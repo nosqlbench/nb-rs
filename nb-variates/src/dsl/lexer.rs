@@ -64,7 +64,7 @@ pub enum TokenKind {
 /// Lex source text into tokens.
 pub fn lex(source: &str) -> Result<Vec<Token>, String> {
     let mut tokens = Vec::new();
-    let mut chars: Vec<char> = source.chars().collect();
+    let chars: Vec<char> = source.chars().collect();
     let mut pos = 0;
     let mut line = 1;
     let mut col = 1;

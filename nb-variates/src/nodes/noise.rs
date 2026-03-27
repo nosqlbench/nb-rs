@@ -15,7 +15,7 @@
 //! Inputs are u64 coordinates mapped to a float domain via scaling.
 //! Outputs are f64 in [-1, 1] (raw noise) or [0, 1] (normalized).
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{GkNode, NodeMeta, Port, Value};
 
 // =================================================================
 // Permutation table (init-time artifact)

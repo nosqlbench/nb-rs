@@ -5,7 +5,7 @@
 
 use std::io::Write;
 
-use crate::frame::{MetricsFrame, Sample, QUANTILES};
+use crate::frame::{MetricsFrame, Sample};
 use crate::scheduler::Reporter;
 
 /// Writes human-readable metrics summaries to a `Write` target.

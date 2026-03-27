@@ -21,4 +21,5 @@ target
 #.idea/
 /target
 /links
+local/
 .idea/**

@@ -49,7 +49,7 @@ impl GkNode for TypeOf {
 /// Signature: `(input: any) -> (String)`
 pub struct DebugRepr {
     meta: NodeMeta,
-    input_type: PortType,
+    _input_type: PortType,
 }
 
 impl DebugRepr {
@@ -64,7 +64,7 @@ impl DebugRepr {
                 inputs: vec![Port::new("input", input_type)],
                 outputs: vec![Port::new("output", PortType::Str)],
             },
-            input_type,
+            _input_type: input_type,
         }
     }
 }

@@ -6,7 +6,6 @@
 //! Walks the AST, resolves function names to node constructors, wires
 //! the `GkAssembler`, and produces a `GkKernel`.
 
-use std::collections::HashMap;
 
 use crate::assembly::{GkAssembler, WireRef};
 use crate::dsl::ast::*;
@@ -20,12 +19,10 @@ use crate::nodes::arithmetic::*;
 use crate::nodes::identity::*;
 use crate::nodes::convert::*;
 use crate::nodes::fixed::*;
-use crate::nodes::string::*;
 use crate::nodes::datetime::*;
 use crate::nodes::lerp::*;
 use crate::nodes::encoding::*;
 use crate::nodes::diagnostic::*;
-use crate::nodes::bytebuf::*;
 use crate::nodes::weighted::*;
 use crate::nodes::format::*;
 use crate::nodes::json::*;
@@ -34,7 +31,7 @@ use crate::nodes::noise::*;
 use crate::nodes::regex::*;
 use crate::sampling::icd::*;
 
-use crate::dsl::error::{DiagnosticReport, Severity};
+use crate::dsl::error::DiagnosticReport;
 use crate::dsl::registry;
 use std::collections::HashSet;
 
@@ -154,7 +151,7 @@ fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
     }
 
     // Check for unused bindings (warning, not error)
-    for (name, span) in &definition_order {
+    for (name, _span) in &definition_order {
         if !referenced.contains(name) && !coord_names.contains(name) {
             // It's an output variate — not consumed internally.
             // This is fine, don't warn. Outputs are consumed externally.
@@ -498,7 +495,7 @@ impl Compiler {
                         .collect();
 
                     // Build format string by replacing {name} with {}
-                    let fmt = s.replace(|_: char| false, ""); // keep as-is for now
+                    let _fmt = s.replace(|_: char| false, ""); // keep as-is for now
                     // Actually, we need to replace each {name} with {} for Printf
                     let mut fmt_str = String::new();
                     let mut ci = 0;
@@ -560,7 +557,7 @@ enum ConstArg {
     Int(u64),
     Float(f64),
     Str(String),
-    FloatArray(Vec<f64>),
+    FloatArray(#[allow(dead_code)] Vec<f64>),
 }
 
 impl ConstArg {
@@ -573,6 +570,7 @@ impl ConstArg {
     fn as_str(&self) -> &str {
         match self { ConstArg::Str(s) => s, _ => "" }
     }
+    #[allow(dead_code)]
     fn as_float_array(&self) -> &[f64] {
         match self { ConstArg::FloatArray(v) => v, _ => &[] }
     }
@@ -584,7 +582,7 @@ impl ConstArg {
 /// `consts` are the assembly-time constant arguments.
 fn build_node(
     func: &str,
-    wires: &[WireRef],
+    _wires: &[WireRef],
     consts: &[ConstArg],
 ) -> Result<Box<dyn GkNode>, String> {
     match func {

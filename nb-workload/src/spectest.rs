@@ -10,7 +10,6 @@
 //!
 //! This module parses those triples from markdown and validates them.
 
-use std::collections::HashMap;
 
 /// A single spectest triple extracted from a markdown file.
 #[derive(Debug, Clone)]

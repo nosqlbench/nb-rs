@@ -13,7 +13,7 @@
 //! proportionally to Census frequency data.
 
 use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
-use crate::sampling::alias::{AliasTable, AliasTableU64};
+use crate::sampling::alias::AliasTableU64;
 
 // =================================================================
 // Bundled CSV data

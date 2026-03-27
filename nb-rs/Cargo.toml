@@ -3,5 +3,16 @@ name = "nb-rs"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "nbrs"
+path = "src/main.rs"
+
 [dependencies]
 nb-variates = { path = "../nb-variates" }
+nb-metrics = { path = "../nb-metrics" }
+nb-workload = { path = "../nb-workload" }
+nb-rate = { path = "../nb-rate" }
+nb-errorhandler = { path = "../nb-errorhandler" }
+nb-activity = { path = "../nb-activity" }
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"

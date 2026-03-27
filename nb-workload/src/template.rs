@@ -28,9 +28,19 @@ pub fn expand_templates(source: &str, params: &HashMap<String, String>) -> Strin
     let mut i = 0;
 
     while i < chars.len() {
-        // Look for TEMPLATE(
-        if i + 9 <= chars.len() && &source[i..i + 9] == "TEMPLATE(" {
-            let start = i;
+        // Look for TEMPLATE( — compare chars, not bytes
+        let template_match = i + 9 <= chars.len()
+            && chars[i] == 'T'
+            && chars[i+1] == 'E'
+            && chars[i+2] == 'M'
+            && chars[i+3] == 'P'
+            && chars[i+4] == 'L'
+            && chars[i+5] == 'A'
+            && chars[i+6] == 'T'
+            && chars[i+7] == 'E'
+            && chars[i+8] == '(';
+
+        if template_match {
             i += 9; // skip "TEMPLATE("
 
             // Find matching closing paren, respecting nested parens and quotes
@@ -49,8 +59,8 @@ pub fn expand_templates(source: &str, params: &HashMap<String, String>) -> Strin
             }
 
             if depth != 0 {
-                // Unclosed TEMPLATE — pass through as-is
-                result.push_str(&source[start..]);
+                // Unclosed TEMPLATE — pass through remaining chars
+                for c in &chars[arg_start - 9..] { result.push(*c); }
                 break;
             }
 

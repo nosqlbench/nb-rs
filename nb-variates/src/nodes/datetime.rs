@@ -158,8 +158,11 @@ impl GkNode for DateComponents {
 // --- Calendar arithmetic (simplified, no leap seconds) ---
 
 const MILLIS_PER_SEC: u64 = 1_000;
+#[allow(dead_code)]
 const MILLIS_PER_MIN: u64 = 60_000;
+#[allow(dead_code)]
 const MILLIS_PER_HOUR: u64 = 3_600_000;
+#[allow(dead_code)]
 const MILLIS_PER_DAY: u64 = 86_400_000;
 
 fn is_leap_year(y: u64) -> bool {

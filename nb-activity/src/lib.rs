@@ -1,0 +1,15 @@
+// Copyright 2024-2026 nosqlbench contributors
+// SPDX-License-Identifier: Apache-2.0
+
+//! # nb-activity
+//!
+//! Activity execution engine: async dispatch loop, adapter trait,
+//! cycle source, op sequencing, and integration of all nb-rs crates.
+
+pub mod cycle;
+pub mod adapter;
+pub mod opseq;
+pub mod activity;
+pub mod adapters;
+pub mod synthesis;
+pub mod bindings;

@@ -5,5 +5,7 @@ members = [
     "nb-metrics",
     "nb-workload",
     "nb-rate",
+    "nb-errorhandler",
+    "nb-activity",
 ]
 resolver = "3"

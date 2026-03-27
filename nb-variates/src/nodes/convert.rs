@@ -9,7 +9,7 @@
 //! - **Explicit conversions**: user-placed nodes for lossy, formatted,
 //!   or parameterized conversions. These require deliberate intent.
 
-use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{GkNode, NodeMeta, Port, Value};
 
 /// Convert u64 to its decimal string representation.
 ///

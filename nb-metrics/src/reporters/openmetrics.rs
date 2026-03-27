@@ -28,7 +28,7 @@ pub fn render_prometheus_text(frame: &MetricsFrame) -> String {
                 let label_str = render_labels(labels, &["name"]);
                 out.push_str(&format!("{name}{label_str} {value}\n"));
             }
-            Sample::Timer { labels, count, histogram } => {
+            Sample::Timer { labels, count: _, histogram } => {
                 let name = sanitize_name(labels.get("name").unwrap_or("unknown"));
                 let label_str = render_labels(labels, &["name"]);
                 let obs = histogram.len();

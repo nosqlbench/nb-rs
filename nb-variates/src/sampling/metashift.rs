@@ -42,6 +42,7 @@ fn feedback_for_width_and_bank(width: u32, bank: usize) -> u64 {
 }
 
 /// Return the default (bank 0) feedback polynomial for a given width.
+#[allow(dead_code)]
 fn feedback_for_width(width: u32) -> u64 {
     feedback_for_width_and_bank(width, 0)
 }

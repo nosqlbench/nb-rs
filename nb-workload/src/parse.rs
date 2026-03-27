@@ -212,7 +212,6 @@ fn parse_ops_field(
         // Map of named ops
         JVal::Object(map) => {
             for (key, val) in map {
-                op_counter += 1;
                 let op = normalize_op_entry(key, val, block_name, bindings, params, tags);
                 all_ops.push(op);
             }
@@ -329,6 +328,8 @@ fn normalize_op_object(
     // Determine op payload
     let reserved = ["name", "description", "desc", "bindings", "params", "tags"];
     let op_field_names = ["op", "ops", "operations", "stmt", "statement", "statements"];
+    // Activity-level params excised from op fields before the adapter sees them
+    let activity_params = ["ratio", "driver", "space", "instrument", "start-timers", "stop-timers"];
 
     let op_fields = if let Some(explicit_op) = op_field_names.iter()
         .find_map(|k| map.get(*k))
@@ -349,12 +350,22 @@ fn normalize_op_object(
             }
         }
     } else {
-        // All non-reserved fields become op fields
+        // All non-reserved, non-activity-param fields become op fields
         map.iter()
-            .filter(|(k, _)| !reserved.contains(&k.as_str()) && !op_field_names.contains(&k.as_str()))
+            .filter(|(k, _)| !reserved.contains(&k.as_str())
+                && !op_field_names.contains(&k.as_str())
+                && !activity_params.contains(&k.as_str()))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     };
+
+    // Excise activity-level params from op fields into params
+    let mut op_params = op_params;
+    for ap in &activity_params {
+        if let Some(val) = map.get(*ap) {
+            op_params.insert(ap.to_string(), val.clone());
+        }
+    }
 
     ParsedOp {
         name,

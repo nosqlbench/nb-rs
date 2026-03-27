@@ -1,0 +1,9 @@
+[package]
+name = "nb-errorhandler"
+version = "0.1.0"
+edition = "2024"
+description = "Modular composable error handler for nb-rs"
+
+[dependencies]
+regex = "1"
+log = "0.4"

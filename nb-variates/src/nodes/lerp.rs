@@ -3,7 +3,7 @@
 
 //! Linear interpolation and range mapping nodes.
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{GkNode, NodeMeta, Port, Value};
 
 /// Linear interpolation with fixed endpoints.
 ///
