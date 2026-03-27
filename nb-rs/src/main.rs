@@ -17,6 +17,8 @@ use nb_activity::bindings::compile_bindings;
 use nb_activity::opseq::{OpSequence, SequencerType};
 use nb_activity::synthesis::OpBuilder;
 use nb_metrics::labels::Labels;
+use nb_tui::app::App;
+use nb_tui::reporter::TuiReporter;
 use nb_workload::parse::parse_workload;
 use nb_workload::tags::TagFilter;
 
@@ -179,6 +181,40 @@ async fn run_command(args: &[String]) {
     let builder = Arc::new(OpBuilder::new(kernel));
     let activity = Activity::new(config, &Labels::of("session", "cli"), op_sequence);
 
+    // Check for --tui flag
+    let use_tui = args.iter().any(|a| a == "--tui");
+
+    // If TUI mode, spawn TUI on a separate thread
+    let tui_handle = if use_tui {
+        let (_tui_reporter, tui_rx) = TuiReporter::channel();
+
+        // Set up the metrics scheduler with TUI as a consumer
+        
+        
+
+        // We'll manually feed frames to the TUI reporter from the
+        // activity metrics. For now, start the TUI thread and feed
+        // it activity info.
+        let mut app = App::with_metrics(tui_rx);
+        app.metrics.activity_name = "main".to_string();
+        app.metrics.driver_name = driver.to_string();
+        app.metrics.threads = threads;
+        app.metrics.total_target = cycles;
+        app.metrics.rate_config = cycle_rate.map(|r| format!("{r}/s")).unwrap_or("unlimited".into());
+
+        let tui_thread = std::thread::spawn(move || {
+            let _ = app.run();
+        });
+
+        // TODO: wire tui_reporter into the metrics scheduler so it
+        // receives live frames. For now the TUI shows static info
+        // until the scheduler integration is complete.
+
+        Some(tui_thread)
+    } else {
+        None
+    };
+
     match driver {
         "stdout" => {
             let adapter = Arc::new(StdoutAdapter::with_config(StdoutConfig {
@@ -198,7 +234,13 @@ async fn run_command(args: &[String]) {
         }
     };
 
-    eprintln!("nbrs: done");
+    if let Some(handle) = tui_handle {
+        // TUI will exit when user presses q — don't wait forever
+        eprintln!("nbrs: activity complete. Press q in TUI to exit.");
+        let _ = handle.join();
+    } else {
+        eprintln!("nbrs: done");
+    }
 }
 
 /// Parse a cycle count that may have suffixes: K, M, B.

@@ -7,5 +7,6 @@ members = [
     "nb-rate",
     "nb-errorhandler",
     "nb-activity",
+    "nb-tui",
 ]
 resolver = "3"
