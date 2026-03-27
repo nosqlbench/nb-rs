@@ -1,0 +1,33 @@
+// independent_samples.gk — Library kernel for independent distribution samples.
+//
+// A common need: generate multiple statistically independent fields
+// from a single coordinate. This kernel takes one input and produces
+// N independent quantiles by chaining hashes.
+
+// Formal interface: one input, three independent quantiles.
+(seed: u64) -> (q0: f64, q1: f64, q2: f64) := {
+    // Each hash step produces an independent-seeming value.
+    h0 := hash(seed)
+    h1 := hash(h0)
+    h2 := hash(h1)
+
+    // Normalize each to [0, 1) independently.
+    q0 := unit_interval(h0)
+    q1 := unit_interval(h1)
+    q2 := unit_interval(h2)
+}
+
+// Usage in another kernel:
+//
+//   init temp_lut = dist_normal(72.0, 5.0)
+//   init wait_lut = dist_exponential(0.5)
+//   init size_lut = dist_pareto(1.0, 2.0)
+//
+//   coordinates := (cycle)
+//   (q_temp, q_wait, q_size) := independent_samples(cycle)
+//   temperature := lut_sample(q_temp, temp_lut)
+//   wait_time := lut_sample(q_wait, wait_lut)
+//   file_size := lut_sample(q_size, size_lut)
+//
+// Now temperature, wait_time, and file_size are statistically
+// independent because they derive from different hash depths.

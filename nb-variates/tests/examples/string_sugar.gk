@@ -1,0 +1,32 @@
+// string_sugar.gk — String interpolation as syntactic sugar.
+//
+// The GK DSL supports string interpolation using {name} bind points
+// inside quoted strings. This is sugar — the assembly phase normalizes
+// it into explicit string-building nodes and edge adapters.
+
+coordinates := (cycle)
+
+(tenant, device, reading) := mixed_radix(cycle, 100, 1000, 0)
+
+tenant_h := hash(tenant)
+tenant_code := mod(tenant_h, 10000)
+
+device_h := hash(interleave(tenant, device))
+device_seq := mod(device_h, 100000)
+
+time_bucket := div(reading, 1000)
+
+// --- Simple interpolation ---
+device_id := "{tenant_code}-{device_seq}"
+
+// --- Another interpolation ---
+partition_key := "{tenant_code}:{time_bucket}"
+
+// --- Single bind point (optimized to edge adapter) ---
+tenant_str := "{tenant_code}"
+
+// --- No bind points (constant) ---
+label := "sensor_reading"
+
+// --- Reusing the same wire twice ---
+echo := "{tenant_code}={tenant_code}"

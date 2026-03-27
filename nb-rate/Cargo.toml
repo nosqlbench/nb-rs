@@ -1,0 +1,8 @@
+[package]
+name = "nb-rate"
+version = "0.1.0"
+edition = "2024"
+description = "Rate limiter for nb-rs: token bucket with time-scaled permits and burst recovery"
+
+[dependencies]
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }

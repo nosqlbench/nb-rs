@@ -1,0 +1,7 @@
+[package]
+name = "nb-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nb-variates = { path = "../nb-variates" }

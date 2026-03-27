@@ -1,0 +1,51 @@
+// hashing_provenance.gk — Explicit hashing and why it matters.
+//
+// A core design principle of the GK: hashing is always explicit.
+// No function secretly hashes its input. This means the user can
+// always see exactly where entropy enters the DAG.
+//
+// This example shows three common hashing patterns and explains
+// when and why each is used.
+
+coordinates := (cycle)
+
+(tenant, device) := mixed_radix(cycle, 100, 0)
+
+// --- Pattern 1: Direct hash ---
+//
+// Hash a single coordinate for dispersion. The input is a small,
+// sequential value (tenant 0..99). The hash spreads it across the
+// full u64 range so that mod/div produce well-distributed results.
+tenant_h := hash(tenant)
+tenant_id := mod(tenant_h, 10000)
+
+// --- Pattern 2: Combined hash ---
+//
+// When two coordinates must be combined into a single unique seed,
+// interleave their bits first, then hash. This ensures that
+// (tenant=1, device=2) and (tenant=2, device=1) produce different
+// hashes. Simply adding or xoring the values would lose this
+// distinction.
+device_h := hash(interleave(tenant, device))
+device_id := mod(device_h, 100000)
+
+// --- Pattern 3: Chained hash ---
+//
+// Hash-of-hash produces an independent-seeming value from the same
+// root. This is useful when you need multiple "random" fields that
+// are all deterministically derived from the same identity.
+//
+// Without chaining, you'd need to interleave with a constant or
+// use a different hash function to get a second axis of randomness.
+field_a := mod(tenant_h, 1000)
+field_b := mod(hash(tenant_h), 1000)
+field_c := mod(hash(hash(tenant_h)), 1000)
+
+// These three fields are all derived from the same tenant, but
+// they will have different values because each additional hash
+// step disperses the input differently.
+//
+// The provenance is visible in the DAG:
+//   tenant → hash → tenant_h → mod → field_a
+//                  └→ hash → mod → field_b
+//                           └→ hash → mod → field_c

@@ -1,0 +1,47 @@
+// distributions.gk — Using ICD sampling as decomposed building blocks.
+//
+// In Java nosqlbench, sampling from a distribution was a single
+// function call: `Normal(72.0, 5.0)`. That one call implicitly
+// hashed the input, normalized to [0,1), and ran the inverse CDF.
+//
+// In nb-rs, each step is an explicit, composable node. Init-time
+// artifacts (LUTs) are built once; cycle-time nodes evaluate per
+// coordinate.
+
+// === Init-time: build distribution tables ===
+// These are resolved once at assembly. The LUT is a precomputed
+// interpolation table for the inverse CDF — expensive to build,
+// O(1) to query.
+init temp_lut = dist_normal(mean: 72.0, stddev: 5.0)
+init wait_lut = dist_exponential(rate: 0.5)
+init size_lut = dist_pareto(scale: 1.0, shape: 2.0)
+
+// === Cycle-time: the DAG ===
+
+coordinates := (cycle)
+
+// Step 1: Hash — explicitly introduce entropy.
+seed := hash(cycle)
+
+// Step 2: Normalize — map hashed u64 to [0, 1).
+quantile := unit_interval(seed)
+
+// Step 3: Sample — LUT lookup per distribution.
+// Each lut_sample node takes a cycle-time quantile and an init-time LUT.
+temperature := lut_sample(quantile, temp_lut)
+wait_time := lut_sample(quantile, wait_lut)
+file_size := lut_sample(quantile, size_lut)
+
+// Step 4: Clamp (optional) — bound extreme tail values.
+file_size_bounded := clamp_f64(file_size, 1.0, 10000.0)
+
+// Note: all three distributions share the SAME quantile, which means
+// they share the same hashed seed. This produces correlated samples.
+// For independent samples per field, hash each one separately:
+//
+//   seed_a := hash(cycle)
+//   seed_b := hash(hash(cycle))
+//   quantile_a := unit_interval(seed_a)
+//   quantile_b := unit_interval(seed_b)
+//   temperature := lut_sample(quantile_a, temp_lut)
+//   wait_time := lut_sample(quantile_b, wait_lut)

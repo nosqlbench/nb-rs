@@ -1,0 +1,46 @@
+// library_kernel.gk — Reusable kernel as a library construct.
+//
+// This file shows two things:
+//   1. How a .gk file defines a reusable kernel with a formal signature
+//   2. How another kernel would reference it by name
+//
+// Init-time artifacts can live inside the kernel. They are built once
+// per kernel instantiation and shared by all cycle-time nodes in that
+// instance.
+
+// === Defining a library kernel ===
+//
+// Anonymous signature — kernel name comes from file name: "library_kernel".
+
+(entity: u64) -> (entity_h: u64, entity_code: u64, entity_bucket: u64) := {
+    entity_h := hash(entity)
+    entity_code := mod(entity_h, 10000)
+    entity_bucket := mod(entity_h, 64)
+}
+
+// === How another kernel would use this ===
+//
+// In a separate file (e.g., workload.gk):
+//
+//   coordinates := (cycle)
+//   (tenant, device) := mixed_radix(cycle, 100, 0)
+//
+//   // Use library_kernel as a node — referenced by file name.
+//   (tenant_h, tenant_code, tenant_bucket) := library_kernel(tenant)
+//   (device_h, device_code, device_bucket) := library_kernel(device)
+//
+// Each invocation is an independent sub-DAG in the compiled kernel.
+
+// === Library kernel with init-time state ===
+//
+// A kernel can include init bindings. These are resolved once per
+// instantiation:
+//
+//   scored_entity(entity: u64) -> (code: u64, score: f64) := {
+//       init lut = dist_normal(0.0, 1.0)
+//
+//       hashed := hash(entity)
+//       code := mod(hashed, 10000)
+//       quantile := unit_interval(hashed)
+//       score := lut_sample(quantile, lut)
+//   }

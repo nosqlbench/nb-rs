@@ -1,0 +1,18 @@
+// hello_world.gk — The simplest possible GK kernel.
+//
+// One input coordinate, one hash, one bounded output.
+// This is the "hello world" of variate generation: take a cycle
+// number and produce a pseudo-random value in a useful range.
+
+// Declare the input coordinate space. Here we have a single
+// dimension called "cycle" — the engine's iteration counter.
+coordinates := (cycle)
+
+// Hash the cycle to produce a pseudo-random but deterministic u64.
+// Without this, sequential cycle values (0, 1, 2, ...) would produce
+// sequential outputs. The hash disperses them across the u64 space.
+hashed := hash(cycle)
+
+// Bound the hashed value to a useful range.
+// This gives us a user_id between 0 and 999,999.
+user_id := mod(hashed, 1000000)

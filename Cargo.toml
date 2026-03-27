@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "nb-rs",
+    "nb-variates",
+    "nb-metrics",
+    "nb-workload",
+    "nb-rate",
+]
+resolver = "3"

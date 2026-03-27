@@ -1,0 +1,26 @@
+// weighted_entity.gk — Library kernel combining alias sampling with identity derivation.
+//
+// A reusable pattern: take a raw coordinate, hash it, select a
+// weighted category via alias table, and derive a numeric code.
+
+// The alias table is an init-time parameter — the caller provides it.
+(entity: u64, table: alias_table) -> (category: u64, entity_code: u64) := {
+    entity_h := hash(entity)
+    category := alias_sample(entity_h, table)
+    entity_code := mod(entity_h, 100000)
+}
+
+// Usage:
+//
+//   // Init-time: build tables from weights
+//   init region_weights = [60.0, 20.0, 15.0, 5.0]
+//   init region_table = alias_table(region_weights)
+//   init device_weights = [30.0, 30.0, 20.0, 20.0]
+//   init device_table = alias_table(device_weights)
+//
+//   coordinates := (cycle)
+//   (tenant, device) := mixed_radix(cycle, 1000, 0)
+//
+//   // Same kernel, different init objects
+//   (region, tenant_code) := weighted_entity(tenant, region_table)
+//   (device_type, device_code) := weighted_entity(device, device_table)

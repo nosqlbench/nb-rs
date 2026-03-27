@@ -1,0 +1,55 @@
+// sensor_workload.gk — Full workload composing library kernels.
+//
+// This demonstrates the complete init/cycle split in a realistic
+// workload that generates sensor telemetry data.
+//
+// The workload models:
+//   - 100 sites, weighted by traffic
+//   - 500 sensors per site
+//   - Each reading has: temperature (normal), humidity (normal),
+//     battery_level (exponential decay)
+//   - Fields are statistically independent per reading.
+
+// === Init-time: build all tables and datasets ===
+
+init temp_lut = dist_normal(mean: 22.0, stddev: 3.0)
+init humid_lut = dist_normal(mean: 55.0, stddev: 10.0)
+init battery_lut = dist_exponential(rate: 0.02)
+init site_weights = [60.0, 20.0, 15.0, 5.0]
+init site_table = alias_table(site_weights)
+
+// === Cycle-time: the DAG ===
+
+coordinates := (cycle)
+
+// Decompose into domain dimensions
+(site, sensor, reading) := mixed_radix(cycle, 100, 500, 0)
+
+// Site identity with weighted selection
+site_h := hash(site)
+site_category := alias_sample(site_h, site_table)
+site_code := mod(site_h, 10000)
+
+// Sensor identity (unique per site)
+sensor_h := hash(interleave(site, sensor))
+sensor_code := mod(sensor_h, 100000)
+
+// Independent quantiles via chained hashes
+combined := interleave(sensor_h, reading)
+h0 := hash(combined)
+h1 := hash(h0)
+h2 := hash(h1)
+q_temp := unit_interval(h0)
+q_humid := unit_interval(h1)
+q_batt := unit_interval(h2)
+
+// Distribution sampling with init-time LUTs
+temperature := lut_sample(q_temp, temp_lut)
+humidity := clamp_f64(lut_sample(q_humid, humid_lut), 0.0, 100.0)
+battery := clamp_f64(lut_sample(q_batt, battery_lut), 0.0, 100.0)
+
+// Timestamp
+timestamp := add(reading, 1710000000000)
+
+// String output
+sensor_label := "{site_code}-{sensor_code}"

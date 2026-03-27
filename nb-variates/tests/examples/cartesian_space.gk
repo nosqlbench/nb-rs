@@ -1,0 +1,37 @@
+// cartesian_space.gk — Decomposing a flat cycle into a multi-dimensional space.
+//
+// One of the key advantages of the GK model over nosqlbench's unary
+// pipelines: a single cycle counter can be decomposed into multiple
+// domain dimensions without the user manually computing div/mod chains.
+//
+// This kernel models a keyspace of 50 regions × 200 stores × unlimited
+// transactions. A cycle counter iterates through every combination.
+
+coordinates := (cycle)
+
+// Mixed-radix decomposition: extract each dimension from the cycle.
+//
+// The radixes [50, 200, 0] mean:
+//   - region  = cycle % 50           (values 0..49)
+//   - store   = (cycle / 50) % 200   (values 0..199)
+//   - tx      = cycle / 10000        (unbounded, 0 means no cap)
+//
+// So cycles 0..9999 cover every region×store combination once,
+// then cycle 10000 starts the second transaction for region 0, store 0.
+(region, store, tx) := mixed_radix(cycle, 50, 200, 0)
+
+// Now each dimension can be processed independently through the DAG.
+// Hash the region to get a dispersed region identifier.
+region_h := hash(region)
+region_code := mod(region_h, 10000)
+
+// Combine region + store into a unique store identifier.
+// Interleave mixes the bits of two values so that (region=5, store=10)
+// produces a different value than (region=10, store=5).
+store_h := hash(interleave(region, store))
+store_code := mod(store_h, 100000)
+
+// Transaction ID: hash the combination of all three dimensions.
+// This ensures each transaction within a store is unique.
+tx_h := hash(interleave(store_h, tx))
+tx_id := mod(tx_h, 1000000000)

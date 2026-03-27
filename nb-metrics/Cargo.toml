@@ -1,0 +1,17 @@
+[package]
+name = "nb-metrics"
+version = "0.1.0"
+edition = "2024"
+description = "Metrics collection and reporting for nb-rs"
+
+[dependencies]
+hdrhistogram = "7"
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+reqwest = { version = "0.12", features = ["blocking"], optional = true }
+base64 = { version = "0.22", optional = true }
+
+[features]
+default = []
+sqlite = ["dep:rusqlite"]
+victoriametrics = ["dep:reqwest"]
+all-reporters = ["sqlite", "victoriametrics", "dep:base64"]

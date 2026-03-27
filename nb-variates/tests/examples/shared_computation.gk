@@ -1,0 +1,29 @@
+// shared_computation.gk — Demonstrating shared intermediate values.
+//
+// In nosqlbench's Java model, each binding ran its own independent
+// pipeline from the cycle number. If two bindings needed the same
+// hashed value, it was computed twice. In the GK, intermediate results
+// are shared naturally through named wires.
+//
+// This kernel generates user profile fields where several outputs
+// depend on a common hashed user identity.
+
+coordinates := (cycle)
+
+// Hash once. This single value feeds multiple downstream paths.
+user_h := hash(cycle)
+
+// All of these derive from the same hash — no redundant computation.
+user_id := mod(user_h, 10000000)
+user_bucket := mod(user_h, 64)
+user_shard := mod(user_h, 16)
+
+// A second hash, derived from the first, for a different "axis"
+// of randomness. This is a common pattern: hash-of-hash gives
+// an independent-seeming but still deterministic value.
+name_h := hash(user_h)
+name_idx := mod(name_h, 50000)
+
+// And a third axis for account age.
+age_h := hash(name_h)
+account_age_days := mod(age_h, 3650)

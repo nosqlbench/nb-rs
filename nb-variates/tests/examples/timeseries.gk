@@ -1,0 +1,41 @@
+// timeseries.gk — Multi-tenant time-series workload.
+//
+// The full worked example from the SRD. Models 100 tenants, each with
+// 1000 devices, writing sensor readings with realistic distributions.
+//
+// Op template:
+//   INSERT INTO sensor_data
+//     (partition_key, device_id, timestamp, tenant_name, reading_value)
+//   VALUES
+//     ({partition_key}, {device_id}, {timestamp}, {tenant_name}, {reading_value})
+
+// === Init-time: build distribution table ===
+init reading_lut = dist_normal(mean: 72.0, stddev: 5.0)
+
+// === Cycle-time: the DAG ===
+
+coordinates := (cycle)
+
+// Coordinate decomposition: 100 tenants × 1000 devices × readings
+(tenant, device, reading) := mixed_radix(cycle, 100, 1000, 0)
+
+// Tenant identity
+tenant_h := hash(tenant)
+tenant_code := mod(tenant_h, 10000)
+
+// Device identity (interleave for cross-tenant uniqueness)
+device_h := hash(interleave(tenant, device))
+device_seq := mod(device_h, 100000)
+
+// String outputs
+device_id := "{tenant_code}-{device_seq}"
+partition_key := "{tenant_code}:{time_bucket}"
+
+// Time dimension
+time_bucket := div(reading, 1000)
+timestamp := add(reading, 1710000000000)
+
+// Reading value — normal distribution via ICD sampling
+reading_seed := hash(interleave(device_h, reading))
+reading_quantile := unit_interval(reading_seed)
+reading_value := lut_sample(reading_quantile, reading_lut)

@@ -1,0 +1,28 @@
+// multi_coordinate.gk — Multiple input coordinates.
+//
+// The coordinate tuple is not limited to a single "cycle" value.
+// The engine can provide multiple named coordinates — for example,
+// a cycle counter and a thread identifier. This lets the GK produce
+// values that vary across both dimensions.
+//
+// Use case: each thread generates its own partition of the keyspace.
+
+coordinates := (cycle, thread)
+
+// Interleave cycle and thread to produce a globally unique seed.
+// Without this, thread 0 at cycle 100 and thread 1 at cycle 100
+// would produce the same hash. Interleaving makes them distinct.
+combined := interleave(cycle, thread)
+row_h := hash(combined)
+
+// Partition key: derived from thread alone, so each thread writes
+// to its own partition. This models a common database pattern where
+// writers are partitioned to avoid contention.
+partition := mod(hash(thread), 256)
+
+// Row key: unique within the partition, derived from the combined seed.
+row_key := mod(row_h, 1000000)
+
+// Value: a second hash axis for the payload.
+value_h := hash(row_h)
+value := mod(value_h, 1000)
