@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use serde_json::Value as JVal;
-use crate::model::{ParsedOp, ScenarioStep, Workload};
+use crate::model::{BindingsDef, ParsedOp, ScenarioStep, Workload};
 use crate::template::expand_templates;
 
 /// Parse a YAML workload string into a normalized Workload.
@@ -30,7 +30,7 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
 
     let scenarios = parse_scenarios(obj.get("scenarios"));
 
-    let doc_bindings = extract_string_map(obj.get("bindings"));
+    let doc_bindings = extract_bindings(obj.get("bindings"));
     let doc_params = extract_value_map(obj.get("params"));
     let doc_tags = extract_string_map(obj.get("tags"));
 
@@ -108,7 +108,7 @@ fn parse_scenarios(val: Option<&JVal>) -> HashMap<String, Vec<ScenarioStep>> {
 
 fn parse_blocks(
     blocks_val: &JVal,
-    doc_bindings: &HashMap<String, String>,
+    doc_bindings: &BindingsDef,
     doc_params: &HashMap<String, JVal>,
     doc_tags: &HashMap<String, String>,
     all_ops: &mut Vec<ParsedOp>,
@@ -136,7 +136,7 @@ fn parse_blocks(
 fn parse_single_block(
     block_name: &str,
     block_val: &JVal,
-    doc_bindings: &HashMap<String, String>,
+    doc_bindings: &BindingsDef,
     doc_params: &HashMap<String, JVal>,
     doc_tags: &HashMap<String, String>,
     all_ops: &mut Vec<ParsedOp>,
@@ -147,7 +147,7 @@ fn parse_single_block(
     };
 
     // Merge block-level properties with doc-level (block overrides doc)
-    let block_bindings = merge_string_maps(doc_bindings, &extract_string_map(obj.get("bindings")));
+    let block_bindings = merge_bindings(doc_bindings, &extract_bindings(obj.get("bindings")));
     let block_params = merge_value_maps(doc_params, &extract_value_map(obj.get("params")));
     let mut block_tags = merge_string_maps(doc_tags, &extract_string_map(obj.get("tags")));
     block_tags.insert("block".to_string(), block_name.to_string());
@@ -179,7 +179,7 @@ fn parse_single_block(
 fn parse_ops_field(
     ops_val: &JVal,
     block_name: &str,
-    bindings: &HashMap<String, String>,
+    bindings: &BindingsDef,
     params: &HashMap<String, JVal>,
     tags: &HashMap<String, String>,
     all_ops: &mut Vec<ParsedOp>,
@@ -228,7 +228,7 @@ fn normalize_op_item(
     item: &JVal,
     auto_name: &str,
     block_name: &str,
-    bindings: &HashMap<String, String>,
+    bindings: &BindingsDef,
     params: &HashMap<String, JVal>,
     tags: &HashMap<String, String>,
 ) -> ParsedOp {
@@ -265,7 +265,7 @@ fn normalize_op_entry(
     key: &str,
     val: &JVal,
     block_name: &str,
-    bindings: &HashMap<String, String>,
+    bindings: &BindingsDef,
     params: &HashMap<String, JVal>,
     tags: &HashMap<String, String>,
 ) -> ParsedOp {
@@ -305,7 +305,7 @@ fn normalize_op_object(
     map: &serde_json::Map<String, JVal>,
     default_name: &str,
     block_name: &str,
-    parent_bindings: &HashMap<String, String>,
+    parent_bindings: &BindingsDef,
     parent_params: &HashMap<String, JVal>,
     parent_tags: &HashMap<String, String>,
 ) -> ParsedOp {
@@ -320,7 +320,7 @@ fn normalize_op_object(
         .map(|s| s.to_string());
 
     // Extract recognized fields
-    let op_bindings = merge_string_maps(parent_bindings, &extract_string_map(map.get("bindings")));
+    let op_bindings = merge_bindings(parent_bindings, &extract_bindings(map.get("bindings")));
     let op_params = merge_value_maps(parent_params, &extract_value_map(map.get("params")));
     let mut op_tags = merge_string_maps(parent_tags, &extract_string_map(map.get("tags")));
     op_tags.insert("block".to_string(), block_name.to_string());
@@ -380,6 +380,54 @@ fn normalize_op_object(
 // -----------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------
+
+/// Extract bindings from a YAML value.
+///
+/// If the value is a string, it's native GK grammar source.
+/// If it's a mapping, it's legacy name→expression pairs.
+fn extract_bindings(val: Option<&JVal>) -> BindingsDef {
+    match val {
+        Some(JVal::String(s)) => BindingsDef::GkSource(s.clone()),
+        Some(JVal::Object(obj)) => {
+            let mut map = HashMap::new();
+            for (k, v) in obj {
+                if let Some(s) = v.as_str() {
+                    map.insert(k.clone(), s.to_string());
+                } else {
+                    map.insert(k.clone(), v.to_string());
+                }
+            }
+            BindingsDef::Map(map)
+        }
+        _ => BindingsDef::default(),
+    }
+}
+
+/// Merge bindings from parent and child levels.
+///
+/// GkSource at child level completely replaces parent (no merging).
+/// Map at child level merges with parent map at key level.
+/// If parent is GkSource and child is empty, parent is inherited.
+fn merge_bindings(parent: &BindingsDef, child: &BindingsDef) -> BindingsDef {
+    match (parent, child) {
+        // Child GK source replaces everything
+        (_, BindingsDef::GkSource(s)) if !s.trim().is_empty() => {
+            BindingsDef::GkSource(s.clone())
+        }
+        // Child map merges with parent map
+        (BindingsDef::Map(p), BindingsDef::Map(c)) => {
+            let mut merged = p.clone();
+            for (k, v) in c {
+                merged.insert(k.clone(), v.clone());
+            }
+            BindingsDef::Map(merged)
+        }
+        // Empty child inherits parent
+        (_, BindingsDef::Map(c)) if c.is_empty() => parent.clone(),
+        // Otherwise child wins
+        (_, child) => child.clone(),
+    }
+}
 
 fn extract_string_map(val: Option<&JVal>) -> HashMap<String, String> {
     let mut map = HashMap::new();
@@ -497,7 +545,7 @@ blocks:
         let ops = parse_ops(yaml).unwrap();
         assert_eq!(ops.len(), 1);
         // Block-level binding overrides doc-level
-        assert_eq!(ops[0].bindings["id"], "Hash()");
+        assert_eq!(ops[0].bindings.as_map()["id"], "Hash()");
         // Doc-level param inherited
         assert_eq!(ops[0].params["prepared"], true);
         // Doc-level tag inherited
@@ -594,5 +642,73 @@ ops:
 "#;
         let workload = parse_workload(yaml, &HashMap::new()).unwrap();
         assert!(workload.description.unwrap().contains("test workload"));
+    }
+
+    #[test]
+    fn parse_gk_source_bindings() {
+        // Native GK grammar: explicit named wires, full DAG
+        let yaml = r#"
+bindings: |
+  // Explicit wiring — every intermediate is named
+  coordinates := (cycle)
+  h := hash(cycle)
+  user_id := mod(h, 1000000)
+  code_hash := hash(user_id)
+  code := combinations(code_hash, '0-9A-Z')
+
+  // Equivalent concise form (nested composition):
+  // user_id := mod(hash(cycle), 1000000)
+  // code := combinations(hash(user_id), '0-9A-Z')
+ops:
+  insert: "INSERT INTO users (id, code) VALUES ({user_id}, '{code}');"
+"#;
+        let ops = parse_ops(yaml).unwrap();
+        assert_eq!(ops.len(), 1);
+        match &ops[0].bindings {
+            BindingsDef::GkSource(src) => {
+                assert!(src.contains("coordinates := (cycle)"));
+                assert!(src.contains("user_id := mod(h, 1000000)"));
+            }
+            BindingsDef::Map(_) => panic!("expected GkSource, got Map"),
+        }
+    }
+
+    #[test]
+    fn parse_map_bindings_still_works() {
+        let yaml = r#"
+bindings:
+  id: "Hash(); Mod(100)"
+ops:
+  op1: "SELECT * FROM t WHERE id={id};"
+"#;
+        let ops = parse_ops(yaml).unwrap();
+        assert_eq!(ops[0].bindings.as_map()["id"], "Hash(); Mod(100)");
+    }
+
+    #[test]
+    fn parse_gk_source_overrides_parent_map() {
+        // Block-level GK source completely replaces doc-level map bindings
+        let yaml = r#"
+bindings:
+  id: "Hash()"
+blocks:
+  main:
+    bindings: |
+      coordinates := (cycle)
+      h := hash(cycle)
+      id := mod(h, 1000)
+      // Concise equivalent:
+      // id := mod(hash(cycle), 1000)
+    ops:
+      op1: "SELECT * FROM t WHERE id={id};"
+"#;
+        let ops = parse_ops(yaml).unwrap();
+        match &ops[0].bindings {
+            BindingsDef::GkSource(src) => {
+                assert!(src.contains("coordinates := (cycle)"));
+                assert!(src.contains("id := mod(h, 1000)"));
+            }
+            BindingsDef::Map(_) => panic!("expected GkSource, got Map"),
+        }
     }
 }

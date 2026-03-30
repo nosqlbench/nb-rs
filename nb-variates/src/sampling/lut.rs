@@ -12,7 +12,7 @@
 //! runtime, querying is a single array index + lerp — no branching on
 //! distribution type, no function pointer call per sample.
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Value};
 
 /// A pre-computed interpolating lookup table mapping [0, 1] → f64.
 ///
@@ -91,6 +91,11 @@ impl LutF64 {
         self.lut.len()
     }
 
+    /// Raw pointer to the LUT data (for JIT constant baking).
+    pub fn as_ptr(&self) -> *const f64 {
+        self.lut.as_ptr()
+    }
+
     /// The resolution (number of intervals).
     pub fn resolution(&self) -> usize {
         self.lut.len() - 1
@@ -135,7 +140,32 @@ impl GkNode for LutSample {
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::F64(self.table.sample(inputs[0].as_f64()));
     }
-    // No compiled_u64: f64 ports.
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        // Capture the pointer as usize to satisfy Send+Sync.
+        // Safety: the LUT is immutable after construction and outlives
+        // the closure (both are owned by the same GkNode).
+        let lut_addr = self.table.lut.as_ptr() as usize;
+        let lut_len = self.table.lut.len();
+        Some(Box::new(move |inputs, outputs| {
+            let u = f64::from_bits(inputs[0]).clamp(0.0, 1.0);
+            let n = (lut_len - 1) as f64;
+            let pos = u * n;
+            let idx = (pos as usize).min(lut_len - 2);
+            let frac = pos - idx as f64;
+            let result = unsafe {
+                let ptr = lut_addr as *const f64;
+                let a = *ptr.add(idx);
+                let b = *ptr.add(idx + 1);
+                a * (1.0 - frac) + b * frac
+            };
+            outputs[0] = result.to_bits();
+        }))
+    }
+
+    fn jit_constants(&self) -> Vec<u64> {
+        vec![self.table.lut.as_ptr() as u64, self.table.lut.len() as u64]
+    }
 }
 
 #[cfg(test)]

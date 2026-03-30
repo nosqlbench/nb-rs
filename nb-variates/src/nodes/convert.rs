@@ -9,7 +9,7 @@
 //! - **Explicit conversions**: user-placed nodes for lossy, formatted,
 //!   or parameterized conversions. These require deliberate intent.
 
-use crate::node::{GkNode, NodeMeta, Port, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Value};
 
 /// Convert u64 to its decimal string representation.
 ///
@@ -185,6 +185,12 @@ impl GkNode for F64ToU64 {
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(inputs[0].as_f64() as u64);
     }
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        Some(Box::new(|inputs, outputs| {
+            outputs[0] = f64::from_bits(inputs[0]) as u64;
+        }))
+    }
 }
 
 /// Round f64 to nearest u64.
@@ -211,6 +217,12 @@ impl GkNode for RoundToU64 {
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(inputs[0].as_f64().round() as u64);
+    }
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        Some(Box::new(|inputs, outputs| {
+            outputs[0] = f64::from_bits(inputs[0]).round() as u64;
+        }))
     }
 }
 
@@ -239,6 +251,12 @@ impl GkNode for FloorToU64 {
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(inputs[0].as_f64().floor() as u64);
     }
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        Some(Box::new(|inputs, outputs| {
+            outputs[0] = f64::from_bits(inputs[0]).floor() as u64;
+        }))
+    }
 }
 
 /// Ceiling f64 to u64 (round toward positive infinity).
@@ -265,6 +283,12 @@ impl GkNode for CeilToU64 {
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(inputs[0].as_f64().ceil() as u64);
+    }
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        Some(Box::new(|inputs, outputs| {
+            outputs[0] = f64::from_bits(inputs[0]).ceil() as u64;
+        }))
     }
 }
 
@@ -305,6 +329,18 @@ impl GkNode for Discretize {
         let bucket = (v / self.range * self.buckets as f64) as u64;
         outputs[0] = Value::U64(bucket.min(self.buckets - 1));
     }
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        let range = self.range;
+        let buckets = self.buckets;
+        Some(Box::new(move |inputs, outputs| {
+            let v = f64::from_bits(inputs[0]).clamp(0.0, range - f64::EPSILON);
+            let bucket = (v / range * buckets as f64) as u64;
+            outputs[0] = bucket.min(buckets - 1);
+        }))
+    }
+
+    fn jit_constants(&self) -> Vec<u64> { vec![self.range.to_bits(), self.buckets] }
 }
 
 /// Format a u64 as a string with a specific radix (2, 8, 10, 16).

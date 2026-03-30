@@ -179,6 +179,10 @@ impl GkNode for Shuffle {
             outputs[0] = (register - 1) + min;
         }))
     }
+
+    fn jit_constants(&self) -> Vec<u64> {
+        vec![self.config.feedback, self.config.size, self.config.min]
+    }
 }
 
 // -----------------------------------------------------------------

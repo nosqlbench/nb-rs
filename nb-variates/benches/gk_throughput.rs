@@ -154,7 +154,80 @@ fn bench_p2_wide_sum(c: &mut Criterion) {
 }
 
 // =================================================================
+// Phase 3 (JIT) benchmarks — only with `jit` feature
+// =================================================================
 
+#[cfg(feature = "jit")]
+fn bench_p3_single_identity(c: &mut Criterion) {
+    let mut kernel = asm_single_identity().try_compile_jit().unwrap();
+    let out_slot = kernel.resolve_output("out").unwrap();
+    c.bench_function("p3/single_identity", |b| {
+        let mut cycle = 0u64;
+        b.iter(|| {
+            kernel.eval(&[cycle]);
+            black_box(kernel.get_slot(out_slot));
+            cycle = cycle.wrapping_add(1);
+        });
+    });
+}
+
+#[cfg(feature = "jit")]
+fn bench_p3_identity_chain(c: &mut Criterion) {
+    let mut group = c.benchmark_group("p3/identity_chain");
+    for depth in [1, 2, 4, 8, 16] {
+        let mut kernel = asm_identity_chain(depth).try_compile_jit().unwrap();
+        let out_slot = kernel.resolve_output("out").unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, _| {
+            let mut cycle = 0u64;
+            b.iter(|| {
+                kernel.eval(&[cycle]);
+                black_box(kernel.get_slot(out_slot));
+                cycle = cycle.wrapping_add(1);
+            });
+        });
+    }
+    group.finish();
+}
+
+// =================================================================
+
+// =================================================================
+// Hybrid benchmarks
+// =================================================================
+
+fn bench_hybrid_single_identity(c: &mut Criterion) {
+    let mut kernel = asm_single_identity().compile_hybrid().unwrap();
+    let out_slot = kernel.resolve_output("out").unwrap();
+    c.bench_function("hybrid/single_identity", |b| {
+        let mut cycle = 0u64;
+        b.iter(|| {
+            kernel.eval(&[cycle]);
+            black_box(kernel.get_slot(out_slot));
+            cycle = cycle.wrapping_add(1);
+        });
+    });
+}
+
+fn bench_hybrid_identity_chain(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hybrid/identity_chain");
+    for depth in [1, 2, 4, 8, 16] {
+        let mut kernel = asm_identity_chain(depth).compile_hybrid().unwrap();
+        let out_slot = kernel.resolve_output("out").unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, _| {
+            let mut cycle = 0u64;
+            b.iter(|| {
+                kernel.eval(&[cycle]);
+                black_box(kernel.get_slot(out_slot));
+                cycle = cycle.wrapping_add(1);
+            });
+        });
+    }
+    group.finish();
+}
+
+// =================================================================
+
+#[cfg(not(feature = "jit"))]
 criterion_group!(
     benches,
     bench_p1_single_identity,
@@ -163,5 +236,22 @@ criterion_group!(
     bench_p2_single_identity,
     bench_p2_identity_chain,
     bench_p2_wide_sum,
+    bench_hybrid_single_identity,
+    bench_hybrid_identity_chain,
+);
+
+#[cfg(feature = "jit")]
+criterion_group!(
+    benches,
+    bench_p1_single_identity,
+    bench_p1_identity_chain,
+    bench_p1_wide_sum,
+    bench_p2_single_identity,
+    bench_p2_identity_chain,
+    bench_p2_wide_sum,
+    bench_p3_single_identity,
+    bench_p3_identity_chain,
+    bench_hybrid_single_identity,
+    bench_hybrid_identity_chain,
 );
 criterion_main!(benches);

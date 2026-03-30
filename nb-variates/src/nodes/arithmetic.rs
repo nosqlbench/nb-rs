@@ -28,20 +28,15 @@ impl AddU64 {
 }
 
 impl GkNode for AddU64 {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
+    fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(inputs[0].as_u64().wrapping_add(self.addend));
     }
-
     fn compiled_u64(&self) -> Option<CompiledU64Op> {
         let addend = self.addend;
-        Some(Box::new(move |inputs, outputs| {
-            outputs[0] = inputs[0].wrapping_add(addend);
-        }))
+        Some(Box::new(move |inputs, outputs| { outputs[0] = inputs[0].wrapping_add(addend); }))
     }
+    fn jit_constants(&self) -> Vec<u64> { vec![self.addend] }
 }
 
 /// Multiply a u64 value by a constant (wrapping).
@@ -67,20 +62,15 @@ impl MulU64 {
 }
 
 impl GkNode for MulU64 {
-    fn meta(&self) -> &NodeMeta {
-        &self.meta
-    }
-
+    fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(inputs[0].as_u64().wrapping_mul(self.factor));
     }
-
     fn compiled_u64(&self) -> Option<CompiledU64Op> {
         let factor = self.factor;
-        Some(Box::new(move |inputs, outputs| {
-            outputs[0] = inputs[0].wrapping_mul(factor);
-        }))
+        Some(Box::new(move |inputs, outputs| { outputs[0] = inputs[0].wrapping_mul(factor); }))
     }
+    fn jit_constants(&self) -> Vec<u64> { vec![self.factor] }
 }
 
 /// Divide a u64 value by a constant (integer division).
@@ -117,10 +107,9 @@ impl GkNode for DivU64 {
 
     fn compiled_u64(&self) -> Option<CompiledU64Op> {
         let divisor = self.divisor;
-        Some(Box::new(move |inputs, outputs| {
-            outputs[0] = inputs[0] / divisor;
-        }))
+        Some(Box::new(move |inputs, outputs| { outputs[0] = inputs[0] / divisor; }))
     }
+    fn jit_constants(&self) -> Vec<u64> { vec![self.divisor] }
 }
 
 /// Modulo of a u64 value by a constant.
@@ -161,6 +150,10 @@ impl GkNode for ModU64 {
             outputs[0] = inputs[0] % modulus;
         }))
     }
+
+    fn jit_constants(&self) -> Vec<u64> {
+        vec![self.modulus]
+    }
 }
 
 /// Clamp a u64 value to `[min, max]`.
@@ -199,10 +192,9 @@ impl GkNode for ClampU64 {
     fn compiled_u64(&self) -> Option<CompiledU64Op> {
         let min = self.min;
         let max = self.max;
-        Some(Box::new(move |inputs, outputs| {
-            outputs[0] = inputs[0].clamp(min, max);
-        }))
+        Some(Box::new(move |inputs, outputs| { outputs[0] = inputs[0].clamp(min, max); }))
     }
+    fn jit_constants(&self) -> Vec<u64> { vec![self.min, self.max] }
 }
 
 /// Decompose a u64 into mixed-radix digits.
@@ -269,6 +261,8 @@ impl GkNode for MixedRadix {
             }
         }))
     }
+
+    fn jit_constants(&self) -> Vec<u64> { self.radixes.clone() }
 }
 
 /// Sum N u64 inputs into one (wrapping).

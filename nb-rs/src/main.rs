@@ -19,6 +19,7 @@ use nb_activity::synthesis::OpBuilder;
 use nb_metrics::labels::Labels;
 use nb_tui::app::App;
 use nb_tui::reporter::TuiReporter;
+use nb_variates::dsl::registry;
 use nb_workload::parse::parse_workload;
 use nb_workload::tags::TagFilter;
 
@@ -27,6 +28,12 @@ fn main() {
 
     if args.is_empty() {
         print_usage();
+        return;
+    }
+
+    // Handle describe command synchronously (no tokio needed)
+    if args.first().map(|s| s.as_str()) == Some("describe") {
+        describe_command(&args[1..]);
         return;
     }
 
@@ -39,9 +46,10 @@ fn main() {
 fn print_usage() {
     eprintln!("nbrs — nosqlbench for Rust");
     eprintln!();
-    eprintln!("Usage:");
+    eprintln!("Commands:");
     eprintln!("  nbrs run driver=stdout workload=file.yaml cycles=100 threads=4");
     eprintln!("  nbrs run workload=file.yaml tags=block:main rate=1000 format=json");
+    eprintln!("  nbrs describe gk functions    List all GK node functions");
     eprintln!();
     eprintln!("Parameters:");
     eprintln!("  workload=<file.yaml>   Workload definition file");
@@ -55,6 +63,136 @@ fn print_usage() {
     eprintln!("  format=<type>          Output format: assignments|json|csv|stmt");
     eprintln!("  errors=<spec>          Error handler spec");
     eprintln!("  filename=<path>        Output file (default: stdout)");
+}
+
+fn describe_command(args: &[String]) {
+    let topic = args.first().map(|s| s.as_str()).unwrap_or("");
+    let subtopic = args.get(1).map(|s| s.as_str()).unwrap_or("");
+
+    match (topic, subtopic) {
+        ("gk", "functions") => describe_gk_functions(),
+        ("gk", _) => {
+            eprintln!("nbrs describe gk <subtopic>");
+            eprintln!("  functions    List all GK node functions");
+        }
+        _ => {
+            eprintln!("nbrs describe <topic>");
+            eprintln!("  gk           Generation kernel topics");
+        }
+    }
+}
+
+fn describe_gk_functions() {
+    use nb_activity::bindings::probe_compile_level;
+
+    let funcs = registry::registry();
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+
+    // ANSI color codes
+    let (bold, dim, reset, green, cyan, magenta) = if is_tty {
+        ("\x1b[1m", "\x1b[2m", "\x1b[0m", "\x1b[32m", "\x1b[36m", "\x1b[35m")
+    } else {
+        ("", "", "", "", "", "")
+    };
+
+    // Group functions by category
+    let categories = [
+        ("Hashing", &["hash"][..]),
+        ("Arithmetic", &["add", "mul", "div", "mod", "clamp", "interleave", "mixed_radix", "identity"]),
+        ("Conversions", &["unit_interval", "clamp_f64", "f64_to_u64", "round_to_u64", "floor_to_u64",
+            "ceil_to_u64", "discretize", "format_u64", "format_f64", "zero_pad_u64"]),
+        ("Distributions", &["dist_normal", "dist_exponential", "dist_uniform", "dist_pareto",
+            "dist_zipf", "lut_sample", "icd_normal", "icd_exponential"]),
+        ("Datetime", &["epoch_scale", "epoch_offset", "to_timestamp", "date_components"]),
+        ("Encoding", &["html_encode", "html_decode", "url_encode", "url_decode",
+            "to_hex", "from_hex", "to_base64", "from_base64", "escape_json"]),
+        ("Interpolation", &["lerp", "scale_range", "quantize"]),
+        ("Weighted", &["weighted_strings", "weighted_u64"]),
+        ("String", &["combinations", "number_to_words"]),
+        ("JSON", &["to_json", "json_to_str", "json_merge"]),
+        ("Byte Buffers", &["u64_to_bytes", "bytes_from_hash"]),
+        ("Digest", &["sha256", "md5"]),
+        ("Noise", &["perlin_1d", "perlin_2d", "simplex_2d"]),
+        ("Regex", &["regex_replace", "regex_match"]),
+        ("Shuffle", &["shuffle"]),
+        ("Real Data", &["first_names", "full_names", "state_codes", "country_names"]),
+        ("Context", &["current_epoch_millis", "counter", "session_start_millis"]),
+        ("Diagnostic", &["type_of", "debug_repr", "inspect"]),
+    ];
+
+    println!();
+    println!("{bold}GK Node Functions{reset}");
+    println!("{bold}═════════════════{reset}");
+    println!();
+
+    for (cat_name, cat_funcs) in &categories {
+        println!("  {bold}{cyan}── {cat_name} ──{reset}");
+        println!();
+
+        for &func_name in *cat_funcs {
+            if let Some(sig) = funcs.iter().find(|s| s.name == func_name) {
+                let level = probe_compile_level(sig.name);
+                // Build "P✓✗✗" column: P always bright, checkmark or x per level
+                let (p1, p2, p3) = match level {
+                    registry::CompileLevel::Phase3 => (
+                        format!("{green}\u{2713}{reset}"),
+                        format!("{green}\u{2713}{reset}"),
+                        format!("{green}\u{2713}{reset}"),
+                    ),
+                    registry::CompileLevel::Phase2 => (
+                        format!("{green}\u{2713}{reset}"),
+                        format!("{green}\u{2713}{reset}"),
+                        format!("{dim}\u{2717}{reset}"),
+                    ),
+                    registry::CompileLevel::Phase1 => (
+                        format!("{green}\u{2713}{reset}"),
+                        format!("{dim}\u{2717}{reset}"),
+                        format!("{dim}\u{2717}{reset}"),
+                    ),
+                };
+                let level_col = format!("{bold}P{reset}{p1}{p2}{p3}");
+
+                let params_desc = if sig.const_params.is_empty() {
+                    String::new()
+                } else {
+                    let p: Vec<String> = sig.const_params.iter()
+                        .map(|(name, required)| {
+                            if *required { name.to_string() } else { format!("[{name}]") }
+                        })
+                        .collect();
+                    format!("({})", p.join(", "))
+                };
+
+                let arity = if sig.outputs == 0 {
+                    format!("{}→N", sig.wire_inputs)
+                } else {
+                    format!("{}→{}", sig.wire_inputs, sig.outputs)
+                };
+
+                // Pad to visual width, then apply color
+                let name_padded = format!("{:<24}", sig.name);
+                let params_padded = format!("{:<24}", params_desc);
+                let arity_padded = format!("{:<5}", arity);
+
+                print!("  {bold}{magenta}{name_padded}{reset}");
+                print!(" {dim}{params_padded}{reset}");
+                print!(" {arity_padded}");
+                print!("  {level_col}");
+                println!("  {dim}{}{reset}", sig.description);
+            }
+        }
+        println!();
+    }
+
+    println!("  {bold}Legend:{reset}  {bold}P{reset}{green}\u{2713}{reset}{green}\u{2713}{reset}{green}\u{2713}{reset} = supported levels  {green}\u{2713}{reset} = yes  {dim}\u{2717}{reset} = no");
+    println!("    {bold}P{reset}3  Cranelift native code       {dim}(~0.2ns/node){reset}");
+    println!("    {bold}P{reset}2  Compiled u64 closure        {dim}(~4.5ns/node){reset}");
+    println!("    {bold}P{reset}1  Runtime Value interpreter   {dim}(~70ns/node){reset}");
+    println!();
+    println!("  {dim}Levels probed from live node instances.{reset}");
+    println!("  {dim}Nodes with constant params (mod, div, etc.) reach P3 when{reset}");
+    println!("  {dim}constants are known at assembly time, P2 otherwise.{reset}");
+    println!();
 }
 
 /// Parse `key=value` pairs from command line args.
@@ -184,17 +322,31 @@ async fn run_command(args: &[String]) {
     // Check for --tui flag
     let use_tui = args.iter().any(|a| a == "--tui");
 
-    // If TUI mode, spawn TUI on a separate thread
+    // Get shared metrics before activity is consumed by run()
+    let shared_metrics = activity.shared_metrics();
+
+    // If TUI mode, spawn metrics capture thread + TUI thread
     let tui_handle = if use_tui {
-        let (_tui_reporter, tui_rx) = TuiReporter::channel();
+        let (tui_reporter, tui_rx) = TuiReporter::channel();
 
-        // Set up the metrics scheduler with TUI as a consumer
-        
-        
+        // Start a metrics capture thread that periodically snapshots
+        // the activity's instruments and sends frames to the TUI.
+        let capture_metrics = shared_metrics.clone();
+        let capture_interval = std::time::Duration::from_millis(500);
+        let capture_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let capture_flag = capture_running.clone();
 
-        // We'll manually feed frames to the TUI reporter from the
-        // activity metrics. For now, start the TUI thread and feed
-        // it activity info.
+        let mut reporter = tui_reporter;
+        std::thread::spawn(move || {
+            use nb_metrics::scheduler::Reporter;
+            while capture_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(capture_interval);
+                let frame = capture_metrics.capture(capture_interval);
+                reporter.report(&frame);
+            }
+        });
+
+        // Start TUI on its own thread
         let mut app = App::with_metrics(tui_rx);
         app.metrics.activity_name = "main".to_string();
         app.metrics.driver_name = driver.to_string();
@@ -206,11 +358,7 @@ async fn run_command(args: &[String]) {
             let _ = app.run();
         });
 
-        // TODO: wire tui_reporter into the metrics scheduler so it
-        // receives live frames. For now the TUI shows static info
-        // until the scheduler integration is complete.
-
-        Some(tui_thread)
+        Some((tui_thread, capture_running))
     } else {
         None
     };
@@ -234,10 +382,12 @@ async fn run_command(args: &[String]) {
         }
     };
 
-    if let Some(handle) = tui_handle {
-        // TUI will exit when user presses q — don't wait forever
+    if let Some((tui_thread, capture_running)) = tui_handle {
+        // Stop the capture thread
+        capture_running.store(false, std::sync::atomic::Ordering::Relaxed);
+        // TUI will exit when user presses q
         eprintln!("nbrs: activity complete. Press q in TUI to exit.");
-        let _ = handle.join();
+        let _ = tui_thread.join();
     } else {
         eprintln!("nbrs: done");
     }

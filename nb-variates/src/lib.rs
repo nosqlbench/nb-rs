@@ -15,3 +15,6 @@ pub mod assembly;
 pub mod nodes;
 pub mod sampling;
 pub mod dsl;
+#[cfg(feature = "jit")]
+pub mod jit;
+pub mod hybrid;

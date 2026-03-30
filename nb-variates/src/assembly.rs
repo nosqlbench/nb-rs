@@ -230,6 +230,98 @@ impl GkAssembler {
         Ok(CompiledKernel::new(coord_count, total_slots, steps, output_map))
     }
 
+    /// Validate, resolve, and attempt Phase 3 JIT compilation.
+    ///
+    /// Returns `Ok(JitKernel)` if all nodes can be JIT-compiled.
+    /// Falls back to `Err(CompiledKernel or GkKernel)` otherwise.
+    #[cfg(feature = "jit")]
+    pub fn try_compile_jit(self) -> Result<crate::jit::JitKernel, String> {
+        let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+        let coord_count = resolved.coord_names.len();
+
+        // Assign buffer slots (same layout as Phase 2)
+        let mut slot_base: Vec<usize> = Vec::with_capacity(resolved.nodes.len());
+        let mut next_slot = coord_count;
+        for node in &resolved.nodes {
+            slot_base.push(next_slot);
+            next_slot += node.meta().outputs.len();
+        }
+        let total_slots = next_slot;
+
+        // Classify each node into a JitOp
+        let mut jit_steps = Vec::new();
+        for (node_idx, node) in resolved.nodes.iter().enumerate() {
+            let jit_op = crate::jit::classify_node(node.as_ref());
+
+            let input_slots: Vec<usize> = resolved.wiring[node_idx]
+                .iter()
+                .map(|source| match source {
+                    crate::kernel::WireSource::Coordinate(c) => *c,
+                    crate::kernel::WireSource::NodeOutput(upstream, port) => slot_base[*upstream] + port,
+                })
+                .collect();
+
+            let output_count = node.meta().outputs.len();
+            let output_slots: Vec<usize> = (0..output_count)
+                .map(|p| slot_base[node_idx] + p)
+                .collect();
+
+            jit_steps.push((jit_op, input_slots, output_slots));
+        }
+
+        // Check if any steps are fallbacks
+        let has_fallback = jit_steps.iter().any(|(op, _, _)| matches!(op, crate::jit::JitOp::Fallback(_)));
+        if has_fallback {
+            return Err("some nodes cannot be JIT-compiled; falling back to Phase 2".into());
+        }
+
+        // Remap output names to buffer slots
+        let output_map: HashMap<String, usize> = resolved
+            .output_map
+            .iter()
+            .map(|(name, (node_idx, port))| {
+                (name.clone(), slot_base[*node_idx] + port)
+            })
+            .collect();
+
+        crate::jit::compile_jit(coord_count, total_slots, jit_steps, output_map)
+    }
+
+    /// Validate, resolve, and compile a hybrid kernel where each node
+    /// runs at its optimal level (JIT native code or Phase 2 closure).
+    ///
+    /// This always succeeds for u64-only DAGs — no all-or-nothing
+    /// fallback. JIT-able nodes get native code, others get closures.
+    pub fn compile_hybrid(self) -> Result<crate::hybrid::HybridKernel, String> {
+        let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+        let coord_count = resolved.coord_names.len();
+
+        let mut slot_bases: Vec<usize> = Vec::with_capacity(resolved.nodes.len());
+        let mut next_slot = coord_count;
+        for node in &resolved.nodes {
+            slot_bases.push(next_slot);
+            next_slot += node.meta().outputs.len();
+        }
+        let total_slots = next_slot;
+
+        let output_map: HashMap<String, usize> = resolved
+            .output_map
+            .iter()
+            .map(|(name, (node_idx, port))| {
+                (name.clone(), slot_bases[*node_idx] + port)
+            })
+            .collect();
+
+        crate::hybrid::build_hybrid(
+            &resolved.nodes,
+            &resolved.wiring,
+            coord_count,
+            total_slots,
+            &slot_bases,
+            output_map,
+        )
+    }
+
     /// Internal: validate, resolve wiring, insert adapters, topological sort.
     fn resolve(self) -> Result<ResolvedDag, AssemblyError> {
         // Build name → index map for nodes

@@ -7,6 +7,8 @@
 //! expected constant parameters, and output count. The compiler uses
 //! this to validate calls at parse time with clear error messages.
 
+pub use crate::node::CompileLevel;
+
 /// Description of a registered function's signature.
 #[derive(Debug, Clone)]
 pub struct FuncSig {

@@ -3,7 +3,7 @@
 
 //! Linear interpolation and range mapping nodes.
 
-use crate::node::{GkNode, NodeMeta, Port, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Value};
 
 /// Linear interpolation with fixed endpoints.
 ///
@@ -38,6 +38,17 @@ impl GkNode for LerpConst {
         let t = inputs[0].as_f64();
         outputs[0] = Value::F64(self.a + t * (self.b - self.a));
     }
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        let a = self.a;
+        let b = self.b;
+        Some(Box::new(move |inputs, outputs| {
+            let t = f64::from_bits(inputs[0]);
+            outputs[0] = (a + t * (b - a)).to_bits();
+        }))
+    }
+
+    fn jit_constants(&self) -> Vec<u64> { vec![self.a.to_bits(), self.b.to_bits()] }
 }
 
 /// Map a u64 linearly to an f64 range.
@@ -73,6 +84,17 @@ impl GkNode for ScaleRange {
         let t = inputs[0].as_u64() as f64 / u64::MAX as f64;
         outputs[0] = Value::F64(self.min + t * self.range);
     }
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        let min = self.min;
+        let range = self.range;
+        Some(Box::new(move |inputs, outputs| {
+            let t = inputs[0] as f64 / u64::MAX as f64;
+            outputs[0] = (min + t * range).to_bits();
+        }))
+    }
+
+    fn jit_constants(&self) -> Vec<u64> { vec![self.min.to_bits(), self.range.to_bits()] }
 }
 
 /// Inverse linear interpolation: map [a, b] → [0, 1].
@@ -178,6 +200,16 @@ impl GkNode for Quantize {
         let v = inputs[0].as_f64();
         outputs[0] = Value::F64((v / self.step).round() * self.step);
     }
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        let step = self.step;
+        Some(Box::new(move |inputs, outputs| {
+            let v = f64::from_bits(inputs[0]);
+            outputs[0] = ((v / step).round() * step).to_bits();
+        }))
+    }
+
+    fn jit_constants(&self) -> Vec<u64> { vec![self.step.to_bits()] }
 }
 
 #[cfg(test)]

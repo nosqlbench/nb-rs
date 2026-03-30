@@ -219,4 +219,43 @@ pub trait GkNode: Send + Sync {
     fn compiled_u64(&self) -> Option<CompiledU64Op> {
         None
     }
+
+    /// Return assembly-time constants for JIT compilation.
+    ///
+    /// Nodes with baked-in constants (Mod's modulus, Add's addend, etc.)
+    /// override this to expose their constants to the JIT compiler.
+    /// Returns a list of u64 constants in the order the JIT expects.
+    ///
+    /// Default: empty (no constants to expose).
+    fn jit_constants(&self) -> Vec<u64> {
+        Vec::new()
+    }
+}
+
+/// Determine the compile level of a node (works on trait objects).
+pub fn compile_level_of(node: &dyn GkNode) -> CompileLevel {
+    #[cfg(feature = "jit")]
+    {
+        let jit_op = crate::jit::classify_node(node);
+        if !matches!(jit_op, crate::jit::JitOp::Fallback(_)) {
+            return CompileLevel::Phase3;
+        }
+    }
+
+    if node.compiled_u64().is_some() {
+        CompileLevel::Phase2
+    } else {
+        CompileLevel::Phase1
+    }
+}
+
+/// The maximum compilation level a node supports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompileLevel {
+    /// Runtime interpreter: `dyn GkNode` + `Value` enum.
+    Phase1,
+    /// Compiled closure: `Box<dyn Fn(&[u64], &mut [u64])>`.
+    Phase2,
+    /// JIT native code via Cranelift.
+    Phase3,
 }

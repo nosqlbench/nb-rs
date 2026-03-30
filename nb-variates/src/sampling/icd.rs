@@ -19,7 +19,7 @@
 //! **Discrete:**
 //! Zipf, Poisson, Binomial, Geometric
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Value};
 use crate::sampling::lut::{LutF64, LutSample};
 
 /// Default interpolation table resolution.
@@ -55,6 +55,13 @@ impl GkNode for UnitInterval {
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::F64(inputs[0].as_u64() as f64 / u64::MAX as f64);
+    }
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        Some(Box::new(|inputs, outputs| {
+            let v = inputs[0] as f64 / u64::MAX as f64;
+            outputs[0] = v.to_bits();
+        }))
     }
 }
 
@@ -93,6 +100,17 @@ impl GkNode for ClampF64 {
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::F64(inputs[0].as_f64().clamp(self.min, self.max));
     }
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        let min = self.min;
+        let max = self.max;
+        Some(Box::new(move |inputs, outputs| {
+            let v = f64::from_bits(inputs[0]).clamp(min, max);
+            outputs[0] = v.to_bits();
+        }))
+    }
+
+    fn jit_constants(&self) -> Vec<u64> { vec![self.min.to_bits(), self.max.to_bits()] }
 }
 
 // =================================================================
@@ -178,6 +196,14 @@ impl GkNode for IcdSample {
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         self.inner.eval(inputs, outputs);
+    }
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        self.inner.compiled_u64()
+    }
+
+    fn jit_constants(&self) -> Vec<u64> {
+        self.inner.jit_constants()
     }
 }
 

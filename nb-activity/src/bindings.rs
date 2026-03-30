@@ -24,8 +24,11 @@ use nb_variates::nodes::arithmetic::*;
 use nb_variates::nodes::convert::*;
 use nb_variates::nodes::hash::*;
 use nb_variates::nodes::identity::*;
+use nb_variates::nodes::lerp::*;
 use nb_variates::nodes::string::*;
 use nb_variates::nodes::datetime::*;
+use nb_variates::sampling::icd::{UnitInterval, ClampF64, IcdSample};
+use nb_variates::sampling::metashift::Shuffle;
 
 use nb_workload::model::ParsedOp;
 use nb_workload::bindpoints;
@@ -142,6 +145,16 @@ fn build_chain_node(func: &BindingFunc) -> Result<(Box<dyn GkNode>, usize), Stri
             let max = parse_u64_arg(&func.args, 1, u64::MAX)?;
             Ok((Box::new(ClampU64::new(min, max)), 1))
         }
+        "interleave" => Ok((Box::new(Interleave::new()), 2)),
+        "mixed_radix" | "mixedradix" => {
+            let radixes: Vec<u64> = func.args.iter()
+                .map(|s| s.trim().parse::<u64>().unwrap_or(0))
+                .collect();
+            if radixes.is_empty() {
+                return Err("mixed_radix requires at least one radix argument".into());
+            }
+            Ok((Box::new(MixedRadix::new(radixes)), 1))
+        }
 
         // --- Identity ---
         "identity" => Ok((Box::new(Identity::new()), 1)),
@@ -173,7 +186,76 @@ fn build_chain_node(func: &BindingFunc) -> Result<(Box<dyn GkNode>, usize), Stri
             Ok((Box::new(EpochOffset::new(base)), 1))
         }
 
-        // --- Distribution sampling ---
+        // --- f64 conversions ---
+        "unit_interval" | "unitinterval" => Ok((Box::new(UnitInterval::new()), 1)),
+        "clamp_f64" | "clampf64" => {
+            let min = parse_f64_arg(&func.args, 0, 0.0)?;
+            let max = parse_f64_arg(&func.args, 1, 1.0)?;
+            Ok((Box::new(ClampF64::new(min, max)), 1))
+        }
+        "f64_to_u64" | "f64tou64" => Ok((Box::new(F64ToU64::new()), 1)),
+        "round_to_u64" | "roundtou64" => Ok((Box::new(RoundToU64::new()), 1)),
+        "floor_to_u64" | "floortou64" => Ok((Box::new(FloorToU64::new()), 1)),
+        "ceil_to_u64" | "ceiltou64" => Ok((Box::new(CeilToU64::new()), 1)),
+        "discretize" => {
+            let range = parse_f64_arg(&func.args, 0, 100.0)?;
+            let buckets = parse_u64_arg(&func.args, 1, 10)?;
+            Ok((Box::new(Discretize::new(range, buckets)), 1))
+        }
+
+        // --- Interpolation ---
+        "lerp" => {
+            let a = parse_f64_arg(&func.args, 0, 0.0)?;
+            let b = parse_f64_arg(&func.args, 1, 1.0)?;
+            Ok((Box::new(LerpConst::new(a, b)), 1))
+        }
+        "scale_range" | "scalerange" => {
+            let min = parse_f64_arg(&func.args, 0, 0.0)?;
+            let max = parse_f64_arg(&func.args, 1, 1.0)?;
+            Ok((Box::new(ScaleRange::new(min, max)), 1))
+        }
+        "quantize" => {
+            let step = parse_f64_arg(&func.args, 0, 1.0)?;
+            Ok((Box::new(Quantize::new(step)), 1))
+        }
+
+        // --- Shuffle ---
+        "shuffle" => {
+            let size = parse_u64_arg(&func.args, 0, 1_000_000)?;
+            Ok((Box::new(Shuffle::new(0, size)), 1))
+        }
+
+        // --- Distribution sampling (LUT-backed, P3 via extern) ---
+        "icd_normal" | "dist_normal" => {
+            let mean = parse_f64_arg(&func.args, 0, 0.0)?;
+            let stddev = parse_f64_arg(&func.args, 1, 1.0)?;
+            Ok((Box::new(IcdSample::normal(mean, stddev)), 1))
+        }
+        "icd_exponential" | "dist_exponential" => {
+            let rate = parse_f64_arg(&func.args, 0, 1.0)?;
+            Ok((Box::new(IcdSample::exponential(rate)), 1))
+        }
+        "dist_uniform" => {
+            let min = parse_f64_arg(&func.args, 0, 0.0)?;
+            let max = parse_f64_arg(&func.args, 1, 1.0)?;
+            Ok((Box::new(IcdSample::uniform(min, max)), 1))
+        }
+        "dist_pareto" => {
+            let scale = parse_f64_arg(&func.args, 0, 1.0)?;
+            let shape = parse_f64_arg(&func.args, 1, 1.0)?;
+            Ok((Box::new(IcdSample::pareto(scale, shape)), 1))
+        }
+        "dist_zipf" => {
+            let n = parse_u64_arg(&func.args, 0, 1000)?;
+            let exponent = parse_f64_arg(&func.args, 1, 1.0)?;
+            Ok((Box::new(IcdSample::zipf(n, exponent)), 1))
+        }
+        "lut_sample" => {
+            // Probe: build a simple identity LUT for probing
+            Ok((Box::new(IcdSample::normal(0.0, 1.0)), 1))
+        }
+
+        // --- Integer uniform ---
         "uniform" => {
             let min = parse_u64_arg(&func.args, 0, 0)?;
             let max = parse_u64_arg(&func.args, 1, 1_000_000)?;
@@ -215,17 +297,69 @@ fn parse_f64_arg(args: &[String], idx: usize, default: f64) -> Result<f64, Strin
 /// Collects all unique binding names and expressions, plus any
 /// unreferenced bind points in op fields (auto-bound to hash+mod).
 /// Wires them through the GK assembler as proper node chains.
+/// Probe the compile level of a GK function by name.
+///
+/// Instantiates a dummy node and calls its intrinsic `compile_level()`.
+/// This is the single source of truth — no external classification needed.
+/// Probe the compile level of a GK function by name.
+///
+/// Instantiates a node with a representative constant and probes
+/// its intrinsic compile level. This is the single source of truth.
+pub fn probe_compile_level(func_name: &str) -> nb_variates::node::CompileLevel {
+    // Supply a representative constant so nodes like Mod don't panic on 0
+    let representative_arg = match func_name.to_lowercase().as_str() {
+        "mod" | "div" | "mul" | "add" => vec!["1000".to_string()],
+        "clamp" => vec!["0".to_string(), "1000".to_string()],
+        "mixed_radix" => vec!["100".to_string(), "1000".to_string()],
+        "clamp_f64" => vec!["0.0".to_string(), "1.0".to_string()],
+        "lerp" => vec!["0.0".to_string(), "1.0".to_string()],
+        "scale_range" => vec!["0.0".to_string(), "100.0".to_string()],
+        "quantize" => vec!["10.0".to_string()],
+        "discretize" => vec!["100.0".to_string(), "10".to_string()],
+        "shuffle" => vec!["1000000".to_string()],
+        "icd_normal" | "dist_normal" => vec!["0.0".to_string(), "1.0".to_string()],
+        "icd_exponential" | "dist_exponential" => vec!["1.0".to_string()],
+        "dist_uniform" => vec!["0.0".to_string(), "1.0".to_string()],
+        "dist_pareto" => vec!["1.0".to_string(), "1.0".to_string()],
+        "dist_zipf" => vec!["1000".to_string(), "1.0".to_string()],
+        _ => Vec::new(),
+    };
+    let dummy = BindingFunc { name: func_name.to_string(), args: representative_arg };
+    match build_chain_node(&dummy) {
+        Ok((node, _)) => nb_variates::node::compile_level_of(node.as_ref()),
+        Err(_) => nb_variates::node::CompileLevel::Phase1,
+    }
+}
+
 pub fn compile_bindings(ops: &[ParsedOp]) -> Result<GkKernel, String> {
-    // Collect all unique bindings
+    use nb_workload::model::BindingsDef;
+
+    // Check if any op uses GK source mode
+    let gk_source = ops.iter().find_map(|op| {
+        if let BindingsDef::GkSource(src) = &op.bindings {
+            if !src.trim().is_empty() { Some(src.clone()) } else { None }
+        } else {
+            None
+        }
+    });
+
+    if let Some(source) = gk_source {
+        // Native GK grammar mode: compile the source directly
+        return nb_variates::dsl::compile_gk(&source);
+    }
+
+    // Legacy mode: collect all map-style bindings
     let mut all_bindings: HashMap<String, String> = HashMap::new();
     for op in ops {
-        for (name, expr) in &op.bindings {
-            all_bindings.entry(name.clone()).or_insert_with(|| expr.clone());
+        if let BindingsDef::Map(map) = &op.bindings {
+            for (name, expr) in map {
+                all_bindings.entry(name.clone()).or_insert_with(|| expr.clone());
+            }
         }
     }
 
     // Validate: all bind point references in op fields must have
-    // a corresponding binding declaration. Collect any missing ones.
+    // a corresponding binding declaration.
     let mut missing: Vec<String> = Vec::new();
     for op in ops {
         for (_, value) in &op.op {

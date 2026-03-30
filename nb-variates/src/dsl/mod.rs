@@ -9,3 +9,5 @@ pub mod parser;
 pub mod compile;
 pub mod error;
 pub mod registry;
+
+pub use compile::{compile_gk, compile_gk_checked};

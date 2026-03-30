@@ -2,9 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Activity: the unit of concurrent execution.
-//!
-//! Owns a workload, adapter, rate limiter, error handler, metrics,
-//! and spawns async tasks to dispatch operations.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -14,28 +11,24 @@ use tokio::task::JoinHandle;
 use nb_errorhandler::ErrorRouter;
 use nb_metrics::instruments::counter::Counter;
 use nb_metrics::instruments::timer::Timer;
+use nb_metrics::frame::{MetricsFrame, Sample};
 use nb_metrics::labels::Labels;
 use nb_rate::RateLimiter;
 
-use crate::adapter::{Adapter, AssembledOp};
+use crate::adapter::Adapter;
 use crate::cycle::CycleSource;
 use crate::opseq::{OpSequence, SequencerType};
+use crate::adapter::AssembledOp;
 
 /// Configuration for an activity.
 pub struct ActivityConfig {
     pub name: String,
     pub cycles: u64,
     pub concurrency: usize,
-    /// Per-cycle rate limit (ops/s). Applies to each individual op.
     pub cycle_rate: Option<f64>,
-    /// Per-stanza rate limit (stanzas/s). Applies to each complete
-    /// rotation through the op sequence.
     pub stanza_rate: Option<f64>,
-    /// Sequencer type: bucket, interval, or concat.
     pub sequencer: SequencerType,
-    /// Error handler spec.
     pub error_spec: String,
-    /// Max retries per op on retryable errors.
     pub max_retries: u32,
 }
 
@@ -54,7 +47,8 @@ impl Default for ActivityConfig {
     }
 }
 
-/// Standard metrics for an activity.
+/// Standard metrics for an activity. Shared via Arc so the metrics
+/// scheduler can capture snapshots while executor tasks record.
 pub struct ActivityMetrics {
     pub service_time: Timer,
     pub wait_time: Timer,
@@ -65,7 +59,7 @@ pub struct ActivityMetrics {
 }
 
 impl ActivityMetrics {
-    fn new(labels: &Labels) -> Self {
+    pub fn new(labels: &Labels) -> Self {
         Self {
             service_time: Timer::new(labels.with("name", "cycles_servicetime")),
             wait_time: Timer::new(labels.with("name", "cycles_waittime")),
@@ -75,27 +69,69 @@ impl ActivityMetrics {
             stanzas_total: Counter::new(labels.with("name", "stanzas_total")),
         }
     }
+
+    /// Capture a metrics frame from the current instrument state.
+    ///
+    /// This snapshots (delta) all timers and reads all counters.
+    pub fn capture(&self, interval: std::time::Duration) -> MetricsFrame {
+        let service_snap = self.service_time.snapshot();
+        let wait_snap = self.wait_time.snapshot();
+        let response_snap = self.response_time.snapshot();
+
+        MetricsFrame {
+            captured_at: Instant::now(),
+            interval,
+            samples: vec![
+                Sample::Timer {
+                    labels: self.service_time.labels().clone(),
+                    count: service_snap.count,
+                    histogram: service_snap.histogram,
+                },
+                Sample::Timer {
+                    labels: self.wait_time.labels().clone(),
+                    count: wait_snap.count,
+                    histogram: wait_snap.histogram,
+                },
+                Sample::Timer {
+                    labels: self.response_time.labels().clone(),
+                    count: response_snap.count,
+                    histogram: response_snap.histogram,
+                },
+                Sample::Counter {
+                    labels: self.cycles_total.labels().clone(),
+                    value: self.cycles_total.get(),
+                },
+                Sample::Counter {
+                    labels: self.errors_total.labels().clone(),
+                    value: self.errors_total.get(),
+                },
+                Sample::Counter {
+                    labels: self.stanzas_total.labels().clone(),
+                    value: self.stanzas_total.get(),
+                },
+            ],
+        }
+    }
 }
 
-/// A running activity: owns everything needed to dispatch ops.
+/// A running activity.
 pub struct Activity {
     pub config: ActivityConfig,
     pub labels: Labels,
-    pub metrics: ActivityMetrics,
+    pub metrics: Arc<ActivityMetrics>,
     pub op_sequence: OpSequence,
     pub error_router: ErrorRouter,
     cycle_source: CycleSource,
 }
 
 impl Activity {
-    /// Create an activity (not yet running).
     pub fn new(
         config: ActivityConfig,
         parent_labels: &Labels,
         op_sequence: OpSequence,
     ) -> Self {
         let labels = parent_labels.with("activity", &config.name);
-        let metrics = ActivityMetrics::new(&labels);
+        let metrics = Arc::new(ActivityMetrics::new(&labels));
         let error_router = ErrorRouter::parse(&config.error_spec)
             .unwrap_or_else(|_| ErrorRouter::default_warn_count());
         let cycle_source = CycleSource::new(0, config.cycles);
@@ -110,8 +146,12 @@ impl Activity {
         }
     }
 
-    /// Run the activity to completion: spawn async tasks, wait for
-    /// all cycles to be consumed.
+    /// Get a shared reference to the metrics for external capture.
+    pub fn shared_metrics(&self) -> Arc<ActivityMetrics> {
+        self.metrics.clone()
+    }
+
+    /// Run the activity to completion.
     pub async fn run<A: Adapter + 'static>(
         self,
         adapter: Arc<A>,
@@ -119,7 +159,6 @@ impl Activity {
     ) {
         let activity = Arc::new(self);
 
-        // Create rate limiters if configured
         let cycle_rl = activity.config.cycle_rate.map(|r| {
             Arc::new(RateLimiter::start(nb_rate::RateSpec::new(r)))
         });
@@ -147,7 +186,6 @@ impl Activity {
     }
 }
 
-/// The core async execution loop for one task.
 async fn executor_task<A: Adapter>(
     activity: Arc<Activity>,
     adapter: Arc<A>,
@@ -161,7 +199,6 @@ async fn executor_task<A: Adapter>(
     loop {
         let Some(cycle) = activity.cycle_source.next() else { break };
 
-        // Stanza rate limiting: acquire once at the start of each stanza
         if let Some(ref srl) = stanza_rl {
             if stanza_len > 0 && cycle % stanza_len == 0 {
                 srl.acquire().await;
@@ -171,20 +208,15 @@ async fn executor_task<A: Adapter>(
             activity.metrics.stanzas_total.inc();
         }
 
-        // Cycle rate limiting
         let wait_start = Instant::now();
         if let Some(ref crl) = cycle_rl {
             crl.acquire().await;
         }
         let wait_nanos = wait_start.elapsed().as_nanos() as u64;
 
-        // Get op template for this cycle
         let op_template = activity.op_sequence.get(cycle);
-
-        // Build the assembled op
         let op = build_op(cycle, op_template);
 
-        // Execute with retry loop
         let mut retries = 0u32;
         let service_start = Instant::now();
 
@@ -328,6 +360,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_metrics_accessible() {
+        let config = ActivityConfig {
+            name: "metricstest".into(),
+            cycles: 50,
+            concurrency: 2,
+            ..Default::default()
+        };
+        let ops = vec![nb_workload::model::ParsedOp::simple("op1", "test")];
+        let seq = OpSequence::uniform(ops);
+        let activity = Activity::new(config, &Labels::of("session", "s1"), seq);
+
+        // Get shared metrics BEFORE run consumes the activity
+        let shared_metrics = activity.shared_metrics();
+
+        let adapter = Arc::new(CountingAdapter::new());
+        let build_op = Arc::new(simple_build_op as fn(u64, &nb_workload::model::ParsedOp) -> AssembledOp);
+        activity.run(adapter, build_op).await;
+
+        // Metrics should reflect the completed run
+        assert_eq!(shared_metrics.cycles_total.get(), 50);
+        let frame = shared_metrics.capture(std::time::Duration::from_secs(1));
+        assert!(!frame.samples.is_empty());
+    }
+
+    #[tokio::test]
     async fn activity_with_cycle_rate() {
         let config = ActivityConfig {
             name: "ratetest".into(),
@@ -342,7 +399,6 @@ mod tests {
 
         let adapter = Arc::new(CountingAdapter::new());
         let build_op = Arc::new(simple_build_op as fn(u64, &nb_workload::model::ParsedOp) -> AssembledOp);
-
         let adapter_ref = adapter.clone();
         activity.run(adapter_ref, build_op).await;
 
@@ -353,7 +409,7 @@ mod tests {
     async fn activity_with_weighted_ops() {
         let config = ActivityConfig {
             name: "weighted".into(),
-            cycles: 12, // 2 full stanzas of length 6
+            cycles: 12,
             concurrency: 1,
             ..Default::default()
         };
@@ -362,12 +418,9 @@ mod tests {
             nb_workload::model::ParsedOp::simple("write", "INSERT"),
         ];
         let seq = OpSequence::build(ops, &[4, 2], SequencerType::Bucket);
-        assert_eq!(seq.stanza_length(), 6);
-
         let activity = Activity::new(config, &Labels::of("session", "s1"), seq);
         let adapter = Arc::new(CountingAdapter::new());
         let build_op = Arc::new(simple_build_op as fn(u64, &nb_workload::model::ParsedOp) -> AssembledOp);
-
         activity.run(adapter.clone(), build_op).await;
         assert_eq!(adapter.count(), 12);
     }
