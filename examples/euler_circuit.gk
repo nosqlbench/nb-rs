@@ -1,0 +1,36 @@
+// Copyright 2024-2026 nosqlbench contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// euler_circuit.gk — GK module
+//
+// Bijective permutation of [0, range) via PCG cycle-walking.
+// Every input in [0, range) maps to a unique output in [0, range).
+// Visiting every element exactly once: an Euler circuit through
+// the value space.
+//
+// Inputs (inferred from unbound references):
+//   position  — which element of the permutation (wire, u64)
+//   range     — size of the permutation space (init constant)
+//   seed      — PCG seed for reproducibility (init constant)
+//   stream    — PCG stream index for independent permutations (init constant)
+//
+// Output:
+//   value     — the permuted value in [0, range)
+//
+// The native cycle_walk node handles:
+//   - Auto-selecting the smallest PCG state width ≥ range
+//     (16-bit for range ≤ 65536, 32-bit for ≤ 4B, 64-bit otherwise)
+//   - Rejection via cycle-walking: apply PCG, if ≥ range, apply
+//     again to the result, until it lands in [0, range)
+//   - Deterministic: same (position, range, seed, stream) always
+//     gives the same output regardless of thread or access order
+//
+// Usage:
+//   h := hash(cycle)
+//   user_id := euler_circuit(h, range: 1000000, seed: 42, stream: 0)
+//
+// Multiple independent permutations over the same range:
+//   perm_a := euler_circuit(h, range: 1000000, seed: 42, stream: 0)
+//   perm_b := euler_circuit(h, range: 1000000, seed: 42, stream: 1)
+
+value := cycle_walk(position, range, seed, stream)

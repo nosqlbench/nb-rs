@@ -10,4 +10,4 @@ pub mod compile;
 pub mod error;
 pub mod registry;
 
-pub use compile::{compile_gk, compile_gk_checked};
+pub use compile::{compile_gk, compile_gk_checked, compile_gk_with_path};

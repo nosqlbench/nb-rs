@@ -14,9 +14,8 @@ description: |
   and humidity.
 
 bindings: |
-  coordinates := (cycle)
-
   // Decompose cycle into device and reading dimensions
+  // 'cycle' is automatically inferred as a coordinate input
   (device, reading) := mixed_radix(cycle, 100, 0)
 
   // Device identity

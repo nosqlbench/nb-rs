@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use nb_activity::activity::{Activity, ActivityConfig};
 use nb_activity::adapters::stdout::{StdoutAdapter, StdoutConfig, StdoutFormat};
-use nb_activity::bindings::compile_bindings;
+use nb_activity::bindings::compile_bindings_with_path;
 use nb_activity::opseq::{OpSequence, SequencerType};
 use nb_activity::synthesis::OpBuilder;
 use nb_metrics::labels::Labels;
@@ -291,8 +291,9 @@ async fn run_command(args: &[String]) {
     eprintln!("nbrs: {} ops selected, {} cycles, {} threads, driver={}",
         ops.len(), cycles, threads, driver);
 
-    // Compile bindings into GK kernel
-    let kernel = match compile_bindings(&ops) {
+    // Compile bindings into GK kernel, with module resolution from the workload directory
+    let workload_dir = std::path::Path::new(&workload_path).parent();
+    let kernel = match compile_bindings_with_path(&ops, workload_dir) {
         Ok(k) => k,
         Err(e) => {
             eprintln!("error: failed to compile bindings: {e}");

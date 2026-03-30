@@ -1,0 +1,12 @@
+// Copyright 2024-2026 nosqlbench contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// hashed_id.gk — GK module
+//
+// Generates a bounded hashed ID from an input value.
+//
+// Inputs (inferred): input, bound
+// Output: id
+
+h := hash(input)
+id := mod(h, bound)

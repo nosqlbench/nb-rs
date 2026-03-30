@@ -332,6 +332,10 @@ pub fn probe_compile_level(func_name: &str) -> nb_variates::node::CompileLevel {
 }
 
 pub fn compile_bindings(ops: &[ParsedOp]) -> Result<GkKernel, String> {
+    compile_bindings_with_path(ops, None)
+}
+
+pub fn compile_bindings_with_path(ops: &[ParsedOp], source_dir: Option<&std::path::Path>) -> Result<GkKernel, String> {
     use nb_workload::model::BindingsDef;
 
     // Check if any op uses GK source mode
@@ -344,8 +348,8 @@ pub fn compile_bindings(ops: &[ParsedOp]) -> Result<GkKernel, String> {
     });
 
     if let Some(source) = gk_source {
-        // Native GK grammar mode: compile the source directly
-        return nb_variates::dsl::compile_gk(&source);
+        // Native GK grammar mode: compile with module resolution
+        return nb_variates::dsl::compile_gk_with_path(&source, source_dir);
     }
 
     // Legacy mode: collect all map-style bindings

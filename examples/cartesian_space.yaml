@@ -23,10 +23,8 @@ description: |
   100×100×100 space with derived density, label, and temperature.
 
 bindings: |
-  coordinates := (cycle)
-
-  // === Coordinate decomposition ===
   // Unpack cycle into three orthogonal dimensions (each 0..99)
+  // 'cycle' is automatically inferred as a coordinate input
   (x, y, z) := mixed_radix(cycle, 100, 100, 0)
 
   // === Per-axis hashing for independent randomness ===

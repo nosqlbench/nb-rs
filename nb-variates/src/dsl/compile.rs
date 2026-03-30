@@ -7,6 +7,8 @@
 //! the `GkAssembler`, and produces a `GkKernel`.
 
 
+use std::path::{Path, PathBuf};
+
 use crate::assembly::{GkAssembler, WireRef};
 use crate::dsl::ast::*;
 use crate::dsl::lexer;
@@ -37,9 +39,17 @@ use std::collections::HashSet;
 
 /// Compile a `.gk` source string into a runtime kernel.
 pub fn compile_gk(source: &str) -> Result<GkKernel, String> {
+    compile_gk_with_path(source, None)
+}
+
+/// Compile with a source directory for module resolution.
+///
+/// When the compiler encounters an unknown function name, it searches
+/// `source_dir` for `.gk` module files that export a matching binding.
+pub fn compile_gk_with_path(source: &str, source_dir: Option<&Path>) -> Result<GkKernel, String> {
     let tokens = lexer::lex(source)?;
     let ast = parser::parse(tokens)?;
-    compile_ast(&ast)
+    compile_ast_with_path(&ast, source_dir)
 }
 
 /// Compile with full diagnostics: errors, warnings, suggestions.
@@ -84,16 +94,24 @@ pub fn compile_gk_checked(source: &str) -> (Result<GkKernel, ()>, DiagnosticRepo
 
 /// Validate the AST: check function names, argument counts, wire
 /// references, unused bindings, forward references.
+///
+/// Coordinate inference: if no `coordinates` declaration is present,
+/// any referenced name that is not defined as a node output is
+/// automatically promoted to a coordinate input. If a `coordinates`
+/// declaration IS present, any unbound reference not in that list
+/// is an error.
 fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
     let mut defined: HashSet<String> = HashSet::new();
     let mut referenced: HashSet<String> = HashSet::new();
     let mut coord_names: HashSet<String> = HashSet::new();
+    let mut has_explicit_coords = false;
     let mut definition_order: Vec<(String, crate::dsl::lexer::Span)> = Vec::new();
 
-    // First pass: collect coordinates and all defined names
+    // First pass: collect explicit coordinates and all defined names
     for stmt in &file.statements {
         match stmt {
             Statement::Coordinates(names, _) => {
+                has_explicit_coords = true;
                 for n in names {
                     coord_names.insert(n.clone());
                     defined.insert(n.clone());
@@ -112,18 +130,6 @@ fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
         }
     }
 
-    // Check for missing coordinates
-    if coord_names.is_empty() {
-        let has_any = !file.statements.is_empty();
-        if has_any {
-            report.error_with_hint(
-                crate::dsl::lexer::Span { line: 1, col: 1 },
-                "no 'coordinates' declaration found",
-                "add 'coordinates := (cycle)' at the top of your .gk file",
-            );
-        }
-    }
-
     // Second pass: validate function calls and collect references
     for stmt in &file.statements {
         let expr = match stmt {
@@ -134,19 +140,45 @@ fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
         validate_expr(expr, &defined, &coord_names, &mut referenced, report);
     }
 
-    // Check for undefined references
-    for name in &referenced {
-        if !defined.contains(name) {
-            // Find where it was referenced (simplified — report first use)
+    // Coordinate inference or validation
+    if has_explicit_coords {
+        // Explicit mode: unbound references are errors
+        for name in &referenced {
+            if !defined.contains(name) {
+                report.error_with_hint(
+                    crate::dsl::lexer::Span { line: 1, col: 1 },
+                    format!("undefined wire reference: '{name}'"),
+                    if coord_names.contains(name) {
+                        // shouldn't happen — coord_names are in defined
+                        "internal error".into()
+                    } else if let Some(suggestion) = find_close_name(name, &defined) {
+                        format!("did you mean '{suggestion}'?")
+                    } else {
+                        format!("'{name}' is not declared as a coordinate — add it to your coordinates declaration, or define it as a binding")
+                    },
+                );
+            }
+        }
+    } else {
+        // Infer mode: unbound references become coordinates
+        let mut inferred: Vec<String> = referenced.iter()
+            .filter(|name| !defined.contains(*name))
+            .cloned()
+            .collect();
+        inferred.sort(); // deterministic order
+
+        if inferred.is_empty() && !file.statements.is_empty() {
             report.error_with_hint(
                 crate::dsl::lexer::Span { line: 1, col: 1 },
-                format!("undefined wire reference: '{name}'"),
-                if let Some(suggestion) = find_close_name(name, &defined) {
-                    format!("did you mean '{suggestion}'?")
-                } else {
-                    "check spelling or add a binding for this name".into()
-                },
+                "no coordinate inputs found",
+                "reference at least one unbound name (e.g., 'cycle') to define the kernel's input",
             );
+        } else {
+            // Promote inferred names to coordinates
+            for name in &inferred {
+                coord_names.insert(name.clone());
+                defined.insert(name.clone());
+            }
         }
     }
 
@@ -237,6 +269,42 @@ fn validate_expr(
     }
 }
 
+/// Collect all identifier references from an expression tree (no validation).
+fn collect_references(expr: &Expr, referenced: &mut HashSet<String>) {
+    match expr {
+        Expr::Ident(name, _) => { referenced.insert(name.clone()); }
+        Expr::Call(call) => {
+            for arg in &call.args {
+                let inner = match arg {
+                    Arg::Positional(e) => e,
+                    Arg::Named(_, e) => e,
+                };
+                collect_references(inner, referenced);
+            }
+        }
+        Expr::ArrayLit(elems, _) => {
+            for e in elems { collect_references(e, referenced); }
+        }
+        Expr::StringLit(s, _) => {
+            let chars: Vec<char> = s.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                if chars[i] == '{' {
+                    i += 1;
+                    let start = i;
+                    while i < chars.len() && chars[i] != '}' { i += 1; }
+                    let name: String = chars[start..i].iter().collect();
+                    if !name.is_empty() { referenced.insert(name); }
+                    i += 1;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn check_forward_refs(
     expr: &Expr,
     seen: &HashSet<String>,
@@ -299,7 +367,12 @@ fn simple_edit_distance(a: &str, b: &str) -> usize {
 
 /// Compile a parsed AST into a runtime kernel.
 pub fn compile_ast(file: &GkFile) -> Result<GkKernel, String> {
-    let mut compiler = Compiler::new();
+    compile_ast_with_path(file, None)
+}
+
+/// Compile a parsed AST with module resolution from a source directory.
+pub fn compile_ast_with_path(file: &GkFile, source_dir: Option<&Path>) -> Result<GkKernel, String> {
+    let mut compiler = Compiler::new(source_dir.map(|p| p.to_path_buf()));
     compiler.compile(file)
 }
 
@@ -309,14 +382,28 @@ struct Compiler {
     all_names: Vec<String>,
     /// Auto-generated node counter for desugared intermediates.
     anon_counter: usize,
+    /// Directory for module resolution (search for .gk files).
+    source_dir: Option<PathBuf>,
+    /// Cache of already-resolved module ASTs: module_name → (inputs, statements).
+    module_cache: std::collections::HashMap<String, ResolvedModule>,
+}
+
+/// A resolved GK module ready for inlining.
+struct ResolvedModule {
+    /// Inferred input names (unbound references), sorted.
+    inputs: Vec<String>,
+    /// The module's AST statements.
+    statements: Vec<Statement>,
 }
 
 impl Compiler {
-    fn new() -> Self {
+    fn new(source_dir: Option<PathBuf>) -> Self {
         Self {
             coord_names: Vec::new(),
             all_names: Vec::new(),
             anon_counter: 0,
+            source_dir,
+            module_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -326,16 +413,289 @@ impl Compiler {
         name
     }
 
+    /// Try to resolve a function call as a GK module and inline it.
+    ///
+    /// Returns Ok(true) if the module was found and inlined, Ok(false)
+    /// if no module was found, or Err on resolution/inlining failure.
+    fn try_inline_module(
+        &mut self,
+        asm: &mut GkAssembler,
+        func_name: &str,
+        caller_args: &[Arg],
+        targets: &[String],
+    ) -> Result<bool, String> {
+        // Resolve the module (load + parse + cache)
+        let module = match self.resolve_module(func_name)? {
+            Some(m) => m,
+            None => return Ok(false),
+        };
+
+        let module_inputs = module.inputs.clone();
+        let module_stmts = module.statements.clone();
+
+        // Build argument mapping: module input name → caller's wire/const
+        // Named args map by name, positional args map by order of module_inputs
+        let mut arg_map: std::collections::HashMap<String, Arg> = std::collections::HashMap::new();
+        let mut positional_idx = 0;
+
+        for arg in caller_args {
+            match arg {
+                Arg::Named(name, _) => {
+                    arg_map.insert(name.clone(), arg.clone());
+                }
+                Arg::Positional(_) => {
+                    if positional_idx < module_inputs.len() {
+                        arg_map.insert(module_inputs[positional_idx].clone(), arg.clone());
+                        positional_idx += 1;
+                    }
+                }
+            }
+        }
+
+        // Generate a unique prefix for this module inlining
+        let prefix = format!("__{func_name}_{}_", self.anon_counter);
+        self.anon_counter += 1;
+
+        // Inline each statement from the module, rewriting names
+        for stmt in &module_stmts {
+            match stmt {
+                Statement::Coordinates(_, _) => {} // skip — coords handled by caller
+                Statement::InitBinding(b) => {
+                    let prefixed_name = format!("{prefix}{}", b.name);
+                    let rewritten = self.rewrite_module_expr(
+                        &b.value, &prefix, &module_inputs, &arg_map,
+                    );
+                    self.compile_binding(asm, &[prefixed_name], &rewritten)?;
+                }
+                Statement::CycleBinding(b) => {
+                    let prefixed_targets: Vec<String> = b.targets.iter()
+                        .map(|t| format!("{prefix}{t}"))
+                        .collect();
+                    let rewritten = self.rewrite_module_expr(
+                        &b.value, &prefix, &module_inputs, &arg_map,
+                    );
+                    self.compile_binding(asm, &prefixed_targets, &rewritten)?;
+                }
+            }
+        }
+
+        // Wire module outputs to caller's targets.
+        // Module outputs = its terminal bindings. We take the last binding
+        // for each target name.
+        let module_output_names: Vec<String> = module_stmts.iter().flat_map(|s| {
+            match s {
+                Statement::CycleBinding(b) => b.targets.clone(),
+                Statement::InitBinding(b) => vec![b.name.clone()],
+                _ => vec![],
+            }
+        }).collect();
+
+        // Map caller targets to module outputs (by position)
+        for (i, target) in targets.iter().enumerate() {
+            let module_output = if i < module_output_names.len() {
+                // Use the last output (terminal binding)
+                &module_output_names[module_output_names.len() - 1 - (targets.len() - 1 - i)]
+            } else {
+                return Err(format!(
+                    "module '{func_name}' has {} outputs but caller expects {}",
+                    module_output_names.len(), targets.len()
+                ));
+            };
+            let prefixed = format!("{prefix}{module_output}");
+            // Add an identity node aliasing the prefixed output to the caller's target
+            asm.add_node(
+                target,
+                Box::new(Identity::new()),
+                vec![WireRef::node(&prefixed)],
+            );
+            self.all_names.push(target.clone());
+        }
+
+        Ok(true)
+    }
+
+    /// Rewrite an expression from a module, substituting input references
+    /// with the caller's arguments and prefixing internal names.
+    fn rewrite_module_expr(
+        &self,
+        expr: &Expr,
+        prefix: &str,
+        module_inputs: &[String],
+        arg_map: &std::collections::HashMap<String, Arg>,
+    ) -> Expr {
+        match expr {
+            Expr::Ident(name, span) => {
+                if module_inputs.contains(name) {
+                    // Replace with caller's argument
+                    if let Some(arg) = arg_map.get(name) {
+                        match arg {
+                            Arg::Positional(e) | Arg::Named(_, e) => e.clone(),
+                        }
+                    } else {
+                        // Unresolved module input — keep as-is (becomes
+                        // a coordinate reference in the caller)
+                        Expr::Ident(name.clone(), *span)
+                    }
+                } else {
+                    // Internal name — prefix it
+                    Expr::Ident(format!("{prefix}{name}"), *span)
+                }
+            }
+            Expr::Call(call) => {
+                let rewritten_args: Vec<Arg> = call.args.iter().map(|arg| {
+                    match arg {
+                        Arg::Positional(e) => Arg::Positional(
+                            self.rewrite_module_expr(e, prefix, module_inputs, arg_map)
+                        ),
+                        Arg::Named(n, e) => Arg::Named(
+                            n.clone(),
+                            self.rewrite_module_expr(e, prefix, module_inputs, arg_map)
+                        ),
+                    }
+                }).collect();
+                Expr::Call(CallExpr {
+                    func: call.func.clone(),
+                    args: rewritten_args,
+                    span: call.span,
+                })
+            }
+            Expr::ArrayLit(elems, span) => {
+                Expr::ArrayLit(
+                    elems.iter().map(|e| self.rewrite_module_expr(e, prefix, module_inputs, arg_map)).collect(),
+                    *span,
+                )
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// Resolve a module by name: search for .gk files in source_dir.
+    fn resolve_module(&mut self, name: &str) -> Result<Option<&ResolvedModule>, String> {
+        if self.module_cache.contains_key(name) {
+            return Ok(self.module_cache.get(name));
+        }
+
+        let source_dir = match &self.source_dir {
+            Some(d) => d.clone(),
+            None => return Ok(None),
+        };
+
+        // Strategy 1: look for <name>.gk in source_dir
+        let module_path = source_dir.join(format!("{name}.gk"));
+        if module_path.exists() {
+            let source = std::fs::read_to_string(&module_path)
+                .map_err(|e| format!("failed to read module '{}': {e}", module_path.display()))?;
+            let resolved = Self::parse_module(&source, name)?;
+            self.module_cache.insert(name.to_string(), resolved);
+            return Ok(self.module_cache.get(name));
+        }
+
+        // Strategy 2: scan all .gk files in source_dir for a matching export
+        if let Ok(entries) = std::fs::read_dir(&source_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("gk") {
+                    let source = match std::fs::read_to_string(&path) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    // Check if any binding in this file matches the function name
+                    if let Ok(resolved) = Self::parse_module(&source, name) {
+                        self.module_cache.insert(name.to_string(), resolved);
+                        return Ok(self.module_cache.get(name));
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Parse a .gk source and extract a module definition.
+    ///
+    /// Infers inputs (unbound references) and validates that the module
+    /// has at least one output binding.
+    fn parse_module(source: &str, _expected_name: &str) -> Result<ResolvedModule, String> {
+        let tokens = lexer::lex(source)?;
+        let ast = parser::parse(tokens)?;
+
+        // Collect defined names and referenced names
+        let mut defined: HashSet<String> = HashSet::new();
+        let mut referenced: HashSet<String> = HashSet::new();
+
+        for stmt in &ast.statements {
+            match stmt {
+                Statement::Coordinates(names, _) => {
+                    for n in names { defined.insert(n.clone()); }
+                }
+                Statement::InitBinding(b) => { defined.insert(b.name.clone()); }
+                Statement::CycleBinding(b) => {
+                    for t in &b.targets { defined.insert(t.clone()); }
+                }
+            }
+        }
+
+        for stmt in &ast.statements {
+            let expr = match stmt {
+                Statement::Coordinates(_, _) => continue,
+                Statement::InitBinding(b) => &b.value,
+                Statement::CycleBinding(b) => &b.value,
+            };
+            collect_references(expr, &mut referenced);
+        }
+
+        let mut inputs: Vec<String> = referenced.into_iter()
+            .filter(|name| !defined.contains(name))
+            .collect();
+        inputs.sort();
+
+        if inputs.is_empty() && ast.statements.is_empty() {
+            return Err("module has no statements".into());
+        }
+
+        Ok(ResolvedModule {
+            inputs,
+            statements: ast.statements,
+        })
+    }
+
     fn compile(&mut self, file: &GkFile) -> Result<GkKernel, String> {
-        // First pass: find coordinates
+        // First pass: find explicit coordinates
         for stmt in &file.statements {
             if let Statement::Coordinates(names, _) = stmt {
                 self.coord_names = names.clone();
             }
         }
 
+        // If no explicit coordinates, infer from unbound references
         if self.coord_names.is_empty() {
-            return Err("no 'coordinates' declaration found".into());
+            let defined: HashSet<String> = file.statements.iter().flat_map(|stmt| {
+                match stmt {
+                    Statement::InitBinding(b) => vec![b.name.clone()],
+                    Statement::CycleBinding(b) => b.targets.clone(),
+                    Statement::Coordinates(_, _) => vec![],
+                }
+            }).collect();
+
+            let mut referenced: HashSet<String> = HashSet::new();
+            for stmt in &file.statements {
+                let expr = match stmt {
+                    Statement::Coordinates(_, _) => continue,
+                    Statement::InitBinding(b) => &b.value,
+                    Statement::CycleBinding(b) => &b.value,
+                };
+                collect_references(expr, &mut referenced);
+            }
+
+            let mut inferred: Vec<String> = referenced.into_iter()
+                .filter(|name| !defined.contains(name))
+                .collect();
+            inferred.sort(); // deterministic order
+            self.coord_names = inferred;
+        }
+
+        if self.coord_names.is_empty() {
+            return Err("no coordinate inputs found — reference at least one unbound name (e.g., 'cycle')".into());
         }
 
         let mut asm = GkAssembler::new(self.coord_names.clone());
@@ -434,7 +794,17 @@ impl Compiler {
                     }
                 }
 
-                let node = build_node(&call.func, &wire_refs, &const_args)?;
+                let node = match build_node(&call.func, &wire_refs, &const_args) {
+                    Ok(n) => n,
+                    Err(e) if e.contains("unknown function") => {
+                        // Try module resolution before giving up
+                        if self.try_inline_module(asm, &call.func, &call.args, targets)? {
+                            return Ok(());
+                        }
+                        return Err(e);
+                    }
+                    Err(e) => return Err(e),
+                };
 
                 if targets.len() == 1 {
                     asm.add_node(&node_name, node, wire_refs);
@@ -817,12 +1187,35 @@ mod tests {
     }
 
     #[test]
-    fn error_missing_coordinates() {
+    fn inferred_coordinates() {
+        // Without explicit coordinates, 'cycle' is inferred as a coordinate input
         let src = "h := hash(cycle)";
+        let mut kernel = compile_gk(src).unwrap();
+        assert_eq!(kernel.coord_names(), &["cycle"]);
+        kernel.set_coordinates(&[42]);
+        let h = kernel.pull("h").as_u64();
+        assert_ne!(h, 42); // hashed, not identity
+    }
+
+    #[test]
+    fn inferred_multi_coordinates() {
+        // Multiple unbound names become multiple coordinate inputs (sorted)
+        let src = "h := hash(interleave(row, col))";
+        let mut kernel = compile_gk(src).unwrap();
+        assert_eq!(kernel.coord_names(), &["col", "row"]); // alphabetically sorted
+        kernel.set_coordinates(&[10, 20]);
+        let h = kernel.pull("h").as_u64();
+        assert_ne!(h, 0);
+    }
+
+    #[test]
+    fn explicit_coordinates_rejects_unbound() {
+        // With explicit coordinates, unbound references are errors
+        let src = "coordinates := (cycle)\nh := hash(unknown)";
         let (_, report) = compile_gk_checked(src);
         assert!(report.has_errors());
         assert!(report.errors().iter().any(|e|
-            e.message.contains("coordinates")));
+            e.message.contains("undefined") && e.message.contains("unknown")));
     }
 
     #[test]

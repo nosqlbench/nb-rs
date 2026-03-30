@@ -11,17 +11,54 @@ This is a deliberate design choice: the GK DAG is already the right
 modeling substrate for coordinate transforms, and there is no strong
 reason to promote decomposition to the activity executor.
 
-## The Single-Cycle Interface
+## Coordinate Inputs
 
-The kernel's external interface is a single u64 coordinate:
+The kernel's external interface is a tuple of named u64 coordinates.
+The activity executor passes a coordinate array and the kernel
+produces named output values.
+
+### Inferred coordinates (default)
+
+When no explicit `coordinates` declaration is present, the compiler
+infers coordinate inputs from unbound references — any name that is
+referenced in an expression but never defined as a node output
+becomes a coordinate input:
+
+```
+// 'cycle' is referenced but never defined → inferred as coordinate
+(x, y, z) := mixed_radix(cycle, 100, 100, 0)
+h := hash(x)
+```
+
+Multiple unbound names become multiple coordinates, sorted
+alphabetically for deterministic ordering:
+
+```
+// 'col' and 'row' are both unbound → coordinates := (col, row)
+h := hash(interleave(row, col))
+```
+
+### Explicit coordinates
+
+When you need to control the coordinate tuple precisely, declare it:
 
 ```
 coordinates := (cycle)
 ```
 
-The activity executor calls `kernel.eval(&[cycle])` with a monotonic
-counter. Everything downstream — decomposition into domain dimensions,
-hashing, generation — is internal to the GK.
+With an explicit declaration, any unbound reference NOT in the list
+is a compile error with a clear diagnostic:
+
+```
+coordinates := (cycle)
+h := hash(row)    // ERROR: 'row' not declared as coordinate
+```
+
+### Activity interface
+
+The activity executor calls `kernel.set_coordinates(&[cycle])` with
+a monotonic counter. Everything downstream — decomposition into domain
+dimensions, hashing, generation — is internal to the GK.
 
 This keeps the activity layer simple: it manages cycle ranges,
 concurrency, and rate limiting. It does not need to understand
@@ -33,7 +70,6 @@ The primary tool for mapping a flat cycle into a multi-dimensional
 space is `mixed_radix`:
 
 ```
-coordinates := (cycle)
 (x, y, z) := mixed_radix(cycle, 100, 100, 0)
 ```
 
@@ -100,6 +136,7 @@ are just different node compositions:
 ### Nested loop (default)
 
 ```
+// 'cycle' inferred as coordinate input
 (x, y, z) := mixed_radix(cycle, Nx, Ny, 0)
 ```
 
@@ -144,12 +181,30 @@ base := mul(cycle, stride)
 
 Skip `stride` positions per cycle. Useful for sampling a subgrid.
 
+### Multi-coordinate kernel
+
+When the caller provides multiple inputs directly (not via cycle
+decomposition), use explicit coordinates or let them be inferred:
+
+```
+// 'row' and 'col' inferred as (col, row) coordinate inputs
+h := hash(interleave(row, col))
+value := mod(h, 1000)
+```
+
+Or with explicit control over ordering:
+
+```
+coordinates := (row, col)
+h := hash(interleave(row, col))
+value := mod(h, 1000)
+```
+
 ## Domain Modeling Examples
 
 ### IoT: devices × readings
 
 ```
-coordinates := (cycle)
 (device, reading) := mixed_radix(cycle, 10000, 0)
 ```
 
@@ -160,7 +215,6 @@ device 1 gets readings 0,1,2,...; etc.
 ### Table: rows × columns
 
 ```
-coordinates := (cycle)
 (col, row) := mixed_radix(cycle, num_cols, 0)
 ```
 
@@ -170,7 +224,6 @@ the next. Natural for INSERT batches.
 ### Vector embeddings: vectors × dimensions
 
 ```
-coordinates := (cycle)
 (dim, vector_id) := mixed_radix(cycle, 768, 0)
 ```
 
@@ -180,7 +233,6 @@ coordinates := (cycle)
 ### Time series: entities × timestamps
 
 ```
-coordinates := (cycle)
 (entity, ts_offset) := mixed_radix(cycle, num_entities, 0)
 ```
 
@@ -191,7 +243,6 @@ modeling concurrent ingestion.
 ### 3D point cloud
 
 ```
-coordinates := (cycle)
 (x, y, z) := mixed_radix(cycle, 100, 100, 100)
 ```
 
@@ -214,3 +265,9 @@ The coordinate transform is a pure function with no shared state.
 **Enumeration-agnostic**: The GK doesn't know or care whether cycles
 are assigned sequentially, in batches, or randomly. It just maps
 whatever cycle value it receives to the corresponding point.
+
+**Composable with modules**: Coordinate decomposition patterns can
+be factored into GK modules (SRD 27) for reuse across workloads.
+A module's interface is inferred from its unbound references (inputs)
+and terminal bindings (outputs) — the same wire inference rules that
+apply to coordinate inputs.

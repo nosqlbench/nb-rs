@@ -1,0 +1,19 @@
+# module_test.yaml — Demonstrates GK module resolution
+#
+# References hashed_id() which is resolved from hashed_id.gk
+# in the same directory.
+#
+# Usage:
+#   nbrs run workload=examples/module_test.yaml cycles=10
+
+description: Test GK module loading from adjacent .gk files.
+
+bindings: |
+  user_id := hashed_id(input: cycle, bound: 1000000)
+  device_id := hashed_id(input: cycle, bound: 50000)
+
+blocks:
+  main:
+    ops:
+      insert:
+        stmt: "INSERT INTO data (user, device) VALUES ({user_id}, {device_id});"
