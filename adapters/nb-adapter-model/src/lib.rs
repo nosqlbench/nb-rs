@@ -15,8 +15,8 @@
 use std::collections::HashMap;
 use std::io::{self, Write, BufWriter};
 use std::sync::Mutex;
-use crate::adapter::{Adapter, AdapterError, AssembledOp, OpResult};
-use crate::adapters::stdout::{StdoutFormat, StdoutConfig};
+use nb_activity::adapter::{Adapter, AdapterError, AssembledOp, OpResult};
+use nb_adapter_stdout::{StdoutFormat, StdoutConfig};
 use xxhash_rust::xxh3;
 
 /// Configuration for the model adapter.

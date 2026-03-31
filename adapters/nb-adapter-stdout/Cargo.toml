@@ -1,0 +1,14 @@
+[package]
+name = "nb-adapter-stdout"
+version = "0.1.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "Stdout adapter for nb-rs: writes assembled ops to stdout or a file"
+keywords = ["nosqlbench", "workload", "benchmark", "stdout"]
+categories = ["command-line-utilities", "simulation"]
+repository = "https://github.com/nosqlbench/nb-rs"
+homepage = "https://github.com/nosqlbench/nb-rs"
+readme = "README.md"
+
+[dependencies]
+nb-activity = { path = "../../nb-activity", version = "0.1.1" }

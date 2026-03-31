@@ -1,79 +1,72 @@
 # Pending SRD Implementations
 
-Ordered by dependency and impact. Items marked [BLOCKED] depend on
-an earlier item.
+## Fully Implemented
 
-## Tier 1 — Core Runtime Capabilities
+- [x] Probability nodes (SRD 29) — fair_coin, unfair_coin, select, chance, n_of, one_of, one_of_weighted, blend
+- [x] Model adapter (SRD 29) — driver=model, --diagnose, result map, runtime latency/error injection
+- [x] Capture context runtime (SRD 28) — CaptureContext, volatile/sticky ports, set/reset/apply
+- [x] External input ports (SRD 28) — WireSource::VolatilePort/StickyPort, PortDef, buffer layout
+- [x] Qualified bind points (SRD 28) — {coord:name}, {capture:name}, {bind:name}, {port:name}
+- [x] Adapter capture extraction trait (SRD 28) — CaptureDecl, CaptureExtractor
+- [x] --strict mode (SRD 27) — coordinates, named args, all inputs
+- [x] Dead code elimination (SRD 27) — assembler prunes unreachable nodes
+- [x] Coordinate inference (SRD 26) — unbound refs become coordinates
+- [x] GK modules (SRD 27) — resolution, inlining, formal sigs, type checking
+- [x] Embedded stdlib (SRD 30) — 8 category files, 17 modules
+- [x] describe gk functions/stdlib/dag (SRD 30)
+- [x] PCG nodes (SRD 25) — pcg, pcg_stream, cycle_walk
+- [x] DAG visualization — DOT with ports, Mermaid, SVG via layout-rs
+- [x] GkProgram/GkState split (SRD 24) — fiber-safe sharing
+- [x] NodeFactory trait (SRD 31) — GkRuntime, unified registry
+- [x] FuncCategory enum — type-safe categories in registry
+- [x] Variadic nodes — sum, product, min, max with identity elements
+- [x] Printf node — variadic formatting
+- [x] Web UI (SRD 32) — nb-web crate, Axum + htmx
 
-These enable the model adapter and inter-op data flow.
-
-- [x] **Probability nodes** (SRD 29) — DONE
-  `select`, `fair_coin`, `unfair_coin`, `chance`, `n_of` implemented.
-  Remaining: `one_of`, `one_of_weighted`, `blend`.
-
-- [x] **Model adapter** (SRD 29) — DONE (basic)
-  `driver=model` works, `--diagnose` flag works, `result` map form
-  parsed. Remaining: GK-computed results, latency injection at
-  runtime, error injection at runtime, `result-rows`.
-
-- [ ] **Capture context runtime** (SRD 28)
-  Stanza-scoped `CaptureContext` with volatile/sticky ports,
-  default values, reset on set_coordinates(). Adapter extraction
-  trait. Wiring captures to next op's GK kernel.
-  Unblocks: multi-op workload flows.
-
-- [ ] **External input ports** (SRD 28)
-  Volatile and sticky buffer regions in GK kernel. `extern` port
-  declarations in GK grammar. Buffer layout: coords | volatile |
-  sticky | node outputs.
-  [BLOCKED by capture context]
-
-## Tier 2 — Language & Tooling
-
-- [ ] **Qualified bind points** (SRD 28)
-  `{coord:name}`, `{capture:name}`, `{bind:name}`, `{port:name}`
-  parsing in bindpoints.rs. Resolution order: bindings → captures →
-  coordinates. Ambiguity warnings (default) / errors (strict).
-
-- [x] **--strict mode** (SRD 27) — DONE
-  Enforces: explicit coordinates, named-only module args, all module
-  inputs provided. 3 new tests.
-
-- [x] **Dead code elimination** (SRD 27) — DONE
-  Assembler traces backward from outputs, prunes unreachable nodes.
-  compile_bindings passes referenced bind points as required outputs.
-  4 new tests.
+## Remaining — Small/Medium Items
 
 - [ ] **--gk-lib flag** (SRD 30)
-  CLI flag for user library directories. Multiple paths, searched
-  between workload dir and embedded stdlib.
-
-- [x] **describe gk stdlib** (SRD 30) — DONE
-  `nbrs describe gk stdlib` lists all embedded modules with typed
-  signatures and descriptions.
+  CLI flag for user library paths. Threading through to compiler.
 
 - [ ] **describe gk modules** (SRD 30)
-  CLI command listing modules in current workload directory +
-  user library.
+  List modules in workload directory + user library.
 
-## Tier 3 — PCG & Advanced Generation
+- [ ] **`extern volatile`/`extern sticky` GK grammar** (SRD 28)
+  Parser support for declaring external ports in .gk source.
+  The runtime supports them; the grammar doesn't parse them yet.
 
-- [ ] **PCG-RXS-M-XS 64/64 nodes** (SRD 25)
-  `pcg(seed, stream)`, `pcg_stream(seed)`, `pcg_dyn`,
-  `pcg_n(seed, stream, count)`. Pure-function seek model.
-  Extern call JIT (P3). Sequential access memoization.
+- [ ] **Ambiguity warnings for bind points** (SRD 28)
+  Warn when an unqualified {name} exists in multiple namespaces.
+  Error in --strict mode.
 
-- [ ] **cycle_walk node** (SRD 25/27)
-  Bijective permutation via PCG cycle-walking. Auto-period
-  selection. Enables euler_circuit stdlib module.
+- [ ] **GK-computed results for model adapter** (SRD 29)
+  `result: |` string form parsed as GK kernel for computed results.
 
-## Tier 4 — Serialization & Visualization
+- [ ] **result-rows for model adapter** (SRD 29)
+  Multi-row result simulation.
+
+- [ ] **Stanza-level executor loop** (SRD 28)
+  Currently each cycle processes one op. For captures to flow between
+  ops, the executor needs a stanza-aware mode that processes all ops
+  in sequence and applies captures between them.
+
+- [ ] **Update bimodal stdlib modules** (SRD 29/30)
+  modeling.gk stubs can now use select/unfair_coin — update them.
+
+## Remaining — Larger Items
 
 - [ ] **Serialization formats** (SRD 28)
-  CBOR wire format, CDDL schema language, JSONL capture event logs.
-  Requirements study for format selection.
+  CBOR wire format, CDDL schema language, JSONL capture logs.
 
-- [x] **DAG visualization** (new) — DONE
-  `gk_to_dot()`, `gk_to_mermaid()`, `gk_to_svg()` in nb-variates/src/viz.rs.
-  Pure-Rust SVG via petgraph + layout-rs. Remaining: wire into
-  `nbrs describe gk dag` CLI command.
+- [ ] **WebSocket live metrics** (SRD 32)
+  htmx WS extension for real-time dashboard updates from MetricsFrame.
+
+- [ ] **Activity control API** (SRD 32)
+  Start/pause/stop activities from the web UI.
+
+- [ ] **HTTP adapter** (first real adapter)
+  The first non-stdout/non-model adapter for actual workloads.
+
+- [ ] **Built-in nodes as NodeFactory** (SRD 31)
+  Refactor build_node hardcoded match into a BuiltinsFactory for
+  fully uniform dispatch.

@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use nb_activity::activity::{Activity, ActivityConfig};
-use nb_activity::adapters::stdout::{StdoutAdapter, StdoutConfig, StdoutFormat};
-use nb_activity::bindings::compile_bindings_with_opts;
+use nb_adapter_stdout::{StdoutAdapter, StdoutConfig, StdoutFormat};
+use nb_activity::bindings::compile_bindings_with_libs;
 use nb_activity::opseq::{OpSequence, SequencerType};
 use nb_activity::synthesis::OpBuilder;
 use nb_metrics::labels::Labels;
@@ -39,13 +39,18 @@ fn main() {
 
     // Handle web command
     if args.first().map(|s| s.as_str()) == Some("web") {
+        let bind = args.iter()
+            .find_map(|a| a.strip_prefix("bind=").or_else(|| a.strip_prefix("--bind=")))
+            .unwrap_or("0.0.0.0");
         let port = args.iter()
             .find_map(|a| a.strip_prefix("port=").or_else(|| a.strip_prefix("--port=")))
             .and_then(|s| s.parse::<u16>().ok())
             .unwrap_or(8080);
+        let addr: std::net::SocketAddr = format!("{bind}:{port}").parse()
+            .unwrap_or_else(|e| { eprintln!("error: invalid bind address '{bind}:{port}': {e}"); std::process::exit(1); });
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            if let Err(e) = nb_web::server::serve(port).await {
+            if let Err(e) = nb_web::server::serve_on(addr).await {
                 eprintln!("error: web server failed: {e}");
             }
         });
@@ -67,7 +72,7 @@ fn print_usage() {
     eprintln!("  nbrs describe gk functions    List all GK node functions");
     eprintln!("  nbrs describe gk stdlib       List standard library modules");
     eprintln!("  nbrs describe gk dag <file>   Render a .gk file as DOT/Mermaid/SVG");
-    eprintln!("  nbrs web [port=8080]          Start the web dashboard");
+    eprintln!("  nbrs web [bind=0.0.0.0] [port=8080]  Start the web dashboard");
     eprintln!();
     eprintln!("Parameters:");
     eprintln!("  workload=<file.yaml>   Workload definition file");
@@ -96,8 +101,8 @@ fn describe_command(args: &[String]) {
             describe_gk_dag(&rest);
         }
         ("gk", "modules") => {
-            eprintln!("nbrs describe gk modules");
-            eprintln!("  Use --dir to specify a directory containing .gk module files.");
+            let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+            describe_gk_modules(&rest);
         }
         ("gk", _) => {
             eprintln!("nbrs describe gk <subtopic>");
@@ -284,6 +289,128 @@ fn describe_gk_stdlib() {
             println!(" {green}{signature}{reset}");
 
             // Description on the next line, indented and dim
+            if let Some(desc) = description {
+                println!("  {:<24} {dim}{desc}{reset}", "");
+            }
+
+            println!();
+        }
+    }
+}
+
+/// Display GK modules found in a directory.
+///
+/// Scans a directory for `.gk` files, parses each one, extracts
+/// `ModuleDef` statements, and displays them with their typed
+/// signatures — same format as `describe gk stdlib`.
+///
+/// Usage:
+///   nbrs describe gk modules [--dir=path]
+fn describe_gk_modules(args: &[String]) {
+    use nb_variates::dsl::lexer::lex;
+    use nb_variates::dsl::parser::parse;
+    use nb_variates::dsl::ast::Statement;
+
+    let dir = args.iter()
+        .find_map(|a| a.strip_prefix("--dir="))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+
+    let (bold, dim, reset, green, cyan, magenta) = if is_tty {
+        ("\x1b[1m", "\x1b[2m", "\x1b[0m", "\x1b[32m", "\x1b[36m", "\x1b[35m")
+    } else {
+        ("", "", "", "", "", "")
+    };
+
+    println!();
+    println!("{bold}GK Modules in {}{reset}", dir.display());
+    println!("{bold}{}{reset}", "═".repeat(15 + dir.display().to_string().len()));
+    println!();
+
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: cannot read directory '{}': {e}", dir.display());
+            return;
+        }
+    };
+
+    let mut gk_files: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("gk"))
+        .collect();
+    gk_files.sort();
+
+    if gk_files.is_empty() {
+        println!("  {dim}(no .gk files found){reset}");
+        println!();
+        return;
+    }
+
+    for path in &gk_files {
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        let filename = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+
+        let category = filename
+            .strip_suffix(".gk")
+            .unwrap_or(filename);
+        let category_title = category
+            .chars()
+            .enumerate()
+            .map(|(i, c)| if i == 0 { c.to_ascii_uppercase() } else { c })
+            .collect::<String>();
+
+        let tokens = match lex(&source) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let ast = match parse(tokens) {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
+
+        let mut modules = Vec::new();
+        for stmt in &ast.statements {
+            if let Statement::ModuleDef(mdef) = stmt {
+                modules.push(mdef);
+            }
+        }
+
+        if modules.is_empty() {
+            continue;
+        }
+
+        println!("  {bold}{cyan}-- {category_title} ({filename}) --{reset}");
+        println!();
+
+        for mdef in &modules {
+            let params_str = mdef.params.iter()
+                .map(|p| format!("{}: {}", p.name, p.typ))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let outputs_str = mdef.outputs.iter()
+                .map(|p| format!("{}: {}", p.name, p.typ))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let signature = format!("({params_str}) -> ({outputs_str})");
+
+            let description = extract_first_comment(&source, &mdef.name);
+
+            let name_padded = format!("{:<24}", mdef.name);
+            print!("  {bold}{magenta}{name_padded}{reset}");
+            println!(" {green}{signature}{reset}");
+
             if let Some(desc) = description {
                 println!("  {:<24} {dim}{desc}{reset}", "");
             }
@@ -495,12 +622,23 @@ async fn run_command(args: &[String]) {
     eprintln!("nbrs: {} ops selected, {} cycles, {} threads, driver={}",
         ops.len(), cycles, threads, driver);
 
-    // Check for --strict flag
+    // Check for --strict and --dry-run flags
     let strict = args.iter().any(|a| a == "--strict");
+    let dry_run = args.iter().find_map(|a| {
+        if a == "--dry-run" { Some("silent") }
+        else if let Some(mode) = a.strip_prefix("--dry-run=") { Some(mode) }
+        else { None }
+    });
+
+    // Collect --gk-lib=path flags
+    let gk_lib_paths: Vec<std::path::PathBuf> = args.iter()
+        .filter_map(|a| a.strip_prefix("--gk-lib="))
+        .map(std::path::PathBuf::from)
+        .collect();
 
     // Compile bindings into GK kernel, with module resolution from the workload directory
     let workload_dir = std::path::Path::new(&workload_path).parent();
-    let kernel = match compile_bindings_with_opts(&ops, workload_dir, strict) {
+    let kernel = match compile_bindings_with_libs(&ops, workload_dir, gk_lib_paths, strict) {
         Ok(k) => k,
         Err(e) => {
             eprintln!("error: failed to compile bindings: {e}");
@@ -571,6 +709,52 @@ async fn run_command(args: &[String]) {
         None
     };
 
+    // Handle --dry-run: override adapter with a no-op or printing adapter
+    if let Some(dry_mode) = dry_run {
+        let b = builder.clone();
+        match dry_mode {
+            "emit" => {
+                // Print each assembled op (like stdout adapter)
+                let adapter = Arc::new(StdoutAdapter::with_config(StdoutConfig {
+                    filename: "stdout".into(),
+                    newline: true,
+                    format: StdoutFormat::Statement,
+                }));
+                activity.run(
+                    adapter,
+                    Arc::new(move |cycle, template| b.build(cycle, template)),
+                ).await;
+            }
+            "json" => {
+                let adapter = Arc::new(StdoutAdapter::with_config(StdoutConfig {
+                    filename: "stdout".into(),
+                    newline: true,
+                    format: StdoutFormat::Json,
+                }));
+                activity.run(
+                    adapter,
+                    Arc::new(move |cycle, template| b.build(cycle, template)),
+                ).await;
+            }
+            _ => {
+                // Silent: assemble but don't print
+                use nb_activity::adapter::{Adapter, OpResult, AdapterError};
+                struct NoopAdapter;
+                impl Adapter for NoopAdapter {
+                    fn execute(&self, _op: &nb_activity::adapter::AssembledOp)
+                        -> impl std::future::Future<Output = Result<OpResult, AdapterError>> + Send {
+                        async { Ok(OpResult { success: true, status: 0, body: None }) }
+                    }
+                }
+                activity.run(
+                    Arc::new(NoopAdapter),
+                    Arc::new(move |cycle, template| b.build(cycle, template)),
+                ).await;
+            }
+        }
+        eprintln!("nbrs: dry-run complete");
+    } else {
+
     match driver {
         "stdout" => {
             let adapter = Arc::new(StdoutAdapter::with_config(StdoutConfig {
@@ -585,7 +769,7 @@ async fn run_command(args: &[String]) {
             ).await;
         }
         "model" => {
-            use nb_activity::adapters::model::{ModelAdapter, ModelConfig};
+            use nb_adapter_model::{ModelAdapter, ModelConfig};
             let diagnose = args.iter().any(|a| a == "--diagnose");
             let adapter = Arc::new(ModelAdapter::with_config(ModelConfig {
                 stdout: StdoutConfig {
@@ -601,11 +785,30 @@ async fn run_command(args: &[String]) {
                 Arc::new(move |cycle, template| b.build(cycle, template)),
             ).await;
         }
+        "http" => {
+            use nb_adapter_http::{HttpAdapter, HttpConfig};
+            let base_url = params.get("base_url").or_else(|| params.get("host")).cloned();
+            let timeout = params.get("timeout")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(30_000);
+            let adapter = Arc::new(HttpAdapter::with_config(HttpConfig {
+                base_url,
+                timeout_ms: timeout,
+                follow_redirects: true,
+            }));
+            let b = builder.clone();
+            activity.run(
+                adapter,
+                Arc::new(move |cycle, template| b.build(cycle, template)),
+            ).await;
+        }
         other => {
-            eprintln!("error: unknown driver '{other}' (supported: stdout, model)");
+            eprintln!("error: unknown driver '{other}' (supported: stdout, model, http)");
             std::process::exit(1);
         }
     };
+
+    } // end of else block for dry-run check
 
     if let Some((tui_thread, capture_running)) = tui_handle {
         // Stop the capture thread

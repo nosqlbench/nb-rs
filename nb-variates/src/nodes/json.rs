@@ -329,6 +329,7 @@ fn value_to_json(v: &Value) -> serde_json::Value {
             json!(base64::engine::general_purpose::STANDARD.encode(b))
         }
         Value::Json(j) => j.clone(),
+        Value::Ext(v) => v.to_json_value(),
         Value::None => serde_json::Value::Null,
     }
 }

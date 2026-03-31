@@ -29,6 +29,12 @@ pub enum TokenKind {
     Init,
     /// `coordinates` keyword
     Coordinates,
+    /// `extern` keyword
+    Extern,
+    /// `volatile` keyword
+    Volatile,
+    /// `sticky` keyword
+    Sticky,
     /// Integer literal: `1000`, `0xFF`
     IntLit(u64),
     /// Float literal: `72.0`, `3.14`
@@ -227,6 +233,9 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
             let kind = match word.as_str() {
                 "init" => TokenKind::Init,
                 "coordinates" => TokenKind::Coordinates,
+                "extern" => TokenKind::Extern,
+                "volatile" => TokenKind::Volatile,
+                "sticky" => TokenKind::Sticky,
                 _ => TokenKind::Ident(word),
             };
             tokens.push(Token { kind, span });

@@ -1620,6 +1620,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "nb-adapter-http"
+version = "0.1.1"
+dependencies = [
+ "nb-activity",
+ "nb-variates",
+ "reqwest 0.12.28",
+]
+
+[[package]]
+name = "nb-adapter-model"
+version = "0.1.1"
+dependencies = [
+ "nb-activity",
+ "nb-adapter-stdout",
+ "serde_json",
+ "tokio",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "nb-adapter-stdout"
+version = "0.1.1"
+dependencies = [
+ "nb-activity",
+]
+
+[[package]]
 name = "nb-errorhandler"
 version = "0.1.1"
 dependencies = [
@@ -1649,6 +1676,9 @@ name = "nb-rs"
 version = "0.1.1"
 dependencies = [
  "nb-activity",
+ "nb-adapter-http",
+ "nb-adapter-model",
+ "nb-adapter-stdout",
  "nb-errorhandler",
  "nb-metrics",
  "nb-rate",

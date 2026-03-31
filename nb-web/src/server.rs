@@ -25,11 +25,15 @@ pub fn build_router() -> Router {
         .layer(CompressionLayer::new())
 }
 
-/// Start the web server on the given port.
+/// Start the web server on the given port (binds to 0.0.0.0).
 pub async fn serve(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    serve_on(std::net::SocketAddr::from(([0, 0, 0, 0], port))).await
+}
+
+/// Start the web server on an explicit socket address.
+pub async fn serve_on(addr: std::net::SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
     let app = build_router();
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
-    eprintln!("nbrs web: listening on http://localhost:{port}");
+    eprintln!("nbrs web: listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())

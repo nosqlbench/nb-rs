@@ -131,6 +131,7 @@ pub fn build_hybrid(
                 .map(|source| match source {
                     WireSource::Coordinate(c) => *c,
                     WireSource::NodeOutput(upstream, port) => slot_bases[*upstream] + port,
+                    WireSource::VolatilePort(_) | WireSource::StickyPort(_) => todo!("port slots in hybrid kernel"),
                 })
                 .collect();
 
@@ -229,6 +230,7 @@ pub fn build_hybrid(
             .map(|source| match source {
                 WireSource::Coordinate(c) => *c,
                 WireSource::NodeOutput(upstream, port) => slot_bases[*upstream] + port,
+                    WireSource::VolatilePort(_) | WireSource::StickyPort(_) => todo!("port slots in hybrid kernel"),
             })
             .collect();
 

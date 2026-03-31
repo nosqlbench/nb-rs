@@ -10,6 +10,11 @@ use std::fmt;
 /// Phase 1 uses this enum for dynamic value representation.
 /// The assembly phase guarantees type correctness, so runtime
 /// code can safely unwrap to the expected variant.
+///
+/// The `Ext` variant carries adapter-contributed types via the
+/// `ReflectedValue` trait. Any consumer can display, serialize,
+/// or inspect an Ext value. The producing adapter (or any code
+/// with the concrete type in scope) can downcast via `as_any()`.
 #[derive(Debug, Clone)]
 pub enum Value {
     U64(u64),
@@ -18,8 +23,81 @@ pub enum Value {
     Str(String),
     Bytes(Vec<u8>),
     Json(serde_json::Value),
+    /// Adapter-contributed reflected value. Carries type info and
+    /// standard access methods (display, JSON, string, bytes).
+    Ext(Box<dyn ReflectedValue>),
     /// Sentinel for uninitialized buffer slots.
     None,
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::U64(a), Value::U64(b)) => a == b,
+            (Value::F64(a), Value::F64(b)) => a == b,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::Bytes(a), Value::Bytes(b)) => a == b,
+            (Value::Json(a), Value::Json(b)) => a == b,
+            (Value::None, Value::None) => true,
+            (Value::Ext(a), Value::Ext(b)) => {
+                a.type_name() == b.type_name() && a.display() == b.display()
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Trait for adapter-contributed value types.
+///
+/// Any type that flows through the GK kernel as `Value::Ext` must
+/// implement this. It provides standard access patterns that work
+/// across adapter boundaries — stdout can display it, HTTP can
+/// serialize it, model adapter can capture it — without needing
+/// the concrete type.
+///
+/// The producing adapter can downcast via `as_any()` when it needs
+/// native protocol access (e.g., CQL binding a `uuid::Uuid`).
+pub trait ReflectedValue: Send + Sync + std::fmt::Debug {
+    /// Type name for diagnostics and describe output.
+    fn type_name(&self) -> &str;
+
+    /// Human-readable string representation.
+    /// Used by stdout adapter, logging, and diagnostics.
+    fn display(&self) -> String;
+
+    /// JSON representation for serialization and HTTP bodies.
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::Value::String(self.display())
+    }
+
+    /// Try to represent as a string. Many types have a canonical
+    /// string form (UUIDs, timestamps, IP addresses).
+    fn try_as_str(&self) -> Option<String> {
+        Some(self.display())
+    }
+
+    /// Try to represent as u64.
+    fn try_as_u64(&self) -> Option<u64> { None }
+
+    /// Try to represent as f64.
+    fn try_as_f64(&self) -> Option<f64> { None }
+
+    /// Try to represent as bytes.
+    fn try_as_bytes(&self) -> Option<&[u8]> { None }
+
+    /// Downcast to the concrete type. Only works when the consuming
+    /// code has the concrete type in scope (same crate or shared dep).
+    fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Clone into a new boxed trait object.
+    fn clone_reflected(&self) -> Box<dyn ReflectedValue>;
+}
+
+impl Clone for Box<dyn ReflectedValue> {
+    fn clone(&self) -> Self {
+        self.clone_reflected()
+    }
 }
 
 impl Value {
@@ -74,7 +152,37 @@ impl Value {
             Value::Str(_) => PortType::Str,
             Value::Bytes(_) => PortType::Bytes,
             Value::Json(_) => PortType::Json,
+            Value::Ext(_) => PortType::Ext,
             Value::None => PortType::U64, // placeholder
+        }
+    }
+
+    /// Best-effort string representation for any value.
+    /// Works across all variants including Ext.
+    pub fn to_display_string(&self) -> String {
+        match self {
+            Value::U64(v) => v.to_string(),
+            Value::F64(v) => v.to_string(),
+            Value::Bool(v) => v.to_string(),
+            Value::Str(v) => v.clone(),
+            Value::Bytes(v) => v.iter().map(|b| format!("{b:02x}")).collect(),
+            Value::Json(v) => v.to_string(),
+            Value::Ext(v) => v.display(),
+            Value::None => String::new(),
+        }
+    }
+
+    /// JSON representation for any value. Works across all variants.
+    pub fn to_json_value(&self) -> serde_json::Value {
+        match self {
+            Value::U64(v) => serde_json::Value::from(*v),
+            Value::F64(v) => serde_json::json!(*v),
+            Value::Bool(v) => serde_json::Value::from(*v),
+            Value::Str(v) => serde_json::Value::from(v.as_str()),
+            Value::Bytes(v) => serde_json::Value::from(v.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            Value::Json(v) => v.clone(),
+            Value::Ext(v) => v.to_json_value(),
+            Value::None => serde_json::Value::Null,
         }
     }
 }
@@ -88,6 +196,8 @@ pub enum PortType {
     Str,
     Bytes,
     Json,
+    /// Adapter-contributed reflected type.
+    Ext,
 }
 
 impl fmt::Display for PortType {
@@ -99,6 +209,7 @@ impl fmt::Display for PortType {
             PortType::Str => write!(f, "String"),
             PortType::Bytes => write!(f, "bytes"),
             PortType::Json => write!(f, "json"),
+            PortType::Ext => write!(f, "ext"),
         }
     }
 }

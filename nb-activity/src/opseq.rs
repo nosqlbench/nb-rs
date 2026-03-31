@@ -100,6 +100,20 @@ impl OpSequence {
         self.lut.len()
     }
 
+    /// Get all ops in a stanza starting at the given cycle.
+    ///
+    /// Returns (op_template, cycle_within_stanza) pairs for each
+    /// position in the stanza. Used by the capture-aware executor
+    /// to process a full stanza as a unit.
+    pub fn stanza_ops(&self, base_cycle: u64) -> Vec<(&ParsedOp, u64)> {
+        (0..self.lut.len())
+            .map(|offset| {
+                let cycle = base_cycle + offset as u64;
+                (self.get(cycle), cycle)
+            })
+            .collect()
+    }
+
     /// The sequencing strategy used.
     pub fn sequencer_type(&self) -> SequencerType {
         self.sequencer_type

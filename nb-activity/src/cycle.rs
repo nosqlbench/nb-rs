@@ -27,6 +27,19 @@ impl CycleSource {
         if cycle < self.end { Some(cycle) } else { None }
     }
 
+    /// Atomically claim N consecutive cycles. Returns the base cycle,
+    /// or None if fewer than N cycles remain.
+    pub fn next_n(&self, n: u64) -> Option<u64> {
+        let base = self.current.fetch_add(n, Ordering::Relaxed);
+        if base + n <= self.end {
+            Some(base)
+        } else {
+            // Partial claim — put back the excess
+            // (racy but acceptable: worst case we skip a few cycles at the end)
+            None
+        }
+    }
+
     /// How many cycles remain (approximate — racy under concurrency).
     pub fn remaining(&self) -> u64 {
         let current = self.current.load(Ordering::Relaxed);

@@ -207,6 +207,7 @@ impl GkAssembler {
                 .map(|source| match source {
                     WireSource::Coordinate(c) => *c,
                     WireSource::NodeOutput(upstream, port) => slot_base[*upstream] + port,
+                    WireSource::VolatilePort(idx) | WireSource::StickyPort(idx) => *idx, // TODO: proper port slot mapping
                 })
                 .collect();
 
@@ -258,6 +259,7 @@ impl GkAssembler {
                 .map(|source| match source {
                     crate::kernel::WireSource::Coordinate(c) => *c,
                     crate::kernel::WireSource::NodeOutput(upstream, port) => slot_base[*upstream] + port,
+                    crate::kernel::WireSource::VolatilePort(idx) | crate::kernel::WireSource::StickyPort(idx) => *idx,
                 })
                 .collect();
 
@@ -529,6 +531,8 @@ impl GkAssembler {
                         WireSource::NodeOutput(old_up, port) => {
                             WireSource::NodeOutput(old_to_new[*old_up], *port)
                         }
+                        WireSource::VolatilePort(idx) => WireSource::VolatilePort(*idx),
+                        WireSource::StickyPort(idx) => WireSource::StickyPort(*idx),
                     })
                     .collect()
             })

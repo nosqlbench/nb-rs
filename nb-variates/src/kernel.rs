@@ -4,14 +4,19 @@
 //! GK runtime kernel: compiled DAG with pull-through evaluation.
 //!
 //! Split into two parts:
-//! - `GkProgram`: the immutable compiled DAG (nodes, wiring, output map).
-//!   Shared via `Arc` across all fibers/threads. No mutable state.
-//! - `GkState`: per-fiber mutable evaluation state (buffers, generation,
-//!   coordinates, volatile/sticky ports). Created cheaply from a program.
+//! - `GkProgram`: immutable compiled DAG. Shared via `Arc`.
+//! - `GkState`: per-fiber mutable state (buffers, ports, generation).
 //!
-//! `GkKernel` is the combined convenience type that owns both for
-//! single-threaded use. For concurrent use, share the program and
-//! give each fiber its own state.
+//! External input ports (SRD 28):
+//! - **Volatile ports**: reset to defaults on `set_coordinates()`.
+//!   Used for per-cycle capture results.
+//! - **Sticky ports**: persist across coordinate changes until
+//!   explicitly overwritten. Used for session-level state.
+//!
+//! Buffer layout in GkState:
+//! ```text
+//! coords[0..C) | volatile[0..V) | sticky[0..S) | node_buffers[...]
+//! ```
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,16 +30,22 @@ pub enum WireSource {
     Coordinate(usize),
     /// Output of another node: `(node_index, output_port_index)`.
     NodeOutput(usize, usize),
+    /// A volatile external input port, by index.
+    VolatilePort(usize),
+    /// A sticky external input port, by index.
+    StickyPort(usize),
+}
+
+/// Metadata for an external input port.
+#[derive(Debug, Clone)]
+pub struct PortDef {
+    /// Port name (used for capture wiring and bind point resolution).
+    pub name: String,
+    /// Default value (used for volatile reset, or initial sticky value).
+    pub default: Value,
 }
 
 /// The immutable compiled DAG. Shared across fibers via `Arc`.
-///
-/// Contains the node instances, wiring, and output map. No mutable
-/// state — all evaluation state lives in `GkState`.
-///
-/// Thread safety: `GkProgram` is `Send + Sync`. The `Box<dyn GkNode>`
-/// instances are `Send + Sync` (required by the trait). The wiring
-/// and output map are read-only after construction.
 pub struct GkProgram {
     /// Node instances in topological order.
     nodes: Vec<Box<dyn GkNode>>,
@@ -44,9 +55,12 @@ pub struct GkProgram {
     coord_names: Vec<String>,
     /// Map from output variate name to `(node_index, output_port_index)`.
     output_map: HashMap<String, (usize, usize)>,
+    /// Volatile port definitions (reset on each set_coordinates).
+    volatile_ports: Vec<PortDef>,
+    /// Sticky port definitions (persist until explicitly overwritten).
+    sticky_ports: Vec<PortDef>,
 }
 
-// SAFETY: GkNode requires Send + Sync. All other fields are read-only.
 unsafe impl Send for GkProgram {}
 unsafe impl Sync for GkProgram {}
 
@@ -55,6 +69,8 @@ impl std::fmt::Debug for GkProgram {
         f.debug_struct("GkProgram")
             .field("nodes", &self.nodes.len())
             .field("coords", &self.coord_names)
+            .field("volatile_ports", &self.volatile_ports.len())
+            .field("sticky_ports", &self.sticky_ports.len())
             .finish()
     }
 }
@@ -67,13 +83,30 @@ impl GkProgram {
         coord_names: Vec<String>,
         output_map: HashMap<String, (usize, usize)>,
     ) -> Self {
-        Self { nodes, wiring, coord_names, output_map }
+        Self {
+            nodes, wiring, coord_names, output_map,
+            volatile_ports: Vec::new(),
+            sticky_ports: Vec::new(),
+        }
+    }
+
+    /// Create a program with external input ports.
+    #[allow(dead_code)]  // used by tests and future assembly integration
+    pub(crate) fn with_ports(
+        nodes: Vec<Box<dyn GkNode>>,
+        wiring: Vec<Vec<WireSource>>,
+        coord_names: Vec<String>,
+        output_map: HashMap<String, (usize, usize)>,
+        volatile_ports: Vec<PortDef>,
+        sticky_ports: Vec<PortDef>,
+    ) -> Self {
+        Self {
+            nodes, wiring, coord_names, output_map,
+            volatile_ports, sticky_ports,
+        }
     }
 
     /// Create a new evaluation state for this program.
-    ///
-    /// Each fiber/thread should have its own state. Creating state is
-    /// cheap — just allocates the value buffers and generation counters.
     pub fn create_state(&self) -> GkState {
         let buffers: Vec<Vec<Value>> = self.nodes
             .iter()
@@ -81,11 +114,31 @@ impl GkProgram {
             .collect();
         let node_count = self.nodes.len();
         let coord_count = self.coord_names.len();
+
+        // Initialize port values to defaults
+        let volatile_values: Vec<Value> = self.volatile_ports.iter()
+            .map(|p| p.default.clone())
+            .collect();
+        let volatile_defaults: Vec<Value> = volatile_values.clone();
+        let sticky_values: Vec<Value> = self.sticky_ports.iter()
+            .map(|p| p.default.clone())
+            .collect();
+
+        // Pre-allocate scratch buffer for the largest node input count
+        let max_inputs = self.wiring.iter()
+            .map(|w| w.len())
+            .max()
+            .unwrap_or(0);
+
         GkState {
             buffers,
             generation: 0,
             node_generation: vec![0; node_count],
             coords: vec![0; coord_count],
+            volatile_values,
+            volatile_defaults,
+            sticky_values,
+            input_scratch: vec![Value::None; max_inputs],
         }
     }
 
@@ -114,24 +167,43 @@ impl GkProgram {
         crate::node::compile_level_of(self.nodes[idx].as_ref())
     }
 
-    /// Probe the compile level of the last node (typically the output).
+    /// Probe the compile level of the last node.
     pub fn last_node_compile_level(&self) -> crate::node::CompileLevel {
         if self.nodes.is_empty() {
             return crate::node::CompileLevel::Phase1;
         }
         self.node_compile_level(self.nodes.len() - 1)
     }
+
+    /// Volatile port definitions.
+    pub fn volatile_ports(&self) -> &[PortDef] {
+        &self.volatile_ports
+    }
+
+    /// Sticky port definitions.
+    pub fn sticky_ports(&self) -> &[PortDef] {
+        &self.sticky_ports
+    }
+
+    /// Find a volatile port by name. Returns its index.
+    pub fn find_volatile_port(&self, name: &str) -> Option<usize> {
+        self.volatile_ports.iter().position(|p| p.name == name)
+    }
+
+    /// Find a sticky port by name. Returns its index.
+    pub fn find_sticky_port(&self, name: &str) -> Option<usize> {
+        self.sticky_ports.iter().position(|p| p.name == name)
+    }
 }
 
 /// Per-fiber mutable evaluation state.
 ///
-/// Contains the value buffers, generation counter, and current
-/// coordinates. Each fiber/thread owns one of these. No sharing,
-/// no synchronization, no blocking.
+/// Contains the value buffers, generation counter, coordinates, and
+/// external input port values. Each fiber/thread owns one of these.
 ///
-/// Setting coordinates (`set_coordinates`) marks the beginning of
-/// an isolation scope. All cached node outputs are implicitly
-/// invalidated. No other fiber can interact with this state.
+/// Setting coordinates (`set_coordinates`) begins a new isolation
+/// scope: generation advances, volatile ports reset to defaults,
+/// sticky ports persist.
 pub struct GkState {
     /// Per-node output value buffers, reused across evaluations.
     buffers: Vec<Vec<Value>>,
@@ -141,23 +213,66 @@ pub struct GkState {
     node_generation: Vec<u64>,
     /// Current coordinate values.
     coords: Vec<u64>,
+    /// Current volatile port values (reset on set_coordinates).
+    volatile_values: Vec<Value>,
+    /// Default values for volatile ports (copied on reset).
+    volatile_defaults: Vec<Value>,
+    /// Current sticky port values (persist across set_coordinates).
+    sticky_values: Vec<Value>,
+    /// Pre-allocated scratch buffer for node input gathering.
+    /// Sized to the maximum input count across all nodes.
+    /// Reused on every eval_node call — zero per-cycle allocation.
+    input_scratch: Vec<Value>,
 }
 
 impl GkState {
     /// Set new coordinates and begin a new isolation scope.
     ///
-    /// All cached node outputs are implicitly invalidated (the
-    /// generation counter advances). Volatile ports would be reset
-    /// here (future: SRD 28).
+    /// - Generation advances (invalidates cached node outputs)
+    /// - Volatile ports reset to their defaults
+    /// - Sticky ports are untouched
     pub fn set_coordinates(&mut self, coords: &[u64]) {
         self.generation = self.generation.wrapping_add(1);
         self.coords.copy_from_slice(coords);
+        // Reset volatile ports to defaults (fast memcpy-equivalent)
+        self.volatile_values.clone_from_slice(&self.volatile_defaults);
+    }
+
+    /// Set a volatile port value by index.
+    ///
+    /// Called by the executor after a capture fires. The value is
+    /// available to subsequent GK evaluations in the same stanza.
+    pub fn set_volatile(&mut self, idx: usize, value: Value) {
+        self.volatile_values[idx] = value;
+        // Invalidate cached outputs since input data changed
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Set a sticky port value by index.
+    ///
+    /// Called by the executor after a capture fires. The value persists
+    /// across coordinate changes until explicitly overwritten.
+    pub fn set_sticky(&mut self, idx: usize, value: Value) {
+        self.sticky_values[idx] = value;
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Read a volatile port value.
+    pub fn get_volatile(&self, idx: usize) -> &Value {
+        &self.volatile_values[idx]
+    }
+
+    /// Read a sticky port value.
+    pub fn get_sticky(&self, idx: usize) -> &Value {
+        &self.sticky_values[idx]
+    }
+
+    /// Read a coordinate value by index.
+    pub fn get_coord(&self, idx: usize) -> u64 {
+        self.coords[idx]
     }
 
     /// Pull a named output variate using the given program.
-    ///
-    /// Triggers lazy evaluation of upstream nodes as needed.
-    /// The program is borrowed immutably — only the state mutates.
     pub fn pull(&mut self, program: &GkProgram, output_name: &str) -> &Value {
         let (node_idx, port_idx) = *program.output_map
             .get(output_name)
@@ -171,49 +286,100 @@ impl GkState {
             return;
         }
 
-        // Gather inputs from coordinates and upstream nodes
+        // Gather inputs into the pre-allocated scratch buffer.
+        // No allocation — just overwrites existing slots.
         let wiring = &program.wiring[node_idx];
-        let mut inputs: Vec<Value> = Vec::with_capacity(wiring.len());
-        for source in wiring {
-            let val = match source {
+        for (i, source) in wiring.iter().enumerate() {
+            self.input_scratch[i] = match source {
                 WireSource::Coordinate(coord_idx) => Value::U64(self.coords[*coord_idx]),
                 WireSource::NodeOutput(upstream_idx, port_idx) => {
                     self.eval_node(program, *upstream_idx);
                     self.buffers[*upstream_idx][*port_idx].clone()
                 }
+                WireSource::VolatilePort(idx) => self.volatile_values[*idx].clone(),
+                WireSource::StickyPort(idx) => self.sticky_values[*idx].clone(),
             };
-            inputs.push(val);
         }
 
-        // Evaluate: program is &, state is &mut — no conflict
-        program.nodes[node_idx].eval(&inputs, &mut self.buffers[node_idx]);
+        let input_count = wiring.len();
+        program.nodes[node_idx].eval(
+            &self.input_scratch[..input_count],
+            &mut self.buffers[node_idx],
+        );
         self.node_generation[node_idx] = self.generation;
     }
 }
 
+/// Stanza-scoped capture context.
+///
+/// Stores captured values from operation results within a single stanza.
+/// Values are written by the adapter extraction step and read by
+/// subsequent operations' GK kernels (via volatile/sticky ports) or
+/// directly by bind point resolution.
+///
+/// Each executor fiber owns one. Reset at stanza start.
+pub struct CaptureContext {
+    /// Named captured values.
+    values: HashMap<String, Value>,
+    /// The cycle this context is evaluating.
+    cycle: u64,
+}
+
+impl CaptureContext {
+    /// Create an empty capture context.
+    pub fn new() -> Self {
+        Self {
+            values: HashMap::new(),
+            cycle: 0,
+        }
+    }
+
+    /// Reset for a new stanza/cycle. Clears all captured values.
+    pub fn reset(&mut self, cycle: u64) {
+        self.values.clear();
+        self.cycle = cycle;
+    }
+
+    /// Store a captured value.
+    pub fn set(&mut self, name: &str, value: Value) {
+        self.values.insert(name.to_string(), value);
+    }
+
+    /// Read a captured value. Returns None if not yet captured.
+    pub fn get(&self, name: &str) -> Option<&Value> {
+        self.values.get(name)
+    }
+
+    /// The current cycle.
+    pub fn cycle(&self) -> u64 {
+        self.cycle
+    }
+
+    /// All captured name-value pairs.
+    pub fn values(&self) -> &HashMap<String, Value> {
+        &self.values
+    }
+
+    /// Transfer captured values into a GkState's volatile/sticky ports.
+    ///
+    /// For each captured name, if the program has a matching volatile
+    /// or sticky port, write the value into the state's port buffer.
+    pub fn apply_to_state(&self, program: &GkProgram, state: &mut GkState) {
+        for (name, value) in &self.values {
+            if let Some(idx) = program.find_volatile_port(name) {
+                state.set_volatile(idx, value.clone());
+            } else if let Some(idx) = program.find_sticky_port(name) {
+                state.set_sticky(idx, value.clone());
+            }
+        }
+    }
+}
+
+impl Default for CaptureContext {
+    fn default() -> Self { Self::new() }
+}
+
 /// A compiled GK kernel: an `Arc<GkProgram>` plus one `GkState`.
-///
-/// The access pattern is identical in single-threaded and concurrent
-/// use — you always go through `program()` and `state()`:
-///
-/// ```ignore
-/// let mut kernel = compile_gk("h := hash(cycle)").unwrap();
-/// kernel.state().set_coordinates(&[42]);
-/// let val = kernel.state().pull(kernel.program(), "h");
-/// ```
-///
-/// For concurrent use, clone the program and create per-fiber states:
-///
-/// ```ignore
-/// let program = kernel.program().clone();  // Arc clone, cheap
-/// // In each fiber:
-/// let mut state = program.create_state();
-/// state.set_coordinates(&[cycle]);
-/// let val = state.pull(&program, "h");
-/// ```
-///
-/// The pattern is the same — `state.pull(&program, name)`. The only
-/// difference is who owns the state and how the program is shared.
 pub struct GkKernel {
     program: Arc<GkProgram>,
     state: GkState,
@@ -240,8 +406,7 @@ impl GkKernel {
         Self { program, state }
     }
 
-    /// The shared immutable program. Borrow or `Arc::clone` for
-    /// concurrent use.
+    /// The shared immutable program.
     pub fn program(&self) -> &Arc<GkProgram> {
         &self.program
     }
@@ -256,7 +421,14 @@ impl GkKernel {
         self.state.set_coordinates(coords);
     }
 
-    /// Convenience: pull from the owned state using the owned program.
+    /// Read a coordinate value by name.
+    pub fn get_coord(&self, name: &str) -> Option<u64> {
+        self.program.coord_names.iter()
+            .position(|n| n == name)
+            .map(|idx| self.state.get_coord(idx))
+    }
+
+    /// Convenience: pull from the owned state.
     pub fn pull(&mut self, output_name: &str) -> &Value {
         self.state.pull(&self.program, output_name)
     }
@@ -271,8 +443,96 @@ impl GkKernel {
         self.program.output_names()
     }
 
-    /// Extract the program for concurrent use, consuming the kernel.
+    /// Extract the program for concurrent use.
     pub fn into_program(self) -> Arc<GkProgram> {
         self.program
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn volatile_ports_reset_on_set_coordinates() {
+        // Build a minimal program with one volatile port
+        let program = Arc::new(GkProgram::with_ports(
+            vec![], vec![], vec!["cycle".into()],
+            HashMap::new(),
+            vec![PortDef { name: "balance".into(), default: Value::F64(0.0) }],
+            vec![],
+        ));
+        let mut state = program.create_state();
+
+        // Default value
+        assert_eq!(state.get_volatile(0), &Value::F64(0.0));
+
+        // Set a value
+        state.set_volatile(0, Value::F64(1234.56));
+        assert_eq!(state.get_volatile(0), &Value::F64(1234.56));
+
+        // Reset via set_coordinates
+        state.set_coordinates(&[42]);
+        assert_eq!(state.get_volatile(0), &Value::F64(0.0)); // back to default
+    }
+
+    #[test]
+    fn sticky_ports_persist_across_coordinates() {
+        let program = Arc::new(GkProgram::with_ports(
+            vec![], vec![], vec!["cycle".into()],
+            HashMap::new(),
+            vec![],
+            vec![PortDef { name: "auth_token".into(), default: Value::Str("anonymous".into()) }],
+        ));
+        let mut state = program.create_state();
+
+        // Default
+        assert_eq!(state.get_sticky(0), &Value::Str("anonymous".into()));
+
+        // Set
+        state.set_sticky(0, Value::Str("token_abc".into()));
+        assert_eq!(state.get_sticky(0), &Value::Str("token_abc".into()));
+
+        // Survives coordinate change
+        state.set_coordinates(&[99]);
+        assert_eq!(state.get_sticky(0), &Value::Str("token_abc".into()));
+    }
+
+    #[test]
+    fn capture_context_lifecycle() {
+        let mut ctx = CaptureContext::new();
+        ctx.reset(42);
+        assert_eq!(ctx.cycle(), 42);
+        assert!(ctx.get("balance").is_none());
+
+        ctx.set("balance", Value::F64(100.0));
+        ctx.set("user_id", Value::U64(7));
+        assert_eq!(ctx.get("balance"), Some(&Value::F64(100.0)));
+        assert_eq!(ctx.get("user_id"), Some(&Value::U64(7)));
+
+        // Reset clears everything
+        ctx.reset(43);
+        assert!(ctx.get("balance").is_none());
+        assert!(ctx.get("user_id").is_none());
+    }
+
+    #[test]
+    fn capture_context_applies_to_state() {
+        let program = Arc::new(GkProgram::with_ports(
+            vec![], vec![], vec!["cycle".into()],
+            HashMap::new(),
+            vec![PortDef { name: "balance".into(), default: Value::F64(0.0) }],
+            vec![PortDef { name: "session".into(), default: Value::U64(0) }],
+        ));
+        let mut state = program.create_state();
+        let mut ctx = CaptureContext::new();
+
+        ctx.reset(1);
+        ctx.set("balance", Value::F64(999.0));
+        ctx.set("session", Value::U64(42));
+        ctx.apply_to_state(&program, &mut state);
+
+        assert_eq!(state.get_volatile(0), &Value::F64(999.0));
+        assert_eq!(state.get_sticky(0), &Value::U64(42));
     }
 }

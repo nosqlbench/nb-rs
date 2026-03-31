@@ -80,6 +80,7 @@ fn parse_statement(p: &mut Parser) -> Result<Statement, String> {
     match p.peek() {
         TokenKind::Coordinates => parse_coordinates(p),
         TokenKind::Init => parse_init_binding(p),
+        TokenKind::Extern => parse_extern_port(p),
         TokenKind::LParen => parse_destructuring_binding(p),
         TokenKind::Ident(_) => {
             // Lookahead to distinguish:
@@ -159,6 +160,35 @@ fn parse_module_def(p: &mut Parser) -> Result<Statement, String> {
         body,
         span,
     }))
+}
+
+/// `extern volatile name: type = default` or `extern sticky name: type`
+fn parse_extern_port(p: &mut Parser) -> Result<Statement, String> {
+    let span = p.span();
+    p.advance(); // consume 'extern'
+
+    let mode = match p.peek() {
+        TokenKind::Volatile => { p.advance(); PortMode::Volatile }
+        TokenKind::Sticky => { p.advance(); PortMode::Sticky }
+        _ => return Err(format!(
+            "expected 'volatile' or 'sticky' after 'extern' at line {}, col {}",
+            p.span().line, p.span().col
+        )),
+    };
+
+    let name = p.expect_ident()?;
+    p.expect(&TokenKind::Colon)?;
+    let typ = p.expect_ident()?;
+
+    // Optional default: = expr
+    let default = if matches!(p.peek(), TokenKind::Eq) {
+        p.advance(); // consume '='
+        Some(parse_expr(p)?)
+    } else {
+        None
+    };
+
+    Ok(Statement::ExternPort(ExternPort { name, mode, typ, default, span }))
 }
 
 /// `coordinates := (name1, name2, ...)`

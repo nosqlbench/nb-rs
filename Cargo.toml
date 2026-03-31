@@ -9,5 +9,8 @@ members = [
     "nb-activity",
     "nb-tui",
     "nb-web",
+    "adapters/nb-adapter-stdout",
+    "adapters/nb-adapter-model",
+    "adapters/nb-adapter-http",
 ]
 resolver = "3"

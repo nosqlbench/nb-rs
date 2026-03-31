@@ -5,6 +5,38 @@ nodes at different levels coexist in the hybrid kernel.
 
 ---
 
+## Design Principle: Front-Load All Preparation
+
+The setup phase of an nbrs session must complete ALL precompilation,
+preconfiguration, memoization, and precomputation before the first
+cycle executes. Once the work phase begins, execution should be as
+optimal as possible — no lazy initialization, no first-cycle
+penalties, no lock contention from concurrent setup.
+
+This means:
+- **GK kernel compilation** (P1/P2/P3/Hybrid) happens entirely at init
+- **Distribution LUTs** are built at init (1000-point tables precomputed)
+- **Module resolution and inlining** happens at compile time, not per-cycle
+- **JIT native code generation** completes before the first `set_coordinates()`
+- **Op sequence LUT** (stanza ratio pattern) is built at init
+- **Adapter connections** (HTTP client, CQL session) are established at init
+- **Buffer allocation** (per-fiber GkState) is done at fiber creation
+- **Volatile port defaults** are pre-built once, `memcpy`'d on each reset
+- **Stdlib modules** are parsed once and cached
+
+The only per-cycle work should be:
+- `set_coordinates()` — write coord slots, memcpy volatile defaults
+- Node evaluation — pull-through or JIT call
+- Op assembly — bind point substitution
+- Adapter execution — the actual I/O
+- Metrics recording — atomic increments
+
+Nothing else. No parsing, no compilation, no file I/O, no allocation
+(beyond the AssembledOp strings), no synchronization beyond the rate
+limiter.
+
+---
+
 ## The Four Levels
 
 | Level | Name | Implementation | Per-node overhead |

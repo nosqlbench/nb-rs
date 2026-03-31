@@ -97,6 +97,33 @@ pub fn compile_gk_with_outputs(
     compiler.compile_filtered(&ast, filter)
 }
 
+/// Compile with additional library directories for module resolution.
+///
+/// Resolution order: source_dir, then each gk_lib_path in order,
+/// then the embedded stdlib.  When `required_outputs` is empty,
+/// compiles all bindings as outputs.
+pub fn compile_gk_with_libs(
+    source: &str,
+    source_dir: Option<&Path>,
+    gk_lib_paths: Vec<PathBuf>,
+    required_outputs: &[String],
+    strict: bool,
+) -> Result<GkKernel, String> {
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(tokens)?;
+    let filter = if required_outputs.is_empty() {
+        None
+    } else {
+        Some(required_outputs)
+    };
+    let mut compiler = Compiler::with_lib_paths(
+        source_dir.map(|p| p.to_path_buf()),
+        gk_lib_paths,
+        strict,
+    );
+    compiler.compile_filtered(&ast, filter)
+}
+
 /// Compile with a source directory and optional strict mode.
 ///
 /// When `strict` is true, the compiler enforces:
@@ -187,13 +214,16 @@ fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
             Statement::ModuleDef(m) => {
                 defined.insert(m.name.clone());
             }
+            Statement::ExternPort(p) => {
+                defined.insert(p.name.clone());
+            }
         }
     }
 
     // Second pass: validate function calls and collect references
     for stmt in &file.statements {
         let expr = match stmt {
-            Statement::Coordinates(_, _) | Statement::ModuleDef(_) => continue,
+            Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) => continue,
             Statement::InitBinding(b) => &b.value,
             Statement::CycleBinding(b) => &b.value,
         };
@@ -267,6 +297,9 @@ fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
             }
             Statement::ModuleDef(m) => {
                 seen_defs.insert(m.name.clone());
+            }
+            Statement::ExternPort(p) => {
+                seen_defs.insert(p.name.clone());
             }
         }
     }
@@ -490,6 +523,11 @@ struct Compiler {
     anon_counter: usize,
     /// Directory for module resolution (search for .gk files).
     source_dir: Option<PathBuf>,
+    /// Additional library directories for module resolution.
+    ///
+    /// Searched after `source_dir` but before the embedded stdlib.
+    /// Populated via `--gk-lib=path` CLI flags.
+    gk_lib_paths: Vec<PathBuf>,
     /// Cache of already-resolved module ASTs: module_name → (inputs, statements).
     module_cache: std::collections::HashMap<String, ResolvedModule>,
     /// When true, enforce strict validation:
@@ -524,6 +562,19 @@ impl Compiler {
             all_names: Vec::new(),
             anon_counter: 0,
             source_dir,
+            gk_lib_paths: Vec::new(),
+            module_cache: std::collections::HashMap::new(),
+            strict,
+        }
+    }
+
+    fn with_lib_paths(source_dir: Option<PathBuf>, gk_lib_paths: Vec<PathBuf>, strict: bool) -> Self {
+        Self {
+            coord_names: Vec::new(),
+            all_names: Vec::new(),
+            anon_counter: 0,
+            source_dir,
+            gk_lib_paths,
             module_cache: std::collections::HashMap::new(),
             strict,
         }
@@ -686,7 +737,7 @@ impl Compiler {
                     );
                     self.compile_binding(asm, &prefixed_targets, &rewritten)?;
                 }
-                Statement::ModuleDef(_) => {} // nested module defs not inlined
+                Statement::ModuleDef(_) | Statement::ExternPort(_) => {} // nested module defs not inlined
             }
         }
 
@@ -805,7 +856,38 @@ impl Compiler {
             }
         }
 
-        // Strategy 3: embedded stdlib
+        // Strategy 3: search --gk-lib directories
+        let lib_paths = self.gk_lib_paths.clone();
+        for lib_dir in &lib_paths {
+            // 3a. Look for <name>.gk in lib_dir
+            let module_path = lib_dir.join(format!("{name}.gk"));
+            if module_path.exists() {
+                let source = std::fs::read_to_string(&module_path)
+                    .map_err(|e| format!("failed to read module '{}': {e}", module_path.display()))?;
+                let resolved = Self::parse_module(&source, name)?;
+                self.module_cache.insert(name.to_string(), resolved);
+                return Ok(self.module_cache.get(name));
+            }
+
+            // 3b. Scan all .gk files in lib_dir for a matching export
+            if let Ok(entries) = std::fs::read_dir(lib_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("gk") {
+                        let source = match std::fs::read_to_string(&path) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                        if let Ok(resolved) = Self::parse_module(&source, name) {
+                            self.module_cache.insert(name.to_string(), resolved);
+                            return Ok(self.module_cache.get(name));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Strategy 4: embedded stdlib
         if let Some(resolved) = self.resolve_stdlib(name)? {
             self.module_cache.insert(name.to_string(), resolved);
             return Ok(self.module_cache.get(name));
@@ -868,7 +950,7 @@ impl Compiler {
 
         for (i, stmt) in ast.statements.iter().enumerate() {
             let (names, expr) = match stmt {
-                Statement::Coordinates(_, _) | Statement::ModuleDef(_) => {
+                Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) => {
                     stmt_refs.push(HashSet::new());
                     continue;
                 }
@@ -925,12 +1007,12 @@ impl Compiler {
                 Statement::CycleBinding(b) => {
                     for t in &b.targets { defined.insert(t.clone()); }
                 }
-                Statement::ModuleDef(_) => {}
+                Statement::ModuleDef(_) | Statement::ExternPort(_) => {}
             }
         }
         for stmt in &extracted {
             let expr = match stmt {
-                Statement::Coordinates(_, _) | Statement::ModuleDef(_) => continue,
+                Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) => continue,
                 Statement::InitBinding(b) => &b.value,
                 Statement::CycleBinding(b) => &b.value,
             };
@@ -975,6 +1057,7 @@ impl Compiler {
                     Statement::InitBinding(b) => vec![b.name.clone()],
                     Statement::CycleBinding(b) => b.targets.clone(),
                     Statement::ModuleDef(m) => vec![m.name.clone()],
+                    Statement::ExternPort(p) => vec![p.name.clone()],
                     Statement::Coordinates(_, _) => vec![],
                 }
             }).collect();
@@ -982,7 +1065,7 @@ impl Compiler {
             let mut referenced: HashSet<String> = HashSet::new();
             for stmt in &file.statements {
                 let expr = match stmt {
-                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) => continue,
+                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) => continue,
                     Statement::InitBinding(b) => &b.value,
                     Statement::CycleBinding(b) => &b.value,
                 };
@@ -1027,6 +1110,12 @@ impl Compiler {
                     // Module definitions are not executed — they're
                     // templates resolved by the module system when
                     // referenced from another file/kernel.
+                }
+                Statement::ExternPort(_port) => {
+                    // External port declarations are handled at the
+                    // program level — they define volatile/sticky port
+                    // metadata. TODO: collect port defs and pass to
+                    // GkProgram::with_ports() during assembly.
                 }
             }
         }
@@ -1073,6 +1162,7 @@ impl Compiler {
                     Statement::InitBinding(b) => vec![b.name.clone()],
                     Statement::CycleBinding(b) => b.targets.clone(),
                     Statement::ModuleDef(m) => vec![m.name.clone()],
+                    Statement::ExternPort(p) => vec![p.name.clone()],
                     Statement::Coordinates(_, _) => vec![],
                 }
             }).collect();
@@ -1080,7 +1170,7 @@ impl Compiler {
             let mut referenced: HashSet<String> = HashSet::new();
             for stmt in &file.statements {
                 let expr = match stmt {
-                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) => continue,
+                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) => continue,
                     Statement::InitBinding(b) => &b.value,
                     Statement::CycleBinding(b) => &b.value,
                 };
@@ -1118,7 +1208,7 @@ impl Compiler {
                         &b.value,
                     )?;
                 }
-                Statement::ModuleDef(_) => {}
+                Statement::ModuleDef(_) | Statement::ExternPort(_) => {}
             }
         }
 
@@ -1741,7 +1831,7 @@ mod tests {
             h := hash(cycle)
             result := mod(h, 1000)
         "#;
-        let (_result, report) = compile_gk_checked(src);
+        let (result, report) = compile_gk_checked(src);
         assert!(!report.has_errors());
         assert!(result.is_ok());
     }

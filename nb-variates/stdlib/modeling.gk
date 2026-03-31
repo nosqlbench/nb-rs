@@ -5,36 +5,31 @@
 // modeling.gk — Service modeling patterns
 //
 // Modules for simulating realistic service behavior with the model
-// adapter. These compose latency distributions with error models.
-//
-// NOTE: Full bimodal and conditional models require native probability
-// nodes (select, unfair_coin) specified in SRD 29/30 but not yet
-// implemented. Current modules use single-mode gaussian fallbacks.
-// Once the probability primitives land, these will be updated to
-// support bimodal latency, path-dependent errors, and retry models.
+// adapter. These compose latency distributions with probability
+// primitives for bimodal and conditional models.
 
 // Single-mode service latency with gaussian profile.
-//
-// The simplest service model: all requests draw from the same normal
-// distribution. Good enough for cache-dominated services or when you
-// don't need bimodal behavior.
-//
-// Example (in workload YAML):
-//   result: |
-//     user_id := id
-//     lat := service_latency(input: cycle, mean_ms: 3.0, stddev_ms: 0.8)
-//   result-latency: lat
-//
-// For bimodal latency (fast cache hits + slow misses), compose
-// manually once select/unfair_coin are available:
-//   // is_slow := unfair_coin(cycle, 0.1)
-//   // fast := gaussian_latency(input: cycle, mean: 2.0, stddev: 0.5)
-//   // slow := gaussian_latency(input: hash(cycle), mean: 30.0, stddev: 5.0)
-//   // latency := select(is_slow, slow, fast)
-//
-// Use for: quick latency modeling when you need something better than
-// a fixed value but don't need full bimodal simulation.
 service_latency(input: u64, mean_ms: f64, stddev_ms: f64) -> (latency_ms: f64) := {
     q := unit_interval(hash(input))
     latency_ms := clamp_f64(icd_normal(q, mean_ms, stddev_ms), 0.1, 999999.0)
+}
+
+// Bimodal service latency: fast path (cache hit) and slow path (miss).
+// slow_pct controls the fraction on the slow path (0.0-1.0).
+bimodal_latency(input: u64, fast_ms: f64, fast_std: f64, slow_ms: f64, slow_std: f64, slow_pct: f64) -> (latency_ms: f64) := {
+    is_slow := unfair_coin(input, slow_pct)
+    fast := clamp_f64(icd_normal(unit_interval(hash(input)), fast_ms, fast_std), 0.1, 999999.0)
+    slow := clamp_f64(icd_normal(unit_interval(hash(hash(input))), slow_ms, slow_std), 0.1, 999999.0)
+    latency_ms := select(is_slow, slow, fast)
+}
+
+// Full service model: bimodal latency + path-dependent errors.
+service_model(input: u64, fast_ms: f64, slow_ms: f64, slow_pct: f64, error_pct: f64) -> (latency_ms: f64, is_error: u64) := {
+    is_slow := unfair_coin(input, slow_pct)
+    fast := clamp_f64(icd_normal(unit_interval(hash(input)), fast_ms, 0.5), 0.1, 999999.0)
+    slow := clamp_f64(icd_normal(unit_interval(hash(hash(input))), slow_ms, 5.0), 0.1, 999999.0)
+    latency_ms := select(is_slow, slow, fast)
+    fast_err := unfair_coin(hash(input), error_pct)
+    slow_err := unfair_coin(hash(hash(input)), error_pct)
+    is_error := select(is_slow, slow_err, fast_err)
 }

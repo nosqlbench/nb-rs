@@ -14,7 +14,7 @@ use std::io::{self, Write, BufWriter};
 use std::fs::File;
 use std::sync::Mutex;
 
-use crate::adapter::{Adapter, AdapterError, AssembledOp, OpResult};
+use nb_activity::adapter::{Adapter, AdapterError, AssembledOp, OpResult};
 
 /// Output target for the stdout adapter.
 enum OutputTarget {
@@ -82,7 +82,7 @@ impl StdoutFormat {
         }
     }
 
-    pub(crate) fn render(&self, op: &AssembledOp) -> String {
+    pub fn render(&self, op: &AssembledOp) -> String {
         match self {
             Self::Assignments => {
                 op.fields.iter()

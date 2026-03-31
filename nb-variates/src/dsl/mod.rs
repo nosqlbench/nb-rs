@@ -10,7 +10,7 @@ pub mod compile;
 pub mod error;
 pub mod registry;
 
-pub use compile::{compile_gk, compile_gk_checked, compile_gk_with_path, compile_gk_strict, compile_gk_with_outputs};
+pub use compile::{compile_gk, compile_gk_checked, compile_gk_with_path, compile_gk_strict, compile_gk_with_outputs, compile_gk_with_libs};
 
 /// Return the embedded standard library module sources.
 ///

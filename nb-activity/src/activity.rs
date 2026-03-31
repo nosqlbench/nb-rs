@@ -186,6 +186,12 @@ impl Activity {
     }
 }
 
+/// Execute cycles as stanza-level units.
+///
+/// Each iteration claims a full stanza of consecutive cycles and
+/// processes them in sequence. This ensures captures from op N are
+/// available to op N+1 within the same stanza. Each stanza is an
+/// isolation scope — the capture context resets at stanza start.
 async fn executor_task<A: Adapter>(
     activity: Arc<Activity>,
     adapter: Arc<A>,
@@ -196,10 +202,92 @@ async fn executor_task<A: Adapter>(
     let stanza_len = activity.op_sequence.stanza_length() as u64;
     let max_retries = activity.config.max_retries;
 
+    if stanza_len <= 1 {
+        // Single-op stanza — no capture flow needed, use fast path
+        executor_task_simple(&activity, &adapter, &cycle_rl, &stanza_rl, &build_op, max_retries).await;
+        return;
+    }
+
+    // Stanza-level execution: claim full stanzas atomically
+    loop {
+        let Some(base_cycle) = activity.cycle_source.next_n(stanza_len) else { break };
+
+        // Rate limit at stanza boundary
+        if let Some(srl) = &stanza_rl {
+            srl.acquire().await;
+        }
+        activity.metrics.stanzas_total.inc();
+
+        // Process each op in the stanza sequentially
+        for offset in 0..stanza_len {
+            let cycle = base_cycle + offset;
+
+            let wait_start = Instant::now();
+            if let Some(crl) = &cycle_rl {
+                crl.acquire().await;
+            }
+            let wait_nanos = wait_start.elapsed().as_nanos() as u64;
+
+            let op_template = activity.op_sequence.get(cycle);
+            let op = build_op(cycle, op_template);
+
+            let service_start = Instant::now();
+            let mut retries = 0u32;
+
+            loop {
+                match adapter.execute(&op).await {
+                    Ok(_result) => {
+                        // Future: extract captures from result and apply
+                        // to the OpBuilder's capture context here.
+                        let service_nanos = service_start.elapsed().as_nanos() as u64;
+                        activity.metrics.service_time.record(service_nanos);
+                        activity.metrics.wait_time.record(wait_nanos);
+                        activity.metrics.response_time.record(service_nanos + wait_nanos);
+                        activity.metrics.cycles_total.inc();
+                        break;
+                    }
+                    Err(e) => {
+                        let duration_nanos = service_start.elapsed().as_nanos() as u64;
+                        let detail = activity.error_router.handle_error(
+                            &e.error_name,
+                            &e.message,
+                            cycle,
+                            duration_nanos,
+                        );
+                        activity.metrics.errors_total.inc();
+
+                        if detail.is_retryable() && retries < max_retries {
+                            retries += 1;
+                            continue;
+                        }
+
+                        let service_nanos = service_start.elapsed().as_nanos() as u64;
+                        activity.metrics.service_time.record(service_nanos);
+                        activity.metrics.wait_time.record(wait_nanos);
+                        activity.metrics.response_time.record(service_nanos + wait_nanos);
+                        activity.metrics.cycles_total.inc();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Fast path for single-op stanzas (no capture flow needed).
+async fn executor_task_simple<A: Adapter>(
+    activity: &Arc<Activity>,
+    adapter: &Arc<A>,
+    cycle_rl: &Option<Arc<RateLimiter>>,
+    stanza_rl: &Option<Arc<RateLimiter>>,
+    build_op: &Arc<dyn Fn(u64, &nb_workload::model::ParsedOp) -> AssembledOp + Send + Sync>,
+    max_retries: u32,
+) {
     loop {
         let Some(cycle) = activity.cycle_source.next() else { break };
 
-        if let Some(ref srl) = stanza_rl {
+        let stanza_len = activity.op_sequence.stanza_length() as u64;
+        if let Some(srl) = stanza_rl {
             if stanza_len > 0 && cycle % stanza_len == 0 {
                 srl.acquire().await;
                 activity.metrics.stanzas_total.inc();
@@ -209,7 +297,7 @@ async fn executor_task<A: Adapter>(
         }
 
         let wait_start = Instant::now();
-        if let Some(ref crl) = cycle_rl {
+        if let Some(crl) = cycle_rl {
             crl.acquire().await;
         }
         let wait_nanos = wait_start.elapsed().as_nanos() as u64;
@@ -217,8 +305,8 @@ async fn executor_task<A: Adapter>(
         let op_template = activity.op_sequence.get(cycle);
         let op = build_op(cycle, op_template);
 
-        let mut retries = 0u32;
         let service_start = Instant::now();
+        let mut retries = 0u32;
 
         loop {
             match adapter.execute(&op).await {

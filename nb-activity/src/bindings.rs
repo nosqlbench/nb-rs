@@ -147,6 +147,118 @@ pub fn compile_bindings_with_path(ops: &[ParsedOp], source_dir: Option<&std::pat
     compile_bindings_with_opts(ops, source_dir, false)
 }
 
+/// Compile all bindings with additional GK library directories.
+///
+/// Each path in `gk_lib_paths` is searched (in order) for `.gk` module
+/// files after `source_dir` but before the embedded stdlib.
+pub fn compile_bindings_with_libs(
+    ops: &[ParsedOp],
+    source_dir: Option<&std::path::Path>,
+    gk_lib_paths: Vec<std::path::PathBuf>,
+    strict: bool,
+) -> Result<GkKernel, String> {
+    use nb_workload::model::BindingsDef;
+
+    // Check if any op uses GK source mode
+    let gk_source = ops.iter().find_map(|op| {
+        if let BindingsDef::GkSource(src) = &op.bindings {
+            if !src.trim().is_empty() { Some(src.clone()) } else { None }
+        } else {
+            None
+        }
+    });
+
+    if let Some(source) = gk_source {
+        let mut required: Vec<String> = Vec::new();
+        for op in ops {
+            for (_, value) in &op.op {
+                if let Some(s) = value.as_str() {
+                    for name in nb_workload::bindpoints::referenced_bindings(s) {
+                        if !required.contains(&name) {
+                            required.push(name);
+                        }
+                    }
+                }
+            }
+        }
+        return nb_variates::dsl::compile_gk_with_libs(&source, source_dir, gk_lib_paths, &required, strict);
+    }
+
+    // Legacy mode: translate semicolon-chain bindings into GK source
+    let mut all_bindings: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for op in ops {
+        if let BindingsDef::Map(map) = &op.bindings {
+            for (name, expr) in map {
+                all_bindings.entry(name.clone()).or_insert_with(|| expr.clone());
+            }
+        }
+    }
+
+    let mut required: Vec<String> = Vec::new();
+    for op in ops {
+        for (_, value) in &op.op {
+            if let Some(s) = value.as_str() {
+                for name in nb_workload::bindpoints::referenced_bindings(s) {
+                    if !required.contains(&name) {
+                        required.push(name);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut gk_lines: Vec<String> = Vec::new();
+    gk_lines.push("coordinates := (cycle)".into());
+
+    for (binding_name, expr) in &all_bindings {
+        let chain = parse_binding_chain(expr);
+        if chain.is_empty() {
+            return Err(format!("empty binding expression for '{binding_name}'"));
+        }
+
+        let mut prev_wire = "cycle".to_string();
+        for (i, func) in chain.iter().enumerate() {
+            let is_last = i == chain.len() - 1;
+            let target = if is_last {
+                binding_name.clone()
+            } else {
+                format!("__chain_{binding_name}_{i}")
+            };
+
+            let func_name = func.name.to_lowercase();
+            let mut call_args = vec![prev_wire.clone()];
+            for arg in &func.args {
+                call_args.push(arg.trim().to_string());
+            }
+
+            gk_lines.push(format!("{target} := {func_name}({args})",
+                args = call_args.join(", ")));
+
+            prev_wire = target;
+        }
+    }
+
+    let mut missing: Vec<String> = Vec::new();
+    for name in &required {
+        if name == "cycle" {
+            if !all_bindings.contains_key(name) {
+                gk_lines.push(format!("{name} := identity(cycle)"));
+            }
+        } else if !all_bindings.contains_key(name) {
+            missing.push(name.clone());
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "undeclared bind point references: {}. Add these to your bindings section.",
+            missing.join(", ")
+        ));
+    }
+
+    let gk_source = gk_lines.join("\n");
+    nb_variates::dsl::compile_gk_with_libs(&gk_source, source_dir, gk_lib_paths, &required, strict)
+}
+
 /// Compile all bindings from a set of ParsedOps into a GK kernel.
 ///
 /// When `strict` is true, the GK compiler enforces:
