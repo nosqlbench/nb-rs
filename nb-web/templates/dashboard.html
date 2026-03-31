@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}nbrs — Dashboard{% endblock %}
+{% block nav_dashboard %}class="active"{% endblock %}
+
+{% block content %}
+<div class="grid grid-4">
+    <div class="card stat">
+        <div class="value" id="total-cycles">{{ total_cycles }}</div>
+        <div class="label">Total Cycles</div>
+    </div>
+    <div class="card stat">
+        <div class="value" id="ops-per-sec">{{ ops_per_sec }}</div>
+        <div class="label">Ops/sec</div>
+    </div>
+    <div class="card stat">
+        <div class="value" id="p99-latency">{{ p99_ms }}</div>
+        <div class="label">P99 Latency (ms)</div>
+    </div>
+    <div class="card stat">
+        <div class="value" id="error-count">{{ error_count }}</div>
+        <div class="label">Errors</div>
+    </div>
+</div>
+
+<div class="grid grid-2">
+    <div class="card">
+        <h2>Activities</h2>
+        <div id="activities-table" hx-get="/api/activities" hx-trigger="every 2s">
+            {% include "fragments/activities_table.html" %}
+        </div>
+    </div>
+    <div class="card">
+        <h2>Recent Ops</h2>
+        <div id="recent-ops" hx-get="/api/recent-ops" hx-trigger="every 2s">
+            <p style="color: var(--text-dim)">No activity running</p>
+        </div>
+    </div>
+</div>
+{% endblock %}

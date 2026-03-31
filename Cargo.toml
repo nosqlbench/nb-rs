@@ -8,5 +8,6 @@ members = [
     "nb-errorhandler",
     "nb-activity",
     "nb-tui",
+    "nb-web",
 ]
 resolver = "3"

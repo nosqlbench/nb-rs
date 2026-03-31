@@ -147,6 +147,7 @@ and per-stanza) with token-bucket semantics and burst recovery.
 | 29 | [model_adapter](29_model_adapter.md) | Simulated op execution with configurable results, latency, error injection |
 | 30 | [stdlib](30_stdlib.md) | GK standard library: embedded modules, resolution chain, stdlib contents |
 | 31 | [node_factories](31_node_factories.md) | External node providers: NodeFactory trait, unified registry, fiber safety |
+| 32 | [web_ui](32_web_ui.md) | Axum + htmx web dashboard: live metrics, function browser, DAG viewer |
 
 Defines how data flows between operations within a stanza and how
 to prototype without real infrastructure. SRD 28 introduces capture

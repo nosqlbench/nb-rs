@@ -1,0 +1,29 @@
+{% for (category, funcs) in groups %}
+<h3 style="color: var(--blue); margin: 16px 0 8px; font-size: 13px;">{{ category }}</h3>
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Params</th>
+            <th>Arity</th>
+            <th>Level</th>
+            <th>Description</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for f in funcs %}
+        <tr>
+            <td style="color: var(--accent); font-weight: 600;">{{ f.name }}</td>
+            <td style="color: var(--text-dim);">{{ f.params_display }}</td>
+            <td>{{ f.arity_display }}</td>
+            <td>
+                <span class="badge badge-{% if f.level == "P3" %}green{% elif f.level == "P2" %}yellow{% else %}blue{% endif %}">
+                    {{ f.level }}
+                </span>
+            </td>
+            <td style="color: var(--text-dim);">{{ f.description }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endfor %}

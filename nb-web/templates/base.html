@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}nbrs{% endblock %}</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://unpkg.com/htmx-ext-ws@2.0.2/ws.js"></script>
+    <style>
+        :root {
+            --bg: #1a1a2e;
+            --surface: #16213e;
+            --border: #0f3460;
+            --text: #e0e0e0;
+            --text-dim: #8888a0;
+            --accent: #e94560;
+            --green: #4ecca3;
+            --yellow: #f0c040;
+            --blue: #4da6ff;
+            --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: var(--mono);
+            background: var(--bg);
+            color: var(--text);
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            gap: 24px;
+        }
+        header h1 {
+            font-size: 18px;
+            color: var(--accent);
+            font-weight: 700;
+        }
+        header nav a {
+            color: var(--text-dim);
+            text-decoration: none;
+            padding: 4px 12px;
+            border-radius: 4px;
+        }
+        header nav a:hover, header nav a.active {
+            color: var(--text);
+            background: var(--border);
+        }
+        main {
+            padding: 24px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .card h2 {
+            font-size: 14px;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+        }
+        .grid { display: grid; gap: 16px; }
+        .grid-2 { grid-template-columns: 1fr 1fr; }
+        .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+        .grid-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+        .stat {
+            text-align: center;
+            padding: 12px;
+        }
+        .stat .value {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--green);
+        }
+        .stat .label {
+            font-size: 11px;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        th {
+            color: var(--text-dim);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .badge-green { background: rgba(78, 204, 163, 0.2); color: var(--green); }
+        .badge-yellow { background: rgba(240, 192, 64, 0.2); color: var(--yellow); }
+        .badge-red { background: rgba(233, 69, 96, 0.2); color: var(--accent); }
+        .badge-blue { background: rgba(77, 166, 255, 0.2); color: var(--blue); }
+        pre {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 12px;
+            overflow-x: auto;
+            font-size: 13px;
+        }
+        .htmx-indicator { opacity: 0; transition: opacity 200ms; }
+        .htmx-request .htmx-indicator { opacity: 1; }
+        @media (max-width: 900px) {
+            .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+        }
+    </style>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <header>
+        <h1>nbrs</h1>
+        <nav>
+            <a href="/" hx-get="/" hx-target="main" hx-push-url="true"
+               {% block nav_dashboard %}{% endblock %}>Dashboard</a>
+            <a href="/functions" hx-get="/functions" hx-target="main" hx-push-url="true"
+               {% block nav_functions %}{% endblock %}>Functions</a>
+            <a href="/stdlib" hx-get="/stdlib" hx-target="main" hx-push-url="true"
+               {% block nav_stdlib %}{% endblock %}>Stdlib</a>
+            <a href="/dag" hx-get="/dag" hx-target="main" hx-push-url="true"
+               {% block nav_dag %}{% endblock %}>DAG Viewer</a>
+        </nav>
+    </header>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

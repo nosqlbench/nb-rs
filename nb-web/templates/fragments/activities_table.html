@@ -1,0 +1,25 @@
+<table>
+    <thead>
+        <tr>
+            <th>Activity</th>
+            <th>Status</th>
+            <th>Cycles</th>
+            <th>Ops/sec</th>
+            <th>Errors</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for activity in activities %}
+        <tr>
+            <td>{{ activity.name }}</td>
+            <td><span class="badge badge-{{ activity.status_class }}">{{ activity.status }}</span></td>
+            <td>{{ activity.cycles_done }} / {{ activity.cycles_total }}</td>
+            <td>{{ activity.ops_per_sec }}</td>
+            <td>{{ activity.error_count }}</td>
+        </tr>
+        {% endfor %}
+        {% if activities.is_empty() %}
+        <tr><td colspan="5" style="color: var(--text-dim)">No activities running</td></tr>
+        {% endif %}
+    </tbody>
+</table>

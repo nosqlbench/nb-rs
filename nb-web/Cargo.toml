@@ -1,0 +1,21 @@
+[package]
+name = "nb-web"
+version = "0.1.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "Web UI for nb-rs: htmx-powered dashboard for workload monitoring and control"
+keywords = ["nosqlbench", "workload", "benchmark", "web-ui", "htmx"]
+categories = ["command-line-utilities", "web-programming::http-server"]
+repository = "https://github.com/nosqlbench/nb-rs"
+homepage = "https://github.com/nosqlbench/nb-rs"
+readme = "README.md"
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "cors", "compression-gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+nb-metrics = { path = "../nb-metrics", version = "0.1.1" }
+nb-variates = { path = "../nb-variates", version = "0.1.1" }
+nb-activity = { path = "../nb-activity", version = "0.1.1" }

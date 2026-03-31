@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}nbrs — Functions{% endblock %}
+{% block nav_functions %}class="active"{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>GK Node Functions</h2>
+    <div style="margin-bottom: 12px;">
+        <input type="text" name="q" placeholder="Search functions..."
+            hx-get="/api/functions" hx-target="#function-table" hx-trigger="keyup changed delay:300ms"
+            style="background: var(--bg); color: var(--text); border: 1px solid var(--border);
+                   padding: 8px 12px; border-radius: 4px; width: 300px; font-family: var(--mono);">
+        <span class="htmx-indicator" style="margin-left: 8px; color: var(--text-dim);">searching...</span>
+    </div>
+    <div id="function-table">
+        {% include "fragments/function_table.html" %}
+    </div>
+</div>
+{% endblock %}

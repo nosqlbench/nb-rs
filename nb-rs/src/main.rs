@@ -37,6 +37,21 @@ fn main() {
         return;
     }
 
+    // Handle web command
+    if args.first().map(|s| s.as_str()) == Some("web") {
+        let port = args.iter()
+            .find_map(|a| a.strip_prefix("port=").or_else(|| a.strip_prefix("--port=")))
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(8080);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            if let Err(e) = nb_web::server::serve(port).await {
+                eprintln!("error: web server failed: {e}");
+            }
+        });
+        return;
+    }
+
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         run_command(&args).await;
@@ -50,6 +65,9 @@ fn print_usage() {
     eprintln!("  nbrs run driver=stdout workload=file.yaml cycles=100 threads=4");
     eprintln!("  nbrs run workload=file.yaml tags=block:main rate=1000 format=json");
     eprintln!("  nbrs describe gk functions    List all GK node functions");
+    eprintln!("  nbrs describe gk stdlib       List standard library modules");
+    eprintln!("  nbrs describe gk dag <file>   Render a .gk file as DOT/Mermaid/SVG");
+    eprintln!("  nbrs web [port=8080]          Start the web dashboard");
     eprintln!();
     eprintln!("Parameters:");
     eprintln!("  workload=<file.yaml>   Workload definition file");
