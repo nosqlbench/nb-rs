@@ -17,9 +17,7 @@
             <td style="color: var(--text-dim);">{{ f.params_display }}</td>
             <td>{{ f.arity_display }}</td>
             <td>
-                <span class="badge badge-{% if f.level == "P3" %}green{% elif f.level == "P2" %}yellow{% else %}blue{% endif %}">
-                    {{ f.level }}
-                </span>
+                <span class="badge badge-{{ f.level_class }}">{{ f.level }}</span>
             </td>
             <td style="color: var(--text-dim);">{{ f.description }}</td>
         </tr>

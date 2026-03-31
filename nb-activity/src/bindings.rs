@@ -133,9 +133,11 @@ pub fn probe_compile_level(func_name: &str) -> nb_variates::node::CompileLevel {
     parts.extend(const_args);
 
     let source = format!("coordinates := (cycle)\nout := {func_name}({})", parts.join(", "));
-    match nb_variates::dsl::compile_gk(&source) {
-        Ok(kernel) => kernel.program().last_node_compile_level(),
-        Err(_) => nb_variates::node::CompileLevel::Phase1,
+    // Catch panics from nodes that validate const params (e.g.
+    // unfair_coin rejects probabilities outside [0,1]).
+    match std::panic::catch_unwind(|| nb_variates::dsl::compile_gk(&source)) {
+        Ok(Ok(kernel)) => kernel.program().last_node_compile_level(),
+        _ => nb_variates::node::CompileLevel::Phase1,
     }
 }
 

@@ -3,32 +3,5 @@
 {% block nav_stdlib %}class="active"{% endblock %}
 
 {% block content %}
-<div class="card">
-    <h2>GK Standard Library</h2>
-    <p style="color: var(--text-dim); margin-bottom: 16px;">
-        Embedded modules available in every workload. Call by name — no imports needed.
-    </p>
-    <div id="stdlib-list">
-        {% for (category, modules) in groups %}
-        <h3 style="color: var(--blue); margin: 16px 0 8px; font-size: 13px;">{{ category }}</h3>
-        {% for m in modules %}
-        <div class="card" style="margin-bottom: 8px; padding: 12px;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                    <span style="color: var(--accent); font-weight: 600;">{{ m.name }}</span>
-                    <span style="color: var(--text-dim); margin-left: 8px;">{{ m.signature }}</span>
-                </div>
-                <button hx-get="/api/stdlib/{{ m.name }}" hx-target="#source-{{ m.name }}" hx-swap="innerHTML"
-                    style="background: var(--border); color: var(--text); border: none; padding: 4px 12px;
-                           border-radius: 4px; cursor: pointer; font-family: var(--mono); font-size: 12px;">
-                    source
-                </button>
-            </div>
-            <div style="color: var(--text-dim); font-size: 12px; margin-top: 4px;">{{ m.description }}</div>
-            <div id="source-{{ m.name }}"></div>
-        </div>
-        {% endfor %}
-        {% endfor %}
-    </div>
-</div>
+{% include "fragments/stdlib_content.html" %}
 {% endblock %}

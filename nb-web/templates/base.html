@@ -6,6 +6,8 @@
     <title>{% block title %}nbrs{% endblock %}</title>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script src="https://unpkg.com/htmx-ext-ws@2.0.2/ws.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/css/litegraph.css">
+    <script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/build/litegraph.min.js"></script>
     <style>
         :root {
             --bg: #1a1a2e;
@@ -142,6 +144,8 @@
                {% block nav_stdlib %}{% endblock %}>Stdlib</a>
             <a href="/dag" hx-get="/dag" hx-target="main" hx-push-url="true"
                {% block nav_dag %}{% endblock %}>DAG Viewer</a>
+            <a href="/graph"
+               {% block nav_graph %}{% endblock %}>Graph Editor</a>
         </nav>
     </header>
     <main>

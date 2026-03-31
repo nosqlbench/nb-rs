@@ -2,85 +2,103 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Route handlers for the web UI.
+//!
+//! Each page route checks the `HX-Request` header. When present (htmx
+//! navigation), only the `<main>` content fragment is returned. When
+//! absent (direct browser load), the full page with base shell is
+//! returned. This avoids separate `/api/*` routes for navigation.
 
-use axum::extract::Query;
+use askama::Template;
+use axum::extract::{Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Html;
 use axum::Form;
 
+use nb_metrics::reporters::openmetrics_parse;
 use nb_variates::dsl::registry;
 use nb_variates::viz;
 
-const BASE_CSS: &str = include_str!("../static/style.css");
-const HTMX_CDN: &str = "https://unpkg.com/htmx.org@2.0.4";
+use crate::models::*;
+use crate::ws::MetricsBroadcast;
 
-fn shell(title: &str, active: &str, content: &str) -> String {
-    let nav = |label: &str, href: &str| -> String {
-        let cls = if label == active { " class=\"active\"" } else { "" };
-        format!("<a href=\"{href}\" hx-get=\"{href}\" hx-target=\"main\" hx-push-url=\"true\"{cls}>{label}</a>")
-    };
-    let nav_html = [
-        nav("Dashboard", "/"),
-        nav("Functions", "/functions"),
-        nav("Stdlib", "/stdlib"),
-        nav("DAG Viewer", "/dag"),
-    ].join("\n            ");
-
-    format!(
-        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n\
-         <meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n\
-         <title>nbrs &mdash; {title}</title>\n\
-         <script src=\"{HTMX_CDN}\"></script>\n\
-         <style>{BASE_CSS}</style>\n</head>\n<body>\n\
-         <header><h1>nbrs</h1><nav>{nav_html}</nav></header>\n\
-         <main>{content}</main>\n</body>\n</html>"
-    )
-}
-
-fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+/// Returns `true` when the request comes from htmx (partial swap).
+fn is_htmx(headers: &HeaderMap) -> bool {
+    headers.contains_key("HX-Request")
 }
 
 // ─── Dashboard ──────────────────────────────────────────────
 
-pub async fn dashboard() -> Html<String> {
-    Html(shell("Dashboard", "Dashboard", include_str!("../templates/page_dashboard.html")))
+pub async fn dashboard(headers: HeaderMap) -> Html<String> {
+    let (tc, ops, p99, ec) = (
+        "0".into(),
+        "\u{2014}".into(),
+        "\u{2014}".into(),
+        "0".into(),
+    );
+    let activities = vec![];
+
+    if is_htmx(&headers) {
+        let frag = DashboardContentFragment {
+            total_cycles: tc, ops_per_sec: ops, p99_ms: p99,
+            error_count: ec, activities,
+        };
+        Html(frag.render().expect("dashboard content fragment"))
+    } else {
+        let page = DashboardPage {
+            total_cycles: tc, ops_per_sec: ops, p99_ms: p99,
+            error_count: ec, activities,
+        };
+        Html(page.render().expect("dashboard template"))
+    }
 }
 
 // ─── Functions ──────────────────────────────────────────────
 
-pub async fn functions_page() -> Html<String> {
-    let table = render_function_table(None);
-    let content = format!(
-        "{}\n<div id=\"function-table\">{table}</div>\n</div>",
-        include_str!("../templates/page_functions_header.html")
-    );
-    Html(shell("Functions", "Functions", &content))
+pub async fn functions_page(headers: HeaderMap) -> Html<String> {
+    let groups = build_function_groups(None);
+    if is_htmx(&headers) {
+        let frag = FunctionsContentFragment { groups };
+        Html(frag.render().expect("functions content fragment"))
+    } else {
+        let page = FunctionsPage { groups };
+        Html(page.render().expect("functions template"))
+    }
 }
 
 #[derive(serde::Deserialize)]
-pub struct FunctionQuery { pub q: Option<String> }
+pub struct FunctionQuery {
+    pub q: Option<String>,
+}
 
 pub async fn functions_api(Query(query): Query<FunctionQuery>) -> Html<String> {
-    Html(render_function_table(query.q.as_deref()))
+    let groups = build_function_groups(query.q.as_deref());
+    let fragment = FunctionTableFragment { groups };
+    Html(fragment.render().expect("function_table fragment"))
 }
 
 // ─── Stdlib ─────────────────────────────────────────────────
 
-pub async fn stdlib_page() -> Html<String> {
-    let modules = render_stdlib_list();
-    let content = format!(
-        "<div class=\"card\">\n<h2>GK Standard Library</h2>\n\
-         <p style=\"color: var(--text-dim); margin-bottom: 16px;\">\
-         Embedded modules &mdash; call by name, no imports needed.</p>\n{modules}\n</div>"
-    );
-    Html(shell("Stdlib", "Stdlib", &content))
+pub async fn stdlib_page(headers: HeaderMap) -> Html<String> {
+    let groups = build_stdlib_groups();
+    if is_htmx(&headers) {
+        let frag = StdlibContentFragment { groups };
+        Html(frag.render().expect("stdlib content fragment"))
+    } else {
+        let page = StdlibPage { groups };
+        Html(page.render().expect("stdlib template"))
+    }
 }
 
-pub async fn stdlib_source(axum::extract::Path(name): axum::extract::Path<String>) -> Html<String> {
+pub async fn stdlib_source(
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Html<String> {
     let sources = nb_variates::dsl::stdlib_sources();
     for (_filename, source) in sources {
         if source.contains(&format!("{name}(")) {
-            return Html(format!("<pre style=\"margin-top: 8px;\">{}</pre>", esc(source)));
+            return Html(format!(
+                "<pre style=\"margin-top: 8px;\">{}</pre>",
+                esc(source)
+            ));
         }
     }
     Html("<pre>Module not found</pre>".into())
@@ -88,17 +106,28 @@ pub async fn stdlib_source(axum::extract::Path(name): axum::extract::Path<String
 
 // ─── DAG Viewer ─────────────────────────────────────────────
 
-pub async fn dag_page() -> Html<String> {
-    Html(shell("DAG Viewer", "DAG Viewer", include_str!("../templates/page_dag.html")))
+pub async fn dag_page(headers: HeaderMap) -> Html<String> {
+    if is_htmx(&headers) {
+        let frag = DagContentFragment;
+        Html(frag.render().expect("dag content fragment"))
+    } else {
+        let page = DagPage;
+        Html(page.render().expect("dag template"))
+    }
 }
 
 #[derive(serde::Deserialize)]
-pub struct DagRenderForm { pub source: String, pub format: Option<String> }
+pub struct DagRenderForm {
+    pub source: String,
+    pub format: Option<String>,
+}
 
 pub async fn dag_render(Form(form): Form<DagRenderForm>) -> Html<String> {
     let source = form.source.trim();
     if source.is_empty() {
-        return Html("<p style=\"color: var(--text-dim);\">Enter GK source to render</p>".into());
+        return Html(
+            "<p style=\"color: var(--text-dim);\">Enter GK source to render</p>".into(),
+        );
     }
 
     let fmt = form.format.as_deref().unwrap_or("svg");
@@ -110,109 +139,178 @@ pub async fn dag_render(Form(form): Form<DagRenderForm>) -> Html<String> {
     };
     match result {
         Ok(content) => Html(content),
-        Err(e) => Html(format!("<pre style=\"color: var(--accent);\">Error: {}</pre>", esc(&e))),
+        Err(e) => Html(format!(
+            "<pre style=\"color: var(--accent);\">Error: {}</pre>",
+            esc(&e)
+        )),
     }
 }
 
 // ─── Activities API ─────────────────────────────────────────
 
 pub async fn activities_api() -> Html<String> {
-    Html("<p style=\"color: var(--text-dim)\">No activities running</p>".into())
+    let fragment = ActivitiesFragment {
+        activities: vec![],
+    };
+    Html(fragment.render().expect("activities_table fragment"))
 }
 
-// ─── Rendering ──────────────────────────────────────────────
+// ─── Graph Editor ───────────────────────────────────────────
 
-fn render_function_table(filter: Option<&str>) -> String {
+pub async fn graph_editor_page(headers: HeaderMap) -> Html<String> {
+    if is_htmx(&headers) {
+        let frag = GraphEditorContentFragment;
+        Html(frag.render().expect("graph editor content fragment"))
+    } else {
+        let page = GraphEditorPage;
+        Html(page.render().expect("graph editor template"))
+    }
+}
+
+pub async fn graph_palette() -> axum::Json<Vec<crate::graph::PaletteCategory>> {
+    axum::Json(crate::graph::build_palette())
+}
+
+pub async fn graph_compile(body: String) -> axum::Json<crate::graph::CompileResult> {
+    axum::Json(crate::graph::compile_graph(&body))
+}
+
+// ─── Metrics Ingestion ──────────────────────────────────────
+
+/// Accept metrics in Prometheus text exposition format.
+///
+/// Running `nbrs run --web=host:port` sessions POST metrics here.
+/// The parsed frame is published to all WebSocket subscribers.
+pub async fn ingest_prometheus(
+    State(broadcast): State<MetricsBroadcast>,
+    body: String,
+) -> StatusCode {
+    let frame = openmetrics_parse::parse_prometheus_text(&body);
+    if !frame.samples.is_empty() {
+        broadcast.publish(frame);
+    }
+    StatusCode::NO_CONTENT
+}
+
+// ─── Data Building ──────────────────────────────────────────
+
+fn build_function_groups(filter: Option<&str>) -> Vec<(String, Vec<FunctionView>)> {
     let grouped = registry::by_category();
     let filter_lower = filter.map(|f| f.to_lowercase());
-    let mut html = String::new();
+    let mut result = Vec::new();
 
     for (cat, funcs) in grouped {
-        let views: Vec<_> = funcs.iter()
+        let views: Vec<FunctionView> = funcs
+            .iter()
             .filter(|sig| match &filter_lower {
-                Some(q) if !q.is_empty() =>
-                    sig.name.contains(q.as_str()) || sig.description.to_lowercase().contains(q.as_str()),
+                Some(q) if !q.is_empty() => {
+                    sig.name.contains(q.as_str())
+                        || sig.description.to_lowercase().contains(q.as_str())
+                }
                 _ => true,
             })
+            .map(|sig| {
+                let params = if sig.const_params.is_empty() {
+                    String::new()
+                } else {
+                    let p: Vec<String> = sig
+                        .const_params
+                        .iter()
+                        .map(|(name, req)| {
+                            if *req {
+                                name.to_string()
+                            } else {
+                                format!("[{name}]")
+                            }
+                        })
+                        .collect();
+                    format!("({})", p.join(", "))
+                };
+                let arity = if sig.outputs == 0 {
+                    format!("{}\u{2192}N", sig.wire_inputs)
+                } else {
+                    format!("{}\u{2192}{}", sig.wire_inputs, sig.outputs)
+                };
+                let level = nb_activity::bindings::probe_compile_level(sig.name);
+                let (ls, lc) = match level {
+                    registry::CompileLevel::Phase3 => ("P3", "green"),
+                    registry::CompileLevel::Phase2 => ("P2", "yellow"),
+                    registry::CompileLevel::Phase1 => ("P1", "blue"),
+                };
+                FunctionView {
+                    name: sig.name.to_string(),
+                    params_display: params,
+                    arity_display: arity,
+                    level: ls.to_string(),
+                    level_class: lc.to_string(),
+                    description: sig.description.to_string(),
+                }
+            })
             .collect();
-        if views.is_empty() { continue; }
 
-        html.push_str(&format!(
-            "<h3 style=\"color: var(--blue); margin: 16px 0 8px; font-size: 13px;\">{}</h3>\n\
-             <table><thead><tr><th>Name</th><th>Params</th><th>Arity</th><th>Level</th><th>Description</th></tr></thead><tbody>\n",
-            cat.display_name()
-        ));
-        for sig in views {
-            let params = if sig.const_params.is_empty() { String::new() } else {
-                let p: Vec<String> = sig.const_params.iter()
-                    .map(|(name, req)| if *req { name.to_string() } else { format!("[{name}]") }).collect();
-                format!("({})", p.join(", "))
-            };
-            let arity = if sig.outputs == 0 { format!("{}&#8594;N", sig.wire_inputs) }
-                else { format!("{}&#8594;{}", sig.wire_inputs, sig.outputs) };
-            let level = nb_activity::bindings::probe_compile_level(sig.name);
-            let (ls, lc) = match level {
-                registry::CompileLevel::Phase3 => ("P3", "green"),
-                registry::CompileLevel::Phase2 => ("P2", "yellow"),
-                registry::CompileLevel::Phase1 => ("P1", "blue"),
-            };
-            html.push_str(&format!(
-                "<tr><td style=\"color: var(--accent); font-weight: 600;\">{}</td>\
-                 <td style=\"color: var(--text-dim);\">{}</td><td>{}</td>\
-                 <td><span class=\"badge badge-{}\">{}</span></td>\
-                 <td style=\"color: var(--text-dim);\">{}</td></tr>\n",
-                esc(sig.name), esc(&params), arity, lc, ls, esc(sig.description)
-            ));
+        if !views.is_empty() {
+            result.push((cat.display_name().to_string(), views));
         }
-        html.push_str("</tbody></table>\n");
     }
-    html
+    result
 }
 
-fn render_stdlib_list() -> String {
-    use nb_variates::dsl::{lexer, parser};
+fn build_stdlib_groups() -> Vec<(String, Vec<StdlibModuleView>)> {
     use nb_variates::dsl::ast::Statement;
+    use nb_variates::dsl::{lexer, parser};
 
     let sources = nb_variates::dsl::stdlib_sources();
-    let mut html = String::new();
+    let mut result: Vec<(String, Vec<StdlibModuleView>)> = Vec::new();
 
     for (filename, source) in sources {
-        let category = source.lines()
+        let category = source
+            .lines()
             .find(|l| l.trim().starts_with("// @category:"))
             .and_then(|l| l.trim().strip_prefix("// @category:"))
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|| filename.replace(".gk", ""));
 
-        let tokens = match lexer::lex(source) { Ok(t) => t, Err(_) => continue };
-        let ast = match parser::parse(tokens) { Ok(a) => a, Err(_) => continue };
+        let tokens = match lexer::lex(source) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let ast = match parser::parse(tokens) {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
 
-        let mut has_modules = false;
+        let mut modules = Vec::new();
         for stmt in &ast.statements {
             if let Statement::ModuleDef(mdef) = stmt {
-                if !has_modules {
-                    html.push_str(&format!(
-                        "<h3 style=\"color: var(--blue); margin: 16px 0 8px; font-size: 13px;\">{category}</h3>\n"
-                    ));
-                    has_modules = true;
-                }
-                let params: Vec<String> = mdef.params.iter()
-                    .map(|p| format!("{}: {}", p.name, p.typ)).collect();
-                let outputs: Vec<String> = mdef.outputs.iter()
-                    .map(|o| format!("{}: {}", o.name, o.typ)).collect();
-                let sig = format!("({}) &#8594; ({})", params.join(", "), outputs.join(", "));
-                let name = esc(&mdef.name);
+                let params: Vec<String> = mdef
+                    .params
+                    .iter()
+                    .map(|p| format!("{}: {}", p.name, p.typ))
+                    .collect();
+                let outputs: Vec<String> = mdef
+                    .outputs
+                    .iter()
+                    .map(|o| format!("{}: {}", o.name, o.typ))
+                    .collect();
+                let sig = format!("({}) \u{2192} ({})", params.join(", "), outputs.join(", "));
 
-                html.push_str(&format!(
-                    "<div class=\"card\" style=\"margin-bottom: 8px; padding: 12px;\">\
-                     <div style=\"display: flex; justify-content: space-between; align-items: center;\">\
-                     <div><span style=\"color: var(--accent); font-weight: 600;\">{name}</span>\
-                     <span style=\"color: var(--text-dim); margin-left: 8px;\">{sig}</span></div>\
-                     <button hx-get=\"/api/stdlib/{name}\" hx-target=\"#src-{name}\" hx-swap=\"innerHTML\" \
-                     style=\"background: var(--border);\">source</button></div>\
-                     <div id=\"src-{name}\"></div></div>\n"
-                ));
+                modules.push(StdlibModuleView {
+                    name: mdef.name.clone(),
+                    signature: sig,
+                    description: String::new(),
+                });
             }
         }
+        if !modules.is_empty() {
+            result.push((category, modules));
+        }
     }
-    html
+    result
+}
+
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }

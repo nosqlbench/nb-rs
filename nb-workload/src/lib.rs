@@ -10,6 +10,7 @@
 pub mod model;
 pub mod template;
 pub mod parse;
+pub mod inline;
 pub mod bindpoints;
 pub mod tags;
 pub mod spectest;

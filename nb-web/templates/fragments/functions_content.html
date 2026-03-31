@@ -4,4 +4,9 @@
         <input type="text" name="q" placeholder="Search functions..."
             hx-get="/api/functions" hx-target="#function-table" hx-trigger="keyup changed delay:300ms"
             style="width: 300px;">
+        <span class="htmx-indicator" style="margin-left: 8px; color: var(--text-dim);">searching...</span>
     </div>
+    <div id="function-table">
+        {% include "fragments/function_table.html" %}
+    </div>
+</div>

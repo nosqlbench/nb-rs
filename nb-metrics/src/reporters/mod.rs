@@ -5,6 +5,7 @@
 
 pub mod console;
 pub mod openmetrics;
+pub mod openmetrics_parse;
 pub mod csv;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;

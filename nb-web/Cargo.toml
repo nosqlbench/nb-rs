@@ -16,6 +16,8 @@ tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["fs", "cors", "compression-gzip"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+askama = "0.15"
+askama-derive-axum = "0.1"
 nb-metrics = { path = "../nb-metrics", version = "0.1.1" }
 nb-variates = { path = "../nb-variates", version = "0.1.1" }
 nb-activity = { path = "../nb-activity", version = "0.1.1" }

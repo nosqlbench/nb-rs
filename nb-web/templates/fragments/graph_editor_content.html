@@ -1,0 +1,266 @@
+<style>
+    #graph-container {
+        display: grid;
+        grid-template-columns: 1fr 350px;
+        gap: 0;
+        height: calc(100vh - 120px);
+    }
+    #graph-canvas-wrap {
+        position: relative;
+        background: #1a1a2e;
+        border: 1px solid var(--border);
+        border-radius: 8px 0 0 8px;
+        overflow: hidden;
+    }
+    #graph-canvas-wrap canvas { display: block; }
+    #graph-sidebar {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-left: none;
+        border-radius: 0 8px 8px 0;
+        padding: 12px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+    #graph-sidebar h3 {
+        font-size: 12px;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin: 0;
+    }
+    #gk-source-output {
+        width: 100%;
+        min-height: 120px;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--border);
+        padding: 8px;
+        border-radius: 4px;
+        font-family: var(--mono);
+        font-size: 12px;
+        resize: vertical;
+    }
+    #sample-output {
+        font-size: 12px;
+        color: var(--text-dim);
+        white-space: pre-wrap;
+        max-height: 200px;
+        overflow-y: auto;
+    }
+    #compile-error {
+        font-size: 12px;
+        color: var(--accent);
+        white-space: pre-wrap;
+    }
+    #svg-preview {
+        overflow: auto;
+        max-height: 300px;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--bg);
+    }
+    #svg-preview svg { width: 100%; }
+    .litegraph .lcanvas { background: #1a1a2e !important; }
+</style>
+
+<div id="graph-container">
+    <div id="graph-canvas-wrap">
+        <canvas id="graph-canvas"></canvas>
+    </div>
+    <div id="graph-sidebar">
+        <div>
+            <h3>GK Source</h3>
+            <textarea id="gk-source-output" readonly></textarea>
+        </div>
+        <div id="compile-error"></div>
+        <div>
+            <h3>SVG Preview</h3>
+            <div id="svg-preview">
+                <p style="color: var(--text-dim); padding: 12px;">Add nodes and connect them to see the DAG</p>
+            </div>
+        </div>
+        <div>
+            <h3>Sample Output (cycles 0-4)</h3>
+            <div id="sample-output">Connect nodes to see sample values</div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    // Port type colors
+    const TYPE_COLORS = {
+        "u64":   "#4da6ff",
+        "f64":   "#4ecca3",
+        "bool":  "#f0c040",
+        "str":   "#e94560",
+        "bytes": "#8888a0",
+        "json":  "#cc66ff"
+    };
+
+    // Register type colors with Litegraph
+    for (const [type_name, color] of Object.entries(TYPE_COLORS)) {
+        LiteGraph.registerNodeType;  // ensure LiteGraph is loaded
+    }
+
+    // ─── Special nodes ──────────────────────────────
+
+    // Coordinates node (source)
+    function CoordinatesNode() {
+        this.addOutput("cycle", "u64");
+        this.title = "Coordinates";
+        this.color = "#16213e";
+        this.bgcolor = "#0f3460";
+        this.size = [180, 50];
+    }
+    CoordinatesNode.title = "Coordinates";
+    LiteGraph.registerNodeType("gk/coordinates", CoordinatesNode);
+
+    // Output node (sink)
+    function OutputNode() {
+        this.addInput("value", "u64");
+        this.addProperty("name", "result");
+        this.addWidget("text", "name", "result", function(v) { this.properties.name = v; }.bind(this));
+        this.title = "Output";
+        this.color = "#16213e";
+        this.bgcolor = "#0f3460";
+        this.size = [180, 60];
+    }
+    OutputNode.title = "Output";
+    LiteGraph.registerNodeType("gk/output", OutputNode);
+
+    // ─── Register function nodes from palette ───────
+
+    async function loadPalette() {
+        const resp = await fetch("/api/graph/palette");
+        const palette = await resp.json();
+
+        for (const cat of palette) {
+            for (const func of cat.functions) {
+                registerFunctionNode(cat.category, func);
+            }
+        }
+    }
+
+    function registerFunctionNode(category, func) {
+        const typePath = "gk/" + func.name;
+
+        function FuncNode() {
+            // Wire inputs
+            const inputCount = func.variadic ? Math.max(func.wire_inputs, 2) : func.wire_inputs;
+            for (let i = 0; i < inputCount; i++) {
+                const name = inputCount === 1 ? "input" : "in_" + i;
+                this.addInput(name, "u64");
+            }
+
+            // Const params as widgets
+            for (const param of func.const_params) {
+                this.addProperty(param.name, 0);
+                this.addWidget("number", param.name, 0, function(v) {
+                    this.properties[param.name] = v;
+                    triggerCompile();
+                }.bind(this));
+            }
+
+            // Outputs
+            for (let i = 0; i < func.outputs; i++) {
+                const name = func.outputs === 1 ? "output" : "out_" + i;
+                this.addOutput(name, "u64");
+            }
+
+            // Custom output variable name
+            this.addProperty("output_name", "");
+
+            this.title = func.name;
+            this.desc = func.description;
+            this.size = [180, Math.max(60, 30 + Math.max(inputCount, func.outputs) * 20 + func.const_params.length * 30)];
+        }
+
+        FuncNode.title = func.name;
+        FuncNode.desc = func.description;
+
+        LiteGraph.registerNodeType(typePath, FuncNode);
+    }
+
+    // ─── Graph setup ────────────────────────────────
+
+    const canvas_el = document.getElementById("graph-canvas");
+    const wrap = document.getElementById("graph-canvas-wrap");
+
+    function resizeCanvas() {
+        canvas_el.width = wrap.clientWidth;
+        canvas_el.height = wrap.clientHeight;
+        if (window._graphCanvas) window._graphCanvas.resize();
+    }
+
+    const graph = new LGraph();
+    const graphCanvas = new LGraphCanvas(canvas_el, graph);
+    window._graphCanvas = graphCanvas;
+
+    // Dark theme
+    graphCanvas.background_image = null;
+    graphCanvas.clear_background_color = "#1a1a2e";
+    graphCanvas.render_shadows = false;
+
+    // Add default Coordinates node
+    const coordNode = LiteGraph.createNode("gk/coordinates");
+    coordNode.pos = [100, 200];
+    graph.add(coordNode);
+
+    // Resize on load and window resize
+    resizeCanvas();
+    window.addEventListener("resize", resizeCanvas);
+    // Also resize after a short delay (for initial layout)
+    setTimeout(resizeCanvas, 100);
+
+    // ─── Compile on change ──────────────────────────
+
+    let compileTimer = null;
+    function triggerCompile() {
+        if (compileTimer) clearTimeout(compileTimer);
+        compileTimer = setTimeout(doCompile, 500);
+    }
+
+    async function doCompile() {
+        const graphJSON = JSON.stringify(graph.serialize());
+        try {
+            const resp = await fetch("/api/graph/compile", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: graphJSON
+            });
+            const result = await resp.json();
+
+            document.getElementById("gk-source-output").value = result.gk_source || "";
+            document.getElementById("svg-preview").innerHTML = result.svg || "<p style='color: var(--text-dim); padding: 12px;'>No output</p>";
+            document.getElementById("sample-output").textContent = (result.samples || []).join("\n") || "No samples";
+            document.getElementById("compile-error").textContent = result.error || "";
+        } catch (e) {
+            document.getElementById("compile-error").textContent = "fetch error: " + e;
+        }
+    }
+
+    // Listen for graph changes
+    graph.onConnectionChange = triggerCompile;
+    graph.onNodeAdded = triggerCompile;
+    graph.onNodeRemoved = triggerCompile;
+
+    // Override widget value changes to trigger compile
+    const origProcessChange = LGraphCanvas.prototype.processNodeWidgets;
+    if (origProcessChange) {
+        LGraphCanvas.prototype.processNodeWidgets = function() {
+            const result = origProcessChange.apply(this, arguments);
+            triggerCompile();
+            return result;
+        };
+    }
+
+    // Load palette then start
+    loadPalette().then(() => {
+        graph.start();
+    });
+})();
+</script>

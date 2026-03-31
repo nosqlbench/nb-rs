@@ -1,35 +1,33 @@
 // Copyright 2024-2026 nosqlbench contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! View models for Askama templates.
+//! Askama template structs and view models for the web UI.
 
-use serde::Serialize;
+use askama::Template;
+
+// ─── View Models ────────────────────────────────────────────
 
 /// A function entry for the function browser.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct FunctionView {
     pub name: String,
     pub params_display: String,
     pub arity_display: String,
     pub level: String,
+    pub level_class: String,
     pub description: String,
 }
 
-/// A grouped set of functions under a category.
-pub type FunctionGroup = (String, Vec<FunctionView>);
-
 /// A stdlib module entry for the module browser.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct StdlibModuleView {
     pub name: String,
     pub signature: String,
     pub description: String,
-    pub source: String,
-    pub category: String,
 }
 
 /// An activity status entry for the dashboard.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct ActivityView {
     pub name: String,
     pub status: String,
@@ -40,22 +38,90 @@ pub struct ActivityView {
     pub error_count: u64,
 }
 
-/// Dashboard summary stats.
-#[derive(Debug, Clone, Serialize)]
-pub struct DashboardStats {
+// ─── Full-Page Templates ────────────────────────────────────
+
+/// Dashboard page — extends `base.html`.
+#[derive(Template)]
+#[template(path = "dashboard.html")]
+pub struct DashboardPage {
     pub total_cycles: String,
     pub ops_per_sec: String,
     pub p99_ms: String,
     pub error_count: String,
+    pub activities: Vec<ActivityView>,
 }
 
-impl Default for DashboardStats {
-    fn default() -> Self {
-        Self {
-            total_cycles: "0".into(),
-            ops_per_sec: "—".into(),
-            p99_ms: "—".into(),
-            error_count: "0".into(),
-        }
-    }
+/// Function browser page — extends `base.html`.
+#[derive(Template)]
+#[template(path = "functions.html")]
+pub struct FunctionsPage {
+    pub groups: Vec<(String, Vec<FunctionView>)>,
 }
+
+/// Stdlib browser page — extends `base.html`.
+#[derive(Template)]
+#[template(path = "stdlib.html")]
+pub struct StdlibPage {
+    pub groups: Vec<(String, Vec<StdlibModuleView>)>,
+}
+
+/// DAG viewer page — extends `base.html`.
+#[derive(Template)]
+#[template(path = "dag.html")]
+pub struct DagPage;
+
+// ─── Fragment Templates ─────────────────────────────────────
+
+/// Activities table fragment (htmx partial).
+#[derive(Template)]
+#[template(path = "fragments/activities_table.html")]
+pub struct ActivitiesFragment {
+    pub activities: Vec<ActivityView>,
+}
+
+/// Function table fragment (htmx partial).
+#[derive(Template)]
+#[template(path = "fragments/function_table.html")]
+pub struct FunctionTableFragment {
+    pub groups: Vec<(String, Vec<FunctionView>)>,
+}
+
+/// Dashboard content fragment (htmx navigation).
+#[derive(Template)]
+#[template(path = "fragments/dashboard_content.html")]
+pub struct DashboardContentFragment {
+    pub total_cycles: String,
+    pub ops_per_sec: String,
+    pub p99_ms: String,
+    pub error_count: String,
+    pub activities: Vec<ActivityView>,
+}
+
+/// Functions content fragment (htmx navigation).
+#[derive(Template)]
+#[template(path = "fragments/functions_content.html")]
+pub struct FunctionsContentFragment {
+    pub groups: Vec<(String, Vec<FunctionView>)>,
+}
+
+/// Stdlib content fragment (htmx navigation).
+#[derive(Template)]
+#[template(path = "fragments/stdlib_content.html")]
+pub struct StdlibContentFragment {
+    pub groups: Vec<(String, Vec<StdlibModuleView>)>,
+}
+
+/// DAG viewer content fragment (htmx navigation).
+#[derive(Template)]
+#[template(path = "fragments/dag_content.html")]
+pub struct DagContentFragment;
+
+/// Graph editor page — extends `base.html`.
+#[derive(Template)]
+#[template(path = "graph_editor.html")]
+pub struct GraphEditorPage;
+
+/// Graph editor content fragment (htmx navigation).
+#[derive(Template)]
+#[template(path = "fragments/graph_editor_content.html")]
+pub struct GraphEditorContentFragment;

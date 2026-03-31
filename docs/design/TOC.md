@@ -116,6 +116,7 @@ are consistently tagged without per-instrument configuration.
 | 17 | [workload_spec_assay](17_workload_spec_assay.md) | Analysis of nosqlbench YAML workload specification format |
 | 22 | [op_sequencing](22_op_sequencing.md) | Stanza-based op sequencing: bucket, interval, concat strategies |
 | 23 | [op_synthesis_diagnostics](23_op_synthesis_diagnostics.md) | Op assembly pipeline, dry-run mode, and diagnostic tooling |
+| 35 | [inline_workload](35_inline_workload.md) | Inline `op=` workload synthesis from command line without YAML |
 
 Defines how YAML workload files are parsed, normalized, and
 translated into runtime operations. SRD 22 defines stanza-based
@@ -124,6 +125,9 @@ pattern, and the executor repeats it. Three strategies (bucket,
 interval, concat) control op ordering within a stanza. SRD 23
 covers the op synthesis pipeline: GK evaluation → bind point
 substitution → assembled op, plus dry-run and diagnostic modes.
+SRD 35 adds inline workload synthesis — `op=` on the command
+line synthesizes a `Workload` struct without a YAML file, with
+`{{expr}}` inline bindings compiled to GK outputs.
 
 ## Execution Engine
 

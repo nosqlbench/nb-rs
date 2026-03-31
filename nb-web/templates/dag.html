@@ -3,46 +3,5 @@
 {% block nav_dag %}class="active"{% endblock %}
 
 {% block content %}
-<div class="grid grid-2">
-    <div class="card">
-        <h2>GK Source</h2>
-        <textarea id="gk-source" name="source" rows="20"
-            style="width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
-                   padding: 12px; border-radius: 4px; font-family: var(--mono); font-size: 13px; resize: vertical;"
-            hx-post="/api/dag/render" hx-target="#dag-output" hx-trigger="keyup changed delay:500ms"
-            hx-include="[name='format']"
->// Paste GK source here, or try an example:
-//
-// (device, reading) := mixed_radix(cycle, 100, 0)
-// device_h := hash(device)
-// device_id := mod(device_h, 100000)
-// combined := interleave(device_h, reading)
-// h0 := hash(combined)
-// q_temp := unit_interval(h0)
-// temperature := icd_normal(q_temp, 22.0, 3.0)
-// timestamp := add(reading, 1710000000000)</textarea>
-        <div style="margin-top: 8px; display: flex; gap: 8px; align-items: center;">
-            <label style="color: var(--text-dim); font-size: 12px;">Format:</label>
-            <select name="format"
-                style="background: var(--bg); color: var(--text); border: 1px solid var(--border);
-                       padding: 4px 8px; border-radius: 4px; font-family: var(--mono); font-size: 12px;">
-                <option value="svg" selected>SVG</option>
-                <option value="mermaid">Mermaid</option>
-                <option value="dot">DOT</option>
-            </select>
-            <button hx-post="/api/dag/render" hx-target="#dag-output" hx-include="#gk-source, [name='format']"
-                style="background: var(--accent); color: white; border: none; padding: 6px 16px;
-                       border-radius: 4px; cursor: pointer; font-family: var(--mono); font-size: 12px;">
-                Render
-            </button>
-            <span class="htmx-indicator" style="color: var(--text-dim); font-size: 12px;">rendering...</span>
-        </div>
-    </div>
-    <div class="card">
-        <h2>DAG Output</h2>
-        <div id="dag-output" style="overflow: auto; min-height: 400px;">
-            <p style="color: var(--text-dim);">Enter GK source and click Render</p>
-        </div>
-    </div>
-</div>
+{% include "fragments/dag_content.html" %}
 {% endblock %}

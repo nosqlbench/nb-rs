@@ -4,7 +4,7 @@
 //! nbrs — the nb-rs command-line tool.
 //!
 //! Usage:
-//!   nbrs run driver=stdout workload=file.yaml cycles=100 threads=4
+//!   nbrs run adapter=stdout workload=file.yaml cycles=100 threads=4
 //!   nbrs run workload=file.yaml tags=block:main rate=1000
 //!   nbrs file.yaml scenario_name [param=value ...]
 
@@ -23,6 +23,9 @@ use nb_variates::dsl::registry;
 use nb_workload::parse::parse_workload;
 use nb_workload::tags::TagFilter;
 
+mod web_push;
+mod daemon;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -39,6 +42,44 @@ fn main() {
 
     // Handle web command
     if args.first().map(|s| s.as_str()) == Some("web") {
+        // Handle --stop: kill a running daemon
+        if args.iter().any(|a| a == "--stop") {
+            match daemon::stop_daemon() {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+
+        // Handle --restart: stop the old daemon, re-launch with its saved args
+        if args.iter().any(|a| a == "--restart") {
+            let anchor = daemon::read_anchor().unwrap_or_else(|| {
+                eprintln!("error: no running daemon found (no anchor file)");
+                std::process::exit(1);
+            });
+            if anchor.args.is_empty() {
+                eprintln!("error: anchor file has no saved args (started with older binary?)");
+                std::process::exit(1);
+            }
+            // Stop the old daemon (ignore errors — it may already be dead).
+            let _ = daemon::stop_daemon();
+            // Re-exec ourselves with the saved args.
+            let exe = std::env::current_exe().unwrap_or_else(|_| "nbrs".into());
+            eprintln!("nbrs web: restarting with: {} {}", exe.display(),
+                anchor.args.join(" "));
+            let status = std::process::Command::new(&exe)
+                .args(&anchor.args)
+                .status()
+                .unwrap_or_else(|e| {
+                    eprintln!("error: failed to restart: {e}");
+                    std::process::exit(1);
+                });
+            std::process::exit(status.code().unwrap_or(1));
+        }
+
         let bind = args.iter()
             .find_map(|a| a.strip_prefix("bind=").or_else(|| a.strip_prefix("--bind=")))
             .unwrap_or("0.0.0.0");
@@ -48,12 +89,36 @@ fn main() {
             .unwrap_or(8080);
         let addr: std::net::SocketAddr = format!("{bind}:{port}").parse()
             .unwrap_or_else(|e| { eprintln!("error: invalid bind address '{bind}:{port}': {e}"); std::process::exit(1); });
+
+        // Handle --daemon: fork to background
+        if args.iter().any(|a| a == "--daemon") {
+            eprintln!("nbrs web: daemonizing on {addr}...");
+            daemon::daemonize().unwrap_or_else(|e| {
+                eprintln!("error: failed to daemonize: {e}");
+                std::process::exit(1);
+            });
+            // After daemonize(), stdout/stderr are /dev/null.
+            // The PID file has been written.
+        }
+
+        // Write anchor file so `nbrs run` in this directory auto-discovers us.
+        // Save the full "web ..." args (excluding --restart) for --restart.
+        let saved_args: Vec<String> = std::env::args().skip(1)
+            .filter(|a| a != "--restart")
+            .collect();
+        daemon::write_anchor(&addr, &saved_args);
+
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            if let Err(e) = nb_web::server::serve_on(addr).await {
+            let broadcast = nb_web::ws::MetricsBroadcast::new(16);
+            if let Err(e) = nb_web::server::serve_with(addr, broadcast).await {
                 eprintln!("error: web server failed: {e}");
             }
         });
+
+        // Clean up on exit.
+        let _ = std::fs::remove_file(daemon::pid_file_path());
+        daemon::remove_anchor();
         return;
     }
 
@@ -67,16 +132,21 @@ fn print_usage() {
     eprintln!("nbrs — nosqlbench for Rust");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  nbrs run driver=stdout workload=file.yaml cycles=100 threads=4");
+    eprintln!("  nbrs run adapter=stdout workload=file.yaml cycles=100 threads=4");
     eprintln!("  nbrs run workload=file.yaml tags=block:main rate=1000 format=json");
+    eprintln!("  nbrs run op='hello {{{{cycle}}}}' cycles=10");
+    eprintln!("  nbrs run op='id={{{{mod(hash(cycle), 1000)}}}}' cycles=100 format=json");
     eprintln!("  nbrs describe gk functions    List all GK node functions");
     eprintln!("  nbrs describe gk stdlib       List standard library modules");
     eprintln!("  nbrs describe gk dag <file>   Render a .gk file as DOT/Mermaid/SVG");
     eprintln!("  nbrs web [bind=0.0.0.0] [port=8080]  Start the web dashboard");
+    eprintln!("  nbrs web --daemon             Start web dashboard in the background");
+    eprintln!("  nbrs web --stop               Stop a running background web dashboard");
+    eprintln!("  nbrs web --restart            Restart with the same arguments");
     eprintln!();
     eprintln!("Parameters:");
     eprintln!("  workload=<file.yaml>   Workload definition file");
-    eprintln!("  driver=<name>          Adapter type (default: stdout)");
+    eprintln!("  adapter=<name>         Adapter type (default: stdout)");
     eprintln!("  cycles=<n>             Number of cycles to execute");
     eprintln!("  threads=<n>            Concurrency level (default: 1)");
     eprintln!("  rate=<n>               Per-cycle rate limit (ops/sec)");
@@ -86,6 +156,8 @@ fn print_usage() {
     eprintln!("  format=<type>          Output format: assignments|json|csv|stmt");
     eprintln!("  errors=<spec>          Error handler spec");
     eprintln!("  filename=<path>        Output file (default: stdout)");
+    eprintln!("  --report-openmetrics-to=<url>  Push metrics in OpenMetrics format");
+    eprintln!("                         e.g. http://localhost:8080/api/v1/import/prometheus");
 }
 
 fn describe_command(args: &[String]) {
@@ -549,41 +621,59 @@ async fn run_command(args: &[String]) {
 
     let params = parse_params(args);
 
-    // Load workload
-    let workload_path = params.get("workload")
-        .or_else(|| {
-            // Look for a .yaml file in the args
-            args.iter().find(|a| a.ends_with(".yaml") || a.ends_with(".yml"))
-        });
-
-    let workload_path = match workload_path {
-        Some(p) => p.clone(),
-        None => {
-            eprintln!("error: no workload file specified");
-            eprintln!("  use: nbrs run workload=file.yaml ...");
-            std::process::exit(1);
+    // Load workload — from inline op= or YAML file.
+    let mut workload_file: Option<String> = None;
+    let workload = if let Some(op_str) = params.get("op") {
+        if params.contains_key("workload") {
+            eprintln!("nbrs: warning: op= overrides workload=");
         }
-    };
-
-    let yaml_source = match std::fs::read_to_string(&workload_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: failed to read workload file '{}': {}", workload_path, e);
-            std::process::exit(1);
+        match nb_workload::inline::synthesize_inline_workload(op_str) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("error: failed to synthesize inline workload: {e}");
+                std::process::exit(1);
+            }
         }
-    };
+    } else {
+        let workload_path = params.get("workload")
+            .or_else(|| {
+                // Look for a .yaml file in the args
+                args.iter().find(|a| a.ends_with(".yaml") || a.ends_with(".yml"))
+            });
 
-    // Parse workload with user-provided template params
-    let workload = match parse_workload(&yaml_source, &params) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("error: failed to parse workload: {e}");
-            std::process::exit(1);
+        let workload_path = match workload_path {
+            Some(p) => p.clone(),
+            None => {
+                eprintln!("error: no workload specified");
+                eprintln!("  use: nbrs run workload=file.yaml ...");
+                eprintln!("   or: nbrs run op='hello {{{{cycle}}}}' cycles=10");
+                std::process::exit(1);
+            }
+        };
+
+        workload_file = Some(workload_path.clone());
+
+        let yaml_source = match std::fs::read_to_string(&workload_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: failed to read workload file '{}': {}", workload_path, e);
+                std::process::exit(1);
+            }
+        };
+
+        match parse_workload(&yaml_source, &params) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("error: failed to parse workload: {e}");
+                std::process::exit(1);
+            }
         }
     };
 
     // Extract activity parameters
-    let driver = params.get("driver").map(|s| s.as_str()).unwrap_or("stdout");
+    let driver = params.get("adapter")
+        .map(|s| s.as_str())
+        .unwrap_or("stdout");
     let cycles: u64 = params.get("cycles").and_then(|s| parse_count(s)).unwrap_or(1);
     let threads: usize = params.get("threads").and_then(|s| s.parse().ok()).unwrap_or(1);
     let cycle_rate: Option<f64> = params.get("rate").and_then(|s| s.parse().ok());
@@ -619,7 +709,7 @@ async fn run_command(args: &[String]) {
         std::process::exit(1);
     }
 
-    eprintln!("nbrs: {} ops selected, {} cycles, {} threads, driver={}",
+    eprintln!("nbrs: {} ops selected, {} cycles, {} threads, adapter={}",
         ops.len(), cycles, threads, driver);
 
     // Check for --strict and --dry-run flags
@@ -637,7 +727,9 @@ async fn run_command(args: &[String]) {
         .collect();
 
     // Compile bindings into GK kernel, with module resolution from the workload directory
-    let workload_dir = std::path::Path::new(&workload_path).parent();
+    let workload_dir: Option<&std::path::Path> = workload_file.as_ref()
+        .and_then(|p| std::path::Path::new(p).parent())
+        .or_else(|| Some(std::path::Path::new(".")));
     let kernel = match compile_bindings_with_libs(&ops, workload_dir, gk_lib_paths, strict) {
         Ok(k) => k,
         Err(e) => {
@@ -708,6 +800,37 @@ async fn run_command(args: &[String]) {
     } else {
         None
     };
+
+    // Determine the openmetrics push URL: explicit flag, or auto-discover
+    // from a running `nbrs web` instance in this directory.
+    let explicit_url: Option<String> = args.iter()
+        .find_map(|a| a.strip_prefix("--report-openmetrics-to=")
+            .or_else(|| a.strip_prefix("report-openmetrics-to=")))
+        .map(|s| s.to_string());
+    let push_url = explicit_url.or_else(|| {
+        let url = daemon::discover_web_instance()?;
+        eprintln!("nbrs: discovered local web instance, auto-pushing metrics");
+        Some(url)
+    });
+
+    // If we have a push URL, spawn a metrics push thread.
+    let openmetrics_push_flag = push_url.map(|url| {
+        let mut reporter = web_push::OpenMetricsPushReporter::new(&url);
+        let capture_metrics = shared_metrics.clone();
+        let capture_interval = std::time::Duration::from_secs(1);
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let flag = running.clone();
+        eprintln!("nbrs: pushing openmetrics to {url}");
+        std::thread::spawn(move || {
+            use nb_metrics::scheduler::Reporter;
+            while flag.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(capture_interval);
+                let frame = capture_metrics.capture(capture_interval);
+                reporter.report(&frame);
+            }
+        });
+        running
+    });
 
     // Handle --dry-run: override adapter with a no-op or printing adapter
     if let Some(dry_mode) = dry_run {
@@ -809,6 +932,11 @@ async fn run_command(args: &[String]) {
     };
 
     } // end of else block for dry-run check
+
+    // Stop the openmetrics push thread if running.
+    if let Some(running) = openmetrics_push_flag {
+        running.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
 
     if let Some((tui_thread, capture_running)) = tui_handle {
         // Stop the capture thread
