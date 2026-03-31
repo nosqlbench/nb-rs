@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "nb-activity"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nb-errorhandler",
  "nb-metrics",
@@ -1514,7 +1514,7 @@ dependencies = [
 
 [[package]]
 name = "nb-errorhandler"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "log",
  "regex",
@@ -1522,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "nb-metrics"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "hdrhistogram",
@@ -1532,14 +1532,14 @@ dependencies = [
 
 [[package]]
 name = "nb-rate"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
 name = "nb-rs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nb-activity",
  "nb-errorhandler",
@@ -1554,7 +1554,7 @@ dependencies = [
 
 [[package]]
 name = "nb-tui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossterm",
  "hdrhistogram",
@@ -1566,7 +1566,7 @@ dependencies = [
 
 [[package]]
 name = "nb-variates"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "cranelift-codegen",
@@ -1588,7 +1588,7 @@ dependencies = [
 
 [[package]]
 name = "nb-workload"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "regex",
  "serde",

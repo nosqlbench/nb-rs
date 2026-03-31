@@ -1,6 +1,6 @@
 [package]
 name = "nb-tui"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Terminal UI for nb-rs: live metrics dashboard, progress, op throughput"
 
