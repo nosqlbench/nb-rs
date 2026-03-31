@@ -1,0 +1,25 @@
+// Copyright 2024-2026 nosqlbench contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// @category: Interpolation
+// waves.gk — Periodic wave patterns
+//
+// Modules for generating periodic signals from a monotonic input.
+// Useful for modeling cyclic workload intensity, phased test stages,
+// and any pattern that repeats over a fixed period.
+
+// Sawtooth wave: ramps from 0.0 to ~1.0 over `period` cycles, then
+// resets to 0.0 and repeats.
+//
+// Example:
+//   intensity := sawtooth(input: cycle, period: 1000)
+//   // ramps 0→1 over 1000 cycles, then resets
+//
+// Use for: gradual load ramps in test phases, progress indicators,
+// any linearly increasing value that resets periodically. Compose
+// with lerp to scale to an arbitrary range:
+//   load := lerp(sawtooth(input: cycle, period: 1000), 100.0, 10000.0)
+//   // ramps from 100 to 10000 ops/sec over 1000 cycles
+sawtooth(input: u64, period: u64) -> (value: f64) := {
+    value := scale_range(mod(input, period), 0.0, 1.0)
+}

@@ -1,0 +1,48 @@
+// Copyright 2024-2026 nosqlbench contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// @category: Datetime
+// timeseries.gk — Time series generation patterns
+//
+// Modules for generating timestamps and time-partitioned data.
+// Use with epoch_offset or to_timestamp for human-readable output.
+
+// Monotonically increasing timestamp.
+//
+// Each input value produces a timestamp at base_epoch + input * interval_ms.
+// Timestamps are evenly spaced and strictly monotonic. Commonly used
+// with the reading index from a mixed_radix decomposition.
+//
+// Example:
+//   (device, reading) := mixed_radix(cycle, 10000, 0)
+//   ts := monotonic_ts(input: reading, base_epoch: 1710000000000, interval_ms: 1000)
+//   // device 0, reading 0 → 1710000000000 (March 2024)
+//   // device 0, reading 1 → 1710000001000 (1 second later)
+//
+// Use for: time series databases, event logs, sensor telemetry —
+// any workload where timestamps must be strictly ordered and evenly
+// spaced within each entity's timeline.
+monotonic_ts(input: u64, base_epoch: u64, interval_ms: u64) -> (ts: u64) := {
+    ts := add(base_epoch, mul(input, interval_ms))
+}
+
+// Monotonic timestamp with per-point deterministic jitter.
+//
+// Like monotonic_ts but adds a random offset in [0, jitter_ms) to
+// each timestamp. The jitter is deterministic — same input always
+// produces the same jitter. This models realistic measurement
+// arrival times where readings don't land at exact intervals.
+//
+// Example:
+//   ts := jittered_ts(input: reading, base_epoch: 1710000000000,
+//                     interval_ms: 1000, jitter_ms: 200)
+//   // timestamps are ~1000ms apart ± up to 200ms jitter
+//
+// Use for: more realistic time series data where exact periodicity
+// is unrealistic. The jitter prevents artificial patterns in
+// downstream analysis.
+jittered_ts(input: u64, base_epoch: u64, interval_ms: u64, jitter_ms: u64) -> (ts: u64) := {
+    base := add(base_epoch, mul(input, interval_ms))
+    noise := mod(hash(input), jitter_ms)
+    ts := add(base, noise)
+}

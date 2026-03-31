@@ -44,14 +44,14 @@ use std::collections::HashSet;
 /// each top-level binding is a separate module, resolved by name.
 /// Searched as the final fallback after workload-local and --gk-lib paths.
 static STDLIB_MODULES: &[(&str, &str)] = &[
-    ("hashing.gk", include_str!("../../../nb-rs/stdlib/hashing.gk")),
-    ("strings.gk", include_str!("../../../nb-rs/stdlib/strings.gk")),
-    ("identity.gk", include_str!("../../../nb-rs/stdlib/identity.gk")),
-    ("distributions.gk", include_str!("../../../nb-rs/stdlib/distributions.gk")),
-    ("latency.gk", include_str!("../../../nb-rs/stdlib/latency.gk")),
-    ("timeseries.gk", include_str!("../../../nb-rs/stdlib/timeseries.gk")),
-    ("waves.gk", include_str!("../../../nb-rs/stdlib/waves.gk")),
-    ("modeling.gk", include_str!("../../../nb-rs/stdlib/modeling.gk")),
+    ("hashing.gk", include_str!("../../stdlib/hashing.gk")),
+    ("strings.gk", include_str!("../../stdlib/strings.gk")),
+    ("identity.gk", include_str!("../../stdlib/identity.gk")),
+    ("distributions.gk", include_str!("../../stdlib/distributions.gk")),
+    ("latency.gk", include_str!("../../stdlib/latency.gk")),
+    ("timeseries.gk", include_str!("../../stdlib/timeseries.gk")),
+    ("waves.gk", include_str!("../../stdlib/waves.gk")),
+    ("modeling.gk", include_str!("../../stdlib/modeling.gk")),
 ];
 
 /// Return the embedded standard library module sources.
