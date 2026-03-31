@@ -162,7 +162,7 @@ mod tests {
         let mut kernel = make_kernel();
         kernel.set_coordinates(&[42]);
 
-        let mut template = ParsedOp::simple("test", "SELECT * FROM t WHERE id={user_id}");
+        let template = ParsedOp::simple("test", "SELECT * FROM t WHERE id={user_id}");
         let assembled = assemble_op(&template, &mut kernel);
 
         assert_eq!(assembled.name, "test");

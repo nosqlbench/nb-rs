@@ -1652,7 +1652,7 @@ mod tests {
     #[test]
     fn error_unknown_function() {
         let src = "coordinates := (cycle)\nresult := foobar(cycle)";
-        let (result, report) = compile_gk_checked(src);
+        let (_result, report) = compile_gk_checked(src);
         assert!(report.has_errors());
         let errors = report.errors();
         assert!(errors.iter().any(|e| e.message.contains("unknown function")));
@@ -1741,7 +1741,7 @@ mod tests {
             h := hash(cycle)
             result := mod(h, 1000)
         "#;
-        let (result, report) = compile_gk_checked(src);
+        let (_result, report) = compile_gk_checked(src);
         assert!(!report.has_errors());
         assert!(result.is_ok());
     }

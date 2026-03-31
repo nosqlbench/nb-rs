@@ -109,7 +109,6 @@ pub fn builtin_handler(name: &str) -> Option<Box<dyn ErrorHandler>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detail::Retry;
 
     #[test]
     fn retry_handler_sets_retryable() {

@@ -112,8 +112,6 @@ impl Reporter for ConsoleReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::labels::Labels;
-    use std::time::{Duration, Instant};
 
     #[test]
     fn format_nanos_ranges() {

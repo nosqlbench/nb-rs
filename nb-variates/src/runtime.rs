@@ -145,7 +145,7 @@ impl Default for GkRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsl::registry;
+    
 
     #[test]
     fn default_runtime_has_builtins() {

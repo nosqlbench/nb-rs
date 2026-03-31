@@ -7,10 +7,8 @@
 //! `nb-rs run workload.yaml driver=stdout`.
 
 use std::sync::Arc;
-use std::collections::HashMap;
 
 use nb_activity::activity::{Activity, ActivityConfig};
-use nb_activity::adapter::AssembledOp;
 use nb_activity::adapters::stdout::{StdoutAdapter, StdoutConfig, StdoutFormat};
 use nb_activity::opseq::{OpSequence, SequencerType};
 use nb_activity::synthesis::OpBuilder;
@@ -19,7 +17,6 @@ use nb_variates::assembly::{GkAssembler, WireRef};
 use nb_variates::nodes::hash::Hash64;
 use nb_variates::nodes::arithmetic::ModU64;
 use nb_variates::nodes::identity::Identity;
-use nb_variates::nodes::convert::U64ToString;
 use nb_workload::parse::parse_ops;
 
 /// Parse a workload YAML, build a GK kernel from bindings that

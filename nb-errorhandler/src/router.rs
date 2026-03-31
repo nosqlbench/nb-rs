@@ -149,7 +149,7 @@ impl ErrorRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detail::Retry;
+    
 
     #[test]
     fn parse_simple() {

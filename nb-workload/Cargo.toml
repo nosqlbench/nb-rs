@@ -2,7 +2,13 @@
 name = "nb-workload"
 version = "0.1.1"
 edition = "2024"
+license = "Apache-2.0"
 description = "Uniform workload specification parsing and processing for nb-rs"
+keywords = ["nosqlbench", "workload", "benchmark", "data-generation"]
+categories = ["command-line-utilities", "simulation"]
+repository = "https://github.com/nosqlbench/nb-rs"
+homepage = "https://github.com/nosqlbench/nb-rs"
+readme = "README.md"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

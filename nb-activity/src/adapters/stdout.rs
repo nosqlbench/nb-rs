@@ -183,7 +183,6 @@ impl Adapter for StdoutAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn test_op(fields: &[(&str, &str)]) -> AssembledOp {
         AssembledOp {

@@ -280,7 +280,7 @@ mod tests {
         }
 
         // Wait time should be measurable (we consumed faster than refill)
-        let wt = limiter.wait_time_nanos();
+        let _wt = limiter.wait_time_nanos();
         // This is the accumulated backlog — may or may not be large
         // depending on timing. Just verify the API works.
         assert!(limiter.total_blocks() == 50);

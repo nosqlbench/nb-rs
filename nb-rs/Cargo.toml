@@ -2,18 +2,25 @@
 name = "nb-rs"
 version = "0.1.1"
 edition = "2024"
+license = "Apache-2.0"
+description = "Rust rewrite of nosqlbench: a pluggable workload generation and benchmarking engine"
+keywords = ["nosqlbench", "workload", "benchmark", "data-generation"]
+categories = ["command-line-utilities", "simulation"]
+repository = "https://github.com/nosqlbench/nb-rs"
+homepage = "https://github.com/nosqlbench/nb-rs"
+readme = "README.md"
 
 [[bin]]
 name = "nbrs"
 path = "src/main.rs"
 
 [dependencies]
-nb-variates = { path = "../nb-variates" }
-nb-metrics = { path = "../nb-metrics" }
-nb-workload = { path = "../nb-workload" }
-nb-rate = { path = "../nb-rate" }
-nb-errorhandler = { path = "../nb-errorhandler" }
-nb-activity = { path = "../nb-activity" }
+nb-variates = { path = "../nb-variates", version = "0.1.1" }
+nb-metrics = { path = "../nb-metrics", version = "0.1.1" }
+nb-workload = { path = "../nb-workload", version = "0.1.1" }
+nb-rate = { path = "../nb-rate", version = "0.1.1" }
+nb-errorhandler = { path = "../nb-errorhandler", version = "0.1.1" }
+nb-activity = { path = "../nb-activity", version = "0.1.1" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
-nb-tui = { path = "../nb-tui" }
+nb-tui = { path = "../nb-tui", version = "0.1.1" }
