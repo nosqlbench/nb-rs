@@ -31,7 +31,15 @@ pub const DEFAULT_RESOLUTION: usize = 1000;
 
 /// Normalize a u64 to a uniform f64 in [0.0, 1.0).
 ///
-/// Signature: `(input: u64) -> (f64)`
+/// Signature: `unit_interval(input: u64) -> (f64)`
+///
+/// The bridge between the integer hash domain and the continuous
+/// probability domain. Place after `hash` and before any node that
+/// expects a [0,1) input: distribution LUT samplers, `lerp`, or
+/// `inv_lerp`. The mapping is `input as f64 / u64::MAX as f64`, so
+/// 0 maps to 0.0 and u64::MAX maps to ~1.0.
+///
+/// JIT level: P2 (compiled_u64 closure; single division).
 pub struct UnitInterval {
     meta: NodeMeta,
 }
@@ -71,7 +79,15 @@ impl GkNode for UnitInterval {
 
 /// Clamp an f64 value to [min, max].
 ///
-/// Signature: `(input: f64) -> (f64)`
+/// Signature: `clamp_f64(input: f64, min: f64, max: f64) -> (f64)`
+///
+/// Hard-limits an f64 to the given bounds. Use after distributions
+/// with unbounded tails (normal, Cauchy) to enforce domain
+/// constraints: `clamp_f64(normal(72.0, 5.0), 0.0, 100.0)` prevents
+/// negative scores. Also useful for guarding against non-finite LUT
+/// edge values before downstream arithmetic.
+///
+/// JIT level: P3 (compiled_u64 with jit_constants for min and max).
 pub struct ClampF64 {
     meta: NodeMeta,
     min: f64,
@@ -119,10 +135,21 @@ impl GkNode for ClampF64 {
 
 /// A distribution-sampling GK node backed by a LUT.
 ///
-/// This is a convenience wrapper — it builds the LUT at construction
+/// Signature: `icd_sample(input: f64) -> (f64)`
+///
+/// This is a convenience wrapper -- it builds the LUT at construction
 /// time and delegates to `LutSample` for evaluation. It exists so
 /// callers can write `IcdSample::normal(72.0, 5.0)` without manually
 /// constructing and wiring a LUT.
+///
+/// Use for any statistical distribution sampling where the input is a
+/// uniform [0,1) value (typically from `unit_interval`) and the output
+/// is a distribution-shaped f64. Supports Normal, Exponential, Uniform,
+/// Pareto, LogNormal, Weibull, Cauchy, Laplace, Beta, Gamma, Zipf,
+/// Poisson, Binomial, and Geometric via named constructors.
+///
+/// JIT level: P2 (delegates to LutSample compiled_u64; O(1) table
+/// lookup with linear interpolation).
 pub struct IcdSample {
     inner: LutSample,
 }

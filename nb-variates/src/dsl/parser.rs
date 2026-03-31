@@ -81,12 +81,84 @@ fn parse_statement(p: &mut Parser) -> Result<Statement, String> {
         TokenKind::Coordinates => parse_coordinates(p),
         TokenKind::Init => parse_init_binding(p),
         TokenKind::LParen => parse_destructuring_binding(p),
-        TokenKind::Ident(_) => parse_cycle_binding(p),
+        TokenKind::Ident(_) => {
+            // Lookahead to distinguish:
+            //   name := expr              → cycle binding
+            //   name(p: type) -> ... := { → module def
+            if is_module_def(p) {
+                parse_module_def(p)
+            } else {
+                parse_cycle_binding(p)
+            }
+        }
         _ => Err(format!(
             "unexpected token {:?} at line {}, col {}",
             p.peek(), p.span().line, p.span().col
         )),
     }
+}
+
+/// Lookahead: is this a module def? Pattern: ident ( ident : ident ...
+fn is_module_def(p: &Parser) -> bool {
+    // Need at least: ident ( ident : type
+    if p.pos + 4 >= p.tokens.len() { return false; }
+    matches!(&p.tokens[p.pos].kind, TokenKind::Ident(_))
+        && matches!(&p.tokens[p.pos + 1].kind, TokenKind::LParen)
+        && matches!(&p.tokens[p.pos + 2].kind, TokenKind::Ident(_))
+        && matches!(&p.tokens[p.pos + 3].kind, TokenKind::Colon)
+}
+
+/// `name(param: type, ...) -> (output: type, ...) := { body }`
+fn parse_module_def(p: &mut Parser) -> Result<Statement, String> {
+    let span = p.span();
+    let name = p.expect_ident()?;
+
+    // Parse params: (name: type, ...)
+    p.expect(&TokenKind::LParen)?;
+    let mut params = Vec::new();
+    while !matches!(p.peek(), TokenKind::RParen) {
+        let pname = p.expect_ident()?;
+        p.expect(&TokenKind::Colon)?;
+        let ptype = p.expect_ident()?;
+        params.push(TypedParam { name: pname, typ: ptype });
+        if matches!(p.peek(), TokenKind::Comma) {
+            p.advance();
+        }
+    }
+    p.expect(&TokenKind::RParen)?;
+
+    // Parse -> (output: type, ...)
+    p.expect(&TokenKind::Arrow)?;
+    p.expect(&TokenKind::LParen)?;
+    let mut outputs = Vec::new();
+    while !matches!(p.peek(), TokenKind::RParen) {
+        let oname = p.expect_ident()?;
+        p.expect(&TokenKind::Colon)?;
+        let otype = p.expect_ident()?;
+        outputs.push(TypedParam { name: oname, typ: otype });
+        if matches!(p.peek(), TokenKind::Comma) {
+            p.advance();
+        }
+    }
+    p.expect(&TokenKind::RParen)?;
+
+    // Parse := { body }
+    p.expect(&TokenKind::ColonEq)?;
+    p.expect(&TokenKind::LBrace)?;
+
+    let mut body = Vec::new();
+    while !matches!(p.peek(), TokenKind::RBrace | TokenKind::Eof) {
+        body.push(parse_statement(p)?);
+    }
+    p.expect(&TokenKind::RBrace)?;
+
+    Ok(Statement::ModuleDef(ModuleDef {
+        name,
+        params,
+        outputs,
+        body,
+        span,
+    }))
 }
 
 /// `coordinates := (name1, name2, ...)`

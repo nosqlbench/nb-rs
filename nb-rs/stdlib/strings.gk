@@ -1,0 +1,56 @@
+// Copyright 2024-2026 nosqlbench contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// @category: String
+// strings.gk — String generation patterns
+//
+// Modules for generating deterministic strings of various formats.
+// These compose hash + formatting nodes into common patterns.
+
+// Fixed-length alphanumeric string.
+//
+// Generates a deterministic string of `length` characters drawn from
+// digits and letters (0-9, A-Z, a-z). Different inputs produce
+// different strings. Equivalent to Java's AlphaNumericString.
+//
+// Example:
+//   session_id := alpha_numeric(input: hash(cycle), length: 24)
+//   // → "k7Bm9xPq2nR4aW1cF5dG8hJ"
+//
+// Use for: session IDs, API keys, random-looking tokens, test data
+// that needs to look like real alphanumeric identifiers.
+alpha_numeric(input: u64, length: u64) -> (value: String) := {
+    value := combinations(hash(input), '0-9A-Za-z', length)
+}
+
+// Zero-padded numeric ID string.
+//
+// Hash the input to a bounded integer, then zero-pad to a fixed
+// character width. Always produces strings of exactly `width` chars.
+// Equivalent to Java's Murmur3DivToString pattern.
+//
+// Example:
+//   order_num := padded_id(input: cycle, bound: 1000000, width: 8)
+//   // → "00527897"
+//
+// Use for: order numbers, account codes, any fixed-width numeric
+// identifier. The leading zeros ensure consistent string length
+// for display and database storage.
+padded_id(input: u64, bound: u64, width: u64) -> (value: String) := {
+    value := zero_pad_u64(mod(hash(input), bound), width)
+}
+
+// Hexadecimal ID string.
+//
+// Hash the input to a bounded integer, format as lowercase hex
+// with "0x" prefix.
+//
+// Example:
+//   device_addr := hex_id(input: cycle, bound: 65536)
+//   // → "0xd2a9"
+//
+// Use for: hardware addresses, memory offsets, debug identifiers,
+// any context where hex representation is natural.
+hex_id(input: u64, bound: u64) -> (value: String) := {
+    value := format_u64(mod(hash(input), bound), 16)
+}

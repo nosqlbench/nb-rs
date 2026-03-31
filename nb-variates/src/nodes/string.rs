@@ -12,15 +12,22 @@ use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
 /// Map a u64 to a formatted string via mixed-radix indexing into
 /// character sets.
 ///
-/// Signature: `(input: u64) -> (String)`
+/// Signature: `combinations(input: u64, pattern: &str) -> (String)`
 ///
 /// The pattern is a semicolon-delimited list of character set specs.
 /// Each spec is a character range (`A-Z`), literal characters, or
 /// both. A single literal character (like `-`) is emitted as-is
 /// without consuming a radix digit.
 ///
-/// Example: `Combinations("0-9;0-9;0-9;-;0-9;0-9;0-9;-;0-9;0-9;0-9;0-9")`
-/// produces phone-number-like strings: `"372-841-9205"`.
+/// Use for generating structured identifiers with fixed character
+/// classes per position. Examples: phone numbers
+/// (`"0-9;0-9;0-9;-;0-9;0-9;0-9;-;0-9;0-9;0-9;0-9"` yields
+/// `"372-841-9205"`), license plates (`"A-Z;A-Z;A-Z;-;0-9;0-9;0-9"`),
+/// or hex tokens (`"0-9a-f;0-9a-f;0-9a-f;0-9a-f"`). Input wraps at
+/// `cardinality()`, so every value in the cycle space maps to a valid
+/// string.
+///
+/// JIT level: P1 (String output; no compiled_u64 path).
 pub struct Combinations {
     meta: NodeMeta,
     segments: Vec<Segment>,
@@ -122,9 +129,19 @@ fn parse_charset(spec: &str) -> Vec<char> {
 
 /// Convert a u64 to its English word representation.
 ///
-/// Signature: `(input: u64) -> (String)`
+/// Signature: `number_to_words(input: u64) -> (String)`
 ///
-/// Examples: 0 → "zero", 42 → "forty-two", 1000 → "one thousand"
+/// Examples: 0 produces "zero", 42 produces "forty-two", 1000
+/// produces "one thousand". Supports the full u64 range up through
+/// quintillions.
+///
+/// Use for generating human-readable text fields from numeric keys,
+/// creating natural-language test data, or populating string columns
+/// with deterministic variable-length content. Commonly chained after
+/// `hash_range` to produce bounded vocabulary:
+/// `number_to_words(hash_range(h, 1000))`.
+///
+/// JIT level: P1 (String output; no compiled_u64 path).
 pub struct NumberToWords {
     meta: NodeMeta,
 }

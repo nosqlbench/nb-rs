@@ -1,0 +1,40 @@
+// Copyright 2024-2026 nosqlbench contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// @category: Probability
+// modeling.gk — Service modeling patterns
+//
+// Modules for simulating realistic service behavior with the model
+// adapter. These compose latency distributions with error models.
+//
+// NOTE: Full bimodal and conditional models require native probability
+// nodes (select, unfair_coin) specified in SRD 29/30 but not yet
+// implemented. Current modules use single-mode gaussian fallbacks.
+// Once the probability primitives land, these will be updated to
+// support bimodal latency, path-dependent errors, and retry models.
+
+// Single-mode service latency with gaussian profile.
+//
+// The simplest service model: all requests draw from the same normal
+// distribution. Good enough for cache-dominated services or when you
+// don't need bimodal behavior.
+//
+// Example (in workload YAML):
+//   result: |
+//     user_id := id
+//     lat := service_latency(input: cycle, mean_ms: 3.0, stddev_ms: 0.8)
+//   result-latency: lat
+//
+// For bimodal latency (fast cache hits + slow misses), compose
+// manually once select/unfair_coin are available:
+//   // is_slow := unfair_coin(cycle, 0.1)
+//   // fast := gaussian_latency(input: cycle, mean: 2.0, stddev: 0.5)
+//   // slow := gaussian_latency(input: hash(cycle), mean: 30.0, stddev: 5.0)
+//   // latency := select(is_slow, slow, fast)
+//
+// Use for: quick latency modeling when you need something better than
+// a fixed value but don't need full bimodal simulation.
+service_latency(input: u64, mean_ms: f64, stddev_ms: f64) -> (latency_ms: f64) := {
+    q := unit_interval(hash(input))
+    latency_ms := clamp_f64(icd_normal(q, mean_ms, stddev_ms), 0.1, 999999.0)
+}

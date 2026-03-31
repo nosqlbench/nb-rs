@@ -149,7 +149,7 @@ pub fn build_hybrid(
     // Batch adjacent JIT-able nodes into segments
     let mut i = 0;
     while i < classifications.len() {
-        if matches!(classifications[i].0, JitOp::Fallback(_)) {
+        if matches!(classifications[i].0, JitOp::Fallback) {
             // This node needs a closure
             let node = &nodes[i];
             let (_, ref input_slots, ref output_slots) = classifications[i];
@@ -166,7 +166,7 @@ pub fn build_hybrid(
         } else {
             // Batch consecutive JIT-able nodes
             let batch_start = i;
-            while i < classifications.len() && !matches!(classifications[i].0, JitOp::Fallback(_)) {
+            while i < classifications.len() && !matches!(classifications[i].0, JitOp::Fallback) {
                 i += 1;
             }
             let batch: Vec<(JitOp, Vec<usize>, Vec<usize>)> = classifications[batch_start..i]
@@ -176,7 +176,7 @@ pub fn build_hybrid(
 
             // Compile the batch to native code
             let empty_map = HashMap::new();
-            let jit_kernel = jit::compile_jit(coord_count, total_slots, batch, empty_map)?;
+            let _jit_kernel = jit::compile_jit(coord_count, total_slots, batch, empty_map)?;
             // Extract the function pointer and module from the JitKernel
             // We need to reach into it... let's add a method.
             // Actually, for the hybrid, we need the raw fn pointer and module.

@@ -7,7 +7,15 @@ use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Value};
 
 /// Passthrough: output equals input.
 ///
-/// Signature: `(input: u64) -> (u64)`
+/// Signature: `identity(input: u64) -> (u64)`
+///
+/// Emits the input cycle counter unchanged. Useful as a placeholder
+/// during DAG construction, as a debugging tap, or when the raw
+/// sequential ordinal is the desired value (e.g., auto-incrementing
+/// primary keys). Also serves as the simplest reference node for
+/// testing the GkNode trait.
+///
+/// JIT level: P2 (compiled_u64 is a trivial copy).
 pub struct Identity {
     meta: NodeMeta,
 }
@@ -42,7 +50,14 @@ impl GkNode for Identity {
 
 /// Emit a fixed u64 value (no inputs).
 ///
-/// Signature: `() -> (u64)`
+/// Signature: `const(value: u64) -> (u64)`
+///
+/// Source node that always produces the same u64 regardless of cycle.
+/// Use for injecting literal parameters into a DAG, such as a fixed
+/// partition key, an epoch timestamp base, or an addend for `add`.
+/// Takes no inputs, so it sits at a DAG root.
+///
+/// JIT level: P2 (compiled_u64 emits a captured constant).
 pub struct ConstU64 {
     meta: NodeMeta,
     value: u64,
@@ -80,7 +95,14 @@ impl GkNode for ConstU64 {
 
 /// Emit a fixed string value (no inputs).
 ///
-/// Signature: `() -> (String)`
+/// Signature: `const_str(value: String) -> (String)`
+///
+/// Source node that always produces the same string regardless of cycle.
+/// Use for injecting literal string parameters into a DAG, such as a
+/// fixed table name, a static label, or a separator for string
+/// concatenation pipelines.
+///
+/// JIT level: P1 (String output; no compiled_u64 path).
 pub struct ConstStr {
     meta: NodeMeta,
     value: String,

@@ -237,7 +237,7 @@ pub fn compile_level_of(node: &dyn GkNode) -> CompileLevel {
     #[cfg(feature = "jit")]
     {
         let jit_op = crate::jit::classify_node(node);
-        if !matches!(jit_op, crate::jit::JitOp::Fallback(_)) {
+        if !matches!(jit_op, crate::jit::JitOp::Fallback) {
             return CompileLevel::Phase3;
         }
     }

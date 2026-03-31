@@ -13,7 +13,13 @@ use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Value};
 
 /// Convert u64 to its decimal string representation.
 ///
-/// Signature: `(input: u64) -> (String)`
+/// Signature: `__u64_to_string(input: u64) -> (String)`
+///
+/// Edge adapter auto-inserted by the assembly phase when a u64 port
+/// feeds a String port. Users rarely reference this directly; prefer
+/// `format_u64` or `zero_pad_u64` when explicit formatting is wanted.
+///
+/// JIT level: P1 (String output; no compiled_u64 path).
 pub struct U64ToString {
     meta: NodeMeta,
 }
@@ -42,7 +48,13 @@ impl GkNode for U64ToString {
 
 /// Convert f64 to its string representation.
 ///
-/// Signature: `(input: f64) -> (String)`
+/// Signature: `__f64_to_string(input: f64) -> (String)`
+///
+/// Edge adapter auto-inserted by the assembly phase when an f64 port
+/// feeds a String port. Produces Rust's default f64 Display output.
+/// For controlled decimal precision, use `format_f64` instead.
+///
+/// JIT level: P1 (String output; no compiled_u64 path).
 pub struct F64ToString {
     meta: NodeMeta,
 }
@@ -69,9 +81,17 @@ impl GkNode for F64ToString {
     }
 }
 
-/// Convert u64 to f64 (lossless for values ≤ 2^53).
+/// Convert u64 to f64 (lossless for values <= 2^53).
 ///
-/// Signature: `(input: u64) -> (f64)`
+/// Signature: `__u64_to_f64(input: u64) -> (f64)`
+///
+/// Edge adapter auto-inserted when a u64 port feeds an f64 port.
+/// Lossless for values up to 2^53; larger values lose low-order bits.
+/// In practice this is safe because hashed u64 values uniformly span
+/// the full range, and downstream f64 consumers (lerp, distributions)
+/// only need proportional accuracy, not exact integer identity.
+///
+/// JIT level: P1 (no compiled_u64; output type is f64).
 pub struct U64ToF64 {
     meta: NodeMeta,
 }
@@ -100,7 +120,13 @@ impl GkNode for U64ToF64 {
 
 /// Convert bool to u64 (false=0, true=1).
 ///
-/// Signature: `(input: bool) -> (u64)`
+/// Signature: `__bool_to_u64(input: bool) -> (u64)`
+///
+/// Edge adapter auto-inserted when a bool port feeds a u64 port.
+/// Maps `false` to 0 and `true` to 1. Enables boolean predicate
+/// results to flow into arithmetic or indexing nodes.
+///
+/// JIT level: P1 (no compiled_u64; bool input type).
 pub struct BoolToU64 {
     meta: NodeMeta,
 }
@@ -129,7 +155,14 @@ impl GkNode for BoolToU64 {
 
 /// Convert u64 to bool (0=false, nonzero=true).
 ///
-/// Signature: `(input: u64) -> (bool)`
+/// Signature: `__u64_to_bool(input: u64) -> (bool)`
+///
+/// Edge adapter auto-inserted when a u64 port feeds a bool port.
+/// Zero maps to `false`, any nonzero value maps to `true`. Useful
+/// after modular reduction (e.g., `hash_range(h, 2)`) to produce
+/// a boolean flag.
+///
+/// JIT level: P1 (no compiled_u64; bool output type).
 pub struct U64ToBool {
     meta: NodeMeta,
 }
@@ -160,9 +193,17 @@ impl GkNode for U64ToBool {
 // Explicit conversions (user-placed, deliberate intent)
 // =================================================================
 
-/// Truncate f64 to u64 (floor toward zero). Lossy — requires explicit use.
+/// Truncate f64 to u64 (floor toward zero). Lossy -- requires explicit use.
 ///
-/// Signature: `(input: f64) -> (u64)`
+/// Signature: `f64_to_u64(input: f64) -> (u64)`
+///
+/// Explicit conversion that truncates the fractional part toward zero.
+/// Use after distribution sampling or lerp when you need a discrete
+/// integer result: `f64_to_u64(lerp(t, 0.0, 1000.0))`. For
+/// round-to-nearest, floor, or ceil semantics, use the dedicated
+/// `round_to_u64`, `floor_to_u64`, or `ceil_to_u64` nodes instead.
+///
+/// JIT level: P2 (compiled_u64 via f64::from_bits truncation).
 pub struct F64ToU64 {
     meta: NodeMeta,
 }
@@ -195,7 +236,15 @@ impl GkNode for F64ToU64 {
 
 /// Round f64 to nearest u64.
 ///
-/// Signature: `(input: f64) -> (u64)`
+/// Signature: `round_to_u64(input: f64) -> (u64)`
+///
+/// Rounds to the nearest integer (half-up). Use when the distribution
+/// or interpolation produces continuous values but downstream nodes
+/// need a discrete count or index with minimal rounding bias. Example:
+/// `round_to_u64(normal(100.0, 5.0))` yields an integer score centered
+/// on 100.
+///
+/// JIT level: P2 (compiled_u64 via f64::from_bits + round).
 pub struct RoundToU64 {
     meta: NodeMeta,
 }
@@ -228,7 +277,14 @@ impl GkNode for RoundToU64 {
 
 /// Floor f64 to u64 (round toward negative infinity).
 ///
-/// Signature: `(input: f64) -> (u64)`
+/// Signature: `floor_to_u64(input: f64) -> (u64)`
+///
+/// Always rounds down. Use when a value must never exceed the
+/// continuous input, such as computing a bucket index from a
+/// continuous position: `floor_to_u64(scale_range(h, 0.0, 10.0))`
+/// yields indices [0, 9].
+///
+/// JIT level: P2 (compiled_u64 via f64::from_bits + floor).
 pub struct FloorToU64 {
     meta: NodeMeta,
 }
@@ -261,7 +317,13 @@ impl GkNode for FloorToU64 {
 
 /// Ceiling f64 to u64 (round toward positive infinity).
 ///
-/// Signature: `(input: f64) -> (u64)`
+/// Signature: `ceil_to_u64(input: f64) -> (u64)`
+///
+/// Always rounds up. Use when the discrete result must be at least as
+/// large as the continuous input, for example computing a minimum
+/// allocation size or page count from a byte length.
+///
+/// JIT level: P2 (compiled_u64 via f64::from_bits + ceil).
 pub struct CeilToU64 {
     meta: NodeMeta,
 }
@@ -297,8 +359,15 @@ impl GkNode for CeilToU64 {
 /// Maps [0, range) to bucket indices [0, buckets). Values outside
 /// the range are clamped.
 ///
-/// Signature: `(input: f64) -> (u64)`
-/// Params: `range: f64, buckets: u64`
+/// Signature: `discretize(input: f64, range: f64, buckets: u64) -> (u64)`
+///
+/// Use after a continuous distribution or interpolation to collapse
+/// values into categorical bins. Example: feed a normal distribution
+/// through `discretize(100.0, 10)` to get 10 histogram bins across
+/// [0, 100). Out-of-range inputs are clamped to the first or last
+/// bucket.
+///
+/// JIT level: P3 (compiled_u64 with jit_constants for range and buckets).
 pub struct Discretize {
     meta: NodeMeta,
     range: f64,
@@ -345,8 +414,15 @@ impl GkNode for Discretize {
 
 /// Format a u64 as a string with a specific radix (2, 8, 10, 16).
 ///
-/// Signature: `(input: u64) -> (String)`
-/// Param: `radix: u32`
+/// Signature: `format_u64(input: u64, radix: u32) -> (String)`
+///
+/// Explicit formatting node for producing human-readable or
+/// protocol-specific numeric strings. Includes standard prefixes:
+/// `0x` for hex, `0b` for binary, `0o` for octal; no prefix for
+/// decimal. Use `FormatU64::hex()` for addresses, `::binary()` for
+/// bitmask display, or `::decimal()` for plain numeric strings.
+///
+/// JIT level: P1 (String output; no compiled_u64 path).
 pub struct FormatU64 {
     meta: NodeMeta,
     radix: u32,
@@ -396,8 +472,14 @@ impl GkNode for FormatU64 {
 
 /// Format an f64 with controlled decimal precision.
 ///
-/// Signature: `(input: f64) -> (String)`
-/// Param: `precision: usize`
+/// Signature: `format_f64(input: f64, precision: usize) -> (String)`
+///
+/// Produces a fixed-precision decimal string. Use when downstream
+/// consumers require consistent decimal places, such as monetary
+/// values (`FormatF64::new(2)` for cents) or scientific notation
+/// alignment. Precision 0 rounds to the nearest integer string.
+///
+/// JIT level: P1 (String output; no compiled_u64 path).
 pub struct FormatF64 {
     meta: NodeMeta,
     precision: usize,
@@ -426,8 +508,15 @@ impl GkNode for FormatF64 {
 
 /// Zero-pad a u64 to a fixed width string.
 ///
-/// Signature: `(input: u64) -> (String)`
-/// Param: `width: usize`
+/// Signature: `zero_pad_u64(input: u64, width: usize) -> (String)`
+///
+/// Produces a left-zero-padded decimal string of at least `width`
+/// characters. Does not truncate values wider than `width`. Common
+/// for generating fixed-width identifiers, partition keys, or file
+/// names: `zero_pad_u64(hash_range(h, 10000), 8)` yields
+/// `"00004217"`.
+///
+/// JIT level: P1 (String output; no compiled_u64 path).
 pub struct ZeroPadU64 {
     meta: NodeMeta,
     width: usize,

@@ -23,5 +23,7 @@ pub mod noise;
 pub mod json;
 pub mod random;
 pub mod realer;
+pub mod probability;
+pub mod pcg;
 #[cfg(feature = "vectordata")]
 pub mod vectors;

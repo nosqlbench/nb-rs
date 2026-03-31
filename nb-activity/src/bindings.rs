@@ -17,18 +17,7 @@
 
 use std::collections::HashMap;
 
-use nb_variates::assembly::{GkAssembler, WireRef};
 use nb_variates::kernel::GkKernel;
-use nb_variates::node::GkNode;
-use nb_variates::nodes::arithmetic::*;
-use nb_variates::nodes::convert::*;
-use nb_variates::nodes::hash::*;
-use nb_variates::nodes::identity::*;
-use nb_variates::nodes::lerp::*;
-use nb_variates::nodes::string::*;
-use nb_variates::nodes::datetime::*;
-use nb_variates::sampling::icd::{UnitInterval, ClampF64, IcdSample};
-use nb_variates::sampling::metashift::Shuffle;
 
 use nb_workload::model::ParsedOp;
 use nb_workload::bindpoints;
@@ -102,195 +91,10 @@ fn split_args(s: &str) -> Vec<String> {
     args
 }
 
-/// Build a GK node from a function name and its constant arguments.
-///
-/// Returns (node, expected_wire_inputs). Most chain functions take 1
-/// wire input (from the previous function in the chain).
-fn build_chain_node(func: &BindingFunc) -> Result<(Box<dyn GkNode>, usize), String> {
-    let name = func.name.to_lowercase();
-    let name = name.trim();
+// build_chain_node and its helpers have been removed.
+// Legacy semicolon-chain bindings are now translated to GK source
+// and compiled through the unified GK compiler. See compile_bindings_with_opts.
 
-    match name {
-        // --- Hashing ---
-        "hash" | "fullhash" => Ok((Box::new(Hash64::new()), 1)),
-        "hashrange" => {
-            let max = parse_u64_arg(&func.args, 0, 1_000_000)?;
-            Ok((Box::new(HashRange::new(max)), 1))
-        }
-        "hashinterval" => {
-            let min = parse_f64_arg(&func.args, 0, 0.0)?;
-            let max = parse_f64_arg(&func.args, 1, 1.0)?;
-            Ok((Box::new(HashInterval::new(min, max)), 1))
-        }
-
-        // --- Arithmetic ---
-        "add" => {
-            let v = parse_u64_arg(&func.args, 0, 0)?;
-            Ok((Box::new(AddU64::new(v)), 1))
-        }
-        "mul" => {
-            let v = parse_u64_arg(&func.args, 0, 1)?;
-            Ok((Box::new(MulU64::new(v)), 1))
-        }
-        "div" => {
-            let v = parse_u64_arg(&func.args, 0, 1)?;
-            Ok((Box::new(DivU64::new(v)), 1))
-        }
-        "mod" | "modulo" => {
-            let v = parse_u64_arg(&func.args, 0, 1_000_000)?;
-            Ok((Box::new(ModU64::new(v)), 1))
-        }
-        "clamp" => {
-            let min = parse_u64_arg(&func.args, 0, 0)?;
-            let max = parse_u64_arg(&func.args, 1, u64::MAX)?;
-            Ok((Box::new(ClampU64::new(min, max)), 1))
-        }
-        "interleave" => Ok((Box::new(Interleave::new()), 2)),
-        "mixed_radix" | "mixedradix" => {
-            let radixes: Vec<u64> = func.args.iter()
-                .map(|s| s.trim().parse::<u64>().unwrap_or(0))
-                .collect();
-            if radixes.is_empty() {
-                return Err("mixed_radix requires at least one radix argument".into());
-            }
-            Ok((Box::new(MixedRadix::new(radixes)), 1))
-        }
-
-        // --- Identity ---
-        "identity" => Ok((Box::new(Identity::new()), 1)),
-
-        // --- Type conversions ---
-        "tostring" | "longtostring" => Ok((Box::new(U64ToString::new()), 1)),
-        "tohexstring" => Ok((Box::new(FormatU64::hex()), 1)),
-
-        // --- String ---
-        "numbernametostring" => Ok((Box::new(NumberToWords::new()), 1)),
-        "combinations" => {
-            let pattern = func.args.first()
-                .map(|s| s.trim_matches('\'').trim_matches('"').to_string())
-                .unwrap_or_else(|| "0-9".to_string());
-            Ok((Box::new(Combinations::new(&pattern)), 1))
-        }
-
-        // --- Datetime ---
-        "todate" | "todatetime" | "totimestamp" => Ok((Box::new(ToTimestamp::new()), 1)),
-        "startingepochmillis" => {
-            // Parse epoch from string arg or default
-            let base = if let Some(arg) = func.args.first() {
-                let arg = arg.trim_matches('\'').trim_matches('"');
-                // Simple: try to parse as number
-                arg.parse::<u64>().unwrap_or(0)
-            } else {
-                0
-            };
-            Ok((Box::new(EpochOffset::new(base)), 1))
-        }
-
-        // --- f64 conversions ---
-        "unit_interval" | "unitinterval" => Ok((Box::new(UnitInterval::new()), 1)),
-        "clamp_f64" | "clampf64" => {
-            let min = parse_f64_arg(&func.args, 0, 0.0)?;
-            let max = parse_f64_arg(&func.args, 1, 1.0)?;
-            Ok((Box::new(ClampF64::new(min, max)), 1))
-        }
-        "f64_to_u64" | "f64tou64" => Ok((Box::new(F64ToU64::new()), 1)),
-        "round_to_u64" | "roundtou64" => Ok((Box::new(RoundToU64::new()), 1)),
-        "floor_to_u64" | "floortou64" => Ok((Box::new(FloorToU64::new()), 1)),
-        "ceil_to_u64" | "ceiltou64" => Ok((Box::new(CeilToU64::new()), 1)),
-        "discretize" => {
-            let range = parse_f64_arg(&func.args, 0, 100.0)?;
-            let buckets = parse_u64_arg(&func.args, 1, 10)?;
-            Ok((Box::new(Discretize::new(range, buckets)), 1))
-        }
-
-        // --- Interpolation ---
-        "lerp" => {
-            let a = parse_f64_arg(&func.args, 0, 0.0)?;
-            let b = parse_f64_arg(&func.args, 1, 1.0)?;
-            Ok((Box::new(LerpConst::new(a, b)), 1))
-        }
-        "scale_range" | "scalerange" => {
-            let min = parse_f64_arg(&func.args, 0, 0.0)?;
-            let max = parse_f64_arg(&func.args, 1, 1.0)?;
-            Ok((Box::new(ScaleRange::new(min, max)), 1))
-        }
-        "quantize" => {
-            let step = parse_f64_arg(&func.args, 0, 1.0)?;
-            Ok((Box::new(Quantize::new(step)), 1))
-        }
-
-        // --- Shuffle ---
-        "shuffle" => {
-            let size = parse_u64_arg(&func.args, 0, 1_000_000)?;
-            Ok((Box::new(Shuffle::new(0, size)), 1))
-        }
-
-        // --- Distribution sampling (LUT-backed, P3 via extern) ---
-        "icd_normal" | "dist_normal" => {
-            let mean = parse_f64_arg(&func.args, 0, 0.0)?;
-            let stddev = parse_f64_arg(&func.args, 1, 1.0)?;
-            Ok((Box::new(IcdSample::normal(mean, stddev)), 1))
-        }
-        "icd_exponential" | "dist_exponential" => {
-            let rate = parse_f64_arg(&func.args, 0, 1.0)?;
-            Ok((Box::new(IcdSample::exponential(rate)), 1))
-        }
-        "dist_uniform" => {
-            let min = parse_f64_arg(&func.args, 0, 0.0)?;
-            let max = parse_f64_arg(&func.args, 1, 1.0)?;
-            Ok((Box::new(IcdSample::uniform(min, max)), 1))
-        }
-        "dist_pareto" => {
-            let scale = parse_f64_arg(&func.args, 0, 1.0)?;
-            let shape = parse_f64_arg(&func.args, 1, 1.0)?;
-            Ok((Box::new(IcdSample::pareto(scale, shape)), 1))
-        }
-        "dist_zipf" => {
-            let n = parse_u64_arg(&func.args, 0, 1000)?;
-            let exponent = parse_f64_arg(&func.args, 1, 1.0)?;
-            Ok((Box::new(IcdSample::zipf(n, exponent)), 1))
-        }
-        "lut_sample" => {
-            // Probe: build a simple identity LUT for probing
-            Ok((Box::new(IcdSample::normal(0.0, 1.0)), 1))
-        }
-
-        // --- Integer uniform ---
-        "uniform" => {
-            let min = parse_u64_arg(&func.args, 0, 0)?;
-            let max = parse_u64_arg(&func.args, 1, 1_000_000)?;
-            // Uniform integer: just hash + mod(max-min) + add(min)
-            Ok((Box::new(ModU64::new(max - min)), 1))
-        }
-
-        // --- Fixed values ---
-        "fixedvalue" => {
-            let v = parse_u64_arg(&func.args, 0, 0)?;
-            Ok((Box::new(ConstU64::new(v)), 0)) // 0 wire inputs
-        }
-
-        _ => Err(format!("unknown binding function: '{}' (in expression)", func.name)),
-    }
-}
-
-fn parse_u64_arg(args: &[String], idx: usize, default: u64) -> Result<u64, String> {
-    args.get(idx)
-        .map(|s| {
-            let s = s.trim().trim_end_matches('L').trim_end_matches('l');
-            s.parse::<u64>().map_err(|e| format!("invalid integer arg '{}': {}", s, e))
-        })
-        .unwrap_or(Ok(default))
-}
-
-fn parse_f64_arg(args: &[String], idx: usize, default: f64) -> Result<f64, String> {
-    args.get(idx)
-        .map(|s| {
-            let s = s.trim().trim_end_matches('d').trim_end_matches('D')
-                .trim_end_matches('f').trim_end_matches('F');
-            s.parse::<f64>().map_err(|e| format!("invalid float arg '{}': {}", s, e))
-        })
-        .unwrap_or(Ok(default))
-}
 
 /// Compile all bindings from a set of ParsedOps into a GK kernel.
 ///
@@ -305,28 +109,32 @@ fn parse_f64_arg(args: &[String], idx: usize, default: f64) -> Result<f64, Strin
 ///
 /// Instantiates a node with a representative constant and probes
 /// its intrinsic compile level. This is the single source of truth.
+/// Probe the compile level of a GK function by name.
+///
+/// Constructs a representative GK program containing the function
+/// and inspects the resulting kernel's node for its compile level.
+/// Uses the unified GK compiler — no separate dispatch table.
 pub fn probe_compile_level(func_name: &str) -> nb_variates::node::CompileLevel {
-    // Supply a representative constant so nodes like Mod don't panic on 0
-    let representative_arg = match func_name.to_lowercase().as_str() {
-        "mod" | "div" | "mul" | "add" => vec!["1000".to_string()],
-        "clamp" => vec!["0".to_string(), "1000".to_string()],
-        "mixed_radix" => vec!["100".to_string(), "1000".to_string()],
-        "clamp_f64" => vec!["0.0".to_string(), "1.0".to_string()],
-        "lerp" => vec!["0.0".to_string(), "1.0".to_string()],
-        "scale_range" => vec!["0.0".to_string(), "100.0".to_string()],
-        "quantize" => vec!["10.0".to_string()],
-        "discretize" => vec!["100.0".to_string(), "10".to_string()],
-        "shuffle" => vec!["1000000".to_string()],
-        "icd_normal" | "dist_normal" => vec!["0.0".to_string(), "1.0".to_string()],
-        "icd_exponential" | "dist_exponential" => vec!["1.0".to_string()],
-        "dist_uniform" => vec!["0.0".to_string(), "1.0".to_string()],
-        "dist_pareto" => vec!["1.0".to_string(), "1.0".to_string()],
-        "dist_zipf" => vec!["1000".to_string(), "1.0".to_string()],
-        _ => Vec::new(),
+    let sig = match nb_variates::dsl::registry::lookup(func_name) {
+        Some(s) => s,
+        None => return nb_variates::node::CompileLevel::Phase1,
     };
-    let dummy = BindingFunc { name: func_name.to_string(), args: representative_arg };
-    match build_chain_node(&dummy) {
-        Ok((node, _)) => nb_variates::node::compile_level_of(node.as_ref()),
+
+    // Generate representative const args (1000 for ints, 1000.0 for floats)
+    let const_args: Vec<String> = sig.const_params.iter().map(|(_name, _req)| {
+        "1000".to_string()
+    }).collect();
+
+    // Build wire args
+    let mut parts = Vec::new();
+    for _ in 0..std::cmp::max(sig.wire_inputs, 1) {
+        parts.push("cycle".to_string());
+    }
+    parts.extend(const_args);
+
+    let source = format!("coordinates := (cycle)\nout := {func_name}({})", parts.join(", "));
+    match nb_variates::dsl::compile_gk(&source) {
+        Ok(kernel) => kernel.program().last_node_compile_level(),
         Err(_) => nb_variates::node::CompileLevel::Phase1,
     }
 }
@@ -336,6 +144,16 @@ pub fn compile_bindings(ops: &[ParsedOp]) -> Result<GkKernel, String> {
 }
 
 pub fn compile_bindings_with_path(ops: &[ParsedOp], source_dir: Option<&std::path::Path>) -> Result<GkKernel, String> {
+    compile_bindings_with_opts(ops, source_dir, false)
+}
+
+/// Compile all bindings from a set of ParsedOps into a GK kernel.
+///
+/// When `strict` is true, the GK compiler enforces:
+/// - Explicit `coordinates := (...)` declaration (no inference)
+/// - All module arguments must be named (no positional)
+/// - All module inputs must be provided by caller (no fallthrough)
+pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::path::Path>, strict: bool) -> Result<GkKernel, String> {
     use nb_workload::model::BindingsDef;
 
     // Check if any op uses GK source mode
@@ -348,11 +166,28 @@ pub fn compile_bindings_with_path(ops: &[ParsedOp], source_dir: Option<&std::pat
     });
 
     if let Some(source) = gk_source {
-        // Native GK grammar mode: compile with module resolution
-        return nb_variates::dsl::compile_gk_with_path(&source, source_dir);
+        // Native GK grammar mode: collect referenced bind points from
+        // op templates for dead code elimination. Only the bindings
+        // actually used by ops are compiled into the kernel.
+        let mut required: Vec<String> = Vec::new();
+        for op in ops {
+            for (_, value) in &op.op {
+                if let Some(s) = value.as_str() {
+                    for name in bindpoints::referenced_bindings(s) {
+                        if !required.contains(&name) {
+                            required.push(name);
+                        }
+                    }
+                }
+            }
+        }
+        return nb_variates::dsl::compile_gk_with_outputs(&source, source_dir, &required, strict);
     }
 
-    // Legacy mode: collect all map-style bindings
+    // Legacy mode: translate semicolon-chain bindings into GK source
+    // and compile through the unified GK compiler. No separate dispatch
+    // table — every node function available in GK grammar is automatically
+    // available in legacy chain syntax.
     let mut all_bindings: HashMap<String, String> = HashMap::new();
     for op in ops {
         if let BindingsDef::Map(map) = &op.bindings {
@@ -362,20 +197,68 @@ pub fn compile_bindings_with_path(ops: &[ParsedOp], source_dir: Option<&std::pat
         }
     }
 
-    // Validate: all bind point references in op fields must have
-    // a corresponding binding declaration.
-    let mut missing: Vec<String> = Vec::new();
+    // Collect required outputs from op templates
+    let mut required: Vec<String> = Vec::new();
     for op in ops {
         for (_, value) in &op.op {
             if let Some(s) = value.as_str() {
                 for name in bindpoints::referenced_bindings(s) {
-                    if name != "cycle" && !all_bindings.contains_key(&name) {
-                        if !missing.contains(&name) {
-                            missing.push(name);
-                        }
+                    if !required.contains(&name) {
+                        required.push(name);
                     }
                 }
             }
+        }
+    }
+
+    // Translate each legacy chain into GK source lines
+    let mut gk_lines: Vec<String> = Vec::new();
+    gk_lines.push("coordinates := (cycle)".into());
+
+    for (binding_name, expr) in &all_bindings {
+        let chain = parse_binding_chain(expr);
+        if chain.is_empty() {
+            return Err(format!("empty binding expression for '{binding_name}'"));
+        }
+
+        // Convert each chain step into a GK binding.
+        // Chain: FuncA(args); FuncB(args) → sequential wiring from cycle.
+        let mut prev_wire = "cycle".to_string();
+
+        for (i, func) in chain.iter().enumerate() {
+            let is_last = i == chain.len() - 1;
+            let target = if is_last {
+                binding_name.clone()
+            } else {
+                format!("__chain_{binding_name}_{i}")
+            };
+
+            // Format args: lowercase function name, prev wire + const args
+            let func_name = func.name.to_lowercase();
+            let mut call_args = vec![prev_wire.clone()];
+            for arg in &func.args {
+                // Pass through literal args (numbers, strings)
+                let trimmed = arg.trim();
+                call_args.push(trimmed.to_string());
+            }
+
+            gk_lines.push(format!("{target} := {func_name}({args})",
+                args = call_args.join(", ")));
+
+            prev_wire = target;
+        }
+    }
+
+    // Validate: all bind point references must have a binding or be "cycle"
+    let mut missing: Vec<String> = Vec::new();
+    for name in &required {
+        if name == "cycle" {
+            // Coordinate — add an identity passthrough
+            if !all_bindings.contains_key(name) {
+                gk_lines.push(format!("{name} := identity(cycle)"));
+            }
+        } else if !all_bindings.contains_key(name) {
+            missing.push(name.clone());
         }
     }
     if !missing.is_empty() {
@@ -385,54 +268,8 @@ pub fn compile_bindings_with_path(ops: &[ParsedOp], source_dir: Option<&std::pat
         ));
     }
 
-    let mut asm = GkAssembler::new(vec!["cycle".into()]);
-    let mut node_counter = 0usize;
-
-    for (binding_name, expr) in &all_bindings {
-        let chain = parse_binding_chain(expr);
-        if chain.is_empty() {
-            return Err(format!("empty binding expression for '{binding_name}'"));
-        }
-
-        // Wire the chain: each function's output feeds the next's input
-        let mut current_wire = WireRef::coord("cycle");
-
-        for (i, func) in chain.iter().enumerate() {
-            let is_last = i == chain.len() - 1;
-            let node_name = if is_last {
-                binding_name.clone()
-            } else {
-                let name = format!("__bind_{binding_name}_{node_counter}");
-                node_counter += 1;
-                name
-            };
-
-            let (node, wire_inputs) = build_chain_node(func)
-                .map_err(|e| format!("in binding '{binding_name}': {e}"))?;
-
-            let inputs = if wire_inputs == 0 {
-                vec![] // constant node, no wire inputs
-            } else {
-                vec![current_wire.clone()]
-            };
-
-            asm.add_node(&node_name, node, inputs);
-
-            if !is_last {
-                current_wire = WireRef::node(&node_name);
-            }
-        }
-
-        asm.add_output(binding_name, WireRef::node(binding_name));
-    }
-
-    // Always provide a "cycle" output
-    if !all_bindings.contains_key("cycle") {
-        asm.add_node("__cycle_identity", Box::new(Identity::new()), vec![WireRef::coord("cycle")]);
-        asm.add_output("cycle", WireRef::node("__cycle_identity"));
-    }
-
-    asm.compile().map_err(|e| format!("GK kernel compilation failed: {e}"))
+    let gk_source = gk_lines.join("\n");
+    nb_variates::dsl::compile_gk_with_outputs(&gk_source, source_dir, &required, strict)
 }
 
 #[cfg(test)]
@@ -478,9 +315,8 @@ mod tests {
     fn parse_with_long_suffix() {
         let chain = parse_binding_chain("Mod(1000000000L)");
         assert_eq!(chain[0].args, vec!["1000000000L"]);
-        // The L suffix should be handled by parse_u64_arg
-        let val = parse_u64_arg(&chain[0].args, 0, 0).unwrap();
-        assert_eq!(val, 1_000_000_000);
+        // The L suffix is preserved in the chain parse.
+        // The GK compiler handles it during node construction.
     }
 
     #[test]

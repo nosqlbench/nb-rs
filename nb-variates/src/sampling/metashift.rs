@@ -85,16 +85,23 @@ struct ShuffleConfig {
 
 /// Deterministic, bijective permutation of a bounded integer range.
 ///
+/// Signature: `shuffle(input: u64, min: u64, size: u64) -> (u64)`
+///
 /// Maps every value in [min, min+size) to itself in a pseudo-random
 /// order, visiting each value exactly once per cycle. Uses a Galois
 /// LFSR with rejection sampling to handle ranges that are not exact
 /// powers of 2.
 ///
-/// Signature: `(input: u64) -> (u64)`
+/// Use when you need every key in a range visited exactly once without
+/// repetition and without materializing the full sequence in memory.
+/// Common patterns: generating unique primary keys for bulk inserts
+/// (`shuffle(cycle, 0, 10_000_000)`), distributing work across
+/// partitions without collision, or simulating a deck-of-cards draw.
+/// Select different `bank` values for independent permutation orderings
+/// across distributed workers.
 ///
-/// Parameters:
-/// - `min`: lower bound of the output range (inclusive)
-/// - `size`: number of values in the range
+/// JIT level: P3 (compiled_u64 with jit_constants for feedback, size,
+/// and min; the LFSR loop compiles to a tight branch sequence).
 pub struct Shuffle {
     meta: NodeMeta,
     config: ShuffleConfig,

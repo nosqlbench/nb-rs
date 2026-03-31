@@ -25,9 +25,8 @@ mod inner {
     use std::mem;
 
     use cranelift_codegen::ir::{self, AbiParam, InstBuilder, types};
-    use cranelift_codegen::isa;
     use cranelift_codegen::settings::{self, Configurable};
-    use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+    use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
     use cranelift_jit::{JITBuilder, JITModule};
     use cranelift_module::{Linkage, Module};
 
@@ -184,7 +183,7 @@ mod inner {
         LutSampleConst(u64, u64), // lut_ptr as u64, lut_len
 
         /// Fallback: call the Phase 2 closure
-        Fallback(usize),
+        Fallback,
     }
 
     /// Classify a GK node into a JIT-able operation.
@@ -202,41 +201,41 @@ mod inner {
                 if let Some(&c) = consts.first() {
                     JitOp::AddConst(c)
                 } else {
-                    JitOp::Fallback(0)
+                    JitOp::Fallback
                 }
             }
             "mul" => {
                 if let Some(&c) = consts.first() {
                     JitOp::MulConst(c)
                 } else {
-                    JitOp::Fallback(0)
+                    JitOp::Fallback
                 }
             }
             "div" => {
                 if let Some(&c) = consts.first() {
                     JitOp::DivConst(c)
                 } else {
-                    JitOp::Fallback(0)
+                    JitOp::Fallback
                 }
             }
             "mod" => {
                 if let Some(&c) = consts.first() {
                     JitOp::ModConst(c)
                 } else {
-                    JitOp::Fallback(0)
+                    JitOp::Fallback
                 }
             }
             "clamp" => {
                 if consts.len() >= 2 {
                     JitOp::ClampConst(consts[0], consts[1])
                 } else {
-                    JitOp::Fallback(0)
+                    JitOp::Fallback
                 }
             }
             "interleave" => JitOp::Interleave,
             "mixed_radix" => {
                 if consts.is_empty() {
-                    JitOp::Fallback(0)
+                    JitOp::Fallback
                 } else {
                     JitOp::MixedRadixConst(consts)
                 }
@@ -245,7 +244,7 @@ mod inner {
                 if consts.len() >= 3 {
                     JitOp::ShuffleConst(consts[0], consts[1], consts[2])
                 } else {
-                    JitOp::Fallback(0)
+                    JitOp::Fallback
                 }
             }
             // f64 ops
@@ -258,45 +257,45 @@ mod inner {
                 if consts.len() >= 2 {
                     JitOp::ClampF64Const(consts[0], consts[1])
                 } else {
-                    JitOp::Fallback(0)
+                    JitOp::Fallback
                 }
             }
             "lerp" => {
                 if consts.len() >= 2 {
                     JitOp::LerpConst(consts[0], consts[1])
                 } else {
-                    JitOp::Fallback(0)
+                    JitOp::Fallback
                 }
             }
             "scale_range" => {
                 if consts.len() >= 2 {
                     JitOp::ScaleRangeConst(consts[0], consts[1])
                 } else {
-                    JitOp::Fallback(0)
+                    JitOp::Fallback
                 }
             }
             "quantize" => {
                 if let Some(&c) = consts.first() {
                     JitOp::QuantizeConst(c)
                 } else {
-                    JitOp::Fallback(0)
+                    JitOp::Fallback
                 }
             }
             "discretize" => {
                 if consts.len() >= 2 {
                     JitOp::DiscretizeConst(consts[0], consts[1])
                 } else {
-                    JitOp::Fallback(0)
+                    JitOp::Fallback
                 }
             }
             "lut_sample" => {
                 if consts.len() >= 2 {
                     JitOp::LutSampleConst(consts[0], consts[1])
                 } else {
-                    JitOp::Fallback(0)
+                    JitOp::Fallback
                 }
             }
-            _ => JitOp::Fallback(0),
+            _ => JitOp::Fallback,
         }
     }
 
@@ -305,7 +304,7 @@ mod inner {
     /// Each step has: jit_op, input_slots (buffer indices), output_slots.
     /// The generated function reads coords from the buffer, executes
     /// all steps in order, and writes results to the buffer.
-    pub fn compile_jit(
+    pub(crate) fn compile_jit(
         coord_count: usize,
         total_slots: usize,
         steps: Vec<(JitOp, Vec<usize>, Vec<usize>)>,
@@ -383,7 +382,7 @@ mod inner {
             builder.switch_to_block(block);
             builder.seal_block(block);
 
-            let coords_ptr = builder.block_params(block)[0];
+            let _coords_ptr = builder.block_params(block)[0];
             let buffer_ptr = builder.block_params(block)[1];
 
             // Import extern functions for calls
@@ -568,7 +567,7 @@ mod inner {
                         store_slot(&mut builder, buffer_ptr, output_slots[0], result);
                     }
 
-                    JitOp::Fallback(_) => {
+                    JitOp::Fallback => {
                         // Can't JIT this node — skip (caller should
                         // not include fallback ops in JIT steps)
                     }

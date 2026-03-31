@@ -4,3 +4,4 @@
 //! Built-in adapters.
 
 pub mod stdout;
+pub mod model;

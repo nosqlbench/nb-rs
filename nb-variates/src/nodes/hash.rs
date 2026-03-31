@@ -8,7 +8,15 @@ use xxhash_rust::xxh3::xxh3_64;
 
 /// 64-bit hash using xxHash3.
 ///
-/// Signature: `(input: u64) -> (u64)`
+/// Signature: `hash(input: u64) -> (u64)`
+///
+/// The fundamental entropy source for deterministic data generation.
+/// Place at the head of nearly every pipeline to scatter sequential
+/// cycle counters into uniformly distributed u64 values. The output
+/// feeds directly into `hash_range`, `unit_interval`, distribution
+/// samplers, or any node that expects pseudo-random input.
+///
+/// JIT level: P2 (compiled_u64 closure; xxh3 call prevents full inlining).
 pub struct Hash64 {
     meta: NodeMeta,
 }
@@ -44,8 +52,15 @@ impl GkNode for Hash64 {
 
 /// Hash a u64 into a bounded range `[0, max)`.
 ///
-/// Signature: `(input: u64) -> (u64)`
-/// Param: `max: u64`
+/// Signature: `hash_range(input: u64, max: u64) -> (u64)`
+///
+/// Combines hashing and modular reduction in a single node. Use when
+/// you need a bounded integer directly, for example selecting a row
+/// index: `hash_range(cycle, 1_000_000)` gives a uniformly distributed
+/// key in [0, 1M). Equivalent to `hash(cycle) % max` but expressed as
+/// one composable node.
+///
+/// JIT level: P2 (compiled_u64 closure with captured `max`).
 pub struct HashRange {
     meta: NodeMeta,
     max: u64,
@@ -85,8 +100,14 @@ impl GkNode for HashRange {
 
 /// Hash a u64 into a float interval `[min, max)`.
 ///
-/// Signature: `(input: u64) -> (f64)`
-/// Params: `min: f64, max: f64`
+/// Signature: `hash_interval(input: u64, min: f64, max: f64) -> (f64)`
+///
+/// Convenience node that hashes, normalizes to [0,1), and scales in one
+/// step. Useful when a uniform f64 in a specific range is needed without
+/// wiring separate `hash` + `unit_interval` + `lerp` nodes. Example:
+/// `hash_interval(cycle, 0.0, 360.0)` produces a random bearing.
+///
+/// JIT level: P1 (no compiled_u64; output is f64, not u64).
 pub struct HashInterval {
     meta: NodeMeta,
     min: f64,

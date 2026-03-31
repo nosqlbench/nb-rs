@@ -1,0 +1,55 @@
+// Copyright 2024-2026 nosqlbench contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// @category: Hashing
+// hashing.gk — Higher-level hashing patterns
+//
+// These modules compose hash + arithmetic into the most common
+// one-step patterns. Use them instead of writing out the underlying
+// nodes directly — they're clearer and self-documenting.
+
+// Hash input and bound to [0, max).
+//
+// The most common pattern in workload generation: turn a coordinate
+// into a bounded integer. Equivalent to Java nosqlbench's HashRange.
+//
+// Example:
+//   user_id := hash_range(input: cycle, max: 1000000)
+//   // user_id is a deterministic integer in [0, 1M)
+//
+// Use for: primary keys, partition keys, bounded IDs.
+// Prefer over raw `mod(hash(x), N)` for readability.
+hash_range(input: u64, max: u64) -> (value: u64) := {
+    h := hash(input)
+    value := mod(h, max)
+}
+
+// Hash input to a uniform f64 in [min, max).
+//
+// Combines hash → unit_interval → lerp in one step. Produces a
+// continuous float uniformly distributed across the range.
+// Equivalent to Java nosqlbench's HashInterval.
+//
+// Example:
+//   longitude := hash_interval(input: cycle, min: -180.0, max: 180.0)
+//   temperature := hash_interval(input: sensor_h, min: 15.0, max: 45.0)
+//
+// Use for: float fields that need a uniform range — coordinates,
+// measurements, percentages. For shaped distributions (normal, etc.),
+// use normal_sample or exponential_sample instead.
+hash_interval(input: u64, min: f64, max: f64) -> (value: f64) := {
+    value := lerp(unit_interval(hash(input)), min, max)
+}
+
+// Hash input, bound to [0, range), and add base offset.
+// Result is in [base, base + range).
+//
+// Equivalent to Java nosqlbench's AddHashRange. Use when your ID space
+// doesn't start at zero — e.g., customer IDs in [10000, 20000).
+//
+// Example:
+//   cust_id := hash_range_offset(input: cycle, base: 10000, range: 10000)
+//   // cust_id is in [10000, 20000)
+hash_range_offset(input: u64, base: u64, range: u64) -> (value: u64) := {
+    value := add(mod(hash(input), range), base)
+}

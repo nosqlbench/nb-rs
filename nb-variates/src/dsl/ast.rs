@@ -20,6 +20,8 @@ pub enum Statement {
     InitBinding(InitBinding),
     /// `name := expr` or `(a, b) := expr`
     CycleBinding(CycleBinding),
+    /// `name(param: type, ...) -> (output: type, ...) := { body }`
+    ModuleDef(ModuleDef),
 }
 
 /// An init-time binding: `init name = expr`
@@ -53,6 +55,30 @@ pub enum Expr {
     ArrayLit(Vec<Expr>, Span),
     /// A function call: `hash(cycle)`, `dist_normal(mean: 72.0, stddev: 5.0)`
     Call(CallExpr),
+}
+
+/// A typed parameter in a module signature.
+#[derive(Debug, Clone)]
+pub struct TypedParam {
+    pub name: String,
+    pub typ: String,  // "u64", "f64", "String", "bytes", etc.
+}
+
+/// A formal module definition with typed interface.
+///
+/// ```text
+/// hash_range(input: u64, max: u64) -> (value: u64) := {
+///     h := hash(input)
+///     value := mod(h, max)
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct ModuleDef {
+    pub name: String,
+    pub params: Vec<TypedParam>,
+    pub outputs: Vec<TypedParam>,
+    pub body: Vec<Statement>,
+    pub span: Span,
 }
 
 /// A function call expression.

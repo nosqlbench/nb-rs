@@ -7,11 +7,26 @@
 //! and `{{expr}}` inline binding definitions. Classifies fields as
 //! static (no bind points) or dynamic (has bind points).
 
+/// Namespace qualifier for a bind point reference.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BindQualifier {
+    /// No qualifier — resolved by priority order: bind → capture → coord.
+    None,
+    /// `{coord:name}` or `{coordinate:name}` — coordinate input.
+    Coord,
+    /// `{bind:name}` — GK binding output.
+    Bind,
+    /// `{capture:name}` — capture context (volatile or sticky port).
+    Capture,
+    /// `{port:name}` — explicit external input port.
+    Port,
+}
+
 /// A detected bind point in an op template field.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BindPoint {
-    /// `{name}` — references a named binding.
-    Reference(String),
+    /// `{name}` or `{qualifier:name}` — references a named value.
+    Reference { name: String, qualifier: BindQualifier },
     /// `{{expr}}` — inline binding definition.
     InlineDefinition(String),
 }
@@ -38,7 +53,7 @@ pub fn classify_field(value: &str) -> FieldType {
         && value.ends_with('}')
     {
         match &bind_points[0] {
-            BindPoint::Reference(name) => FieldType::BindRef(name.clone()),
+            BindPoint::Reference { name, .. } => FieldType::BindRef(name.clone()),
             _ => FieldType::Template(bind_points),
         }
     } else {
@@ -67,15 +82,17 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
                     i += 2; // skip }}
                 }
             } else {
-                // Reference: {name}
+                // Reference: {name} or {qualifier:name}
                 i += 1;
                 let start = i;
                 while i < chars.len() && chars[i] != '}' {
                     i += 1;
                 }
                 if i < chars.len() {
-                    let name: String = chars[start..i].iter().collect();
-                    points.push(BindPoint::Reference(name.trim().to_string()));
+                    let raw: String = chars[start..i].iter().collect();
+                    let raw = raw.trim();
+                    let (qualifier, name) = parse_qualified_ref(raw);
+                    points.push(BindPoint::Reference { name, qualifier });
                     i += 1; // skip }
                 }
             }
@@ -87,12 +104,29 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
     points
 }
 
+/// Parse a qualified reference like "coord:cycle" or just "cycle".
+fn parse_qualified_ref(raw: &str) -> (BindQualifier, String) {
+    if let Some((prefix, name)) = raw.split_once(':') {
+        let qualifier = match prefix.trim().to_lowercase().as_str() {
+            "coord" | "coordinate" => BindQualifier::Coord,
+            "bind" => BindQualifier::Bind,
+            "capture" => BindQualifier::Capture,
+            "port" => BindQualifier::Port,
+            _ => return (BindQualifier::None, raw.to_string()), // not a known qualifier
+        };
+        (qualifier, name.trim().to_string())
+    } else {
+        (BindQualifier::None, raw.to_string())
+    }
+}
+
 /// Extract all referenced binding names from a string (only `{name}`, not `{{expr}}`).
+/// Returns the bare name without qualifier.
 pub fn referenced_bindings(value: &str) -> Vec<String> {
     extract_bind_points(value)
         .into_iter()
         .filter_map(|bp| match bp {
-            BindPoint::Reference(name) => Some(name),
+            BindPoint::Reference { name, .. } => Some(name),
             _ => None,
         })
         .collect()
@@ -238,8 +272,8 @@ mod tests {
         match ft {
             FieldType::Template(points) => {
                 assert_eq!(points.len(), 2);
-                assert_eq!(points[0], BindPoint::Reference("id".into()));
-                assert_eq!(points[1], BindPoint::Reference("name".into()));
+                assert_eq!(points[0], BindPoint::Reference { name: "id".into(), qualifier: BindQualifier::None });
+                assert_eq!(points[1], BindPoint::Reference { name: "name".into(), qualifier: BindQualifier::None });
             }
             _ => panic!("expected Template"),
         }
@@ -272,6 +306,72 @@ mod tests {
     fn no_bind_points() {
         let refs = referenced_bindings("just a plain string");
         assert!(refs.is_empty());
+    }
+
+    // --- Qualified bind point tests ---
+
+    #[test]
+    fn qualified_coord() {
+        let points = extract_bind_points("{coord:cycle}");
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0], BindPoint::Reference {
+            name: "cycle".into(),
+            qualifier: BindQualifier::Coord,
+        });
+    }
+
+    #[test]
+    fn qualified_capture() {
+        let points = extract_bind_points("{capture:balance}");
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0], BindPoint::Reference {
+            name: "balance".into(),
+            qualifier: BindQualifier::Capture,
+        });
+    }
+
+    #[test]
+    fn qualified_bind() {
+        let points = extract_bind_points("{bind:user_id}");
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0], BindPoint::Reference {
+            name: "user_id".into(),
+            qualifier: BindQualifier::Bind,
+        });
+    }
+
+    #[test]
+    fn qualified_port() {
+        let points = extract_bind_points("{port:auth_token}");
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0], BindPoint::Reference {
+            name: "auth_token".into(),
+            qualifier: BindQualifier::Port,
+        });
+    }
+
+    #[test]
+    fn unqualified_still_works() {
+        let points = extract_bind_points("{user_id}");
+        assert_eq!(points[0], BindPoint::Reference {
+            name: "user_id".into(),
+            qualifier: BindQualifier::None,
+        });
+    }
+
+    #[test]
+    fn qualified_referenced_bindings_returns_bare_name() {
+        let refs = referenced_bindings("VALUES ({coord:cycle}, {capture:balance}, {user_id})");
+        assert_eq!(refs, vec!["cycle", "balance", "user_id"]);
+    }
+
+    #[test]
+    fn coordinate_long_form() {
+        let points = extract_bind_points("{coordinate:row}");
+        assert_eq!(points[0], BindPoint::Reference {
+            name: "row".into(),
+            qualifier: BindQualifier::Coord,
+        });
     }
 
     // --- Capture point tests ---

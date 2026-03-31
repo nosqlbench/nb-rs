@@ -108,11 +108,20 @@ impl LutF64 {
 
 /// GK node that performs interpolating lookup in a precomputed table.
 ///
-/// Signature: `(input: f64) -> (f64)`
+/// Signature: `lut_sample(input: f64) -> (f64)`
 ///
 /// Input is a value in [0, 1]. Output is the interpolated table value.
-/// This is a general-purpose node — it doesn't know or care whether the
+/// This is a general-purpose node -- it doesn't know or care whether the
 /// table holds an inverse CDF, a transfer function, or anything else.
+///
+/// Use as the low-level building block for any precomputed f64-to-f64
+/// mapping. Distribution sampling (via `IcdSample`), custom transfer
+/// curves, and empirical data all route through this node at runtime.
+/// The lookup is O(1): a single array index plus one linear
+/// interpolation, with no branching on distribution type.
+///
+/// JIT level: P3 (compiled_u64 with jit_constants exposing the LUT
+/// pointer and length for potential native code generation).
 pub struct LutSample {
     meta: NodeMeta,
     table: LutF64,

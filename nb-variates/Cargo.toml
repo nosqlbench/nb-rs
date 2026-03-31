@@ -12,6 +12,8 @@ base64 = "0.22"
 data-encoding = "2"
 regex = "1"
 serde_json = "1"
+petgraph = "0.8"
+layout-rs = "0.1"
 vectordata = { version = "0.9", optional = true }
 cranelift-jit = { version = "0.116", optional = true }
 cranelift-module = { version = "0.116", optional = true }

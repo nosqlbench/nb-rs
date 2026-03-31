@@ -18,3 +18,5 @@ pub mod dsl;
 #[cfg(feature = "jit")]
 pub mod jit;
 pub mod hybrid;
+pub mod viz;
+pub mod runtime;

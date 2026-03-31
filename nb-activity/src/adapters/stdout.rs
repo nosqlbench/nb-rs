@@ -82,7 +82,7 @@ impl StdoutFormat {
         }
     }
 
-    fn render(&self, op: &AssembledOp) -> String {
+    pub(crate) fn render(&self, op: &AssembledOp) -> String {
         match self {
             Self::Assignments => {
                 op.fields.iter()

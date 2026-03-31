@@ -145,13 +145,24 @@ and per-stanza) with token-bucket semantics and burst recovery.
 |---|------|-------|
 | 28 | [capture_points](28_capture_points.md) | Inter-op data flow, stanza-scoped captures, qualified bind points, serialization |
 | 29 | [model_adapter](29_model_adapter.md) | Simulated op execution with configurable results, latency, error injection |
+| 30 | [stdlib](30_stdlib.md) | GK standard library: embedded modules, resolution chain, stdlib contents |
+| 31 | [node_factories](31_node_factories.md) | External node providers: NodeFactory trait, unified registry, fiber safety |
 
-Defines how data flows between operations within a stanza. SRD 28
-introduces capture points (`[name]` syntax), external input ports
-(volatile/sticky with defaults), qualified bind points
-(`{coord:name}`, `{capture:name}`, `{bind:name}`), and the
-stanza-scoped capture context. The GK stays pure — captures are
-an external input source, not a graph mutation. SRD 29 defines the
-model adapter for prototyping: the `result` op field provides
-simulated results (static map or GK kernel), with latency
-simulation, error injection, and diagnostic output.
+Defines how data flows between operations within a stanza and how
+to prototype without real infrastructure. SRD 28 introduces capture
+points (`[name]` syntax), external input ports (volatile/sticky with
+defaults), qualified bind points (`{coord:name}`, `{capture:name}`,
+`{bind:name}`), and the stanza-scoped capture context. The GK stays
+pure — captures are an external input source, not a graph mutation.
+SRD 29 defines the model adapter: the `result` op field provides
+simulated results (static map or GK kernel), `result-*` fields for
+latency/error injection (static or GK-driven), `{{...}}` anonymous
+inline bindings, and probability modeling nodes (fair_coin, select,
+one_of, etc.). SRD 30 defines the standard library — `.gk` module
+files embedded in the binary, resolved after workload-local and user
+library, providing reusable patterns (latency models, identity
+generators, time series helpers, service modeling). SRD 31 defines
+node factories — external crates implement `NodeFactory` to provide
+GK nodes that are registered into the unified registry at startup,
+indistinguishable from built-in nodes in describe output, category
+grouping, type checking, and compilation levels.

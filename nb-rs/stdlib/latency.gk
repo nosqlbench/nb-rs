@@ -1,0 +1,49 @@
+// Copyright 2024-2026 nosqlbench contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// @category: Distributions
+// latency.gk — Latency simulation models
+//
+// Modules for generating deterministic latency values for use with
+// the model adapter's result-latency field. Each produces a float
+// in milliseconds, clamped to [0.1, 999999] to avoid zero or
+// negative latencies.
+
+// Normally-distributed latency in milliseconds.
+//
+// The most common latency model for single-mode services. Most
+// requests complete near the mean, with symmetric tails. Clamped
+// to positive values.
+//
+// Example (in a workload YAML):
+//   result: |
+//     user_id := id
+//     lat := gaussian_latency(input: cycle, mean: 5.0, stddev: 1.2)
+//   result-latency: lat
+//
+// Or as a standalone value:
+//   latency := gaussian_latency(input: hash(cycle), mean: 2.0, stddev: 0.5)
+//
+// Use for: services with predictable response times — cache lookups,
+// simple key-value reads, network round trips.
+gaussian_latency(input: u64, mean: f64, stddev: f64) -> (latency_ms: f64) := {
+    q := unit_interval(hash(input))
+    latency_ms := clamp_f64(icd_normal(q, mean, stddev), 0.1, 999999.0)
+}
+
+// Exponentially-distributed latency in milliseconds.
+//
+// Models queuing-theory wait times: most requests are fast, but some
+// are very slow. The distribution has a long right tail. Rate = 1/mean,
+// so rate=0.2 gives mean=5ms.
+//
+// Example:
+//   latency := exponential_latency(input: cycle, rate: 0.1)
+//   // mean = 10ms, but some requests take 50ms+
+//
+// Use for: workloads where occasional high latency is expected —
+// disk I/O, network timeouts, garbage collection pauses.
+exponential_latency(input: u64, rate: f64) -> (latency_ms: f64) := {
+    q := unit_interval(hash(input))
+    latency_ms := clamp_f64(icd_exponential(q, rate), 0.1, 999999.0)
+}

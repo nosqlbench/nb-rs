@@ -154,39 +154,56 @@ values. Given the same coordinates, it always produces the same
 outputs regardless of which thread evaluates it. This is the
 foundation of the threading model.
 
-### Shared vs Per-Thread Separation
+### GkProgram / GkState Split
+
+The kernel is split into two structs at the type level:
 
 ```
-┌─────────────────────────────────────────────────┐
-│              Shared (Arc, immutable)             │
-│                                                  │
-│  ┌──────────────┐  ┌─────────────────────────┐  │
-│  │ JIT function │  │ P2 closure vec          │  │
-│  │ pointer      │  │ (Box<dyn Fn> per step)  │  │
-│  └──────────────┘  └─────────────────────────┘  │
-│  ┌──────────────┐  ┌─────────────────────────┐  │
-│  │ Output map   │  │ Slot layout / metadata  │  │
-│  │ name → slot  │  │ coord_count, total_slots│  │
-│  └──────────────┘  └─────────────────────────┘  │
-│  ┌──────────────────────────────────────────┐   │
-│  │ Node graph (Phase 1 only, dyn GkNode)    │   │
-│  └──────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────┐
+│          GkProgram (Arc, immutable, shared)        │
+│                                                    │
+│  ┌──────────────┐  ┌──────────────────────────┐   │
+│  │ Node graph   │  │ Wiring (WireSource[][])   │   │
+│  │ dyn GkNode[] │  │ immutable after assembly  │   │
+│  └──────────────┘  └──────────────────────────┘   │
+│  ┌──────────────┐  ┌──────────────────────────┐   │
+│  │ Output map   │  │ Coord names              │   │
+│  │ name → slot  │  │ (read-only)              │   │
+│  └──────────────┘  └──────────────────────────┘   │
+│  For P2/P3: JIT fn ptr, closure vec (read-only)   │
+└───────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────┐
-│           Per-Thread (mutable, private)          │
-│                                                  │
-│  Thread 0: [ buffer: Vec<u64> ]                  │
-│  Thread 1: [ buffer: Vec<u64> ]                  │
-│  Thread 2: [ buffer: Vec<u64> ]                  │
-│  ...                                             │
-│  Thread N: [ buffer: Vec<u64> ]                  │
-└─────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────┐
+│  GkState (per-fiber, mutable, private, no sharing) │
+│                                                    │
+│  Fiber 0: [ buffers, generation, coords ]          │
+│  Fiber 1: [ buffers, generation, coords ]          │
+│  Fiber 2: [ buffers, generation, coords ]          │
+│  ...                                               │
+│  Fiber N: [ buffers, generation, coords ]          │
+└───────────────────────────────────────────────────┘
 ```
 
-The compiled code (JIT function pointer, P2 closures) is read-only
-after assembly and shared across all threads via `Arc`. Only the
-mutable evaluation buffer is per-thread. This gives:
+`GkProgram` is `Send + Sync` and shared via `Arc`. It contains
+the compiled node instances, wiring, and output map — all immutable
+after assembly.
+
+`GkState` is per-fiber mutable state: value buffers, generation
+counter, and current coordinates. Each fiber creates its own state
+via `program.create_state()`. No sharing, no synchronization, no
+blocking.
+
+**Isolation scope:** Calling `state.set_coordinates()` begins a new
+isolation scope. The generation counter advances, implicitly
+invalidating all cached node outputs. Volatile ports (SRD 28) reset
+to their defaults. No other fiber can interact with a given state.
+
+**Evaluation:** `state.pull(program, "name")` borrows the program
+immutably (`&GkProgram`) and the state mutably (`&mut GkState`).
+The program provides the code, the state provides the scratch space.
+No locks, no atomics, no cross-fiber interference.
+
+This gives:
 
 - **Zero contention**: No locks, no atomics on the hot path.
   Each thread writes exclusively to its own buffer.

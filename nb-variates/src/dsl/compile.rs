@@ -31,11 +31,33 @@ use crate::nodes::json::*;
 use crate::nodes::context::*;
 use crate::nodes::noise::*;
 use crate::nodes::regex::*;
+use crate::nodes::probability::*;
 use crate::sampling::icd::*;
 
 use crate::dsl::error::DiagnosticReport;
 use crate::dsl::registry;
 use std::collections::HashSet;
+
+/// Embedded standard library modules, compiled into the binary.
+///
+/// Each entry is (filename, source). Multiple modules per file —
+/// each top-level binding is a separate module, resolved by name.
+/// Searched as the final fallback after workload-local and --gk-lib paths.
+static STDLIB_MODULES: &[(&str, &str)] = &[
+    ("hashing.gk", include_str!("../../../nb-rs/stdlib/hashing.gk")),
+    ("strings.gk", include_str!("../../../nb-rs/stdlib/strings.gk")),
+    ("identity.gk", include_str!("../../../nb-rs/stdlib/identity.gk")),
+    ("distributions.gk", include_str!("../../../nb-rs/stdlib/distributions.gk")),
+    ("latency.gk", include_str!("../../../nb-rs/stdlib/latency.gk")),
+    ("timeseries.gk", include_str!("../../../nb-rs/stdlib/timeseries.gk")),
+    ("waves.gk", include_str!("../../../nb-rs/stdlib/waves.gk")),
+    ("modeling.gk", include_str!("../../../nb-rs/stdlib/modeling.gk")),
+];
+
+/// Return the embedded standard library module sources.
+pub fn stdlib_sources() -> &'static [(&'static str, &'static str)] {
+    STDLIB_MODULES
+}
 
 /// Compile a `.gk` source string into a runtime kernel.
 pub fn compile_gk(source: &str) -> Result<GkKernel, String> {
@@ -47,9 +69,44 @@ pub fn compile_gk(source: &str) -> Result<GkKernel, String> {
 /// When the compiler encounters an unknown function name, it searches
 /// `source_dir` for `.gk` module files that export a matching binding.
 pub fn compile_gk_with_path(source: &str, source_dir: Option<&Path>) -> Result<GkKernel, String> {
+    compile_gk_strict(source, source_dir, false)
+}
+
+/// Compile with dead code elimination: only outputs named in
+/// `required_outputs` are exposed, and unreachable upstream nodes
+/// are pruned from the kernel.
+///
+/// When `required_outputs` is empty, compiles all bindings as outputs
+/// (same as `compile_gk_with_path`).
+///
+/// The `strict` flag enforces the same rules as `compile_gk_strict`.
+pub fn compile_gk_with_outputs(
+    source: &str,
+    source_dir: Option<&Path>,
+    required_outputs: &[String],
+    strict: bool,
+) -> Result<GkKernel, String> {
     let tokens = lexer::lex(source)?;
     let ast = parser::parse(tokens)?;
-    compile_ast_with_path(&ast, source_dir)
+    let filter = if required_outputs.is_empty() {
+        None
+    } else {
+        Some(required_outputs)
+    };
+    let mut compiler = Compiler::new(source_dir.map(|p| p.to_path_buf()), strict);
+    compiler.compile_filtered(&ast, filter)
+}
+
+/// Compile with a source directory and optional strict mode.
+///
+/// When `strict` is true, the compiler enforces:
+/// - Explicit `coordinates := (...)` declaration (no inference)
+/// - All module arguments must be named (no positional)
+/// - All module inputs must be provided by the caller (no fallthrough to coordinates)
+pub fn compile_gk_strict(source: &str, source_dir: Option<&Path>, strict: bool) -> Result<GkKernel, String> {
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(tokens)?;
+    compile_ast_strict(&ast, source_dir, strict)
 }
 
 /// Compile with full diagnostics: errors, warnings, suggestions.
@@ -127,13 +184,16 @@ fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
                     definition_order.push((t.clone(), b.span));
                 }
             }
+            Statement::ModuleDef(m) => {
+                defined.insert(m.name.clone());
+            }
         }
     }
 
     // Second pass: validate function calls and collect references
     for stmt in &file.statements {
         let expr = match stmt {
-            Statement::Coordinates(_, _) => continue,
+            Statement::Coordinates(_, _) | Statement::ModuleDef(_) => continue,
             Statement::InitBinding(b) => &b.value,
             Statement::CycleBinding(b) => &b.value,
         };
@@ -205,6 +265,9 @@ fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
                     seen_defs.insert(t.clone());
                 }
             }
+            Statement::ModuleDef(m) => {
+                seen_defs.insert(m.name.clone());
+            }
         }
     }
 }
@@ -247,7 +310,9 @@ fn validate_expr(
             }
         }
         Expr::StringLit(s, _) => {
-            // Extract {name} references from string interpolation
+            // Extract {name} references from string interpolation.
+            // Only valid identifiers (alpha/underscore start) — skip
+            // format specifiers like {:05} or {:.2}.
             let chars: Vec<char> = s.chars().collect();
             let mut i = 0;
             while i < chars.len() {
@@ -256,7 +321,10 @@ fn validate_expr(
                     let start = i;
                     while i < chars.len() && chars[i] != '}' { i += 1; }
                     let name: String = chars[start..i].iter().collect();
-                    if !name.is_empty() {
+                    let is_ident = name.chars().next()
+                        .map(|c| c.is_alphabetic() || c == '_')
+                        .unwrap_or(false);
+                    if is_ident {
                         referenced.insert(name);
                     }
                     i += 1;
@@ -266,6 +334,28 @@ fn validate_expr(
             }
         }
         _ => {}
+    }
+}
+
+/// Return the type name of a literal expression, if it is one.
+fn literal_type(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::IntLit(_, _) => Some("u64".into()),
+        Expr::FloatLit(_, _) => Some("f64".into()),
+        Expr::StringLit(_, _) => Some("String".into()),
+        _ => None, // wire references, calls — type not known from the literal
+    }
+}
+
+/// Check if a literal type is compatible with a declared parameter type.
+fn types_compatible(lit_type: &str, declared: &str) -> bool {
+    match (lit_type, declared) {
+        ("u64", "u64") => true,
+        ("f64", "f64") => true,
+        ("String", "String") => true,
+        // u64 literal can be used where f64 is expected (implicit widening)
+        ("u64", "f64") => true,
+        _ => false,
     }
 }
 
@@ -286,6 +376,9 @@ fn collect_references(expr: &Expr, referenced: &mut HashSet<String>) {
             for e in elems { collect_references(e, referenced); }
         }
         Expr::StringLit(s, _) => {
+            // Extract {name} references, but only valid identifiers
+            // (starts with alpha/underscore). Skips format specifiers
+            // like {:05} or {:.2} which start with ':' or '.'.
             let chars: Vec<char> = s.chars().collect();
             let mut i = 0;
             while i < chars.len() {
@@ -294,7 +387,10 @@ fn collect_references(expr: &Expr, referenced: &mut HashSet<String>) {
                     let start = i;
                     while i < chars.len() && chars[i] != '}' { i += 1; }
                     let name: String = chars[start..i].iter().collect();
-                    if !name.is_empty() { referenced.insert(name); }
+                    let is_ident = name.chars().next()
+                        .map(|c| c.is_alphabetic() || c == '_')
+                        .unwrap_or(false);
+                    if is_ident { referenced.insert(name); }
                     i += 1;
                 } else {
                     i += 1;
@@ -372,7 +468,17 @@ pub fn compile_ast(file: &GkFile) -> Result<GkKernel, String> {
 
 /// Compile a parsed AST with module resolution from a source directory.
 pub fn compile_ast_with_path(file: &GkFile, source_dir: Option<&Path>) -> Result<GkKernel, String> {
-    let mut compiler = Compiler::new(source_dir.map(|p| p.to_path_buf()));
+    compile_ast_strict(file, source_dir, false)
+}
+
+/// Compile a parsed AST with module resolution and optional strict mode.
+///
+/// When `strict` is true, the compiler enforces:
+/// - Explicit `coordinates := (...)` declaration (no inference)
+/// - All module arguments must be named (no positional)
+/// - All module inputs must be provided by the caller (no fallthrough)
+pub fn compile_ast_strict(file: &GkFile, source_dir: Option<&Path>, strict: bool) -> Result<GkKernel, String> {
+    let mut compiler = Compiler::new(source_dir.map(|p| p.to_path_buf()), strict);
     compiler.compile(file)
 }
 
@@ -386,24 +492,40 @@ struct Compiler {
     source_dir: Option<PathBuf>,
     /// Cache of already-resolved module ASTs: module_name → (inputs, statements).
     module_cache: std::collections::HashMap<String, ResolvedModule>,
+    /// When true, enforce strict validation:
+    /// - Require explicit `coordinates := (...)` declaration
+    /// - Require all module arguments to be named (no positional)
+    /// - Require all module inputs to be provided by caller (no fallthrough)
+    strict: bool,
 }
 
 /// A resolved GK module ready for inlining.
 struct ResolvedModule {
-    /// Inferred input names (unbound references), sorted.
+    /// Input parameter names (from formal signature or inferred).
     inputs: Vec<String>,
+    /// Input parameter types (from formal signature; empty if inferred).
+    input_types: Vec<Option<String>>,
+    /// Output binding names (from formal signature or last binding).
+    outputs: Vec<String>,
+    /// Output types (from formal signature; empty if inferred).
+    /// Reserved for future strict-mode type checking of downstream consumers.
+    #[allow(dead_code)]
+    output_types: Vec<Option<String>>,
+    /// Whether this module has a formal typed signature.
+    is_formal: bool,
     /// The module's AST statements.
     statements: Vec<Statement>,
 }
 
 impl Compiler {
-    fn new(source_dir: Option<PathBuf>) -> Self {
+    fn new(source_dir: Option<PathBuf>, strict: bool) -> Self {
         Self {
             coord_names: Vec::new(),
             all_names: Vec::new(),
             anon_counter: 0,
             source_dir,
             module_cache: std::collections::HashMap::new(),
+            strict,
         }
     }
 
@@ -431,7 +553,22 @@ impl Compiler {
         };
 
         let module_inputs = module.inputs.clone();
+        let module_input_types = module.input_types.clone();
+        let module_outputs = module.outputs.clone();
+        let module_is_formal = module.is_formal;
         let module_stmts = module.statements.clone();
+
+        // Strict mode: require all module arguments to be named
+        if self.strict {
+            for arg in caller_args {
+                if matches!(arg, Arg::Positional(_)) {
+                    return Err(format!(
+                        "strict mode: module '{}' called with positional args — use named args (e.g., param_name: value)",
+                        func_name
+                    ));
+                }
+            }
+        }
 
         // Build argument mapping: module input name → caller's wire/const
         // Named args map by name, positional args map by order of module_inputs
@@ -449,6 +586,79 @@ impl Compiler {
                         positional_idx += 1;
                     }
                 }
+            }
+        }
+
+        // Strict mode: require all module inputs to be provided by the caller
+        if self.strict {
+            for input_name in &module_inputs {
+                if !arg_map.contains_key(input_name) {
+                    return Err(format!(
+                        "strict mode: module '{}' input '{}' not provided — add '{}: <value>'",
+                        func_name, input_name, input_name
+                    ));
+                }
+            }
+        }
+
+        // --- Type validation for formal modules ---
+        if module_is_formal {
+            // Arity check
+            let provided = arg_map.len();
+            let expected = module_inputs.len();
+            if provided != expected {
+                return Err(format!(
+                    "module '{}' expects {} arguments, got {}",
+                    func_name, expected, provided
+                ));
+            }
+
+            // Named argument validation: all names must match declared params
+            for arg_name in arg_map.keys() {
+                if !module_inputs.contains(arg_name) {
+                    return Err(format!(
+                        "module '{}' has no parameter named '{}' — available: {}",
+                        func_name, arg_name, module_inputs.join(", ")
+                    ));
+                }
+            }
+
+            // Missing parameter check
+            for input_name in &module_inputs {
+                if !arg_map.contains_key(input_name) {
+                    return Err(format!(
+                        "module '{}' parameter '{}' not provided",
+                        func_name, input_name
+                    ));
+                }
+            }
+
+            // Literal type checking against declared param types
+            for (i, input_name) in module_inputs.iter().enumerate() {
+                if let Some(Some(declared_type)) = module_input_types.get(i) {
+                    if let Some(arg) = arg_map.get(input_name) {
+                        let expr = match arg {
+                            Arg::Positional(e) | Arg::Named(_, e) => e,
+                        };
+                        if let Some(lit_type) = literal_type(expr) {
+                            if !types_compatible(&lit_type, declared_type) {
+                                return Err(format!(
+                                    "module '{}' parameter '{}' expects {}, got {} literal",
+                                    func_name, input_name, declared_type, lit_type
+                                ));
+                            }
+                        }
+                        // Wire arguments: type checked when the assembler validates wiring
+                    }
+                }
+            }
+
+            // Output arity check
+            if targets.len() > module_outputs.len() {
+                return Err(format!(
+                    "module '{}' produces {} outputs, but {} targets requested",
+                    func_name, module_outputs.len(), targets.len()
+                ));
             }
         }
 
@@ -476,39 +686,21 @@ impl Compiler {
                     );
                     self.compile_binding(asm, &prefixed_targets, &rewritten)?;
                 }
+                Statement::ModuleDef(_) => {} // nested module defs not inlined
             }
         }
 
         // Wire module outputs to caller's targets.
-        // Module outputs = its terminal bindings. We take the last binding
-        // for each target name.
-        let module_output_names: Vec<String> = module_stmts.iter().flat_map(|s| {
-            match s {
-                Statement::CycleBinding(b) => b.targets.clone(),
-                Statement::InitBinding(b) => vec![b.name.clone()],
-                _ => vec![],
-            }
-        }).collect();
-
-        // Map caller targets to module outputs (by position)
+        // Use the module's declared output names (from formal signature
+        // or inferred from binding names).
         for (i, target) in targets.iter().enumerate() {
-            let module_output = if i < module_output_names.len() {
-                // Use the last output (terminal binding)
-                &module_output_names[module_output_names.len() - 1 - (targets.len() - 1 - i)]
-            } else {
-                return Err(format!(
-                    "module '{func_name}' has {} outputs but caller expects {}",
-                    module_output_names.len(), targets.len()
-                ));
-            };
-            let prefixed = format!("{prefix}{module_output}");
-            // Add an identity node aliasing the prefixed output to the caller's target
-            asm.add_node(
-                target,
-                Box::new(Identity::new()),
-                vec![WireRef::node(&prefixed)],
-            );
-            self.all_names.push(target.clone());
+            let output_name = module_outputs.get(i).cloned()
+                .unwrap_or_else(|| func_name.to_string());
+            let prefixed = format!("{prefix}{output_name}");
+            // Register as output directly — don't add to all_names since
+            // the main compile loop would try to add_output(target, node(target))
+            // which would fail (target is an alias, not a node).
+            asm.add_output(target, WireRef::node(&prefixed));
         }
 
         Ok(true)
@@ -569,61 +761,162 @@ impl Compiler {
         }
     }
 
-    /// Resolve a module by name: search for .gk files in source_dir.
+    /// Resolve a module by name.
+    ///
+    /// Resolution order:
+    /// 1. Cache (already resolved)
+    /// 2. <name>.gk in source_dir (workload-local)
+    /// 3. Any .gk in source_dir containing a matching binding
+    /// 4. Embedded stdlib
     fn resolve_module(&mut self, name: &str) -> Result<Option<&ResolvedModule>, String> {
         if self.module_cache.contains_key(name) {
             return Ok(self.module_cache.get(name));
         }
 
-        let source_dir = match &self.source_dir {
-            Some(d) => d.clone(),
-            None => return Ok(None),
-        };
+        // Strategy 1-2: filesystem search in source_dir
+        if let Some(source_dir) = &self.source_dir {
+            let source_dir = source_dir.clone();
 
-        // Strategy 1: look for <name>.gk in source_dir
-        let module_path = source_dir.join(format!("{name}.gk"));
-        if module_path.exists() {
-            let source = std::fs::read_to_string(&module_path)
-                .map_err(|e| format!("failed to read module '{}': {e}", module_path.display()))?;
-            let resolved = Self::parse_module(&source, name)?;
-            self.module_cache.insert(name.to_string(), resolved);
-            return Ok(self.module_cache.get(name));
-        }
+            // 1. Look for <name>.gk in source_dir
+            let module_path = source_dir.join(format!("{name}.gk"));
+            if module_path.exists() {
+                let source = std::fs::read_to_string(&module_path)
+                    .map_err(|e| format!("failed to read module '{}': {e}", module_path.display()))?;
+                let resolved = Self::parse_module(&source, name)?;
+                self.module_cache.insert(name.to_string(), resolved);
+                return Ok(self.module_cache.get(name));
+            }
 
-        // Strategy 2: scan all .gk files in source_dir for a matching export
-        if let Ok(entries) = std::fs::read_dir(&source_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("gk") {
-                    let source = match std::fs::read_to_string(&path) {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
-                    // Check if any binding in this file matches the function name
-                    if let Ok(resolved) = Self::parse_module(&source, name) {
-                        self.module_cache.insert(name.to_string(), resolved);
-                        return Ok(self.module_cache.get(name));
+            // 2. Scan all .gk files in source_dir for a matching export
+            if let Ok(entries) = std::fs::read_dir(&source_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("gk") {
+                        let source = match std::fs::read_to_string(&path) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                        if let Ok(resolved) = Self::parse_module(&source, name) {
+                            self.module_cache.insert(name.to_string(), resolved);
+                            return Ok(self.module_cache.get(name));
+                        }
                     }
                 }
             }
         }
 
+        // Strategy 3: embedded stdlib
+        if let Some(resolved) = self.resolve_stdlib(name)? {
+            self.module_cache.insert(name.to_string(), resolved);
+            return Ok(self.module_cache.get(name));
+        }
+
         Ok(None)
     }
 
-    /// Parse a .gk source and extract a module definition.
+    /// Search the embedded stdlib for a module.
+    fn resolve_stdlib(&self, name: &str) -> Result<Option<ResolvedModule>, String> {
+        for (_filename, source) in STDLIB_MODULES {
+            if let Ok(resolved) = Self::parse_module(source, name) {
+                return Ok(Some(resolved));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Parse a .gk source and extract a module by name.
     ///
-    /// Infers inputs (unbound references) and validates that the module
-    /// has at least one output binding.
-    fn parse_module(source: &str, _expected_name: &str) -> Result<ResolvedModule, String> {
+    /// First checks for a formal `ModuleDef` statement matching the name.
+    /// If found, uses its typed signature and body directly.
+    /// Otherwise, falls back to subgraph extraction by binding name.
+    fn parse_module(source: &str, target_name: &str) -> Result<ResolvedModule, String> {
         let tokens = lexer::lex(source)?;
         let ast = parser::parse(tokens)?;
 
-        // Collect defined names and referenced names
+        // Strategy 1: look for a formal ModuleDef with matching name
+        for stmt in &ast.statements {
+            if let Statement::ModuleDef(mdef) = stmt {
+                if mdef.name == target_name {
+                    let inputs: Vec<String> = mdef.params.iter()
+                        .map(|p| p.name.clone())
+                        .collect();
+                    let input_types: Vec<Option<String>> = mdef.params.iter()
+                        .map(|p| Some(p.typ.clone()))
+                        .collect();
+                    let outputs: Vec<String> = mdef.outputs.iter()
+                        .map(|o| o.name.clone())
+                        .collect();
+                    let output_types: Vec<Option<String>> = mdef.outputs.iter()
+                        .map(|o| Some(o.typ.clone()))
+                        .collect();
+                    return Ok(ResolvedModule {
+                        inputs,
+                        input_types,
+                        outputs,
+                        output_types,
+                        is_formal: true,
+                        statements: mdef.body.clone(),
+                    });
+                }
+            }
+        }
+
+        // Strategy 2: subgraph extraction by binding name
+        // Build a map: binding name → (statement index, references)
+        let mut name_to_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut stmt_refs: Vec<HashSet<String>> = Vec::new();
+
+        for (i, stmt) in ast.statements.iter().enumerate() {
+            let (names, expr) = match stmt {
+                Statement::Coordinates(_, _) | Statement::ModuleDef(_) => {
+                    stmt_refs.push(HashSet::new());
+                    continue;
+                }
+                Statement::InitBinding(b) => (vec![b.name.clone()], &b.value),
+                Statement::CycleBinding(b) => (b.targets.clone(), &b.value),
+            };
+            for name in &names {
+                name_to_idx.insert(name.clone(), i);
+            }
+            let mut refs = HashSet::new();
+            collect_references(expr, &mut refs);
+            stmt_refs.push(refs);
+        }
+
+        // Check that the target binding exists in this file
+        let target_idx = match name_to_idx.get(target_name) {
+            Some(&idx) => idx,
+            None => return Err(format!("no binding named '{target_name}' in module")),
+        };
+
+        // Trace backward from target to find all needed statements
+        let mut needed: HashSet<usize> = HashSet::new();
+        let mut worklist = vec![target_idx];
+        while let Some(idx) = worklist.pop() {
+            if !needed.insert(idx) { continue; }
+            if idx < stmt_refs.len() {
+                for ref_name in &stmt_refs[idx] {
+                    if let Some(&dep_idx) = name_to_idx.get(ref_name) {
+                        worklist.push(dep_idx);
+                    }
+                }
+            }
+        }
+
+        // Extract only the needed statements, preserving order
+        let extracted: Vec<Statement> = ast.statements.iter().enumerate()
+            .filter(|(i, _)| needed.contains(i))
+            .map(|(_, s)| s.clone())
+            .collect();
+
+        if extracted.is_empty() {
+            return Err(format!("empty subgraph for '{target_name}'"));
+        }
+
+        // Infer inputs: referenced names not defined within the subgraph
         let mut defined: HashSet<String> = HashSet::new();
         let mut referenced: HashSet<String> = HashSet::new();
-
-        for stmt in &ast.statements {
+        for stmt in &extracted {
             match stmt {
                 Statement::Coordinates(names, _) => {
                     for n in names { defined.insert(n.clone()); }
@@ -632,12 +925,12 @@ impl Compiler {
                 Statement::CycleBinding(b) => {
                     for t in &b.targets { defined.insert(t.clone()); }
                 }
+                Statement::ModuleDef(_) => {}
             }
         }
-
-        for stmt in &ast.statements {
+        for stmt in &extracted {
             let expr = match stmt {
-                Statement::Coordinates(_, _) => continue,
+                Statement::Coordinates(_, _) | Statement::ModuleDef(_) => continue,
                 Statement::InitBinding(b) => &b.value,
                 Statement::CycleBinding(b) => &b.value,
             };
@@ -649,13 +942,13 @@ impl Compiler {
             .collect();
         inputs.sort();
 
-        if inputs.is_empty() && ast.statements.is_empty() {
-            return Err("module has no statements".into());
-        }
-
         Ok(ResolvedModule {
+            input_types: inputs.iter().map(|_| None).collect(),
             inputs,
-            statements: ast.statements,
+            outputs: vec![target_name.to_string()],
+            output_types: vec![None],
+            is_formal: false,
+            statements: extracted,
         })
     }
 
@@ -667,12 +960,21 @@ impl Compiler {
             }
         }
 
+        // Strict mode: require explicit coordinates declaration
+        if self.strict && self.coord_names.is_empty() {
+            return Err(
+                "strict mode: no 'coordinates' declaration — add 'coordinates := (cycle)' \
+                 or equivalent to declare coordinate inputs explicitly".into()
+            );
+        }
+
         // If no explicit coordinates, infer from unbound references
         if self.coord_names.is_empty() {
             let defined: HashSet<String> = file.statements.iter().flat_map(|stmt| {
                 match stmt {
                     Statement::InitBinding(b) => vec![b.name.clone()],
                     Statement::CycleBinding(b) => b.targets.clone(),
+                    Statement::ModuleDef(m) => vec![m.name.clone()],
                     Statement::Coordinates(_, _) => vec![],
                 }
             }).collect();
@@ -680,7 +982,7 @@ impl Compiler {
             let mut referenced: HashSet<String> = HashSet::new();
             for stmt in &file.statements {
                 let expr = match stmt {
-                    Statement::Coordinates(_, _) => continue,
+                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) => continue,
                     Statement::InitBinding(b) => &b.value,
                     Statement::CycleBinding(b) => &b.value,
                 };
@@ -721,12 +1023,122 @@ impl Compiler {
                         &b.value,
                     )?;
                 }
+                Statement::ModuleDef(_) => {
+                    // Module definitions are not executed — they're
+                    // templates resolved by the module system when
+                    // referenced from another file/kernel.
+                }
             }
         }
 
         // Expose all top-level named bindings as outputs
         for name in &self.all_names {
             asm.add_output(name, WireRef::node(name));
+        }
+
+        asm.compile().map_err(|e| format!("{e}"))
+    }
+
+    /// Compile with optional output filtering for dead code elimination.
+    ///
+    /// When `required_outputs` is `Some`, only those named bindings are
+    /// exposed as kernel outputs. The assembler's DCE pass then prunes
+    /// all nodes not reachable from those outputs.
+    ///
+    /// When `None`, behaves identically to `compile()`.
+    fn compile_filtered(
+        &mut self,
+        file: &GkFile,
+        required_outputs: Option<&[String]>,
+    ) -> Result<GkKernel, String> {
+        // First pass: find explicit coordinates
+        for stmt in &file.statements {
+            if let Statement::Coordinates(names, _) = stmt {
+                self.coord_names = names.clone();
+            }
+        }
+
+        // Strict mode: require explicit coordinates declaration
+        if self.strict && self.coord_names.is_empty() {
+            return Err(
+                "strict mode: no 'coordinates' declaration — add 'coordinates := (cycle)' \
+                 or equivalent to declare coordinate inputs explicitly".into()
+            );
+        }
+
+        // If no explicit coordinates, infer from unbound references
+        if self.coord_names.is_empty() {
+            let defined: HashSet<String> = file.statements.iter().flat_map(|stmt| {
+                match stmt {
+                    Statement::InitBinding(b) => vec![b.name.clone()],
+                    Statement::CycleBinding(b) => b.targets.clone(),
+                    Statement::ModuleDef(m) => vec![m.name.clone()],
+                    Statement::Coordinates(_, _) => vec![],
+                }
+            }).collect();
+
+            let mut referenced: HashSet<String> = HashSet::new();
+            for stmt in &file.statements {
+                let expr = match stmt {
+                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) => continue,
+                    Statement::InitBinding(b) => &b.value,
+                    Statement::CycleBinding(b) => &b.value,
+                };
+                collect_references(expr, &mut referenced);
+            }
+
+            let mut inferred: Vec<String> = referenced.into_iter()
+                .filter(|name| !defined.contains(name))
+                .collect();
+            inferred.sort();
+            self.coord_names = inferred;
+        }
+
+        if self.coord_names.is_empty() {
+            return Err("no coordinate inputs found — reference at least one unbound name (e.g., 'cycle')".into());
+        }
+
+        let mut asm = GkAssembler::new(self.coord_names.clone());
+
+        // Second pass: process all bindings into the assembler
+        for stmt in &file.statements {
+            match stmt {
+                Statement::Coordinates(_, _) => {}
+                Statement::InitBinding(b) => {
+                    self.compile_binding(
+                        &mut asm,
+                        &[b.name.clone()],
+                        &b.value,
+                    )?;
+                }
+                Statement::CycleBinding(b) => {
+                    self.compile_binding(
+                        &mut asm,
+                        &b.targets,
+                        &b.value,
+                    )?;
+                }
+                Statement::ModuleDef(_) => {}
+            }
+        }
+
+        // Expose outputs: only the required set, or all if no filter
+        match required_outputs {
+            Some(required) => {
+                for name in required {
+                    if self.all_names.contains(name) {
+                        asm.add_output(name, WireRef::node(name));
+                    }
+                    // Silently skip names not in this GK source — the
+                    // caller may reference bindings from other sources
+                    // or coordinates that pass through directly.
+                }
+            }
+            None => {
+                for name in &self.all_names {
+                    asm.add_output(name, WireRef::node(name));
+                }
+            }
         }
 
         asm.compile().map_err(|e| format!("{e}"))
@@ -952,14 +1364,14 @@ impl ConstArg {
 /// `consts` are the assembly-time constant arguments.
 fn build_node(
     func: &str,
-    _wires: &[WireRef],
+    wires: &[WireRef],
     consts: &[ConstArg],
 ) -> Result<Box<dyn GkNode>, String> {
     match func {
         // --- Hashing ---
         "hash" => Ok(Box::new(Hash64::new())),
 
-        // --- Arithmetic ---
+        // --- Binary arithmetic (constant parameter) ---
         "add" => Ok(Box::new(AddU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(0)))),
         "mul" => Ok(Box::new(MulU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1)))),
         "div" => Ok(Box::new(DivU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1)))),
@@ -976,6 +1388,21 @@ fn build_node(
 
         // --- Identity & constants ---
         "identity" => Ok(Box::new(Identity::new())),
+
+        // --- Printf (variadic, needs format string + wire count) ---
+        "printf" => {
+            use crate::nodes::format::Printf;
+            use crate::node::PortType;
+            let fmt = consts.first()
+                .map(|c| c.as_str())
+                .unwrap_or("{}");
+            // Infer input types: all wire inputs default to u64.
+            // The Printf node handles any Value type at eval time,
+            // so u64 ports work as the default — the actual value
+            // type is determined by what's wired upstream.
+            let types: Vec<PortType> = (0..wires.len()).map(|_| PortType::U64).collect();
+            Ok(Box::new(Printf::new(&fmt, &types)))
+        }
 
         // --- Conversions ---
         "unit_interval" => Ok(Box::new(UnitInterval::new())),
@@ -1069,7 +1496,63 @@ fn build_node(
             consts.get(1).map(|c| c.as_str()).unwrap_or(""),
         ))),
 
-        _ => Err(format!("unknown function: {func}")),
+        // --- Probability modeling ---
+        "fair_coin" => Ok(Box::new(FairCoin::new())),
+        "unfair_coin" => Ok(Box::new(UnfairCoin::new(
+            consts.get(0).map(|c| c.as_f64()).unwrap_or(0.5),
+        ))),
+        "select" => Ok(Box::new(Select::new())),
+        "chance" => Ok(Box::new(Chance::new(
+            consts.get(0).map(|c| c.as_f64()).unwrap_or(0.5),
+        ))),
+        "n_of" => Ok(Box::new(NofM::new(
+            consts.get(0).map(|c| c.as_u64()).unwrap_or(1),
+            consts.get(1).map(|c| c.as_u64()).unwrap_or(2),
+        ))),
+        "one_of" => {
+            let values: Vec<String> = consts.iter().map(|c| c.as_str().to_string()).collect();
+            Ok(Box::new(OneOf::new(values)))
+        }
+        "one_of_weighted" => Ok(Box::new(OneOfWeighted::new(
+            consts.first().map(|c| c.as_str()).unwrap_or("a:1"),
+        ))),
+        "blend" => Ok(Box::new(Blend::new(
+            consts.first().map(|c| c.as_f64()).unwrap_or(0.5),
+        ))),
+
+        // --- PCG RNG ---
+        "pcg" => Ok(Box::new(crate::nodes::pcg::Pcg::new(
+            consts.get(0).map(|c| c.as_u64()).unwrap_or(0),
+            consts.get(1).map(|c| c.as_u64()).unwrap_or(0),
+        ))),
+        "pcg_stream" => Ok(Box::new(crate::nodes::pcg::PcgStream::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
+        ))),
+        "cycle_walk" => Ok(Box::new(crate::nodes::pcg::CycleWalk::new(
+            consts.get(0).map(|c| c.as_u64()).unwrap_or(1000),
+            consts.get(1).map(|c| c.as_u64()).unwrap_or(0),
+            consts.get(2).map(|c| c.as_u64()).unwrap_or(0),
+        ))),
+
+        _ => {
+            // Check registry for variadic functions before giving up.
+            // The registry carries the constructor — no name-to-type
+            // mapping needed here.
+            if let Some(sig) = registry::lookup(func) {
+                if sig.variadic {
+                    if wires.is_empty() {
+                        if let Some(id) = sig.identity {
+                            return Ok(Box::new(ConstU64::new(id)));
+                        }
+                        return Err(format!("variadic function '{func}' requires at least one input"));
+                    }
+                    if let Some(ctor) = sig.variadic_ctor {
+                        return Ok(ctor(wires.len()));
+                    }
+                }
+            }
+            Err(format!("unknown function: {func}"))
+        }
     }
 }
 
@@ -1261,5 +1744,124 @@ mod tests {
         let (result, report) = compile_gk_checked(src);
         assert!(!report.has_errors());
         assert!(result.is_ok());
+    }
+
+    // --- Strict mode tests ---
+
+    #[test]
+    fn strict_requires_explicit_coordinates() {
+        // Without coordinates declaration, strict mode should error
+        let src = "h := hash(cycle)";
+        let result = compile_gk_strict(src, None, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("strict mode"), "expected strict error, got: {err}");
+        assert!(err.contains("coordinates"), "expected coordinates mention, got: {err}");
+    }
+
+    #[test]
+    fn strict_accepts_explicit_coordinates() {
+        // With explicit coordinates, strict mode should succeed
+        let src = r#"
+            coordinates := (cycle)
+            h := hash(cycle)
+        "#;
+        let mut kernel = compile_gk_strict(src, None, true).unwrap();
+        kernel.set_coordinates(&[42]);
+        let h = kernel.pull("h").as_u64();
+        assert_ne!(h, 42); // hashed, not identity
+    }
+
+    #[test]
+    fn non_strict_infers_coordinates() {
+        // Without strict, coordinate inference works as before
+        let src = "h := hash(cycle)";
+        let mut kernel = compile_gk_strict(src, None, false).unwrap();
+        kernel.set_coordinates(&[42]);
+        assert_ne!(kernel.pull("h").as_u64(), 42);
+    }
+
+    // --- Dead code elimination tests ---
+
+    #[test]
+    fn dce_filters_to_required_outputs() {
+        // GK source defines three bindings but we only request one
+        let src = r#"
+            coordinates := (cycle)
+            a := hash(cycle)
+            b := mod(a, 100)
+            c := add(cycle, 1)
+        "#;
+        let required = vec!["b".to_string()];
+        let mut kernel = compile_gk_with_outputs(src, None, &required, false).unwrap();
+        kernel.set_coordinates(&[42]);
+
+        // "b" should be available and correct
+        let b = kernel.pull("b").as_u64();
+        assert!(b < 100, "b={b}");
+
+        // "a" and "c" should NOT be in the output map
+        let outputs = kernel.output_names();
+        assert!(outputs.contains(&"b"), "should contain 'b'");
+        assert!(!outputs.contains(&"a"), "should not contain pruned 'a'");
+        assert!(!outputs.contains(&"c"), "should not contain pruned 'c'");
+    }
+
+    #[test]
+    fn dce_preserves_upstream_dependencies() {
+        // Request "result" which depends on "h" — both the result node
+        // and its upstream "h" node must be kept, but "unrelated" is pruned
+        let src = r#"
+            coordinates := (cycle)
+            h := hash(cycle)
+            result := mod(h, 1000)
+            unrelated := add(cycle, 999)
+        "#;
+        let required = vec!["result".to_string()];
+        let mut kernel = compile_gk_with_outputs(src, None, &required, false).unwrap();
+        kernel.set_coordinates(&[42]);
+
+        let result = kernel.pull("result").as_u64();
+        assert!(result < 1000, "result={result}");
+
+        let outputs = kernel.output_names();
+        assert!(!outputs.contains(&"unrelated"), "unrelated should be pruned");
+    }
+
+    #[test]
+    fn dce_empty_required_compiles_all() {
+        // Empty required_outputs should produce the same kernel as compile_gk
+        let src = r#"
+            coordinates := (cycle)
+            a := hash(cycle)
+            b := mod(a, 100)
+        "#;
+        let kernel_all = compile_gk(src).unwrap();
+        let kernel_empty = compile_gk_with_outputs(src, None, &[], false).unwrap();
+
+        assert_eq!(kernel_all.output_names().len(), kernel_empty.output_names().len());
+    }
+
+    #[test]
+    fn dce_multiple_required_outputs() {
+        // Request two of three bindings
+        let src = r#"
+            coordinates := (cycle)
+            x := hash(cycle)
+            y := mod(x, 50)
+            z := add(cycle, 10)
+        "#;
+        let required = vec!["y".to_string(), "z".to_string()];
+        let mut kernel = compile_gk_with_outputs(src, None, &required, false).unwrap();
+        kernel.set_coordinates(&[5]);
+
+        assert!(kernel.pull("y").as_u64() < 50);
+        assert_eq!(kernel.pull("z").as_u64(), 15);
+
+        let outputs = kernel.output_names();
+        assert!(outputs.contains(&"y"));
+        assert!(outputs.contains(&"z"));
+        // "x" is an upstream dep of "y" but not a requested output
+        assert!(!outputs.contains(&"x"), "x should not be in outputs");
     }
 }

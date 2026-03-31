@@ -270,7 +270,7 @@ impl GkAssembler {
         }
 
         // Check if any steps are fallbacks
-        let has_fallback = jit_steps.iter().any(|(op, _, _)| matches!(op, crate::jit::JitOp::Fallback(_)));
+        let has_fallback = jit_steps.iter().any(|(op, _, _)| matches!(op, crate::jit::JitOp::Fallback));
         if has_fallback {
             return Err("some nodes cannot be JIT-compiled; falling back to Phase 2".into());
         }
@@ -388,7 +388,10 @@ impl GkAssembler {
                     }
                 };
 
-                if source_type == expected_type {
+                // Printf accepts any input type — skip type checking for it
+                let skip_type_check = all_nodes[node_idx].node.meta().name == "printf";
+
+                if skip_type_check || source_type == expected_type {
                     node_wiring.push(source);
                 } else if let Some(adapter) = auto_adapter(source_type, expected_type) {
                     let adapter_name = format!("__adapt_{adapter_count}");
@@ -435,12 +438,45 @@ impl GkAssembler {
             resolved_wiring.push(Vec::new());
         }
 
-        // Topological sort (Kahn's algorithm)
+        // --- Dead code elimination ---
+        //
+        // Trace backward from output nodes to find all reachable nodes.
+        // Only reachable nodes participate in the topological sort and
+        // end up in the final kernel. This prunes unused binding chains
+        // when the caller requests a subset of outputs.
         let node_count = all_nodes.len();
+        let mut reachable = vec![false; node_count];
+        {
+            let mut worklist: Vec<usize> = Vec::new();
+            // Seed with output nodes
+            for wire_ref in self.outputs.values() {
+                if let WireRef::Node(node_name, _) = wire_ref {
+                    if let Some(&idx) = all_name_to_idx.get(node_name) {
+                        worklist.push(idx);
+                    }
+                }
+            }
+            // Walk backward through wiring
+            while let Some(idx) = worklist.pop() {
+                if reachable[idx] { continue; }
+                reachable[idx] = true;
+                for source in &resolved_wiring[idx] {
+                    if let WireSource::NodeOutput(upstream, _) = source {
+                        if !reachable[*upstream] {
+                            worklist.push(*upstream);
+                        }
+                    }
+                }
+            }
+        }
+        let live_count = reachable.iter().filter(|&&r| r).count();
+
+        // Topological sort (Kahn's algorithm) over reachable nodes only
         let mut in_degree = vec![0usize; node_count];
         let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); node_count];
 
         for (node_idx, wiring) in resolved_wiring.iter().enumerate() {
+            if !reachable[node_idx] { continue; }
             for source in wiring {
                 if let WireSource::NodeOutput(upstream, _) = source {
                     in_degree[node_idx] += 1;
@@ -450,9 +486,9 @@ impl GkAssembler {
         }
 
         let mut queue: Vec<usize> = (0..node_count)
-            .filter(|i| in_degree[*i] == 0)
+            .filter(|i| reachable[*i] && in_degree[*i] == 0)
             .collect();
-        let mut sorted_order: Vec<usize> = Vec::with_capacity(node_count);
+        let mut sorted_order: Vec<usize> = Vec::with_capacity(live_count);
 
         while let Some(idx) = queue.pop() {
             sorted_order.push(idx);
@@ -464,7 +500,7 @@ impl GkAssembler {
             }
         }
 
-        if sorted_order.len() != node_count {
+        if sorted_order.len() != live_count {
             return Err(AssemblyError::CycleDetected);
         }
 

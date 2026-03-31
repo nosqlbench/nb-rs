@@ -1,0 +1,99 @@
+// Copyright 2024-2026 nosqlbench contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// @category: Distributions
+// distributions.gk — Distribution sampling conveniences
+//
+// Each module composes hash → unit_interval → icd_* into a single
+// call. Use these when you want a shaped random value from a u64
+// input without manually wiring the three-step chain.
+
+// Sample from a normal (Gaussian) distribution.
+//
+// The most commonly used distribution for realistic continuous data:
+// heights, temperatures, scores, response times. The output is
+// unbounded — use clamp_f64 downstream if you need hard limits.
+//
+// Equivalent to Java nosqlbench's Normal(mean, stddev, 'hash').
+//
+// Example:
+//   temperature := normal_sample(input: cycle, mean: 22.0, stddev: 3.0)
+//   age := round_to_u64(clamp_f64(normal_sample(input: h, mean: 35.0, stddev: 12.0), 18.0, 90.0))
+//
+// Use for: any measurement that clusters around a central value
+// with symmetric tails.
+normal_sample(input: u64, mean: f64, stddev: f64) -> (value: f64) := {
+    q := unit_interval(hash(input))
+    value := icd_normal(q, mean, stddev)
+}
+
+// Sample from an exponential distribution.
+//
+// Models wait times, inter-arrival intervals, and any "memoryless"
+// process. The rate parameter is 1/mean — rate=0.5 gives mean=2.0.
+// Output is always ≥ 0.
+//
+// Equivalent to Java nosqlbench's Exponential(rate, 'hash').
+//
+// Example:
+//   wait_ms := exponential_sample(input: cycle, rate: 0.1)
+//   // mean wait = 10ms, exponentially distributed
+//
+// Use for: queuing models, time-between-events, decay processes.
+exponential_sample(input: u64, rate: f64) -> (value: f64) := {
+    q := unit_interval(hash(input))
+    value := icd_exponential(q, rate)
+}
+
+// Sample from a continuous uniform distribution in [min, max).
+//
+// Every value in the range is equally likely. This is the simplest
+// distribution — use when you have no reason to prefer any shape.
+//
+// Equivalent to Java nosqlbench's Uniform(min, max, 'hash').
+//
+// Example:
+//   price := uniform_sample(input: cycle, min: 1.0, max: 100.0)
+//
+// Use for: prices, coordinates, any flat random float.
+uniform_sample(input: u64, min: f64, max: f64) -> (value: f64) := {
+    value := lerp(unit_interval(hash(input)), min, max)
+}
+
+// Sample from a Zipf distribution. Returns integer in [1, n].
+//
+// Models power-law rank-frequency distributions: the most popular
+// item is accessed much more often than the rest, with a long tail.
+// Higher exponent = more skewed toward rank 1.
+//
+// Equivalent to Java nosqlbench's Zipf(n, exponent, 'hash').
+//
+// Example:
+//   page_rank := zipf_sample(input: cycle, n: 100000, exponent: 1.2)
+//   // heavily skewed toward low ranks
+//
+// Use for: web page popularity, word frequencies, database hot keys,
+// cache access patterns.
+zipf_sample(input: u64, n: u64, exponent: f64) -> (value: u64) := {
+    q := unit_interval(hash(input))
+    value := round_to_u64(icd_zipf(q, n, exponent))
+}
+
+// Normal sample clamped to [min, max] and rounded to integer.
+//
+// The most common pattern for generating realistic bounded counts:
+// ages, quantities, scores, ratings. Combines normal distribution
+// with hard bounds and integer rounding.
+//
+// Example:
+//   age := bounded_normal_int(input: h, mean: 35.0, stddev: 12.0, min: 18.0, max: 90.0)
+//   quantity := bounded_normal_int(input: h, mean: 5.0, stddev: 2.0, min: 1.0, max: 20.0)
+//
+// Use for: any integer field that should cluster around a mean
+// but never exceed physical limits.
+bounded_normal_int(input: u64, mean: f64, stddev: f64, min: f64, max: f64) -> (value: u64) := {
+    q := unit_interval(hash(input))
+    raw := icd_normal(q, mean, stddev)
+    clamped := clamp_f64(raw, min, max)
+    value := round_to_u64(clamped)
+}

@@ -7,10 +7,16 @@ use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Value};
 
 /// Linear interpolation with fixed endpoints.
 ///
-/// Signature: `(t: f64) -> (f64)`
+/// Signature: `lerp(t: f64, a: f64, b: f64) -> (f64)`
 /// Result: `a + t * (b - a)` where a, b are init-time params.
 ///
-/// When t=0 → a, t=1 → b, t=0.5 → midpoint.
+/// When t=0 the output is a, t=1 gives b, t=0.5 gives the midpoint.
+/// Use after `unit_interval` to map a normalized [0,1) value into an
+/// arbitrary continuous range. Example: `lerp(unit_interval(h), -180.0,
+/// 180.0)` produces a random longitude. Accepts t outside [0,1] for
+/// extrapolation.
+///
+/// JIT level: P3 (compiled_u64 with jit_constants for a and b).
 pub struct LerpConst {
     meta: NodeMeta,
     a: f64,
@@ -53,10 +59,16 @@ impl GkNode for LerpConst {
 
 /// Map a u64 linearly to an f64 range.
 ///
-/// Signature: `(input: u64) -> (f64)`
+/// Signature: `scale_range(input: u64, min: f64, max: f64) -> (f64)`
 /// Maps [0, u64::MAX] to [min, max].
 ///
-/// Convenience: combines UnitInterval + LerpConst.
+/// Convenience node that fuses `unit_interval` + `lerp` into a single
+/// step. Use directly after `hash` when you need a uniform f64 in a
+/// custom range without wiring two separate nodes. Example:
+/// `scale_range(hash(cycle), 0.0, 1000.0)` gives a uniform float in
+/// [0, 1000].
+///
+/// JIT level: P3 (compiled_u64 with jit_constants for min and range).
 pub struct ScaleRange {
     meta: NodeMeta,
     min: f64,
@@ -97,10 +109,18 @@ impl GkNode for ScaleRange {
     fn jit_constants(&self) -> Vec<u64> { vec![self.min.to_bits(), self.range.to_bits()] }
 }
 
-/// Inverse linear interpolation: map [a, b] → [0, 1].
+/// Inverse linear interpolation: map [a, b] to [0, 1].
 ///
-/// Signature: `(input: f64) -> (f64)`
+/// Signature: `inv_lerp(input: f64, a: f64, b: f64) -> (f64)`
 /// Result: `(input - a) / (b - a)`, clamped to [0, 1].
+///
+/// The reverse of `lerp`: normalizes an arbitrary continuous range
+/// back to [0,1]. Use as the first half of a `remap`, or to feed a
+/// domain-specific value into a node that expects unit input. Example:
+/// `inv_lerp(temperature, 32.0, 212.0)` normalizes Fahrenheit to
+/// [0,1]. Output is clamped, so out-of-range inputs saturate.
+///
+/// JIT level: P1 (no compiled_u64; f64 in/out without captured closure).
 pub struct InvLerp {
     meta: NodeMeta,
     a: f64,
@@ -133,8 +153,16 @@ impl GkNode for InvLerp {
 
 /// Remap from one range to another.
 ///
-/// Signature: `(input: f64) -> (f64)`
-/// Maps [in_min, in_max] → [out_min, out_max] linearly.
+/// Signature: `remap(input: f64, in_min: f64, in_max: f64, out_min: f64, out_max: f64) -> (f64)`
+/// Maps [in_min, in_max] to [out_min, out_max] linearly.
+///
+/// Combines `inv_lerp` + `lerp` in one node. Use for unit conversions
+/// or rescaling distribution outputs. Example:
+/// `remap(value, 32.0, 212.0, 0.0, 100.0)` converts Fahrenheit to
+/// Celsius. Unlike `inv_lerp`, the output is not clamped, so
+/// extrapolation is possible.
+///
+/// JIT level: P1 (no compiled_u64; f64 in/out without captured closure).
 pub struct Remap {
     meta: NodeMeta,
     in_min: f64,
@@ -172,8 +200,16 @@ impl GkNode for Remap {
 
 /// Quantize an f64 to the nearest multiple of a step size.
 ///
-/// Signature: `(input: f64) -> (f64)`
+/// Signature: `quantize(input: f64, step: f64) -> (f64)`
 /// Result: `round(input / step) * step`
+///
+/// Snaps continuous values to a discrete grid. Use for rounding
+/// prices to the nearest cent (`quantize(price, 0.01)`), snapping
+/// coordinates to a tile grid (`quantize(x, 16.0)`), or binning
+/// timestamps to fixed intervals. Unlike `discretize`, the output
+/// remains f64 at the grid point, not a bucket index.
+///
+/// JIT level: P3 (compiled_u64 with jit_constants for step).
 pub struct Quantize {
     meta: NodeMeta,
     step: f64,

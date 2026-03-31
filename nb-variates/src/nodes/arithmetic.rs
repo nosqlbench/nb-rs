@@ -2,13 +2,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Arithmetic function nodes.
+//!
+//! Core integer operations for the GK DAG. These are the building blocks
+//! that most workloads compose: hash → mod → add for bounded IDs,
+//! mixed_radix for coordinate decomposition, interleave for combining
+//! independent dimensions.
 
 use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Value};
 
 /// Add a constant to a u64 value (wrapping).
 ///
-/// Signature: `(input: u64) -> (u64)`
-/// Param: `addend: u64`
+/// Signature: `add(input: u64, addend: u64) -> (u64)`
+///
+/// Use for offsetting a bounded range: `mod(h, 100)` gives [0,100),
+/// `add(mod(h, 100), 500)` gives [500,600). Also common with timestamps:
+/// `add(base_epoch, offset)`.
+///
+/// JIT level: P3 (single `iadd` instruction).
 pub struct AddU64 {
     meta: NodeMeta,
     addend: u64,
@@ -41,8 +51,12 @@ impl GkNode for AddU64 {
 
 /// Multiply a u64 value by a constant (wrapping).
 ///
-/// Signature: `(input: u64) -> (u64)`
-/// Param: `factor: u64`
+/// Signature: `mul(input: u64, factor: u64) -> (u64)`
+///
+/// Use for scaling counters to time intervals: `mul(reading_idx, 1000)`
+/// converts a reading index to millisecond offsets. Wraps at 2^64.
+///
+/// JIT level: P3 (single `imul` instruction).
 pub struct MulU64 {
     meta: NodeMeta,
     factor: u64,
@@ -73,10 +87,14 @@ impl GkNode for MulU64 {
     fn jit_constants(&self) -> Vec<u64> { vec![self.factor] }
 }
 
-/// Divide a u64 value by a constant (integer division).
+/// Divide a u64 value by a constant (integer division, toward zero).
 ///
-/// Signature: `(input: u64) -> (u64)`
-/// Param: `divisor: u64`
+/// Signature: `div(input: u64, divisor: u64) -> (u64)`
+///
+/// Use for coarsening: `div(cycle, 100)` groups 100 consecutive cycles
+/// into one bucket. Panics at construction if divisor is 0.
+///
+/// JIT level: P3 (single `udiv` instruction).
 pub struct DivU64 {
     meta: NodeMeta,
     divisor: u64,
@@ -112,10 +130,15 @@ impl GkNode for DivU64 {
     fn jit_constants(&self) -> Vec<u64> { vec![self.divisor] }
 }
 
-/// Modulo of a u64 value by a constant.
+/// Modulo of a u64 value by a constant. Result in [0, modulus).
 ///
-/// Signature: `(input: u64) -> (u64)`
-/// Param: `modulus: u64`
+/// Signature: `mod(input: u64, modulus: u64) -> (u64)`
+///
+/// The most common operation after hash. `mod(hash(cycle), N)` gives a
+/// uniformly distributed integer in [0, N). Also used for cyclic patterns:
+/// `mod(cycle, period)` repeats every `period` cycles.
+///
+/// JIT level: P3 (single `urem` instruction).
 pub struct ModU64 {
     meta: NodeMeta,
     modulus: u64,
@@ -156,10 +179,14 @@ impl GkNode for ModU64 {
     }
 }
 
-/// Clamp a u64 value to `[min, max]`.
+/// Clamp an unsigned integer to [min, max].
 ///
-/// Signature: `(input: u64) -> (u64)`
-/// Params: `min: u64, max: u64`
+/// Signature: `clamp(input: u64, min: u64, max: u64) -> (u64)`
+///
+/// Unlike mod (which wraps), clamp saturates at the boundary. Use when
+/// you want values to pile up at the edges rather than wrap around.
+///
+/// JIT level: P3 (`umax` + `umin`).
 pub struct ClampU64 {
     meta: NodeMeta,
     min: u64,
@@ -199,12 +226,20 @@ impl GkNode for ClampU64 {
 
 /// Decompose a u64 into mixed-radix digits.
 ///
-/// Signature: `(input: u64) -> (u64, u64, ...)`
-/// Param: `radixes: Vec<u64>` — the radix for each output position.
-///   A radix of 0 means "unbounded" (consumes the remainder).
+/// Signature: `mixed_radix(input: u64, radixes...) -> (d0: u64, d1: u64, ...)`
 ///
-/// Example: `MixedRadix([100, 1000, 0])` decomposes `cycle` into
-/// `(cycle % 100, (cycle / 100) % 1000, cycle / 100000)`.
+/// The primary tool for coordinate decomposition. Maps a flat cycle
+/// counter into a multi-dimensional space. Each radix defines the size
+/// of that dimension. A trailing radix of 0 means unbounded (consumes
+/// the remainder).
+///
+/// Example: `(device, reading) := mixed_radix(cycle, 10000, 0)` gives
+/// 10,000 devices with unbounded readings per device.
+///
+/// Traversal is nested-loop, innermost first: d0 increments every cycle,
+/// d1 increments every `radix[0]` cycles, etc.
+///
+/// JIT level: P3 (unrolled urem/udiv chain).
 pub struct MixedRadix {
     meta: NodeMeta,
     radixes: Vec<u64>,
@@ -265,9 +300,16 @@ impl GkNode for MixedRadix {
     fn jit_constants(&self) -> Vec<u64> { self.radixes.clone() }
 }
 
-/// Sum N u64 inputs into one (wrapping).
+/// Sum N u64 inputs (wrapping). Variadic: accepts 0..N wire inputs.
 ///
-/// Signature: `(in_0: u64, in_1: u64, ..., in_N: u64) -> (u64)`
+/// Signature: `sum(in_0: u64, ..., in_N: u64) -> (u64)`
+///
+/// Group theory: identity element is 0 (additive identity).
+/// `sum()` = 0, `sum(a)` = a, `sum(a, b, c)` = a + b + c.
+///
+/// Use for combining multiple values into a single aggregate.
+///
+/// JIT level: P2 (closure with loop).
 pub struct SumN {
     meta: NodeMeta,
 }
@@ -309,9 +351,152 @@ impl GkNode for SumN {
     }
 }
 
-/// Interleave bits from two u64 values into one.
+/// Multiply N u64 inputs (wrapping). Variadic: accepts 0..N wire inputs.
 ///
-/// Signature: `(a: u64, b: u64) -> (u64)`
+/// Signature: `product(in_0: u64, ..., in_N: u64) -> (u64)`
+///
+/// Group theory: identity element is 1 (multiplicative identity).
+/// `product()` = 1, `product(a)` = a, `product(a, b)` = a * b.
+///
+/// JIT level: P2 (closure with loop).
+pub struct ProductN {
+    meta: NodeMeta,
+}
+
+impl ProductN {
+    pub fn new(n: usize) -> Self {
+        let inputs: Vec<Port> = (0..n).map(|i| Port::u64(format!("in_{i}"))).collect();
+        Self {
+            meta: NodeMeta {
+                name: "product".into(),
+                inputs,
+                outputs: vec![Port::u64("output")],
+            },
+        }
+    }
+}
+
+impl GkNode for ProductN {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let mut acc: u64 = 1;
+        for input in inputs {
+            acc = acc.wrapping_mul(input.as_u64());
+        }
+        outputs[0] = Value::U64(acc);
+    }
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        Some(Box::new(|inputs, outputs| {
+            let mut acc: u64 = 1;
+            for &v in inputs { acc = acc.wrapping_mul(v); }
+            outputs[0] = acc;
+        }))
+    }
+}
+
+/// Minimum of N u64 inputs. Variadic: accepts 0..N wire inputs.
+///
+/// Signature: `min(in_0: u64, ..., in_N: u64) -> (u64)`
+///
+/// Lattice: identity element is u64::MAX (top element).
+/// `min()` = u64::MAX, `min(a)` = a, `min(a, b, c)` = smallest.
+///
+/// JIT level: P2 (closure with loop).
+pub struct MinN {
+    meta: NodeMeta,
+}
+
+impl MinN {
+    pub fn new(n: usize) -> Self {
+        let inputs: Vec<Port> = (0..n).map(|i| Port::u64(format!("in_{i}"))).collect();
+        Self {
+            meta: NodeMeta {
+                name: "min".into(),
+                inputs,
+                outputs: vec![Port::u64("output")],
+            },
+        }
+    }
+}
+
+impl GkNode for MinN {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let mut acc: u64 = u64::MAX;
+        for input in inputs {
+            acc = acc.min(input.as_u64());
+        }
+        outputs[0] = Value::U64(acc);
+    }
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        Some(Box::new(|inputs, outputs| {
+            let mut acc: u64 = u64::MAX;
+            for &v in inputs { acc = acc.min(v); }
+            outputs[0] = acc;
+        }))
+    }
+}
+
+/// Maximum of N u64 inputs. Variadic: accepts 0..N wire inputs.
+///
+/// Signature: `max(in_0: u64, ..., in_N: u64) -> (u64)`
+///
+/// Lattice: identity element is 0 (bottom element).
+/// `max()` = 0, `max(a)` = a, `max(a, b, c)` = largest.
+///
+/// JIT level: P2 (closure with loop).
+pub struct MaxN {
+    meta: NodeMeta,
+}
+
+impl MaxN {
+    pub fn new(n: usize) -> Self {
+        let inputs: Vec<Port> = (0..n).map(|i| Port::u64(format!("in_{i}"))).collect();
+        Self {
+            meta: NodeMeta {
+                name: "max".into(),
+                inputs,
+                outputs: vec![Port::u64("output")],
+            },
+        }
+    }
+}
+
+impl GkNode for MaxN {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let mut acc: u64 = 0;
+        for input in inputs {
+            acc = acc.max(input.as_u64());
+        }
+        outputs[0] = Value::U64(acc);
+    }
+
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        Some(Box::new(|inputs, outputs| {
+            let mut acc: u64 = 0;
+            for &v in inputs { acc = acc.max(v); }
+            outputs[0] = acc;
+        }))
+    }
+}
+
+/// Interleave the bits of two u64 values into one (Morton code).
+///
+/// Signature: `interleave(a: u64, b: u64) -> (u64)`
+///
+/// Bit 0 of a → bit 0 of output, bit 0 of b → bit 1, bit 1 of a → bit 2,
+/// etc. This preserves locality from both dimensions — essential for
+/// combining two independent coordinates into a single hash input:
+/// `hash(interleave(device_id, reading_idx))` produces a value that
+/// changes when either dimension changes, with spatial correlation.
+///
+/// JIT level: P3 (extern call).
 pub struct Interleave {
     meta: NodeMeta,
 }
@@ -429,5 +614,73 @@ mod tests {
         let mut out = [Value::None];
         node.eval(&[Value::U64(4_201_337)], &mut out);
         assert_eq!(out[0].as_u64(), 42013);
+    }
+
+    // --- Variadic N-ary tests ---
+
+    #[test]
+    fn sum_variadic() {
+        // 0 inputs → identity = 0
+        let node = SumN::new(0);
+        let mut out = [Value::None];
+        node.eval(&[], &mut out);
+        assert_eq!(out[0].as_u64(), 0);
+
+        // 1 input → passthrough
+        let node = SumN::new(1);
+        node.eval(&[Value::U64(42)], &mut out);
+        assert_eq!(out[0].as_u64(), 42);
+
+        // 3 inputs → fold
+        let node = SumN::new(3);
+        node.eval(&[Value::U64(10), Value::U64(20), Value::U64(30)], &mut out);
+        assert_eq!(out[0].as_u64(), 60);
+    }
+
+    #[test]
+    fn product_variadic() {
+        // 0 inputs → identity = 1
+        let node = ProductN::new(0);
+        let mut out = [Value::None];
+        node.eval(&[], &mut out);
+        assert_eq!(out[0].as_u64(), 1);
+
+        // 1 input → passthrough
+        let node = ProductN::new(1);
+        node.eval(&[Value::U64(7)], &mut out);
+        assert_eq!(out[0].as_u64(), 7);
+
+        // 3 inputs → fold
+        let node = ProductN::new(3);
+        node.eval(&[Value::U64(2), Value::U64(3), Value::U64(7)], &mut out);
+        assert_eq!(out[0].as_u64(), 42);
+    }
+
+    #[test]
+    fn min_variadic() {
+        // 0 inputs → identity = u64::MAX
+        let node = MinN::new(0);
+        let mut out = [Value::None];
+        node.eval(&[], &mut out);
+        assert_eq!(out[0].as_u64(), u64::MAX);
+
+        // 3 inputs → min
+        let node = MinN::new(3);
+        node.eval(&[Value::U64(50), Value::U64(10), Value::U64(30)], &mut out);
+        assert_eq!(out[0].as_u64(), 10);
+    }
+
+    #[test]
+    fn max_variadic() {
+        // 0 inputs → identity = 0
+        let node = MaxN::new(0);
+        let mut out = [Value::None];
+        node.eval(&[], &mut out);
+        assert_eq!(out[0].as_u64(), 0);
+
+        // 3 inputs → max
+        let node = MaxN::new(3);
+        node.eval(&[Value::U64(50), Value::U64(10), Value::U64(30)], &mut out);
+        assert_eq!(out[0].as_u64(), 50);
     }
 }

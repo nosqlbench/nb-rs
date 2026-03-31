@@ -1,0 +1,62 @@
+// Copyright 2024-2026 nosqlbench contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// @category: Permutation
+// identity.gk — Identity and key generation patterns
+//
+// Modules for generating deterministic, bounded, and/or unique IDs.
+// These are the building blocks for primary keys, foreign keys, and
+// entity identifiers in workload templates.
+
+// Deterministic bounded ID from hash.
+//
+// The simplest ID generation pattern: hash the input and mod by the
+// bound. Fast and well-distributed, but NOT collision-free — two
+// different inputs can produce the same ID (birthday paradox).
+//
+// Example:
+//   user_id := hashed_id(input: cycle, bound: 1000000)
+//
+// Use for: non-unique IDs, foreign key references, partition keys
+// where collisions are acceptable. For collision-free IDs, use
+// shuffled_id or euler_circuit instead.
+hashed_id(input: u64, bound: u64) -> (id: u64) := {
+    id := mod(hash(input), bound)
+}
+
+// Bijective permutation of [0, size) via LFSR shuffle.
+//
+// Every input in [0, size) maps to a DIFFERENT output in [0, size).
+// No collisions, no gaps — a true permutation. Uses a Galois LFSR
+// with rejection sampling for non-power-of-2 sizes.
+//
+// Example:
+//   unique_key := shuffled_id(input: cycle, size: 10000000)
+//   // cycle 0..9999999 each produce a different key in [0, 10M)
+//
+// Use for: primary keys in bulk inserts where every key must be
+// unique. Also for visit-every-element patterns (testing every
+// row in a table exactly once).
+shuffled_id(input: u64, size: u64) -> (value: u64) := {
+    value := shuffle(input, size)
+}
+
+// Bijective permutation of [0, range) via PCG cycle-walking.
+//
+// Like shuffled_id but with independent permutations via the stream
+// parameter. Different (seed, stream) pairs give different orderings.
+// Uses PCG's seekable RNG with cycle-walking rejection.
+//
+// Example:
+//   key_a := euler_circuit(position: cycle, range: 1000000, seed: 42, stream: 0)
+//   key_b := euler_circuit(position: cycle, range: 1000000, seed: 42, stream: 1)
+//   // key_a and key_b are independent permutations of the same range
+//
+// Use for: multiple independent unique key spaces from the same
+// cycle counter. Each stream gives a different permutation.
+//
+// STATUS: Stub — falls back to hash+mod (not bijective) until the
+// native cycle_walk node is implemented per SRD 25.
+euler_circuit(position: u64, range: u64, seed: u64, stream: u64) -> (value: u64) := {
+    value := mod(hash(interleave(position, seed)), range)
+}

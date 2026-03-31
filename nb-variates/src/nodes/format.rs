@@ -39,22 +39,28 @@ struct FormatSpec {
     conversion: char,
 }
 
-/// Printf-style N→1 formatting node.
+/// Printf-style N→1 formatting node. Variadic: accepts 0..N wire inputs.
 ///
-/// Signature: `(in_0: any, in_1: any, ...) -> (String)`
+/// Signature: `printf(format: String, in_0, in_1, ...) -> (String)`
 ///
-/// Input types must match the placeholders. All inputs are consumed
-/// as `Value` and formatted according to their specifier.
+/// Format string uses Rust-style `{}` placeholders with optional specifiers:
+/// `{:05}` (zero-pad), `{:.2}` (precision), `{:x}` (hex), `{:X}` (HEX),
+/// `{:b}` (binary), `{:o}` (octal). Inputs are matched positionally.
+///
+/// Use for constructing complex formatted strings from multiple GK wires:
+/// `printf("user-{:05}-score-{:.1}", id, score)` → "user-00042-score-98.6"
+///
+/// All Value types are accepted at eval time regardless of declared port
+/// types. The format specifier determines how each value renders.
+///
+/// JIT level: P1 (String output).
 pub struct Printf {
     meta: NodeMeta,
     segments: Vec<Segment>,
 }
 
 impl Printf {
-    /// Create from a format string. Input ports are inferred from
-    /// the number of placeholders.
-    ///
-    /// `input_types` specifies the PortType for each placeholder input.
+    /// Create from a format string with explicit input port types.
     pub fn new(fmt: &str, input_types: &[PortType]) -> Self {
         let segments = parse_format(fmt);
         let placeholder_count = segments.iter().filter(|s| matches!(s, Segment::Placeholder(_))).count();
@@ -70,6 +76,26 @@ impl Printf {
             .map(|(i, &typ)| Port::new(format!("in_{i}"), typ))
             .collect();
 
+        Self {
+            meta: NodeMeta {
+                name: "printf".into(),
+                inputs,
+                outputs: vec![Port::new("output", PortType::Str)],
+            },
+            segments,
+        }
+    }
+
+    /// Create from a format string with N wire inputs, all typed as u64.
+    ///
+    /// For variadic DSL use. Port types are declared as u64 but the eval
+    /// method accepts any Value type — the assembler skips type checking
+    /// for printf inputs.
+    pub fn variadic(fmt: &str, wire_count: usize) -> Self {
+        let segments = parse_format(fmt);
+        let inputs: Vec<Port> = (0..wire_count)
+            .map(|i| Port::new(format!("in_{i}"), PortType::U64))
+            .collect();
         Self {
             meta: NodeMeta {
                 name: "printf".into(),
