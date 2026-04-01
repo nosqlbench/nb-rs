@@ -91,6 +91,10 @@
 
 <script>
 (function() {
+    // Clear all built-in Litegraph node types — we only want GK nodes.
+    LiteGraph.registered_node_types = {};
+    LiteGraph.Nodes = {};
+
     // Port type colors
     const TYPE_COLORS = {
         "u64":   "#4da6ff",
@@ -100,11 +104,6 @@
         "bytes": "#8888a0",
         "json":  "#cc66ff"
     };
-
-    // Register type colors with Litegraph
-    for (const [type_name, color] of Object.entries(TYPE_COLORS)) {
-        LiteGraph.registerNodeType;  // ensure LiteGraph is loaded
-    }
 
     // ─── Special nodes ──────────────────────────────
 
