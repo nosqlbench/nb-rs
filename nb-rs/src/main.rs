@@ -54,30 +54,39 @@ fn main() {
             return;
         }
 
-        // Handle --restart: stop the old daemon, re-launch with its saved args
+        // Handle --restart: stop the old daemon, re-launch with its saved args.
+        // If no daemon is running, fall through and start fresh.
         if args.iter().any(|a| a == "--restart") {
-            let anchor = daemon::read_anchor().unwrap_or_else(|| {
-                eprintln!("error: no running daemon found (no anchor file)");
-                std::process::exit(1);
-            });
-            if anchor.args.is_empty() {
-                eprintln!("error: anchor file has no saved args (started with older binary?)");
-                std::process::exit(1);
+            if let Some(anchor) = daemon::read_anchor() {
+                if !anchor.args.is_empty() {
+                    // Stop the old daemon (ignore errors — it may already be dead).
+                    let _ = daemon::stop_daemon();
+                    // Re-exec ourselves with the saved args.
+                    let exe = std::env::current_exe().unwrap_or_else(|_| "nbrs".into());
+                    eprintln!("nbrs web: restarting with: {} {}", exe.display(),
+                        anchor.args.join(" "));
+                    let status = std::process::Command::new(&exe)
+                        .args(&anchor.args)
+                        .status()
+                        .unwrap_or_else(|e| {
+                            eprintln!("error: failed to restart: {e}");
+                            std::process::exit(1);
+                        });
+                    std::process::exit(status.code().unwrap_or(1));
+                }
+                eprintln!("nbrs web: anchor has no saved args, starting with defaults");
+            } else {
+                eprintln!("nbrs web: no running daemon found, starting fresh");
             }
-            // Stop the old daemon (ignore errors — it may already be dead).
-            let _ = daemon::stop_daemon();
-            // Re-exec ourselves with the saved args.
-            let exe = std::env::current_exe().unwrap_or_else(|_| "nbrs".into());
-            eprintln!("nbrs web: restarting with: {} {}", exe.display(),
-                anchor.args.join(" "));
-            let status = std::process::Command::new(&exe)
-                .args(&anchor.args)
-                .status()
-                .unwrap_or_else(|e| {
-                    eprintln!("error: failed to restart: {e}");
-                    std::process::exit(1);
-                });
-            std::process::exit(status.code().unwrap_or(1));
+        }
+
+        // Warn about unrecognized --flags.
+        let known_flags = ["--daemon", "--stop", "--restart"];
+        for a in args.iter().filter(|a| a.starts_with("--")) {
+            let key = a.split('=').next().unwrap_or(a);
+            if !known_flags.contains(&key) && key != "--bind" && key != "--port" {
+                eprintln!("warning: unrecognized option '{a}' (known: --daemon, --stop, --restart, --bind=, --port=)");
+            }
         }
 
         let bind = args.iter()
@@ -89,6 +98,15 @@ fn main() {
             .unwrap_or(8080);
         let addr: std::net::SocketAddr = format!("{bind}:{port}").parse()
             .unwrap_or_else(|e| { eprintln!("error: invalid bind address '{bind}:{port}': {e}"); std::process::exit(1); });
+
+        // Clean up stale anchor if the recorded PID is dead.
+        daemon::cleanup_stale_anchor();
+
+        // Check if the port is already in use before attempting to bind.
+        if let Err(msg) = daemon::check_port_available(&addr) {
+            eprintln!("error: {msg}");
+            std::process::exit(1);
+        }
 
         // Handle --daemon: fork to background
         if args.iter().any(|a| a == "--daemon") {

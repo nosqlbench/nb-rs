@@ -47,12 +47,13 @@ assembly-time constants (LUTs, tables) vs `:=` for cycle-time
 bindings. Together these enable the two-phase compilation model
 where init objects are frozen before any cycle executes.
 
-## GK Compilation
+## GK Compilation and Optimization
 
 | # | File | Scope |
 |---|------|-------|
 | 10 | [aot_compilation](10_aot_compilation.md) | Ahead-of-time compiled kernel path and trade-offs |
 | 24 | [compilation_levels](24_compilation_levels.md) | P1/P2/P3/Hybrid compilation, shared buffer, thread scalability |
+| 36 | [node_fusion](36_node_fusion.md) | Graph-level node fusion optimization pass with equivalence contracts |
 
 Defines four compilation levels for the GK runtime. Phase 1 is a
 pull-through interpreter (~70ns/node). Phase 2 compiles to u64
@@ -60,7 +61,10 @@ closures (~4.5ns/node). Phase 3 generates Cranelift JIT native
 code (~0.2ns/node). Hybrid mode lets each node run at its optimal
 level in the same kernel. SRD 24 also covers the thread scalability
 model: shared immutable code via Arc, per-thread mutable buffers,
-zero-contention evaluation.
+zero-contention evaluation. SRD 36 defines an assembly-time graph
+optimization pass that recognizes fusible subgraph patterns and
+replaces them with equivalent fused nodes — including commutativity
+as first-class node metadata and test-verified equivalence contracts.
 
 ## GK Extensions
 

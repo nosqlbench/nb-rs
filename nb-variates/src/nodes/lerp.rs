@@ -3,7 +3,8 @@
 
 //! Linear interpolation and range mapping nodes.
 
-use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::fusion::{DecomposedGraph, DecomposedWire, FusedNode};
 
 /// Linear interpolation with fixed endpoints.
 ///
@@ -30,6 +31,7 @@ impl LerpConst {
                 name: "lerp".into(),
                 inputs: vec![Port::f64("t")],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
             a,
             b,
@@ -82,6 +84,7 @@ impl ScaleRange {
                 name: "scale_range".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
             min,
             range: max - min,
@@ -107,6 +110,22 @@ impl GkNode for ScaleRange {
     }
 
     fn jit_constants(&self) -> Vec<u64> { vec![self.min.to_bits(), self.range.to_bits()] }
+}
+
+impl FusedNode for ScaleRange {
+    /// `scale_range(x, lo, hi)` decomposes to `lerp(unit_interval(x), lo, hi)`.
+    fn decomposed(&self) -> DecomposedGraph {
+        use crate::sampling::icd::UnitInterval;
+        let hi = self.min + self.range;
+        let mut g = DecomposedGraph::new(1);
+        let ui = g.add_node(Box::new(UnitInterval::new()), vec![DecomposedWire::Input(0)]);
+        let lerp = g.add_node(
+            Box::new(LerpConst::new(self.min, hi)),
+            vec![DecomposedWire::Node(ui, 0)],
+        );
+        g.set_outputs(vec![DecomposedWire::Node(lerp, 0)]);
+        g
+    }
 }
 
 /// Inverse linear interpolation: map [a, b] to [0, 1].
@@ -135,6 +154,7 @@ impl InvLerp {
                 name: "inv_lerp".into(),
                 inputs: vec![Port::f64("input")],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
             a,
             inv_range: 1.0 / (b - a),
@@ -180,6 +200,7 @@ impl Remap {
                 name: "remap".into(),
                 inputs: vec![Port::f64("input")],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
             in_min,
             in_inv_range: 1.0 / in_range,
@@ -223,6 +244,7 @@ impl Quantize {
                 name: "quantize".into(),
                 inputs: vec![Port::f64("input")],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
             step,
         }

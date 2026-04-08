@@ -16,7 +16,7 @@
 //! - `{:b}` — binary (u64)
 //! - `{:o}` — octal (u64)
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
 
 /// A parsed format segment: either literal text or a placeholder.
 #[derive(Debug, Clone)]
@@ -81,6 +81,7 @@ impl Printf {
                 name: "printf".into(),
                 inputs,
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             segments,
         }
@@ -101,6 +102,7 @@ impl Printf {
                 name: "printf".into(),
                 inputs,
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             segments,
         }

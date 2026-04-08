@@ -15,7 +15,7 @@
 //! Inputs are u64 coordinates mapped to a float domain via scaling.
 //! Outputs are f64 in [-1, 1] (raw noise) or [0, 1] (normalized).
 
-use crate::node::{GkNode, NodeMeta, Port, Value};
+use crate::node::{Commutativity, GkNode, NodeMeta, Port, Value};
 
 // =================================================================
 // Permutation table (init-time artifact)
@@ -190,6 +190,7 @@ impl Perlin1D {
                 name: "perlin_1d".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
             perm: PermTable::new(seed),
             frequency,
@@ -221,6 +222,7 @@ impl Perlin2D {
                 name: "perlin_2d".into(),
                 inputs: vec![Port::u64("x"), Port::u64("y")],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
             perm: PermTable::new(seed),
             frequency,
@@ -255,6 +257,7 @@ impl SimplexNoise2D {
                 name: "simplex_2d".into(),
                 inputs: vec![Port::u64("x"), Port::u64("y")],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
             perm: PermTable::new(seed),
             frequency,
@@ -306,6 +309,7 @@ impl FractalNoise1D {
                 name: "fractal_noise_1d".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
             perm: PermTable::new(seed),
             frequency,
@@ -363,6 +367,7 @@ impl FractalNoise2D {
                 name: "fractal_noise_2d".into(),
                 inputs: vec![Port::u64("x"), Port::u64("y")],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
             perm: PermTable::new(seed),
             frequency,

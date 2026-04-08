@@ -3,7 +3,7 @@
 
 //! String encoding and decoding nodes: HTML entities, URL percent-encoding.
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
 
 // =================================================================
 // HTML entity encoding
@@ -25,6 +25,7 @@ impl HtmlEncode {
                 name: "html_encode".into(),
                 inputs: vec![Port::new("input", PortType::Str)],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -66,6 +67,7 @@ impl HtmlDecode {
                 name: "html_decode".into(),
                 inputs: vec![Port::new("input", PortType::Str)],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -107,6 +109,7 @@ impl UrlEncode {
                 name: "url_encode".into(),
                 inputs: vec![Port::new("input", PortType::Str)],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -147,6 +150,7 @@ impl UrlDecode {
                 name: "url_decode".into(),
                 inputs: vec![Port::new("input", PortType::Str)],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
         }
     }

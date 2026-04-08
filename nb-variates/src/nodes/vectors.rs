@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
 use vectordata::{TestDataGroup, VectorReader};
 
 // =================================================================
@@ -110,6 +110,7 @@ impl VectorAt {
                 name: "vector_at".into(),
                 inputs: vec![Port::u64("index")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             dataset,
         }
@@ -147,6 +148,7 @@ impl VectorAtBytes {
                 name: "vector_at_bytes".into(),
                 inputs: vec![Port::u64("index")],
                 outputs: vec![Port::new("output", PortType::Bytes)],
+                commutativity: Commutativity::Positional,
             },
             dataset,
         }
@@ -183,6 +185,7 @@ impl VectorDim {
                 name: "vector_dim".into(),
                 inputs: vec![],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             dim: dataset.dim() as u64,
         }
@@ -211,6 +214,7 @@ impl VectorCount {
                 name: "vector_count".into(),
                 inputs: vec![],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             count: dataset.count() as u64,
         }

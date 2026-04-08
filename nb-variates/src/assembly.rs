@@ -440,6 +440,56 @@ impl GkAssembler {
             resolved_wiring.push(Vec::new());
         }
 
+        // --- Node fusion optimization ---
+        //
+        // Recognize fusible subgraph patterns and replace them with
+        // semantically equivalent fused nodes. See SRD 36.
+        {
+            let rules = crate::fusion::default_rules();
+            if !rules.is_empty() {
+                // Collect node indices that are directly referenced by outputs.
+                // These nodes must not be consumed as interior nodes by fusion.
+                let mut output_nodes: Vec<usize> = Vec::new();
+                for wire_ref in self.outputs.values() {
+                    if let WireRef::Node(node_name, _) = wire_ref {
+                        if let Some(&idx) = all_name_to_idx.get(node_name) {
+                            output_nodes.push(idx);
+                        }
+                    }
+                }
+
+                // Convert to Option<Box<dyn GkNode>> for the fusion pass.
+                let mut opt_nodes: Vec<Option<Box<dyn GkNode>>> = all_nodes
+                    .into_iter()
+                    .map(|pn| Some(pn.node))
+                    .collect();
+
+                let _fused_count = crate::fusion::apply_fusions(
+                    &mut opt_nodes,
+                    &mut resolved_wiring,
+                    &mut all_name_to_idx,
+                    &rules,
+                    &output_nodes,
+                );
+
+                // Convert back, rebuilding PendingNode wrappers.
+                // Fused-away nodes (None) get placeholder names.
+                all_nodes = opt_nodes
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, opt)| PendingNode {
+                        name: all_name_to_idx
+                            .iter()
+                            .find(|&(_, &idx)| idx == i)
+                            .map(|(n, _)| n.clone())
+                            .unwrap_or_else(|| format!("__removed_{i}")),
+                        node: opt.unwrap_or_else(|| Box::new(crate::nodes::identity::Identity::new())),
+                        inputs: vec![], // wiring is in resolved_wiring
+                    })
+                    .collect();
+            }
+        }
+
         // --- Dead code elimination ---
         //
         // Trace backward from output nodes to find all reachable nodes.

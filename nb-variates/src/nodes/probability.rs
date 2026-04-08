@@ -12,7 +12,7 @@
 //! error injection, bimodal distributions), but usable anywhere in a
 //! GK pipeline.
 
-use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
 use xxhash_rust::xxh3::xxh3_64;
 
 /// Convert a u64 hash to a value in the unit interval [0.0, 1.0).
@@ -45,6 +45,7 @@ impl FairCoin {
                 name: "fair_coin".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -105,6 +106,7 @@ impl UnfairCoin {
                 name: "unfair_coin".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             p,
         }
@@ -163,6 +165,7 @@ impl Select {
                     Port::u64("if_false"),
                 ],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -218,6 +221,7 @@ impl Chance {
                 name: "chance".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             p,
         }
@@ -285,6 +289,7 @@ impl NofM {
                 name: "n_of".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             n,
             m,
@@ -372,6 +377,7 @@ impl OneOf {
                 name: "one_of".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::str("output")],
+                commutativity: Commutativity::Positional,
             },
             values,
         }
@@ -460,6 +466,7 @@ impl OneOfWeighted {
                 name: "one_of_weighted".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::str("output")],
+                commutativity: Commutativity::Positional,
             },
             values,
             cumulative,
@@ -523,6 +530,7 @@ impl Blend {
                 name: "blend".into(),
                 inputs: vec![Port::u64("a"), Port::u64("b")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             mix,
         }

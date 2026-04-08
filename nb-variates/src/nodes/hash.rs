@@ -3,7 +3,8 @@
 
 //! Hash function nodes.
 
-use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::fusion::{DecomposedGraph, DecomposedWire, FusedNode};
 use xxhash_rust::xxh3::xxh3_64;
 
 /// 64-bit hash using xxHash3.
@@ -28,6 +29,7 @@ impl Hash64 {
                 name: "hash".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -73,6 +75,7 @@ impl HashRange {
                 name: "hash_range".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             max,
         }
@@ -95,6 +98,20 @@ impl GkNode for HashRange {
         Some(Box::new(move |inputs, outputs| {
             outputs[0] = xxh3_64(&inputs[0].to_le_bytes()) % max;
         }))
+    }
+
+    fn jit_constants(&self) -> Vec<u64> { vec![self.max] }
+}
+
+impl FusedNode for HashRange {
+    /// `hash_range(x, K)` decomposes to `mod(hash(x), K)`.
+    fn decomposed(&self) -> DecomposedGraph {
+        use crate::nodes::arithmetic::ModU64;
+        let mut g = DecomposedGraph::new(1);
+        let h = g.add_node(Box::new(Hash64::new()), vec![DecomposedWire::Input(0)]);
+        let m = g.add_node(Box::new(ModU64::new(self.max)), vec![DecomposedWire::Node(h, 0)]);
+        g.set_outputs(vec![DecomposedWire::Node(m, 0)]);
+        g
     }
 }
 
@@ -121,6 +138,7 @@ impl HashInterval {
                 name: "hash_interval".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
             min,
             max,
@@ -139,6 +157,23 @@ impl GkNode for HashInterval {
         // Map u64 to [0, 1) then scale to [min, max)
         let unit = (h as f64) / (u64::MAX as f64);
         outputs[0] = Value::F64(self.min + unit * (self.max - self.min));
+    }
+}
+
+impl FusedNode for HashInterval {
+    /// `hash_interval(x, lo, hi)` decomposes to `lerp(unit_interval(hash(x)), lo, hi)`.
+    fn decomposed(&self) -> DecomposedGraph {
+        use crate::nodes::lerp::LerpConst;
+        use crate::sampling::icd::UnitInterval;
+        let mut g = DecomposedGraph::new(1);
+        let h = g.add_node(Box::new(Hash64::new()), vec![DecomposedWire::Input(0)]);
+        let ui = g.add_node(Box::new(UnitInterval::new()), vec![DecomposedWire::Node(h, 0)]);
+        let lerp = g.add_node(
+            Box::new(LerpConst::new(self.min, self.max)),
+            vec![DecomposedWire::Node(ui, 0)],
+        );
+        g.set_outputs(vec![DecomposedWire::Node(lerp, 0)]);
+        g
     }
 }
 

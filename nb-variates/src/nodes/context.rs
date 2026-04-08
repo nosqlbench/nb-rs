@@ -10,7 +10,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::node::{GkNode, NodeMeta, Port, Value};
+use crate::node::{Commutativity, GkNode, NodeMeta, Port, Value};
 
 /// Current wall-clock time in epoch milliseconds.
 ///
@@ -28,6 +28,7 @@ impl CurrentEpochMillis {
                 name: "current_epoch_millis".into(),
                 inputs: vec![],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -65,6 +66,7 @@ impl SessionStartMillis {
                 name: "session_start_millis".into(),
                 inputs: vec![],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             start,
         }
@@ -99,6 +101,7 @@ impl ElapsedMillis {
                 name: "elapsed_millis".into(),
                 inputs: vec![],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             start,
         }
@@ -133,6 +136,7 @@ impl Counter {
                 name: "counter".into(),
                 inputs: vec![],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             count: AtomicU64::new(0),
         }
@@ -144,6 +148,7 @@ impl Counter {
                 name: "counter".into(),
                 inputs: vec![],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             count: AtomicU64::new(start),
         }

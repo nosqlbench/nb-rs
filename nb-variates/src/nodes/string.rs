@@ -3,7 +3,7 @@
 
 //! String generation and transformation nodes.
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
 
 // =================================================================
 // Combinations: mixed-radix character set mapping
@@ -64,6 +64,7 @@ impl Combinations {
                 name: "combinations".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             segments,
             modulus,
@@ -153,6 +154,7 @@ impl NumberToWords {
                 name: "number_to_words".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
         }
     }

@@ -7,7 +7,7 @@
 //! value lookup in one step. They parse an inline spec string at init
 //! time and perform weighted selection at cycle time.
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
 use crate::sampling::alias::AliasTableU64;
 
 /// Parse a weighted spec like "alpha:0.3;beta:0.5;gamma:0.2"
@@ -61,6 +61,7 @@ impl WeightedStrings {
                 name: "weighted_strings".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             values,
             table,
@@ -96,6 +97,7 @@ impl WeightedU64 {
                 name: "weighted_u64".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             values,
             table,

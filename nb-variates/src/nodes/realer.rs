@@ -12,7 +12,7 @@
 //! distribution) and returns a String. Weighted variants select
 //! proportionally to Census frequency data.
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
 use crate::sampling::alias::AliasTableU64;
 
 // =================================================================
@@ -130,6 +130,7 @@ impl FirstNames {
                 name: "first_names".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             sampler: WeightedNameSampler::new(names, weights),
         }
@@ -142,6 +143,7 @@ impl FirstNames {
                 name: "first_names".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             sampler: WeightedNameSampler::new(names, weights),
         }
@@ -171,6 +173,7 @@ impl StateCodes {
                 name: "state_codes".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             sampler: UniformNameSampler::new(names),
         }
@@ -201,6 +204,7 @@ impl CountryNames {
                 name: "country_names".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             sampler: UniformNameSampler::new(names),
         }
@@ -231,6 +235,7 @@ impl CountryCodes {
                 name: "country_codes".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             sampler: UniformNameSampler::new(codes),
         }
@@ -260,6 +265,7 @@ impl Nationalities {
                 name: "nationalities".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             sampler: UniformNameSampler::new(names),
         }
@@ -295,6 +301,7 @@ impl FullNames {
                 name: "full_names".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             first_female: WeightedNameSampler::new(f_names, f_weights),
             first_male: WeightedNameSampler::new(m_names, m_weights),

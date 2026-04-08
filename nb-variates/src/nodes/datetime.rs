@@ -3,7 +3,7 @@
 
 //! Datetime and epoch function nodes.
 
-use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, PortType, Value};
 
 /// Scale a u64 to epoch milliseconds by multiplying by a factor.
 ///
@@ -28,6 +28,7 @@ impl EpochScale {
                 name: "epoch_scale".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             factor,
         }
@@ -65,6 +66,7 @@ impl EpochOffset {
                 name: "epoch_offset".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             base: base_epoch_ms,
         }
@@ -106,6 +108,7 @@ impl ToTimestamp {
                 name: "to_timestamp".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -136,6 +139,7 @@ impl DateComponents {
                     Port::u64("hour"), Port::u64("minute"), Port::u64("second"),
                     Port::u64("millis"),
                 ],
+                commutativity: Commutativity::Positional,
             },
         }
     }

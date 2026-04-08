@@ -3,7 +3,7 @@
 
 //! Identity and constant nodes.
 
-use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
 
 /// Passthrough: output equals input.
 ///
@@ -27,6 +27,7 @@ impl Identity {
                 name: "identity".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -70,6 +71,7 @@ impl ConstU64 {
                 name: "const".into(),
                 inputs: vec![],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             value,
         }
@@ -115,6 +117,7 @@ impl ConstStr {
                 name: "const_str".into(),
                 inputs: vec![],
                 outputs: vec![Port::str("output")],
+                commutativity: Commutativity::Positional,
             },
             value: value.into(),
         }

@@ -12,7 +12,7 @@
 //!    time, then extract variable-length slices at cycle time using
 //!    hash-based offset selection. Fast hot path — just a memcpy.
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
 use xxhash_rust::xxh3::xxh3_64;
 
 // =================================================================
@@ -33,6 +33,7 @@ impl U64ToBytes {
                 name: "u64_to_bytes".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Bytes)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -64,6 +65,7 @@ impl BytesFromHash {
                 name: "bytes_from_hash".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Bytes)],
+                commutativity: Commutativity::Positional,
             },
             size,
         }
@@ -144,6 +146,7 @@ impl ByteImageExtract {
                 name: "byte_image_extract".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Bytes)],
+                commutativity: Commutativity::Positional,
             },
             image: ByteImage::new(image_size, seed),
             slice_size,
@@ -233,6 +236,7 @@ impl CharImageExtract {
                 name: "char_image_extract".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             image: CharImage::hashed(charset, image_size, 0),
             slice_size,
@@ -245,6 +249,7 @@ impl CharImageExtract {
                 name: "char_image_extract".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             image: CharImage::hashed(charset, image_size, seed),
             slice_size,
@@ -280,6 +285,7 @@ impl ByteSlice {
                 name: "byte_slice".into(),
                 inputs: vec![Port::new("input", PortType::Bytes)],
                 outputs: vec![Port::new("output", PortType::Bytes)],
+                commutativity: Commutativity::Positional,
             },
             offset,
             length,
@@ -311,6 +317,7 @@ impl ToHex {
                 name: "to_hex".into(),
                 inputs: vec![Port::new("input", PortType::Bytes)],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -338,6 +345,7 @@ impl FromHex {
                 name: "from_hex".into(),
                 inputs: vec![Port::new("input", PortType::Str)],
                 outputs: vec![Port::new("output", PortType::Bytes)],
+                commutativity: Commutativity::Positional,
             },
         }
     }

@@ -12,6 +12,7 @@ pub mod node;
 pub mod kernel;
 pub mod compiled;
 pub mod assembly;
+pub mod fusion;
 pub mod nodes;
 pub mod sampling;
 pub mod dsl;

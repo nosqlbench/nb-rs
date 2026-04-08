@@ -8,7 +8,7 @@
 //! mixed_radix for coordinate decomposition, interleave for combining
 //! independent dimensions.
 
-use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
 
 /// Add a constant to a u64 value (wrapping).
 ///
@@ -31,6 +31,7 @@ impl AddU64 {
                 name: "add".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             addend,
         }
@@ -69,6 +70,7 @@ impl MulU64 {
                 name: "mul".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             factor,
         }
@@ -108,6 +110,7 @@ impl DivU64 {
                 name: "div".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             divisor,
         }
@@ -152,6 +155,7 @@ impl ModU64 {
                 name: "mod".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             modulus,
         }
@@ -200,6 +204,7 @@ impl ClampU64 {
                 name: "clamp".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             min,
             max,
@@ -257,6 +262,7 @@ impl MixedRadix {
                 name: "mixed_radix".into(),
                 inputs: vec![Port::u64("input")],
                 outputs,
+                commutativity: Commutativity::Positional,
             },
             radixes,
         }
@@ -322,6 +328,7 @@ impl SumN {
                 name: "sum".into(),
                 inputs,
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::AllCommutative,
             },
         }
     }
@@ -371,6 +378,7 @@ impl ProductN {
                 name: "product".into(),
                 inputs,
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::AllCommutative,
             },
         }
     }
@@ -416,6 +424,7 @@ impl MinN {
                 name: "min".into(),
                 inputs,
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::AllCommutative,
             },
         }
     }
@@ -461,6 +470,7 @@ impl MaxN {
                 name: "max".into(),
                 inputs,
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::AllCommutative,
             },
         }
     }
@@ -508,6 +518,7 @@ impl Interleave {
                 name: "interleave".into(),
                 inputs: vec![Port::u64("a"), Port::u64("b")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }

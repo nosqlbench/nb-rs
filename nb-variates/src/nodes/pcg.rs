@@ -16,7 +16,7 @@
 //! - [`PcgStream`] — fixed seed, both position and stream are wire inputs
 //! - [`CycleWalk`] — bijective permutation of `[0, range)` via cycle-walking
 
-use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
 
 // =================================================================
 // PCG-RXS-M-XS 64/64 core algorithm
@@ -101,6 +101,7 @@ impl Pcg {
                 name: "pcg".into(),
                 inputs: vec![Port::u64("position")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             seed,
             inc: 2u64.wrapping_mul(stream).wrapping_add(1),
@@ -159,6 +160,7 @@ impl PcgStream {
                 name: "pcg_stream".into(),
                 inputs: vec![Port::u64("position"), Port::u64("stream_id")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             seed,
         }
@@ -259,6 +261,7 @@ impl CycleWalk {
                 name: "cycle_walk".into(),
                 inputs: vec![Port::u64("position")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             range,
             seed,

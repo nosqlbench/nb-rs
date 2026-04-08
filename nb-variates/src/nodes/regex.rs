@@ -3,7 +3,7 @@
 
 //! Regex processing nodes.
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
 use regex::Regex;
 
 /// Regex replace: substitute all matches of a pattern.
@@ -23,6 +23,7 @@ impl RegexReplace {
                 name: "regex_replace".into(),
                 inputs: vec![Port::new("input", PortType::Str)],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             re: Regex::new(pattern).expect("invalid regex"),
             replacement: replacement.to_string(),
@@ -53,6 +54,7 @@ impl RegexMatch {
                 name: "regex_match".into(),
                 inputs: vec![Port::new("input", PortType::Str)],
                 outputs: vec![Port::bool("output")],
+                commutativity: Commutativity::Positional,
             },
             re: Regex::new(pattern).expect("invalid regex"),
         }
@@ -81,6 +83,7 @@ impl RegexExtract {
                 name: "regex_extract".into(),
                 inputs: vec![Port::new("input", PortType::Str)],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             re: Regex::new(pattern).expect("invalid regex"),
         }

@@ -14,7 +14,7 @@
 
 use std::cell::RefCell;
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
 use xxhash_rust::xxh3::xxh3_64;
 
 // =================================================================
@@ -83,6 +83,7 @@ impl RandomRange {
                 name: "random_range".into(),
                 inputs: vec![],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             min,
             range: max - min,
@@ -113,6 +114,7 @@ impl RandomF64 {
                 name: "random_f64".into(),
                 inputs: vec![],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
             min,
             range: max - min,
@@ -142,6 +144,7 @@ impl RandomBytes {
                 name: "random_bytes".into(),
                 inputs: vec![],
                 outputs: vec![Port::new("output", PortType::Bytes)],
+                commutativity: Commutativity::Positional,
             },
             size,
         }
@@ -180,6 +183,7 @@ impl RandomString {
                 name: "random_string".into(),
                 inputs: vec![],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             chars: parse_charset(spec),
             length,
@@ -212,6 +216,7 @@ impl RandomBool {
                 name: "random_bool".into(),
                 inputs: vec![],
                 outputs: vec![Port::bool("output")],
+                commutativity: Commutativity::Positional,
             },
             threshold: (probability.clamp(0.0, 1.0) * u64::MAX as f64) as u64,
         }
@@ -249,6 +254,7 @@ impl HashedLoremExtract {
                 name: "hashed_lorem_extract".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             min_len,
             max_len,
@@ -297,6 +303,7 @@ impl HashedLineToString {
                 name: "hashed_line_to_string".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             lines,
         }

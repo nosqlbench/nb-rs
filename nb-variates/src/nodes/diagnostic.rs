@@ -6,7 +6,7 @@
 //! These are development aids, not hot-path nodes. They let users
 //! inspect types and values flowing through the DAG.
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
 
 /// Emit the type name of the input value as a string.
 ///
@@ -30,6 +30,7 @@ impl TypeOf {
                 name: "type_of".into(),
                 inputs: vec![Port::new("input", input_type)],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             input_type,
         }
@@ -63,6 +64,7 @@ impl DebugRepr {
                 name: "debug_repr".into(),
                 inputs: vec![Port::new("input", input_type)],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             _input_type: input_type,
         }
@@ -108,6 +110,7 @@ impl Inspect {
                 name: format!("inspect[{label}]"),
                 inputs: vec![Port::new("input", typ)],
                 outputs: vec![Port::new("output", typ)],
+                commutativity: Commutativity::Positional,
             },
             label,
         }

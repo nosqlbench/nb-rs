@@ -19,7 +19,7 @@
 //! **Discrete:**
 //! Zipf, Poisson, Binomial, Geometric
 
-use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, PortType, Value};
 use crate::sampling::lut::{LutF64, LutSample};
 
 /// Default interpolation table resolution.
@@ -51,6 +51,7 @@ impl UnitInterval {
                 name: "unit_interval".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::F64)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -101,6 +102,7 @@ impl ClampF64 {
                 name: "clamp_f64".into(),
                 inputs: vec![Port::new("input", PortType::F64)],
                 outputs: vec![Port::new("output", PortType::F64)],
+                commutativity: Commutativity::Positional,
             },
             min,
             max,
@@ -589,6 +591,7 @@ impl DiscreteSample {
                 name: "discrete_sample".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             outcomes,
         }

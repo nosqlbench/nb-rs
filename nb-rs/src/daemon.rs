@@ -144,6 +144,50 @@ pub fn daemonize() -> Result<(), String> {
     Ok(())
 }
 
+/// Remove the anchor file if the recorded PID is no longer alive.
+///
+/// Called on startup so that a stale anchor from a crashed daemon
+/// doesn't confuse port-in-use diagnostics.
+pub fn cleanup_stale_anchor() {
+    if let Some(anchor) = read_anchor() {
+        let alive = unsafe { libc::kill(anchor.pid as i32, 0) } == 0;
+        if !alive {
+            eprintln!("nbrs web: cleaning up stale anchor (pid {} no longer running)", anchor.pid);
+            remove_anchor();
+        }
+    }
+}
+
+/// Check whether the target address/port is available for binding.
+///
+/// Returns `Ok(())` if the port is free, or `Err(message)` with
+/// actionable diagnostics (including the owning PID from the anchor
+/// file, if available).
+pub fn check_port_available(addr: &SocketAddr) -> Result<(), String> {
+    match std::net::TcpListener::bind(addr) {
+        Ok(_listener) => Ok(()), // drops immediately, freeing the port
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            let mut msg = format!("port {} is already in use on {}", addr.port(), addr.ip());
+            if let Some(anchor) = read_anchor() {
+                let alive = unsafe { libc::kill(anchor.pid as i32, 0) } == 0;
+                if alive {
+                    msg.push_str(&format!(
+                        "\n  → an nbrs web instance is running (pid {})\n  → use 'nbrs web --stop' to stop it, or 'nbrs web --restart' to restart",
+                        anchor.pid
+                    ));
+                } else {
+                    msg.push_str("\n  → stale anchor file found (process dead) — another program may hold the port");
+                    remove_anchor();
+                }
+            } else {
+                msg.push_str("\n  → another program is using this port; try a different port with port=<N>");
+            }
+            Err(msg)
+        }
+        Err(e) => Err(format!("cannot bind to {addr}: {e}")),
+    }
+}
+
 /// Stop a running daemon by reading the PID file and sending SIGTERM.
 pub fn stop_daemon() -> Result<(), String> {
     let path = pid_file_path();

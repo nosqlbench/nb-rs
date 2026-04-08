@@ -3,7 +3,7 @@
 
 //! Fixed value and value-list nodes across fundamental types.
 
-use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, PortType, Value};
 
 // =================================================================
 // Constants (0→1 nodes)
@@ -24,6 +24,7 @@ impl ConstF64 {
                 name: "const_f64".into(),
                 inputs: vec![],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
             value,
         }
@@ -52,6 +53,7 @@ impl ConstBool {
                 name: "const_bool".into(),
                 inputs: vec![],
                 outputs: vec![Port::bool("output")],
+                commutativity: Commutativity::Positional,
             },
             value,
         }
@@ -86,6 +88,7 @@ impl FixedValuesU64 {
                 name: "fixed_values_u64".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             values,
         }
@@ -125,6 +128,7 @@ impl FixedValuesF64 {
                 name: "fixed_values_f64".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
             values,
         }
@@ -156,6 +160,7 @@ impl FixedValuesStr {
                 name: "fixed_values_str".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
             values,
         }
@@ -195,6 +200,7 @@ impl CoinFlip {
                 name: "coin_flip".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::bool("output")],
+                commutativity: Commutativity::Positional,
             },
             threshold,
         }

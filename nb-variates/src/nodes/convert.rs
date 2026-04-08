@@ -9,7 +9,7 @@
 //! - **Explicit conversions**: user-placed nodes for lossy, formatted,
 //!   or parameterized conversions. These require deliberate intent.
 
-use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
 
 /// Convert u64 to its decimal string representation.
 ///
@@ -31,6 +31,7 @@ impl U64ToString {
                 name: "__u64_to_string".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::str("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -66,6 +67,7 @@ impl F64ToString {
                 name: "__f64_to_string".into(),
                 inputs: vec![Port::f64("input")],
                 outputs: vec![Port::str("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -103,6 +105,7 @@ impl U64ToF64 {
                 name: "__u64_to_f64".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::f64("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -138,6 +141,7 @@ impl BoolToU64 {
                 name: "__bool_to_u64".into(),
                 inputs: vec![Port::bool("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -174,6 +178,7 @@ impl U64ToBool {
                 name: "__u64_to_bool".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::bool("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -215,6 +220,7 @@ impl F64ToU64 {
                 name: "f64_to_u64".into(),
                 inputs: vec![Port::f64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -256,6 +262,7 @@ impl RoundToU64 {
                 name: "round_to_u64".into(),
                 inputs: vec![Port::f64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -296,6 +303,7 @@ impl FloorToU64 {
                 name: "floor_to_u64".into(),
                 inputs: vec![Port::f64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -335,6 +343,7 @@ impl CeilToU64 {
                 name: "ceil_to_u64".into(),
                 inputs: vec![Port::f64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -383,6 +392,7 @@ impl Discretize {
                 name: "discretize".into(),
                 inputs: vec![Port::f64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             range,
             buckets,
@@ -448,6 +458,7 @@ impl FormatU64 {
                 name: "format_u64".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::str("output")],
+                commutativity: Commutativity::Positional,
             },
             radix,
             prefix,
@@ -492,6 +503,7 @@ impl FormatF64 {
                 name: "format_f64".into(),
                 inputs: vec![Port::f64("input")],
                 outputs: vec![Port::str("output")],
+                commutativity: Commutativity::Positional,
             },
             precision,
         }
@@ -529,6 +541,7 @@ impl ZeroPadU64 {
                 name: "zero_pad_u64".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::str("output")],
+                commutativity: Commutativity::Positional,
             },
             width,
         }

@@ -3,7 +3,7 @@
 
 //! Cryptographic digest and base encoding nodes.
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
 use sha2::{Sha256, Digest as Sha2Digest};
 use md5::Md5;
 
@@ -22,6 +22,7 @@ impl DigestSha256 {
                 name: "sha256".into(),
                 inputs: vec![Port::new("input", PortType::Bytes)],
                 outputs: vec![Port::new("output", PortType::Bytes)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -51,6 +52,7 @@ impl DigestMd5 {
                 name: "md5".into(),
                 inputs: vec![Port::new("input", PortType::Bytes)],
                 outputs: vec![Port::new("output", PortType::Bytes)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -79,6 +81,7 @@ impl ToBase64 {
                 name: "to_base64".into(),
                 inputs: vec![Port::new("input", PortType::Bytes)],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -106,6 +109,7 @@ impl FromBase64 {
                 name: "from_base64".into(),
                 inputs: vec![Port::new("input", PortType::Str)],
                 outputs: vec![Port::new("output", PortType::Bytes)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -136,6 +140,7 @@ impl ToBase32 {
                 name: "to_base32".into(),
                 inputs: vec![Port::new("input", PortType::Bytes)],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -162,6 +167,7 @@ impl FromBase32 {
                 name: "from_base32".into(),
                 inputs: vec![Port::new("input", PortType::Str)],
                 outputs: vec![Port::new("output", PortType::Bytes)],
+                commutativity: Commutativity::Positional,
             },
         }
     }

@@ -8,7 +8,7 @@
 //! serialization/deserialization round-trips when passing structured
 //! data between nodes or to adapters that consume JSON natively.
 
-use crate::node::{GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
 use serde_json::json;
 
 // =================================================================
@@ -44,6 +44,7 @@ impl JsonObject {
                 name: "json_object".into(),
                 inputs,
                 outputs: vec![Port::json("output")],
+                commutativity: Commutativity::Positional,
             },
             keys,
         }
@@ -79,6 +80,7 @@ impl JsonArray {
                 name: "json_array".into(),
                 inputs,
                 outputs: vec![Port::json("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -109,6 +111,7 @@ impl ToJson {
                 name: "to_json".into(),
                 inputs: vec![Port::new("input", input_type)],
                 outputs: vec![Port::json("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -135,6 +138,7 @@ impl JsonMerge {
                 name: "json_merge".into(),
                 inputs: vec![Port::json("left"), Port::json("right")],
                 outputs: vec![Port::json("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -177,6 +181,7 @@ impl JsonToStr {
                 name: "__json_to_string".into(),
                 inputs: vec![Port::json("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -203,6 +208,7 @@ impl JsonToStrPretty {
                 name: "json_to_str_pretty".into(),
                 inputs: vec![Port::json("input")],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -231,6 +237,7 @@ impl StrToJson {
                 name: "str_to_json".into(),
                 inputs: vec![Port::new("input", PortType::Str)],
                 outputs: vec![Port::json("output")],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -262,6 +269,7 @@ impl EscapeJson {
                 name: "escape_json".into(),
                 inputs: vec![Port::new("input", PortType::Str)],
                 outputs: vec![Port::new("output", PortType::Str)],
+                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -298,6 +306,7 @@ impl JsonField {
                 name: format!("json_field[{key}]"),
                 inputs: vec![Port::json("input")],
                 outputs: vec![Port::json("output")],
+                commutativity: Commutativity::Positional,
             },
             key: key.to_string(),
         }

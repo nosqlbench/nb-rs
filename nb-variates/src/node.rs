@@ -284,15 +284,90 @@ pub enum ParamValue {
     VecU64(Vec<u64>),
 }
 
-/// Metadata describing a node's interface: its ports and parameters.
+/// Declares which inputs of a node are interchangeable.
+///
+/// Used by the fusion pattern matcher to recognize equivalent
+/// subgraphs regardless of operand order, and by future passes
+/// (e.g., canonical ordering, common subexpression elimination).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Commutativity {
+    /// Input order matters. No permutations attempted during
+    /// pattern matching. This is the default for unary nodes and
+    /// any node where operand order affects the result.
+    ///
+    /// Examples: `mod(dividend, divisor)`, `div(x, K)`,
+    /// `concat(left, right)`, `sub(a, b)`.
+    Positional,
+
+    /// All inputs are interchangeable, including variadic.
+    /// For small arity (2-3), the matcher tries all permutations.
+    /// For larger arity, it uses set-matching.
+    ///
+    /// Examples: `sum(a, b, ..., n)`, `product(a, b, ..., n)`,
+    /// `min(a, b, ..., n)`, `max(a, b, ..., n)`.
+    AllCommutative,
+
+    /// Specific groups of input port indices are interchangeable
+    /// within each group. Inputs not listed in any group are
+    /// positional.
+    ///
+    /// Example: `fma(x, y, z) = x + y * z`
+    /// The multiplicands `y` (index 1) and `z` (index 2) commute,
+    /// but the addend `x` (index 0) does not.
+    /// `Groups(vec![vec![1, 2]])`
+    Groups(Vec<Vec<usize>>),
+}
+
+impl Default for Commutativity {
+    fn default() -> Self {
+        Commutativity::Positional
+    }
+}
+
+/// Metadata describing a node's interface: its ports, parameters,
+/// and commutativity.
 ///
 /// Generated per-node-type and queryable at runtime for assembly-time
-/// validation and (Phase 2) compilation.
+/// validation, compilation, and optimization passes.
 #[derive(Debug, Clone)]
 pub struct NodeMeta {
     pub name: String,
     pub inputs: Vec<Port>,
     pub outputs: Vec<Port>,
+    /// Declares which inputs are interchangeable. Defaults to
+    /// `Positional` (order matters). Override for commutative
+    /// operations like `sum`, `product`, `min`, `max`.
+    pub commutativity: Commutativity,
+}
+
+impl NodeMeta {
+    /// Create a new `NodeMeta` with positional (non-commutative) inputs.
+    pub fn positional(
+        name: impl Into<String>,
+        inputs: Vec<Port>,
+        outputs: Vec<Port>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            inputs,
+            outputs,
+            commutativity: Commutativity::Positional,
+        }
+    }
+
+    /// Create a new `NodeMeta` where all inputs are commutative.
+    pub fn all_commutative(
+        name: impl Into<String>,
+        inputs: Vec<Port>,
+        outputs: Vec<Port>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            inputs,
+            outputs,
+            commutativity: Commutativity::AllCommutative,
+        }
+    }
 }
 
 /// A compiled u64-only evaluation step.

@@ -16,7 +16,7 @@
 //! The core algorithm is a Galois-configuration LFSR. The `Shuffle` GK
 //! node wraps it with range normalization and rejection sampling.
 
-use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
 
 // -----------------------------------------------------------------
 // LFSR feedback polynomials (one per register width 4..64)
@@ -127,6 +127,7 @@ impl Shuffle {
                 name: "shuffle".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             config: ShuffleConfig { feedback, size, min },
         }
@@ -221,6 +222,7 @@ impl LfsrStep {
                 name: "lfsr_step".into(),
                 inputs: vec![Port::u64("input")],
                 outputs: vec![Port::u64("output")],
+                commutativity: Commutativity::Positional,
             },
             feedback: feedback_for_width_and_bank(width, bank),
         }
