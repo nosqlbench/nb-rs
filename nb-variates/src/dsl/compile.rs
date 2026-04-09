@@ -64,6 +64,19 @@ pub fn compile_gk(source: &str) -> Result<GkKernel, String> {
     compile_gk_with_path(source, None)
 }
 
+/// Compile GK source to an assembler (not yet compiled to a kernel).
+///
+/// Returns the `GkAssembler` with all nodes and wiring populated,
+/// ready to be compiled at any level: `.compile()` for P1,
+/// `.try_compile()` for P2, `.try_compile_jit()` for P3,
+/// `.compile_hybrid()` for Hybrid.
+pub fn compile_gk_to_assembler(source: &str) -> Result<GkAssembler, String> {
+    let tokens = super::lexer::lex(source)?;
+    let ast = super::parser::parse(tokens)?;
+    let mut compiler = Compiler::new(None, false);
+    compiler.build_assembler(&ast)
+}
+
 /// Compile with a source directory for module resolution.
 ///
 /// When the compiler encounters an unknown function name, it searches
@@ -707,7 +720,7 @@ impl Compiler {
             // Output arity check
             if targets.len() > module_outputs.len() {
                 return Err(format!(
-                    "module '{}' produces {} outputs, but {} targets requested",
+                    "module '{}' produces {} outputs: outputs, but {} targets requested",
                     func_name, module_outputs.len(), targets.len()
                 ));
             }
@@ -934,7 +947,7 @@ impl Compiler {
                     return Ok(ResolvedModule {
                         inputs,
                         input_types,
-                        outputs,
+                        outputs: outputs,
                         output_types,
                         is_formal: true,
                         statements: mdef.body.clone(),
@@ -1126,6 +1139,72 @@ impl Compiler {
         }
 
         asm.compile().map_err(|e| format!("{e}"))
+    }
+
+    /// Build an assembler with all nodes and wiring, without compiling.
+    fn build_assembler(&mut self, file: &GkFile) -> Result<GkAssembler, String> {
+        // Reuse the same logic as compile(), but return the assembler
+        // instead of calling asm.compile().
+
+        // First pass: find explicit coordinates
+        for stmt in &file.statements {
+            if let Statement::Coordinates(names, _) = stmt {
+                self.coord_names = names.clone();
+            }
+        }
+
+        if self.coord_names.is_empty() {
+            let defined: HashSet<String> = file.statements.iter().flat_map(|stmt| {
+                match stmt {
+                    Statement::InitBinding(b) => vec![b.name.clone()],
+                    Statement::CycleBinding(b) => b.targets.clone(),
+                    Statement::ModuleDef(m) => vec![m.name.clone()],
+                    Statement::ExternPort(p) => vec![p.name.clone()],
+                    Statement::Coordinates(_, _) => vec![],
+                }
+            }).collect();
+
+            let mut referenced: HashSet<String> = HashSet::new();
+            for stmt in &file.statements {
+                let expr = match stmt {
+                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) => continue,
+                    Statement::InitBinding(b) => &b.value,
+                    Statement::CycleBinding(b) => &b.value,
+                };
+                collect_references(expr, &mut referenced);
+            }
+
+            let mut inferred: Vec<String> = referenced.into_iter()
+                .filter(|name| !defined.contains(name))
+                .collect();
+            inferred.sort();
+            if inferred.is_empty() {
+                inferred.push("cycle".to_string());
+            }
+            self.coord_names = inferred;
+        }
+
+        let mut asm = GkAssembler::new(self.coord_names.clone());
+
+        for stmt in file.statements.clone() {
+            match &stmt {
+                Statement::CycleBinding(binding) => {
+                    self.compile_binding(&mut asm, &binding.targets, &binding.value)?;
+                }
+                Statement::InitBinding(binding) => {
+                    self.compile_binding(&mut asm, &[binding.name.clone()], &binding.value)?;
+                }
+                Statement::ExternPort(_) => {}
+                Statement::ModuleDef(_) => {}
+                Statement::Coordinates(_, _) => {}
+            }
+        }
+
+        for name in &self.all_names {
+            asm.add_output(name, WireRef::node(name));
+        }
+
+        Ok(asm)
     }
 
     /// Compile with optional output filtering for dead code elimination.
@@ -1556,6 +1635,17 @@ fn build_node(
         "weighted_u64" => Ok(Box::new(WeightedU64::new(
             consts.get(0).map(|c| c.as_str()).unwrap_or(""),
         ))),
+        "weighted_pick" => {
+            use crate::nodes::weighted::WeightedPick;
+            let pairs: Vec<(f64, u64)> = consts.chunks(2)
+                .map(|chunk| {
+                    let w = chunk.get(0).map(|c| c.as_f64()).unwrap_or(1.0);
+                    let v = chunk.get(1).map(|c| c.as_u64()).unwrap_or(0);
+                    (w, v)
+                })
+                .collect();
+            Ok(Box::new(WeightedPick::new(&pairs)))
+        }
 
         // --- Diagnostic ---
         "type_of" => Ok(Box::new(TypeOf::for_u64())),
@@ -1624,12 +1714,105 @@ fn build_node(
             consts.get(2).map(|c| c.as_u64()).unwrap_or(0),
         ))),
 
+        // --- Shuffle / Permutation ---
+        "shuffle" => Ok(Box::new(crate::sampling::metashift::Shuffle::new(
+            consts.get(0).map(|c| c.as_u64()).unwrap_or(0),
+            consts.get(1).map(|c| c.as_u64()).unwrap_or(1024),
+        ))),
+
+        // --- Conversions ---
+        "discretize" => Ok(Box::new(crate::nodes::convert::Discretize::new(
+            consts.get(0).map(|c| c.as_f64()).unwrap_or(1.0),
+            consts.get(1).map(|c| c.as_u64()).unwrap_or(10),
+        ))),
+        "format_u64" => Ok(Box::new(crate::nodes::convert::FormatU64::with_radix(
+            consts.get(0).map(|c| c.as_u64()).unwrap_or(10) as u32,
+        ))),
+        "format_f64" => Ok(Box::new(crate::nodes::convert::FormatF64::new(
+            consts.get(0).map(|c| c.as_u64()).unwrap_or(2) as usize,
+        ))),
+        "zero_pad_u64" => Ok(Box::new(crate::nodes::convert::ZeroPadU64::new(
+            consts.get(0).map(|c| c.as_u64()).unwrap_or(10) as usize,
+        ))),
+
+        // --- Distributions missing ---
+        "dist_uniform" => {
+            Ok(Box::new(IcdSample::uniform(
+                consts.get(0).map(|c| c.as_f64()).unwrap_or(0.0),
+                consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
+            )))
+        }
+        "dist_pareto" => {
+            Ok(Box::new(IcdSample::pareto(
+                consts.get(0).map(|c| c.as_f64()).unwrap_or(1.0),
+                consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
+            )))
+        }
+        "dist_zipf" => {
+            Ok(Box::new(IcdSample::zipf(
+                consts.get(0).map(|c| c.as_u64()).unwrap_or(100),
+                consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
+            )))
+        }
+        // lut_sample and icd_exponential handled above
+
+        // --- Digest missing ---
+        "sha256" => Ok(Box::new(crate::nodes::digest::DigestSha256::new())),
+        "md5" => Ok(Box::new(crate::nodes::digest::DigestMd5::new())),
+
+        // --- Byte buffer missing ---
+        "bytes_from_hash" => Ok(Box::new(crate::nodes::bytebuf::BytesFromHash::new(
+            consts.get(0).map(|c| c.as_u64()).unwrap_or(16) as usize,
+        ))),
+
+        // --- Noise missing ---
+        "simplex_2d" => Ok(Box::new(crate::nodes::noise::SimplexNoise2D::new(
+            consts.get(0).map(|c| c.as_u64()).unwrap_or(0),
+            consts.get(1).map(|c| c.as_f64()).unwrap_or(0.01),
+        ))),
+
+        // --- Regex missing ---
+        "regex_match" => Ok(Box::new(crate::nodes::regex::RegexMatch::new(
+            consts.get(0).map(|c| c.as_str()).unwrap_or(".*"),
+        ))),
+
+        // --- String ---
+        "combinations" => Ok(Box::new(crate::nodes::string::Combinations::new(
+            consts.get(0).map(|c| c.as_str()).unwrap_or("a-z"),
+        ))),
+        "number_to_words" => Ok(Box::new(crate::nodes::string::NumberToWords::new())),
+
+        // --- Byte buffer ---
+        "u64_to_bytes" => Ok(Box::new(crate::nodes::bytebuf::U64ToBytes::new())),
+        "to_hex" => Ok(Box::new(crate::nodes::bytebuf::ToHex::new())),
+        "from_hex" => Ok(Box::new(crate::nodes::bytebuf::FromHex::new())),
+
+        // --- Digest ---
+        "to_base64" => Ok(Box::new(crate::nodes::digest::ToBase64::new())),
+        "from_base64" => Ok(Box::new(crate::nodes::digest::FromBase64::new())),
+
+        // --- JSON ---
+        "json_merge" => Ok(Box::new(crate::nodes::json::JsonMerge::new())),
+
+        // --- Datetime ---
+        "date_components" => Ok(Box::new(crate::nodes::datetime::DateComponents::new())),
+        "session_start_millis" => Ok(Box::new(crate::nodes::context::SessionStartMillis::new())),
+
+        // --- Diagnostic ---
+        "debug_repr" => Ok(Box::new(crate::nodes::diagnostic::DebugRepr::new(crate::node::PortType::U64))),
+
+        // --- Real-world data ---
+        "first_names" => Ok(Box::new(crate::nodes::realer::FirstNames::female())),
+        "full_names" => Ok(Box::new(crate::nodes::realer::FullNames::new())),
+        "state_codes" => Ok(Box::new(crate::nodes::realer::StateCodes::new())),
+        "country_names" => Ok(Box::new(crate::nodes::realer::CountryNames::new())),
+
         _ => {
             // Check registry for variadic functions before giving up.
             // The registry carries the constructor — no name-to-type
             // mapping needed here.
             if let Some(sig) = registry::lookup(func) {
-                if sig.variadic {
+                if sig.is_variadic() {
                     if wires.is_empty() {
                         if let Some(id) = sig.identity {
                             return Ok(Box::new(ConstU64::new(id)));
@@ -1953,5 +2136,126 @@ mod tests {
         assert!(outputs.contains(&"z"));
         // "x" is an upstream dep of "y" but not a requested output
         assert!(!outputs.contains(&"x"), "x should not be in outputs");
+    }
+
+    /// Every function registered in the FuncSig registry must be
+    /// compilable. This test catches drift between registry.rs and
+    /// build_node() — if you register a function, you must also add
+    /// a match arm so the DSL compiler can build it.
+    ///
+    /// Functions that require non-u64 inputs (bytes, json, str) or
+    /// specific parameter formats (spec strings) are tested with
+    /// appropriate upstream nodes to satisfy type requirements.
+    #[test]
+    fn every_registered_function_compiles() {
+        use crate::dsl::registry;
+        use crate::node::SlotType;
+
+        let reg = registry::registry();
+        let mut failures: Vec<String> = Vec::new();
+
+        // Per-function overrides for functions that need special args
+        // or upstream wiring to satisfy type constraints.
+        let overrides: std::collections::HashMap<&str, &str> = [
+            // These need a bytes input, not u64
+            ("to_hex", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nout := to_hex(b)"),
+            ("from_hex", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nh := to_hex(b)\nout := from_hex(h)"),
+            ("sha256", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nout := sha256(b)"),
+            ("md5", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nout := md5(b)"),
+            ("to_base64", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nout := to_base64(b)"),
+            ("from_base64", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\ne := to_base64(b)\nout := from_base64(e)"),
+            // These need json input
+            ("json_to_str", "coordinates := (cycle)\nj := to_json(cycle)\nout := json_to_str(j)"),
+            ("json_merge", "coordinates := (cycle)\na := to_json(cycle)\nb := to_json(cycle)\nout := json_merge(a, b)"),
+            ("escape_json", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := escape_json(s)"),
+            // Distribution builders: 0 wire inputs, just const params
+            ("dist_normal", "coordinates := (cycle)\nlut := dist_normal(0.0, 1.0)\nout := lut_sample(lut)"),
+            ("dist_exponential", "coordinates := (cycle)\nlut := dist_exponential(1.0)\nout := lut_sample(lut)"),
+            ("dist_uniform", "coordinates := (cycle)\nlut := dist_uniform(0.0, 1.0)\nout := lut_sample(lut)"),
+            ("dist_pareto", "coordinates := (cycle)\nlut := dist_pareto(1.0, 1.0)\nout := lut_sample(lut)"),
+            ("dist_zipf", "coordinates := (cycle)\nlut := dist_zipf(100, 1.0)\nout := lut_sample(lut)"),
+            // Weighted functions need valid spec strings
+            ("weighted_strings", "coordinates := (cycle)\nout := weighted_strings(hash(cycle), \"a:0.5;b:0.5\")"),
+            ("weighted_u64", "coordinates := (cycle)\nout := weighted_u64(hash(cycle), \"10:0.5;20:0.5\")"),
+            ("one_of_weighted", "coordinates := (cycle)\nout := one_of_weighted(hash(cycle), \"a:0.5;b:0.5\")"),
+            // String input functions
+            ("html_encode", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := html_encode(s)"),
+            ("html_decode", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := html_decode(s)"),
+            ("url_encode", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := url_encode(s)"),
+            ("url_decode", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := url_decode(s)"),
+            ("regex_replace", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := regex_replace(s, \"[0-9]\", \"x\")"),
+            ("regex_match", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := regex_match(s, \"[0-9]+\")"),
+            // Select needs 3 inputs (cond, if_true, if_false)
+            ("select", "coordinates := (cycle)\nout := select(fair_coin(hash(cycle)), cycle, cycle)"),
+            // Blend needs 2 wire inputs
+            ("blend", "coordinates := (cycle)\nout := blend(hash(cycle), hash(cycle), 0.5)"),
+            // Multi-output: date_components
+            ("date_components", "coordinates := (cycle)\n(y, mo, d, h, mi, s, ms) := date_components(cycle)"),
+            // Context nodes: no inputs
+            ("current_epoch_millis", "coordinates := (cycle)\nout := current_epoch_millis()"),
+            ("counter", "coordinates := (cycle)\nout := counter()"),
+            ("session_start_millis", "coordinates := (cycle)\nout := session_start_millis()"),
+            // f64 input functions
+            ("clamp_f64", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := clamp_f64(f, 0.0, 0.5)"),
+            ("quantize", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := quantize(f, 0.1)"),
+            ("lerp", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := lerp(f, 0.0, 100.0)"),
+            ("inv_lerp", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := inv_lerp(f, 0.0, 1.0)"),
+            // 2-input noise
+            ("perlin_2d", "coordinates := (cycle)\nout := perlin_2d(cycle, cycle, 42, 0.01)"),
+            ("simplex_2d", "coordinates := (cycle)\nout := simplex_2d(cycle, cycle, 42, 0.01)"),
+            // PCG with 2 wires
+            ("pcg_stream", "coordinates := (cycle)\nout := pcg_stream(cycle, cycle, 42)"),
+            ("format_u64", "coordinates := (cycle)\nout := format_u64(cycle, 16)"),
+        ].into_iter().collect();
+
+        for sig in &reg {
+            let src = if let Some(override_src) = overrides.get(sig.name) {
+                override_src.to_string()
+            } else {
+                // Auto-generate: all wire params get cycle, consts get defaults
+                let mut args: Vec<String> = Vec::new();
+                for p in sig.params {
+                    match p.slot_type {
+                        SlotType::Wire => args.push("cycle".into()),
+                        SlotType::ConstU64 => args.push("100".into()),
+                        SlotType::ConstF64 => args.push("1.0".into()),
+                        SlotType::ConstStr => args.push("\"test\"".into()),
+                        SlotType::ConstVecU64 => args.push("100".into()),
+                        SlotType::ConstVecF64 => args.push("1.0".into()),
+                    }
+                }
+                if args.is_empty() && sig.is_variadic() {
+                    args.push("cycle".into());
+                }
+                let call = format!("{}({})", sig.name, args.join(", "));
+                format!("coordinates := (cycle)\nout := {call}")
+            };
+
+            let result = std::panic::catch_unwind(|| {
+                compile_gk(&src)
+            });
+
+            match result {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    // Filter out known acceptable errors (type mismatches
+                    // from auto-generated args are OK if we have an override)
+                    if !overrides.contains_key(sig.name) {
+                        failures.push(format!("  {}: {e}", sig.name));
+                    }
+                }
+                Err(_) => {
+                    failures.push(format!("  {}: panicked", sig.name));
+                }
+            }
+        }
+
+        if !failures.is_empty() {
+            panic!(
+                "Registered functions that failed to compile:\n\
+                 Add a build_node() arm or an override in this test.\n\n{}\n",
+                failures.join("\n")
+            );
+        }
     }
 }

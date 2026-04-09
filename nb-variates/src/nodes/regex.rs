@@ -3,7 +3,7 @@
 
 //! Regex processing nodes.
 
-use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, Value};
 use regex::Regex;
 
 /// Regex replace: substitute all matches of a pattern.
@@ -21,9 +21,8 @@ impl RegexReplace {
         Self {
             meta: NodeMeta {
                 name: "regex_replace".into(),
-                inputs: vec![Port::new("input", PortType::Str)],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
             },
             re: Regex::new(pattern).expect("invalid regex"),
             replacement: replacement.to_string(),
@@ -52,9 +51,8 @@ impl RegexMatch {
         Self {
             meta: NodeMeta {
                 name: "regex_match".into(),
-                inputs: vec![Port::new("input", PortType::Str)],
-                outputs: vec![Port::bool("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::bool("output")],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
             },
             re: Regex::new(pattern).expect("invalid regex"),
         }
@@ -81,9 +79,8 @@ impl RegexExtract {
         Self {
             meta: NodeMeta {
                 name: "regex_extract".into(),
-                inputs: vec![Port::new("input", PortType::Str)],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
             },
             re: Regex::new(pattern).expect("invalid regex"),
         }

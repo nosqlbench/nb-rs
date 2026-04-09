@@ -28,6 +28,7 @@ pub struct PaletteCategory {
 pub struct PaletteFunction {
     pub name: String,
     pub description: String,
+    pub help: String,
     pub wire_inputs: usize,
     pub outputs: usize,
     pub const_params: Vec<PaletteParam>,
@@ -53,17 +54,18 @@ pub fn build_palette() -> Vec<PaletteCategory> {
                 .map(|sig| PaletteFunction {
                     name: sig.name.to_string(),
                     description: sig.description.to_string(),
-                    wire_inputs: sig.wire_inputs,
+                    help: sig.help.to_string(),
+                    wire_inputs: sig.wire_input_count(),
                     outputs: if sig.outputs == 0 { 1 } else { sig.outputs },
                     const_params: sig
-                        .const_params
+                        .const_param_info()
                         .iter()
                         .map(|(name, req)| PaletteParam {
                             name: name.to_string(),
                             required: *req,
                         })
                         .collect(),
-                    variadic: sig.variadic,
+                    variadic: sig.is_variadic(),
                 })
                 .collect(),
         })
@@ -131,8 +133,8 @@ pub fn compile_graph(graph_json: &str) -> CompileResult {
         }
     };
 
-    let gk_source = match graph_to_gk(&graph) {
-        Ok(src) => src,
+    let translation = match graph_to_gk(&graph) {
+        Ok(t) => t,
         Err(e) => {
             return CompileResult {
                 gk_source: String::new(),
@@ -142,6 +144,8 @@ pub fn compile_graph(graph_json: &str) -> CompileResult {
             };
         }
     };
+
+    let gk_source = translation.source;
 
     if gk_source.trim().is_empty() {
         return CompileResult {
@@ -190,10 +194,18 @@ pub fn compile_graph(graph_json: &str) -> CompileResult {
     }
 }
 
+/// Result of translating a Litegraph graph into GK source text.
+pub struct GkTranslation {
+    /// The generated GK source code.
+    pub source: String,
+    /// Maps LiteGraph node ID to a list of (slot_index, var_name).
+    pub var_map: HashMap<i64, Vec<(usize, String)>>,
+}
+
 /// Convert a Litegraph graph structure into GK source text.
-fn graph_to_gk(graph: &LiteGraph) -> Result<String, String> {
+fn graph_to_gk(graph: &LiteGraph) -> Result<GkTranslation, String> {
     if graph.nodes.is_empty() {
-        return Ok(String::new());
+        return Ok(GkTranslation { source: String::new(), var_map: HashMap::new() });
     }
 
     // Build link map: link_id → (source_node_id, source_slot, dest_node_id, dest_slot)
@@ -231,7 +243,7 @@ fn graph_to_gk(graph: &LiteGraph) -> Result<String, String> {
 
     // Assign output variable names for function nodes.
     for node in &graph.nodes {
-        if node.node_type == "gk/coordinates" || node.node_type == "gk/output" {
+        if node.node_type == "gk/coordinates" || node.node_type == "gk/output" || node.node_type == "gk/plotter" {
             continue;
         }
         let func_name = node.node_type.strip_prefix("gk/").unwrap_or(&node.node_type);
@@ -278,7 +290,7 @@ fn graph_to_gk(graph: &LiteGraph) -> Result<String, String> {
     let mut sorted_nodes: Vec<&LiteNode> = graph
         .nodes
         .iter()
-        .filter(|n| n.node_type != "gk/coordinates" && n.node_type != "gk/output")
+        .filter(|n| n.node_type != "gk/coordinates" && n.node_type != "gk/output" && n.node_type != "gk/plotter")
         .collect();
     sorted_nodes.sort_by_key(|n| n.id);
 
@@ -297,7 +309,7 @@ fn graph_to_gk(graph: &LiteGraph) -> Result<String, String> {
         }
 
         // Collect const params from widget values.
-        for (i, widget_val) in node.widgets_values.iter().enumerate() {
+        for (_i, widget_val) in node.widgets_values.iter().enumerate() {
             let val_str = match widget_val {
                 serde_json::Value::Number(n) => n.to_string(),
                 serde_json::Value::String(s) => {
@@ -334,5 +346,202 @@ fn graph_to_gk(graph: &LiteGraph) -> Result<String, String> {
         ));
     }
 
-    Ok(lines.join("\n"))
+    let mut var_map: HashMap<i64, Vec<(usize, String)>> = HashMap::new();
+    for ((node_id, slot_idx), var_name) in &output_names {
+        var_map.entry(*node_id).or_default().push((*slot_idx, var_name.clone()));
+    }
+    Ok(GkTranslation { source: lines.join("\n"), var_map })
+}
+
+// ─── Eval API ──────────────────────────────────────────────
+
+/// Request body for the eval endpoint.
+#[derive(Deserialize)]
+pub struct EvalRequest {
+    pub graph: String,
+    pub cycle: u64,
+}
+
+/// Full evaluation result including per-node port values.
+#[derive(Serialize)]
+pub struct EvalResult {
+    pub gk_source: String,
+    pub svg: String,
+    pub error: Option<String>,
+    pub sample: String,
+    pub node_values: HashMap<String, NodePortValues>,
+}
+
+/// Port values for a single node.
+#[derive(Serialize)]
+pub struct NodePortValues {
+    pub outs: Vec<PortValue>,
+}
+
+/// A single port's evaluated value.
+#[derive(Serialize)]
+pub struct PortValue {
+    pub name: String,
+    pub value: String,
+}
+
+/// Request for batch evaluation over a cycle range (for plotting).
+#[derive(Deserialize)]
+pub struct PlotRequest {
+    pub graph: String,
+    pub cycle_start: u64,
+    pub cycle_end: u64,
+    pub cycle_step: u64,
+}
+
+/// Batch evaluation result: arrays of values per output, for plotting.
+#[derive(Serialize)]
+pub struct PlotResult {
+    pub error: Option<String>,
+    /// The cycle values (x-axis).
+    pub cycles: Vec<u64>,
+    /// Per-output arrays: output_name → array of values (as f64 for plotting).
+    pub series: HashMap<String, Vec<f64>>,
+    /// Output names in declaration order.
+    pub output_names: Vec<String>,
+}
+
+/// Evaluate a graph over a range of cycles for plotting.
+pub fn plot_graph(req: PlotRequest) -> PlotResult {
+    let graph: LiteGraph = match serde_json::from_str(&req.graph) {
+        Ok(g) => g,
+        Err(e) => return PlotResult {
+            error: Some(format!("invalid graph JSON: {e}")),
+            cycles: vec![], series: HashMap::new(), output_names: vec![],
+        },
+    };
+
+    let translation = match graph_to_gk(&graph) {
+        Ok(t) => t,
+        Err(e) => return PlotResult {
+            error: Some(e),
+            cycles: vec![], series: HashMap::new(), output_names: vec![],
+        },
+    };
+
+    if translation.source.trim().is_empty() {
+        return PlotResult {
+            error: None, cycles: vec![], series: HashMap::new(), output_names: vec![],
+        };
+    }
+
+    match nb_variates::dsl::compile_gk(&translation.source) {
+        Ok(mut kernel) => {
+            let output_names: Vec<String> = kernel.output_names()
+                .iter().map(|s| s.to_string()).collect();
+
+            let step = req.cycle_step.max(1);
+            let mut cycles = Vec::new();
+            let mut series: HashMap<String, Vec<f64>> = HashMap::new();
+            for name in &output_names {
+                series.insert(name.clone(), Vec::new());
+            }
+
+            let mut c = req.cycle_start;
+            while c <= req.cycle_end {
+                cycles.push(c);
+                kernel.set_coordinates(&[c]);
+                for name in &output_names {
+                    let v = kernel.pull(name);
+                    let f = match v {
+                        nb_variates::node::Value::U64(n) => *n as f64,
+                        nb_variates::node::Value::F64(n) => *n,
+                        nb_variates::node::Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+                        _ => f64::NAN,
+                    };
+                    series.get_mut(name).unwrap().push(f);
+                }
+                c += step;
+            }
+
+            PlotResult { error: None, cycles, series, output_names }
+        }
+        Err(e) => PlotResult {
+            error: Some(format!("compile error: {e}")),
+            cycles: vec![], series: HashMap::new(), output_names: vec![],
+        },
+    }
+}
+
+/// Evaluate a graph at a specific cycle, returning per-node port values.
+pub fn eval_graph(req: EvalRequest) -> EvalResult {
+    let graph: LiteGraph = match serde_json::from_str(&req.graph) {
+        Ok(g) => g,
+        Err(e) => return EvalResult {
+            gk_source: String::new(), svg: String::new(),
+            error: Some(format!("invalid graph JSON: {e}")),
+            sample: String::new(), node_values: HashMap::new(),
+        },
+    };
+
+    let translation = match graph_to_gk(&graph) {
+        Ok(t) => t,
+        Err(e) => return EvalResult {
+            gk_source: String::new(), svg: String::new(),
+            error: Some(e), sample: String::new(), node_values: HashMap::new(),
+        },
+    };
+
+    if translation.source.trim().is_empty() {
+        return EvalResult {
+            gk_source: translation.source, svg: String::new(),
+            error: None, sample: String::new(), node_values: HashMap::new(),
+        };
+    }
+
+    let svg = viz::gk_to_svg(&translation.source).unwrap_or_default();
+
+    match nb_variates::dsl::compile_gk(&translation.source) {
+        Ok(mut kernel) => {
+            kernel.set_coordinates(&[req.cycle]);
+
+            // Pull all outputs and collect their display values.
+            let output_names: Vec<String> = kernel.output_names().iter().map(|s| s.to_string()).collect();
+            let mut all_values: HashMap<String, String> = HashMap::new();
+            for name in &output_names {
+                let v = kernel.pull(name);
+                all_values.insert(name.clone(), v.to_display_string());
+            }
+
+            // Map variable values back to LiteGraph node IDs.
+            let mut node_values: HashMap<String, NodePortValues> = HashMap::new();
+            for (node_id, slots) in &translation.var_map {
+                let mut outs = Vec::new();
+                for (_, var_name) in slots {
+                    if let Some(val) = all_values.get(var_name) {
+                        outs.push(PortValue { name: var_name.clone(), value: val.clone() });
+                    }
+                }
+                if !outs.is_empty() {
+                    node_values.insert(node_id.to_string(), NodePortValues { outs });
+                }
+            }
+
+            // Build sample string for sidebar.
+            let sample_vals: Vec<String> = output_names.iter()
+                .filter_map(|name| all_values.get(name).map(|v| format!("{name}={v}")))
+                .collect();
+            let sample = format!("cycle {}: {}", req.cycle, sample_vals.join(", "));
+
+            EvalResult {
+                gk_source: translation.source,
+                svg,
+                error: None,
+                sample,
+                node_values,
+            }
+        }
+        Err(e) => EvalResult {
+            gk_source: translation.source,
+            svg,
+            error: Some(format!("compile error: {e}")),
+            sample: String::new(),
+            node_values: HashMap::new(),
+        },
+    }
 }

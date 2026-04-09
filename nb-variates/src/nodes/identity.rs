@@ -3,7 +3,7 @@
 
 //! Identity and constant nodes.
 
-use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value};
 
 /// Passthrough: output equals input.
 ///
@@ -25,9 +25,8 @@ impl Identity {
         Self {
             meta: NodeMeta {
                 name: "identity".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
         }
     }
@@ -69,9 +68,8 @@ impl ConstU64 {
         Self {
             meta: NodeMeta {
                 name: "const".into(),
-                inputs: vec![],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::const_u64("value", value)],
             },
             value,
         }
@@ -112,14 +110,14 @@ pub struct ConstStr {
 
 impl ConstStr {
     pub fn new(value: impl Into<String>) -> Self {
+        let value: String = value.into();
         Self {
             meta: NodeMeta {
                 name: "const_str".into(),
-                inputs: vec![],
-                outputs: vec![Port::str("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::str("output")],
+                ins: vec![Slot::const_str("value", value.clone())],
             },
-            value: value.into(),
+            value,
         }
     }
 }

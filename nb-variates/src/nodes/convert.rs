@@ -9,7 +9,7 @@
 //! - **Explicit conversions**: user-placed nodes for lossy, formatted,
 //!   or parameterized conversions. These require deliberate intent.
 
-use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value};
 
 /// Convert u64 to its decimal string representation.
 ///
@@ -29,9 +29,8 @@ impl U64ToString {
         Self {
             meta: NodeMeta {
                 name: "__u64_to_string".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::str("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::str("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
         }
     }
@@ -65,9 +64,8 @@ impl F64ToString {
         Self {
             meta: NodeMeta {
                 name: "__f64_to_string".into(),
-                inputs: vec![Port::f64("input")],
-                outputs: vec![Port::str("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::str("output")],
+                ins: vec![Slot::Wire(Port::f64("input"))],
             },
         }
     }
@@ -103,9 +101,8 @@ impl U64ToF64 {
         Self {
             meta: NodeMeta {
                 name: "__u64_to_f64".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::f64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::f64("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
         }
     }
@@ -139,9 +136,8 @@ impl BoolToU64 {
         Self {
             meta: NodeMeta {
                 name: "__bool_to_u64".into(),
-                inputs: vec![Port::bool("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::bool("input"))],
             },
         }
     }
@@ -176,9 +172,8 @@ impl U64ToBool {
         Self {
             meta: NodeMeta {
                 name: "__u64_to_bool".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::bool("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::bool("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
         }
     }
@@ -218,9 +213,8 @@ impl F64ToU64 {
         Self {
             meta: NodeMeta {
                 name: "f64_to_u64".into(),
-                inputs: vec![Port::f64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::f64("input"))],
             },
         }
     }
@@ -260,9 +254,8 @@ impl RoundToU64 {
         Self {
             meta: NodeMeta {
                 name: "round_to_u64".into(),
-                inputs: vec![Port::f64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::f64("input"))],
             },
         }
     }
@@ -301,9 +294,8 @@ impl FloorToU64 {
         Self {
             meta: NodeMeta {
                 name: "floor_to_u64".into(),
-                inputs: vec![Port::f64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::f64("input"))],
             },
         }
     }
@@ -341,9 +333,8 @@ impl CeilToU64 {
         Self {
             meta: NodeMeta {
                 name: "ceil_to_u64".into(),
-                inputs: vec![Port::f64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::f64("input"))],
             },
         }
     }
@@ -390,9 +381,12 @@ impl Discretize {
         Self {
             meta: NodeMeta {
                 name: "discretize".into(),
-                inputs: vec![Port::f64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::f64("input")),
+                    Slot::const_f64("range", range),
+                    Slot::const_u64("buckets", buckets),
+                ],
             },
             range,
             buckets,
@@ -456,9 +450,8 @@ impl FormatU64 {
         Self {
             meta: NodeMeta {
                 name: "format_u64".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::str("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::str("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             radix,
             prefix,
@@ -501,9 +494,8 @@ impl FormatF64 {
         Self {
             meta: NodeMeta {
                 name: "format_f64".into(),
-                inputs: vec![Port::f64("input")],
-                outputs: vec![Port::str("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::str("output")],
+                ins: vec![Slot::Wire(Port::f64("input"))],
             },
             precision,
         }
@@ -539,9 +531,8 @@ impl ZeroPadU64 {
         Self {
             meta: NodeMeta {
                 name: "zero_pad_u64".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::str("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::str("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             width,
         }

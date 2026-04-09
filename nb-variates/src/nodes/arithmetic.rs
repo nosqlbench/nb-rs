@@ -8,7 +8,10 @@
 //! mixed_radix for coordinate decomposition, interleave for combining
 //! independent dimensions.
 
-use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{
+    Commutativity, CompiledU64Op,
+    GkNode, NodeMeta, Port, Slot, Value,
+};
 
 /// Add a constant to a u64 value (wrapping).
 ///
@@ -29,9 +32,11 @@ impl AddU64 {
         Self {
             meta: NodeMeta {
                 name: "add".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("input")),
+                    Slot::const_u64("addend", addend),
+                ],
             },
             addend,
         }
@@ -68,9 +73,11 @@ impl MulU64 {
         Self {
             meta: NodeMeta {
                 name: "mul".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("input")),
+                    Slot::const_u64("factor", factor),
+                ],
             },
             factor,
         }
@@ -108,9 +115,11 @@ impl DivU64 {
         Self {
             meta: NodeMeta {
                 name: "div".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("input")),
+                    Slot::const_u64("divisor", divisor),
+                ],
             },
             divisor,
         }
@@ -153,9 +162,11 @@ impl ModU64 {
         Self {
             meta: NodeMeta {
                 name: "mod".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("input")),
+                    Slot::const_u64("modulus", modulus),
+                ],
             },
             modulus,
         }
@@ -202,9 +213,12 @@ impl ClampU64 {
         Self {
             meta: NodeMeta {
                 name: "clamp".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("input")),
+                    Slot::const_u64("min", min),
+                    Slot::const_u64("max", max),
+                ],
             },
             min,
             max,
@@ -257,12 +271,15 @@ impl MixedRadix {
             .enumerate()
             .map(|(i, _)| Port::u64(format!("d{i}")))
             .collect();
+        let slots = vec![
+            Slot::Wire(Port::u64("input")),
+            Slot::const_vec_u64("radixes", radixes.clone()),
+        ];
         Self {
             meta: NodeMeta {
                 name: "mixed_radix".into(),
-                inputs: vec![Port::u64("input")],
-                outputs,
-                commutativity: Commutativity::Positional,
+                outs: outputs,
+                ins: slots,
             },
             radixes,
         }
@@ -322,13 +339,14 @@ pub struct SumN {
 
 impl SumN {
     pub fn new(n: usize) -> Self {
-        let inputs: Vec<Port> = (0..n).map(|i| Port::u64(format!("in_{i}"))).collect();
+        let slots: Vec<Slot> = (0..n)
+            .map(|i| Slot::Wire(Port::u64(format!("in_{i}"))))
+            .collect();
         Self {
             meta: NodeMeta {
                 name: "sum".into(),
-                inputs,
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::AllCommutative,
+                outs: vec![Port::u64("output")],
+                ins: slots,
             },
         }
     }
@@ -338,6 +356,8 @@ impl GkNode for SumN {
     fn meta(&self) -> &NodeMeta {
         &self.meta
     }
+
+    fn commutativity(&self) -> Commutativity { Commutativity::AllCommutative }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let mut acc: u64 = 0;
@@ -372,13 +392,14 @@ pub struct ProductN {
 
 impl ProductN {
     pub fn new(n: usize) -> Self {
-        let inputs: Vec<Port> = (0..n).map(|i| Port::u64(format!("in_{i}"))).collect();
+        let slots: Vec<Slot> = (0..n)
+            .map(|i| Slot::Wire(Port::u64(format!("in_{i}"))))
+            .collect();
         Self {
             meta: NodeMeta {
                 name: "product".into(),
-                inputs,
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::AllCommutative,
+                outs: vec![Port::u64("output")],
+                ins: slots,
             },
         }
     }
@@ -386,6 +407,8 @@ impl ProductN {
 
 impl GkNode for ProductN {
     fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn commutativity(&self) -> Commutativity { Commutativity::AllCommutative }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let mut acc: u64 = 1;
@@ -418,13 +441,14 @@ pub struct MinN {
 
 impl MinN {
     pub fn new(n: usize) -> Self {
-        let inputs: Vec<Port> = (0..n).map(|i| Port::u64(format!("in_{i}"))).collect();
+        let slots: Vec<Slot> = (0..n)
+            .map(|i| Slot::Wire(Port::u64(format!("in_{i}"))))
+            .collect();
         Self {
             meta: NodeMeta {
                 name: "min".into(),
-                inputs,
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::AllCommutative,
+                outs: vec![Port::u64("output")],
+                ins: slots,
             },
         }
     }
@@ -432,6 +456,8 @@ impl MinN {
 
 impl GkNode for MinN {
     fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn commutativity(&self) -> Commutativity { Commutativity::AllCommutative }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let mut acc: u64 = u64::MAX;
@@ -464,13 +490,14 @@ pub struct MaxN {
 
 impl MaxN {
     pub fn new(n: usize) -> Self {
-        let inputs: Vec<Port> = (0..n).map(|i| Port::u64(format!("in_{i}"))).collect();
+        let slots: Vec<Slot> = (0..n)
+            .map(|i| Slot::Wire(Port::u64(format!("in_{i}"))))
+            .collect();
         Self {
             meta: NodeMeta {
                 name: "max".into(),
-                inputs,
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::AllCommutative,
+                outs: vec![Port::u64("output")],
+                ins: slots,
             },
         }
     }
@@ -478,6 +505,8 @@ impl MaxN {
 
 impl GkNode for MaxN {
     fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn commutativity(&self) -> Commutativity { Commutativity::AllCommutative }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let mut acc: u64 = 0;
@@ -516,9 +545,11 @@ impl Interleave {
         Self {
             meta: NodeMeta {
                 name: "interleave".into(),
-                inputs: vec![Port::u64("a"), Port::u64("b")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("a")),
+                    Slot::Wire(Port::u64("b")),
+                ],
             },
         }
     }
@@ -693,5 +724,58 @@ mod tests {
         let node = MaxN::new(3);
         node.eval(&[Value::U64(50), Value::U64(10), Value::U64(30)], &mut out);
         assert_eq!(out[0].as_u64(), 50);
+    }
+
+    // --- Slot model consistency ---
+
+    /// Verify that `meta().jit_constants_from_slots()` matches
+    /// `jit_constants()` for all arithmetic nodes with constants.
+    #[test]
+    fn slot_constants_match_jit_constants() {
+        use crate::node::GkNode;
+
+        let nodes: Vec<Box<dyn GkNode>> = vec![
+            Box::new(AddU64::new(42)),
+            Box::new(MulU64::new(7)),
+            Box::new(DivU64::new(100)),
+            Box::new(ModU64::new(256)),
+            Box::new(ClampU64::new(10, 90)),
+            Box::new(MixedRadix::new(vec![100, 1000, 0])),
+        ];
+
+        for node in &nodes {
+            let from_trait = node.jit_constants();
+            let from_slots = node.meta().jit_constants_from_slots();
+            assert_eq!(
+                from_trait, from_slots,
+                "constant mismatch for node '{}': trait={from_trait:?}, slots={from_slots:?}",
+                node.meta().name,
+            );
+        }
+    }
+
+    /// Verify wire_inputs() returns correct count for all arithmetic nodes.
+    #[test]
+    fn slot_wire_inputs_match_inputs() {
+        use crate::node::GkNode;
+
+        let nodes: Vec<Box<dyn GkNode>> = vec![
+            Box::new(AddU64::new(0)),
+            Box::new(ModU64::new(1)),
+            Box::new(SumN::new(3)),
+            Box::new(ProductN::new(2)),
+            Box::new(Interleave::new()),
+            Box::new(MixedRadix::new(vec![10, 20])),
+        ];
+
+        for node in &nodes {
+            let old_count = node.meta().wire_inputs().len();
+            let new_count = node.meta().wire_inputs().len();
+            assert_eq!(
+                old_count, new_count,
+                "wire input count mismatch for '{}': inputs={old_count}, wire_inputs()={new_count}",
+                node.meta().name,
+            );
+        }
     }
 }

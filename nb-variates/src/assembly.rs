@@ -192,7 +192,7 @@ impl GkAssembler {
         let mut next_slot = coord_count;
         for node in &resolved.nodes {
             slot_base.push(next_slot);
-            next_slot += node.meta().outputs.len();
+            next_slot += node.meta().outs.len();
         }
         let total_slots = next_slot;
 
@@ -211,7 +211,7 @@ impl GkAssembler {
                 })
                 .collect();
 
-            let output_count = resolved.nodes[node_idx].meta().outputs.len();
+            let output_count = resolved.nodes[node_idx].meta().outs.len();
             let output_slots: Vec<usize> = (0..output_count)
                 .map(|p| slot_base[node_idx] + p)
                 .collect();
@@ -245,7 +245,7 @@ impl GkAssembler {
         let mut next_slot = coord_count;
         for node in &resolved.nodes {
             slot_base.push(next_slot);
-            next_slot += node.meta().outputs.len();
+            next_slot += node.meta().outs.len();
         }
         let total_slots = next_slot;
 
@@ -263,7 +263,7 @@ impl GkAssembler {
                 })
                 .collect();
 
-            let output_count = node.meta().outputs.len();
+            let output_count = node.meta().outs.len();
             let output_slots: Vec<usize> = (0..output_count)
                 .map(|p| slot_base[node_idx] + p)
                 .collect();
@@ -286,7 +286,7 @@ impl GkAssembler {
             })
             .collect();
 
-        crate::jit::compile_jit(coord_count, total_slots, jit_steps, output_map)
+        crate::jit::compile_jit(coord_count, total_slots, jit_steps, output_map, resolved.nodes)
     }
 
     /// Validate, resolve, and compile a hybrid kernel where each node
@@ -302,7 +302,7 @@ impl GkAssembler {
         let mut next_slot = coord_count;
         for node in &resolved.nodes {
             slot_bases.push(next_slot);
-            next_slot += node.meta().outputs.len();
+            next_slot += node.meta().outs.len();
         }
         let total_slots = next_slot;
 
@@ -314,14 +314,16 @@ impl GkAssembler {
             })
             .collect();
 
-        crate::hybrid::build_hybrid(
+        let mut kernel = crate::hybrid::build_hybrid(
             &resolved.nodes,
             &resolved.wiring,
             coord_count,
             total_slots,
             &slot_bases,
             output_map,
-        )
+        )?;
+        kernel.retain_nodes(resolved.nodes);
+        Ok(kernel)
     }
 
     /// Internal: validate, resolve wiring, insert adapters, topological sort.
@@ -345,7 +347,7 @@ impl GkAssembler {
 
         // Validate arity
         for pn in &self.nodes {
-            let expected = pn.node.meta().inputs.len();
+            let expected = pn.node.meta().wire_inputs().len();
             let got = pn.inputs.len();
             if expected != got {
                 return Err(AssemblyError::ArityMismatch {
@@ -372,7 +374,7 @@ impl GkAssembler {
             let mut node_wiring = Vec::new();
 
             for (port_idx, wire_ref) in all_nodes[node_idx].inputs.clone().iter().enumerate() {
-                let expected_type = all_nodes[node_idx].node.meta().inputs[port_idx].typ;
+                let expected_type = all_nodes[node_idx].node.meta().wire_inputs()[port_idx].typ;
 
                 let (source, source_type) = match wire_ref {
                     WireRef::Coord(name) => {
@@ -385,7 +387,7 @@ impl GkAssembler {
                         let src_idx = all_name_to_idx
                             .get(name)
                             .ok_or_else(|| AssemblyError::UnknownWire(name.clone()))?;
-                        let src_type = all_nodes[*src_idx].node.meta().outputs[*out_port].typ;
+                        let src_type = all_nodes[*src_idx].node.meta().outs[*out_port].typ;
                         (WireSource::NodeOutput(*src_idx, *out_port), src_type)
                     }
                 };

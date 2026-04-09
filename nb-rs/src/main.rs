@@ -40,6 +40,19 @@ fn main() {
         return;
     }
 
+    // Handle bench command synchronously
+    if args.first().map(|s| s.as_str()) == Some("bench") {
+        bench_command(&args[1..]);
+        return;
+    }
+
+    // Handle completions command: output shell completion script
+    if args.first().map(|s| s.as_str()) == Some("completions") {
+        let shell = args.get(1).map(|s| s.as_str()).unwrap_or("bash");
+        print_completions(shell);
+        return;
+    }
+
     // Handle web command
     if args.first().map(|s| s.as_str()) == Some("web") {
         // Handle --stop: kill a running daemon
@@ -55,13 +68,13 @@ fn main() {
         }
 
         // Handle --restart: stop the old daemon, re-launch with its saved args.
-        // If no daemon is running, fall through and start fresh.
+        // Falls back to process-table scan if no anchor file exists.
+        // If nothing is found at all, starts fresh.
         if args.iter().any(|a| a == "--restart") {
             if let Some(anchor) = daemon::read_anchor() {
+                // Anchor file exists — use it for a clean restart.
+                let _ = daemon::stop_daemon();
                 if !anchor.args.is_empty() {
-                    // Stop the old daemon (ignore errors — it may already be dead).
-                    let _ = daemon::stop_daemon();
-                    // Re-exec ourselves with the saved args.
                     let exe = std::env::current_exe().unwrap_or_else(|_| "nbrs".into());
                     eprintln!("nbrs web: restarting with: {} {}", exe.display(),
                         anchor.args.join(" "));
@@ -76,7 +89,31 @@ fn main() {
                 }
                 eprintln!("nbrs web: anchor has no saved args, starting with defaults");
             } else {
-                eprintln!("nbrs web: no running daemon found, starting fresh");
+                // No anchor — scan the process table for orphaned nbrs web processes.
+                let procs = daemon::find_nbrs_web_processes();
+                if procs.is_empty() {
+                    eprintln!("nbrs web: no running instance found, starting fresh");
+                } else {
+                    eprintln!("nbrs web: no anchor file, but found {} running nbrs web process(es):",
+                        procs.len());
+                    for p in &procs {
+                        eprintln!("  pid {} — {}", p.pid, p.cmdline);
+                    }
+                    if daemon::confirm_prompt("Kill these and start fresh?") {
+                        for p in &procs {
+                            match daemon::kill_pid(p.pid) {
+                                Ok(()) => eprintln!("  stopped pid {}", p.pid),
+                                Err(e) => eprintln!("  warning: {e}"),
+                            }
+                        }
+                        // Clean up any leftover PID/anchor files.
+                        let _ = std::fs::remove_file(daemon::pid_file_path());
+                        daemon::remove_anchor();
+                    } else {
+                        eprintln!("nbrs web: aborted");
+                        return;
+                    }
+                }
             }
         }
 
@@ -89,13 +126,14 @@ fn main() {
             }
         }
 
-        let bind = args.iter()
+        let bind_raw = args.iter()
             .find_map(|a| a.strip_prefix("bind=").or_else(|| a.strip_prefix("--bind=")))
             .unwrap_or("0.0.0.0");
-        let port = args.iter()
-            .find_map(|a| a.strip_prefix("port=").or_else(|| a.strip_prefix("--port=")))
-            .and_then(|s| s.parse::<u16>().ok())
-            .unwrap_or(8080);
+        let port_raw = args.iter()
+            .find_map(|a| a.strip_prefix("port=").or_else(|| a.strip_prefix("--port=")));
+
+        // Parse bind flexibly: accept bare IP, host:port, or full URL
+        let (bind, port) = parse_bind_address(bind_raw, port_raw);
         let addr: std::net::SocketAddr = format!("{bind}:{port}").parse()
             .unwrap_or_else(|e| { eprintln!("error: invalid bind address '{bind}:{port}': {e}"); std::process::exit(1); });
 
@@ -157,6 +195,7 @@ fn print_usage() {
     eprintln!("  nbrs describe gk functions    List all GK node functions");
     eprintln!("  nbrs describe gk stdlib       List standard library modules");
     eprintln!("  nbrs describe gk dag <file>   Render a .gk file as DOT/Mermaid/SVG");
+    eprintln!("  nbrs bench gk <expr>    Benchmark a GK expression at all compilation levels");
     eprintln!("  nbrs web [bind=0.0.0.0] [port=8080]  Start the web dashboard");
     eprintln!("  nbrs web --daemon             Start web dashboard in the background");
     eprintln!("  nbrs web --stop               Stop a running background web dashboard");
@@ -252,10 +291,11 @@ fn describe_gk_functions() {
             };
             let level_col = format!("{bold}P{reset}{p1}{p2}{p3}");
 
-            let params_desc = if sig.const_params.is_empty() {
+            let const_info = sig.const_param_info();
+            let params_desc = if const_info.is_empty() {
                 String::new()
             } else {
-                let p: Vec<String> = sig.const_params.iter()
+                let p: Vec<String> = const_info.iter()
                     .map(|(name, required)| {
                         if *required { name.to_string() } else { format!("[{name}]") }
                     })
@@ -264,9 +304,9 @@ fn describe_gk_functions() {
             };
 
             let arity = if sig.outputs == 0 {
-                format!("{}→N", sig.wire_inputs)
+                format!("{}→N", sig.wire_input_count())
             } else {
-                format!("{}→{}", sig.wire_inputs, sig.outputs)
+                format!("{}→{}", sig.wire_input_count(), sig.outputs)
             };
 
             let name_padded = format!("{:<24}", sig.name);
@@ -613,6 +653,485 @@ fn describe_gk_dag(args: &[String]) {
             }
         }
         Err(e) => eprintln!("error: {e}"),
+    }
+}
+
+// =================================================================
+// Bench command: A/B timing across compilation levels and threads
+// =================================================================
+
+/// Parse a range spec: `N`, `start:end:step`, or `start:end*factor`.
+///
+/// - `4` → [4]
+/// - `1:8:2` → [1, 3, 5, 7]
+/// - `1:64*2` → [1, 2, 4, 8, 16, 32, 64]
+fn parse_range(s: &str) -> Vec<u64> {
+    // Single value
+    if !s.contains(':') {
+        return vec![s.parse().unwrap_or(1)];
+    }
+
+    let parts: Vec<&str> = s.splitn(2, ':').collect();
+    let start: f64 = parts[0].parse().unwrap_or(1.0);
+    let rest = parts[1];
+
+    // Geometric: start:end*factor
+    if let Some(pos) = rest.find('*') {
+        let end: f64 = rest[..pos].parse().unwrap_or(start);
+        let factor: f64 = rest[pos + 1..].parse().unwrap_or(2.0);
+        let mut result = Vec::new();
+        let mut v = start;
+        while v <= end + 0.001 {
+            let rounded = v.round() as u64;
+            if rounded >= 1 && (result.is_empty() || *result.last().unwrap() != rounded) {
+                result.push(rounded);
+            }
+            v *= factor;
+        }
+        return result;
+    }
+
+    // Linear: start:end:step
+    if let Some(pos) = rest.find(':') {
+        let end: f64 = rest[..pos].parse().unwrap_or(start);
+        let step: f64 = rest[pos + 1..].parse().unwrap_or(1.0);
+        let mut result = Vec::new();
+        let mut v = start;
+        while v <= end + 0.001 {
+            result.push(v.round() as u64);
+            v += step;
+        }
+        return result;
+    }
+
+    // start:end (implicit step=1)
+    let end: f64 = rest.parse().unwrap_or(start);
+    (start as u64..=end as u64).collect()
+}
+
+/// Benchmark a GK expression at all compilation levels, optionally
+/// across multiple thread counts.
+///
+/// Usage: `nbrs bench gk <expr> [cycles=N] [threads=RANGE]`
+///
+/// Range syntax:
+///   threads=4          single value
+///   threads=1:8:2      linear: 1, 3, 5, 7
+///   threads=1:64*2     geometric: 1, 2, 4, 8, 16, 32, 64
+fn bench_command(args: &[String]) {
+    let topic = args.first().map(|s| s.as_str()).unwrap_or("");
+    if topic != "gk" {
+        eprintln!("Usage: nbrs bench gk <expr> [cycles=N] [threads=RANGE]");
+        eprintln!("  Example: nbrs bench gk \"hash_range(hash(cycle), 1000)\"");
+        eprintln!("  Example: nbrs bench gk \"weighted_pick(hash(cycle), 0.5, 10, 0.3, 20)\" threads=1:8*2");
+        eprintln!();
+        eprintln!("Range syntax: N | start:end:step | start:end*factor");
+        return;
+    }
+
+    let rest = &args[1..];
+    let mut expr = String::new();
+    let mut cycles: u64 = 100_000;
+    let mut thread_counts: Vec<u64> = vec![1];
+
+    let mut i = 0;
+    while i < rest.len() {
+        let arg = &rest[i];
+        if let Some(val) = arg.strip_prefix("cycles=") {
+            cycles = val.parse().unwrap_or(100_000);
+        } else if let Some(val) = arg.strip_prefix("threads=") {
+            thread_counts = parse_range(val);
+        } else if arg == "--cycles" || arg == "-c" {
+            i += 1;
+            if i < rest.len() {
+                cycles = rest[i].parse().unwrap_or(100_000);
+            }
+        } else if arg == "--threads" || arg == "-t" {
+            i += 1;
+            if i < rest.len() {
+                thread_counts = parse_range(&rest[i]);
+            }
+        } else if arg.starts_with("--cycles=") {
+            cycles = arg["--cycles=".len()..].parse().unwrap_or(100_000);
+        } else if arg.starts_with("--threads=") {
+            thread_counts = parse_range(&arg["--threads=".len()..]);
+        } else if arg.starts_with('-') {
+            eprintln!("error: unrecognized option '{arg}'");
+            eprintln!("  Valid options: cycles=N, threads=RANGE, --cycles N, --threads RANGE");
+            return;
+        } else if expr.is_empty() {
+            expr = arg.clone();
+        } else {
+            eprintln!("error: unexpected argument '{arg}'");
+            eprintln!("  The GK expression must be quoted if it contains spaces.");
+            return;
+        }
+        i += 1;
+    }
+
+    if expr.is_empty() {
+        eprintln!("Usage: nbrs bench gk <expr> [cycles=N] [threads=RANGE]");
+        return;
+    }
+
+    let source = format!("coordinates := (cycle)\nout := {expr}");
+    let warmup = 1000u64;
+
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let (bold, dim, reset, green) = if is_tty {
+        ("\x1b[1m", "\x1b[2m", "\x1b[0m", "\x1b[32m")
+    } else {
+        ("", "", "", "")
+    };
+
+    println!("{bold}Benchmarking:{reset} {expr}");
+    println!("{dim}  {cycles} cycles per thread, {warmup} warmup{reset}");
+
+    use nb_variates::dsl::compile::compile_gk_to_assembler;
+
+    for &nthreads in &thread_counts {
+        let nthreads = nthreads.max(1) as usize;
+
+        if thread_counts.len() > 1 {
+            println!();
+            println!("  {bold}--- {nthreads} thread{} ---{reset}",
+                if nthreads == 1 { "" } else { "s" });
+        }
+        println!();
+        println!("  {bold}{:<10} {:>12} {:>12} {:>8} {:>14}  {}{reset}",
+            "Level", "Total", "Per-cycle", "Speedup", "Throughput", "");
+        println!("  {}", "-".repeat(62));
+
+        let total_ops = (cycles * nthreads as u64) as f64;
+        let mut p1_ns: Option<f64> = None;
+
+        // Phase 1: uses Arc<GkProgram> + per-thread GkState (true multi-thread)
+        if let Ok(asm) = compile_gk_to_assembler(&source) {
+            if let Ok(kernel) = asm.compile() {
+                let program = kernel.program().clone();
+                // Warmup
+                {
+                    let mut state = program.create_state();
+                    for c in 0..warmup { state.set_coordinates(&[c]); state.pull(&program, "out"); }
+                }
+                let per_thread = cycles;
+                let barrier = Arc::new(std::sync::Barrier::new(nthreads));
+                let elapsed = Arc::new(std::sync::Mutex::new(std::time::Duration::ZERO));
+
+                std::thread::scope(|s| {
+                    for tid in 0..nthreads {
+                        let program = program.clone();
+                        let barrier = barrier.clone();
+                        let elapsed = elapsed.clone();
+                        s.spawn(move || {
+                            let mut state = program.create_state();
+                            let base = tid as u64 * per_thread;
+                            barrier.wait();
+                            let start = std::time::Instant::now();
+                            for c in base..base + per_thread {
+                                state.set_coordinates(&[c]);
+                                state.pull(&program, "out");
+                            }
+                            let e = start.elapsed();
+                            // Take the max elapsed across threads (wall-clock)
+                            let mut guard = elapsed.lock().unwrap();
+                            if e > *guard { *guard = e; }
+                        });
+                    }
+                });
+
+                let wall = *elapsed.lock().unwrap();
+                let per_cycle = wall.as_nanos() as f64 / total_ops;
+                let throughput = total_ops / wall.as_secs_f64();
+                p1_ns = Some(per_cycle);
+                println!("  {:<10} {:>12} {:>10.1} ns {:>7.1}x {:>12.0} /s  {dim}runtime interpreter{reset}",
+                    "P1", format_duration(wall), per_cycle, 1.0, throughput);
+            }
+        }
+
+        // P2, Hybrid, P3: each thread gets its own compiled kernel
+        // (the buffer is mutable per-kernel, no sharing needed).
+        let levels: Vec<(&str, bool, &str)> = vec![
+            ("P2", false, "compiled u64 closures"),
+            ("Hybrid", true, "per-node optimal (JIT + closure)"),
+            ("P3", true, "Cranelift JIT native code"),
+        ];
+
+        for (level_name, highlight, desc) in &levels {
+            let kernels: Vec<_> = (0..nthreads).filter_map(|_| {
+                let asm = compile_gk_to_assembler(&source).ok()?;
+                match *level_name {
+                    "P2" => asm.try_compile().ok().map(|mut k| {
+                        let out = k.resolve_output("out").unwrap();
+                        Box::new(move |c: u64| { k.eval(&[c]); let _ = k.get_slot(out); })
+                            as Box<dyn FnMut(u64) + Send>
+                    }),
+                    "Hybrid" => asm.compile_hybrid().ok().map(|mut k| {
+                        let out = k.resolve_output("out").unwrap();
+                        Box::new(move |c: u64| { k.eval(&[c]); let _ = k.get_slot(out); })
+                            as Box<dyn FnMut(u64) + Send>
+                    }),
+                    "P3" => asm.try_compile_jit().ok().map(|mut k| {
+                        let out = k.resolve_output("out").unwrap();
+                        Box::new(move |c: u64| { k.eval(&[c]); let _ = k.get_slot(out); })
+                            as Box<dyn FnMut(u64) + Send>
+                    }),
+                    _ => None,
+                }
+            }).collect();
+
+            if kernels.len() != nthreads {
+                if kernels.is_empty() {
+                    println!("  {dim}{:<10} not available{reset}", level_name);
+                }
+                continue;
+            }
+
+            // Warmup on first kernel
+            // (already warmed by construction + first eval)
+
+            let per_thread = cycles;
+            let barrier = Arc::new(std::sync::Barrier::new(nthreads));
+            let elapsed = Arc::new(std::sync::Mutex::new(std::time::Duration::ZERO));
+
+            let kernel_cells: Vec<_> = kernels.into_iter()
+                .map(|k| std::sync::Mutex::new(k))
+                .collect();
+
+            std::thread::scope(|s| {
+                for (tid, cell) in kernel_cells.iter().enumerate() {
+                    let barrier = barrier.clone();
+                    let elapsed = elapsed.clone();
+                    s.spawn(move || {
+                        let mut kernel = cell.lock().unwrap();
+                        let base = tid as u64 * per_thread;
+                        // Warmup
+                        for c in base..base + warmup { (kernel)(c); }
+                        barrier.wait();
+                        let start = std::time::Instant::now();
+                        for c in base..base + per_thread { (kernel)(c); }
+                        let e = start.elapsed();
+                        let mut guard = elapsed.lock().unwrap();
+                        if e > *guard { *guard = e; }
+                    });
+                }
+            });
+
+            let wall = *elapsed.lock().unwrap();
+            let per_cycle = wall.as_nanos() as f64 / total_ops;
+            let speedup = p1_ns.map(|p| p / per_cycle).unwrap_or(0.0);
+            let throughput = total_ops / wall.as_secs_f64();
+            if *highlight {
+                println!("  {green}{:<10}{reset} {:>12} {:>10.1} ns {:>7.1}x {:>12.0} /s  {dim}{desc}{reset}",
+                    level_name, format_duration(wall), per_cycle, speedup, throughput);
+            } else {
+                println!("  {:<10} {:>12} {:>10.1} ns {:>7.1}x {:>12.0} /s  {dim}{desc}{reset}",
+                    level_name, format_duration(wall), per_cycle, speedup, throughput);
+            }
+        }
+    }
+
+    println!();
+}
+
+// =================================================================
+// Shell completions
+// =================================================================
+
+fn print_completions(shell: &str) {
+    match shell {
+        "bash" => print_bash_completions(),
+        "zsh" => print_zsh_completions(),
+        "fish" => print_fish_completions(),
+        _ => {
+            eprintln!("Unknown shell: {shell}");
+            eprintln!("Supported: bash, zsh, fish");
+        }
+    }
+}
+
+fn print_bash_completions() {
+    // Get all GK function names for completing expressions
+    let funcs: Vec<&str> = nb_variates::dsl::registry::registry()
+        .iter()
+        .map(|s| s.name)
+        .collect();
+    let func_list = funcs.join(" ");
+
+    print!(r#"_nbrs() {{
+    local cur prev words cword
+    _init_completion || return
+
+    local subcommands="run describe bench web completions"
+    local describe_topics="gk"
+    local describe_gk="functions stdlib dag modules"
+    local bench_topics="gk"
+    local web_flags="--daemon --stop --restart"
+    local run_params="workload= adapter= cycles= threads= rate= stanzarate= tags= seq= format= errors= filename= op= gk-lib="
+    local bench_params="cycles= threads= --cycles --threads -c -t"
+    local gk_functions="{func_list}"
+
+    case "${{cword}}" in
+        1)
+            COMPREPLY=( $(compgen -W "$subcommands" -- "$cur") )
+            return
+            ;;
+    esac
+
+    case "${{words[1]}}" in
+        describe)
+            case "${{cword}}" in
+                2) COMPREPLY=( $(compgen -W "$describe_topics" -- "$cur") ) ;;
+                3)
+                    if [[ "${{words[2]}}" == "gk" ]]; then
+                        COMPREPLY=( $(compgen -W "$describe_gk" -- "$cur") )
+                    fi
+                    ;;
+            esac
+            ;;
+        bench)
+            case "${{cword}}" in
+                2) COMPREPLY=( $(compgen -W "$bench_topics" -- "$cur") ) ;;
+                *)
+                    COMPREPLY=( $(compgen -W "$bench_params" -- "$cur") )
+                    ;;
+            esac
+            ;;
+        web)
+            COMPREPLY=( $(compgen -W "$web_flags bind= port=" -- "$cur") )
+            ;;
+        run)
+            COMPREPLY=( $(compgen -W "$run_params" -- "$cur") )
+            # Also complete YAML files
+            _filedir yaml
+            _filedir yml
+            ;;
+        completions)
+            COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") )
+            ;;
+    esac
+}}
+complete -o nospace -F _nbrs nbrs
+"#);
+}
+
+fn print_zsh_completions() {
+    print!(r#"#compdef nbrs
+
+_nbrs() {{
+    local -a subcommands
+    subcommands=(
+        'run:Execute a workload'
+        'describe:Describe GK functions, stdlib, or DAG'
+        'bench:Benchmark a GK expression at all compilation levels'
+        'web:Start the web dashboard'
+        'completions:Output shell completion script'
+    )
+
+    if (( CURRENT == 2 )); then
+        _describe 'subcommand' subcommands
+        return
+    fi
+
+    case "$words[2]" in
+        describe)
+            if (( CURRENT == 3 )); then
+                _values 'topic' gk
+            elif (( CURRENT == 4 )) && [[ "$words[3]" == "gk" ]]; then
+                _values 'subtopic' functions stdlib dag modules
+            fi
+            ;;
+        bench)
+            if (( CURRENT == 3 )); then
+                _values 'topic' gk
+            else
+                _message 'expr or option (cycles=N threads=RANGE)'
+            fi
+            ;;
+        web)
+            _values 'option' --daemon --stop --restart 'bind=' 'port='
+            ;;
+        run)
+            _files -g '*.y(a|)ml'
+            _message 'param=value'
+            ;;
+        completions)
+            _values 'shell' bash zsh fish
+            ;;
+    esac
+}}
+
+_nbrs "$@"
+"#);
+}
+
+fn print_fish_completions() {
+    println!("# nbrs fish completions");
+    println!("complete -c nbrs -n '__fish_use_subcommand' -a run -d 'Execute a workload'");
+    println!("complete -c nbrs -n '__fish_use_subcommand' -a describe -d 'Describe GK functions'");
+    println!("complete -c nbrs -n '__fish_use_subcommand' -a bench -d 'Benchmark GK expression'");
+    println!("complete -c nbrs -n '__fish_use_subcommand' -a web -d 'Start web dashboard'");
+    println!("complete -c nbrs -n '__fish_use_subcommand' -a completions -d 'Output shell completions'");
+    println!("complete -c nbrs -n '__fish_seen_subcommand_from describe' -a 'gk'");
+    println!("complete -c nbrs -n '__fish_seen_subcommand_from bench' -a 'gk'");
+    println!("complete -c nbrs -n '__fish_seen_subcommand_from web' -l daemon -d 'Run in background'");
+    println!("complete -c nbrs -n '__fish_seen_subcommand_from web' -l stop -d 'Stop daemon'");
+    println!("complete -c nbrs -n '__fish_seen_subcommand_from web' -l restart -d 'Restart daemon'");
+    println!("complete -c nbrs -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish'");
+}
+
+/// Parse a bind address flexibly. Accepts any of:
+///   `0.0.0.0`                     → (0.0.0.0, default_port)
+///   `0.0.0.0:8085`                → (0.0.0.0, 8085)
+///   `http://0.0.0.0:8085/`        → (0.0.0.0, 8085)
+///   `http://0.0.0.0/`             → (0.0.0.0, default_port)
+///   `https://localhost:9090/path`  → (localhost, 9090)
+///
+/// The `port_override` from a separate `port=` arg takes precedence
+/// over any port embedded in the bind string.
+fn parse_bind_address(raw: &str, port_override: Option<&str>) -> (String, u16) {
+    let default_port = 8080u16;
+
+    // Strip scheme (http://, https://)
+    let without_scheme = raw
+        .strip_prefix("http://").or_else(|| raw.strip_prefix("https://"))
+        .unwrap_or(raw);
+
+    // Strip trailing path (everything after first /)
+    let host_port = without_scheme.split('/').next().unwrap_or(without_scheme);
+
+    // Split host and port
+    let (host, embedded_port) = if let Some(colon_pos) = host_port.rfind(':') {
+        let maybe_port = &host_port[colon_pos + 1..];
+        if let Ok(p) = maybe_port.parse::<u16>() {
+            (host_port[..colon_pos].to_string(), Some(p))
+        } else {
+            (host_port.to_string(), None)
+        }
+    } else {
+        (host_port.to_string(), None)
+    };
+
+    // port= arg overrides embedded port, which overrides default
+    let port = port_override
+        .and_then(|s| s.parse::<u16>().ok())
+        .or(embedded_port)
+        .unwrap_or(default_port);
+
+    let host = if host.is_empty() { "0.0.0.0".to_string() } else { host };
+    (host, port)
+}
+
+fn format_duration(d: std::time::Duration) -> String {
+    let ns = d.as_nanos();
+    if ns < 1_000 {
+        format!("{ns} ns")
+    } else if ns < 1_000_000 {
+        format!("{:.1} us", ns as f64 / 1_000.0)
+    } else if ns < 1_000_000_000 {
+        format!("{:.2} ms", ns as f64 / 1_000_000.0)
+    } else {
+        format!("{:.2} s", ns as f64 / 1_000_000_000.0)
     }
 }
 

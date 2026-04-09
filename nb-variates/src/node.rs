@@ -268,20 +268,131 @@ impl Port {
     }
 }
 
-/// Descriptor for an assembly-time parameter on a node.
-#[derive(Debug, Clone)]
-pub struct Param {
-    pub name: String,
-    pub value: ParamValue,
+// ---------------------------------------------------------------------------
+// Unified slot model (SRD 36 §Variadic)
+// ---------------------------------------------------------------------------
+
+/// The type discriminant for a slot: wire or typed constant.
+///
+/// This is the shared vocabulary between `FuncSig` (static registry)
+/// and `NodeMeta` (owned instance). It replaces the former `ParamKind`,
+/// `ConstType`, and `SlotKind` enums with a single type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SlotType {
+    /// A runtime wire input carrying a value each cycle.
+    Wire,
+    /// A u64 constant literal.
+    ConstU64,
+    /// An f64 constant literal.
+    ConstF64,
+    /// A string constant literal.
+    ConstStr,
+    /// A Vec<u64> constant (from array literal).
+    ConstVecU64,
+    /// A Vec<f64> constant (from array literal).
+    ConstVecF64,
 }
 
-/// Assembly-time parameter values, baked into the node at construction.
-#[derive(Debug, Clone)]
-pub enum ParamValue {
+impl SlotType {
+    /// Whether this is a constant (not a wire).
+    pub fn is_const(self) -> bool {
+        !matches!(self, SlotType::Wire)
+    }
+
+    /// Whether this is a wire (not a constant).
+    pub fn is_wire(self) -> bool {
+        matches!(self, SlotType::Wire)
+    }
+}
+
+/// A concrete constant value stored in node metadata.
+///
+/// Assembly-time values baked into the node at construction. The
+/// variant determines the `SlotType` — no separate type discriminant
+/// is needed.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstValue {
     U64(u64),
     F64(f64),
     Str(String),
     VecU64(Vec<u64>),
+    VecF64(Vec<f64>),
+}
+
+impl ConstValue {
+    /// Return the `SlotType` for this value.
+    pub fn slot_type(&self) -> SlotType {
+        match self {
+            ConstValue::U64(_) => SlotType::ConstU64,
+            ConstValue::F64(_) => SlotType::ConstF64,
+            ConstValue::Str(_) => SlotType::ConstStr,
+            ConstValue::VecU64(_) => SlotType::ConstVecU64,
+            ConstValue::VecF64(_) => SlotType::ConstVecF64,
+        }
+    }
+
+    /// Encode to the JIT's u64 representation.
+    pub fn to_jit_u64s(&self) -> Vec<u64> {
+        match self {
+            ConstValue::U64(v) => vec![*v],
+            ConstValue::F64(v) => vec![v.to_bits()],
+            ConstValue::Str(_) => vec![],
+            ConstValue::VecU64(v) => v.clone(),
+            ConstValue::VecF64(v) => v.iter().map(|f| f.to_bits()).collect(),
+        }
+    }
+}
+
+/// A single logical input to a node: either a runtime wire or an
+/// assembly-time constant. The positional order in `NodeMeta.slots`
+/// matches the function call syntax in the DSL.
+#[derive(Debug, Clone)]
+pub enum Slot {
+    /// A runtime wire input carrying a value each cycle.
+    Wire(Port),
+    /// An assembly-time constant, baked into the node at construction.
+    Const {
+        name: String,
+        value: ConstValue,
+    },
+}
+
+impl Slot {
+    /// Return the `SlotType` discriminant for this slot.
+    pub fn slot_type(&self) -> SlotType {
+        match self {
+            Slot::Wire(_) => SlotType::Wire,
+            Slot::Const { value, .. } => value.slot_type(),
+        }
+    }
+
+    /// Create a wire slot.
+    pub fn wire(port: Port) -> Self { Slot::Wire(port) }
+
+    /// Create a u64 constant slot.
+    pub fn const_u64(name: impl Into<String>, v: u64) -> Self {
+        Slot::Const { name: name.into(), value: ConstValue::U64(v) }
+    }
+
+    /// Create an f64 constant slot.
+    pub fn const_f64(name: impl Into<String>, v: f64) -> Self {
+        Slot::Const { name: name.into(), value: ConstValue::F64(v) }
+    }
+
+    /// Create a string constant slot.
+    pub fn const_str(name: impl Into<String>, v: impl Into<String>) -> Self {
+        Slot::Const { name: name.into(), value: ConstValue::Str(v.into()) }
+    }
+
+    /// Create a Vec<u64> constant slot.
+    pub fn const_vec_u64(name: impl Into<String>, v: Vec<u64>) -> Self {
+        Slot::Const { name: name.into(), value: ConstValue::VecU64(v) }
+    }
+
+    /// Create a Vec<f64> constant slot.
+    pub fn const_vec_f64(name: impl Into<String>, v: Vec<f64>) -> Self {
+        Slot::Const { name: name.into(), value: ConstValue::VecF64(v) }
+    }
 }
 
 /// Declares which inputs of a node are interchangeable.
@@ -324,49 +435,43 @@ impl Default for Commutativity {
     }
 }
 
-/// Metadata describing a node's interface: its ports, parameters,
-/// and commutativity.
+/// Metadata describing a node's interface: its input slots and output ports.
 ///
 /// Generated per-node-type and queryable at runtime for assembly-time
-/// validation, compilation, and optimization passes.
+/// validation, compilation, optimization passes, and describe output.
+///
+/// Wire inputs are `Slot::Wire(Port)`. Constants are `Slot::Const { name, value }`.
+/// Use `wire_inputs()` to extract just the wire ports.
 #[derive(Debug, Clone)]
 pub struct NodeMeta {
     pub name: String,
-    pub inputs: Vec<Port>,
-    pub outputs: Vec<Port>,
-    /// Declares which inputs are interchangeable. Defaults to
-    /// `Positional` (order matters). Override for commutative
-    /// operations like `sum`, `product`, `min`, `max`.
-    pub commutativity: Commutativity,
+    /// All inputs in positional order: wires and constants.
+    pub ins: Vec<Slot>,
+    pub outs: Vec<Port>,
 }
 
 impl NodeMeta {
-    /// Create a new `NodeMeta` with positional (non-commutative) inputs.
-    pub fn positional(
-        name: impl Into<String>,
-        inputs: Vec<Port>,
-        outputs: Vec<Port>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            inputs,
-            outputs,
-            commutativity: Commutativity::Positional,
-        }
+    /// Wire-only input ports extracted from `ins`.
+    pub fn wire_inputs(&self) -> Vec<&Port> {
+        self.ins.iter().filter_map(|s| match s {
+            Slot::Wire(p) => Some(p),
+            Slot::Const { .. } => None,
+        }).collect()
     }
 
-    /// Create a new `NodeMeta` where all inputs are commutative.
-    pub fn all_commutative(
-        name: impl Into<String>,
-        inputs: Vec<Port>,
-        outputs: Vec<Port>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            inputs,
-            outputs,
-            commutativity: Commutativity::AllCommutative,
-        }
+    /// Constant names and values extracted from `ins`.
+    pub fn const_slots(&self) -> Vec<(&str, &ConstValue)> {
+        self.ins.iter().filter_map(|s| match s {
+            Slot::Const { name, value } => Some((name.as_str(), value)),
+            Slot::Wire(_) => None,
+        }).collect()
+    }
+
+    /// Encode all constants from `ins` to JIT u64 representation.
+    pub fn jit_constants_from_slots(&self) -> Vec<u64> {
+        self.const_slots().iter()
+            .flat_map(|(_, v)| v.to_jit_u64s())
+            .collect()
     }
 }
 
@@ -392,6 +497,14 @@ pub trait GkNode: Send + Sync {
     /// The assembly phase guarantees that `inputs` and `outputs` have
     /// the correct length and types matching `meta()`.
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]);
+
+    /// Declare which inputs are interchangeable for this node.
+    ///
+    /// Override for commutative operations like `sum`, `product`,
+    /// `min`, `max`. The default is `Positional` (order matters).
+    fn commutativity(&self) -> Commutativity {
+        Commutativity::Positional
+    }
 
     /// Return a compiled u64-only evaluation closure, if this node
     /// operates entirely in u64 space.

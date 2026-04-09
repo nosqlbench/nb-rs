@@ -8,6 +8,7 @@
     <script src="https://unpkg.com/htmx-ext-ws@2.0.2/ws.js"></script>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/css/litegraph.css">
     <script src="https://cdn.jsdelivr.net/npm/litegraph.js@0.7.18/build/litegraph.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.0.min.js" charset="utf-8"></script>
     <style>
         :root {
             --bg: #1a1a2e;
@@ -136,20 +137,116 @@
     <header>
         <h1>nbrs</h1>
         <nav>
-            <a href="/" hx-get="/" hx-target="main" hx-push-url="true"
+            <a href="/" data-tab="dashboard" onclick="switchTab('dashboard', '/', event)"
                {% block nav_dashboard %}{% endblock %}>Dashboard</a>
-            <a href="/functions" hx-get="/functions" hx-target="main" hx-push-url="true"
+            <a href="/functions" data-tab="functions" onclick="switchTab('functions', '/functions', event)"
                {% block nav_functions %}{% endblock %}>Functions</a>
-            <a href="/stdlib" hx-get="/stdlib" hx-target="main" hx-push-url="true"
+            <a href="/stdlib" data-tab="stdlib" onclick="switchTab('stdlib', '/stdlib', event)"
                {% block nav_stdlib %}{% endblock %}>Stdlib</a>
-            <a href="/dag" hx-get="/dag" hx-target="main" hx-push-url="true"
+            <a href="/dag" data-tab="dag" onclick="switchTab('dag', '/dag', event)"
                {% block nav_dag %}{% endblock %}>DAG Viewer</a>
-            <a href="/graph"
+            <a href="/graph" data-tab="graph" onclick="switchTab('graph', '/graph', event)"
                {% block nav_graph %}{% endblock %}>Graph Editor</a>
         </nav>
     </header>
     <main>
         {% block content %}{% endblock %}
     </main>
+    <script>
+    // Tab switching: show/hide panes instead of replacing content.
+    // Each pane is lazily loaded on first visit, then preserved.
+    const tabPanes = {};
+    let activeTab = null;
+
+    function switchTab(tabName, url, event) {
+        event.preventDefault();
+
+        // Hide current pane (don't destroy it)
+        if (activeTab && tabPanes[activeTab]) {
+            tabPanes[activeTab].style.display = 'none';
+        }
+
+        const main = document.querySelector('main');
+
+        // If pane already loaded, just show it
+        if (tabPanes[tabName]) {
+            tabPanes[tabName].style.display = 'block';
+            activeTab = tabName;
+            updateNavActive(tabName);
+            history.pushState({tab: tabName}, '', url);
+            return;
+        }
+
+        // First visit: fetch content and create a persistent pane
+        fetch(url, { headers: { 'HX-Request': 'true' } })
+            .then(r => r.text())
+            .then(html => {
+                const pane = document.createElement('div');
+                pane.className = 'tab-pane';
+                pane.dataset.tab = tabName;
+                pane.innerHTML = html;
+                main.appendChild(pane);
+
+                // Execute any <script> tags in the loaded content
+                pane.querySelectorAll('script').forEach(oldScript => {
+                    const newScript = document.createElement('script');
+                    if (oldScript.src) {
+                        newScript.src = oldScript.src;
+                    } else {
+                        newScript.textContent = oldScript.textContent;
+                    }
+                    oldScript.replaceWith(newScript);
+                });
+
+                // Tell htmx to process any hx-* attributes in the new content
+                if (typeof htmx !== 'undefined') {
+                    htmx.process(pane);
+                }
+
+                tabPanes[tabName] = pane;
+                activeTab = tabName;
+                updateNavActive(tabName);
+                history.pushState({tab: tabName}, '', url);
+            });
+    }
+
+    function updateNavActive(tabName) {
+        document.querySelectorAll('header nav a').forEach(a => {
+            a.classList.toggle('active', a.dataset.tab === tabName);
+        });
+    }
+
+    // On initial page load, register the current content as the active tab pane
+    (function() {
+        const main = document.querySelector('main');
+        const path = window.location.pathname;
+        const tabMap = {'/': 'dashboard', '/functions': 'functions', '/stdlib': 'stdlib',
+                        '/dag': 'dag', '/graph': 'graph'};
+        const currentTab = tabMap[path] || 'dashboard';
+
+        // Wrap existing main content in a pane div
+        const pane = document.createElement('div');
+        pane.className = 'tab-pane';
+        pane.dataset.tab = currentTab;
+        while (main.firstChild) pane.appendChild(main.firstChild);
+        main.appendChild(pane);
+        tabPanes[currentTab] = pane;
+        activeTab = currentTab;
+        updateNavActive(currentTab);
+    })();
+
+    // Handle browser back/forward
+    window.addEventListener('popstate', function(e) {
+        if (e.state && e.state.tab) {
+            const tabName = e.state.tab;
+            if (tabPanes[activeTab]) tabPanes[activeTab].style.display = 'none';
+            if (tabPanes[tabName]) {
+                tabPanes[tabName].style.display = 'block';
+                activeTab = tabName;
+                updateNavActive(tabName);
+            }
+        }
+    });
+    </script>
 </body>
 </html>

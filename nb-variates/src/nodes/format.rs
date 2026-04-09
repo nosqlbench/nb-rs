@@ -16,7 +16,7 @@
 //! - `{:b}` — binary (u64)
 //! - `{:o}` — octal (u64)
 
-use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, Value};
 
 /// A parsed format segment: either literal text or a placeholder.
 #[derive(Debug, Clone)]
@@ -75,13 +75,13 @@ impl Printf {
             .enumerate()
             .map(|(i, &typ)| Port::new(format!("in_{i}"), typ))
             .collect();
+        let slots: Vec<Slot> = inputs.iter().map(|p| Slot::Wire(p.clone())).collect();
 
         Self {
             meta: NodeMeta {
                 name: "printf".into(),
-                inputs,
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: slots,
             },
             segments,
         }
@@ -97,12 +97,12 @@ impl Printf {
         let inputs: Vec<Port> = (0..wire_count)
             .map(|i| Port::new(format!("in_{i}"), PortType::U64))
             .collect();
+        let slots: Vec<Slot> = inputs.iter().map(|p| Slot::Wire(p.clone())).collect();
         Self {
             meta: NodeMeta {
                 name: "printf".into(),
-                inputs,
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: slots,
             },
             segments,
         }

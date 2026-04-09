@@ -45,6 +45,9 @@ mod inner {
         code_fn: unsafe fn(*const u64, *mut u64),
         /// Keep the module alive so the code isn't freed.
         _module: JITModule,
+        /// Keep source nodes alive so JIT-baked pointers (e.g., LUT
+        /// pointers, alias table arrays) remain valid.
+        _nodes: Vec<Box<dyn GkNode>>,
     }
 
     impl JitKernel {
@@ -130,6 +133,35 @@ mod inner {
         (register - 1) + min
     }
 
+    /// Extern function: weighted pick via alias table (called from JIT code).
+    ///
+    /// Performs O(1) alias sampling and value lookup. All array pointers
+    /// are baked as i64 immediates in the JIT code.
+    extern "C" fn jit_weighted_pick(
+        input: u64,
+        values_ptr: u64,
+        biases_ptr: u64,
+        primaries_ptr: u64,
+        aliases_ptr: u64,
+        n: u64,
+    ) -> u64 {
+        let n = n as usize;
+        let slot = (input as usize) % n;
+        let bias_test = ((input >> 32) as f64) / (u32::MAX as f64);
+        unsafe {
+            let biases = std::slice::from_raw_parts(biases_ptr as *const f64, n);
+            let primaries = std::slice::from_raw_parts(primaries_ptr as *const u64, n);
+            let aliases = std::slice::from_raw_parts(aliases_ptr as *const u64, n);
+            let values = std::slice::from_raw_parts(values_ptr as *const u64, n);
+            let index = if bias_test < biases[slot] {
+                primaries[slot]
+            } else {
+                aliases[slot]
+            };
+            values[index as usize]
+        }
+    }
+
     /// Description of a JIT step — what operation to generate.
     ///
     /// For f64 operations, values are stored in the u64 buffer as their
@@ -181,6 +213,8 @@ mod inner {
         DiscretizeConst(u64, u64), // range.to_bits(), buckets
         /// output[0] = lut_sample(f64 input, lut_ptr, lut_len)  → f64 bits  (extern call)
         LutSampleConst(u64, u64), // lut_ptr as u64, lut_len
+        /// output[0] = weighted_pick(input, values_ptr, biases_ptr, primaries_ptr, aliases_ptr, n)
+        WeightedPickConst(u64, u64, u64, u64, u64), // values_ptr, biases_ptr, primaries_ptr, aliases_ptr, n
 
         /// Fallback: call the Phase 2 closure
         Fallback,
@@ -295,6 +329,13 @@ mod inner {
                     JitOp::Fallback
                 }
             }
+            "weighted_pick" => {
+                if consts.len() >= 5 {
+                    JitOp::WeightedPickConst(consts[0], consts[1], consts[2], consts[3], consts[4])
+                } else {
+                    JitOp::Fallback
+                }
+            }
             _ => JitOp::Fallback,
         }
     }
@@ -309,6 +350,7 @@ mod inner {
         total_slots: usize,
         steps: Vec<(JitOp, Vec<usize>, Vec<usize>)>,
         output_map: HashMap<String, usize>,
+        nodes: Vec<Box<dyn GkNode>>,
     ) -> Result<JitKernel, String> {
         let mut flag_builder = settings::builder();
         flag_builder.set("opt_level", "speed").unwrap();
@@ -324,6 +366,7 @@ mod inner {
         jit_builder.symbol("jit_interleave", jit_interleave as *const u8);
         jit_builder.symbol("jit_shuffle", jit_shuffle as *const u8);
         jit_builder.symbol("jit_lut_sample", jit_lut_sample as *const u8);
+        jit_builder.symbol("jit_weighted_pick", jit_weighted_pick as *const u8);
 
         let mut module = JITModule::new(jit_builder);
 
@@ -364,6 +407,15 @@ mod inner {
                 .map_err(|e| format!("declare lut_sample: {e}"))?
         };
 
+        // Declare extern: weighted_pick(u64, u64, u64, u64, u64, u64) -> u64
+        let weighted_pick_func_id = {
+            let mut sig = module.make_signature();
+            for _ in 0..6 { sig.params.push(AbiParam::new(types::I64)); }
+            sig.returns.push(AbiParam::new(types::I64));
+            module.declare_function("jit_weighted_pick", Linkage::Import, &sig)
+                .map_err(|e| format!("declare weighted_pick: {e}"))?
+        };
+
         // Define the kernel function: fn(coords: *const u64, buffer: *mut u64)
         let mut sig = module.make_signature();
         sig.params.push(AbiParam::new(types::I64)); // coords ptr
@@ -390,6 +442,7 @@ mod inner {
             let interleave_func_ref = module.declare_func_in_func(interleave_func_id, builder.func);
             let shuffle_func_ref = module.declare_func_in_func(shuffle_func_id, builder.func);
             let lut_sample_func_ref = module.declare_func_in_func(lut_sample_func_id, builder.func);
+            let weighted_pick_func_ref = module.declare_func_in_func(weighted_pick_func_id, builder.func);
 
             // Generate code for each step
             for (jit_op, input_slots, output_slots) in &steps {
@@ -567,6 +620,22 @@ mod inner {
                         store_slot(&mut builder, buffer_ptr, output_slots[0], result);
                     }
 
+                    JitOp::WeightedPickConst(values_ptr, biases_ptr, primaries_ptr, aliases_ptr, n) => {
+                        // Extern call: jit_weighted_pick(input, values_ptr, biases_ptr, primaries_ptr, aliases_ptr, n)
+                        let input = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                        let v_ptr = builder.ins().iconst(types::I64, *values_ptr as i64);
+                        let b_ptr = builder.ins().iconst(types::I64, *biases_ptr as i64);
+                        let p_ptr = builder.ins().iconst(types::I64, *primaries_ptr as i64);
+                        let a_ptr = builder.ins().iconst(types::I64, *aliases_ptr as i64);
+                        let n_val = builder.ins().iconst(types::I64, *n as i64);
+                        let call = builder.ins().call(
+                            weighted_pick_func_ref,
+                            &[input, v_ptr, b_ptr, p_ptr, a_ptr, n_val],
+                        );
+                        let result = builder.inst_results(call)[0];
+                        store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                    }
+
                     JitOp::Fallback => {
                         // Can't JIT this node — skip (caller should
                         // not include fallback ops in JIT steps)
@@ -593,6 +662,7 @@ mod inner {
             output_map,
             code_fn,
             _module: module,
+            _nodes: nodes,
         })
     }
 
@@ -649,7 +719,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
             kernel.eval(&[42]);
             assert_eq!(kernel.get("out"), 42);
         }
@@ -661,7 +731,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
             kernel.eval(&[5]);
             assert_eq!(kernel.get("out"), 105);
         }
@@ -673,7 +743,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
             kernel.eval(&[6]);
             assert_eq!(kernel.get("out"), 42);
         }
@@ -685,7 +755,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
             kernel.eval(&[542]);
             assert_eq!(kernel.get("out"), 42);
         }
@@ -697,7 +767,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[42]);
             let v1 = kernel.get("out");
@@ -712,7 +782,7 @@ mod inner {
             let steps = vec![(JitOp::Hash, vec![0], vec![1])];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[42]);
             let v1 = kernel.get("out");
@@ -730,7 +800,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("user_id".into(), 2);
-            let mut kernel = compile_jit(1, 3, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 3, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[42]);
             let uid = kernel.get("user_id");
@@ -744,7 +814,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[5]);
             assert_eq!(kernel.get("out"), 10); // below min
@@ -763,7 +833,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 2);
-            let mut kernel = compile_jit(2, 3, steps, output_map).unwrap();
+            let mut kernel = compile_jit(2, 3, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[0b101, 0b010]);
             // Same as the Interleave node test: result = 0b011001
@@ -780,7 +850,7 @@ mod inner {
             output_map.insert("d0".into(), 1);
             output_map.insert("d1".into(), 2);
             output_map.insert("d2".into(), 3);
-            let mut kernel = compile_jit(1, 4, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 4, steps, output_map, Vec::new()).unwrap();
 
             // 4201337 → (37, 13, 42)
             kernel.eval(&[4_201_337]);
@@ -802,7 +872,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
 
             // Verify same result as the node
             kernel.eval(&[42]);
@@ -820,7 +890,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[0]);
             let v = f64::from_bits(kernel.get("out"));
@@ -839,7 +909,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[3.7f64.to_bits()]);
             assert_eq!(kernel.get("out"), 3); // truncate toward zero
@@ -850,7 +920,7 @@ mod inner {
             let steps = vec![(JitOp::RoundToU64, vec![0], vec![1])];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[3.7f64.to_bits()]);
             assert_eq!(kernel.get("out"), 4);
@@ -866,7 +936,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[(-0.5f64).to_bits()]);
             assert_eq!(f64::from_bits(kernel.get("out")), 0.0);
@@ -885,7 +955,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[0.0f64.to_bits()]);
             assert_eq!(f64::from_bits(kernel.get("out")), 10.0);
@@ -904,7 +974,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[0]);
             let v = f64::from_bits(kernel.get("out"));
@@ -922,7 +992,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[13.0f64.to_bits()]);
             assert_eq!(f64::from_bits(kernel.get("out")), 10.0);
@@ -938,7 +1008,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[0.0f64.to_bits()]);
             assert_eq!(kernel.get("out"), 0);
@@ -967,7 +1037,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
 
             // Input 0.5 → should give ~50.0
             kernel.eval(&[0.5f64.to_bits()]);
@@ -998,7 +1068,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
 
             // Median of standard normal = 0.0
             kernel.eval(&[0.5f64.to_bits()]);
@@ -1020,7 +1090,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 2);
-            let mut kernel = compile_jit(1, 3, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 3, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[0]);
             let v = f64::from_bits(kernel.get("out"));
@@ -1041,7 +1111,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 3);
-            let mut kernel = compile_jit(1, 4, steps, output_map).unwrap();
+            let mut kernel = compile_jit(1, 4, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[5]);
             // (5 + 10) * 3 = 45, 45 % 100 = 45

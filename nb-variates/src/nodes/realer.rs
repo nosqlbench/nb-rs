@@ -12,7 +12,7 @@
 //! distribution) and returns a String. Weighted variants select
 //! proportionally to Census frequency data.
 
-use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, Value};
 use crate::sampling::alias::AliasTableU64;
 
 // =================================================================
@@ -128,9 +128,8 @@ impl FirstNames {
         Self {
             meta: NodeMeta {
                 name: "first_names".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             sampler: WeightedNameSampler::new(names, weights),
         }
@@ -141,9 +140,8 @@ impl FirstNames {
         Self {
             meta: NodeMeta {
                 name: "first_names".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             sampler: WeightedNameSampler::new(names, weights),
         }
@@ -171,9 +169,8 @@ impl StateCodes {
         Self {
             meta: NodeMeta {
                 name: "state_codes".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             sampler: UniformNameSampler::new(names),
         }
@@ -202,9 +199,8 @@ impl CountryNames {
         Self {
             meta: NodeMeta {
                 name: "country_names".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             sampler: UniformNameSampler::new(names),
         }
@@ -233,9 +229,8 @@ impl CountryCodes {
         Self {
             meta: NodeMeta {
                 name: "country_codes".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             sampler: UniformNameSampler::new(codes),
         }
@@ -263,9 +258,8 @@ impl Nationalities {
         Self {
             meta: NodeMeta {
                 name: "nationalities".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             sampler: UniformNameSampler::new(names),
         }
@@ -299,9 +293,8 @@ impl FullNames {
         Self {
             meta: NodeMeta {
                 name: "full_names".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             first_female: WeightedNameSampler::new(f_names, f_weights),
             first_male: WeightedNameSampler::new(m_names, m_weights),

@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, Value};
 use vectordata::{TestDataGroup, VectorReader};
 
 // =================================================================
@@ -108,9 +108,8 @@ impl VectorAt {
         Self {
             meta: NodeMeta {
                 name: "vector_at".into(),
-                inputs: vec![Port::u64("index")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("index"))],
             },
             dataset,
         }
@@ -146,9 +145,8 @@ impl VectorAtBytes {
         Self {
             meta: NodeMeta {
                 name: "vector_at_bytes".into(),
-                inputs: vec![Port::u64("index")],
-                outputs: vec![Port::new("output", PortType::Bytes)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Bytes)],
+                ins: vec![Slot::Wire(Port::u64("index"))],
             },
             dataset,
         }
@@ -183,9 +181,8 @@ impl VectorDim {
         Self {
             meta: NodeMeta {
                 name: "vector_dim".into(),
-                inputs: vec![],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: Vec::new(),
             },
             dim: dataset.dim() as u64,
         }
@@ -212,9 +209,8 @@ impl VectorCount {
         Self {
             meta: NodeMeta {
                 name: "vector_count".into(),
-                inputs: vec![],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: Vec::new(),
             },
             count: dataset.count() as u64,
         }

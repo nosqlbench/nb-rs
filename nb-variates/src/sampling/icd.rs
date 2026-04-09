@@ -19,7 +19,7 @@
 //! **Discrete:**
 //! Zipf, Poisson, Binomial, Geometric
 
-use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value};
 use crate::sampling::lut::{LutF64, LutSample};
 
 /// Default interpolation table resolution.
@@ -49,9 +49,8 @@ impl UnitInterval {
         Self {
             meta: NodeMeta {
                 name: "unit_interval".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::F64)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::F64)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
         }
     }
@@ -100,9 +99,12 @@ impl ClampF64 {
         Self {
             meta: NodeMeta {
                 name: "clamp_f64".into(),
-                inputs: vec![Port::new("input", PortType::F64)],
-                outputs: vec![Port::new("output", PortType::F64)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::F64)],
+                ins: vec![
+                    Slot::Wire(Port::new("input", PortType::F64)),
+                    Slot::const_f64("min", min),
+                    Slot::const_f64("max", max),
+                ],
             },
             min,
             max,
@@ -589,9 +591,8 @@ impl DiscreteSample {
         Self {
             meta: NodeMeta {
                 name: "discrete_sample".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             outcomes,
         }

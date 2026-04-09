@@ -121,13 +121,13 @@ pub fn probe_compile_level(func_name: &str) -> nb_variates::node::CompileLevel {
     };
 
     // Generate representative const args (1000 for ints, 1000.0 for floats)
-    let const_args: Vec<String> = sig.const_params.iter().map(|(_name, _req)| {
+    let const_args: Vec<String> = sig.const_param_info().iter().map(|(_name, _req)| {
         "1000".to_string()
     }).collect();
 
     // Build wire args
     let mut parts = Vec::new();
-    for _ in 0..std::cmp::max(sig.wire_inputs, 1) {
+    for _ in 0..std::cmp::max(sig.wire_input_count(), 1) {
         parts.push("cycle".to_string());
     }
     parts.extend(const_args);

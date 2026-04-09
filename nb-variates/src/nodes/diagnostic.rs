@@ -6,7 +6,7 @@
 //! These are development aids, not hot-path nodes. They let users
 //! inspect types and values flowing through the DAG.
 
-use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, Value};
 
 /// Emit the type name of the input value as a string.
 ///
@@ -28,9 +28,8 @@ impl TypeOf {
         Self {
             meta: NodeMeta {
                 name: "type_of".into(),
-                inputs: vec![Port::new("input", input_type)],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", input_type))],
             },
             input_type,
         }
@@ -62,9 +61,8 @@ impl DebugRepr {
         Self {
             meta: NodeMeta {
                 name: "debug_repr".into(),
-                inputs: vec![Port::new("input", input_type)],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", input_type))],
             },
             _input_type: input_type,
         }
@@ -108,9 +106,8 @@ impl Inspect {
         Self {
             meta: NodeMeta {
                 name: format!("inspect[{label}]"),
-                inputs: vec![Port::new("input", typ)],
-                outputs: vec![Port::new("output", typ)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", typ)],
+                ins: vec![Slot::Wire(Port::new("input", typ))],
             },
             label,
         }

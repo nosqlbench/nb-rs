@@ -110,7 +110,7 @@ impl GkProgram {
     pub fn create_state(&self) -> GkState {
         let buffers: Vec<Vec<Value>> = self.nodes
             .iter()
-            .map(|n| vec![Value::None; n.meta().outputs.len()])
+            .map(|n| vec![Value::None; n.meta().outs.len()])
             .collect();
         let node_count = self.nodes.len();
         let coord_count = self.coord_names.len();

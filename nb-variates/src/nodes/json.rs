@@ -8,7 +8,7 @@
 //! serialization/deserialization round-trips when passing structured
 //! data between nodes or to adapters that consume JSON natively.
 
-use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, Value};
 use serde_json::json;
 
 // =================================================================
@@ -39,12 +39,12 @@ impl JsonObject {
         let inputs: Vec<Port> = keys.iter().zip(input_types.iter())
             .map(|(k, &t)| Port::new(k.clone(), t))
             .collect();
+        let slots: Vec<Slot> = inputs.iter().map(|p| Slot::Wire(p.clone())).collect();
         Self {
             meta: NodeMeta {
                 name: "json_object".into(),
-                inputs,
-                outputs: vec![Port::json("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::json("output")],
+                ins: slots,
             },
             keys,
         }
@@ -75,12 +75,12 @@ impl JsonArray {
         let inputs: Vec<Port> = input_types.iter().enumerate()
             .map(|(i, &t)| Port::new(format!("elem_{i}"), t))
             .collect();
+        let slots: Vec<Slot> = inputs.iter().map(|p| Slot::Wire(p.clone())).collect();
         Self {
             meta: NodeMeta {
                 name: "json_array".into(),
-                inputs,
-                outputs: vec![Port::json("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::json("output")],
+                ins: slots,
             },
         }
     }
@@ -109,9 +109,8 @@ impl ToJson {
         Self {
             meta: NodeMeta {
                 name: "to_json".into(),
-                inputs: vec![Port::new("input", input_type)],
-                outputs: vec![Port::json("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::json("output")],
+                ins: vec![Slot::Wire(Port::new("input", input_type))],
             },
         }
     }
@@ -136,9 +135,8 @@ impl JsonMerge {
         Self {
             meta: NodeMeta {
                 name: "json_merge".into(),
-                inputs: vec![Port::json("left"), Port::json("right")],
-                outputs: vec![Port::json("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::json("output")],
+                ins: vec![Slot::Wire(Port::json("left")), Slot::Wire(Port::json("right"))],
             },
         }
     }
@@ -179,9 +177,8 @@ impl JsonToStr {
         Self {
             meta: NodeMeta {
                 name: "__json_to_string".into(),
-                inputs: vec![Port::json("input")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::json("input"))],
             },
         }
     }
@@ -206,9 +203,8 @@ impl JsonToStrPretty {
         Self {
             meta: NodeMeta {
                 name: "json_to_str_pretty".into(),
-                inputs: vec![Port::json("input")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::json("input"))],
             },
         }
     }
@@ -235,9 +231,8 @@ impl StrToJson {
         Self {
             meta: NodeMeta {
                 name: "str_to_json".into(),
-                inputs: vec![Port::new("input", PortType::Str)],
-                outputs: vec![Port::json("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::json("output")],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
             },
         }
     }
@@ -267,9 +262,8 @@ impl EscapeJson {
         Self {
             meta: NodeMeta {
                 name: "escape_json".into(),
-                inputs: vec![Port::new("input", PortType::Str)],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
             },
         }
     }
@@ -304,9 +298,8 @@ impl JsonField {
         Self {
             meta: NodeMeta {
                 name: format!("json_field[{key}]"),
-                inputs: vec![Port::json("input")],
-                outputs: vec![Port::json("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::json("output")],
+                ins: vec![Slot::Wire(Port::json("input"))],
             },
             key: key.to_string(),
         }

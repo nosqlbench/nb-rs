@@ -3,7 +3,7 @@
 
 //! Datetime and epoch function nodes.
 
-use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value};
 
 /// Scale a u64 to epoch milliseconds by multiplying by a factor.
 ///
@@ -26,9 +26,8 @@ impl EpochScale {
         Self {
             meta: NodeMeta {
                 name: "epoch_scale".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             factor,
         }
@@ -64,9 +63,8 @@ impl EpochOffset {
         Self {
             meta: NodeMeta {
                 name: "epoch_offset".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             base: base_epoch_ms,
         }
@@ -106,9 +104,8 @@ impl ToTimestamp {
         Self {
             meta: NodeMeta {
                 name: "to_timestamp".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
         }
     }
@@ -133,13 +130,12 @@ impl DateComponents {
         Self {
             meta: NodeMeta {
                 name: "date_components".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![
+                outs: vec![
                     Port::u64("year"), Port::u64("month"), Port::u64("day"),
                     Port::u64("hour"), Port::u64("minute"), Port::u64("second"),
                     Port::u64("millis"),
                 ],
-                commutativity: Commutativity::Positional,
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
         }
     }

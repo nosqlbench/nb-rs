@@ -14,7 +14,7 @@
 
 use std::cell::RefCell;
 
-use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, Value};
 use xxhash_rust::xxh3::xxh3_64;
 
 // =================================================================
@@ -81,9 +81,8 @@ impl RandomRange {
         Self {
             meta: NodeMeta {
                 name: "random_range".into(),
-                inputs: vec![],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: Vec::new(),
             },
             min,
             range: max - min,
@@ -112,9 +111,8 @@ impl RandomF64 {
         Self {
             meta: NodeMeta {
                 name: "random_f64".into(),
-                inputs: vec![],
-                outputs: vec![Port::f64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::f64("output")],
+                ins: Vec::new(),
             },
             min,
             range: max - min,
@@ -142,9 +140,8 @@ impl RandomBytes {
         Self {
             meta: NodeMeta {
                 name: "random_bytes".into(),
-                inputs: vec![],
-                outputs: vec![Port::new("output", PortType::Bytes)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Bytes)],
+                ins: Vec::new(),
             },
             size,
         }
@@ -181,9 +178,8 @@ impl RandomString {
         Self {
             meta: NodeMeta {
                 name: "random_string".into(),
-                inputs: vec![],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: Vec::new(),
             },
             chars: parse_charset(spec),
             length,
@@ -214,9 +210,8 @@ impl RandomBool {
         Self {
             meta: NodeMeta {
                 name: "random_bool".into(),
-                inputs: vec![],
-                outputs: vec![Port::bool("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::bool("output")],
+                ins: Vec::new(),
             },
             threshold: (probability.clamp(0.0, 1.0) * u64::MAX as f64) as u64,
         }
@@ -252,9 +247,8 @@ impl HashedLoremExtract {
         Self {
             meta: NodeMeta {
                 name: "hashed_lorem_extract".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             min_len,
             max_len,
@@ -301,9 +295,8 @@ impl HashedLineToString {
         Self {
             meta: NodeMeta {
                 name: "hashed_line_to_string".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             lines,
         }

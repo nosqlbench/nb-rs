@@ -10,7 +10,7 @@
 //! - Implicit labels: `"50 25 13 12"` → outcomes 0,1,2,3 with those weights
 //! - Explicit labels: `"234:50 33:25 17:13 3:12"` → outcomes 234,33,17,3
 
-use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value};
 use crate::sampling::alias::AliasTableU64;
 
 /// Parse a histribution spec and build an alias table.
@@ -65,9 +65,8 @@ impl Histribution {
         Self {
             meta: NodeMeta {
                 name: "histribution".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             labels,
             table,

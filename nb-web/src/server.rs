@@ -35,6 +35,8 @@ pub fn build_router(broadcast: MetricsBroadcast) -> Router {
         // Graph editor API
         .route("/api/graph/palette", get(routes::graph_palette))
         .route("/api/graph/compile", post(routes::graph_compile))
+        .route("/api/graph/eval", post(routes::graph_eval))
+        .route("/api/graph/plot", post(routes::graph_plot))
         // Metrics ingestion (push from running sessions)
         .route("/api/v1/import/prometheus", post(routes::ingest_prometheus))
         // WebSocket metric stream
@@ -76,7 +78,16 @@ pub async fn serve_with(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app = build_router(broadcast);
     eprintln!("nbrs web: listening on http://{addr}");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let socket = socket2::Socket::new(
+        if addr.is_ipv6() { socket2::Domain::IPV6 } else { socket2::Domain::IPV4 },
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+    let listener = tokio::net::TcpListener::from_std(socket.into())?;
     axum::serve(listener, app).await?;
     Ok(())
 }

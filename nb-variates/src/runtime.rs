@@ -145,7 +145,8 @@ impl Default for GkRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+    use crate::dsl::registry::{Arity, ParamSpec};
+    use crate::node::SlotType;
 
     #[test]
     fn default_runtime_has_builtins() {
@@ -162,13 +163,16 @@ mod tests {
                 vec![FuncSig {
                     name: "test_node",
                     category: FuncCategory::Diagnostic,
-                    wire_inputs: 1,
-                    const_params: &[],
                     outputs: 1,
                     description: "a test node from a factory",
-                    variadic: false,
+                    help: "",
                     identity: None,
                     variadic_ctor: None,
+                    params: &[
+                        ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                    ],
+                    arity: Arity::Fixed,
+                    commutativity: crate::node::Commutativity::Positional,
                 }]
             }
             fn build(&self, _name: &str, _wc: usize, _consts: &[FactoryArg])
@@ -195,13 +199,16 @@ mod tests {
                 vec![FuncSig {
                     name: "custom_identity",
                     category: FuncCategory::Diagnostic,
-                    wire_inputs: 1,
-                    const_params: &[],
                     outputs: 1,
                     description: "custom identity from factory",
-                    variadic: false,
+                    help: "",
                     identity: None,
                     variadic_ctor: None,
+                    params: &[
+                        ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                    ],
+                    arity: Arity::Fixed,
+                    commutativity: crate::node::Commutativity::Positional,
                 }]
             }
             fn build(&self, name: &str, _wc: usize, _consts: &[FactoryArg])
@@ -234,13 +241,16 @@ mod tests {
                 vec![FuncSig {
                     name: "factory_hash",
                     category: FuncCategory::Hashing,
-                    wire_inputs: 1,
-                    const_params: &[],
                     outputs: 1,
                     description: "a factory hashing node",
-                    variadic: false,
+                    help: "",
                     identity: None,
                     variadic_ctor: None,
+                    params: &[
+                        ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                    ],
+                    arity: Arity::Fixed,
+                    commutativity: crate::node::Commutativity::Positional,
                 }]
             }
             fn build(&self, _: &str, _: usize, _: &[FactoryArg])

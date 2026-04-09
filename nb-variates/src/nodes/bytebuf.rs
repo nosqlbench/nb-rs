@@ -12,7 +12,7 @@
 //!    time, then extract variable-length slices at cycle time using
 //!    hash-based offset selection. Fast hot path — just a memcpy.
 
-use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, Value};
 use xxhash_rust::xxh3::xxh3_64;
 
 // =================================================================
@@ -31,9 +31,8 @@ impl U64ToBytes {
         Self {
             meta: NodeMeta {
                 name: "u64_to_bytes".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Bytes)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Bytes)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
         }
     }
@@ -63,9 +62,8 @@ impl BytesFromHash {
         Self {
             meta: NodeMeta {
                 name: "bytes_from_hash".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Bytes)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Bytes)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             size,
         }
@@ -144,9 +142,8 @@ impl ByteImageExtract {
         Self {
             meta: NodeMeta {
                 name: "byte_image_extract".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Bytes)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Bytes)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             image: ByteImage::new(image_size, seed),
             slice_size,
@@ -234,9 +231,8 @@ impl CharImageExtract {
         Self {
             meta: NodeMeta {
                 name: "char_image_extract".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             image: CharImage::hashed(charset, image_size, 0),
             slice_size,
@@ -247,9 +243,8 @@ impl CharImageExtract {
         Self {
             meta: NodeMeta {
                 name: "char_image_extract".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             image: CharImage::hashed(charset, image_size, seed),
             slice_size,
@@ -283,9 +278,8 @@ impl ByteSlice {
         Self {
             meta: NodeMeta {
                 name: "byte_slice".into(),
-                inputs: vec![Port::new("input", PortType::Bytes)],
-                outputs: vec![Port::new("output", PortType::Bytes)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Bytes)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Bytes))],
             },
             offset,
             length,
@@ -315,9 +309,8 @@ impl ToHex {
         Self {
             meta: NodeMeta {
                 name: "to_hex".into(),
-                inputs: vec![Port::new("input", PortType::Bytes)],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Bytes))],
             },
         }
     }
@@ -343,9 +336,8 @@ impl FromHex {
         Self {
             meta: NodeMeta {
                 name: "from_hex".into(),
-                inputs: vec![Port::new("input", PortType::Str)],
-                outputs: vec![Port::new("output", PortType::Bytes)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Bytes)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
             },
         }
     }

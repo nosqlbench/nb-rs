@@ -3,7 +3,7 @@
 
 //! Cryptographic digest and base encoding nodes.
 
-use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, Value};
 use sha2::{Sha256, Digest as Sha2Digest};
 use md5::Md5;
 
@@ -20,9 +20,8 @@ impl DigestSha256 {
         Self {
             meta: NodeMeta {
                 name: "sha256".into(),
-                inputs: vec![Port::new("input", PortType::Bytes)],
-                outputs: vec![Port::new("output", PortType::Bytes)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Bytes)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Bytes))],
             },
         }
     }
@@ -50,9 +49,8 @@ impl DigestMd5 {
         Self {
             meta: NodeMeta {
                 name: "md5".into(),
-                inputs: vec![Port::new("input", PortType::Bytes)],
-                outputs: vec![Port::new("output", PortType::Bytes)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Bytes)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Bytes))],
             },
         }
     }
@@ -79,9 +77,8 @@ impl ToBase64 {
         Self {
             meta: NodeMeta {
                 name: "to_base64".into(),
-                inputs: vec![Port::new("input", PortType::Bytes)],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Bytes))],
             },
         }
     }
@@ -107,9 +104,8 @@ impl FromBase64 {
         Self {
             meta: NodeMeta {
                 name: "from_base64".into(),
-                inputs: vec![Port::new("input", PortType::Str)],
-                outputs: vec![Port::new("output", PortType::Bytes)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Bytes)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
             },
         }
     }
@@ -138,9 +134,8 @@ impl ToBase32 {
         Self {
             meta: NodeMeta {
                 name: "to_base32".into(),
-                inputs: vec![Port::new("input", PortType::Bytes)],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Bytes))],
             },
         }
     }
@@ -165,9 +160,8 @@ impl FromBase32 {
         Self {
             meta: NodeMeta {
                 name: "from_base32".into(),
-                inputs: vec![Port::new("input", PortType::Str)],
-                outputs: vec![Port::new("output", PortType::Bytes)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Bytes)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
             },
         }
     }

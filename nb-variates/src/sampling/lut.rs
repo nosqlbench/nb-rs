@@ -12,7 +12,7 @@
 //! runtime, querying is a single array index + lerp — no branching on
 //! distribution type, no function pointer call per sample.
 
-use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value};
 
 /// A pre-computed interpolating lookup table mapping [0, 1] → f64.
 ///
@@ -133,9 +133,8 @@ impl LutSample {
         Self {
             meta: NodeMeta {
                 name: "lut_sample".into(),
-                inputs: vec![Port::new("input", PortType::F64)],
-                outputs: vec![Port::new("output", PortType::F64)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::F64)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::F64))],
             },
             table,
         }

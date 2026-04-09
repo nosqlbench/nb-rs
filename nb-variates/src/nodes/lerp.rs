@@ -3,7 +3,10 @@
 
 //! Linear interpolation and range mapping nodes.
 
-use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{
+    CompiledU64Op,
+    GkNode, NodeMeta, Port, Slot, Value,
+};
 use crate::fusion::{DecomposedGraph, DecomposedWire, FusedNode};
 
 /// Linear interpolation with fixed endpoints.
@@ -29,9 +32,12 @@ impl LerpConst {
         Self {
             meta: NodeMeta {
                 name: "lerp".into(),
-                inputs: vec![Port::f64("t")],
-                outputs: vec![Port::f64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::f64("output")],
+                ins: vec![
+                    Slot::Wire(Port::f64("t")),
+                    Slot::const_f64("a", a),
+                    Slot::const_f64("b", b),
+                ],
             },
             a,
             b,
@@ -79,15 +85,19 @@ pub struct ScaleRange {
 
 impl ScaleRange {
     pub fn new(min: f64, max: f64) -> Self {
+        let range = max - min;
         Self {
             meta: NodeMeta {
                 name: "scale_range".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::f64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::f64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("input")),
+                    Slot::const_f64("min", min),
+                    Slot::const_f64("range", range),
+                ],
             },
             min,
-            range: max - min,
+            range,
         }
     }
 }
@@ -149,15 +159,19 @@ pub struct InvLerp {
 impl InvLerp {
     pub fn new(a: f64, b: f64) -> Self {
         assert!((b - a).abs() > f64::EPSILON, "range must be non-zero");
+        let inv_range = 1.0 / (b - a);
         Self {
             meta: NodeMeta {
                 name: "inv_lerp".into(),
-                inputs: vec![Port::f64("input")],
-                outputs: vec![Port::f64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::f64("output")],
+                ins: vec![
+                    Slot::Wire(Port::f64("input")),
+                    Slot::const_f64("a", a),
+                    Slot::const_f64("inv_range", inv_range),
+                ],
             },
             a,
-            inv_range: 1.0 / (b - a),
+            inv_range,
         }
     }
 }
@@ -195,17 +209,24 @@ impl Remap {
     pub fn new(in_min: f64, in_max: f64, out_min: f64, out_max: f64) -> Self {
         let in_range = in_max - in_min;
         assert!(in_range.abs() > f64::EPSILON, "input range must be non-zero");
+        let in_inv_range = 1.0 / in_range;
+        let out_range = out_max - out_min;
         Self {
             meta: NodeMeta {
                 name: "remap".into(),
-                inputs: vec![Port::f64("input")],
-                outputs: vec![Port::f64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::f64("output")],
+                ins: vec![
+                    Slot::Wire(Port::f64("input")),
+                    Slot::const_f64("in_min", in_min),
+                    Slot::const_f64("in_inv_range", in_inv_range),
+                    Slot::const_f64("out_min", out_min),
+                    Slot::const_f64("out_range", out_range),
+                ],
             },
             in_min,
-            in_inv_range: 1.0 / in_range,
+            in_inv_range,
             out_min,
-            out_range: out_max - out_min,
+            out_range,
         }
     }
 }
@@ -242,9 +263,11 @@ impl Quantize {
         Self {
             meta: NodeMeta {
                 name: "quantize".into(),
-                inputs: vec![Port::f64("input")],
-                outputs: vec![Port::f64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::f64("output")],
+                ins: vec![
+                    Slot::Wire(Port::f64("input")),
+                    Slot::const_f64("step", step),
+                ],
             },
             step,
         }

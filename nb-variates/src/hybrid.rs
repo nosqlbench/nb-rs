@@ -50,6 +50,8 @@ pub struct HybridKernel {
     output_map: HashMap<String, usize>,
     gather_buf: Vec<u64>,
     scatter_buf: Vec<u64>,
+    /// Keep source nodes alive so JIT-baked pointers remain valid.
+    _nodes: Vec<Box<dyn crate::node::GkNode>>,
 }
 
 impl HybridKernel {
@@ -100,6 +102,11 @@ impl HybridKernel {
     pub fn resolve_output(&self, name: &str) -> Option<usize> {
         self.output_map.get(name).copied()
     }
+
+    /// Store owned nodes to keep JIT-baked pointers valid.
+    pub fn retain_nodes(&mut self, nodes: Vec<Box<dyn crate::node::GkNode>>) {
+        self._nodes = nodes;
+    }
 }
 
 /// Build a hybrid kernel from resolved DAG data.
@@ -135,7 +142,7 @@ pub fn build_hybrid(
                 })
                 .collect();
 
-            let output_count = node.meta().outputs.len();
+            let output_count = node.meta().outs.len();
             let output_slots: Vec<usize> = (0..output_count)
                 .map(|p| slot_bases[node_idx] + p)
                 .collect();
@@ -177,7 +184,7 @@ pub fn build_hybrid(
 
             // Compile the batch to native code
             let empty_map = HashMap::new();
-            let _jit_kernel = jit::compile_jit(coord_count, total_slots, batch, empty_map)?;
+            let _jit_kernel = jit::compile_jit(coord_count, total_slots, batch, empty_map, Vec::new())?;
             // Extract the function pointer and module from the JitKernel
             // We need to reach into it... let's add a method.
             // Actually, for the hybrid, we need the raw fn pointer and module.
@@ -188,7 +195,7 @@ pub fn build_hybrid(
             for j in batch_start..i {
                 let (ref jit_op, ref input_slots, ref output_slots) = classifications[j];
                 let single_batch = vec![(jit_op.clone(), input_slots.clone(), output_slots.clone())];
-                let jit_kernel = jit::compile_jit(coord_count, total_slots, single_batch, HashMap::new())?;
+                let jit_kernel = jit::compile_jit(coord_count, total_slots, single_batch, HashMap::new(), Vec::new())?;
 
                 // Extract fn and module
                 let (code_fn, module) = jit_kernel.into_parts();
@@ -207,6 +214,7 @@ pub fn build_hybrid(
         output_map,
         gather_buf: vec![0u64; max_inputs],
         scatter_buf: vec![0u64; max_outputs],
+        _nodes: Vec::new(), // Nodes retained by caller for JIT pointer safety
     })
 }
 
@@ -234,7 +242,7 @@ pub fn build_hybrid(
             })
             .collect();
 
-        let output_count = node.meta().outputs.len();
+        let output_count = node.meta().outs.len();
         let output_slots: Vec<usize> = (0..output_count)
             .map(|p| slot_bases[node_idx] + p)
             .collect();
@@ -260,5 +268,6 @@ pub fn build_hybrid(
         output_map,
         gather_buf: vec![0u64; max_inputs],
         scatter_buf: vec![0u64; max_outputs],
+        _nodes: Vec::new(),
     })
 }

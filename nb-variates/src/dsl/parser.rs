@@ -156,7 +156,7 @@ fn parse_module_def(p: &mut Parser) -> Result<Statement, String> {
     Ok(Statement::ModuleDef(ModuleDef {
         name,
         params,
-        outputs,
+        outputs: outputs,
         body,
         span,
     }))

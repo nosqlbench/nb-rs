@@ -15,7 +15,7 @@
 //! Inputs are u64 coordinates mapped to a float domain via scaling.
 //! Outputs are f64 in [-1, 1] (raw noise) or [0, 1] (normalized).
 
-use crate::node::{Commutativity, GkNode, NodeMeta, Port, Value};
+use crate::node::{GkNode, NodeMeta, Port, Slot, Value};
 
 // =================================================================
 // Permutation table (init-time artifact)
@@ -188,9 +188,8 @@ impl Perlin1D {
         Self {
             meta: NodeMeta {
                 name: "perlin_1d".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::f64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::f64("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             perm: PermTable::new(seed),
             frequency,
@@ -220,9 +219,8 @@ impl Perlin2D {
         Self {
             meta: NodeMeta {
                 name: "perlin_2d".into(),
-                inputs: vec![Port::u64("x"), Port::u64("y")],
-                outputs: vec![Port::f64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::f64("output")],
+                ins: vec![Slot::Wire(Port::u64("x")), Slot::Wire(Port::u64("y"))],
             },
             perm: PermTable::new(seed),
             frequency,
@@ -255,9 +253,8 @@ impl SimplexNoise2D {
         Self {
             meta: NodeMeta {
                 name: "simplex_2d".into(),
-                inputs: vec![Port::u64("x"), Port::u64("y")],
-                outputs: vec![Port::f64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::f64("output")],
+                ins: vec![Slot::Wire(Port::u64("x")), Slot::Wire(Port::u64("y"))],
             },
             perm: PermTable::new(seed),
             frequency,
@@ -307,9 +304,8 @@ impl FractalNoise1D {
         Self {
             meta: NodeMeta {
                 name: "fractal_noise_1d".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::f64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::f64("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             perm: PermTable::new(seed),
             frequency,
@@ -365,9 +361,8 @@ impl FractalNoise2D {
         Self {
             meta: NodeMeta {
                 name: "fractal_noise_2d".into(),
-                inputs: vec![Port::u64("x"), Port::u64("y")],
-                outputs: vec![Port::f64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::f64("output")],
+                ins: vec![Slot::Wire(Port::u64("x")), Slot::Wire(Port::u64("y"))],
             },
             perm: PermTable::new(seed),
             frequency,

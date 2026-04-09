@@ -175,6 +175,18 @@ pub async fn graph_compile(body: String) -> axum::Json<crate::graph::CompileResu
     axum::Json(crate::graph::compile_graph(&body))
 }
 
+pub async fn graph_eval(
+    axum::Json(req): axum::Json<crate::graph::EvalRequest>,
+) -> axum::Json<crate::graph::EvalResult> {
+    axum::Json(crate::graph::eval_graph(req))
+}
+
+pub async fn graph_plot(
+    axum::Json(req): axum::Json<crate::graph::PlotRequest>,
+) -> axum::Json<crate::graph::PlotResult> {
+    axum::Json(crate::graph::plot_graph(req))
+}
+
 // ─── Metrics Ingestion ──────────────────────────────────────
 
 /// Accept metrics in Prometheus text exposition format.
@@ -210,11 +222,11 @@ fn build_function_groups(filter: Option<&str>) -> Vec<(String, Vec<FunctionView>
                 _ => true,
             })
             .map(|sig| {
-                let params = if sig.const_params.is_empty() {
+                let const_info = sig.const_param_info();
+                let params = if const_info.is_empty() {
                     String::new()
                 } else {
-                    let p: Vec<String> = sig
-                        .const_params
+                    let p: Vec<String> = const_info
                         .iter()
                         .map(|(name, req)| {
                             if *req {
@@ -227,9 +239,9 @@ fn build_function_groups(filter: Option<&str>) -> Vec<(String, Vec<FunctionView>
                     format!("({})", p.join(", "))
                 };
                 let arity = if sig.outputs == 0 {
-                    format!("{}\u{2192}N", sig.wire_inputs)
+                    format!("{}\u{2192}N", sig.wire_input_count())
                 } else {
-                    format!("{}\u{2192}{}", sig.wire_inputs, sig.outputs)
+                    format!("{}\u{2192}{}", sig.wire_input_count(), sig.outputs)
                 };
                 let level = nb_activity::bindings::probe_compile_level(sig.name);
                 let (ls, lc) = match level {

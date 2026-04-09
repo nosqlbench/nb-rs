@@ -16,7 +16,7 @@
 //! - [`PcgStream`] — fixed seed, both position and stream are wire inputs
 //! - [`CycleWalk`] — bijective permutation of `[0, range)` via cycle-walking
 
-use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value};
 
 // =================================================================
 // PCG-RXS-M-XS 64/64 core algorithm
@@ -96,15 +96,19 @@ impl Pcg {
     /// - `seed`: initial LCG state
     /// - `stream`: stream selector; the LCG increment is `2 * stream + 1`
     pub fn new(seed: u64, stream: u64) -> Self {
+        let inc = 2u64.wrapping_mul(stream).wrapping_add(1);
         Self {
             meta: NodeMeta {
                 name: "pcg".into(),
-                inputs: vec![Port::u64("position")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("position")),
+                    Slot::const_u64("seed", seed),
+                    Slot::const_u64("inc", inc),
+                ],
             },
             seed,
-            inc: 2u64.wrapping_mul(stream).wrapping_add(1),
+            inc,
         }
     }
 }
@@ -158,9 +162,8 @@ impl PcgStream {
         Self {
             meta: NodeMeta {
                 name: "pcg_stream".into(),
-                inputs: vec![Port::u64("position"), Port::u64("stream_id")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::u64("position")), Slot::Wire(Port::u64("stream_id"))],
             },
             seed,
         }
@@ -259,9 +262,13 @@ impl CycleWalk {
         Self {
             meta: NodeMeta {
                 name: "cycle_walk".into(),
-                inputs: vec![Port::u64("position")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("position")),
+                    Slot::const_u64("range", range),
+                    Slot::const_u64("seed", seed),
+                    Slot::const_u64("inc", inc),
+                ],
             },
             range,
             seed,

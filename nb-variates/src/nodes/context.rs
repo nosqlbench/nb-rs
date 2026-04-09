@@ -10,7 +10,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::node::{Commutativity, GkNode, NodeMeta, Port, Value};
+use crate::node::{GkNode, NodeMeta, Port, Value};
 
 /// Current wall-clock time in epoch milliseconds.
 ///
@@ -26,9 +26,8 @@ impl CurrentEpochMillis {
         Self {
             meta: NodeMeta {
                 name: "current_epoch_millis".into(),
-                inputs: vec![],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: Vec::new(),
             },
         }
     }
@@ -64,9 +63,8 @@ impl SessionStartMillis {
         Self {
             meta: NodeMeta {
                 name: "session_start_millis".into(),
-                inputs: vec![],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: Vec::new(),
             },
             start,
         }
@@ -99,9 +97,8 @@ impl ElapsedMillis {
         Self {
             meta: NodeMeta {
                 name: "elapsed_millis".into(),
-                inputs: vec![],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: Vec::new(),
             },
             start,
         }
@@ -134,9 +131,8 @@ impl Counter {
         Self {
             meta: NodeMeta {
                 name: "counter".into(),
-                inputs: vec![],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: Vec::new(),
             },
             count: AtomicU64::new(0),
         }
@@ -146,9 +142,8 @@ impl Counter {
         Self {
             meta: NodeMeta {
                 name: "counter".into(),
-                inputs: vec![],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: Vec::new(),
             },
             count: AtomicU64::new(start),
         }

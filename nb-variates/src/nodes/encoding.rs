@@ -3,7 +3,7 @@
 
 //! String encoding and decoding nodes: HTML entities, URL percent-encoding.
 
-use crate::node::{Commutativity, GkNode, NodeMeta, Port, PortType, Value};
+use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, Value};
 
 // =================================================================
 // HTML entity encoding
@@ -23,9 +23,8 @@ impl HtmlEncode {
         Self {
             meta: NodeMeta {
                 name: "html_encode".into(),
-                inputs: vec![Port::new("input", PortType::Str)],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
             },
         }
     }
@@ -65,9 +64,8 @@ impl HtmlDecode {
         Self {
             meta: NodeMeta {
                 name: "html_decode".into(),
-                inputs: vec![Port::new("input", PortType::Str)],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
             },
         }
     }
@@ -107,9 +105,8 @@ impl UrlEncode {
         Self {
             meta: NodeMeta {
                 name: "url_encode".into(),
-                inputs: vec![Port::new("input", PortType::Str)],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
             },
         }
     }
@@ -148,9 +145,8 @@ impl UrlDecode {
         Self {
             meta: NodeMeta {
                 name: "url_decode".into(),
-                inputs: vec![Port::new("input", PortType::Str)],
-                outputs: vec![Port::new("output", PortType::Str)],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
             },
         }
     }

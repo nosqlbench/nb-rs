@@ -180,12 +180,132 @@ pub fn check_port_available(addr: &SocketAddr) -> Result<(), String> {
                     remove_anchor();
                 }
             } else {
-                msg.push_str("\n  → another program is using this port; try a different port with port=<N>");
+                // No anchor — check process table for nbrs web processes.
+                let procs = find_nbrs_web_processes();
+                if procs.is_empty() {
+                    // Try to identify what's holding the port via ss/lsof
+                    let port = addr.port();
+                    let holder = identify_port_holder(port);
+                    if let Some(info) = holder {
+                        msg.push_str(&format!("\n  → held by: {info}"));
+                    } else {
+                        msg.push_str("\n  → another program is using this port");
+                    }
+                    msg.push_str(&format!("\n  → try a different port with port=<N>"));
+                } else {
+                    for p in &procs {
+                        msg.push_str(&format!("\n  → found nbrs web process: pid {} — {}", p.pid, p.cmdline));
+                    }
+                    msg.push_str("\n  → use 'nbrs web --restart' to kill and restart");
+                }
             }
             Err(msg)
         }
         Err(e) => Err(format!("cannot bind to {addr}: {e}")),
     }
+}
+
+/// Information about a running `nbrs web` process found via /proc scan.
+pub struct NbrsWebProcess {
+    pub pid: u32,
+    pub cmdline: String,
+}
+
+/// Scan the process table for `nbrs` processes whose command line
+/// contains "web", excluding the current process.
+///
+/// Uses `/proc/*/cmdline` on Linux. Returns an empty vec on
+/// non-Linux or if `/proc` is unavailable.
+pub fn find_nbrs_web_processes() -> Vec<NbrsWebProcess> {
+    let my_pid = std::process::id();
+    let mut results = Vec::new();
+
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return results;
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid_str) = name.to_str() else { continue };
+        let Ok(pid) = pid_str.parse::<u32>() else { continue };
+        if pid == my_pid { continue; }
+
+        let cmdline_path = entry.path().join("cmdline");
+        let Ok(raw) = fs::read(&cmdline_path) else { continue };
+
+        // /proc/*/cmdline uses NUL separators between args.
+        let cmdline: String = raw.iter()
+            .map(|&b| if b == 0 { ' ' } else { b as char })
+            .collect::<String>()
+            .trim()
+            .to_string();
+
+        // Match processes that look like "nbrs web ..."
+        if cmdline.contains("nbrs") && cmdline.contains("web") {
+            results.push(NbrsWebProcess { pid, cmdline });
+        }
+    }
+
+    results
+}
+
+/// Try to identify what process holds a given TCP port.
+///
+/// Uses `ss -tlnp` on Linux. Returns a human-readable description
+/// like "pid 1234 (nginx)" or None if it can't determine.
+fn identify_port_holder(port: u16) -> Option<String> {
+    let output = std::process::Command::new("ss")
+        .args(["-tlnp", &format!("sport = :{port}")])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Parse ss output: look for lines containing the port
+    for line in stdout.lines().skip(1) {
+        if line.contains(&format!(":{port}")) {
+            // Extract the process info from the "users:" field
+            // Format: users:(("program",pid=1234,fd=5))
+            if let Some(users_start) = line.find("users:((") {
+                let rest = &line[users_start + 8..];
+                if let Some(end) = rest.find("))") {
+                    return Some(rest[..end].to_string());
+                }
+            }
+            // If no users field, return the whole line trimmed
+            return Some(line.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Prompt the user on stderr/stdin with a yes/no question.
+///
+/// Returns `true` if the user answers `y` or `yes` (case-insensitive).
+/// Returns `false` on `n`, `no`, EOF, or any other input.
+pub fn confirm_prompt(message: &str) -> bool {
+    eprint!("{message} [y/N] ");
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
+/// Send SIGTERM to a process by PID and wait briefly for it to exit.
+pub fn kill_pid(pid: u32) -> Result<(), String> {
+    let result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    if result == -1 {
+        return Err(format!("failed to signal pid {pid}"));
+    }
+    // Wait briefly for the process to exit.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Verify it actually exited.
+    let still_alive = unsafe { libc::kill(pid as i32, 0) } == 0;
+    if still_alive {
+        eprintln!("nbrs web: pid {pid} still alive after SIGTERM, sending SIGKILL");
+        unsafe { libc::kill(pid as i32, libc::SIGKILL); }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    Ok(())
 }
 
 /// Stop a running daemon by reading the PID file and sending SIGTERM.

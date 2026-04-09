@@ -3,7 +3,10 @@
 
 //! Hash function nodes.
 
-use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{
+    CompiledU64Op,
+    GkNode, NodeMeta, Port, Slot, Value,
+};
 use crate::fusion::{DecomposedGraph, DecomposedWire, FusedNode};
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -27,9 +30,8 @@ impl Hash64 {
         Self {
             meta: NodeMeta {
                 name: "hash".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
         }
     }
@@ -73,9 +75,11 @@ impl HashRange {
         Self {
             meta: NodeMeta {
                 name: "hash_range".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("input")),
+                    Slot::const_u64("max", max),
+                ],
             },
             max,
         }
@@ -136,9 +140,12 @@ impl HashInterval {
         Self {
             meta: NodeMeta {
                 name: "hash_interval".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::f64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::f64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("input")),
+                    Slot::const_f64("min", min),
+                    Slot::const_f64("max", max),
+                ],
             },
             min,
             max,

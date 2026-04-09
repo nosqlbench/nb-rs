@@ -12,7 +12,7 @@
 //! error injection, bimodal distributions), but usable anywhere in a
 //! GK pipeline.
 
-use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value};
 use xxhash_rust::xxh3::xxh3_64;
 
 /// Convert a u64 hash to a value in the unit interval [0.0, 1.0).
@@ -43,9 +43,8 @@ impl FairCoin {
         Self {
             meta: NodeMeta {
                 name: "fair_coin".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
         }
     }
@@ -104,9 +103,11 @@ impl UnfairCoin {
         Self {
             meta: NodeMeta {
                 name: "unfair_coin".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("input")),
+                    Slot::const_f64("p", p),
+                ],
             },
             p,
         }
@@ -159,13 +160,12 @@ impl Select {
         Self {
             meta: NodeMeta {
                 name: "select".into(),
-                inputs: vec![
-                    Port::u64("cond"),
-                    Port::u64("if_true"),
-                    Port::u64("if_false"),
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("cond")),
+                    Slot::Wire(Port::u64("if_true")),
+                    Slot::Wire(Port::u64("if_false")),
                 ],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
             },
         }
     }
@@ -219,9 +219,11 @@ impl Chance {
         Self {
             meta: NodeMeta {
                 name: "chance".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("input")),
+                    Slot::const_f64("p", p),
+                ],
             },
             p,
         }
@@ -287,9 +289,12 @@ impl NofM {
         Self {
             meta: NodeMeta {
                 name: "n_of".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("input")),
+                    Slot::const_u64("n", n),
+                    Slot::const_u64("m", m),
+                ],
             },
             n,
             m,
@@ -375,9 +380,8 @@ impl OneOf {
         Self {
             meta: NodeMeta {
                 name: "one_of".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::str("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::str("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             values,
         }
@@ -464,9 +468,8 @@ impl OneOfWeighted {
         Self {
             meta: NodeMeta {
                 name: "one_of_weighted".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::str("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::str("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             values,
             cumulative,
@@ -528,9 +531,12 @@ impl Blend {
         Self {
             meta: NodeMeta {
                 name: "blend".into(),
-                inputs: vec![Port::u64("a"), Port::u64("b")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("a")),
+                    Slot::Wire(Port::u64("b")),
+                    Slot::const_f64("mix", mix),
+                ],
             },
             mix,
         }

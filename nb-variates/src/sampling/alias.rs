@@ -226,7 +226,7 @@ impl AliasTableU64 {
 // GK node wrapping the alias table
 // -----------------------------------------------------------------
 
-use crate::node::{Commutativity, CompiledU64Op, GkNode, NodeMeta, Port, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value};
 
 /// GK node that samples from a pre-built alias table.
 ///
@@ -245,9 +245,8 @@ impl AliasSample {
         Self {
             meta: NodeMeta {
                 name: "alias_sample".into(),
-                inputs: vec![Port::u64("input")],
-                outputs: vec![Port::u64("output")],
-                commutativity: Commutativity::Positional,
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::u64("input"))],
             },
             table: AliasTableU64::from_weights(weights),
         }

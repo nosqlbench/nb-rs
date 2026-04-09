@@ -55,17 +55,81 @@
         color: var(--accent);
         white-space: pre-wrap;
     }
-    #svg-preview {
-        overflow: auto;
-        max-height: 300px;
+    .litegraph .lcanvas { background: #1a1a2e !important; }
+    #help-panel {
+        display: none;
+        position: fixed;
+        top: 50%; left: 50%;
+        transform: translate(-50%, -50%);
+        background: var(--surface);
+        border: 2px solid var(--accent);
+        border-radius: 8px;
+        padding: 16px 20px;
+        max-width: 500px;
+        max-height: 400px;
+        overflow-y: auto;
+        z-index: 1000;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+    #help-panel h3 { color: var(--accent); margin-bottom: 8px; }
+    #help-panel .help-desc { color: var(--text-dim); font-size: 12px; margin-bottom: 8px; }
+    #help-panel .help-body { font-size: 12px; white-space: pre-wrap; line-height: 1.5; }
+    #help-panel .help-close {
+        position: absolute; top: 8px; right: 12px;
+        background: none; border: none; color: var(--text-dim);
+        font-size: 18px; cursor: pointer;
+    }
+    #help-panel .help-close:hover { color: var(--text); }
+    #help-overlay {
+        display: none;
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.4);
+        z-index: 999;
+    }
+    #plot-controls {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+    }
+    #plot-controls label { font-size: 11px; color: var(--text-dim); }
+    #plot-controls input, #plot-controls select {
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 4px 6px;
+        font-family: var(--mono);
+        font-size: 12px;
+        width: 80px;
+    }
+    #plot-controls select { width: auto; }
+    #plot-controls button {
+        background: var(--border);
+        color: var(--text);
+        border: none;
+        border-radius: 4px;
+        padding: 4px 12px;
+        font-family: var(--mono);
+        font-size: 12px;
+        cursor: pointer;
+    }
+    #plot-controls button:hover { background: var(--accent); }
+    #plot-area {
+        min-height: 300px;
         border: 1px solid var(--border);
         border-radius: 4px;
         background: var(--bg);
     }
-    #svg-preview svg { width: 100%; }
-    .litegraph .lcanvas { background: #1a1a2e !important; }
 </style>
 
+<div id="help-overlay" onclick="closeHelp()"></div>
+<div id="help-panel">
+    <button class="help-close" onclick="closeHelp()">&times;</button>
+    <h3 id="help-title"></h3>
+    <div class="help-desc" id="help-desc"></div>
+    <div class="help-body" id="help-body"></div>
+</div>
 <div id="graph-container">
     <div id="graph-canvas-wrap">
         <canvas id="graph-canvas"></canvas>
@@ -77,14 +141,42 @@
         </div>
         <div id="compile-error"></div>
         <div>
-            <h3>SVG Preview</h3>
-            <div id="svg-preview">
-                <p style="color: var(--text-dim); padding: 12px;">Add nodes and connect them to see the DAG</p>
+            <h3>Interface</h3>
+            <div id="interface-panel" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px;">
+                <div>
+                    <div style="color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; font-size: 10px; margin-bottom: 4px;">Coordinates</div>
+                    <div id="coord-list" style="color: var(--blue);">cycle</div>
+                </div>
+                <div>
+                    <div style="color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; font-size: 10px; margin-bottom: 4px;">Outputs</div>
+                    <div id="output-list" style="color: var(--green);">—</div>
+                </div>
             </div>
         </div>
         <div>
-            <h3>Sample Output (cycles 0-4)</h3>
+            <h3>Sample Output</h3>
             <div id="sample-output">Connect nodes to see sample values</div>
+        </div>
+        <div>
+            <h3>Plot</h3>
+            <div id="plot-controls">
+                <label>type</label>
+                <select id="plot-type">
+                    <option value="line">Line</option>
+                    <option value="scatter">Scatter</option>
+                    <option value="histogram">Histogram</option>
+                    <option value="heatmap">Heatmap</option>
+                    <option value="surface">Surface 3D</option>
+                </select>
+                <label>start</label>
+                <input id="plot-start" type="number" value="0" min="0">
+                <label>end</label>
+                <input id="plot-end" type="number" value="1000" min="1">
+                <label>step</label>
+                <input id="plot-step" type="number" value="1" min="1">
+                <button onclick="doPlot()">Plot</button>
+            </div>
+            <div id="plot-area"></div>
         </div>
     </div>
 </div>
@@ -107,15 +199,103 @@
 
     // ─── Special nodes ──────────────────────────────
 
-    // Coordinates node (source)
+    // ─── Help system ─────────────────────────────────
+
+    const helpTexts = {}; // funcName → { description, help }
+
+    window.showHelp = function(funcName) {
+        const info = helpTexts[funcName];
+        if (!info) return;
+        document.getElementById("help-title").textContent = funcName;
+        document.getElementById("help-desc").textContent = info.description;
+        document.getElementById("help-body").textContent = info.help || "(no detailed help available)";
+        document.getElementById("help-panel").style.display = "block";
+        document.getElementById("help-overlay").style.display = "block";
+    };
+
+    window.closeHelp = function() {
+        document.getElementById("help-panel").style.display = "none";
+        document.getElementById("help-overlay").style.display = "none";
+    };
+
+    // ─── Special nodes ──────────────────────────────
+
+    // Coordinates node (source) — editable cycle value + plot range
+    // All values are unsigned integers (step=10 for coarse drag, precision=0 for display).
     function CoordinatesNode() {
         this.addOutput("cycle", "u64");
+        this.addProperty("cycle_value", 0);
+        this.addProperty("plot_start", 0);
+        this.addProperty("plot_end", 1000);
+        this.addProperty("plot_step", 1);
+        this.addWidget("number", "cycle", 0, function(v) {
+            this.widgets[0].value = Math.max(0, Math.round(v));
+            triggerCompile();
+        }.bind(this), { min: 0, max: 4294967295, step: 1, precision: 0 });
+        this.addWidget("number", "plot_start", 0, function(v) {
+            this.widgets[1].value = Math.max(0, Math.round(v));
+            triggerCompile();
+        }.bind(this), { min: 0, max: 4294967295, step: 10, precision: 0 });
+        this.addWidget("number", "plot_end", 1000, function(v) {
+            this.widgets[2].value = Math.max(1, Math.round(v));
+            triggerCompile();
+        }.bind(this), { min: 1, max: 4294967295, step: 10, precision: 0 });
+        this.addWidget("number", "plot_step", 1, function(v) {
+            this.widgets[3].value = Math.max(1, Math.round(v));
+            triggerCompile();
+        }.bind(this), { min: 1, max: 1000000, step: 1, precision: 0 });
         this.title = "Coordinates";
         this.color = "#16213e";
         this.bgcolor = "#0f3460";
-        this.size = [180, 50];
+        this.size = [220, 140];
     }
+    CoordinatesNode.prototype.onDrawForeground = function(ctx) {
+        if (!this._portValues) return;
+        ctx.font = "10px monospace";
+        ctx.textAlign = "right";
+        for (let i = 0; i < this._portValues.length && i < this.outputs.length; i++) {
+            const pv = this._portValues[i];
+            const y = LiteGraph.NODE_TITLE_HEIGHT + 6 + i * LiteGraph.NODE_SLOT_HEIGHT;
+            let text = pv.value;
+            if (text.length > 20) text = text.substring(0, 17) + "...";
+            ctx.fillStyle = "rgba(78, 204, 163, 0.9)";
+            ctx.fillText(text, this.size[0] - 10, y);
+        }
+        ctx.textAlign = "left";
+    };
     CoordinatesNode.title = "Coordinates";
+
+    helpTexts["coordinates"] = {
+        description: "Source node providing cycle coordinates to the graph.",
+        help: "The entry point for all GK graphs. Outputs a u64 cycle value\n" +
+              "that drives downstream nodes.\n\n" +
+              "Widgets:\n" +
+              "  cycle       — the specific cycle to evaluate (shown on ports)\n" +
+              "  plot_start  — first cycle in the plot range\n" +
+              "  plot_end    — last cycle in the plot range\n" +
+              "  plot_step   — step between plotted cycles\n\n" +
+              "The cycle value is an unsigned integer. Downstream nodes like\n" +
+              "hash(cycle) use it as their entropy source. Change the cycle\n" +
+              "value to see how outputs vary across the coordinate space.",
+    };
+
+    CoordinatesNode.prototype.getExtraMenuOptions = function() {
+        return [{ content: "Help — Coordinates", callback: () => showHelp("coordinates") }];
+    };
+    CoordinatesNode.prototype.onMouseDown = function(e, local_pos) {
+        const bx = this.size[0] - 22;
+        if (local_pos[0] > bx && local_pos[1] < 0) { showHelp("coordinates"); return true; }
+        return false;
+    };
+    const origCoordDraw = CoordinatesNode.prototype.onDrawForeground;
+    CoordinatesNode.prototype.onDrawForeground = function(ctx) {
+        // Draw "?" help button
+        ctx.font = "bold 12px monospace";
+        ctx.fillStyle = "rgba(255,255,255,0.4)";
+        ctx.fillText("?", this.size[0] - 18, -LiteGraph.NODE_TITLE_HEIGHT + 16);
+        if (origCoordDraw) origCoordDraw.call(this, ctx);
+    };
+
     LiteGraph.registerNodeType("gk/coordinates", CoordinatesNode);
 
     // Output node (sink)
@@ -128,8 +308,119 @@
         this.bgcolor = "#0f3460";
         this.size = [180, 60];
     }
+    OutputNode.prototype.onDrawForeground = function(ctx) {
+        if (!this._portValues) return;
+        ctx.font = "10px monospace";
+        ctx.textAlign = "right";
+        for (let i = 0; i < this._portValues.length; i++) {
+            const pv = this._portValues[i];
+            const y = LiteGraph.NODE_TITLE_HEIGHT + 6 + i * LiteGraph.NODE_SLOT_HEIGHT;
+            let text = pv.value;
+            if (text.length > 20) text = text.substring(0, 17) + "...";
+            ctx.fillStyle = "rgba(78, 204, 163, 0.9)";
+            ctx.fillText(text, this.size[0] - 10, y);
+        }
+        ctx.textAlign = "left";
+    };
     OutputNode.title = "Output";
+
+    helpTexts["output"] = {
+        description: "Sink node that names a graph output.",
+        help: "Marks a value as a named output of the GK kernel.\n\n" +
+              "Widgets:\n" +
+              "  name  — the output variable name (used in op templates\n" +
+              "          as {bind:name} and shown in sample output)\n\n" +
+              "Connect any node's output to the input port. The value\n" +
+              "appears in the sidebar sample and is accessible as a\n" +
+              "named binding in workload op templates.",
+    };
+
+    OutputNode.prototype.getExtraMenuOptions = function() {
+        return [{ content: "Help — Output", callback: () => showHelp("output") }];
+    };
+    OutputNode.prototype.onMouseDown = function(e, local_pos) {
+        const bx = this.size[0] - 22;
+        if (local_pos[0] > bx && local_pos[1] < 0) { showHelp("output"); return true; }
+        return false;
+    };
+    const origOutputDraw = OutputNode.prototype.onDrawForeground;
+    OutputNode.prototype.onDrawForeground = function(ctx) {
+        ctx.font = "bold 12px monospace";
+        ctx.fillStyle = "rgba(255,255,255,0.4)";
+        ctx.fillText("?", this.size[0] - 18, -LiteGraph.NODE_TITLE_HEIGHT + 16);
+        if (origOutputDraw) origOutputDraw.call(this, ctx);
+    };
+
     LiteGraph.registerNodeType("gk/output", OutputNode);
+
+    // Plotter node — renders a Plotly chart inline on the canvas
+    function PlotterNode() {
+        this.addInput("x", "u64");
+        this.addInput("y", "u64");
+        this.addInput("z", "u64");
+        this.addProperty("plot_type", "line");
+        this.addWidget("combo", "type", "line", function(v) {
+            this.properties.plot_type = v;
+            triggerCompile();
+        }.bind(this), { values: ["line", "scatter", "histogram", "heatmap", "surface"] });
+        this.title = "Plotter";
+        this.color = "#1a2e1a";
+        this.bgcolor = "#0f3020";
+        this.size = [320, 300];
+        this._plotDiv = null;
+    }
+
+    PlotterNode.title = "Plotter";
+
+    PlotterNode.prototype.onDrawForeground = function(ctx) {
+        // Draw the plot inside the node using an offscreen div + Plotly
+        if (!this._plotData) return;
+
+        // Render to an offscreen div if not yet created
+        if (!this._plotDiv) {
+            this._plotDiv = document.createElement("div");
+            this._plotDiv.style.position = "absolute";
+            this._plotDiv.style.left = "-9999px";
+            this._plotDiv.style.width = (this.size[0] - 10) + "px";
+            this._plotDiv.style.height = (this.size[1] - 70) + "px";
+            document.body.appendChild(this._plotDiv);
+        }
+
+        // If we have a rendered image, draw it
+        if (this._plotImage) {
+            ctx.drawImage(this._plotImage, 5, 65, this.size[0] - 10, this.size[1] - 70);
+        }
+    };
+
+    PlotterNode.prototype.onRemoved = function() {
+        if (this._plotDiv) {
+            this._plotDiv.remove();
+            this._plotDiv = null;
+        }
+    };
+
+    PlotterNode.prototype.getExtraMenuOptions = function() {
+        return [{ content: "Help — Plotter", callback: () => showHelp("plotter") }];
+    };
+
+    helpTexts["plotter"] = {
+        description: "Inline plot node — visualizes input values over the cycle range.",
+        help: "Connect outputs to the x, y, z input ports to visualize them.\n\n" +
+              "Ports:\n" +
+              "  x  — horizontal axis (or primary series for line/histogram)\n" +
+              "  y  — vertical axis (or second series for scatter)\n" +
+              "  z  — depth axis (for surface/heatmap)\n\n" +
+              "Plot types:\n" +
+              "  line      — x vs cycle (y, z as additional series)\n" +
+              "  scatter   — x vs y scatter plot\n" +
+              "  histogram — distribution of x (y, z as overlays)\n" +
+              "  heatmap   — x as rows, y as columns\n" +
+              "  surface   — 3D surface from x values\n\n" +
+              "Updates live as the graph changes. The plot range comes\n" +
+              "from the Coordinates node.",
+    };
+
+    LiteGraph.registerNodeType("gk/plotter", PlotterNode);
 
     // ─── Register function nodes from palette ───────
 
@@ -146,6 +437,9 @@
 
     function registerFunctionNode(category, func) {
         const typePath = "gk/" + func.name;
+
+        // Store help text for the help panel
+        helpTexts[func.name] = { description: func.description, help: func.help || "" };
 
         function FuncNode() {
             // Wire inputs
@@ -181,6 +475,47 @@
         FuncNode.title = func.name;
         FuncNode.desc = func.description;
 
+        // Right-click context menu includes "Help"
+        FuncNode.prototype.getExtraMenuOptions = function() {
+            return [
+                { content: "Help — " + func.name, callback: () => showHelp(func.name) },
+            ];
+        };
+
+        FuncNode.prototype.onDrawForeground = function(ctx) {
+            // Draw "?" help button in the title bar
+            const bx = this.size[0] - 18;
+            const by = -LiteGraph.NODE_TITLE_HEIGHT + 4;
+            ctx.font = "bold 12px monospace";
+            ctx.fillStyle = "rgba(255,255,255,0.4)";
+            ctx.fillText("?", bx, by + 12);
+
+            // Draw port values
+            if (!this._portValues) return;
+            ctx.font = "10px monospace";
+            ctx.textAlign = "right";
+            for (let i = 0; i < this._portValues.length && i < this.outputs.length; i++) {
+                const pv = this._portValues[i];
+                const y = LiteGraph.NODE_TITLE_HEIGHT + 6 + i * LiteGraph.NODE_SLOT_HEIGHT;
+                let text = pv.value;
+                if (text.length > 20) text = text.substring(0, 17) + "...";
+                ctx.fillStyle = "rgba(78, 204, 163, 0.9)";
+                ctx.fillText(text, this.size[0] - 10, y);
+            }
+            ctx.textAlign = "left";
+        };
+
+        // Click on the "?" area opens help
+        FuncNode.prototype.onMouseDown = function(e, local_pos) {
+            const bx = this.size[0] - 22;
+            const by = -LiteGraph.NODE_TITLE_HEIGHT;
+            if (local_pos[0] > bx && local_pos[1] > by && local_pos[1] < 0) {
+                showHelp(func.name);
+                return true; // consume the click
+            }
+            return false;
+        };
+
         LiteGraph.registerNodeType(typePath, FuncNode);
     }
 
@@ -204,6 +539,11 @@
     graphCanvas.clear_background_color = "#1a1a2e";
     graphCanvas.render_shadows = false;
 
+    // Enable the built-in search box (double-click or right-click on canvas)
+    // This lets users type to filter and select node types.
+    graphCanvas.allow_searchbox = true;
+
+
     // Add default Coordinates node
     const coordNode = LiteGraph.createNode("gk/coordinates");
     coordNode.pos = [100, 200];
@@ -223,20 +563,56 @@
         compileTimer = setTimeout(doCompile, 500);
     }
 
+    function updateNodeValues(nodeValues) {
+        // Clear old values
+        for (const node of graph._nodes) {
+            node._portValues = null;
+        }
+        // Set new values keyed by node ID
+        for (const [nodeIdStr, portData] of Object.entries(nodeValues)) {
+            const nodeId = parseInt(nodeIdStr);
+            const node = graph.getNodeById(nodeId);
+            if (node && portData.outs) {
+                node._portValues = portData.outs;
+            }
+        }
+        graphCanvas.setDirty(true, true);
+    }
+
+    // Extract coordinate values from the Coordinates node
+    function getCoordNode() {
+        for (const node of graph._nodes) {
+            if (node.type === "gk/coordinates" && node.widgets) return node;
+        }
+        return null;
+    }
+
     async function doCompile() {
-        const graphJSON = JSON.stringify(graph.serialize());
+        const serialized = graph.serialize();
+        const cn = getCoordNode();
+        let cycleValue = 0;
+        if (cn && cn.widgets.length > 0) {
+            cycleValue = Math.max(0, Math.floor(cn.widgets[0].value)) >>> 0; // unsigned
+        }
         try {
-            const resp = await fetch("/api/graph/compile", {
+            const resp = await fetch("/api/graph/eval", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: graphJSON
+                body: JSON.stringify({ graph: JSON.stringify(serialized), cycle: cycleValue })
             });
             const result = await resp.json();
 
             document.getElementById("gk-source-output").value = result.gk_source || "";
-            document.getElementById("svg-preview").innerHTML = result.svg || "<p style='color: var(--text-dim); padding: 12px;'>No output</p>";
-            document.getElementById("sample-output").textContent = (result.samples || []).join("\n") || "No samples";
+            // Update interface panel: coordinates and outputs
+            updateInterfacePanel(result.gk_source || "");
+            document.getElementById("sample-output").textContent = result.sample || "No sample";
             document.getElementById("compile-error").textContent = result.error || "";
+            updateNodeValues(result.node_values || {});
+
+            // Auto-update plot whenever there are outputs to show
+            if (result.gk_source && !result.error) {
+                doPlot();
+            }
         } catch (e) {
             document.getElementById("compile-error").textContent = "fetch error: " + e;
         }
@@ -257,9 +633,327 @@
         };
     }
 
-    // Load palette then start
+    // ─── Interface panel ─────────────────────────────
+
+    function updateInterfacePanel(gkSource) {
+        // Extract coordinate names from "coordinates := (a, b, c)"
+        const coordMatch = gkSource.match(/coordinates\s*:=\s*\(([^)]+)\)/);
+        const coords = coordMatch
+            ? coordMatch[1].split(',').map(s => s.trim()).filter(s => s)
+            : ['cycle'];
+
+        // Find output node names from the graph
+        const outputNames = [];
+        for (const node of graph._nodes) {
+            if (node.type === "gk/output") {
+                const name = node.properties?.name || "result";
+                // Get the value if available
+                const val = node._portValues && node._portValues.length > 0
+                    ? node._portValues[0].value : "—";
+                outputNames.push({ name, val });
+            }
+        }
+
+        // Also list all top-level bindings as outputs (intermediate values)
+        // Parse lines like "varname := func(...)"
+        const bindings = [];
+        for (const line of gkSource.split('\n')) {
+            const m = line.match(/^(\(?.+?\)?)\s*:=\s*/);
+            if (m && !line.startsWith('coordinates')) {
+                const targets = m[1].replace(/[()]/g, '').split(',').map(s => s.trim());
+                bindings.push(...targets);
+            }
+        }
+
+        const coordDiv = document.getElementById("coord-list");
+        coordDiv.innerHTML = coords.map(c =>
+            `<div style="padding: 2px 0;">` +
+            `<span style="color: var(--blue);">${c}</span>` +
+            `<span style="color: var(--text-dim); font-size: 10px;"> u64</span></div>`
+        ).join('');
+
+        const outputDiv = document.getElementById("output-list");
+        if (bindings.length === 0 && outputNames.length === 0) {
+            outputDiv.innerHTML = '<span style="color: var(--text-dim);">—</span>';
+        } else {
+            const lines = [];
+            for (const b of bindings) {
+                lines.push(`<div style="padding: 2px 0;"><span style="color: var(--green);">${b}</span></div>`);
+            }
+            outputDiv.innerHTML = lines.join('');
+        }
+    }
+
+    // ─── Plotting ────────────────────────────────────
+
+    window.doPlot = async function doPlot() {
+        const serialized = graph.serialize();
+        const plotType = document.getElementById("plot-type").value;
+        // Read range from coordinates node widgets (indices 1, 2, 3)
+        const cn = getCoordNode();
+        const start = cn && cn.widgets.length > 1 ? Math.max(0, Math.floor(cn.widgets[1].value)) >>> 0 : 0;
+        const end = cn && cn.widgets.length > 2 ? Math.max(1, Math.floor(cn.widgets[2].value)) >>> 0 : 1000;
+        const step = cn && cn.widgets.length > 3 ? Math.max(1, Math.floor(cn.widgets[3].value)) >>> 0 : 1;
+        // Sync sidebar controls
+        document.getElementById("plot-start").value = start;
+        document.getElementById("plot-end").value = end;
+        document.getElementById("plot-step").value = step;
+
+        try {
+            const resp = await fetch("/api/graph/plot", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    graph: JSON.stringify(serialized),
+                    cycle_start: start,
+                    cycle_end: end,
+                    cycle_step: step,
+                }),
+            });
+            const result = await resp.json();
+
+            if (result.error) {
+                document.getElementById("plot-area").innerHTML =
+                    `<p style="color: var(--accent); padding: 12px;">${result.error}</p>`;
+                return;
+            }
+
+            const div = document.getElementById("plot-area");
+            const names = result.output_names || [];
+            const cycles = result.cycles || [];
+            const series = result.series || {};
+
+            const plotLayout = {
+                paper_bgcolor: "#1a1a2e",
+                plot_bgcolor: "#16213e",
+                font: { color: "#e0e0e0", family: "JetBrains Mono, monospace", size: 11 },
+                margin: { t: 30, b: 40, l: 50, r: 20 },
+                xaxis: { gridcolor: "#0f3460", title: "cycle" },
+                yaxis: { gridcolor: "#0f3460" },
+                legend: { bgcolor: "rgba(0,0,0,0)" },
+            };
+
+            const colors = ["#4da6ff", "#4ecca3", "#e94560", "#f0c040", "#cc66ff", "#8888a0"];
+
+            if (plotType === "line" || plotType === "scatter") {
+                const traces = names.map((name, i) => ({
+                    x: cycles,
+                    y: series[name],
+                    name: name,
+                    type: plotType === "scatter" ? "scattergl" : "scatter",
+                    mode: plotType === "scatter" ? "markers" : "lines",
+                    marker: { color: colors[i % colors.length], size: 3 },
+                    line: { color: colors[i % colors.length], width: 1.5 },
+                }));
+                Plotly.newPlot(div, traces, plotLayout, { responsive: true });
+
+            } else if (plotType === "histogram") {
+                const traces = names.map((name, i) => ({
+                    x: series[name],
+                    name: name,
+                    type: "histogram",
+                    marker: { color: colors[i % colors.length] },
+                    opacity: 0.7,
+                }));
+                const layout = { ...plotLayout };
+                layout.xaxis.title = "value";
+                layout.yaxis.title = "count";
+                layout.barmode = "overlay";
+                Plotly.newPlot(div, traces, layout, { responsive: true });
+
+            } else if (plotType === "heatmap") {
+                // Heatmap: x = cycle, y = output index, z = values
+                const z = names.map(name => series[name]);
+                const trace = {
+                    x: cycles,
+                    y: names,
+                    z: z,
+                    type: "heatmap",
+                    colorscale: "Viridis",
+                };
+                Plotly.newPlot(div, [trace], plotLayout, { responsive: true });
+
+            } else if (plotType === "surface") {
+                // Surface: needs 2D data. If only 1 output, reshape as
+                // sqrt(N) x sqrt(N) grid. If multiple outputs, use first.
+                const firstName = names[0];
+                const data = series[firstName] || [];
+                const side = Math.ceil(Math.sqrt(data.length));
+                const z = [];
+                for (let r = 0; r < side; r++) {
+                    const row = [];
+                    for (let c = 0; c < side; c++) {
+                        const idx = r * side + c;
+                        row.push(idx < data.length ? data[idx] : 0);
+                    }
+                    z.push(row);
+                }
+                const trace = {
+                    z: z,
+                    type: "surface",
+                    colorscale: "Viridis",
+                };
+                const layout3d = {
+                    paper_bgcolor: "#1a1a2e",
+                    font: { color: "#e0e0e0", family: "JetBrains Mono, monospace", size: 11 },
+                    margin: { t: 20, b: 20, l: 20, r: 20 },
+                    scene: {
+                        xaxis: { gridcolor: "#0f3460", title: "row" },
+                        yaxis: { gridcolor: "#0f3460", title: "col" },
+                        zaxis: { gridcolor: "#0f3460", title: firstName },
+                        bgcolor: "#16213e",
+                    },
+                };
+                Plotly.newPlot(div, [trace], layout3d, { responsive: true });
+            }
+            // Render inline plots on Plotter nodes
+            updatePlotterNodes(cycles, series, names);
+
+        } catch (e) {
+            document.getElementById("plot-area").innerHTML =
+                `<p style="color: var(--accent); padding: 12px;">Error: ${e}</p>`;
+        }
+    };
+
+    async function updatePlotterNodes(cycles, series, allNames) {
+        const colors = ["#4da6ff", "#4ecca3", "#e94560"];
+
+        for (const node of graph._nodes) {
+            if (node.type !== "gk/plotter") continue;
+
+            // Resolve which variable name is wired to each port (x, y, z)
+            const portData = {}; // "x" → series array, "y" → series array, "z" → series array
+            const portNames = {}; // "x" → variable name
+            for (let i = 0; i < node.inputs.length; i++) {
+                const portLabel = node.inputs[i].name; // "x", "y", or "z"
+                const link = node.inputs[i].link;
+                if (link == null) continue;
+                const linkInfo = graph.links[link];
+                if (!linkInfo) continue;
+                const srcNode = graph.getNodeById(linkInfo.origin_id);
+                if (!srcNode || !srcNode._portValues) continue;
+                const srcSlot = linkInfo.origin_slot;
+                if (srcNode._portValues && srcNode._portValues[srcSlot]) {
+                    const varName = srcNode._portValues[srcSlot].name;
+                    if (series[varName]) {
+                        portData[portLabel] = series[varName];
+                        portNames[portLabel] = varName;
+                    }
+                }
+            }
+
+            if (Object.keys(portData).length === 0) {
+                node._plotData = null;
+                node._plotImage = null;
+                continue;
+            }
+
+            const plotType = node.properties.plot_type || "line";
+            const traces = [];
+
+            if (plotType === "line") {
+                // Each connected port as a line vs cycle
+                for (const [port, data] of Object.entries(portData)) {
+                    const ci = port === "x" ? 0 : port === "y" ? 1 : 2;
+                    traces.push({
+                        x: cycles, y: data, name: portNames[port],
+                        type: "scatter", mode: "lines",
+                        line: { color: colors[ci], width: 1.5 },
+                    });
+                }
+            } else if (plotType === "scatter") {
+                // x vs y scatter (z as color if present)
+                if (portData.x && portData.y) {
+                    const trace = {
+                        x: portData.x, y: portData.y,
+                        type: "scattergl", mode: "markers",
+                        marker: { color: portData.z || colors[0], size: 2,
+                                  colorscale: portData.z ? "Viridis" : undefined,
+                                  showscale: !!portData.z },
+                        name: portNames.x + " vs " + portNames.y,
+                    };
+                    traces.push(trace);
+                } else {
+                    // Only one axis — plot vs cycle
+                    for (const [port, data] of Object.entries(portData)) {
+                        traces.push({ x: cycles, y: data, type: "scattergl", mode: "markers",
+                            marker: { color: colors[0], size: 2 }, name: portNames[port] });
+                    }
+                }
+            } else if (plotType === "histogram") {
+                for (const [port, data] of Object.entries(portData)) {
+                    const ci = port === "x" ? 0 : port === "y" ? 1 : 2;
+                    traces.push({
+                        x: data, name: portNames[port], type: "histogram",
+                        marker: { color: colors[ci] }, opacity: 0.7,
+                    });
+                }
+            } else if (plotType === "heatmap" || plotType === "surface") {
+                // Use x data, reshape to sqrt grid
+                const data = portData.x || portData.y || portData.z;
+                if (data) {
+                    const side = Math.ceil(Math.sqrt(data.length));
+                    const z = [];
+                    for (let r = 0; r < side; r++) {
+                        const row = [];
+                        for (let c = 0; c < side; c++) {
+                            const idx = r * side + c;
+                            row.push(idx < data.length ? data[idx] : 0);
+                        }
+                        z.push(row);
+                    }
+                    traces.push({ z: z, type: plotType, colorscale: "Viridis" });
+                }
+            }
+
+            if (traces.length === 0) continue;
+
+            // Render to the offscreen div
+            if (!node._plotDiv) {
+                node._plotDiv = document.createElement("div");
+                node._plotDiv.style.position = "absolute";
+                node._plotDiv.style.left = "-9999px";
+                document.body.appendChild(node._plotDiv);
+            }
+            const pw = Math.round(node.size[0] - 10);
+            const ph = Math.round(node.size[1] - 70);
+            node._plotDiv.style.width = pw + "px";
+            node._plotDiv.style.height = ph + "px";
+
+            const layout = {
+                paper_bgcolor: "#0f3020",
+                plot_bgcolor: "#1a2e1a",
+                font: { color: "#aaa", size: 8 },
+                margin: { t: 5, b: 20, l: 30, r: 5 },
+                xaxis: { gridcolor: "#2a4a2a" },
+                yaxis: { gridcolor: "#2a4a2a" },
+                showlegend: inputNames.length > 1,
+                legend: { bgcolor: "rgba(0,0,0,0)", font: { size: 8 } },
+            };
+
+            try {
+                await Plotly.newPlot(node._plotDiv, traces, layout, { staticPlot: true });
+                const imgUrl = await Plotly.toImage(node._plotDiv, {
+                    format: "png", width: pw * 2, height: ph * 2,
+                });
+                const img = new Image();
+                img.onload = function() {
+                    node._plotImage = img;
+                    node._plotData = true;
+                    graphCanvas.setDirty(true, true);
+                };
+                img.src = imgUrl;
+            } catch (e) {
+                // Plotly render failed — skip
+            }
+        }
+    }
+
+    // Load palette, start graph, and trigger initial compile
     loadPalette().then(() => {
         graph.start();
+        // Initial compile so values show immediately
+        setTimeout(triggerCompile, 200);
     });
 })();
 </script>

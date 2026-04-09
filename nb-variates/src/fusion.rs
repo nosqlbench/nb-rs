@@ -11,7 +11,7 @@
 //! See SRD 36 (docs/design/36_node_fusion.md) for the full design.
 
 use crate::kernel::WireSource;
-use crate::node::{Commutativity, GkNode};
+use crate::node::{Commutativity, ConstValue, GkNode};
 
 // ---------------------------------------------------------------------------
 // Pattern types
@@ -45,6 +45,23 @@ pub enum FusionPattern {
         /// Binding name for this wire in the match result.
         bind: &'static str,
     },
+
+    /// Match a variadic node with N children, applying a sub-pattern
+    /// to each child. Children are bound as `{bind}_0`, `{bind}_1`, etc.
+    ///
+    /// Use for fusion rules that operate on variadic nodes like `sum`
+    /// where the number of inputs isn't known at rule-definition time.
+    VariadicNode {
+        /// The node's `meta().name`.
+        op: &'static str,
+        /// Pattern applied to each child input.
+        child_pattern: Box<FusionPattern>,
+        /// Binding prefix: children bound as `{bind}_0`, `{bind}_1`, ...
+        /// The node's own constants are bound under `{bind}`.
+        bind: &'static str,
+        /// Minimum number of children to match.
+        min_children: usize,
+    },
 }
 
 impl FusionPattern {
@@ -66,6 +83,7 @@ impl FusionPattern {
     pub fn root_op(&self) -> Option<&'static str> {
         match self {
             FusionPattern::Node { op, .. } => Some(op),
+            FusionPattern::VariadicNode { op, .. } => Some(op),
             FusionPattern::Any { .. } => None,
         }
     }
@@ -79,11 +97,14 @@ impl FusionPattern {
 #[derive(Debug, Clone)]
 pub struct MatchResult {
     /// Bound wire sources: `bind_name → WireSource` for each `Any` leaf.
-    pub wires: Vec<(&'static str, WireSource)>,
+    pub wires: Vec<(String, WireSource)>,
 
-    /// Bound node constants: `bind_name → jit_constants()` for each
-    /// matched `Node`.
-    pub constants: Vec<(&'static str, Vec<u64>)>,
+    /// Bound node constants (JIT u64 form): `bind_name → jit_constants()`.
+    pub constants: Vec<(String, Vec<u64>)>,
+
+    /// Bound typed constants from the slot model.
+    /// Empty for nodes not yet migrated to slots.
+    pub typed_constants: Vec<(String, Vec<ConstValue>)>,
 
     /// The set of node indices consumed by this match. These nodes
     /// will be removed from the DAG and replaced by the fused node.
@@ -95,6 +116,7 @@ impl MatchResult {
         Self {
             wires: Vec::new(),
             constants: Vec::new(),
+            typed_constants: Vec::new(),
             consumed_nodes: Vec::new(),
         }
     }
@@ -103,16 +125,16 @@ impl MatchResult {
     pub fn wire(&self, name: &str) -> &WireSource {
         self.wires
             .iter()
-            .find(|(n, _)| *n == name)
+            .find(|(n, _)| n == name)
             .map(|(_, w)| w)
             .unwrap_or_else(|| panic!("no wire bound as '{name}'"))
     }
 
-    /// Look up captured constants by binding name.
+    /// Look up captured constants (u64 form) by binding name.
     pub fn const_vec(&self, name: &str) -> &[u64] {
         self.constants
             .iter()
-            .find(|(n, _)| *n == name)
+            .find(|(n, _)| n == name)
             .map(|(_, c)| c.as_slice())
             .unwrap_or_else(|| panic!("no constants bound as '{name}'"))
     }
@@ -122,9 +144,19 @@ impl MatchResult {
         self.const_vec(name)[0]
     }
 
+    /// Look up typed constants by binding name.
+    pub fn typed_consts(&self, name: &str) -> &[ConstValue] {
+        self.typed_constants
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, c)| c.as_slice())
+            .unwrap_or(&[])
+    }
+
     fn merge(&mut self, other: MatchResult) {
         self.wires.extend(other.wires);
         self.constants.extend(other.constants);
+        self.typed_constants.extend(other.typed_constants);
         self.consumed_nodes.extend(other.consumed_nodes);
     }
 }
@@ -174,7 +206,7 @@ fn try_match(
     match pattern {
         FusionPattern::Any { bind } => {
             let mut result = MatchResult::new();
-            result.wires.push((bind, source.clone()));
+            result.wires.push((bind.to_string(), source.clone()));
             Some(result)
         }
 
@@ -200,10 +232,65 @@ fn try_match(
 
             // Try to match sub-patterns against the node's inputs,
             // respecting the node's commutativity declaration.
-            let matched = match_inputs(inputs, node_wiring, &node.meta().commutativity, view)?;
+            let matched = match_inputs(inputs, node_wiring, &node.commutativity(), view)?;
 
             let mut result = matched;
-            result.constants.push((bind, node.jit_constants()));
+            result.constants.push((bind.to_string(), node.jit_constants()));
+
+            // Also capture typed constants from the slot model.
+            let typed: Vec<ConstValue> = node.meta().const_slots()
+                .iter()
+                .map(|c| c.1.clone())
+                .collect();
+            if !typed.is_empty() {
+                result.typed_constants.push((bind.to_string(), typed));
+            }
+
+            result.consumed_nodes.push(node_idx);
+            Some(result)
+        }
+
+        FusionPattern::VariadicNode { op, child_pattern, bind, min_children } => {
+            let node_idx = match source {
+                WireSource::NodeOutput(idx, 0) => *idx,
+                _ => return None,
+            };
+
+            let node = view.nodes[node_idx].as_ref()?;
+            if node.meta().name != *op {
+                return None;
+            }
+
+            let node_wiring = &view.wiring[node_idx];
+            if node_wiring.len() < *min_children {
+                return None;
+            }
+
+            // Match each child input against the child pattern.
+            let mut result = MatchResult::new();
+            for (i, wire) in node_wiring.iter().enumerate() {
+                let child_bind = format!("{bind}_{i}");
+                // For Any patterns, override the bind name with the indexed one.
+                let indexed_pattern = match child_pattern.as_ref() {
+                    FusionPattern::Any { .. } => FusionPattern::Any {
+                        bind: Box::leak(child_bind.clone().into_boxed_str()),
+                    },
+                    _ => *child_pattern.clone(),
+                };
+                let m = try_match(&indexed_pattern, wire, view)?;
+                result.merge(m);
+            }
+
+            // Capture the variadic node's own constants.
+            result.constants.push((bind.to_string(), node.jit_constants()));
+            let typed: Vec<ConstValue> = node.meta().const_slots()
+                .iter()
+                .map(|c| c.1.clone())
+                .collect();
+            if !typed.is_empty() {
+                result.typed_constants.push((bind.to_string(), typed));
+            }
+
             result.consumed_nodes.push(node_idx);
             Some(result)
         }
@@ -684,7 +771,7 @@ impl DecomposedGraph {
                 .collect();
 
             // Evaluate.
-            let output_count = node.meta().outputs.len();
+            let output_count = node.meta().outs.len();
             let mut outputs = vec![Value::None; output_count];
             node.eval(&node_inputs, &mut outputs);
             node_outputs.push(outputs);
@@ -794,8 +881,8 @@ mod tests {
     /// across a range of deterministic inputs.
     fn assert_equivalence(fused: &dyn FusedNode, test_count: usize) {
         let decomposed = fused.decomposed();
-        let input_count = fused.meta().inputs.len();
-        let output_count = fused.meta().outputs.len();
+        let input_count = fused.meta().wire_inputs().len();
+        let output_count = fused.meta().outs.len();
 
         for seed in 0..test_count as u64 {
             // Generate deterministic inputs from the seed.
@@ -805,7 +892,7 @@ mod tests {
                         &(seed.wrapping_mul(31).wrapping_add(port as u64)).to_le_bytes()
                     );
                     // Use the port type from the fused node's metadata.
-                    match fused.meta().inputs[port].typ {
+                    match fused.meta().wire_inputs()[port].typ {
                         crate::node::PortType::U64 => Value::U64(v),
                         crate::node::PortType::F64 => Value::F64(f64::from_bits(v)),
                         _ => Value::U64(v), // fallback for other types
@@ -899,5 +986,61 @@ mod tests {
                 rule.name
             );
         }
+    }
+
+    // --- VariadicNode pattern tests ---
+
+    #[test]
+    fn variadic_pattern_matches_sum() {
+        use crate::nodes::arithmetic::SumN;
+
+        // Build a graph: sum(a, b, c) where a, b, c are coordinates
+        let mut asm = GkAssembler::new(vec!["a".into(), "b".into(), "c".into()]);
+        asm.add_node("s", Box::new(SumN::new(3)), vec![
+            WireRef::coord("a"), WireRef::coord("b"), WireRef::coord("c"),
+        ]);
+        asm.add_output("out", WireRef::node("s"));
+
+        let mut kernel = asm.compile().unwrap();
+
+        // Verify it works.
+        kernel.set_coordinates(&[10, 20, 30]);
+        assert_eq!(kernel.pull("out").as_u64(), 60);
+    }
+
+    #[test]
+    fn typed_constants_captured_in_match() {
+        use crate::nodes::hash::HashRange;
+        use crate::node::ConstValue;
+
+        // Build: hash_range(cycle, 100)
+        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        asm.add_node("hr", Box::new(HashRange::new(100)), vec![WireRef::coord("cycle")]);
+        asm.add_output("out", WireRef::node("hr"));
+
+        // Manually test pattern matching on the resolved graph.
+        // HashRange has slots: [Wire("input"), Const("max", U64, 100)]
+        let node = HashRange::new(100);
+        let typed: Vec<ConstValue> = node.meta().const_slots()
+            .iter()
+            .map(|c| c.1.clone())
+            .collect();
+        assert_eq!(typed.len(), 1);
+        assert_eq!(typed[0], ConstValue::U64(100));
+    }
+
+    #[test]
+    fn match_result_string_bindings() {
+        // Verify String bindings work correctly for lookup.
+        let mut m = MatchResult::new();
+        m.wires.push(("x".to_string(), WireSource::Coordinate(0)));
+        m.constants.push(("mod_node".to_string(), vec![42]));
+        m.typed_constants.push(("mod_node".to_string(), vec![
+            crate::node::ConstValue::U64(42),
+        ]));
+
+        assert_eq!(m.const_u64("mod_node"), 42);
+        assert_eq!(m.typed_consts("mod_node").len(), 1);
+        assert!(matches!(m.wire("x"), WireSource::Coordinate(0)));
     }
 }
