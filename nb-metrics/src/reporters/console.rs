@@ -39,6 +39,13 @@ impl ConsoleReporter {
             format!("{:.2}s", nanos as f64 / 1_000_000_000.0)
         }
     }
+
+    /// Write to the output, logging on failure.
+    fn emit(&mut self, args: std::fmt::Arguments<'_>) {
+        if let Err(e) = self.out.write_fmt(args) {
+            eprintln!("warning: console reporter write failed: {e}");
+        }
+    }
 }
 
 impl Reporter for ConsoleReporter {
@@ -46,7 +53,7 @@ impl Reporter for ConsoleReporter {
         let interval_secs = frame.interval.as_secs_f64();
         if interval_secs <= 0.0 { return; }
 
-        let _ = writeln!(self.out);
+        self.emit(format_args!("\n"));
 
         // Group samples by activity label
         let mut by_activity: std::collections::BTreeMap<String, Vec<&Sample>> =
@@ -59,8 +66,8 @@ impl Reporter for ConsoleReporter {
         }
 
         for (activity, samples) in &by_activity {
-            let _ = writeln!(self.out, "── {activity} ({:.1}s) ──────────────────",
-                interval_secs);
+            self.emit(format_args!("── {activity} ({:.1}s) ──────────────────\n",
+                interval_secs));
 
             for sample in samples {
                 let name = sample.labels().get("name").unwrap_or("?");
@@ -73,8 +80,8 @@ impl Reporter for ConsoleReporter {
                         self.prev_counts.insert(key, *value);
 
                         if delta > 0 || *value > 0 {
-                            let _ = writeln!(self.out,
-                                "  {name}  count={value}  delta={delta}  rate={rate:.0}/s");
+                            self.emit(format_args!(
+                                "  {name}  count={value}  delta={delta}  rate={rate:.0}/s\n"));
                         }
                     }
                     Sample::Timer { labels: _, count: _, histogram } => {
@@ -82,8 +89,8 @@ impl Reporter for ConsoleReporter {
                         if obs == 0 { continue; }
                         let rate = obs as f64 / interval_secs;
 
-                        let _ = writeln!(self.out,
-                            "  {name}  count={obs}  rate={rate:.0}/s");
+                        self.emit(format_args!(
+                            "  {name}  count={obs}  rate={rate:.0}/s\n"));
 
                         let p50 = Self::format_nanos(histogram.value_at_quantile(0.50));
                         let p90 = Self::format_nanos(histogram.value_at_quantile(0.90));
@@ -91,21 +98,25 @@ impl Reporter for ConsoleReporter {
                         let p999 = Self::format_nanos(histogram.value_at_quantile(0.999));
                         let max = Self::format_nanos(histogram.max());
 
-                        let _ = writeln!(self.out,
-                            "    p50={p50}  p90={p90}  p99={p99}  p999={p999}  max={max}");
+                        self.emit(format_args!(
+                            "    p50={p50}  p90={p90}  p99={p99}  p999={p999}  max={max}\n"));
                     }
                     Sample::Gauge { labels: _, value } => {
-                        let _ = writeln!(self.out, "  {name}  {value:.2}");
+                        self.emit(format_args!("  {name}  {value:.2}\n"));
                     }
                 }
             }
         }
 
-        let _ = self.out.flush();
+        if let Err(e) = self.out.flush() {
+            eprintln!("warning: console reporter flush failed: {e}");
+        }
     }
 
     fn flush(&mut self) {
-        let _ = self.out.flush();
+        if let Err(e) = self.out.flush() {
+            eprintln!("warning: console reporter flush failed: {e}");
+        }
     }
 }
 

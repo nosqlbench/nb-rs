@@ -106,6 +106,7 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
         description: Some("inline workload".into()),
         scenarios: HashMap::new(),
         ops,
+        params: HashMap::new(),
     })
 }
 
@@ -158,14 +159,13 @@ fn parse_segment(s: &str) -> OpSegment {
     if let Some(colon_pos) = s.find(':') {
         let prefix = &s[..colon_pos];
         // Only treat as ratio if prefix is all digits.
-        if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) {
-            if let Ok(ratio) = prefix.parse::<u64>() {
+        if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit())
+            && let Ok(ratio) = prefix.parse::<u64>() {
                 return OpSegment {
                     template: s[colon_pos + 1..].trim().to_string(),
                     ratio,
                 };
             }
-        }
     }
     OpSegment {
         template: s.to_string(),

@@ -1,0 +1,99 @@
+# CQL Key-Value Workload for cassnbrs
+#
+# A simple key-value workload for benchmarking Cassandra. Equivalent
+# to the Java nosqlbench cql_keyvalue2.yaml baseline.
+#
+# The schema creates a text key / text value table. Rampup inserts
+# sequential keys with hashed values. The main phase does a mix of
+# random reads and writes with 5:5 ratio.
+#
+# Usage:
+#   cassnbrs run adapter=cql hosts=localhost workload=cql_keyvalue.yaml cycles=1000000
+#
+# Parameters (override with key=value on CLI):
+#   keyspace     — target keyspace (default: baselines)
+#   table        — target table (default: keyvalue)
+#   keycount     — number of unique keys (default: 1000000)
+#   valuecount   — number of unique values (default: 1000000)
+#   rf           — replication factor (default: 1)
+#   read_cl      — read consistency (default: LOCAL_QUORUM)
+#   write_cl     — write consistency (default: LOCAL_QUORUM)
+
+description: |
+  CQL Key-Value: text keys, text values. Simplest possible schema
+  for measuring raw CQL throughput. Sequential rampup, then random
+  read/write mix.
+
+bindings: |
+  coordinates := (cycle)
+  seq_key     := format_u64(mod(cycle, TEMPLATE(keycount, 1000000)), 10)
+  seq_value   := format_u64(mod(hash(cycle), TEMPLATE(valuecount, 1000000)), 10)
+  rw_key      := format_u64(mod(hash(cycle), TEMPLATE(keycount, 1000000)), 10)
+  rw_value    := format_u64(mod(hash(hash(cycle)), TEMPLATE(valuecount, 1000000)), 10)
+
+blocks:
+  schema:
+    tags:
+      block: schema
+    params:
+      prepared: "false"
+    ops:
+      create_keyspace:
+        stmt: |
+          CREATE KEYSPACE IF NOT EXISTS TEMPLATE(keyspace, baselines)
+          WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 'TEMPLATE(rf, 1)'}
+          AND durable_writes = true
+      create_table:
+        stmt: |
+          CREATE TABLE IF NOT EXISTS TEMPLATE(keyspace, baselines).TEMPLATE(table, keyvalue) (
+            key text,
+            value text,
+            PRIMARY KEY (key)
+          )
+
+  rampup:
+    tags:
+      block: rampup
+    ops:
+      rampup_insert:
+        stmt: |
+          INSERT INTO TEMPLATE(keyspace, baselines).TEMPLATE(table, keyvalue)
+          (key, value) VALUES ('{seq_key}', '{seq_value}')
+
+  main_read:
+    tags:
+      block: main_read
+    params:
+      ratio: 5
+    ops:
+      main_select:
+        stmt: |
+          SELECT * FROM TEMPLATE(keyspace, baselines).TEMPLATE(table, keyvalue)
+          WHERE key = '{rw_key}'
+
+  main_write:
+    tags:
+      block: main_write
+    params:
+      ratio: 5
+    ops:
+      main_insert:
+        stmt: |
+          INSERT INTO TEMPLATE(keyspace, baselines).TEMPLATE(table, keyvalue)
+          (key, value) VALUES ('{rw_key}', '{rw_value}')
+
+scenarios:
+  default:
+    - run tags=block:schema cycles=UNDEF threads=1
+    - run tags=block:rampup cycles=TEMPLATE(rampup-cycles, 1000000)
+    - run tags=block:main_read,block:main_write cycles=TEMPLATE(main-cycles, 1000000)
+  schema_only:
+    - run tags=block:schema cycles=UNDEF threads=1
+  rampup_only:
+    - run tags=block:rampup cycles=TEMPLATE(rampup-cycles, 1000000)
+  main_only:
+    - run tags=block:main_read,block:main_write cycles=TEMPLATE(main-cycles, 1000000)
+  quick_test:
+    - run tags=block:schema cycles=UNDEF threads=1
+    - run tags=block:rampup cycles=100
+    - run tags=block:main_read,block:main_write cycles=100

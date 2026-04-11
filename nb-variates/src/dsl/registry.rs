@@ -39,6 +39,8 @@ pub enum FuncCategory {
     Encoding,
     /// Linear interpolation, range mapping, quantization.
     Interpolation,
+    /// Trigonometric and mathematical functions (sin, cos, sqrt, etc.).
+    Math,
     /// Probability modeling: coins, selection, conditionals.
     Probability,
     /// Weighted categorical selection.
@@ -79,6 +81,7 @@ impl FuncCategory {
             Self::Datetime => "Datetime",
             Self::Encoding => "Encoding",
             Self::Interpolation => "Interpolation",
+            Self::Math => "Math",
             Self::Probability => "Probability",
             Self::Weighted => "Weighted",
             Self::Formatting => "Formatting",
@@ -107,6 +110,7 @@ impl FuncCategory {
             "datetime" | "date" | "time" => Some(Self::Datetime),
             "encoding" => Some(Self::Encoding),
             "interpolation" | "lerp" => Some(Self::Interpolation),
+            "math" | "trig" | "trigonometry" => Some(Self::Math),
             "probability" => Some(Self::Probability),
             "weighted" => Some(Self::Weighted),
             "formatting" | "format" | "printf" => Some(Self::Formatting),
@@ -129,7 +133,7 @@ impl FuncCategory {
         &[
             Self::Hashing, Self::Arithmetic, Self::Variadic,
             Self::Conversions, Self::Distributions, Self::Datetime,
-            Self::Encoding, Self::Interpolation, Self::Probability,
+            Self::Encoding, Self::Interpolation, Self::Math, Self::Probability,
             Self::Weighted, Self::Formatting, Self::String,
             Self::Json, Self::ByteBuffers, Self::Digest, Self::Noise,
             Self::Regex, Self::Permutation, Self::RealData,
@@ -163,8 +167,10 @@ pub struct ParamSpec {
 ///
 /// Describes which parts of the parameter list are fixed vs repeatable.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum Arity {
     /// Exactly the parameters declared in `params`.
+    #[default]
     Fixed,
     /// Trailing wire parameters repeat (sum, product, min, max).
     VariadicWires { min_wires: usize },
@@ -177,9 +183,6 @@ pub enum Arity {
     },
 }
 
-impl Default for Arity {
-    fn default() -> Self { Arity::Fixed }
-}
 
 /// Description of a registered function's signature.
 pub struct FuncSig {
@@ -258,7 +261,8 @@ use FuncCategory as C;
 
 /// Return the full registry of known functions.
 pub fn registry() -> Vec<FuncSig> {
-    vec![
+    #[allow(unused_mut)]
+    let mut funcs = vec![
         // --- Hashing ---
         FuncSig {
             name: "hash", category: C::Hashing, outputs: 1,
@@ -632,6 +636,31 @@ pub fn registry() -> Vec<FuncSig> {
             help: "One-step exponential distribution sampling (builds LUT + samples).\nConvenience wrapper for modeling inter-arrival times and latencies.\nParameters:\n  input — u64 wire input (typically hashed)\n  rate  — rate parameter lambda (f64, mean = 1/rate)\nExample: icd_exponential(hash(cycle), 0.1)  // mean = 10.0",
         },
 
+        FuncSig {
+            name: "histribution", category: C::Distributions,
+            outputs: 1, description: "discrete histogram distribution",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Sample from a discrete histogram distribution.\nParse an inline frequency spec into an alias table at init time.\nTwo formats:\n  Implicit labels: histribution(hash(cycle), \"50 25 13 12\") → outcomes 0-3\n  Explicit labels: histribution(hash(cycle), \"234:50 33:25 17:13 3:12\")\nDelimiters: space, comma, or semicolon.\nOutput is a u64 label.",
+        },
+        FuncSig {
+            name: "dist_empirical", category: C::Distributions,
+            outputs: 1, description: "empirical distribution from data points",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "data", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Sample from an empirical distribution defined by observed data points.\nThe data string is a space/comma/semicolon-separated list of f64 values.\nAt init time, values are sorted and used as the inverse CDF directly.\nThe input is an f64 in [0,1] (from unit_interval); output is interpolated.\nExample: dist_empirical(unit_interval(hash(cycle)), \"1.2 3.5 5.0 7.8 12.1\")",
+        },
+
         // --- Datetime ---
         FuncSig {
             name: "epoch_scale", category: C::Datetime,
@@ -754,6 +783,122 @@ pub fn registry() -> Vec<FuncSig> {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             help: "Round an f64 to the nearest multiple of a step size.\nOutput remains f64 at the grid point (unlike discretize which returns a bucket index).\nUseful for snapping coordinates to a tile grid or binning to fixed intervals.\nParameters:\n  input — f64 wire input\n  step  — grid spacing (f64, must be > 0)\nExample: quantize(scale_range(hash(cycle), 0.0, 100.0), 5.0)  // 0, 5, 10, ..., 100",
+        },
+
+        // --- Math (trig & elementary functions) ---
+        FuncSig {
+            name: "sin", category: C::Math,
+            outputs: 1, description: "sine (radians)",
+            help: "Sine of an f64 value in radians.\nOutput oscillates between -1 and 1.\n\nExample: sin(scale_range(hash(cycle), 0.0, 6.2832))",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "cos", category: C::Math,
+            outputs: 1, description: "cosine (radians)",
+            help: "Cosine of an f64 value in radians.\nOutput oscillates between -1 and 1.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "tan", category: C::Math,
+            outputs: 1, description: "tangent (radians)",
+            help: "Tangent of an f64 value in radians.\nUnbounded output — has poles at odd multiples of pi/2.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "asin", category: C::Math,
+            outputs: 1, description: "arc sine (inverse sin)",
+            help: "Arc sine: input in [-1, 1], output in [-pi/2, pi/2] radians.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "acos", category: C::Math,
+            outputs: 1, description: "arc cosine (inverse cos)",
+            help: "Arc cosine: input in [-1, 1], output in [0, pi] radians.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "atan", category: C::Math,
+            outputs: 1, description: "arc tangent",
+            help: "Arc tangent: output in (-pi/2, pi/2) radians.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "atan2", category: C::Math,
+            outputs: 1, description: "two-argument arc tangent",
+            help: "atan2(y, x): angle in radians from positive x-axis to point (x,y).\nOutput in (-pi, pi]. Use for Cartesian-to-polar conversion.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "y", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "x", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "sqrt", category: C::Math,
+            outputs: 1, description: "square root",
+            help: "Square root of an f64 value.\nReturns NaN for negative inputs.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "abs_f64", category: C::Math,
+            outputs: 1, description: "absolute value (f64)",
+            help: "Absolute value of an f64. Always non-negative.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "ln", category: C::Math,
+            outputs: 1, description: "natural logarithm",
+            help: "Natural logarithm (base e).\nReturns -inf for 0, NaN for negative inputs.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "exp", category: C::Math,
+            outputs: 1, description: "exponential (e^x)",
+            help: "Exponential function: e raised to the power of input.\nexp(0) = 1, exp(1) ≈ 2.718.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "pow", category: C::Math,
+            outputs: 1, description: "power (base^exponent)",
+            help: "Raise base to the power of exponent.\npow(2, 10) = 1024. Both inputs are f64 wires.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "base", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "exponent", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
         },
 
         // --- Probability ---
@@ -1108,6 +1253,25 @@ pub fn registry() -> Vec<FuncSig> {
             commutativity: crate::node::Commutativity::Positional,
         },
 
+        FuncSig {
+            name: "elapsed_millis", category: C::Context, outputs: 1,
+            description: "elapsed milliseconds since session start",
+            help: "Returns elapsed milliseconds since the session was initialized.\nNon-deterministic: grows monotonically over the session.\nUse for relative time offsets in generated records.\nTakes no wire inputs.",
+            identity: None, variadic_ctor: None,
+            params: &[],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "thread_id", category: C::Context, outputs: 1,
+            description: "current OS thread numeric ID",
+            help: "Returns the current OS thread's numeric identifier as u64.\nNon-deterministic: different fibers may run on different threads.\nUseful for partitioning or sharding in multi-threaded workloads.\nTakes no wire inputs.",
+            identity: None, variadic_ctor: None,
+            params: &[],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+
         // --- Noise ---
         FuncSig {
             name: "perlin_1d", category: C::Noise,
@@ -1272,7 +1436,140 @@ pub fn registry() -> Vec<FuncSig> {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
-    ]
+    ];
+
+    // Vectordata nodes (feature-gated)
+    #[cfg(feature = "vectordata")]
+    {
+        let vd = vec![
+            FuncSig {
+                name: "vector_at", category: C::RealData, outputs: 1,
+                description: "access base vector by index (string)",
+                help: "Look up a base vector by index from a loaded dataset.\nReturns the vector as a JSON array string: [0.1,0.2,...].\nThe index wraps modulo the dataset size.\nRequires a dataset loaded at init time.\nExample: vector_at(mod(cycle, vector_count), dataset)",
+                identity: None, variadic_ctor: None,
+                params: &[
+                    ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                    ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+                ],
+                arity: Arity::Fixed,
+                commutativity: crate::node::Commutativity::Positional,
+            },
+            FuncSig {
+                name: "vector_at_bytes", category: C::RealData, outputs: 1,
+                description: "access base vector by index (bytes)",
+                help: "Look up a base vector by index, returning raw f32 little-endian bytes.\nSuitable for CQL blob columns or binary protocols.",
+                identity: None, variadic_ctor: None,
+                params: &[
+                    ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                    ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+                ],
+                arity: Arity::Fixed,
+                commutativity: crate::node::Commutativity::Positional,
+            },
+            FuncSig {
+                name: "query_vector_at", category: C::RealData, outputs: 1,
+                description: "access query vector by index (string)",
+                help: "Look up a query vector by index from a loaded dataset.\nReturns the vector as a JSON array string.",
+                identity: None, variadic_ctor: None,
+                params: &[
+                    ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                    ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+                ],
+                arity: Arity::Fixed,
+                commutativity: crate::node::Commutativity::Positional,
+            },
+            FuncSig {
+                name: "query_vector_at_bytes", category: C::RealData, outputs: 1,
+                description: "access query vector by index (bytes)",
+                help: "Look up a query vector by index, returning raw f32 little-endian bytes.",
+                identity: None, variadic_ctor: None,
+                params: &[
+                    ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                    ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+                ],
+                arity: Arity::Fixed,
+                commutativity: crate::node::Commutativity::Positional,
+            },
+            FuncSig {
+                name: "neighbor_indices_at", category: C::RealData, outputs: 1,
+                description: "ground-truth neighbor indices for a query",
+                help: "Look up ground-truth k-nearest neighbor indices for a query.\nReturns indices as a JSON array string: [42,17,99,...].\nUsed for recall verification in vector search workloads.",
+                identity: None, variadic_ctor: None,
+                params: &[
+                    ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                    ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+                ],
+                arity: Arity::Fixed,
+                commutativity: crate::node::Commutativity::Positional,
+            },
+            FuncSig {
+                name: "neighbor_distances_at", category: C::RealData, outputs: 1,
+                description: "ground-truth neighbor distances for a query",
+                help: "Look up ground-truth distances for a query's k-nearest neighbors.\nReturns distances as a JSON array string.",
+                identity: None, variadic_ctor: None,
+                params: &[
+                    ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                    ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+                ],
+                arity: Arity::Fixed,
+                commutativity: crate::node::Commutativity::Positional,
+            },
+            FuncSig {
+                name: "filtered_neighbor_indices_at", category: C::RealData, outputs: 1,
+                description: "filtered ground-truth neighbor indices",
+                help: "Look up filtered ground-truth neighbor indices for a query.\nUsed for filtered ANN recall verification.",
+                identity: None, variadic_ctor: None,
+                params: &[
+                    ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                    ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+                ],
+                arity: Arity::Fixed,
+                commutativity: crate::node::Commutativity::Positional,
+            },
+            FuncSig {
+                name: "filtered_neighbor_distances_at", category: C::RealData, outputs: 1,
+                description: "filtered ground-truth neighbor distances",
+                help: "Look up filtered ground-truth distances for a query.\nUsed for filtered ANN recall verification.",
+                identity: None, variadic_ctor: None,
+                params: &[
+                    ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                    ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+                ],
+                arity: Arity::Fixed,
+                commutativity: crate::node::Commutativity::Positional,
+            },
+            FuncSig {
+                name: "dataset_distance_function", category: C::RealData, outputs: 1,
+                description: "dataset distance/similarity function name",
+                help: "Returns the distance function declared in the dataset metadata\n(e.g., 'cosine', 'euclidean', 'dot_product').\nConstant per dataset.\nExample: dataset_distance_function(\"glove-25-angular\")",
+                identity: None, variadic_ctor: None,
+                params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true }],
+                arity: Arity::Fixed,
+                commutativity: crate::node::Commutativity::Positional,
+            },
+            FuncSig {
+                name: "vector_dim", category: C::RealData, outputs: 1,
+                description: "dataset vector dimensionality",
+                help: "Returns the dimensionality of vectors in the loaded dataset.\nConstant per dataset — evaluated once at init time.\nExample: vector_dim(\"glove-100\")",
+                identity: None, variadic_ctor: None,
+                params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true }],
+                arity: Arity::Fixed,
+                commutativity: crate::node::Commutativity::Positional,
+            },
+            FuncSig {
+                name: "vector_count", category: C::RealData, outputs: 1,
+                description: "dataset vector count",
+                help: "Returns the number of vectors in the loaded dataset.\nConstant per dataset — evaluated once at init time.\nExample: vector_count(\"glove-100\")",
+                identity: None, variadic_ctor: None,
+                params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true }],
+                arity: Arity::Fixed,
+                commutativity: crate::node::Commutativity::Positional,
+            },
+        ];
+        funcs.extend(vd);
+    }
+
+    funcs
 }
 
 /// Return functions grouped by category in display order.
@@ -1295,11 +1592,10 @@ pub fn suggest_function(name: &str) -> Option<&'static str> {
     let mut best: Option<(&str, usize)> = None;
     for sig in &reg {
         let dist = edit_distance(name, sig.name);
-        if dist <= 3 {
-            if best.is_none() || dist < best.unwrap().1 {
+        if dist <= 3
+            && (best.is_none() || dist < best.unwrap().1) {
                 best = Some((sig.name, dist));
             }
-        }
     }
     best.map(|(name, _)| name)
 }

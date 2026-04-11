@@ -20,6 +20,12 @@ pub struct Identity {
     meta: NodeMeta,
 }
 
+impl Default for Identity {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Identity {
     pub fn new() -> Self {
         Self {

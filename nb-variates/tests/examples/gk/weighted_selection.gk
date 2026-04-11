@@ -1,0 +1,11 @@
+// weighted_selection.gk — Weighted and probabilistic selection.
+//
+// Exercises probability nodes: fair_coin, unfair_coin, select,
+// weighted_strings, weighted_u64.
+
+coordinates := (cycle)
+coin := fair_coin(hash(cycle))
+biased := unfair_coin(hash(cycle), 0.9)
+choice := select(coin, cycle, hash(cycle))
+color := weighted_strings(hash(cycle), "red:0.5;blue:0.3;green:0.2")
+tier := weighted_u64(hash(cycle), "1:0.7;2:0.2;3:0.1")

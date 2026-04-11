@@ -171,7 +171,7 @@ fn apply_width(s: &str, spec: &FormatSpec) -> String {
         if s.len() < w {
             let pad = w - s.len();
             let fill = spec.fill;
-            format!("{}{s}", std::iter::repeat(fill).take(pad).collect::<String>())
+            format!("{}{s}", std::iter::repeat_n(fill, pad).collect::<String>())
         } else {
             s.to_string()
         }

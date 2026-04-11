@@ -135,8 +135,8 @@ pub fn validate_spec_test(test: &SpecTestCase) -> Result<(), String> {
             .map_err(|e| format!("[line {}] Serialization error: {e}", test.line_number))?;
 
         // Compare each expected op against our output
-        if let serde_json::Value::Array(expected_arr) = &expected_ops {
-            if let serde_json::Value::Array(our_arr) = &our_ops {
+        if let serde_json::Value::Array(expected_arr) = &expected_ops
+            && let serde_json::Value::Array(our_arr) = &our_ops {
                 for (idx, expected_op) in expected_arr.iter().enumerate() {
                     // Find matching op by name
                     let expected_name = expected_op.get("name")
@@ -157,7 +157,6 @@ pub fn validate_spec_test(test: &SpecTestCase) -> Result<(), String> {
                     }
                 }
             }
-        }
     }
 
     Ok(())
@@ -169,7 +168,7 @@ fn json_values_equivalent(a: &serde_json::Value, b: &serde_json::Value) -> bool 
     match (a, b) {
         (serde_json::Value::Object(am), serde_json::Value::Object(bm)) => {
             // All keys in a must be in b with equivalent values
-            am.iter().all(|(k, v)| bm.get(k).map_or(false, |bv| json_values_equivalent(v, bv)))
+            am.iter().all(|(k, v)| bm.get(k).is_some_and(|bv| json_values_equivalent(v, bv)))
                 && bm.iter().all(|(k, _)| am.contains_key(k))
         }
         (serde_json::Value::Array(aa), serde_json::Value::Array(ba)) => {
@@ -199,22 +198,20 @@ fn validate_op_fields(
     }
 
     // Check op fields
-    if let Some(exp_op) = expected.get("op") {
-        if let Some(act_op) = actual.get("op") {
-            if !json_values_equivalent(exp_op, act_op) {
+    if let Some(exp_op) = expected.get("op")
+        && let Some(act_op) = actual.get("op")
+            && !json_values_equivalent(exp_op, act_op) {
                 return Err(format!(
                     "[line {line}] Op '{exp_name}' op fields mismatch in '{title}'\n  expected: {}\n  actual:   {}",
                     serde_json::to_string(exp_op).unwrap_or_default(),
                     serde_json::to_string(act_op).unwrap_or_default(),
                 ));
             }
-        }
-    }
 
     // Check tags (if expected has them)
-    if let Some(exp_tags) = expected.get("tags") {
-        if let Some(act_tags) = actual.get("tags") {
-            if let (Some(exp_map), Some(act_map)) = (exp_tags.as_object(), act_tags.as_object()) {
+    if let Some(exp_tags) = expected.get("tags")
+        && let Some(act_tags) = actual.get("tags")
+            && let (Some(exp_map), Some(act_map)) = (exp_tags.as_object(), act_tags.as_object()) {
                 for (key, exp_val) in exp_map {
                     if let Some(act_val) = act_map.get(key) {
                         if exp_val != act_val {
@@ -229,30 +226,24 @@ fn validate_op_fields(
                     }
                 }
             }
-        }
-    }
 
     // Check bindings (if expected has them)
-    if let Some(exp_bindings) = expected.get("bindings") {
-        if let Some(act_bindings) = actual.get("bindings") {
-            if !json_values_equivalent(exp_bindings, act_bindings) {
+    if let Some(exp_bindings) = expected.get("bindings")
+        && let Some(act_bindings) = actual.get("bindings")
+            && !json_values_equivalent(exp_bindings, act_bindings) {
                 return Err(format!(
                     "[line {line}] Op '{exp_name}' bindings mismatch in '{title}'"
                 ));
             }
-        }
-    }
 
     // Check params (if expected has them)
-    if let Some(exp_params) = expected.get("params") {
-        if let Some(act_params) = actual.get("params") {
-            if !json_values_equivalent(exp_params, act_params) {
+    if let Some(exp_params) = expected.get("params")
+        && let Some(act_params) = actual.get("params")
+            && !json_values_equivalent(exp_params, act_params) {
                 return Err(format!(
                     "[line {line}] Op '{exp_name}' params mismatch in '{title}'"
                 ));
             }
-        }
-    }
 
     Ok(())
 }

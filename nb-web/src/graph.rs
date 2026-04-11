@@ -212,14 +212,13 @@ fn graph_to_gk(graph: &LiteGraph) -> Result<GkTranslation, String> {
     // Litegraph link format: [link_id, origin_id, origin_slot, target_id, target_slot, type]
     let mut link_map: HashMap<i64, (i64, usize)> = HashMap::new(); // link_id → (source_node, source_slot)
     for link_val in &graph.links {
-        if let Some(arr) = link_val.as_array() {
-            if arr.len() >= 5 {
+        if let Some(arr) = link_val.as_array()
+            && arr.len() >= 5 {
                 let link_id = arr[0].as_i64().unwrap_or(-1);
                 let origin_id = arr[1].as_i64().unwrap_or(-1);
                 let origin_slot = arr[2].as_u64().unwrap_or(0) as usize;
                 link_map.insert(link_id, (origin_id, origin_slot));
             }
-        }
     }
 
     // Build node output name map: (node_id, slot_index) → variable name
@@ -246,7 +245,8 @@ fn graph_to_gk(graph: &LiteGraph) -> Result<GkTranslation, String> {
         if node.node_type == "gk/coordinates" || node.node_type == "gk/output" || node.node_type == "gk/plotter" {
             continue;
         }
-        let func_name = node.node_type.strip_prefix("gk/").unwrap_or(&node.node_type);
+        // Node type is "Category/funcname" or "gk/special" — extract last segment
+        let func_name = node.node_type.rsplit('/').next().unwrap_or(&node.node_type);
         if node.outputs.len() == 1 {
             // Single output: use the node's custom name or func_id.
             let var_name = node
@@ -295,7 +295,8 @@ fn graph_to_gk(graph: &LiteGraph) -> Result<GkTranslation, String> {
     sorted_nodes.sort_by_key(|n| n.id);
 
     for node in &sorted_nodes {
-        let func_name = node.node_type.strip_prefix("gk/").unwrap_or(&node.node_type);
+        // Node type is "Category/funcname" or "gk/special" — extract last segment
+        let func_name = node.node_type.rsplit('/').next().unwrap_or(&node.node_type);
 
         // Collect wire inputs.
         let mut args: Vec<String> = Vec::new();
@@ -309,7 +310,7 @@ fn graph_to_gk(graph: &LiteGraph) -> Result<GkTranslation, String> {
         }
 
         // Collect const params from widget values.
-        for (_i, widget_val) in node.widgets_values.iter().enumerate() {
+        for widget_val in node.widgets_values.iter() {
             let val_str = match widget_val {
                 serde_json::Value::Number(n) => n.to_string(),
                 serde_json::Value::String(s) => {

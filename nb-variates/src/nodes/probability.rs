@@ -38,6 +38,12 @@ pub struct FairCoin {
     meta: NodeMeta,
 }
 
+impl Default for FairCoin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FairCoin {
     pub fn new() -> Self {
         Self {
@@ -153,6 +159,12 @@ impl GkNode for UnfairCoin {
 /// JIT level: P3 (branchless conditional move).
 pub struct Select {
     meta: NodeMeta,
+}
+
+impl Default for Select {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Select {

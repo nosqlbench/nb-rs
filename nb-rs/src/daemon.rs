@@ -62,9 +62,10 @@ pub fn write_anchor(addr: &SocketAddr, args: &[String]) {
         pid: std::process::id(),
         args: args.to_vec(),
     };
-    if let Ok(json) = serde_json::to_string_pretty(&anchor) {
-        let _ = fs::write(anchor_path(), json);
-    }
+    if let Ok(json) = serde_json::to_string_pretty(&anchor)
+        && let Err(e) = fs::write(anchor_path(), &json) {
+            eprintln!("warning: failed to write daemon anchor file: {e}");
+        }
 }
 
 /// Remove the anchor file on shutdown.
@@ -191,7 +192,7 @@ pub fn check_port_available(addr: &SocketAddr) -> Result<(), String> {
                     } else {
                         msg.push_str("\n  → another program is using this port");
                     }
-                    msg.push_str(&format!("\n  → try a different port with port=<N>"));
+                    msg.push_str(&"\n  → try a different port with port=<N>".to_string());
                 } else {
                     for p in &procs {
                         msg.push_str(&format!("\n  → found nbrs web process: pid {} — {}", p.pid, p.cmdline));
@@ -318,12 +319,11 @@ pub fn stop_daemon() -> Result<(), String> {
 
     // Verify the process exists and is an nbrs process.
     let cmdline_path = format!("/proc/{pid}/cmdline");
-    if let Ok(cmdline) = fs::read_to_string(&cmdline_path) {
-        if !cmdline.contains("nbrs") {
+    if let Ok(cmdline) = fs::read_to_string(&cmdline_path)
+        && !cmdline.contains("nbrs") {
             let _ = fs::remove_file(&path);
             return Err(format!("PID {pid} is not an nbrs process — stale PID file removed"));
         }
-    }
 
     let result = unsafe { libc::kill(pid, libc::SIGTERM) };
     if result == -1 {

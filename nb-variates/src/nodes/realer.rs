@@ -37,12 +37,11 @@ fn parse_name_weight_csv(csv: &str) -> (Vec<String>, Vec<f64>) {
         let parts: Vec<&str> = line.split(',').collect();
         if parts.len() >= 2 {
             let name = parts[0].trim().to_string();
-            if let Ok(w) = parts[1].trim().parse::<f64>() {
-                if !name.is_empty() && w > 0.0 {
+            if let Ok(w) = parts[1].trim().parse::<f64>()
+                && !name.is_empty() && w > 0.0 {
                     names.push(name);
                     weights.push(w);
                 }
-            }
         }
     }
     (names, weights)
@@ -163,6 +162,12 @@ pub struct StateCodes {
     sampler: UniformNameSampler,
 }
 
+impl Default for StateCodes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StateCodes {
     pub fn new() -> Self {
         let names = parse_single_column_csv(STATES_CSV);
@@ -190,6 +195,12 @@ impl GkNode for StateCodes {
 pub struct CountryNames {
     meta: NodeMeta,
     sampler: UniformNameSampler,
+}
+
+impl Default for CountryNames {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CountryNames {
@@ -222,6 +233,12 @@ pub struct CountryCodes {
     sampler: UniformNameSampler,
 }
 
+impl Default for CountryCodes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CountryCodes {
     pub fn new() -> Self {
         let pairs = parse_code_name_csv(COUNTRIES_CSV);
@@ -250,6 +267,12 @@ impl GkNode for CountryCodes {
 pub struct Nationalities {
     meta: NodeMeta,
     sampler: UniformNameSampler,
+}
+
+impl Default for Nationalities {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Nationalities {
@@ -284,6 +307,12 @@ pub struct FullNames {
     first_female: WeightedNameSampler,
     first_male: WeightedNameSampler,
     last: UniformNameSampler,
+}
+
+impl Default for FullNames {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FullNames {

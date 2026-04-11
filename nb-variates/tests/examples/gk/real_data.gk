@@ -1,0 +1,9 @@
+// real_data.gk — Real-world data nodes from bundled datasets.
+//
+// Exercises first_names, last_names, state_codes, country_names.
+
+coordinates := (cycle)
+fname := first_names(hash(cycle))
+fullname := full_names(hash(cycle))
+state := state_codes(hash(cycle))
+country := country_names(hash(cycle))

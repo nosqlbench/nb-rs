@@ -117,13 +117,15 @@ pub fn parse_prometheus_text(text: &str) -> MetricsFrame {
                 0
             };
             for _ in 0..accum.count.min(10_000) {
-                let _ = histogram.record(mean_nanos.max(1));
+                if let Err(e) = histogram.record(mean_nanos.max(1)) {
+                    eprintln!("warning: histogram record failed: {e}");
+                }
             }
         } else {
             // Distribute observations across quantile buckets.
             // Sort quantiles ascending so we can compute per-bucket counts.
             let mut qs = accum.quantiles.clone();
-            qs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            qs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
             let total = accum.count.max(1);
             let mut prev_q = 0.0_f64;
@@ -132,7 +134,9 @@ pub fn parse_prometheus_text(text: &str) -> MetricsFrame {
                 let bucket_fraction = q - prev_q;
                 let bucket_count = (bucket_fraction * total as f64).round() as u64;
                 for _ in 0..bucket_count.max(1).min(10_000) {
-                    let _ = histogram.record(val_nanos.max(1));
+                    if let Err(e) = histogram.record(val_nanos.max(1)) {
+                        eprintln!("warning: histogram record failed: {e}");
+                    }
                 }
                 prev_q = *q;
             }

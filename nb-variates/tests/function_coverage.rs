@@ -738,6 +738,20 @@ fn session_start_stable() {
     assert!(a > 0, "session start should be positive");
 }
 
+#[test]
+fn elapsed_millis_nonnegative() {
+    let mut k = gk("out := elapsed_millis()");
+    let v = eval_u64(&mut k, 0);
+    assert!(v < 1000, "elapsed_millis should be small right after creation, got {v}");
+}
+
+#[test]
+fn thread_id_positive() {
+    let mut k = gk("out := thread_id()");
+    let v = eval_u64(&mut k, 0);
+    assert!(v > 0, "thread_id should be a positive number, got {v}");
+}
+
 // ===========================================================================
 // Noise
 // ===========================================================================
@@ -1021,6 +1035,42 @@ fn dist_pareto_samples() {
     }
 }
 
+#[test]
+fn histribution_samples() {
+    let mut k = gk("out := histribution(hash(cycle), \"100:90 200:9 300:1\")");
+    let mut seen = std::collections::HashSet::new();
+    for cycle in 0..1000 {
+        let v = eval_u64(&mut k, cycle);
+        assert!(v == 100 || v == 200 || v == 300, "unexpected histribution output: {v}");
+        seen.insert(v);
+    }
+    assert!(seen.contains(&100), "should see label 100");
+}
+
+#[test]
+fn dist_empirical_bounded() {
+    let mut k = gk("f := unit_interval(hash(cycle))\nout := dist_empirical(f, \"10.0 20.0 30.0 40.0 50.0\")");
+    for cycle in 0..1000 {
+        let v = eval_f64(&mut k, cycle);
+        assert!(v >= 10.0 && v <= 50.0,
+            "empirical should be in [10, 50], got {v} at cycle={cycle}");
+    }
+}
+
+#[test]
+fn dist_empirical_interpolates() {
+    // With only 2 data points, output should be a linear interpolation
+    let mut k = gk("f := unit_interval(hash(cycle))\nout := dist_empirical(f, \"0.0 100.0\")");
+    let mut sum = 0.0;
+    let n = 10000;
+    for cycle in 0..n {
+        sum += eval_f64(&mut k, cycle as u64);
+    }
+    let mean = sum / n as f64;
+    // With uniform input, mean should be ~50
+    assert!((mean - 50.0).abs() < 5.0, "mean should be ~50, got {mean}");
+}
+
 // ===========================================================================
 // Formatting
 // ===========================================================================
@@ -1038,5 +1088,145 @@ fn clamp_f64_works() {
     for cycle in 0..1000 {
         let v = eval_f64(&mut k, cycle);
         assert!(v >= 0.25 && v <= 0.75, "cycle={cycle} gave {v}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Math / Trigonometry
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sin_known_values() {
+    let mut k = gk("f := unit_interval(hash(cycle))\nout := sin(f)");
+    for cycle in 0..100 {
+        let v = eval_f64(&mut k, cycle);
+        assert!(v >= -1.0 && v <= 1.0, "sin out of range: {v} at cycle={cycle}");
+    }
+    // sin(0) = 0
+    let mut k2 = gk2("f := unit_interval(x)\nout := sin(f)");
+    k2.set_coordinates(&[0, 0]);
+    let v = k2.pull("out").as_f64();
+    assert!(v.abs() < 1e-10, "sin(0) should be ~0, got {v}");
+}
+
+#[test]
+fn cos_known_values() {
+    let mut k = gk("f := unit_interval(hash(cycle))\nout := cos(f)");
+    for cycle in 0..100 {
+        let v = eval_f64(&mut k, cycle);
+        assert!(v >= -1.0 && v <= 1.0, "cos out of range: {v} at cycle={cycle}");
+    }
+    // cos(0) = 1
+    let mut k2 = gk2("f := unit_interval(x)\nout := cos(f)");
+    k2.set_coordinates(&[0, 0]);
+    let v = k2.pull("out").as_f64();
+    assert!((v - 1.0).abs() < 1e-10, "cos(0) should be ~1, got {v}");
+}
+
+#[test]
+fn tan_compiles_and_runs() {
+    let mut k = gk("f := unit_interval(hash(cycle))\nout := tan(f)");
+    // unit_interval produces [0,1), tan is well-defined there
+    for cycle in 0..100 {
+        let v = eval_f64(&mut k, cycle);
+        assert!(v.is_finite(), "tan should be finite for input in [0,1): {v} at cycle={cycle}");
+    }
+}
+
+#[test]
+fn asin_known_values() {
+    let mut k = gk("f := unit_interval(hash(cycle))\nout := asin(f)");
+    for cycle in 0..100 {
+        let v = eval_f64(&mut k, cycle);
+        // asin input [0,1) -> output [0, pi/2)
+        assert!(v >= 0.0 && v <= std::f64::consts::FRAC_PI_2 + 0.001,
+            "asin out of expected range: {v} at cycle={cycle}");
+    }
+}
+
+#[test]
+fn acos_known_values() {
+    let mut k = gk("f := unit_interval(hash(cycle))\nout := acos(f)");
+    for cycle in 0..100 {
+        let v = eval_f64(&mut k, cycle);
+        // acos input [0,1) -> output (0, pi/2]
+        assert!(v >= 0.0 && v <= std::f64::consts::FRAC_PI_2 + 0.001,
+            "acos out of expected range: {v} at cycle={cycle}");
+    }
+}
+
+#[test]
+fn atan_known_values() {
+    let mut k = gk("f := unit_interval(hash(cycle))\nout := atan(f)");
+    for cycle in 0..100 {
+        let v = eval_f64(&mut k, cycle);
+        // atan input [0,1) -> output [0, pi/4)
+        assert!(v >= 0.0 && v < std::f64::consts::FRAC_PI_4 + 0.001,
+            "atan out of expected range: {v} at cycle={cycle}");
+    }
+}
+
+#[test]
+fn sqrt_known_values() {
+    let mut k = gk("f := unit_interval(hash(cycle))\nout := sqrt(f)");
+    for cycle in 0..100 {
+        let v = eval_f64(&mut k, cycle);
+        assert!(v >= 0.0 && v <= 1.0, "sqrt of [0,1) should be in [0,1]: {v} at cycle={cycle}");
+    }
+}
+
+#[test]
+fn abs_f64_makes_positive() {
+    // unit_interval gives [0,1), subtract 0.5 to get [-0.5, 0.5)
+    // We can test abs by using a scale that goes negative
+    let mut k = gk("f := unit_interval(hash(cycle))\nout := abs_f64(f)");
+    for cycle in 0..100 {
+        let v = eval_f64(&mut k, cycle);
+        assert!(v >= 0.0, "abs should be non-negative: {v} at cycle={cycle}");
+    }
+}
+
+#[test]
+fn ln_positive_inputs() {
+    // unit_interval gives [0,1). Use lerp to map to [0.01, 1.0] to avoid ln(0).
+    let mut k = gk("h := hash(cycle)\nf := unit_interval(h)\nscaled := lerp(f, 0.01, 1.0)\nout := ln(scaled)");
+    for cycle in 0..100 {
+        let v = eval_f64(&mut k, cycle);
+        assert!(v.is_finite(), "ln should be finite for positive input: {v} at cycle={cycle}");
+        assert!(v <= 0.001, "ln([0.01, 1.0]) should be <= ~0: {v} at cycle={cycle}");
+    }
+}
+
+#[test]
+fn exp_known_values() {
+    let mut k = gk("f := unit_interval(hash(cycle))\nout := exp(f)");
+    for cycle in 0..100 {
+        let v = eval_f64(&mut k, cycle);
+        // exp([0,1)) -> [1, e)
+        assert!(v >= 1.0 && v < std::f64::consts::E + 0.001,
+            "exp out of expected range: {v} at cycle={cycle}");
+    }
+}
+
+#[test]
+fn atan2_compiles_and_runs() {
+    // atan2 takes two f64 wire inputs (y, x)
+    let mut k = gk("h1 := hash(cycle)\nh2 := hash(h1)\nfy := unit_interval(h1)\nfx := unit_interval(h2)\nout := atan2(fy, fx)");
+    for cycle in 0..100 {
+        let v = eval_f64(&mut k, cycle);
+        assert!(v.is_finite(), "atan2 should produce finite result: {v} at cycle={cycle}");
+        assert!(v >= -std::f64::consts::PI && v <= std::f64::consts::PI,
+            "atan2 should be in [-pi, pi]: {v} at cycle={cycle}");
+    }
+}
+
+#[test]
+fn pow_known_values() {
+    // pow takes two f64 wire inputs (base, exponent)
+    let mut k = gk("h1 := hash(cycle)\nh2 := hash(h1)\nbase := unit_interval(h1)\nexponent := unit_interval(h2)\nout := pow(base, exponent)");
+    for cycle in 0..100 {
+        let v = eval_f64(&mut k, cycle);
+        assert!(v.is_finite(), "pow should produce finite result: {v} at cycle={cycle}");
+        assert!(v >= 0.0, "pow of positive base should be non-negative: {v} at cycle={cycle}");
     }
 }

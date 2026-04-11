@@ -54,6 +54,15 @@
         font-size: 12px;
         color: var(--accent);
         white-space: pre-wrap;
+        font-family: var(--mono);
+        background: rgba(233, 69, 96, 0.1);
+        border: 1px solid rgba(233, 69, 96, 0.3);
+        border-radius: 4px;
+        padding: 8px;
+        line-height: 1.6;
+    }
+    #compile-error:empty {
+        display: none;
     }
     .litegraph .lcanvas { background: #1a1a2e !important; }
     #help-panel {
@@ -148,7 +157,7 @@
                     <div id="coord-list" style="color: var(--blue);">cycle</div>
                 </div>
                 <div>
-                    <div style="color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; font-size: 10px; margin-bottom: 4px;">Outputs</div>
+                    <div style="color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; font-size: 10px; margin-bottom: 4px;">Outputs <span style="font-size: 9px; color: var(--text-dim);">(check to plot)</span></div>
                     <div id="output-list" style="color: var(--green);">—</div>
                 </div>
             </div>
@@ -161,20 +170,13 @@
             <h3>Plot</h3>
             <div id="plot-controls">
                 <label>type</label>
-                <select id="plot-type">
+                <select id="plot-type" onchange="doPlot()">
                     <option value="line">Line</option>
                     <option value="scatter">Scatter</option>
                     <option value="histogram">Histogram</option>
                     <option value="heatmap">Heatmap</option>
                     <option value="surface">Surface 3D</option>
                 </select>
-                <label>start</label>
-                <input id="plot-start" type="number" value="0" min="0">
-                <label>end</label>
-                <input id="plot-end" type="number" value="1000" min="1">
-                <label>step</label>
-                <input id="plot-step" type="number" value="1" min="1">
-                <button onclick="doPlot()">Plot</button>
             </div>
             <div id="plot-area"></div>
         </div>
@@ -226,22 +228,30 @@
         this.addOutput("cycle", "u64");
         this.addProperty("cycle_value", 0);
         this.addProperty("plot_start", 0);
-        this.addProperty("plot_end", 1000);
+        this.addProperty("plot_end", 20);
         this.addProperty("plot_step", 1);
         this.addWidget("number", "cycle", 0, function(v) {
-            this.widgets[0].value = Math.max(0, Math.round(v));
+            const val = Math.max(0, Math.round(v));
+            this.widgets[0].value = val;
+            this.properties.cycle_value = val;
             triggerCompile();
         }.bind(this), { min: 0, max: 4294967295, step: 1, precision: 0 });
         this.addWidget("number", "plot_start", 0, function(v) {
-            this.widgets[1].value = Math.max(0, Math.round(v));
+            const val = Math.max(0, Math.round(v));
+            this.widgets[1].value = val;
+            this.properties.plot_start = val;
             triggerCompile();
         }.bind(this), { min: 0, max: 4294967295, step: 10, precision: 0 });
-        this.addWidget("number", "plot_end", 1000, function(v) {
-            this.widgets[2].value = Math.max(1, Math.round(v));
+        this.addWidget("number", "plot_end", 20, function(v) {
+            const val = Math.max(1, Math.round(v));
+            this.widgets[2].value = val;
+            this.properties.plot_end = val;
             triggerCompile();
         }.bind(this), { min: 1, max: 4294967295, step: 10, precision: 0 });
         this.addWidget("number", "plot_step", 1, function(v) {
-            this.widgets[3].value = Math.max(1, Math.round(v));
+            const val = Math.max(1, Math.round(v));
+            this.widgets[3].value = val;
+            this.properties.plot_step = val;
             triggerCompile();
         }.bind(this), { min: 1, max: 1000000, step: 1, precision: 0 });
         this.title = "Coordinates";
@@ -436,7 +446,7 @@
     }
 
     function registerFunctionNode(category, func) {
-        const typePath = "gk/" + func.name;
+        const typePath = category + "/" + func.name;
 
         // Store help text for the help panel
         helpTexts[func.name] = { description: func.description, help: func.help || "" };
@@ -590,10 +600,7 @@
     async function doCompile() {
         const serialized = graph.serialize();
         const cn = getCoordNode();
-        let cycleValue = 0;
-        if (cn && cn.widgets.length > 0) {
-            cycleValue = Math.max(0, Math.floor(cn.widgets[0].value)) >>> 0; // unsigned
-        }
+        let cycleValue = cn ? Math.max(0, Math.round(cn.properties.cycle_value || 0)) >>> 0 : 0;
         try {
             const resp = await fetch("/api/graph/eval", {
                 method: "POST",
@@ -611,7 +618,8 @@
 
             // Auto-update plot whenever there are outputs to show
             if (result.gk_source && !result.error) {
-                doPlot();
+                invalidatePlotCache();
+                doPlot(true);
             }
         } catch (e) {
             document.getElementById("compile-error").textContent = "fetch error: " + e;
@@ -642,28 +650,53 @@
             ? coordMatch[1].split(',').map(s => s.trim()).filter(s => s)
             : ['cycle'];
 
-        // Find output node names from the graph
-        const outputNames = [];
+        // Determine which bindings are terminal outputs:
+        // A binding is terminal if its producing node has at least one
+        // unconnected output port, or if it feeds a gk/output sink node.
+        // Intermediate nodes whose outputs are all consumed are NOT terminal.
+        const terminalNames = new Set();
+
+        // Collect all names from gk/output sink nodes
         for (const node of graph._nodes) {
             if (node.type === "gk/output") {
-                const name = node.properties?.name || "result";
-                // Get the value if available
-                const val = node._portValues && node._portValues.length > 0
-                    ? node._portValues[0].value : "—";
-                outputNames.push({ name, val });
+                terminalNames.add(node.properties?.name || "result");
             }
         }
 
-        // Also list all top-level bindings as outputs (intermediate values)
-        // Parse lines like "varname := func(...)"
-        const bindings = [];
+        // Find nodes with unconnected output ports (leaf nodes).
+        // Derive variable names the same way graph_to_gk does:
+        //   single output: output_name property or funcname_nodeid
+        //   multi output: slotname_nodeid
+        for (const node of graph._nodes) {
+            if (node.type === "gk/coordinates" || node.type === "gk/output" || node.type === "gk/plotter") continue;
+            if (!node.outputs) continue;
+            const funcName = node.type.split('/').pop();
+            for (let i = 0; i < node.outputs.length; i++) {
+                const out = node.outputs[i];
+                const links = out.links;
+                if (!links || links.length === 0) {
+                    // Unconnected output — this is a terminal
+                    let varName;
+                    if (node.outputs.length === 1) {
+                        varName = (node.properties?.output_name || "").trim() || (funcName + "_" + node.id);
+                    } else {
+                        varName = out.name + "_" + node.id;
+                    }
+                    terminalNames.add(varName);
+                }
+            }
+        }
+
+        // Parse all bindings from GK source, then filter to terminal only
+        const allBindings = [];
         for (const line of gkSource.split('\n')) {
             const m = line.match(/^(\(?.+?\)?)\s*:=\s*/);
             if (m && !line.startsWith('coordinates')) {
                 const targets = m[1].replace(/[()]/g, '').split(',').map(s => s.trim());
-                bindings.push(...targets);
+                allBindings.push(...targets);
             }
         }
+        const bindings = allBindings.filter(b => terminalNames.has(b));
 
         const coordDiv = document.getElementById("coord-list");
         coordDiv.innerHTML = coords.map(c =>
@@ -673,55 +706,115 @@
         ).join('');
 
         const outputDiv = document.getElementById("output-list");
-        if (bindings.length === 0 && outputNames.length === 0) {
+        if (bindings.length === 0) {
             outputDiv.innerHTML = '<span style="color: var(--text-dim);">—</span>';
         } else {
-            const lines = [];
-            for (const b of bindings) {
-                lines.push(`<div style="padding: 2px 0;"><span style="color: var(--green);">${b}</span></div>`);
+            // Check if the output list actually changed — if not, don't rebuild
+            // (rebuilding would lose checkbox state)
+            const existingNames = [];
+            outputDiv.querySelectorAll('input[type=checkbox]').forEach(cb => {
+                existingNames.push(cb.dataset.name);
+            });
+            const sameList = existingNames.length === bindings.length &&
+                existingNames.every((n, i) => n === bindings[i]);
+
+            if (!sameList) {
+                // Remember which outputs were previously checked
+                const prevChecked = new Set();
+                outputDiv.querySelectorAll('input[type=checkbox]:checked').forEach(cb => {
+                    prevChecked.add(cb.dataset.name);
+                });
+
+                const lines = [];
+                for (const b of bindings) {
+                    // Preserve previous state; new outputs default to checked
+                    const checked = prevChecked.size === 0 || prevChecked.has(b) || !existingNames.includes(b) ? 'checked' : '';
+                    lines.push(
+                        `<label style="display: flex; align-items: center; gap: 4px; padding: 1px 0; cursor: pointer; font-size: 12px;">` +
+                        `<input type="checkbox" data-name="${b}" ${checked} ` +
+                        `onchange="doPlot()" style="accent-color: var(--green); margin: 0;">` +
+                        `<span style="color: var(--green);">${b}</span></label>`
+                    );
+                }
+                outputDiv.innerHTML = lines.join('');
             }
-            outputDiv.innerHTML = lines.join('');
         }
+    }
+
+    /// Get the list of output names that are checked for plotting.
+    function getPlotOutputs() {
+        const checked = [];
+        document.querySelectorAll('#output-list input[type=checkbox]:checked').forEach(cb => {
+            checked.push(cb.dataset.name);
+        });
+        return checked;
     }
 
     // ─── Plotting ────────────────────────────────────
 
-    window.doPlot = async function doPlot() {
-        const serialized = graph.serialize();
+    // Cached plot data — reused when only checkboxes or plot type change.
+    let lastPlotResult = null;
+    let lastPlotNeedsRefetch = true;
+
+    // Called when graph structure changes — marks data as stale
+    function invalidatePlotCache() {
+        lastPlotNeedsRefetch = true;
+    }
+
+    // Render the plot from cached or fresh data
+    window.doPlot = async function doPlot(forceRefetch) {
         const plotType = document.getElementById("plot-type").value;
-        // Read range from coordinates node widgets (indices 1, 2, 3)
         const cn = getCoordNode();
-        const start = cn && cn.widgets.length > 1 ? Math.max(0, Math.floor(cn.widgets[1].value)) >>> 0 : 0;
-        const end = cn && cn.widgets.length > 2 ? Math.max(1, Math.floor(cn.widgets[2].value)) >>> 0 : 1000;
-        const step = cn && cn.widgets.length > 3 ? Math.max(1, Math.floor(cn.widgets[3].value)) >>> 0 : 1;
-        // Sync sidebar controls
-        document.getElementById("plot-start").value = start;
-        document.getElementById("plot-end").value = end;
-        document.getElementById("plot-step").value = step;
+        const start = cn ? Math.max(0, Math.round(cn.properties.plot_start || 0)) >>> 0 : 0;
+        const end = cn ? Math.max(1, Math.round(cn.properties.plot_end || 20)) >>> 0 : 20;
+        const step = cn ? Math.max(1, Math.round(cn.properties.plot_step || 1)) >>> 0 : 1;
 
-        try {
-            const resp = await fetch("/api/graph/plot", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    graph: JSON.stringify(serialized),
-                    cycle_start: start,
-                    cycle_end: end,
-                    cycle_step: step,
-                }),
-            });
-            const result = await resp.json();
-
-            if (result.error) {
+        // Only fetch new data if the graph changed; reuse cache for checkbox/type toggles
+        if (lastPlotNeedsRefetch || forceRefetch || !lastPlotResult) {
+            try {
+                const serialized = graph.serialize();
+                const resp = await fetch("/api/graph/plot", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        graph: JSON.stringify(serialized),
+                        cycle_start: start,
+                        cycle_end: end,
+                        cycle_step: step,
+                    }),
+                });
+                lastPlotResult = await resp.json();
+                lastPlotNeedsRefetch = false;
+            } catch (e) {
                 document.getElementById("plot-area").innerHTML =
-                    `<p style="color: var(--accent); padding: 12px;">${result.error}</p>`;
+                    `<p style="color: var(--accent); padding: 12px;">Error: ${e}</p>`;
                 return;
             }
+        }
+
+        const result = lastPlotResult;
+        if (!result || result.error) {
+            document.getElementById("plot-area").innerHTML =
+                result ? `<p style="color: var(--accent); padding: 12px;">${result.error}</p>` : '';
+            return;
+        }
 
             const div = document.getElementById("plot-area");
-            const names = result.output_names || [];
+            const allNames = result.output_names || [];
             const cycles = result.cycles || [];
             const series = result.series || {};
+
+            // Filter to only checked outputs — if none checked, show nothing
+            const checked = getPlotOutputs();
+            const names = allNames.filter(n => checked.includes(n));
+
+            // Purge old plot before rendering new one
+            Plotly.purge(div);
+
+            if (names.length === 0) {
+                div.innerHTML = '<p style="color: var(--text-dim); padding: 12px;">No outputs selected</p>';
+                return;
+            }
 
             const plotLayout = {
                 paper_bgcolor: "#1a1a2e",
@@ -734,6 +827,7 @@
             };
 
             const colors = ["#4da6ff", "#4ecca3", "#e94560", "#f0c040", "#cc66ff", "#8888a0"];
+            const dashes = ["solid", "dash", "dot", "dashdot", "longdash", "longdashdot"];
 
             if (plotType === "line" || plotType === "scatter") {
                 const traces = names.map((name, i) => ({
@@ -742,8 +836,9 @@
                     name: name,
                     type: plotType === "scatter" ? "scattergl" : "scatter",
                     mode: plotType === "scatter" ? "markers" : "lines",
-                    marker: { color: colors[i % colors.length], size: 3 },
-                    line: { color: colors[i % colors.length], width: 1.5 },
+                    marker: { color: colors[i % colors.length], size: 3,
+                              symbol: ["circle", "square", "diamond", "cross", "x", "triangle-up"][i % 6] },
+                    line: { color: colors[i % colors.length], width: 2, dash: dashes[i % dashes.length] },
                 }));
                 Plotly.newPlot(div, traces, plotLayout, { responsive: true });
 
@@ -808,11 +903,6 @@
             }
             // Render inline plots on Plotter nodes
             updatePlotterNodes(cycles, series, names);
-
-        } catch (e) {
-            document.getElementById("plot-area").innerHTML =
-                `<p style="color: var(--accent); padding: 12px;">Error: ${e}</p>`;
-        }
     };
 
     async function updatePlotterNodes(cycles, series, allNames) {

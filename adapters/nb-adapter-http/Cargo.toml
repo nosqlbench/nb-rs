@@ -13,4 +13,6 @@ readme = "README.md"
 [dependencies]
 nb-activity = { path = "../../nb-activity", version = "0.1.1", default-features = false }
 nb-variates = { path = "../../nb-variates", version = "0.1.1" }
+nb-workload = { path = "../../nb-workload", version = "0.1.1" }
 reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1"

@@ -1,0 +1,12 @@
+// multi_output.gk — Multi-output node destructuring.
+//
+// mixed_radix produces multiple outputs from a single input.
+// The DSL destructures them into named bindings.
+//
+// Expected events:
+//   BindingResolved for each destructured target
+
+coordinates := (cycle)
+(region, store, tx) := mixed_radix(cycle, 50, 200, 0)
+region_id := mod(hash(region), 10000)
+store_id := mod(hash(interleave(region, store)), 100000)

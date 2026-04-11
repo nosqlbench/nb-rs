@@ -1,21 +1,18 @@
 // Copyright 2024-2026 nosqlbench contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Op synthesis: assemble concrete operations from templates + variates.
+//! Op synthesis: resolve bind points in op templates from GK variates.
 //!
 //! This is the bridge between the workload spec (ParsedOp) and the
-//! adapter (AssembledOp). For each cycle, bind points in op template
+//! adapter (ResolvedFields). For each cycle, bind points in op template
 //! fields are resolved from the GK kernel's output variates.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use nb_variates::kernel::{GkKernel, GkProgram, GkState, CaptureContext};
 use nb_variates::node::Value;
 use nb_workload::model::ParsedOp;
 use nb_workload::bindpoints::{self, BindPoint, BindQualifier};
-
-use crate::adapter::AssembledOp;
 
 /// Resolves bind points in a string template using the GK kernel
 /// and optionally a capture context.
@@ -102,11 +99,10 @@ fn resolve_bind_point(
             if kernel.program().resolve_output(name).is_some() {
                 return value_to_string(kernel.pull(name));
             }
-            if let Some(ctx) = captures {
-                if let Some(val) = ctx.get(name) {
+            if let Some(ctx) = captures
+                && let Some(val) = ctx.get(name) {
                     return value_to_string(val);
                 }
-            }
             // Last resort: might be a coordinate exposed as output
             format!("{{{name}}}")
         }
@@ -119,63 +115,13 @@ fn value_to_string(value: &Value) -> String {
 }
 
 
-/// Resolve a single JSON value field, substituting bind points.
-fn resolve_field_with_captures(
-    value: &serde_json::Value,
-    kernel: &mut GkKernel,
-    captures: Option<&CaptureContext>,
-) -> String {
-    match value {
-        serde_json::Value::String(s) => substitute_bind_points(s, kernel, captures),
-        other => other.to_string(),
-    }
-}
-
-/// Build an AssembledOp from a ParsedOp template, the GK kernel,
-/// and an optional capture context.
-///
-/// The kernel must already have its coordinate set for this cycle.
-/// Build an AssembledOp using the program/state split (no lock needed).
-fn assemble_op_with_state(
-    template: &ParsedOp,
-    program: &GkProgram,
-    state: &mut GkState,
-    captures: Option<&CaptureContext>,
-) -> AssembledOp {
-    let mut fields = HashMap::new();
-    let mut typed_fields = HashMap::new();
-    for (key, value) in &template.op {
-        if let serde_json::Value::String(s) = value {
-            let resolved = substitute_bind_points_with_state(s, program, state, captures);
-            fields.insert(key.clone(), resolved.clone());
-
-            // Try to preserve typed value for pure bind point references
-            let trimmed = s.trim();
-            if trimmed.starts_with('{') && trimmed.ends_with('}') && !trimmed.starts_with("{{") {
-                let name = &trimmed[1..trimmed.len()-1];
-                let bare = if let Some((_, n)) = name.split_once(':') { n } else { name };
-                if program.resolve_output(bare).is_some() {
-                    let val = state.pull(program, bare).clone();
-                    typed_fields.insert(key.clone(), val);
-                    continue;
-                }
-            }
-            typed_fields.insert(key.clone(), Value::Str(resolved));
-        } else {
-            let s = value.to_string();
-            fields.insert(key.clone(), s.clone());
-            typed_fields.insert(key.clone(), Value::Str(s));
-        }
-    }
-    AssembledOp { name: template.name.clone(), typed_fields, fields }
-}
-
 /// Substitute bind points using program + state (no GkKernel wrapper).
 fn substitute_bind_points_with_state(
     template: &str,
     program: &GkProgram,
     state: &mut GkState,
     captures: Option<&CaptureContext>,
+    params: &std::collections::HashMap<String, String>,
 ) -> String {
     let bind_points = bindpoints::extract_bind_points(template);
     if bind_points.is_empty() { return template.to_string(); }
@@ -184,7 +130,7 @@ fn substitute_bind_points_with_state(
     for bp in &bind_points {
         match bp {
             BindPoint::Reference { name, qualifier } => {
-                let value_str = resolve_bind_point_with_state(name, qualifier, program, state, captures);
+                let value_str = resolve_bind_point_with_state(name, qualifier, program, state, captures, params);
                 let placeholder = match qualifier {
                     BindQualifier::None => format!("{{{name}}}"),
                     BindQualifier::Coord => format!("{{coord:{name}}}"),
@@ -206,6 +152,7 @@ fn resolve_bind_point_with_state(
     program: &GkProgram,
     state: &mut GkState,
     captures: Option<&CaptureContext>,
+    params: &std::collections::HashMap<String, String>,
 ) -> String {
     match qualifier {
         BindQualifier::Bind => {
@@ -233,52 +180,19 @@ fn resolve_bind_point_with_state(
                 .unwrap_or_else(|| format!("{{coord:{name}}}"))
         }
         BindQualifier::None => {
+            // Resolution order: GK output → captures → workload params → unresolved
             if program.resolve_output(name).is_some() {
                 return state.pull(program, name).to_display_string();
             }
-            if let Some(ctx) = captures {
-                if let Some(val) = ctx.get(name) {
+            if let Some(ctx) = captures
+                && let Some(val) = ctx.get(name) {
                     return val.to_display_string();
                 }
+            if let Some(val) = params.get(name) {
+                return val.clone();
             }
             format!("{{{name}}}")
         }
-    }
-}
-
-/// Backward-compatible: build using GkKernel wrapper.
-pub fn assemble_op(
-    template: &ParsedOp,
-    kernel: &mut GkKernel,
-    captures: Option<&CaptureContext>,
-) -> AssembledOp {
-    let mut fields = HashMap::new();
-    let mut typed_fields = HashMap::new();
-    for (key, value) in &template.op {
-        let resolved_str = resolve_field_with_captures(value, kernel, captures);
-        fields.insert(key.clone(), resolved_str);
-        // For typed fields, pull the raw Value from the kernel if the field
-        // is a pure bind point reference (single {name} covering the whole field)
-        if let serde_json::Value::String(s) = value {
-            let trimmed = s.trim();
-            if trimmed.starts_with('{') && trimmed.ends_with('}') && !trimmed.starts_with("{{") {
-                let name = &trimmed[1..trimmed.len()-1];
-                // Strip qualifier if present
-                let bare_name = if let Some((_qual, n)) = name.split_once(':') { n } else { name };
-                if kernel.program().resolve_output(bare_name).is_some() {
-                    let val = kernel.pull(bare_name).clone();
-                    typed_fields.insert(key.clone(), val);
-                    continue;
-                }
-            }
-        }
-        // Default: string value
-        typed_fields.insert(key.clone(), nb_variates::node::Value::Str(fields[key].clone()));
-    }
-    AssembledOp {
-        name: template.name.clone(),
-        typed_fields,
-        fields,
     }
 }
 
@@ -290,19 +204,17 @@ pub fn assemble_op(
 /// contention on the hot path.
 pub struct OpBuilder {
     program: Arc<GkProgram>,
-    /// Fallback mutex-based builder for backward compatibility with
-    /// the `build(cycle, template)` API. New code should use
-    /// `create_fiber_builder()` instead.
-    fallback_kernel: Mutex<GkKernel>,
 }
 
 impl OpBuilder {
     pub fn new(kernel: GkKernel) -> Self {
-        let program = kernel.program().clone();
-        Self {
-            program,
-            fallback_kernel: Mutex::new(kernel),
-        }
+        let program = kernel.into_program();
+        Self { program }
+    }
+
+    /// Access the shared GK program.
+    pub fn program(&self) -> Arc<GkProgram> {
+        self.program.clone()
     }
 
     /// Create a per-fiber builder. No locks, no sharing — the fiber
@@ -312,14 +224,8 @@ impl OpBuilder {
             program: self.program.clone(),
             state: self.program.create_state(),
             captures: CaptureContext::new(),
+            params: Arc::new(std::collections::HashMap::new()),
         }
-    }
-
-    /// Backward-compatible build (uses mutex). Prefer `create_fiber_builder()`.
-    pub fn build(&self, cycle: u64, template: &ParsedOp) -> AssembledOp {
-        let mut kernel = self.fallback_kernel.lock().unwrap();
-        kernel.set_coordinates(&[cycle]);
-        assemble_op_with_kernel(template, &mut kernel, None)
     }
 }
 
@@ -331,17 +237,30 @@ pub struct FiberBuilder {
     program: Arc<GkProgram>,
     state: GkState,
     captures: CaptureContext,
+    /// Workload parameters: constant per run, shared across fibers.
+    params: Arc<std::collections::HashMap<String, String>>,
 }
 
 impl FiberBuilder {
+    /// Create a new fiber builder from a shared GK program.
+    pub fn new(program: Arc<GkProgram>) -> Self {
+        Self::with_params(program, Arc::new(std::collections::HashMap::new()))
+    }
+
+    /// Create with workload parameters available for bind-point resolution.
+    pub fn with_params(program: Arc<GkProgram>, params: Arc<std::collections::HashMap<String, String>>) -> Self {
+        let state = program.create_state();
+        Self {
+            program,
+            state,
+            captures: CaptureContext::new(),
+            params,
+        }
+    }
+
     /// Set coordinates and begin a new isolation scope.
     pub fn set_coordinates(&mut self, coords: &[u64]) {
         self.state.set_coordinates(coords);
-    }
-
-    /// Build an assembled op for the current coordinates.
-    pub fn build(&mut self, template: &ParsedOp) -> AssembledOp {
-        assemble_op_with_state(template, &self.program, &mut self.state, Some(&self.captures))
     }
 
     /// Store a captured value.
@@ -358,22 +277,61 @@ impl FiberBuilder {
     pub fn apply_captures(&mut self) {
         self.captures.apply_to_state(&self.program, &mut self.state);
     }
-}
 
-/// Assemble using the old GkKernel API (backward compat).
-fn assemble_op_with_kernel(
-    template: &ParsedOp,
-    kernel: &mut GkKernel,
-    captures: Option<&CaptureContext>,
-) -> AssembledOp {
-    let mut fields = HashMap::new();
-    let mut typed_fields = HashMap::new();
-    for (key, value) in &template.op {
-        let resolved_str = resolve_field_with_captures(value, kernel, captures);
-        fields.insert(key.clone(), resolved_str.clone());
-        typed_fields.insert(key.clone(), Value::Str(resolved_str));
+    /// Resolve all fields in a template to typed values and strings.
+    /// Returns ResolvedFields for consumption by an OpDispenser.
+    ///
+    /// `extra_bindings` are GK output names that should be included in
+    /// the resolved fields even though they don't appear in the op map.
+    /// Used by the validation layer to pull ground truth bindings.
+    pub fn resolve_with_extras(
+        &mut self,
+        template: &ParsedOp,
+        extra_bindings: &[String],
+    ) -> crate::adapter::ResolvedFields {
+        let mut names = Vec::new();
+        let mut values = Vec::new();
+
+        for (key, value) in &template.op {
+            names.push(key.clone());
+            if let serde_json::Value::String(s) = value {
+                let resolved = substitute_bind_points_with_state(
+                    s, &self.program, &mut self.state, Some(&self.captures), &self.params,
+                );
+
+                // Preserve typed value for pure bind point references
+                let trimmed = s.trim();
+                if trimmed.starts_with('{') && trimmed.ends_with('}') && !trimmed.starts_with("{{") {
+                    let name = &trimmed[1..trimmed.len()-1];
+                    let bare = if let Some((_, n)) = name.split_once(':') { n } else { name };
+                    if self.program.resolve_output(bare).is_some() {
+                        values.push(self.state.pull(&self.program, bare).clone());
+                        continue;
+                    }
+                }
+                values.push(Value::Str(resolved));
+            } else {
+                values.push(Value::Str(value.to_string()));
+            }
+        }
+
+        // Pull extra GK bindings (e.g., ground truth for validation)
+        for binding in extra_bindings {
+            if !names.contains(binding) {
+                if self.program.resolve_output(binding).is_some() {
+                    names.push(binding.clone());
+                    values.push(self.state.pull(&self.program, binding).clone());
+                }
+            }
+        }
+
+        crate::adapter::ResolvedFields::new(names, values)
     }
-    AssembledOp { name: template.name.clone(), typed_fields, fields }
+
+    /// Resolve op fields only (no extras). Convenience for simple cases.
+    pub fn resolve(&mut self, template: &ParsedOp) -> crate::adapter::ResolvedFields {
+        self.resolve_with_extras(template, &[])
+    }
 }
 
 #[cfg(test)]
@@ -430,42 +388,46 @@ mod tests {
     }
 
     #[test]
-    fn assemble_op_resolves_fields() {
-        let mut kernel = make_kernel();
-        kernel.set_coordinates(&[42]);
-
+    fn fiber_builder_resolves_fields() {
+        let kernel = make_kernel();
+        let builder = OpBuilder::new(kernel);
+        let mut fiber = builder.create_fiber_builder();
         let template = ParsedOp::simple("test", "SELECT * FROM t WHERE id={user_id}");
-        let assembled = assemble_op(&template, &mut kernel, None);
 
-        assert_eq!(assembled.name, "test");
-        let stmt = &assembled.fields["stmt"];
+        fiber.set_coordinates(&[42]);
+        let fields = fiber.resolve(&template);
+
+        assert_eq!(fields.names, vec!["stmt"]);
+        let stmt = &fields.strings()[0];
         assert!(stmt.starts_with("SELECT * FROM t WHERE id="));
         assert!(!stmt.contains("{user_id}"));
     }
 
     #[test]
-    fn op_builder_thread_safe() {
+    fn fiber_builder_deterministic() {
         let kernel = make_kernel();
         let builder = OpBuilder::new(kernel);
+        let mut fiber = builder.create_fiber_builder();
         let template = ParsedOp::simple("op1", "id={user_id}");
 
-        let op1 = builder.build(42, &template);
-        let op2 = builder.build(43, &template);
-
-        assert!(!op1.fields["stmt"].contains("{user_id}"));
-        assert!(!op2.fields["stmt"].contains("{user_id}"));
-        // Different cycles should produce different ids (probably)
-        assert_ne!(op1.fields["stmt"], op2.fields["stmt"]);
+        fiber.set_coordinates(&[42]);
+        let a = fiber.resolve(&template);
+        fiber.set_coordinates(&[42]);
+        let b = fiber.resolve(&template);
+        assert_eq!(a.strings()[0], b.strings()[0]);
     }
 
     #[test]
-    fn op_builder_deterministic() {
+    fn fiber_builder_different_cycles() {
         let kernel = make_kernel();
         let builder = OpBuilder::new(kernel);
+        let mut fiber = builder.create_fiber_builder();
         let template = ParsedOp::simple("op1", "id={user_id}");
 
-        let a = builder.build(42, &template);
-        let b = builder.build(42, &template);
-        assert_eq!(a.fields["stmt"], b.fields["stmt"]);
+        fiber.set_coordinates(&[42]);
+        let a = fiber.resolve(&template);
+        fiber.set_coordinates(&[43]);
+        let b = fiber.resolve(&template);
+        assert_ne!(a.strings()[0], b.strings()[0]);
     }
 }

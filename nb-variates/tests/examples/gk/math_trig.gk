@@ -1,0 +1,15 @@
+// math_trig.gk — Math and trigonometry functions.
+//
+// Exercises sin, cos, sqrt, exp, ln, lerp, scale_range, clamp_f64.
+// All operate on f64 values derived from unit_interval.
+
+coordinates := (cycle)
+h := hash(cycle)
+u := unit_interval(h)
+sine := sin(u)
+cosine := cos(u)
+root := sqrt(u)
+exponential := exp(u)
+scaled := scale_range(h, -100.0, 100.0)
+interpolated := lerp(u, 0.0, 1000.0)
+clamped := clamp_f64(scaled, -50.0, 50.0)

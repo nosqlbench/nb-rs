@@ -162,6 +162,11 @@ impl GkProgram {
         self.nodes.len()
     }
 
+    /// Access a node's metadata by index.
+    pub fn node_meta(&self, idx: usize) -> &crate::node::NodeMeta {
+        self.nodes[idx].meta()
+    }
+
     /// Probe the compile level of a node by index.
     pub fn node_compile_level(&self, idx: usize) -> crate::node::CompileLevel {
         crate::node::compile_level_of(self.nodes[idx].as_ref())
@@ -193,6 +198,144 @@ impl GkProgram {
     /// Find a sticky port by name. Returns its index.
     pub fn find_sticky_port(&self, name: &str) -> Option<usize> {
         self.sticky_ports.iter().position(|p| p.name == name)
+    }
+
+    /// Fold init-time constant nodes (SRD 44).
+    ///
+    /// Identifies nodes whose transitive dependencies contain no
+    /// coordinate inputs, volatile ports, or sticky ports — these are
+    /// init-time evaluable. Evaluates them once, then replaces their
+    /// outputs with constant nodes in the program.
+    ///
+    /// Returns the number of nodes folded. The program is modified
+    /// in place.
+    pub fn fold_init_constants(&mut self) -> usize {
+        self.fold_init_constants_with_log(None)
+    }
+
+    /// Fold init-time constants, emitting diagnostic events to the log.
+    pub fn fold_init_constants_with_log(&mut self, mut log: Option<&mut crate::dsl::events::CompileEventLog>) -> usize {
+        use crate::nodes::identity::{ConstU64, ConstStr};
+        use crate::nodes::fixed::ConstF64;
+        use crate::node::Value;
+
+        let n = self.nodes.len();
+        if n == 0 { return 0; }
+
+        // Phase 1: Determine which nodes are init-time evaluable.
+        // A node is init-time if ALL its wire sources are either:
+        //   - NodeOutput from another init-time node
+        //   - (nothing else — no Coordinate, Volatile, Sticky)
+        // Nodes with zero inputs (constants, context nodes like counter)
+        // are init-time IF they have no side effects that matter at cycle time.
+        // We conservatively exclude nodes with zero inputs that are
+        // non-deterministic (like current_epoch_millis, counter, thread_id).
+        let mut is_init: Vec<bool> = vec![true; n];
+
+        // Mark nodes that directly depend on coordinates or external ports
+        for (i, wiring) in self.wiring.iter().enumerate() {
+            for source in wiring {
+                match source {
+                    WireSource::Coordinate(_) |
+                    WireSource::VolatilePort(_) |
+                    WireSource::StickyPort(_) => {
+                        is_init[i] = false;
+                    }
+                    WireSource::NodeOutput(_, _) => {}
+                }
+            }
+            // Exclude non-deterministic zero-input nodes
+            if wiring.is_empty() {
+                let name = &self.nodes[i].meta().name;
+                if name == "current_epoch_millis" || name == "session_start_millis"
+                    || name == "elapsed_millis" || name == "counter"
+                    || name == "thread_id"
+                {
+                    is_init[i] = false;
+                }
+            }
+            // Exclude auto-inserted type adapter nodes (internal wiring)
+            let name = &self.nodes[i].meta().name;
+            if name.starts_with("__") {
+                is_init[i] = false;
+            }
+        }
+
+        // Propagate: if any input is not init-time, this node isn't either
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for i in 0..n {
+                if !is_init[i] { continue; }
+                for source in &self.wiring[i] {
+                    if let WireSource::NodeOutput(upstream, _) = source
+                        && !is_init[*upstream] {
+                            is_init[i] = false;
+                            changed = true;
+                            break;
+                        }
+                }
+            }
+        }
+
+        // Count how many init-time nodes have downstream cycle-time consumers
+        let init_count = is_init.iter().filter(|&&b| b).count();
+        if init_count == 0 { return 0; }
+
+        // Phase 2: Evaluate init-time nodes.
+        // Use catch_unwind to handle any panics gracefully —
+        // if a node panics during init evaluation, skip folding it.
+        let mut state = self.create_state();
+        let dummy_coords = vec![0u64; self.coord_names.len()];
+        state.set_coordinates(&dummy_coords);
+
+        for i in 0..n {
+            if is_init[i] {
+                // Only fold nodes with exactly 1 output (simple constants)
+                if self.nodes[i].meta().outs.len() != 1 {
+                    is_init[i] = false;
+                    continue;
+                }
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    state.eval_node_public(self, i);
+                }));
+                if result.is_err() {
+                    is_init[i] = false; // evaluation panicked, don't fold
+                }
+            }
+        }
+
+        // Phase 3: Replace init-time nodes with constants.
+        let mut folded = 0;
+        for i in 0..n {
+            if !is_init[i] { continue; }
+
+            let value = state.buffers[i][0].clone();
+            if matches!(value, Value::None) { continue; } // not evaluated
+            let port_type = self.nodes[i].meta().outs[0].typ;
+
+            // Replace the node with a constant
+            let const_node: Box<dyn crate::node::GkNode> = match (&value, port_type) {
+                (Value::U64(v), _) => Box::new(ConstU64::new(*v)),
+                (Value::F64(v), _) => Box::new(ConstF64::new(*v)),
+                (Value::Bool(v), _) => Box::new(ConstU64::new(if *v { 1 } else { 0 })),
+                (Value::Str(s), _) => Box::new(ConstStr::new(s.clone())),
+                _ => continue, // Can't fold this type
+            };
+
+            let node_name = self.nodes[i].meta().name.clone();
+            if let Some(ref mut log) = log {
+                log.push(crate::dsl::events::CompileEvent::ConstantFolded {
+                    node: node_name,
+                    value: value.to_display_string(),
+                });
+            }
+            self.nodes[i] = const_node;
+            self.wiring[i] = Vec::new(); // Constants have no inputs
+            folded += 1;
+        }
+
+        folded
     }
 }
 
@@ -281,19 +424,32 @@ impl GkState {
         &self.buffers[node_idx][port_idx]
     }
 
+    /// Evaluate a node by index (package-visible for constant folding).
+    pub(crate) fn eval_node_public(&mut self, program: &GkProgram, node_idx: usize) {
+        self.eval_node(program, node_idx);
+    }
+
     fn eval_node(&mut self, program: &GkProgram, node_idx: usize) {
         if self.node_generation[node_idx] == self.generation {
             return;
         }
 
-        // Gather inputs into the pre-allocated scratch buffer.
-        // No allocation — just overwrites existing slots.
+        // First: recursively evaluate all upstream nodes. This must
+        // happen BEFORE gathering values into the scratch buffer,
+        // because recursive eval_node calls also write to input_scratch.
         let wiring = &program.wiring[node_idx];
+        for source in wiring.iter() {
+            if let WireSource::NodeOutput(upstream_idx, _) = source {
+                self.eval_node(program, *upstream_idx);
+            }
+        }
+
+        // Now gather inputs into the scratch buffer. All upstream nodes
+        // are already evaluated, so no recursive calls will clobber it.
         for (i, source) in wiring.iter().enumerate() {
             self.input_scratch[i] = match source {
                 WireSource::Coordinate(coord_idx) => Value::U64(self.coords[*coord_idx]),
                 WireSource::NodeOutput(upstream_idx, port_idx) => {
-                    self.eval_node(program, *upstream_idx);
                     self.buffers[*upstream_idx][*port_idx].clone()
                 }
                 WireSource::VolatilePort(idx) => self.volatile_values[*idx].clone(),
@@ -383,6 +539,8 @@ impl Default for CaptureContext {
 pub struct GkKernel {
     program: Arc<GkProgram>,
     state: GkState,
+    /// Number of init-time constants folded during compilation.
+    pub constants_folded: usize,
 }
 
 impl std::fmt::Debug for GkKernel {
@@ -401,9 +559,21 @@ impl GkKernel {
         coord_names: Vec<String>,
         output_map: HashMap<String, (usize, usize)>,
     ) -> Self {
-        let program = Arc::new(GkProgram::new(nodes, wiring, coord_names, output_map));
+        Self::new_with_log(nodes, wiring, coord_names, output_map, None)
+    }
+
+    pub(crate) fn new_with_log(
+        nodes: Vec<Box<dyn GkNode>>,
+        wiring: Vec<Vec<WireSource>>,
+        coord_names: Vec<String>,
+        output_map: HashMap<String, (usize, usize)>,
+        log: Option<&mut crate::dsl::events::CompileEventLog>,
+    ) -> Self {
+        let mut program = GkProgram::new(nodes, wiring, coord_names, output_map);
+        let constants_folded = program.fold_init_constants_with_log(log);
+        let program = Arc::new(program);
         let state = program.create_state();
-        Self { program, state }
+        Self { program, state, constants_folded }
     }
 
     /// The shared immutable program.
@@ -441,6 +611,15 @@ impl GkKernel {
     /// Return the names of all available output variates.
     pub fn output_names(&self) -> Vec<&str> {
         self.program.output_names()
+    }
+
+    /// Read the value of a named output that was folded to a constant
+    /// at init time. Returns `None` if the output doesn't exist or
+    /// wasn't folded (i.e., it depends on coordinates).
+    pub fn get_constant(&self, name: &str) -> Option<&Value> {
+        let (node_idx, port_idx) = self.program.output_map.get(name)?;
+        let val = &self.state.buffers[*node_idx][*port_idx];
+        if matches!(val, Value::None) { None } else { Some(val) }
     }
 
     /// Extract the program for concurrent use.
@@ -534,5 +713,38 @@ mod tests {
 
         assert_eq!(state.get_volatile(0), &Value::F64(999.0));
         assert_eq!(state.get_sticky(0), &Value::U64(42));
+    }
+
+    #[test]
+    fn fold_init_constants_basic() {
+        // base=42, seed=hash(base) should both be folded
+        // user_id=hash(cycle) should NOT be folded (depends on coordinate)
+        use crate::dsl::compile::compile_gk;
+        let mut k = compile_gk("coordinates := (cycle)\nbase := 42\nseed := hash(base)\nuser_id := hash(cycle)").unwrap();
+
+        // seed should be constant across cycles
+        k.set_coordinates(&[0]);
+        let seed_0 = k.pull("seed").clone();
+        k.set_coordinates(&[1]);
+        let seed_1 = k.pull("seed").clone();
+        assert_eq!(seed_0.as_u64(), seed_1.as_u64(), "seed should be constant (folded)");
+
+        // user_id should vary
+        k.set_coordinates(&[0]);
+        let uid_0 = k.pull("user_id").clone();
+        k.set_coordinates(&[1]);
+        let uid_1 = k.pull("user_id").clone();
+        assert_ne!(uid_0.as_u64(), uid_1.as_u64(), "user_id should vary per cycle");
+    }
+
+    #[test]
+    fn fold_does_not_touch_cycle_dependent() {
+        use crate::dsl::compile::compile_gk;
+        let mut k = compile_gk("coordinates := (cycle)\nout := hash(cycle)").unwrap();
+        k.set_coordinates(&[42]);
+        let v1 = k.pull("out").as_u64();
+        k.set_coordinates(&[43]);
+        let v2 = k.pull("out").as_u64();
+        assert_ne!(v1, v2, "cycle-dependent node should not be folded");
     }
 }

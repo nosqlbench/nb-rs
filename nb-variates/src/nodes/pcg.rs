@@ -248,7 +248,7 @@ impl CycleWalk {
             2 // minimum 2 bits for a balanced Feistel
         } else {
             let b = 64 - (range - 1).leading_zeros();
-            if b % 2 != 0 { b + 1 } else { b.max(2) }
+            if !b.is_multiple_of(2) { b + 1 } else { b.max(2) }
         };
         let half_bits = min_bits / 2;
         let half_mask = (1u64 << half_bits) - 1;
@@ -331,7 +331,7 @@ fn cycle_walk_inner(
         return 0;
     }
     // Ensure we start in [0, range) so cycle-walk terminates.
-    value = value % range;
+    value %= range;
     loop {
         value = feistel_encrypt(value, half_bits, half_mask, round_keys);
         if value < range {

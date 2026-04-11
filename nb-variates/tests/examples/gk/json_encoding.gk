@@ -1,0 +1,13 @@
+// json_encoding.gk — JSON construction and encoding nodes.
+//
+// Exercises to_json, json_to_str, html_encode, url_encode,
+// sha256, to_base64.
+
+coordinates := (cycle)
+j := to_json(cycle)
+js := json_to_str(j)
+key := format_u64(hash(cycle), 16)
+encoded := url_encode(key)
+raw_bytes := u64_to_bytes(hash(cycle))
+digest := sha256(raw_bytes)
+b64 := to_base64(raw_bytes)

@@ -1,0 +1,12 @@
+// type_adapters.gk — Automatic type adapter insertion.
+//
+// The assembler inserts U64→F64 adapters when a u64 output feeds an
+// f64 input. This happens transparently.
+//
+// Expected events:
+//   TypeAdapterInserted: cycle → unit_interval (U64→F64) [for sin]
+
+coordinates := (cycle)
+u := unit_interval(hash(cycle))
+s := sin(u)
+c := cos(u)

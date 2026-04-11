@@ -21,6 +21,12 @@ pub struct CurrentEpochMillis {
     meta: NodeMeta,
 }
 
+impl Default for CurrentEpochMillis {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CurrentEpochMillis {
     pub fn new() -> Self {
         Self {
@@ -52,6 +58,12 @@ impl GkNode for CurrentEpochMillis {
 pub struct SessionStartMillis {
     meta: NodeMeta,
     start: u64,
+}
+
+impl Default for SessionStartMillis {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SessionStartMillis {
@@ -88,6 +100,12 @@ pub struct ElapsedMillis {
     start: u64,
 }
 
+impl Default for ElapsedMillis {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ElapsedMillis {
     pub fn new() -> Self {
         let start = SystemTime::now()
@@ -116,6 +134,48 @@ impl GkNode for ElapsedMillis {
     }
 }
 
+/// Current OS thread numeric identifier.
+///
+/// Signature: `() -> (u64)`
+///
+/// Non-deterministic: returns a different value per thread.
+/// Useful for partitioning or sharding in multi-threaded workloads.
+pub struct ThreadId {
+    meta: NodeMeta,
+}
+
+impl Default for ThreadId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ThreadId {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "thread_id".into(),
+                outs: vec![Port::u64("output")],
+                ins: Vec::new(),
+            },
+        }
+    }
+}
+
+impl GkNode for ThreadId {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
+        // Use the thread ID as a u64. std::thread::current().id() returns an
+        // opaque ThreadId; we convert via Debug format to extract the numeric ID.
+        let id = std::thread::current().id();
+        let id_str = format!("{id:?}");
+        // ThreadId(N) format
+        let num = id_str.trim_start_matches("ThreadId(").trim_end_matches(')');
+        let n: u64 = num.parse().unwrap_or(0);
+        outputs[0] = Value::U64(n);
+    }
+}
+
 /// Monotonically incrementing counter (thread-safe).
 ///
 /// Signature: `() -> (u64)`
@@ -124,6 +184,12 @@ impl GkNode for ElapsedMillis {
 pub struct Counter {
     meta: NodeMeta,
     count: AtomicU64,
+}
+
+impl Default for Counter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Counter {

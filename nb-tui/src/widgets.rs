@@ -36,6 +36,12 @@ pub struct MetricsState {
     pub start: std::time::Instant,
 }
 
+impl Default for MetricsState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetricsState {
     pub fn new() -> Self {
         Self {

@@ -66,6 +66,18 @@ optimization pass that recognizes fusible subgraph patterns and
 replaces them with equivalent fused nodes — including commutativity
 as first-class node metadata and test-verified equivalence contracts.
 
+## GK Composition
+
+| # | File | Scope |
+|---|------|-------|
+| 44 | [gk_composition](44_gk_composition.md) | Kernel composition: pipeline staging, init-time value propagation, recompilation |
+
+Defines how GK kernels compose: as pipeline stages (init outputs
+become cycle constants) and as embedded modules (merged + recompiled).
+Two-phase compilation automatically partitions nodes into init-time
+and cycle-time sets. Init-time values propagate as compile-time
+constants for full JIT optimization.
+
 ## GK Extensions
 
 | # | File | Scope |
@@ -139,13 +151,17 @@ line synthesizes a `Workload` struct without a YAML file, with
 |---|------|-------|
 | 19 | [rate_limiter](19_rate_limiter.md) | Token-bucket rate limiter with burst recovery, async-ready |
 | 21 | [execution_layer](21_execution_layer.md) | Async activity engine composing workloads, variates, metrics, rate limiting |
+| 38 | [adapter_interface](38_adapter_interface.md) | Tiered adapter contract: DriverAdapter, OpDispenser, ResolvedFields |
 
 Defines the runtime execution model. The activity is the unit of
 concurrent execution — it owns a cycle source, op sequence, GK
-kernel, metrics, rate limiters, and error router. Executor tasks
-(tokio async) pull cycles, evaluate the GK kernel, assemble ops,
-and execute them through the adapter. Dual rate limiting (per-cycle
-and per-stanza) with token-bucket semantics and burst recovery.
+kernel, metrics, rate limiters, and error router. SRD 38 defines the
+adapter abstraction: a three-phase pipeline (map → dispense → execute)
+that separates init-time template analysis from cycle-time execution.
+DriverAdapter maps templates to OpDispensers at init time;
+OpDispensers bind values and execute at cycle time; backward
+compatibility with the flat Adapter trait via blanket impl. No
+Space abstraction — driver concurrency is internal to the adapter.
 
 ## Inter-Op Data Flow
 
@@ -176,3 +192,41 @@ node factories — external crates implement `NodeFactory` to provide
 GK nodes that are registered into the unified registry at startup,
 indistinguishable from built-in nodes in describe output, category
 grouping, type checking, and compilation levels.
+
+## System Architecture
+
+| # | File | Scope |
+|---|------|-------|
+| 39 | [system_layers](39_system_layers.md) | Crate-level layers, dependency rules, contract boundaries |
+| 40 | [op_execution_semantics](40_op_execution_semantics.md) | Cycle lifecycle, stanza semantics, field resolution, retry, determinism |
+| 41 | [error_handling](41_error_handling.md) | Error classification, routing, retry flow, adapter guidelines |
+| 42 | [workload_parameters](42_workload_parameters.md) | Workload parameterization via GK, no separate expression language |
+| 43 | [logging_conventions](43_logging_conventions.md) | Logging channels, severity levels, message format, hot-path rules |
+
+Defines the cross-cutting architectural concerns. SRD 39 maps out the
+crate dependency graph and the typed contract boundaries between layers.
+SRD 40 specifies the full cycle lifecycle from rate limiting through
+field resolution, execution, capture, metrics, and error handling —
+including stanza concurrency, result traversal, and mixed adapter
+dispatch. SRD 41 defines the two-stage error pipeline with
+delaminated error scoping (Op vs Adapter). SRD 42 defines workload
+parameterization — `params:` section with CLI overrides and env vars,
+resolved through the GK bind-point pipeline (no Groovy, no
+preprocessing). SRD 43 defines logging conventions: stderr for
+diagnostics, stdout for data, no per-cycle output on success.
+
+## Client Personas
+
+| # | File | Scope |
+|---|------|-------|
+| 37 | [client_personas](37_client_personas.md) | Protocol-specific nbrs binaries: architecture, cassnbrs CQL persona |
+
+Defines the persona architecture: separate binary crates that extend
+the core framework with native protocol drivers. Each persona includes
+all core adapters (stdout, http, model) plus protocol-specific
+adapters. SRD 37 specifies the `AdapterFactory` trait for pluggable
+dispatch, the `personas/` directory layout, and the first persona
+`cassnbrs` — a Cassandra/CQL client using the `scylla` Rust driver,
+with prepared statement support, token-aware routing, Astra cloud
+compatibility, capture point extraction from SELECT results, and
+native CQL type mapping via `Value::Ext`.

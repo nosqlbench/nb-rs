@@ -25,5 +25,6 @@ pub mod random;
 pub mod realer;
 pub mod probability;
 pub mod pcg;
+pub mod math;
 #[cfg(feature = "vectordata")]
 pub mod vectors;

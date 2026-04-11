@@ -1,0 +1,11 @@
+// string_generation.gk — String value generation pipeline.
+//
+// Exercises string nodes: combinations, format_u64, number_to_words.
+//
+// Expected events:
+//   BindingResolved for each string node
+
+coordinates := (cycle)
+code := combinations(hash(cycle), "A-Z0-9", 8)
+decimal := format_u64(cycle, 10)
+hex := format_u64(hash(cycle), 16)

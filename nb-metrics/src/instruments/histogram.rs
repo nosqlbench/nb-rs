@@ -38,8 +38,11 @@ impl Histogram {
     /// Record a value (typically nanoseconds).
     pub fn record(&self, value: u64) {
         let value = value.min(MAX_VALUE);
-        let mut h = self.current.lock().unwrap();
-        let _ = h.record(value);
+        let mut h = self.current.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = h.record(value) {
+            eprintln!("warning: histogram record failed for value {value}: {e}");
+        }
     }
 
     /// Swap out the current histogram and return the delta.
@@ -47,7 +50,8 @@ impl Histogram {
     /// The returned histogram contains all data since the last
     /// `snapshot()` call. The internal histogram is reset.
     pub fn snapshot(&self) -> HdrHistogram<u64> {
-        let mut current = self.current.lock().unwrap();
+        let mut current = self.current.lock()
+            .unwrap_or_else(|e| e.into_inner());
         let snapshot = current.clone();
         current.reset();
         snapshot

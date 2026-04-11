@@ -18,6 +18,11 @@ pub struct Workload {
     pub scenarios: HashMap<String, Vec<ScenarioStep>>,
     #[serde(default)]
     pub ops: Vec<ParsedOp>,
+    /// Resolved workload parameters. These are available as bind points
+    /// in op templates and as constants in GK bindings.
+    /// Populated from: workload `params:` defaults, CLI overrides, env vars.
+    #[serde(default)]
+    pub params: HashMap<String, String>,
 }
 
 /// A single step in a scenario.
@@ -89,6 +94,10 @@ pub struct ParsedOp {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// The operation payload: field name → value.
+    /// The statement is always under `"stmt"` after normalization.
+    /// The original field name that carried the statement (e.g., `"raw"`,
+    /// `"simple"`, `"prepared"`, `"stmt"`) is preserved in `stmt_type`
+    /// for adapters that dispatch on execution mode.
     pub op: HashMap<String, serde_json::Value>,
     /// Binding definitions: either a name→expression map (legacy) or
     /// a GK grammar source string (native).

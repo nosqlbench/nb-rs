@@ -699,22 +699,20 @@ impl Compiler {
 
             // Literal type checking against declared param types
             for (i, input_name) in module_inputs.iter().enumerate() {
-                if let Some(Some(declared_type)) = module_input_types.get(i) {
-                    if let Some(arg) = arg_map.get(input_name) {
+                if let Some(Some(declared_type)) = module_input_types.get(i)
+                    && let Some(arg) = arg_map.get(input_name) {
                         let expr = match arg {
                             Arg::Positional(e) | Arg::Named(_, e) => e,
                         };
-                        if let Some(lit_type) = literal_type(expr) {
-                            if !types_compatible(&lit_type, declared_type) {
+                        if let Some(lit_type) = literal_type(expr)
+                            && !types_compatible(&lit_type, declared_type) {
                                 return Err(format!(
                                     "module '{}' parameter '{}' expects {}, got {} literal",
                                     func_name, input_name, declared_type, lit_type
                                 ));
                             }
-                        }
                         // Wire arguments: type checked when the assembler validates wiring
                     }
-                }
             }
 
             // Output arity check
@@ -930,8 +928,8 @@ impl Compiler {
 
         // Strategy 1: look for a formal ModuleDef with matching name
         for stmt in &ast.statements {
-            if let Statement::ModuleDef(mdef) = stmt {
-                if mdef.name == target_name {
+            if let Statement::ModuleDef(mdef) = stmt
+                && mdef.name == target_name {
                     let inputs: Vec<String> = mdef.params.iter()
                         .map(|p| p.name.clone())
                         .collect();
@@ -947,13 +945,12 @@ impl Compiler {
                     return Ok(ResolvedModule {
                         inputs,
                         input_types,
-                        outputs: outputs,
+                        outputs,
                         output_types,
                         is_formal: true,
                         statements: mdef.body.clone(),
                     });
                 }
-            }
         }
 
         // Strategy 2: subgraph extraction by binding name
@@ -1496,7 +1493,7 @@ impl Compiler {
                 self.all_names.push(name.clone());
             }
             _ => {
-                return Err(format!("unsupported expression in binding"));
+                return Err("unsupported expression in binding".to_string());
             }
         }
         Ok(())
@@ -1546,7 +1543,7 @@ fn build_node(
         "div" => Ok(Box::new(DivU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1)))),
         "mod" => Ok(Box::new(ModU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1)))),
         "clamp" => Ok(Box::new(ClampU64::new(
-            consts.get(0).map(|c| c.as_u64()).unwrap_or(0),
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
             consts.get(1).map(|c| c.as_u64()).unwrap_or(u64::MAX),
         ))),
         "interleave" => Ok(Box::new(Interleave::new())),
@@ -1570,13 +1567,13 @@ fn build_node(
             // so u64 ports work as the default — the actual value
             // type is determined by what's wired upstream.
             let types: Vec<PortType> = (0..wires.len()).map(|_| PortType::U64).collect();
-            Ok(Box::new(Printf::new(&fmt, &types)))
+            Ok(Box::new(Printf::new(fmt, &types)))
         }
 
         // --- Conversions ---
         "unit_interval" => Ok(Box::new(UnitInterval::new())),
         "clamp_f64" => Ok(Box::new(ClampF64::new(
-            consts.get(0).map(|c| c.as_f64()).unwrap_or(f64::MIN),
+            consts.first().map(|c| c.as_f64()).unwrap_or(f64::MIN),
             consts.get(1).map(|c| c.as_f64()).unwrap_or(f64::MAX),
         ))),
         "f64_to_u64" => Ok(Box::new(F64ToU64::new())),
@@ -1588,21 +1585,28 @@ fn build_node(
         "lut_sample" | "icd_normal" => {
             // For now, IcdSample convenience
             Ok(Box::new(IcdSample::normal(
-                consts.get(0).map(|c| c.as_f64()).unwrap_or(0.0),
+                consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
                 consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
             )))
         }
         "icd_exponential" | "dist_exponential" => {
             Ok(Box::new(IcdSample::exponential(
-                consts.get(0).map(|c| c.as_f64()).unwrap_or(1.0),
+                consts.first().map(|c| c.as_f64()).unwrap_or(1.0),
             )))
         }
         "dist_normal" => {
             Ok(Box::new(IcdSample::normal(
-                consts.get(0).map(|c| c.as_f64()).unwrap_or(0.0),
+                consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
                 consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
             )))
         }
+
+        "histribution" => Ok(Box::new(crate::sampling::histribution::Histribution::new(
+            consts.first().map(|c| c.as_str()).unwrap_or("1"),
+        ))),
+        "dist_empirical" => Ok(Box::new(crate::sampling::lut::EmpiricalSample::from_spec(
+            consts.first().map(|c| c.as_str()).unwrap_or("0.0 1.0"),
+        ))),
 
         // --- Datetime ---
         "epoch_scale" => Ok(Box::new(EpochScale::new(consts.first().map(|c| c.as_u64()).unwrap_or(1)))),
@@ -1617,29 +1621,29 @@ fn build_node(
 
         // --- Lerp ---
         "lerp" => Ok(Box::new(LerpConst::new(
-            consts.get(0).map(|c| c.as_f64()).unwrap_or(0.0),
+            consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
             consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
         ))),
         "scale_range" => Ok(Box::new(ScaleRange::new(
-            consts.get(0).map(|c| c.as_f64()).unwrap_or(0.0),
+            consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
             consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
         ))),
         "quantize" => Ok(Box::new(Quantize::new(
-            consts.get(0).map(|c| c.as_f64()).unwrap_or(1.0),
+            consts.first().map(|c| c.as_f64()).unwrap_or(1.0),
         ))),
 
         // --- Weighted ---
         "weighted_strings" => Ok(Box::new(WeightedStrings::new(
-            consts.get(0).map(|c| c.as_str()).unwrap_or(""),
+            consts.first().map(|c| c.as_str()).unwrap_or(""),
         ))),
         "weighted_u64" => Ok(Box::new(WeightedU64::new(
-            consts.get(0).map(|c| c.as_str()).unwrap_or(""),
+            consts.first().map(|c| c.as_str()).unwrap_or(""),
         ))),
         "weighted_pick" => {
             use crate::nodes::weighted::WeightedPick;
             let pairs: Vec<(f64, u64)> = consts.chunks(2)
                 .map(|chunk| {
-                    let w = chunk.get(0).map(|c| c.as_f64()).unwrap_or(1.0);
+                    let w = chunk.first().map(|c| c.as_f64()).unwrap_or(1.0);
                     let v = chunk.get(1).map(|c| c.as_u64()).unwrap_or(0);
                     (w, v)
                 })
@@ -1662,31 +1666,31 @@ fn build_node(
 
         // --- Noise ---
         "perlin_1d" => Ok(Box::new(Perlin1D::new(
-            consts.get(0).map(|c| c.as_u64()).unwrap_or(0),
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
             consts.get(1).map(|c| c.as_f64()).unwrap_or(0.01),
         ))),
         "perlin_2d" => Ok(Box::new(Perlin2D::new(
-            consts.get(0).map(|c| c.as_u64()).unwrap_or(0),
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
             consts.get(1).map(|c| c.as_f64()).unwrap_or(0.01),
         ))),
 
         // --- Regex ---
         "regex_replace" => Ok(Box::new(RegexReplace::new(
-            consts.get(0).map(|c| c.as_str()).unwrap_or(""),
+            consts.first().map(|c| c.as_str()).unwrap_or(""),
             consts.get(1).map(|c| c.as_str()).unwrap_or(""),
         ))),
 
         // --- Probability modeling ---
         "fair_coin" => Ok(Box::new(FairCoin::new())),
         "unfair_coin" => Ok(Box::new(UnfairCoin::new(
-            consts.get(0).map(|c| c.as_f64()).unwrap_or(0.5),
+            consts.first().map(|c| c.as_f64()).unwrap_or(0.5),
         ))),
         "select" => Ok(Box::new(Select::new())),
         "chance" => Ok(Box::new(Chance::new(
-            consts.get(0).map(|c| c.as_f64()).unwrap_or(0.5),
+            consts.first().map(|c| c.as_f64()).unwrap_or(0.5),
         ))),
         "n_of" => Ok(Box::new(NofM::new(
-            consts.get(0).map(|c| c.as_u64()).unwrap_or(1),
+            consts.first().map(|c| c.as_u64()).unwrap_or(1),
             consts.get(1).map(|c| c.as_u64()).unwrap_or(2),
         ))),
         "one_of" => {
@@ -1702,55 +1706,55 @@ fn build_node(
 
         // --- PCG RNG ---
         "pcg" => Ok(Box::new(crate::nodes::pcg::Pcg::new(
-            consts.get(0).map(|c| c.as_u64()).unwrap_or(0),
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
             consts.get(1).map(|c| c.as_u64()).unwrap_or(0),
         ))),
         "pcg_stream" => Ok(Box::new(crate::nodes::pcg::PcgStream::new(
             consts.first().map(|c| c.as_u64()).unwrap_or(0),
         ))),
         "cycle_walk" => Ok(Box::new(crate::nodes::pcg::CycleWalk::new(
-            consts.get(0).map(|c| c.as_u64()).unwrap_or(1000),
+            consts.first().map(|c| c.as_u64()).unwrap_or(1000),
             consts.get(1).map(|c| c.as_u64()).unwrap_or(0),
             consts.get(2).map(|c| c.as_u64()).unwrap_or(0),
         ))),
 
         // --- Shuffle / Permutation ---
         "shuffle" => Ok(Box::new(crate::sampling::metashift::Shuffle::new(
-            consts.get(0).map(|c| c.as_u64()).unwrap_or(0),
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
             consts.get(1).map(|c| c.as_u64()).unwrap_or(1024),
         ))),
 
         // --- Conversions ---
         "discretize" => Ok(Box::new(crate::nodes::convert::Discretize::new(
-            consts.get(0).map(|c| c.as_f64()).unwrap_or(1.0),
+            consts.first().map(|c| c.as_f64()).unwrap_or(1.0),
             consts.get(1).map(|c| c.as_u64()).unwrap_or(10),
         ))),
         "format_u64" => Ok(Box::new(crate::nodes::convert::FormatU64::with_radix(
-            consts.get(0).map(|c| c.as_u64()).unwrap_or(10) as u32,
+            consts.first().map(|c| c.as_u64()).unwrap_or(10) as u32,
         ))),
         "format_f64" => Ok(Box::new(crate::nodes::convert::FormatF64::new(
-            consts.get(0).map(|c| c.as_u64()).unwrap_or(2) as usize,
+            consts.first().map(|c| c.as_u64()).unwrap_or(2) as usize,
         ))),
         "zero_pad_u64" => Ok(Box::new(crate::nodes::convert::ZeroPadU64::new(
-            consts.get(0).map(|c| c.as_u64()).unwrap_or(10) as usize,
+            consts.first().map(|c| c.as_u64()).unwrap_or(10) as usize,
         ))),
 
         // --- Distributions missing ---
         "dist_uniform" => {
             Ok(Box::new(IcdSample::uniform(
-                consts.get(0).map(|c| c.as_f64()).unwrap_or(0.0),
+                consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
                 consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
             )))
         }
         "dist_pareto" => {
             Ok(Box::new(IcdSample::pareto(
-                consts.get(0).map(|c| c.as_f64()).unwrap_or(1.0),
+                consts.first().map(|c| c.as_f64()).unwrap_or(1.0),
                 consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
             )))
         }
         "dist_zipf" => {
             Ok(Box::new(IcdSample::zipf(
-                consts.get(0).map(|c| c.as_u64()).unwrap_or(100),
+                consts.first().map(|c| c.as_u64()).unwrap_or(100),
                 consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
             )))
         }
@@ -1762,23 +1766,37 @@ fn build_node(
 
         // --- Byte buffer missing ---
         "bytes_from_hash" => Ok(Box::new(crate::nodes::bytebuf::BytesFromHash::new(
-            consts.get(0).map(|c| c.as_u64()).unwrap_or(16) as usize,
+            consts.first().map(|c| c.as_u64()).unwrap_or(16) as usize,
         ))),
 
         // --- Noise missing ---
         "simplex_2d" => Ok(Box::new(crate::nodes::noise::SimplexNoise2D::new(
-            consts.get(0).map(|c| c.as_u64()).unwrap_or(0),
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
             consts.get(1).map(|c| c.as_f64()).unwrap_or(0.01),
         ))),
 
         // --- Regex missing ---
         "regex_match" => Ok(Box::new(crate::nodes::regex::RegexMatch::new(
-            consts.get(0).map(|c| c.as_str()).unwrap_or(".*"),
+            consts.first().map(|c| c.as_str()).unwrap_or(".*"),
         ))),
+
+        // --- Math (trig & elementary) ---
+        "sin" => Ok(Box::new(crate::nodes::math::Sin::new())),
+        "cos" => Ok(Box::new(crate::nodes::math::Cos::new())),
+        "tan" => Ok(Box::new(crate::nodes::math::Tan::new())),
+        "asin" => Ok(Box::new(crate::nodes::math::Asin::new())),
+        "acos" => Ok(Box::new(crate::nodes::math::Acos::new())),
+        "atan" => Ok(Box::new(crate::nodes::math::Atan::new())),
+        "atan2" => Ok(Box::new(crate::nodes::math::Atan2::new())),
+        "sqrt" => Ok(Box::new(crate::nodes::math::Sqrt::new())),
+        "abs_f64" => Ok(Box::new(crate::nodes::math::Abs::new())),
+        "ln" => Ok(Box::new(crate::nodes::math::Ln::new())),
+        "exp" => Ok(Box::new(crate::nodes::math::Exp::new())),
+        "pow" => Ok(Box::new(crate::nodes::math::Pow::new())),
 
         // --- String ---
         "combinations" => Ok(Box::new(crate::nodes::string::Combinations::new(
-            consts.get(0).map(|c| c.as_str()).unwrap_or("a-z"),
+            consts.first().map(|c| c.as_str()).unwrap_or("a-z"),
         ))),
         "number_to_words" => Ok(Box::new(crate::nodes::string::NumberToWords::new())),
 
@@ -1797,6 +1815,76 @@ fn build_node(
         // --- Datetime ---
         "date_components" => Ok(Box::new(crate::nodes::datetime::DateComponents::new())),
         "session_start_millis" => Ok(Box::new(crate::nodes::context::SessionStartMillis::new())),
+        "elapsed_millis" => Ok(Box::new(crate::nodes::context::ElapsedMillis::new())),
+        "thread_id" => Ok(Box::new(crate::nodes::context::ThreadId::new())),
+
+        // --- Vectordata (feature-gated) ---
+        #[cfg(feature = "vectordata")]
+        "vector_at" => {
+            let src = consts.first().map(|c| c.as_str()).unwrap_or("");
+            crate::nodes::vectors::VectorAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        }
+        #[cfg(feature = "vectordata")]
+        "vector_at_bytes" => {
+            let src = consts.first().map(|c| c.as_str()).unwrap_or("");
+            crate::nodes::vectors::VectorAtBytes::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        }
+        #[cfg(feature = "vectordata")]
+        "query_vector_at" => {
+            let src = consts.first().map(|c| c.as_str()).unwrap_or("");
+            crate::nodes::vectors::QueryVectorAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        }
+        #[cfg(feature = "vectordata")]
+        "query_vector_at_bytes" => {
+            let src = consts.first().map(|c| c.as_str()).unwrap_or("");
+            crate::nodes::vectors::QueryVectorAtBytes::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        }
+        #[cfg(feature = "vectordata")]
+        "neighbor_indices_at" => {
+            let src = consts.first().map(|c| c.as_str()).unwrap_or("");
+            crate::nodes::vectors::NeighborIndicesAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        }
+        #[cfg(feature = "vectordata")]
+        "neighbor_distances_at" => {
+            let src = consts.first().map(|c| c.as_str()).unwrap_or("");
+            crate::nodes::vectors::NeighborDistancesAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        }
+        #[cfg(feature = "vectordata")]
+        "filtered_neighbor_indices_at" => {
+            let src = consts.first().map(|c| c.as_str()).unwrap_or("");
+            crate::nodes::vectors::FilteredNeighborIndicesAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        }
+        #[cfg(feature = "vectordata")]
+        "filtered_neighbor_distances_at" => {
+            let src = consts.first().map(|c| c.as_str()).unwrap_or("");
+            crate::nodes::vectors::FilteredNeighborDistancesAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        }
+        #[cfg(feature = "vectordata")]
+        "dataset_distance_function" => {
+            let src = consts.first().map(|c| c.as_str()).unwrap_or("");
+            crate::nodes::vectors::DatasetDistanceFunction::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        }
+        #[cfg(feature = "vectordata")]
+        "vector_dim" => {
+            let src = consts.first().map(|c| c.as_str()).unwrap_or("");
+            crate::nodes::vectors::VectorDim::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        }
+        #[cfg(feature = "vectordata")]
+        "vector_count" => {
+            let src = consts.first().map(|c| c.as_str()).unwrap_or("");
+            crate::nodes::vectors::VectorCount::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        }
 
         // --- Diagnostic ---
         "debug_repr" => Ok(Box::new(crate::nodes::diagnostic::DebugRepr::new(crate::node::PortType::U64))),
@@ -1811,8 +1899,8 @@ fn build_node(
             // Check registry for variadic functions before giving up.
             // The registry carries the constructor — no name-to-type
             // mapping needed here.
-            if let Some(sig) = registry::lookup(func) {
-                if sig.is_variadic() {
+            if let Some(sig) = registry::lookup(func)
+                && sig.is_variadic() {
                     if wires.is_empty() {
                         if let Some(id) = sig.identity {
                             return Ok(Box::new(ConstU64::new(id)));
@@ -1823,8 +1911,13 @@ fn build_node(
                         return Ok(ctor(wires.len()));
                     }
                 }
+            let mut msg = format!("unknown function: '{func}'\n");
+            if let Some(suggestion) = registry::suggest_function(func) {
+                msg.push_str(&format!("\n  Did you mean '{suggestion}'?"));
             }
-            Err(format!("unknown function: {func}"))
+            msg.push_str("\n\n  This function is not registered in the GK function library.");
+            msg.push_str("\n  Use 'nbrs describe gk functions' to see all available functions.");
+            Err(msg)
         }
     }
 }
@@ -2174,6 +2267,8 @@ mod tests {
             ("dist_uniform", "coordinates := (cycle)\nlut := dist_uniform(0.0, 1.0)\nout := lut_sample(lut)"),
             ("dist_pareto", "coordinates := (cycle)\nlut := dist_pareto(1.0, 1.0)\nout := lut_sample(lut)"),
             ("dist_zipf", "coordinates := (cycle)\nlut := dist_zipf(100, 1.0)\nout := lut_sample(lut)"),
+            ("histribution", "coordinates := (cycle)\nout := histribution(hash(cycle), \"50 25 13 12\")"),
+            ("dist_empirical", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := dist_empirical(f, \"1.0 3.0 5.0 7.0 9.0\")"),
             // Weighted functions need valid spec strings
             ("weighted_strings", "coordinates := (cycle)\nout := weighted_strings(hash(cycle), \"a:0.5;b:0.5\")"),
             ("weighted_u64", "coordinates := (cycle)\nout := weighted_u64(hash(cycle), \"10:0.5;20:0.5\")"),
@@ -2195,6 +2290,8 @@ mod tests {
             ("current_epoch_millis", "coordinates := (cycle)\nout := current_epoch_millis()"),
             ("counter", "coordinates := (cycle)\nout := counter()"),
             ("session_start_millis", "coordinates := (cycle)\nout := session_start_millis()"),
+            ("elapsed_millis", "coordinates := (cycle)\nout := elapsed_millis()"),
+            ("thread_id", "coordinates := (cycle)\nout := thread_id()"),
             // f64 input functions
             ("clamp_f64", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := clamp_f64(f, 0.0, 0.5)"),
             ("quantize", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := quantize(f, 0.1)"),
@@ -2231,6 +2328,17 @@ mod tests {
                 format!("coordinates := (cycle)\nout := {call}")
             };
 
+            // Skip vectordata functions — their constructors perform I/O
+            // (catalog lookup + dataset loading) which requires network
+            // access. They compile correctly with a valid dataset source.
+            let vectordata_fns = [
+                "vector_at", "vector_at_bytes", "query_vector_at", "query_vector_at_bytes",
+                "neighbor_indices_at", "neighbor_distances_at",
+                "filtered_neighbor_indices_at", "filtered_neighbor_distances_at",
+                "dataset_distance_function", "vector_dim", "vector_count",
+            ];
+            if vectordata_fns.contains(&sig.name) { continue; }
+
             let result = std::panic::catch_unwind(|| {
                 compile_gk(&src)
             });
@@ -2238,8 +2346,6 @@ mod tests {
             match result {
                 Ok(Ok(_)) => {}
                 Ok(Err(e)) => {
-                    // Filter out known acceptable errors (type mismatches
-                    // from auto-generated args are OK if we have an override)
                     if !overrides.contains_key(sig.name) {
                         failures.push(format!("  {}: {e}", sig.name));
                     }

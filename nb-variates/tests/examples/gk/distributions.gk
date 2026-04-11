@@ -1,0 +1,12 @@
+// distributions.gk — Distribution sampling via ICD and histribution.
+//
+// Exercises the sampling pipeline: hash → unit_interval → icd_normal
+// and the inline histribution spec.
+//
+// Expected events:
+//   BindingResolved for icd and histribution nodes
+
+coordinates := (cycle)
+u := unit_interval(hash(cycle))
+normal := icd_normal(u, 100.0, 15.0)
+outcome := histribution(hash(cycle), "100:80 200:15 300:5")

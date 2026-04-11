@@ -15,21 +15,27 @@ use nb_metrics::frame::{MetricsFrame, Sample};
 use nb_metrics::labels::Labels;
 use nb_rate::RateLimiter;
 
-use crate::adapter::Adapter;
+use crate::adapter::{DriverAdapter, OpDispenser};
 use crate::cycle::CycleSource;
 use crate::opseq::{OpSequence, SequencerType};
-use crate::adapter::AssembledOp;
+use crate::validation;
 
 /// Configuration for an activity.
 pub struct ActivityConfig {
     pub name: String,
     pub cycles: u64,
+    /// Number of fibers (tokio tasks) executing stanzas concurrently.
     pub concurrency: usize,
     pub cycle_rate: Option<f64>,
     pub stanza_rate: Option<f64>,
     pub sequencer: SequencerType,
     pub error_spec: String,
     pub max_retries: u32,
+    /// Maximum number of ops within a stanza that execute concurrently.
+    /// Default 1 (sequential): ops execute one at a time with capture
+    /// flow between them. Values > 1 allow concurrent op execution
+    /// within a stanza window — captures only flow between windows.
+    pub stanza_concurrency: usize,
 }
 
 impl Default for ActivityConfig {
@@ -43,6 +49,7 @@ impl Default for ActivityConfig {
             sequencer: SequencerType::Bucket,
             error_spec: ".*:warn,counter".into(),
             max_retries: 3,
+            stanza_concurrency: 1,
         }
     }
 }
@@ -56,6 +63,8 @@ pub struct ActivityMetrics {
     pub cycles_total: Counter,
     pub errors_total: Counter,
     pub stanzas_total: Counter,
+    pub result_elements: Counter,
+    pub result_bytes: Counter,
 }
 
 impl ActivityMetrics {
@@ -67,6 +76,8 @@ impl ActivityMetrics {
             cycles_total: Counter::new(labels.with("name", "cycles_total")),
             errors_total: Counter::new(labels.with("name", "errors_total")),
             stanzas_total: Counter::new(labels.with("name", "stanzas_total")),
+            result_elements: Counter::new(labels.with("name", "result_elements")),
+            result_bytes: Counter::new(labels.with("name", "result_bytes")),
         }
     }
 
@@ -109,6 +120,14 @@ impl ActivityMetrics {
                     labels: self.stanzas_total.labels().clone(),
                     value: self.stanzas_total.get(),
                 },
+                Sample::Counter {
+                    labels: self.result_elements.labels().clone(),
+                    value: self.result_elements.get(),
+                },
+                Sample::Counter {
+                    labels: self.result_bytes.labels().clone(),
+                    value: self.result_bytes.get(),
+                },
             ],
         }
     }
@@ -122,6 +141,8 @@ pub struct Activity {
     pub op_sequence: OpSequence,
     pub error_router: ErrorRouter,
     cycle_source: CycleSource,
+    /// Resolved workload parameters (constant per run).
+    pub workload_params: Arc<std::collections::HashMap<String, String>>,
 }
 
 impl Activity {
@@ -130,10 +151,22 @@ impl Activity {
         parent_labels: &Labels,
         op_sequence: OpSequence,
     ) -> Self {
+        Self::with_params(config, parent_labels, op_sequence, std::collections::HashMap::new())
+    }
+
+    pub fn with_params(
+        config: ActivityConfig,
+        parent_labels: &Labels,
+        op_sequence: OpSequence,
+        params: std::collections::HashMap<String, String>,
+    ) -> Self {
         let labels = parent_labels.with("activity", &config.name);
         let metrics = Arc::new(ActivityMetrics::new(&labels));
         let error_router = ErrorRouter::parse(&config.error_spec)
-            .unwrap_or_else(|_| ErrorRouter::default_warn_count());
+            .unwrap_or_else(|e| {
+                eprintln!("warning: invalid error spec '{}': {e}; using default (warn,count)", config.error_spec);
+                ErrorRouter::default_warn_count()
+            });
         let cycle_source = CycleSource::new(0, config.cycles);
 
         Self {
@@ -143,6 +176,7 @@ impl Activity {
             op_sequence,
             error_router,
             cycle_source,
+            workload_params: Arc::new(params),
         }
     }
 
@@ -151,13 +185,83 @@ impl Activity {
         self.metrics.clone()
     }
 
-    /// Run the activity to completion.
-    pub async fn run<A: Adapter + 'static>(
+    /// Run the activity with a single adapter for all ops.
+    pub async fn run_with_driver(
         self,
-        adapter: Arc<A>,
-        build_op: Arc<dyn Fn(u64, &nb_workload::model::ParsedOp) -> AssembledOp + Send + Sync>,
+        adapter: Arc<dyn DriverAdapter>,
+        program: Arc<nb_variates::kernel::GkProgram>,
+    ) {
+        let mut adapters = std::collections::HashMap::new();
+        let name = adapter.name().to_string();
+        adapters.insert(name.clone(), adapter);
+        self.run_with_adapters(adapters, &name, program).await;
+    }
+
+    /// Run the activity with multiple adapters (SRD 38/40).
+    ///
+    /// Each op template's `adapter` param selects which adapter to use.
+    /// Templates without an explicit adapter use `default_adapter`.
+    /// At init time: maps each template to a dispenser from the
+    /// appropriate adapter. Per fiber: creates a FiberBuilder. Per
+    /// cycle: resolves fields via GK, executes via dispenser.
+    pub async fn run_with_adapters(
+        self,
+        adapters: std::collections::HashMap<String, Arc<dyn DriverAdapter>>,
+        default_adapter: &str,
+        program: Arc<nb_variates::kernel::GkProgram>,
     ) {
         let activity = Arc::new(self);
+
+        // Init time: map each template to a dispenser from its adapter,
+        // then wrap with result traverser for consumption/capture
+        let templates = activity.op_sequence.templates();
+        let traversal_stats = Arc::new(crate::wrappers::TraversalStats {
+            metrics: activity.metrics.clone(),
+        });
+        let mut dispensers: Vec<Arc<dyn OpDispenser>> = Vec::new();
+        let mut validation_metrics: Vec<Arc<validation::ValidationMetrics>> = Vec::new();
+        let mut extra_bindings_per_template: Vec<Vec<String>> = Vec::new();
+        for template in templates {
+            // Resolve adapter: per-template override or default
+            let adapter_name = template.params.get("adapter")
+                .and_then(|v| v.as_str())
+                .or_else(|| template.params.get("driver").and_then(|v| v.as_str()))
+                .unwrap_or(default_adapter);
+            let adapter = match adapters.get(adapter_name) {
+                Some(a) => a,
+                None => {
+                    eprintln!("error: unknown adapter '{adapter_name}' for op '{}'", template.name);
+                    eprintln!("  available: {}", adapters.keys().cloned().collect::<Vec<_>>().join(", "));
+                    return;
+                }
+            };
+
+            match adapter.map_op(template) {
+                Ok(d) => {
+                    let raw = Arc::from(d);
+                    // Wrap with traversal (innermost)
+                    let traversed = crate::wrappers::TraversingDispenser::wrap(
+                        raw, template, traversal_stats.clone(),
+                    );
+                    // Wrap with validation (outermost) — only if template declares it
+                    let (final_dispenser, vm) = crate::validation::ValidatingDispenser::wrap(
+                        traversed, template, &activity.labels,
+                    );
+                    if let Some(vm) = vm {
+                        validation_metrics.push(vm);
+                    }
+                    dispensers.push(final_dispenser);
+                    extra_bindings_per_template.push(validation::extra_bindings(template));
+                }
+                Err(e) => {
+                    eprintln!("error: adapter.map_op failed for '{}': {e}", template.name);
+                    return;
+                }
+            }
+        }
+        let dispensers = Arc::new(dispensers);
+        let extra_bindings_per_template = Arc::new(extra_bindings_per_template);
+        let validation_metrics = Arc::new(validation_metrics);
 
         let cycle_rl = activity.config.cycle_rate.map(|r| {
             Arc::new(RateLimiter::start(nb_rate::RateSpec::new(r)))
@@ -170,177 +274,177 @@ impl Activity {
 
         for _task_id in 0..activity.config.concurrency {
             let activity = activity.clone();
-            let adapter = adapter.clone();
+            let dispensers = dispensers.clone();
+            let extra_bindings = extra_bindings_per_template.clone();
+            let program = program.clone();
             let cycle_rl = cycle_rl.clone();
             let stanza_rl = stanza_rl.clone();
-            let build_op = build_op.clone();
 
             handles.push(tokio::spawn(async move {
-                executor_task(activity, adapter, cycle_rl, stanza_rl, build_op).await;
+                executor_task(
+                    activity, dispensers, extra_bindings, program,
+                    cycle_rl, stanza_rl,
+                ).await;
             }));
         }
 
         for handle in handles {
-            let _ = handle.await;
+            if let Err(e) = handle.await {
+                if e.is_panic() {
+                    eprintln!("error: executor fiber panicked: {e}");
+                } else {
+                    eprintln!("error: executor fiber failed: {e}");
+                }
+                activity.metrics.errors_total.inc();
+            }
+        }
+
+        // Print validation summary if any validation was active
+        if !validation_metrics.is_empty() {
+            let mut total_passed = 0u64;
+            let mut total_failed = 0u64;
+            for vm in validation_metrics.iter() {
+                total_passed += vm.passed();
+                total_failed += vm.failed();
+                for (name, histo) in &vm.relevancy_histograms {
+                    let snap = histo.snapshot();
+                    if snap.len() > 0 {
+                        let mean = snap.mean() / 10_000.0;
+                        let p50 = snap.value_at_quantile(0.5) as f64 / 10_000.0;
+                        let p99 = snap.value_at_quantile(0.99) as f64 / 10_000.0;
+                        let min = snap.min() as f64 / 10_000.0;
+                        let max = snap.max() as f64 / 10_000.0;
+                        eprintln!(
+                            "  {name}: mean={mean:.4} p50={p50:.4} p99={p99:.4} min={min:.4} max={max:.4} (n={})",
+                            snap.len()
+                        );
+                    }
+                }
+            }
+            eprintln!(
+                "validation: {} passed, {} failed",
+                total_passed, total_failed
+            );
         }
     }
 }
 
-/// Execute cycles as stanza-level units.
+/// Executor task for the tiered DriverAdapter interface.
 ///
-/// Each iteration claims a full stanza of consecutive cycles and
-/// processes them in sequence. This ensures captures from op N are
-/// available to op N+1 within the same stanza. Each stanza is an
-/// isolation scope — the capture context resets at stanza start.
-async fn executor_task<A: Adapter>(
+/// Each fiber has its own FiberBuilder (lock-free GK state).
+/// Ops within a stanza are processed in windows of `stanza_concurrency`:
+/// - Resolve all ops in the window (sequential, uses GK state)
+/// - Execute all ops in the window concurrently (join_all)
+/// - Process results (metrics, captures)
+///
+/// With stanza_concurrency=1 (default), each window is one op,
+/// yielding sequential execution with capture flow between every op.
+async fn executor_task(
     activity: Arc<Activity>,
-    adapter: Arc<A>,
+    dispensers: Arc<Vec<Arc<dyn OpDispenser>>>,
+    extra_bindings: Arc<Vec<Vec<String>>>,
+    program: Arc<nb_variates::kernel::GkProgram>,
     cycle_rl: Option<Arc<RateLimiter>>,
     stanza_rl: Option<Arc<RateLimiter>>,
-    build_op: Arc<dyn Fn(u64, &nb_workload::model::ParsedOp) -> AssembledOp + Send + Sync>,
 ) {
+    use crate::synthesis::FiberBuilder;
+    use crate::adapter::ResolvedFields;
+
     let stanza_len = activity.op_sequence.stanza_length() as u64;
     let max_retries = activity.config.max_retries;
+    let stanza_concurrency = activity.config.stanza_concurrency.max(1) as u64;
+    let mut fiber = FiberBuilder::with_params(program, activity.workload_params.clone());
 
-    if stanza_len <= 1 {
-        // Single-op stanza — no capture flow needed, use fast path
-        executor_task_simple(&activity, &adapter, &cycle_rl, &stanza_rl, &build_op, max_retries).await;
-        return;
-    }
-
-    // Stanza-level execution: claim full stanzas atomically
     loop {
         let Some(base_cycle) = activity.cycle_source.next_n(stanza_len) else { break };
 
-        // Rate limit at stanza boundary
         if let Some(srl) = &stanza_rl {
             srl.acquire().await;
         }
         activity.metrics.stanzas_total.inc();
+        fiber.reset_captures(base_cycle);
 
-        // Process each op in the stanza sequentially
-        for offset in 0..stanza_len {
-            let cycle = base_cycle + offset;
+        // Process stanza ops in windows of stanza_concurrency
+        let mut offset = 0u64;
+        while offset < stanza_len {
+            let window_end = (offset + stanza_concurrency).min(stanza_len);
+            let window_size = window_end - offset;
 
-            let wait_start = Instant::now();
-            if let Some(crl) = &cycle_rl {
-                crl.acquire().await;
+            // Apply captures from previous window before resolving
+            if offset > 0 {
+                fiber.apply_captures();
             }
-            let wait_nanos = wait_start.elapsed().as_nanos() as u64;
 
-            let op_template = activity.op_sequence.get(cycle);
-            let op = build_op(cycle, op_template);
+            // Phase 1: Resolve all ops in the window (sequential, uses GK state)
+            let mut window: Vec<(u64, usize, ResolvedFields, u64)> = Vec::with_capacity(window_size as usize);
+            for i in offset..window_end {
+                let cycle = base_cycle + i;
 
-            let service_start = Instant::now();
-            let mut retries = 0u32;
+                let wait_start = Instant::now();
+                if let Some(crl) = &cycle_rl {
+                    crl.acquire().await;
+                }
+                let wait_nanos = wait_start.elapsed().as_nanos() as u64;
 
-            loop {
-                match adapter.execute(&op).await {
-                    Ok(_result) => {
-                        // Future: extract captures from result and apply
-                        // to the OpBuilder's capture context here.
-                        let service_nanos = service_start.elapsed().as_nanos() as u64;
-                        activity.metrics.service_time.record(service_nanos);
-                        activity.metrics.wait_time.record(wait_nanos);
-                        activity.metrics.response_time.record(service_nanos + wait_nanos);
-                        activity.metrics.cycles_total.inc();
-                        break;
-                    }
-                    Err(e) => {
-                        let duration_nanos = service_start.elapsed().as_nanos() as u64;
-                        let detail = activity.error_router.handle_error(
-                            &e.error_name,
-                            &e.message,
-                            cycle,
-                            duration_nanos,
-                        );
-                        activity.metrics.errors_total.inc();
+                let (template_idx, template) = activity.op_sequence.get_with_index(cycle);
+                fiber.set_coordinates(&[cycle]);
+                let fields = fiber.resolve_with_extras(template, &extra_bindings[template_idx]);
+                window.push((cycle, template_idx, fields, wait_nanos));
+            }
 
-                        if detail.is_retryable() && retries < max_retries {
-                            retries += 1;
-                            continue;
+            // Phase 2: Execute all ops in the window concurrently
+            let futures: Vec<_> = window.iter().map(|(cycle, template_idx, fields, _)| {
+                let dispenser = dispensers[*template_idx].clone();
+                let cycle = *cycle;
+                let max_retries = max_retries;
+                let activity = activity.clone();
+                async move {
+                    let service_start = Instant::now();
+                    let mut retries = 0u32;
+                    loop {
+                        match dispenser.execute(cycle, fields).await {
+                            Ok(result) => {
+                                let service_nanos = service_start.elapsed().as_nanos() as u64;
+                                return (true, service_nanos, result.captures);
+                            }
+                            Err(e) => {
+                                let duration_nanos = service_start.elapsed().as_nanos() as u64;
+                                let inner = e.error();
+                                let detail = activity.error_router.handle_error(
+                                    &inner.error_name, &inner.message, cycle, duration_nanos,
+                                );
+                                activity.metrics.errors_total.inc();
+
+                                if !e.is_adapter_level() && detail.is_retryable() && retries < max_retries {
+                                    retries += 1;
+                                    continue;
+                                }
+
+                                let service_nanos = service_start.elapsed().as_nanos() as u64;
+                                return (false, service_nanos, std::collections::HashMap::new());
+                            }
                         }
-
-                        let service_nanos = service_start.elapsed().as_nanos() as u64;
-                        activity.metrics.service_time.record(service_nanos);
-                        activity.metrics.wait_time.record(wait_nanos);
-                        activity.metrics.response_time.record(service_nanos + wait_nanos);
-                        activity.metrics.cycles_total.inc();
-                        break;
                     }
                 }
-            }
-        }
-    }
-}
+            }).collect();
 
-/// Fast path for single-op stanzas (no capture flow needed).
-async fn executor_task_simple<A: Adapter>(
-    activity: &Arc<Activity>,
-    adapter: &Arc<A>,
-    cycle_rl: &Option<Arc<RateLimiter>>,
-    stanza_rl: &Option<Arc<RateLimiter>>,
-    build_op: &Arc<dyn Fn(u64, &nb_workload::model::ParsedOp) -> AssembledOp + Send + Sync>,
-    max_retries: u32,
-) {
-    loop {
-        let Some(cycle) = activity.cycle_source.next() else { break };
+            let results = futures::future::join_all(futures).await;
 
-        let stanza_len = activity.op_sequence.stanza_length() as u64;
-        if let Some(srl) = stanza_rl {
-            if stanza_len > 0 && cycle % stanza_len == 0 {
-                srl.acquire().await;
-                activity.metrics.stanzas_total.inc();
-            }
-        } else if stanza_len > 0 && cycle % stanza_len == 0 {
-            activity.metrics.stanzas_total.inc();
-        }
-
-        let wait_start = Instant::now();
-        if let Some(crl) = cycle_rl {
-            crl.acquire().await;
-        }
-        let wait_nanos = wait_start.elapsed().as_nanos() as u64;
-
-        let op_template = activity.op_sequence.get(cycle);
-        let op = build_op(cycle, op_template);
-
-        let service_start = Instant::now();
-        let mut retries = 0u32;
-
-        loop {
-            match adapter.execute(&op).await {
-                Ok(_result) => {
-                    let service_nanos = service_start.elapsed().as_nanos() as u64;
-                    activity.metrics.service_time.record(service_nanos);
-                    activity.metrics.wait_time.record(wait_nanos);
-                    activity.metrics.response_time.record(service_nanos + wait_nanos);
+            // Phase 3: Record metrics and store captures
+            for (i, (success, service_nanos, captures)) in results.into_iter().enumerate() {
+                let wait_nanos = window[i].3;
+                activity.metrics.service_time.record(service_nanos);
+                activity.metrics.wait_time.record(wait_nanos);
+                activity.metrics.response_time.record(service_nanos + wait_nanos);
+                if success {
                     activity.metrics.cycles_total.inc();
-                    break;
                 }
-                Err(e) => {
-                    let duration_nanos = service_start.elapsed().as_nanos() as u64;
-                    let detail = activity.error_router.handle_error(
-                        &e.error_name,
-                        &e.message,
-                        cycle,
-                        duration_nanos,
-                    );
-                    activity.metrics.errors_total.inc();
-
-                    if detail.is_retryable() && retries < max_retries {
-                        retries += 1;
-                        continue;
-                    }
-
-                    let service_nanos = service_start.elapsed().as_nanos() as u64;
-                    activity.metrics.service_time.record(service_nanos);
-                    activity.metrics.wait_time.record(wait_nanos);
-                    activity.metrics.response_time.record(service_nanos + wait_nanos);
-                    activity.metrics.cycles_total.inc();
-                    break;
+                for (name, value) in captures {
+                    fiber.capture(&name, value);
                 }
             }
+
+            offset = window_end;
         }
     }
 }
@@ -348,59 +452,101 @@ async fn executor_task_simple<A: Adapter>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::{OpResult, AdapterError};
+    use crate::adapter::{OpResult, AdapterError, ExecutionError, ResolvedFields};
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    struct CountingAdapter {
-        count: AtomicU64,
+    /// A counting DriverAdapter + OpDispenser for testing.
+    struct CountingDriverAdapter {
+        count: Arc<AtomicU64>,
     }
 
-    impl CountingAdapter {
-        fn new() -> Self { Self { count: AtomicU64::new(0) } }
-        fn count(&self) -> u64 { self.count.load(Ordering::Relaxed) }
+    impl CountingDriverAdapter {
+        fn new() -> (Self, Arc<AtomicU64>) {
+            let count = Arc::new(AtomicU64::new(0));
+            (Self { count: count.clone() }, count)
+        }
     }
 
-    impl Adapter for CountingAdapter {
-        fn execute(&self, _op: &AssembledOp) -> impl std::future::Future<Output = Result<OpResult, AdapterError>> + Send {
+    impl DriverAdapter for CountingDriverAdapter {
+        fn name(&self) -> &str { "counting" }
+        fn map_op(&self, _template: &nb_workload::model::ParsedOp)
+            -> Result<Box<dyn OpDispenser>, String> {
+            Ok(Box::new(CountingDispenser { count: self.count.clone() }))
+        }
+    }
+
+    struct CountingDispenser {
+        count: Arc<AtomicU64>,
+    }
+
+    impl OpDispenser for CountingDispenser {
+        fn execute<'a>(&'a self, _cycle: u64, _fields: &'a ResolvedFields)
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
             self.count.fetch_add(1, Ordering::Relaxed);
-            async { Ok(OpResult { success: true, status: 200, body: None }) }
+            Box::pin(async { Ok(OpResult { body: None, captures: HashMap::new() }) })
         }
     }
 
-    struct FailThenSucceed {
-        fails_remaining: AtomicU64,
-        total_calls: AtomicU64,
+    /// A fail-then-succeed DriverAdapter for retry testing.
+    struct FailThenSucceedDriverAdapter {
+        fails_remaining: Arc<AtomicU64>,
+        total_calls: Arc<AtomicU64>,
     }
 
-    impl FailThenSucceed {
-        fn new(fail_count: u64) -> Self {
-            Self {
-                fails_remaining: AtomicU64::new(fail_count),
-                total_calls: AtomicU64::new(0),
-            }
+    impl FailThenSucceedDriverAdapter {
+        fn new(fail_count: u64) -> (Self, Arc<AtomicU64>) {
+            let total = Arc::new(AtomicU64::new(0));
+            (Self {
+                fails_remaining: Arc::new(AtomicU64::new(fail_count)),
+                total_calls: total.clone(),
+            }, total)
         }
     }
 
-    impl Adapter for FailThenSucceed {
-        fn execute(&self, _op: &AssembledOp) -> impl std::future::Future<Output = Result<OpResult, AdapterError>> + Send {
+    impl DriverAdapter for FailThenSucceedDriverAdapter {
+        fn name(&self) -> &str { "fail-then-succeed" }
+        fn map_op(&self, _template: &nb_workload::model::ParsedOp)
+            -> Result<Box<dyn OpDispenser>, String> {
+            Ok(Box::new(FailThenSucceedDispenser {
+                fails_remaining: self.fails_remaining.clone(),
+                total_calls: self.total_calls.clone(),
+            }))
+        }
+    }
+
+    struct FailThenSucceedDispenser {
+        fails_remaining: Arc<AtomicU64>,
+        total_calls: Arc<AtomicU64>,
+    }
+
+    impl OpDispenser for FailThenSucceedDispenser {
+        fn execute<'a>(&'a self, _cycle: u64, _fields: &'a ResolvedFields)
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
             self.total_calls.fetch_add(1, Ordering::Relaxed);
             let remaining = self.fails_remaining.fetch_sub(1, Ordering::Relaxed);
-            async move {
+            Box::pin(async move {
                 if remaining > 0 {
-                    Err(AdapterError {
+                    Err(ExecutionError::Op(AdapterError {
                         error_name: "TransientError".into(),
                         message: "temporary failure".into(),
-                    })
+                        retryable: true,
+                    }))
                 } else {
-                    Ok(OpResult { success: true, status: 200, body: None })
+                    Ok(OpResult { body: None, captures: HashMap::new() })
                 }
-            }
+            })
         }
     }
 
-    fn simple_build_op(_cycle: u64, _template: &nb_workload::model::ParsedOp) -> AssembledOp {
-        AssembledOp { name: "test".into(), fields: HashMap::new() }
+    /// Build a minimal GK program (single identity node) for tests.
+    fn test_program() -> Arc<nb_variates::kernel::GkProgram> {
+        use nb_variates::assembly::{GkAssembler, WireRef};
+        use nb_variates::nodes::identity::Identity;
+        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        asm.add_node("id", Box::new(Identity::new()), vec![WireRef::coord("cycle")]);
+        asm.add_output("id", WireRef::node("id"));
+        asm.compile().unwrap().into_program()
     }
 
     #[tokio::test]
@@ -415,13 +561,10 @@ mod tests {
         let seq = OpSequence::uniform(ops);
         let activity = Activity::new(config, &Labels::of("session", "test"), seq);
 
-        let adapter = Arc::new(CountingAdapter::new());
-        let build_op = Arc::new(simple_build_op as fn(u64, &nb_workload::model::ParsedOp) -> AssembledOp);
+        let (adapter, count) = CountingDriverAdapter::new();
+        activity.run_with_driver(Arc::new(adapter), test_program()).await;
 
-        let adapter_ref = adapter.clone();
-        activity.run(adapter_ref, build_op).await;
-
-        assert_eq!(adapter.count(), 100);
+        assert_eq!(count.load(Ordering::Relaxed), 100);
     }
 
     #[tokio::test]
@@ -438,13 +581,10 @@ mod tests {
         let seq = OpSequence::uniform(ops);
         let activity = Activity::new(config, &Labels::of("session", "s1"), seq);
 
-        let adapter = Arc::new(FailThenSucceed::new(2));
-        let build_op = Arc::new(simple_build_op as fn(u64, &nb_workload::model::ParsedOp) -> AssembledOp);
+        let (adapter, total_calls) = FailThenSucceedDriverAdapter::new(2);
+        activity.run_with_driver(Arc::new(adapter), test_program()).await;
 
-        let adapter_ref = adapter.clone();
-        activity.run(adapter_ref, build_op).await;
-
-        assert_eq!(adapter.total_calls.load(Ordering::Relaxed), 3);
+        assert_eq!(total_calls.load(Ordering::Relaxed), 3);
     }
 
     #[tokio::test]
@@ -459,14 +599,11 @@ mod tests {
         let seq = OpSequence::uniform(ops);
         let activity = Activity::new(config, &Labels::of("session", "s1"), seq);
 
-        // Get shared metrics BEFORE run consumes the activity
         let shared_metrics = activity.shared_metrics();
 
-        let adapter = Arc::new(CountingAdapter::new());
-        let build_op = Arc::new(simple_build_op as fn(u64, &nb_workload::model::ParsedOp) -> AssembledOp);
-        activity.run(adapter, build_op).await;
+        let (adapter, _count) = CountingDriverAdapter::new();
+        activity.run_with_driver(Arc::new(adapter), test_program()).await;
 
-        // Metrics should reflect the completed run
         assert_eq!(shared_metrics.cycles_total.get(), 50);
         let frame = shared_metrics.capture(std::time::Duration::from_secs(1));
         assert!(!frame.samples.is_empty());
@@ -485,12 +622,10 @@ mod tests {
         let seq = OpSequence::uniform(ops);
         let activity = Activity::new(config, &Labels::of("session", "s1"), seq);
 
-        let adapter = Arc::new(CountingAdapter::new());
-        let build_op = Arc::new(simple_build_op as fn(u64, &nb_workload::model::ParsedOp) -> AssembledOp);
-        let adapter_ref = adapter.clone();
-        activity.run(adapter_ref, build_op).await;
+        let (adapter, count) = CountingDriverAdapter::new();
+        activity.run_with_driver(Arc::new(adapter), test_program()).await;
 
-        assert_eq!(adapter.count(), 10);
+        assert_eq!(count.load(Ordering::Relaxed), 10);
     }
 
     #[tokio::test]
@@ -507,9 +642,10 @@ mod tests {
         ];
         let seq = OpSequence::build(ops, &[4, 2], SequencerType::Bucket);
         let activity = Activity::new(config, &Labels::of("session", "s1"), seq);
-        let adapter = Arc::new(CountingAdapter::new());
-        let build_op = Arc::new(simple_build_op as fn(u64, &nb_workload::model::ParsedOp) -> AssembledOp);
-        activity.run(adapter.clone(), build_op).await;
-        assert_eq!(adapter.count(), 12);
+
+        let (adapter, count) = CountingDriverAdapter::new();
+        activity.run_with_driver(Arc::new(adapter), test_program()).await;
+
+        assert_eq!(count.load(Ordering::Relaxed), 12);
     }
 }

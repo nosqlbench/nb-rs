@@ -25,6 +25,12 @@ pub struct Hash64 {
     meta: NodeMeta,
 }
 
+impl Default for Hash64 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Hash64 {
     pub fn new() -> Self {
         Self {

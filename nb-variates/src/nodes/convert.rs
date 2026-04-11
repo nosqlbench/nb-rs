@@ -24,6 +24,12 @@ pub struct U64ToString {
     meta: NodeMeta,
 }
 
+impl Default for U64ToString {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl U64ToString {
     pub fn new() -> Self {
         Self {
@@ -57,6 +63,12 @@ impl GkNode for U64ToString {
 /// JIT level: P1 (String output; no compiled_u64 path).
 pub struct F64ToString {
     meta: NodeMeta,
+}
+
+impl Default for F64ToString {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl F64ToString {
@@ -96,6 +108,12 @@ pub struct U64ToF64 {
     meta: NodeMeta,
 }
 
+impl Default for U64ToF64 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl U64ToF64 {
     pub fn new() -> Self {
         Self {
@@ -129,6 +147,12 @@ impl GkNode for U64ToF64 {
 /// JIT level: P1 (no compiled_u64; bool input type).
 pub struct BoolToU64 {
     meta: NodeMeta,
+}
+
+impl Default for BoolToU64 {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BoolToU64 {
@@ -165,6 +189,12 @@ impl GkNode for BoolToU64 {
 /// JIT level: P1 (no compiled_u64; bool output type).
 pub struct U64ToBool {
     meta: NodeMeta,
+}
+
+impl Default for U64ToBool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl U64ToBool {
@@ -208,6 +238,12 @@ pub struct F64ToU64 {
     meta: NodeMeta,
 }
 
+impl Default for F64ToU64 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl F64ToU64 {
     pub fn new() -> Self {
         Self {
@@ -247,6 +283,12 @@ impl GkNode for F64ToU64 {
 /// JIT level: P2 (compiled_u64 via f64::from_bits + round).
 pub struct RoundToU64 {
     meta: NodeMeta,
+}
+
+impl Default for RoundToU64 {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RoundToU64 {
@@ -289,6 +331,12 @@ pub struct FloorToU64 {
     meta: NodeMeta,
 }
 
+impl Default for FloorToU64 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FloorToU64 {
     pub fn new() -> Self {
         Self {
@@ -326,6 +374,12 @@ impl GkNode for FloorToU64 {
 /// JIT level: P2 (compiled_u64 via f64::from_bits + ceil).
 pub struct CeilToU64 {
     meta: NodeMeta,
+}
+
+impl Default for CeilToU64 {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CeilToU64 {

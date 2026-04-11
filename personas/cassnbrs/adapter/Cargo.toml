@@ -1,0 +1,14 @@
+[package]
+name = "cassnbrs-adapter-cql"
+version = "0.1.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "CQL adapter for cassnbrs — native Cassandra protocol via Apache C++ driver"
+
+[dependencies]
+nb-activity = { path = "../../../nb-activity", version = "0.1.1", default-features = false }
+nb-variates = { path = "../../../nb-variates", version = "0.1.1" }
+nb-workload = { path = "../../../nb-workload", version = "0.1.1" }
+cassandra-cpp = "3"
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "rt"] }

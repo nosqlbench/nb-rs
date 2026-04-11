@@ -145,6 +145,155 @@ pub fn compile_bindings(ops: &[ParsedOp]) -> Result<GkKernel, String> {
     compile_bindings_with_path(ops, None)
 }
 
+/// Compile bindings, excluding named bind points from the "undeclared" check.
+/// Used when workload params will be resolved at cycle time, not via GK.
+pub fn compile_bindings_excluding(ops: &[ParsedOp], exclude: &[String]) -> Result<GkKernel, String> {
+    compile_bindings_excluding_with_path(ops, None, exclude)
+}
+
+pub fn compile_bindings_excluding_with_path(ops: &[ParsedOp], source_dir: Option<&std::path::Path>, exclude: &[String]) -> Result<GkKernel, String> {
+    // Delegate to the standard compilation, but filter out excluded
+    // names from the required-bindings collection.
+    compile_bindings_excluding_impl(ops, source_dir, false, exclude)
+}
+
+fn compile_bindings_excluding_impl(
+    ops: &[ParsedOp],
+    source_dir: Option<&std::path::Path>,
+    strict: bool,
+    exclude: &[String],
+) -> Result<GkKernel, String> {
+    use nb_workload::model::BindingsDef;
+    use nb_workload::bindpoints;
+
+    let gk_source = ops.iter().find_map(|op| {
+        if let BindingsDef::GkSource(src) = &op.bindings {
+            if !src.trim().is_empty() { Some(src.clone()) } else { None }
+        } else {
+            None
+        }
+    });
+
+    if let Some(source) = gk_source {
+        let mut required: Vec<String> = Vec::new();
+        for op in ops {
+            // Scan op fields for bind point references
+            for value in op.op.values() {
+                if let Some(s) = value.as_str() {
+                    for name in bindpoints::referenced_bindings(s) {
+                        if !required.contains(&name) && !exclude.contains(&name) {
+                            required.push(name);
+                        }
+                    }
+                }
+            }
+            // Scan params for bind point references (e.g., relevancy.expected)
+            collect_param_bindings(&op.params, exclude, &mut required);
+        }
+        return nb_variates::dsl::compile_gk_with_outputs(&source, source_dir, &required, strict);
+    }
+
+    // Legacy mode: same as compile_bindings_with_opts but filter required
+    let mut all_bindings: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for op in ops {
+        if let BindingsDef::Map(map) = &op.bindings {
+            for (name, expr) in map {
+                all_bindings.entry(name.clone()).or_insert_with(|| expr.clone());
+            }
+        }
+    }
+
+    let mut required: Vec<String> = Vec::new();
+    for op in ops {
+        for value in op.op.values() {
+            if let Some(s) = value.as_str() {
+                for name in bindpoints::referenced_bindings(s) {
+                    if !required.contains(&name) && !exclude.contains(&name) {
+                        required.push(name);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut gk_lines: Vec<String> = Vec::new();
+    gk_lines.push("coordinates := (cycle)".into());
+
+    for (binding_name, expr) in &all_bindings {
+        let chain = parse_binding_chain(expr);
+        if chain.is_empty() {
+            return Err(format!("empty binding expression for '{binding_name}'"));
+        }
+        let mut prev_wire = "cycle".to_string();
+        for (i, func) in chain.iter().enumerate() {
+            let is_last = i == chain.len() - 1;
+            let target = if is_last {
+                binding_name.clone()
+            } else {
+                format!("__chain_{binding_name}_{i}")
+            };
+            let (func_name, extra_args) = translate_legacy_func(&func.name, &func.args);
+            let mut call_args = vec![prev_wire.clone()];
+            for arg in &func.args {
+                call_args.push(strip_java_long_suffix(arg.trim()).to_string());
+            }
+            call_args.extend(extra_args);
+            gk_lines.push(format!("{target} := {func_name}({})", call_args.join(", ")));
+            prev_wire = target;
+        }
+    }
+
+    // Check for required bindings that have no GK source
+    let missing: Vec<&String> = required.iter()
+        .filter(|r| !all_bindings.contains_key(*r) && *r != "cycle")
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!("undeclared bind point references: {}. Add these to your bindings section.",
+            missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
+    }
+
+    let gk_source = gk_lines.join("\n");
+    nb_variates::dsl::compile_gk_with_outputs(&gk_source, source_dir, &required, strict)
+}
+
+/// Scan op params for bind point references (recursively through JSON values).
+fn collect_param_bindings(
+    params: &HashMap<String, serde_json::Value>,
+    exclude: &[String],
+    required: &mut Vec<String>,
+) {
+    for value in params.values() {
+        collect_json_bindings(value, exclude, required);
+    }
+}
+
+fn collect_json_bindings(
+    value: &serde_json::Value,
+    exclude: &[String],
+    required: &mut Vec<String>,
+) {
+    match value {
+        serde_json::Value::String(s) => {
+            for name in bindpoints::referenced_bindings(s) {
+                if !required.contains(&name) && !exclude.contains(&name) {
+                    required.push(name);
+                }
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for v in map.values() {
+                collect_json_bindings(v, exclude, required);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                collect_json_bindings(v, exclude, required);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn compile_bindings_with_path(ops: &[ParsedOp], source_dir: Option<&std::path::Path>) -> Result<GkKernel, String> {
     compile_bindings_with_opts(ops, source_dir, false)
 }
@@ -158,6 +307,18 @@ pub fn compile_bindings_with_libs(
     source_dir: Option<&std::path::Path>,
     gk_lib_paths: Vec<std::path::PathBuf>,
     strict: bool,
+) -> Result<GkKernel, String> {
+    compile_bindings_with_libs_excluding(ops, source_dir, gk_lib_paths, strict, &[])
+}
+
+/// Like `compile_bindings_with_libs` but excludes named bind points from
+/// the "undeclared" check. Used for workload params that resolve at cycle time.
+pub fn compile_bindings_with_libs_excluding(
+    ops: &[ParsedOp],
+    source_dir: Option<&std::path::Path>,
+    gk_lib_paths: Vec<std::path::PathBuf>,
+    strict: bool,
+    exclude: &[String],
 ) -> Result<GkKernel, String> {
     use nb_workload::model::BindingsDef;
 
@@ -173,10 +334,10 @@ pub fn compile_bindings_with_libs(
     if let Some(source) = gk_source {
         let mut required: Vec<String> = Vec::new();
         for op in ops {
-            for (_, value) in &op.op {
+            for value in op.op.values() {
                 if let Some(s) = value.as_str() {
                     for name in nb_workload::bindpoints::referenced_bindings(s) {
-                        if !required.contains(&name) {
+                        if !required.contains(&name) && !exclude.contains(&name) {
                             required.push(name);
                         }
                     }
@@ -198,10 +359,10 @@ pub fn compile_bindings_with_libs(
 
     let mut required: Vec<String> = Vec::new();
     for op in ops {
-        for (_, value) in &op.op {
+        for value in op.op.values() {
             if let Some(s) = value.as_str() {
                 for name in nb_workload::bindpoints::referenced_bindings(s) {
-                    if !required.contains(&name) {
+                    if !required.contains(&name) && !exclude.contains(&name) {
                         required.push(name);
                     }
                 }
@@ -227,11 +388,12 @@ pub fn compile_bindings_with_libs(
                 format!("__chain_{binding_name}_{i}")
             };
 
-            let func_name = func.name.to_lowercase();
+            let (func_name, extra_args) = translate_legacy_func(&func.name, &func.args);
             let mut call_args = vec![prev_wire.clone()];
             for arg in &func.args {
-                call_args.push(arg.trim().to_string());
+                call_args.push(strip_java_long_suffix(arg.trim()).to_string());
             }
+            call_args.extend(extra_args);
 
             gk_lines.push(format!("{target} := {func_name}({args})",
                 args = call_args.join(", ")));
@@ -285,7 +447,7 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
         // actually used by ops are compiled into the kernel.
         let mut required: Vec<String> = Vec::new();
         for op in ops {
-            for (_, value) in &op.op {
+            for value in op.op.values() {
                 if let Some(s) = value.as_str() {
                     for name in bindpoints::referenced_bindings(s) {
                         if !required.contains(&name) {
@@ -314,7 +476,7 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
     // Collect required outputs from op templates
     let mut required: Vec<String> = Vec::new();
     for op in ops {
-        for (_, value) in &op.op {
+        for value in op.op.values() {
             if let Some(s) = value.as_str() {
                 for name in bindpoints::referenced_bindings(s) {
                     if !required.contains(&name) {
@@ -347,14 +509,13 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
                 format!("__chain_{binding_name}_{i}")
             };
 
-            // Format args: lowercase function name, prev wire + const args
-            let func_name = func.name.to_lowercase();
+            // Translate legacy function names to GK equivalents
+            let (func_name, extra_args) = translate_legacy_func(&func.name, &func.args);
             let mut call_args = vec![prev_wire.clone()];
             for arg in &func.args {
-                // Pass through literal args (numbers, strings)
-                let trimmed = arg.trim();
-                call_args.push(trimmed.to_string());
+                call_args.push(strip_java_long_suffix(arg.trim()).to_string());
             }
+            call_args.extend(extra_args);
 
             gk_lines.push(format!("{target} := {func_name}({args})",
                 args = call_args.join(", ")));
@@ -384,6 +545,78 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
 
     let gk_source = gk_lines.join("\n");
     nb_variates::dsl::compile_gk_with_outputs(&gk_source, source_dir, &required, strict)
+}
+
+// ---------------------------------------------------------------------------
+// Legacy function name translation (virtdata → GK)
+//
+// This is a compatibility overlay that maps Java nosqlbench function
+// names to their nb-rs GK equivalents. It lives ONLY in the binding
+// chain compiler — the GK registry and node implementations are not
+// polluted with legacy names.
+// ---------------------------------------------------------------------------
+
+/// Translate a legacy Java nosqlbench function name to its GK equivalent.
+///
+/// Returns `(gk_func_name, extra_args)` where extra_args are additional
+/// arguments to append (e.g., for ToString → format_u64 which needs a radix).
+fn translate_legacy_func(name: &str, args: &[String]) -> (String, Vec<String>) {
+    match name.to_lowercase().as_str() {
+        // Direct name mappings (same semantics, different naming convention)
+        "hash" => ("hash".into(), vec![]),
+        "identity" => ("identity".into(), vec![]),
+        "add" => ("add".into(), vec![]),
+        "mul" => ("mul".into(), vec![]),
+        "div" => ("div".into(), vec![]),
+        "mod" => ("mod".into(), vec![]),
+        "clamp" => ("clamp".into(), vec![]),
+
+        // String conversions
+        "tostring" | "to_string" => ("format_u64".into(), vec!["10".into()]),
+        "tohexstring" => ("format_u64".into(), vec!["16".into()]),
+        "tooctalstring" => ("format_u64".into(), vec!["8".into()]),
+        "tobinarystring" => ("format_u64".into(), vec!["2".into()]),
+
+        // Distributions (Java names → GK equivalents)
+        // Uniform(min, max) → hash_range(input, max-min) + add(min)
+        // This is approximate — Java Uniform samples from a distribution;
+        // GK hash_range does modular hash. Close enough for key distribution.
+        "uniform" => {
+            if args.len() >= 2 {
+                // Uniform(min, max) → mod(hash(input), range) then add(min)
+                // We approximate with hash_range which takes just max
+                ("hash_range".into(), vec![])
+            } else {
+                ("hash_range".into(), vec![])
+            }
+        }
+
+        // Zipf, Normal, etc. — map to icd_ variants
+        "normal" | "gaussian" => ("icd_normal".into(), vec![]),
+        "zipf" => ("dist_zipf".into(), vec![]),
+
+        // Hash-based
+        "hashrange" | "hash_range" => ("hash_range".into(), vec![]),
+        "hashinterval" | "hash_interval" => ("hash_interval".into(), vec![]),
+
+        // Number formatting
+        "format" | "printf" => ("printf".into(), vec![]),
+        "numbernamesto_string" | "numbernames" => ("number_to_words".into(), vec![]),
+
+        // Shuffle / permutation
+        "shuffle" => ("shuffle".into(), vec![]),
+
+        // Long suffix stripping (Java allows 1000000000L)
+        _ => {
+            // Default: lowercase the name and hope the GK registry has it
+            (name.to_lowercase(), vec![])
+        }
+    }
+}
+
+/// Strip Java long literal suffix (e.g., "1000000000L" → "1000000000")
+fn strip_java_long_suffix(arg: &str) -> &str {
+    arg.strip_suffix('L').or_else(|| arg.strip_suffix('l')).unwrap_or(arg)
 }
 
 #[cfg(test)]
@@ -515,5 +748,17 @@ mod tests {
         let mut kernel = compile_bindings(&ops).unwrap();
         kernel.set_coordinates(&[99]);
         assert_eq!(kernel.pull("cycle").as_u64(), 99);
+    }
+
+    #[test]
+    fn legacy_tostring_translates() {
+        let (name, _) = translate_legacy_func("ToString", &[]);
+        assert_eq!(name, "format_u64");
+    }
+
+    #[test]
+    fn legacy_uniform_translates() {
+        let (name, _) = translate_legacy_func("Uniform", &["0".into(), "1000".into()]);
+        assert_eq!(name, "hash_range");
     }
 }

@@ -287,9 +287,9 @@ pub enum SlotType {
     ConstF64,
     /// A string constant literal.
     ConstStr,
-    /// A Vec<u64> constant (from array literal).
+    /// A `Vec<u64>` constant (from array literal).
     ConstVecU64,
-    /// A Vec<f64> constant (from array literal).
+    /// A `Vec<f64>` constant (from array literal).
     ConstVecF64,
 }
 
@@ -384,12 +384,12 @@ impl Slot {
         Slot::Const { name: name.into(), value: ConstValue::Str(v.into()) }
     }
 
-    /// Create a Vec<u64> constant slot.
+    /// Create a `Vec<u64>` constant slot.
     pub fn const_vec_u64(name: impl Into<String>, v: Vec<u64>) -> Self {
         Slot::Const { name: name.into(), value: ConstValue::VecU64(v) }
     }
 
-    /// Create a Vec<f64> constant slot.
+    /// Create a `Vec<f64>` constant slot.
     pub fn const_vec_f64(name: impl Into<String>, v: Vec<f64>) -> Self {
         Slot::Const { name: name.into(), value: ConstValue::VecF64(v) }
     }
@@ -401,6 +401,7 @@ impl Slot {
 /// subgraphs regardless of operand order, and by future passes
 /// (e.g., canonical ordering, common subexpression elimination).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum Commutativity {
     /// Input order matters. No permutations attempted during
     /// pattern matching. This is the default for unary nodes and
@@ -408,6 +409,7 @@ pub enum Commutativity {
     ///
     /// Examples: `mod(dividend, divisor)`, `div(x, K)`,
     /// `concat(left, right)`, `sub(a, b)`.
+    #[default]
     Positional,
 
     /// All inputs are interchangeable, including variadic.
@@ -429,11 +431,6 @@ pub enum Commutativity {
     Groups(Vec<Vec<usize>>),
 }
 
-impl Default for Commutativity {
-    fn default() -> Self {
-        Commutativity::Positional
-    }
-}
 
 /// Metadata describing a node's interface: its input slots and output ports.
 ///

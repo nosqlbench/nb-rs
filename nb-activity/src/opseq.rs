@@ -90,6 +90,18 @@ impl OpSequence {
         &self.ops[idx]
     }
 
+    /// Get the op template and its index for a given cycle.
+    #[inline]
+    pub fn get_with_index(&self, cycle: u64) -> (usize, &ParsedOp) {
+        let idx = self.lut[(cycle as usize) % self.lut.len()];
+        (idx, &self.ops[idx])
+    }
+
+    /// All unique op templates in declaration order.
+    pub fn templates(&self) -> &[ParsedOp] {
+        &self.ops
+    }
+
     /// Number of distinct op templates.
     pub fn op_count(&self) -> usize {
         self.ops.len()
@@ -186,7 +198,7 @@ fn build_interval_lut(ratios: &[u64]) -> Vec<usize> {
 
     // Sort by position, then by op index for stability
     entries.sort_by(|a, b| {
-        a.0.partial_cmp(&b.0).unwrap()
+        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.1.cmp(&b.1))
     });
 

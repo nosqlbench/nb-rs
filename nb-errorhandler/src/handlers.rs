@@ -70,21 +70,21 @@ impl CounterHandler {
     /// Get the current count for a specific error name.
     #[allow(dead_code)]
     pub fn get_count(&self, name: &str) -> u64 {
-        let counts = self.counts.lock().unwrap();
+        let counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
         counts.get(name).map(|c| c.load(Ordering::Relaxed)).unwrap_or(0)
     }
 
     /// Get all error counts.
     #[allow(dead_code)]
     pub fn all_counts(&self) -> HashMap<String, u64> {
-        let counts = self.counts.lock().unwrap();
+        let counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
         counts.iter().map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed))).collect()
     }
 }
 
 impl ErrorHandler for CounterHandler {
     fn handle(&self, name: &str, _error_msg: &str, _cycle: u64, _duration_nanos: u64, detail: ErrorDetail) -> ErrorDetail {
-        let mut counts = self.counts.lock().unwrap();
+        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
         counts
             .entry(name.to_string())
             .or_insert_with(|| AtomicU64::new(0))

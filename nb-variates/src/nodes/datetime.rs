@@ -99,6 +99,12 @@ pub struct ToTimestamp {
     meta: NodeMeta,
 }
 
+impl Default for ToTimestamp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToTimestamp {
     pub fn new() -> Self {
         Self {
@@ -123,6 +129,12 @@ impl GkNode for ToTimestamp {
 /// Signature: `(input: u64) -> (year: u64, month: u64, day: u64, hour: u64, minute: u64, second: u64, millis: u64)`
 pub struct DateComponents {
     meta: NodeMeta,
+}
+
+impl Default for DateComponents {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DateComponents {
@@ -166,7 +178,7 @@ const MILLIS_PER_HOUR: u64 = 3_600_000;
 const MILLIS_PER_DAY: u64 = 86_400_000;
 
 fn is_leap_year(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
 fn days_in_month(y: u64, m: u64) -> u64 {

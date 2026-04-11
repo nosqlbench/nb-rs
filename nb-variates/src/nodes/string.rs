@@ -146,6 +146,12 @@ pub struct NumberToWords {
     meta: NodeMeta,
 }
 
+impl Default for NumberToWords {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NumberToWords {
     pub fn new() -> Self {
         Self {

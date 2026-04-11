@@ -15,9 +15,9 @@ use crate::fusion::{DecomposedGraph, DecomposedWire, FusedNode};
 /// Result: `a + t * (b - a)` where a, b are init-time params.
 ///
 /// When t=0 the output is a, t=1 gives b, t=0.5 gives the midpoint.
-/// Use after `unit_interval` to map a normalized [0,1) value into an
+/// Use after `unit_interval` to map a normalized `[0,1)` value into an
 /// arbitrary continuous range. Example: `lerp(unit_interval(h), -180.0,
-/// 180.0)` produces a random longitude. Accepts t outside [0,1] for
+/// 180.0)` produces a random longitude. Accepts t outside `[0,1]` for
 /// extrapolation.
 ///
 /// JIT level: P3 (compiled_u64 with jit_constants for a and b).
@@ -141,13 +141,13 @@ impl FusedNode for ScaleRange {
 /// Inverse linear interpolation: map [a, b] to [0, 1].
 ///
 /// Signature: `inv_lerp(input: f64, a: f64, b: f64) -> (f64)`
-/// Result: `(input - a) / (b - a)`, clamped to [0, 1].
+/// Result: `(input - a) / (b - a)`, clamped to `[0, 1]`.
 ///
 /// The reverse of `lerp`: normalizes an arbitrary continuous range
-/// back to [0,1]. Use as the first half of a `remap`, or to feed a
+/// back to `[0,1]`. Use as the first half of a `remap`, or to feed a
 /// domain-specific value into a node that expects unit input. Example:
 /// `inv_lerp(temperature, 32.0, 212.0)` normalizes Fahrenheit to
-/// [0,1]. Output is clamped, so out-of-range inputs saturate.
+/// `[0,1]`. Output is clamped, so out-of-range inputs saturate.
 ///
 /// JIT level: P1 (no compiled_u64; f64 in/out without captured closure).
 pub struct InvLerp {

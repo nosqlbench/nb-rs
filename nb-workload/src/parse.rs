@@ -43,11 +43,10 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
 
     // Also check for top-level ops (no blocks)
     for key in ["ops", "op", "operations", "statements", "statement"] {
-        if let Some(ops_val) = obj.get(key) {
-            if obj.get("blocks").is_none() {
+        if let Some(ops_val) = obj.get(key)
+            && obj.get("blocks").is_none() {
                 parse_ops_field(ops_val, "block0", &doc_bindings, &doc_params, &doc_tags, &mut all_ops)?;
             }
-        }
     }
 
     // Stage 5: Auto-tag all ops
@@ -60,7 +59,31 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         }
     }
 
-    Ok(Workload { description, scenarios, ops: all_ops })
+    // Stage 6: Resolve workload parameters
+    // Priority: CLI params > workload defaults > env vars
+    let yaml_params = extract_string_map(obj.get("params"));
+    let mut resolved_params = HashMap::new();
+    for (key, default_value) in &yaml_params {
+        let resolved = if let Some(cli_value) = params.get(key) {
+            // CLI override
+            cli_value.clone()
+        } else if let Some(env_name) = default_value.strip_prefix("env:") {
+            // Environment variable lookup
+            std::env::var(env_name).unwrap_or_else(|_| default_value.clone())
+        } else {
+            default_value.clone()
+        };
+        resolved_params.insert(key.clone(), resolved);
+    }
+    // Also include CLI params that aren't in the workload defaults
+    // (ad-hoc parameters passed on the command line)
+    for (key, value) in params {
+        if !resolved_params.contains_key(key) {
+            resolved_params.insert(key.clone(), value.clone());
+        }
+    }
+
+    Ok(Workload { description, scenarios, ops: all_ops, params: resolved_params })
 }
 
 /// Parse a YAML source into just the list of normalized ParsedOps.
@@ -243,8 +266,8 @@ fn normalize_op_item(
         }
         JVal::Object(map) => {
             // Check if first entry is name:stmt pattern
-            if let Some((first_key, first_val)) = map.iter().next() {
-                if map.len() == 1 && first_val.is_string() {
+            if let Some((first_key, first_val)) = map.iter().next()
+                && map.len() == 1 && first_val.is_string() {
                     let mut op = ParsedOp::simple(first_key, first_val.as_str().unwrap());
                     op.bindings = bindings.clone();
                     op.params = params.clone();
@@ -252,7 +275,6 @@ fn normalize_op_item(
                     op.tags.insert("block".to_string(), block_name.to_string());
                     return op;
                 }
-            }
             // Full op object
             normalize_op_object(map, auto_name, block_name, bindings, params, tags)
         }
@@ -329,12 +351,13 @@ fn normalize_op_object(
     let reserved = ["name", "description", "desc", "bindings", "params", "tags"];
     let op_field_names = ["op", "ops", "operations", "stmt", "statement", "statements"];
     // Activity-level params excised from op fields before the adapter sees them
-    let activity_params = ["ratio", "driver", "space", "instrument", "start-timers", "stop-timers"];
+    let activity_params = ["ratio", "driver", "space", "instrument", "start-timers", "stop-timers",
+        "verify", "relevancy", "strict"];
 
     let op_fields = if let Some(explicit_op) = op_field_names.iter()
         .find_map(|k| map.get(*k))
     {
-        match explicit_op {
+        let m = match explicit_op {
             JVal::String(s) => {
                 let mut m = HashMap::new();
                 m.insert("stmt".to_string(), JVal::String(s.clone()));
@@ -348,7 +371,8 @@ fn normalize_op_object(
                 m.insert("stmt".to_string(), other.clone());
                 m
             }
-        }
+        };
+        m
     } else {
         // All non-reserved, non-activity-param fields become op fields
         map.iter()

@@ -37,7 +37,9 @@ impl CsvReporter {
             CsvFile { file, header_written: false }
         });
         if !entry.header_written {
-            let _ = writeln!(entry.file, "{header}");
+            if let Err(e) = writeln!(entry.file, "{header}") {
+                eprintln!("warning: CSV header write failed for {name}: {e}");
+            }
             entry.header_written = true;
         }
         &mut entry.file
@@ -56,16 +58,20 @@ impl Reporter for CsvReporter {
             match sample {
                 Sample::Counter { value, .. } => {
                     let file = self.ensure_file(&name, "timestamp_ms,count");
-                    let _ = writeln!(file, "{now_ms},{value}");
+                    if let Err(e) = writeln!(file, "{now_ms},{value}") {
+                        eprintln!("warning: CSV write failed for {name}: {e}");
+                    }
                 }
                 Sample::Gauge { value, .. } => {
                     let file = self.ensure_file(&name, "timestamp_ms,value");
-                    let _ = writeln!(file, "{now_ms},{value}");
+                    if let Err(e) = writeln!(file, "{now_ms},{value}") {
+                        eprintln!("warning: CSV write failed for {name}: {e}");
+                    }
                 }
                 Sample::Timer { histogram, .. } => {
                     let file = self.ensure_file(&name,
                         "timestamp_ms,count,min,max,mean,stddev,p50,p75,p90,p95,p98,p99,p999");
-                    let _ = writeln!(file, "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                    if let Err(e) = writeln!(file, "{},{},{},{},{},{},{},{},{},{},{},{},{}",
                         now_ms, histogram.len(),
                         histogram.min(), histogram.max(),
                         histogram.mean(), histogram.stdev(),
@@ -76,7 +82,9 @@ impl Reporter for CsvReporter {
                         histogram.value_at_quantile(0.98),
                         histogram.value_at_quantile(0.99),
                         histogram.value_at_quantile(0.999),
-                    );
+                    ) {
+                        eprintln!("warning: CSV write failed for {name}: {e}");
+                    }
                 }
             }
         }
@@ -84,7 +92,9 @@ impl Reporter for CsvReporter {
 
     fn flush(&mut self) {
         for cf in self.files.values_mut() {
-            let _ = cf.file.flush();
+            if let Err(e) = cf.file.flush() {
+                eprintln!("warning: CSV flush failed: {e}");
+            }
         }
     }
 }

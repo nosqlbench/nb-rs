@@ -48,7 +48,7 @@ pub fn gk_to_dot(source: &str) -> Result<String, String> {
     dot.push_str("    bgcolor=\"#1a1a2e\";\n");
     dot.push_str("    node [shape=record, style=filled, fontname=\"monospace\", fontsize=11];\n");
     dot.push_str("    edge [color=\"#4da6ff\", fontcolor=\"#8888a0\", fontname=\"monospace\", fontsize=9];\n");
-    dot.push_str("\n");
+    dot.push('\n');
 
     for node in &nodes {
         if node.is_coord {
@@ -112,7 +112,7 @@ pub fn gk_to_dot(source: &str) -> Result<String, String> {
         }
     }
 
-    dot.push_str("\n");
+    dot.push('\n');
 
     for edge in &edges {
         let from = if edge.from_port.is_empty() {

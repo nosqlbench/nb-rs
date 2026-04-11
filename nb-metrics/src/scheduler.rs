@@ -84,6 +84,12 @@ pub struct SchedulerBuilder {
     reporters: Vec<(Duration, Box<dyn Reporter>)>,
 }
 
+impl Default for SchedulerBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SchedulerBuilder {
     pub fn new() -> Self {
         Self {
@@ -162,13 +168,13 @@ impl SchedulerHandle {
         let interval = self.base_interval;
         let running = self.running.clone();
 
-        *running.lock().unwrap() = true;
+        *running.lock().unwrap_or_else(|e| e.into_inner()) = true;
 
         let stop_running = running.clone();
         let handle = thread::spawn(move || {
             let mut next_tick = Instant::now() + interval;
             loop {
-                if !*stop_running.lock().unwrap() {
+                if !*stop_running.lock().unwrap_or_else(|e| e.into_inner()) {
                     break;
                 }
 
@@ -179,7 +185,7 @@ impl SchedulerHandle {
                 next_tick += interval;
 
                 let frame = (capture)();
-                let mut root = root.lock().unwrap();
+                let mut root = root.lock().unwrap_or_else(|e| e.into_inner());
 
                 // Deliver to root reporters
                 for reporter in &mut root.reporters {
@@ -193,7 +199,7 @@ impl SchedulerHandle {
             }
 
             // Flush all reporters
-            flush_tree(&mut root.lock().unwrap());
+            flush_tree(&mut root.lock().unwrap_or_else(|e| e.into_inner()));
         });
 
         StopHandle { running: self.running, thread: Some(handle) }
@@ -217,7 +223,7 @@ pub struct StopHandle {
 
 impl StopHandle {
     pub fn stop(mut self) {
-        *self.running.lock().unwrap() = false;
+        *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;
         if let Some(handle) = self.thread.take() {
             let _ = handle.join();
         }
@@ -226,7 +232,7 @@ impl StopHandle {
 
 impl Drop for StopHandle {
     fn drop(&mut self) {
-        *self.running.lock().unwrap() = false;
+        *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;
         if let Some(handle) = self.thread.take() {
             let _ = handle.join();
         }

@@ -1,0 +1,7 @@
+// empirical_dist.gk — Empirical distribution from data points.
+//
+// Exercises dist_empirical with user-provided data.
+
+coordinates := (cycle)
+u := unit_interval(hash(cycle))
+latency := dist_empirical(u, "0.5 1.2 2.0 3.5 5.0 8.0 12.0 20.0 50.0 100.0")

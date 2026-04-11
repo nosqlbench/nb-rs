@@ -177,10 +177,7 @@ pub fn build_hybrid(
             while i < classifications.len() && !matches!(classifications[i].0, JitOp::Fallback) {
                 i += 1;
             }
-            let batch: Vec<(JitOp, Vec<usize>, Vec<usize>)> = classifications[batch_start..i]
-                .iter()
-                .cloned()
-                .collect();
+            let batch: Vec<(JitOp, Vec<usize>, Vec<usize>)> = classifications[batch_start..i].to_vec();
 
             // Compile the batch to native code
             let empty_map = HashMap::new();

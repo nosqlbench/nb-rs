@@ -14,12 +14,17 @@
 
 use std::collections::HashMap;
 use std::io::{self, Write, BufWriter};
-use std::sync::Mutex;
-use nb_activity::adapter::{Adapter, AdapterError, AssembledOp, OpResult};
+use std::sync::{Arc, Mutex};
+
+use nb_activity::adapter::{
+    AdapterError, DriverAdapter, ExecutionError, OpDispenser, OpResult, ResolvedFields, TextBody,
+};
+use nb_workload::model::ParsedOp;
 use nb_adapter_stdout::{StdoutFormat, StdoutConfig};
 use xxhash_rust::xxh3;
 
 /// Configuration for the model adapter.
+#[derive(Default)]
 pub struct ModelConfig {
     /// Base stdout config (filename, newline, format).
     pub stdout: StdoutConfig,
@@ -27,14 +32,6 @@ pub struct ModelConfig {
     pub diagnose: bool,
 }
 
-impl Default for ModelConfig {
-    fn default() -> Self {
-        Self {
-            stdout: StdoutConfig::default(),
-            diagnose: false,
-        }
-    }
-}
 
 /// Simulated result definition for a single op.
 ///
@@ -45,7 +42,6 @@ impl Default for ModelConfig {
 pub enum ResultDef {
     /// Static key-value pairs: `result: { user_id: 42, balance: 1234.56 }`
     Static(HashMap<String, String>),
-    // Future: GkSource(String) — GK kernel for computed results
 }
 
 /// Per-op model parameters extracted from `result-*` op fields.
@@ -99,13 +95,13 @@ impl Write for OutputTarget {
 
 /// The model adapter: stdout + simulated results, latency, and errors.
 ///
-/// Prints the assembled op (like stdout), then produces a simulated
+/// Prints the resolved op (like stdout), then produces a simulated
 /// result based on the op's `result` field configuration. Supports
 /// latency injection and deterministic error simulation.
 ///
 /// Use for prototyping workloads before connecting to real infrastructure.
 pub struct ModelAdapter {
-    writer: Mutex<OutputTarget>,
+    writer: Arc<Mutex<OutputTarget>>,
     newline: bool,
     format: StdoutFormat,
     diagnose: bool,
@@ -127,7 +123,7 @@ impl ModelAdapter {
             OutputTarget::File(BufWriter::new(file))
         };
         Self {
-            writer: Mutex::new(writer),
+            writer: Arc::new(Mutex::new(writer)),
             newline: config.stdout.newline,
             format: config.stdout.format,
             diagnose: config.diagnose,
@@ -135,109 +131,94 @@ impl ModelAdapter {
     }
 }
 
-impl ModelAdapter {
-    /// Execute with model parameters for latency/error injection.
-    ///
-    /// Call this from the executor when model params have been extracted
-    /// from the op template's `result-*` fields.
-    pub async fn execute_with_params(
-        &self,
-        op: &AssembledOp,
-        params: &ModelParams,
-        cycle: u64,
-    ) -> Result<OpResult, AdapterError> {
-        let text = self.format.render(op);
+impl DriverAdapter for ModelAdapter {
+    fn name(&self) -> &str { "model" }
 
-        // Write the assembled op (same as stdout)
-        {
-            let mut writer = self.writer.lock().unwrap();
-            if self.newline {
-                let _ = writeln!(writer, "{text}");
-            } else {
-                let _ = write!(writer, "{text}");
-            }
-            let _ = writer.flush();
-        }
-
-        // Error injection: deterministic per cycle
-        if params.error_rate > 0.0 {
-            // Hash the cycle to get a deterministic float in [0, 1)
-            let h = xxh3::xxh3_64(&cycle.to_le_bytes());
-            let p = h as f64 / u64::MAX as f64;
-            if p < params.error_rate {
-                if self.diagnose {
-                    eprintln!("  model [{}]: ERROR injected (cycle={}, rate={:.2}%)",
-                        op.name, cycle, params.error_rate * 100.0);
-                }
-                return Err(AdapterError {
-                    error_name: params.error_name.clone(),
-                    message: params.error_message.clone(),
-                });
-            }
-        }
-
-        // Latency injection
-        if let Some(ms) = params.latency_ms {
-            if ms > 0.0 {
-                let duration = std::time::Duration::from_micros((ms * 1000.0) as u64);
-                tokio::time::sleep(duration).await;
-                if self.diagnose {
-                    eprintln!("  model [{}]: latency {:.1}ms injected", op.name, ms);
-                }
-            }
-        }
-
-        // Diagnostic output
-        if self.diagnose {
-            let result_desc = match &params.result {
-                Some(ResultDef::Static(map)) => {
-                    let pairs: Vec<String> = map.iter()
-                        .map(|(k, v)| format!("{k}={v}"))
-                        .collect();
-                    pairs.join(", ")
-                }
-                None => "(none)".into(),
-            };
-            eprintln!("  model [{}]: result=[{}]", op.name, result_desc);
-        }
-
-        Ok(OpResult {
-            success: true,
-            status: 0,
-            body: Some(text),
-        })
+    fn map_op(&self, template: &ParsedOp) -> Result<Box<dyn OpDispenser>, String> {
+        let model_params = extract_model_params(&template.params);
+        Ok(Box::new(ModelDispenser {
+            writer: self.writer.clone(),
+            format: self.format,
+            newline: self.newline,
+            diagnose: self.diagnose,
+            model_params,
+        }))
     }
 }
 
-impl Adapter for ModelAdapter {
-    fn execute(&self, op: &AssembledOp) -> impl std::future::Future<Output = Result<OpResult, AdapterError>> + Send {
-        let text = self.format.render(op);
-        let newline = self.newline;
-        let diagnose = self.diagnose;
-        let op_name = op.name.clone();
+/// Op dispenser for the model adapter. Captures format and model params
+/// at init time; renders and simulates per-cycle.
+struct ModelDispenser {
+    writer: Arc<Mutex<OutputTarget>>,
+    format: StdoutFormat,
+    newline: bool,
+    diagnose: bool,
+    model_params: ModelParams,
+}
 
-        // Write the assembled op (same as stdout)
-        {
-            let mut writer = self.writer.lock().unwrap();
-            if newline {
-                let _ = writeln!(writer, "{text}");
-            } else {
-                let _ = write!(writer, "{text}");
+impl OpDispenser for ModelDispenser {
+    fn execute<'a>(
+        &'a self,
+        cycle: u64,
+        fields: &'a ResolvedFields,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        Box::pin(async move {
+            let text = self.format.render(fields);
+
+            // Write the resolved op (same as stdout)
+            {
+                let mut writer = self.writer.lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let write_result = if self.newline {
+                    writeln!(writer, "{text}")
+                } else {
+                    write!(writer, "{text}")
+                };
+                if let Err(e) = write_result {
+                    return Err(ExecutionError::Op(AdapterError {
+                        error_name: "IoError".into(),
+                        message: format!("write failed: {e}"),
+                        retryable: false,
+                    }));
+                }
+                if let Err(e) = writer.flush() {
+                    return Err(ExecutionError::Op(AdapterError {
+                        error_name: "FlushError".into(),
+                        message: format!("flush failed: {e}"),
+                        retryable: false,
+                    }));
+                }
             }
-            let _ = writer.flush();
-        }
 
-        if diagnose {
-            eprintln!("  model [{}]: stmt rendered, {} fields", op_name, op.fields.len());
-        }
+            // Error injection: deterministic per cycle
+            if self.model_params.error_rate > 0.0 {
+                let h = xxh3::xxh3_64(&cycle.to_le_bytes());
+                let p = h as f64 / u64::MAX as f64;
+                if p < self.model_params.error_rate {
+                    if self.diagnose {
+                        eprintln!("  model: ERROR injected (cycle={}, rate={:.2}%)",
+                            cycle, self.model_params.error_rate * 100.0);
+                    }
+                    return Err(ExecutionError::Op(AdapterError {
+                        error_name: self.model_params.error_name.clone(),
+                        message: self.model_params.error_message.clone(),
+                        retryable: false,
+                    }));
+                }
+            }
 
-        async move {
+            // Latency injection
+            if let Some(ms) = self.model_params.latency_ms
+                && ms > 0.0 {
+                    let duration = std::time::Duration::from_micros((ms * 1000.0) as u64);
+                    tokio::time::sleep(duration).await;
+                }
+
             Ok(OpResult {
-                success: true,
-                status: 0,
-                body: Some(text),
+                body: Some(Box::new(TextBody(text))),
+                captures: std::collections::HashMap::new(),
             })
-        }
+        })
     }
 }
 
@@ -248,15 +229,13 @@ impl Adapter for ModelAdapter {
 pub fn extract_model_params(params: &HashMap<String, serde_json::Value>) -> ModelParams {
     let mut mp = ModelParams::default();
 
-    if let Some(val) = params.get("result") {
-        if let Some(obj) = val.as_object() {
+    if let Some(val) = params.get("result")
+        && let Some(obj) = val.as_object() {
             let map: HashMap<String, String> = obj.iter()
                 .map(|(k, v)| (k.clone(), v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string())))
                 .collect();
             mp.result = Some(ResultDef::Static(map));
         }
-        // Future: if val.is_string(), parse as GK source
-    }
 
     if let Some(val) = params.get("result-latency") {
         if let Some(s) = val.as_str() {
@@ -266,23 +245,20 @@ pub fn extract_model_params(params: &HashMap<String, serde_json::Value>) -> Mode
         }
     }
 
-    if let Some(val) = params.get("result-error-rate") {
-        if let Some(n) = val.as_f64() {
+    if let Some(val) = params.get("result-error-rate")
+        && let Some(n) = val.as_f64() {
             mp.error_rate = n;
         }
-    }
 
-    if let Some(val) = params.get("result-error-name") {
-        if let Some(s) = val.as_str() {
+    if let Some(val) = params.get("result-error-name")
+        && let Some(s) = val.as_str() {
             mp.error_name = s.to_string();
         }
-    }
 
-    if let Some(val) = params.get("result-error-message") {
-        if let Some(s) = val.as_str() {
+    if let Some(val) = params.get("result-error-message")
+        && let Some(s) = val.as_str() {
             mp.error_message = s.to_string();
         }
-    }
 
     mp
 }
@@ -347,18 +323,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_adapter_basic() {
+    async fn model_dispenser_basic() {
         let adapter = ModelAdapter::new();
-        let op = AssembledOp {
-            name: "test".into(),
-            fields: {
-                let mut m = HashMap::new();
-                m.insert("stmt".into(), "SELECT 1;".into());
-                m
-            },
-        };
-        let result = adapter.execute(&op).await.unwrap();
-        assert!(result.success);
+        let template = nb_workload::model::ParsedOp::simple("test", "SELECT 1;");
+        let dispenser = adapter.map_op(&template).unwrap();
+        let fields = ResolvedFields::new(
+            vec!["stmt".into()],
+            vec![nb_variates::node::Value::Str("SELECT 1;".into())],
+        );
+        let result = dispenser.execute(0, &fields).await.unwrap();
         assert!(result.body.is_some());
     }
 }

@@ -15,8 +15,8 @@ use crate::sampling::alias::AliasTableU64;
 
 /// Parse a histribution spec and build an alias table.
 ///
-/// Returns `(labels, table)` where labels[i] is the outcome for
-/// alias table index i.
+/// Returns `(labels, table)` where `labels[i]` is the outcome for
+/// alias table index `i`.
 pub fn parse_histribution(spec: &str) -> (Vec<u64>, AliasTableU64) {
     let labeled = spec.contains(':');
     let mut labels = Vec::new();

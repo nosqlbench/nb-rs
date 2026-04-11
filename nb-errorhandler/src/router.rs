@@ -124,7 +124,7 @@ impl ErrorRouter {
     fn lookup(&self, error_name: &str) -> Vec<Arc<dyn ErrorHandler>> {
         // Check cache first
         {
-            let cache = self.cache.lock().unwrap();
+            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(handlers) = cache.get(error_name) {
                 return handlers.clone();
             }
@@ -135,7 +135,7 @@ impl ErrorRouter {
             for pattern in &mapping.patterns {
                 if pattern.is_match(error_name) {
                     let handlers = mapping.handlers.clone();
-                    self.cache.lock().unwrap().insert(error_name.to_string(), handlers.clone());
+                    self.cache.lock().unwrap_or_else(|e| e.into_inner()).insert(error_name.to_string(), handlers.clone());
                     return handlers;
                 }
             }

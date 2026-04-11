@@ -1,0 +1,13 @@
+// constant_folding.gk — Init-time constant propagation (SRD 44).
+//
+// Nodes with no coordinate dependency are evaluated once at init time
+// and replaced with constants. The cycle-time graph sees them as literals.
+//
+// Expected events:
+//   ConstantFolded: base → 42
+//   ConstantFolded: seed → <hash of 42>
+
+coordinates := (cycle)
+base := 42
+seed := hash(base)
+user_id := mod(hash(cycle), 1000000)

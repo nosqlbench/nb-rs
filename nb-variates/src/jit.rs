@@ -133,6 +133,24 @@ mod inner {
         (register - 1) + min
     }
 
+    // Extern functions for math operations (called from JIT code).
+    extern "C" fn jit_sin(bits: u64) -> u64 { f64::from_bits(bits).sin().to_bits() }
+    extern "C" fn jit_cos(bits: u64) -> u64 { f64::from_bits(bits).cos().to_bits() }
+    extern "C" fn jit_tan(bits: u64) -> u64 { f64::from_bits(bits).tan().to_bits() }
+    extern "C" fn jit_asin(bits: u64) -> u64 { f64::from_bits(bits).asin().to_bits() }
+    extern "C" fn jit_acos(bits: u64) -> u64 { f64::from_bits(bits).acos().to_bits() }
+    extern "C" fn jit_atan(bits: u64) -> u64 { f64::from_bits(bits).atan().to_bits() }
+    extern "C" fn jit_sqrt(bits: u64) -> u64 { f64::from_bits(bits).sqrt().to_bits() }
+    extern "C" fn jit_abs_f64(bits: u64) -> u64 { f64::from_bits(bits).abs().to_bits() }
+    extern "C" fn jit_ln(bits: u64) -> u64 { f64::from_bits(bits).ln().to_bits() }
+    extern "C" fn jit_exp(bits: u64) -> u64 { f64::from_bits(bits).exp().to_bits() }
+    extern "C" fn jit_atan2(y_bits: u64, x_bits: u64) -> u64 {
+        f64::from_bits(y_bits).atan2(f64::from_bits(x_bits)).to_bits()
+    }
+    extern "C" fn jit_pow(base_bits: u64, exp_bits: u64) -> u64 {
+        f64::from_bits(base_bits).powf(f64::from_bits(exp_bits)).to_bits()
+    }
+
     /// Extern function: weighted pick via alias table (called from JIT code).
     ///
     /// Performs O(1) alias sampling and value lookup. All array pointers
@@ -215,6 +233,13 @@ mod inner {
         LutSampleConst(u64, u64), // lut_ptr as u64, lut_len
         /// output[0] = weighted_pick(input, values_ptr, biases_ptr, primaries_ptr, aliases_ptr, n)
         WeightedPickConst(u64, u64, u64, u64, u64), // values_ptr, biases_ptr, primaries_ptr, aliases_ptr, n
+
+        /// Unary f64 math function via extern call. The u8 identifies which function.
+        /// 0=sin 1=cos 2=tan 3=asin 4=acos 5=atan 6=sqrt 7=abs 8=ln 9=exp
+        MathUnary(u8),
+        /// Binary f64 math function via extern call.
+        /// 0=atan2 1=pow
+        MathBinary(u8),
 
         /// Fallback: call the Phase 2 closure
         Fallback,
@@ -329,6 +354,20 @@ mod inner {
                     JitOp::Fallback
                 }
             }
+            // Math functions
+            "sin" => JitOp::MathUnary(0),
+            "cos" => JitOp::MathUnary(1),
+            "tan" => JitOp::MathUnary(2),
+            "asin" => JitOp::MathUnary(3),
+            "acos" => JitOp::MathUnary(4),
+            "atan" => JitOp::MathUnary(5),
+            "sqrt" => JitOp::MathUnary(6),
+            "abs_f64" => JitOp::MathUnary(7),
+            "ln" => JitOp::MathUnary(8),
+            "exp" => JitOp::MathUnary(9),
+            "atan2" => JitOp::MathBinary(0),
+            "pow" => JitOp::MathBinary(1),
+
             "weighted_pick" => {
                 if consts.len() >= 5 {
                     JitOp::WeightedPickConst(consts[0], consts[1], consts[2], consts[3], consts[4])
@@ -367,6 +406,19 @@ mod inner {
         jit_builder.symbol("jit_shuffle", jit_shuffle as *const u8);
         jit_builder.symbol("jit_lut_sample", jit_lut_sample as *const u8);
         jit_builder.symbol("jit_weighted_pick", jit_weighted_pick as *const u8);
+        // Math externs
+        jit_builder.symbol("jit_sin", jit_sin as *const u8);
+        jit_builder.symbol("jit_cos", jit_cos as *const u8);
+        jit_builder.symbol("jit_tan", jit_tan as *const u8);
+        jit_builder.symbol("jit_asin", jit_asin as *const u8);
+        jit_builder.symbol("jit_acos", jit_acos as *const u8);
+        jit_builder.symbol("jit_atan", jit_atan as *const u8);
+        jit_builder.symbol("jit_sqrt", jit_sqrt as *const u8);
+        jit_builder.symbol("jit_abs_f64", jit_abs_f64 as *const u8);
+        jit_builder.symbol("jit_ln", jit_ln as *const u8);
+        jit_builder.symbol("jit_exp", jit_exp as *const u8);
+        jit_builder.symbol("jit_atan2", jit_atan2 as *const u8);
+        jit_builder.symbol("jit_pow", jit_pow as *const u8);
 
         let mut module = JITModule::new(jit_builder);
 
@@ -416,6 +468,36 @@ mod inner {
                 .map_err(|e| format!("declare weighted_pick: {e}"))?
         };
 
+        // Declare math externs: unary (u64) -> u64
+        let math_unary_names = [
+            "jit_sin", "jit_cos", "jit_tan", "jit_asin", "jit_acos",
+            "jit_atan", "jit_sqrt", "jit_abs_f64", "jit_ln", "jit_exp",
+        ];
+        let mut math_unary_ids = Vec::new();
+        for name in &math_unary_names {
+            let mut sig = module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            math_unary_ids.push(
+                module.declare_function(name, Linkage::Import, &sig)
+                    .map_err(|e| format!("declare {name}: {e}"))?
+            );
+        }
+
+        // Declare math externs: binary (u64, u64) -> u64
+        let math_binary_names = ["jit_atan2", "jit_pow"];
+        let mut math_binary_ids = Vec::new();
+        for name in &math_binary_names {
+            let mut sig = module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            math_binary_ids.push(
+                module.declare_function(name, Linkage::Import, &sig)
+                    .map_err(|e| format!("declare {name}: {e}"))?
+            );
+        }
+
         // Define the kernel function: fn(coords: *const u64, buffer: *mut u64)
         let mut sig = module.make_signature();
         sig.params.push(AbiParam::new(types::I64)); // coords ptr
@@ -443,6 +525,12 @@ mod inner {
             let shuffle_func_ref = module.declare_func_in_func(shuffle_func_id, builder.func);
             let lut_sample_func_ref = module.declare_func_in_func(lut_sample_func_id, builder.func);
             let weighted_pick_func_ref = module.declare_func_in_func(weighted_pick_func_id, builder.func);
+            let math_unary_refs: Vec<_> = math_unary_ids.iter()
+                .map(|id| module.declare_func_in_func(*id, builder.func))
+                .collect();
+            let math_binary_refs: Vec<_> = math_binary_ids.iter()
+                .map(|id| module.declare_func_in_func(*id, builder.func))
+                .collect();
 
             // Generate code for each step
             for (jit_op, input_slots, output_slots) in &steps {
@@ -632,6 +720,23 @@ mod inner {
                             weighted_pick_func_ref,
                             &[input, v_ptr, b_ptr, p_ptr, a_ptr, n_val],
                         );
+                        let result = builder.inst_results(call)[0];
+                        store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                    }
+
+                    JitOp::MathUnary(idx) => {
+                        let input = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                        let func_ref = math_unary_refs[*idx as usize];
+                        let call = builder.ins().call(func_ref, &[input]);
+                        let result = builder.inst_results(call)[0];
+                        store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                    }
+
+                    JitOp::MathBinary(idx) => {
+                        let a = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                        let b = load_slot(&mut builder, buffer_ptr, input_slots[1]);
+                        let func_ref = math_binary_refs[*idx as usize];
+                        let call = builder.ins().call(func_ref, &[a, b]);
                         let result = builder.inst_results(call)[0];
                         store_slot(&mut builder, buffer_ptr, output_slots[0], result);
                     }

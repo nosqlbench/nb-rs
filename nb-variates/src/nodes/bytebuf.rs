@@ -26,6 +26,12 @@ pub struct U64ToBytes {
     meta: NodeMeta,
 }
 
+impl Default for U64ToBytes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl U64ToBytes {
     pub fn new() -> Self {
         Self {
@@ -75,7 +81,7 @@ impl GkNode for BytesFromHash {
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let seed = inputs[0].as_u64();
         let mut result = Vec::with_capacity(self.size);
-        let chunks = (self.size + 7) / 8;
+        let chunks = self.size.div_ceil(8);
         for i in 0..chunks {
             let h = xxh3_64(&(seed.wrapping_add(i as u64)).to_le_bytes());
             let take = (self.size - result.len()).min(8);
@@ -102,7 +108,7 @@ impl ByteImage {
     /// Build a byte image of `image_size` bytes from a seed.
     pub fn new(image_size: usize, seed: u64) -> Self {
         let mut image = Vec::with_capacity(image_size);
-        let chunks = (image_size + 7) / 8;
+        let chunks = image_size.div_ceil(8);
         for i in 0..chunks {
             let h = xxh3_64(&(seed.wrapping_add(i as u64)).to_le_bytes());
             let take = (image_size - image.len()).min(8);
@@ -304,6 +310,12 @@ pub struct ToHex {
     meta: NodeMeta,
 }
 
+impl Default for ToHex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToHex {
     pub fn new() -> Self {
         Self {
@@ -329,6 +341,12 @@ impl GkNode for ToHex {
 /// Signature: `(input: String) -> (bytes)`
 pub struct FromHex {
     meta: NodeMeta,
+}
+
+impl Default for FromHex {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FromHex {

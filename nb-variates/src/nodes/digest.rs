@@ -15,6 +15,12 @@ pub struct DigestSha256 {
     meta: NodeMeta,
 }
 
+impl Default for DigestSha256 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DigestSha256 {
     pub fn new() -> Self {
         Self {
@@ -42,6 +48,12 @@ impl GkNode for DigestSha256 {
 /// Output is always 16 bytes.
 pub struct DigestMd5 {
     meta: NodeMeta,
+}
+
+impl Default for DigestMd5 {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DigestMd5 {
@@ -72,6 +84,12 @@ pub struct ToBase64 {
     meta: NodeMeta,
 }
 
+impl Default for ToBase64 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToBase64 {
     pub fn new() -> Self {
         Self {
@@ -97,6 +115,12 @@ impl GkNode for ToBase64 {
 /// Signature: `(input: String) -> (bytes)`
 pub struct FromBase64 {
     meta: NodeMeta,
+}
+
+impl Default for FromBase64 {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FromBase64 {
@@ -129,6 +153,12 @@ pub struct ToBase32 {
     meta: NodeMeta,
 }
 
+impl Default for ToBase32 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToBase32 {
     pub fn new() -> Self {
         Self {
@@ -153,6 +183,12 @@ impl GkNode for ToBase32 {
 /// Signature: `(input: String) -> (bytes)`
 pub struct FromBase32 {
     meta: NodeMeta,
+}
+
+impl Default for FromBase32 {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FromBase32 {

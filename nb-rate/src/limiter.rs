@@ -94,7 +94,7 @@ impl RateLimiter {
     /// Returns the current backlog in ticks (waiting pool value).
     pub async fn acquire(&self) -> i64 {
         self.state.blocks.fetch_add(1, Ordering::Relaxed);
-        let permits = self.state.ticks_per_op as u32;
+        let permits = self.state.ticks_per_op;
 
         // Acquire permits from the semaphore — this is the blocking point.
         // forget() the permit so tokens are permanently consumed (not

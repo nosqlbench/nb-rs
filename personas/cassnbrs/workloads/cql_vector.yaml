@@ -1,0 +1,113 @@
+# CQL Vector Search Workload for cassnbrs
+#
+# Live vector search testing with dataset-backed vectors via vectordata.
+# Adapted from nosqlbench cql_vector2.yaml baseline.
+#
+# Run phases:
+#   nbrs run adapter=cql hosts=localhost workload=cql_vector.yaml tags=phase:schema concurrency=1
+#   nbrs run adapter=cql hosts=localhost workload=cql_vector.yaml tags=phase:rampup cycles=100000
+#   nbrs run adapter=cql hosts=localhost workload=cql_vector.yaml tags=phase:search cycles=1000
+#
+# Dry-run to stdout:
+#   nbrs run adapter=stdout workload=cql_vector.yaml tags=phase:schema
+#   nbrs run adapter=stdout workload=cql_vector.yaml tags=phase:rampup cycles=5
+#   nbrs run adapter=stdout workload=cql_vector.yaml tags=phase:search cycles=3
+#
+# Parameters:
+#   dataset   — vectordata dataset name (default: glove-25-angular)
+#   keyspace  — target keyspace (default: baselines)
+#   table     — target table (default: vectors)
+#   k         — ANN result limit (default: 100)
+#
+# Statement modes (field name selects execution mode):
+#   raw:      — string interpolation, session.execute(text). For DDL.
+#   simple:   — parameterized, SimpleStatement with typed positional args.
+#   prepared: — prepared statement + typed bind. Default for DML.
+#   stmt:     — alias for prepared (default).
+
+description: |
+  CQL Vector Search: load base vectors, build SAI index, run ANN
+  queries with ground truth neighbors for recall verification.
+  Dimensions are auto-discovered from the dataset.
+
+params:
+  dataset: glove-25-angular
+  keyspace: baselines
+  table: vectors
+  k: "100"
+  concurrency: "100"
+  replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
+
+bindings: |
+  coordinates := (cycle)
+
+  // Dataset metadata (init-time constants)
+  dim := vector_dim("{dataset}")
+  train_count := vector_count("{dataset}")
+
+  // Rampup bindings
+  id := format_u64(cycle, 10)
+  train_vector := vector_at(cycle, "{dataset}")
+
+  // Search bindings
+  query_vector := query_vector_at(cycle, "{dataset}")
+  ground_truth := neighbor_indices_at(cycle, "{dataset}")
+
+ops:
+
+  # --- Schema phase ---
+  # Run with: tags=phase:schema concurrency=1
+  # "raw:" → string interpolation, no prepare. Required for DDL.
+
+  drop_index:
+    tags:
+      phase: schema
+    raw: "DROP INDEX IF EXISTS {keyspace}.{table}_value_idx"
+
+  drop_table:
+    tags:
+      phase: schema
+    raw: "DROP TABLE IF EXISTS {keyspace}.{table}"
+
+  create_keyspace:
+    tags:
+      phase: schema
+    raw: "CREATE KEYSPACE IF NOT EXISTS {keyspace} WITH replication = {replication} AND durable_writes = true"
+
+  create_table:
+    tags:
+      phase: schema
+    raw: "CREATE TABLE IF NOT EXISTS {keyspace}.{table} (key text PRIMARY KEY, value vector<float, {dim}>)"
+
+  create_index:
+    tags:
+      phase: schema
+    raw: "CREATE CUSTOM INDEX IF NOT EXISTS {table}_value_idx ON {keyspace}.{table} (value) USING 'StorageAttachedIndex'"
+
+  # --- Rampup phase ---
+  # Run with: tags=phase:rampup cycles=<trainsize>
+  # "prepared:" → prepared statement + typed bind.
+
+  insert:
+    tags:
+      phase: rampup
+    prepared: "INSERT INTO {keyspace}.{table} (key, value) VALUES ('{id}', {train_vector})"
+
+  # --- Search phase ---
+  # Run with: tags=phase:search cycles=<testsize>
+  # "prepared:" → prepared statement + typed bind.lets
+
+  select_ann:
+    tags:
+      phase: search
+    prepared: "SELECT key FROM {keyspace}.{table} ORDER BY value ANN OF {query_vector} LIMIT {k}"
+    relevancy:
+      actual: key
+      expected: "{ground_truth}"
+      k: 100
+      functions:
+        - recall
+        - precision
+        - f1
+        - reciprocal_rank
+        - average_precision

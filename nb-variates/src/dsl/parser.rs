@@ -156,7 +156,7 @@ fn parse_module_def(p: &mut Parser) -> Result<Statement, String> {
     Ok(Statement::ModuleDef(ModuleDef {
         name,
         params,
-        outputs: outputs,
+        outputs,
         body,
         span,
     }))
@@ -321,15 +321,14 @@ fn parse_call(p: &mut Parser, func: String, span: Span) -> Result<Expr, String> 
 /// Parse a single argument: either `name: expr` (named) or `expr` (positional).
 fn parse_arg(p: &mut Parser) -> Result<Arg, String> {
     // Lookahead: if it's `Ident Colon`, it's a named arg.
-    if let TokenKind::Ident(name) = p.peek().clone() {
-        if p.pos + 1 < p.tokens.len() && matches!(p.tokens[p.pos + 1].kind, TokenKind::Colon) {
+    if let TokenKind::Ident(name) = p.peek().clone()
+        && p.pos + 1 < p.tokens.len() && matches!(p.tokens[p.pos + 1].kind, TokenKind::Colon) {
             let name = name.clone();
             p.advance(); // consume ident
             p.advance(); // consume ':'
             let value = parse_expr(p)?;
             return Ok(Arg::Named(name, value));
         }
-    }
     let expr = parse_expr(p)?;
     Ok(Arg::Positional(expr))
 }

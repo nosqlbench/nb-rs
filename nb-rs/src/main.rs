@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use nb_activity::activity::{Activity, ActivityConfig};
 use nb_adapter_stdout::{StdoutAdapter, StdoutConfig, StdoutFormat};
-use nb_activity::bindings::compile_bindings_with_libs;
+use nb_activity::bindings::compile_bindings_with_libs_excluding;
 use nb_activity::opseq::{OpSequence, SequencerType};
 use nb_activity::synthesis::OpBuilder;
 use nb_metrics::labels::Labels;
@@ -26,12 +26,104 @@ use nb_workload::tags::TagFilter;
 mod web_push;
 mod daemon;
 
+/// Discover workload-declared parameters for dynamic completion.
+///
+/// When `workload=somefile.yaml` is on the command line, parse the
+/// file's `params:` section and return param names as `key=` completions.
+fn discover_workload_params(_partial: &str, context: &[&str]) -> Vec<String> {
+    for word in context {
+        let path = if let Some(p) = word.strip_prefix("workload=") {
+            p
+        } else if word.ends_with(".yaml") || word.ends_with(".yml") {
+            word
+        } else {
+            continue;
+        };
+        // Try to read the YAML and extract top-level params
+        if let Ok(source) = std::fs::read_to_string(path)
+            && let Ok(doc) = serde_yaml::from_str::<serde_json::Value>(&source)
+                && let Some(params) = doc.get("params").and_then(|v| v.as_object()) {
+                    return params.keys().map(|k| format!("{k}=")).collect();
+                }
+    }
+    Vec::new()
+}
+
+/// Build the definitive CLI command tree. This is the single source of
+/// truth for all subcommands, options, and flags. Shell completions,
+/// help text, and option validation all derive from this definition.
+fn cli_tree() -> veks_completion::CommandTree {
+    use veks_completion::Node;
+
+    veks_completion::CommandTree::new("nbrs")
+        .command("run", Node::leaf_with_flags(
+            &[
+                "adapter=", "driver=", "workload=", "op=", "cycles=", "threads=",
+                "rate=", "stanzarate=", "errors=", "seq=", "tags=", "format=",
+                "filename=", "stanza_concurrency=", "sc=",
+                // CQL adapter params
+                "hosts=", "host=", "port=", "keyspace=", "consistency=",
+                "username=", "password=", "request_timeout_ms=",
+                // HTTP adapter params
+                "base_url=", "timeout=",
+            ],
+            &["--strict", "--dry-run", "--tui", "--diagnose",
+              "--dry-run=emit", "--dry-run=json"],
+        ).with_dynamic_options(discover_workload_params))
+        .command("describe", Node::group(vec![
+            ("gk", Node::group(vec![
+                ("functions", Node::leaf(&[])),
+                ("stdlib", Node::leaf(&[])),
+                ("dag", Node::leaf(&[])),
+                ("modules", Node::leaf(&[])),
+            ])),
+        ]))
+        .command("bench", Node::group(vec![
+            ("gk", Node::leaf_with_flags(
+                &["cycles=", "concurrency=", "--cycles", "--concurrency", "-c"],
+                &["--explain"],
+            )),
+        ]))
+        .command("web", Node::leaf_with_flags(
+            &["bind=", "port="],
+            &["--daemon", "--stop", "--restart"],
+        ))
+        .command("completions", Node::leaf(&["bash", "zsh", "fish"]))
+}
+
 fn main() {
+    // Handle shell completion callbacks before anything else.
+    let tree = cli_tree();
+    if veks_completion::handle_complete_env("nbrs", &tree) {
+        std::process::exit(0);
+    }
+
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.is_empty() {
         print_usage();
         return;
+    }
+
+    // Detect bare workload file as first argument:
+    //   nbrs myworkload.yaml [params...]
+    //   nbrs myworkload [params...]  (auto-appends .yaml/.yml)
+    if let Some(first) = args.first() {
+        if first != "run" && first != "describe" && first != "bench"
+            && first != "web" && first != "completions"
+            && !first.starts_with('-')
+        {
+            let workload_path = resolve_workload_path(first);
+            if let Some(path) = workload_path {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                let mut run_args = vec![format!("workload={path}")];
+                run_args.extend(args[1..].iter().cloned());
+                rt.block_on(async {
+                    run_command(&run_args).await;
+                });
+                return;
+            }
+        }
     }
 
     // Handle describe command synchronously (no tokio needed)
@@ -46,10 +138,23 @@ fn main() {
         return;
     }
 
-    // Handle completions command: output shell completion script
+    // Handle completions command: output shell completion script.
+    // Usage:
+    //   eval "$(nbrs completions)"
+    //   source <(nbrs completions --shell bash)
+    //   echo 'eval "$(nbrs completions)"' >> ~/.bashrc
     if args.first().map(|s| s.as_str()) == Some("completions") {
-        let shell = args.get(1).map(|s| s.as_str()).unwrap_or("bash");
-        print_completions(shell);
+        let shell = args.iter().find_map(|a| a.strip_prefix("--shell="))
+            .or_else(|| args.iter().skip_while(|a| *a != "--shell").nth(1).map(|s| s.as_str()))
+            .or_else(|| args.get(1).map(|s| s.as_str()))
+            .unwrap_or("bash");
+        match shell {
+            "bash" => veks_completion::print_bash_script("nbrs"),
+            other => {
+                eprintln!("Shell '{other}' is not yet supported.");
+                eprintln!("For bash: eval \"$(nbrs completions)\"");
+            }
+        }
         return;
     }
 
@@ -182,6 +287,37 @@ fn main() {
     rt.block_on(async {
         run_command(&args).await;
     });
+}
+
+/// Resolve a potential workload path, trying extensions if needed.
+///
+/// Returns `Some(path)` if a workload file exists, `None` otherwise.
+fn resolve_workload_path(name: &str) -> Option<String> {
+    // Already has extension
+    if name.ends_with(".yaml") || name.ends_with(".yml") {
+        if std::path::Path::new(name).exists() {
+            return Some(name.to_string());
+        }
+        return None;
+    }
+
+    // Try appending extensions
+    for ext in &[".yaml", ".yml"] {
+        let path = format!("{name}{ext}");
+        if std::path::Path::new(&path).exists() {
+            return Some(path);
+        }
+    }
+
+    // Try in workloads/ subdirectory
+    for ext in &["", ".yaml", ".yml"] {
+        let path = format!("workloads/{name}{ext}");
+        if std::path::Path::new(&path).exists() {
+            return Some(path);
+        }
+    }
+
+    None
 }
 
 fn print_usage() {
@@ -370,11 +506,11 @@ fn describe_gk_stdlib() {
 
         let tokens = match lex(source) {
             Ok(t) => t,
-            Err(_) => continue,
+            Err(e) => { eprintln!("warning: failed to lex stdlib file: {e}"); continue; }
         };
         let ast = match parse(tokens) {
             Ok(a) => a,
-            Err(_) => continue,
+            Err(e) => { eprintln!("warning: failed to parse stdlib file: {e}"); continue; }
         };
 
         // Collect module defs from this file
@@ -483,7 +619,7 @@ fn describe_gk_modules(args: &[String]) {
     for path in &gk_files {
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
-            Err(_) => continue,
+            Err(e) => { eprintln!("warning: failed to read {}: {e}", path.display()); continue; }
         };
 
         let filename = path.file_name()
@@ -501,11 +637,11 @@ fn describe_gk_modules(args: &[String]) {
 
         let tokens = match lex(&source) {
             Ok(t) => t,
-            Err(_) => continue,
+            Err(e) => { eprintln!("warning: failed to lex {filename}: {e}"); continue; }
         };
         let ast = match parse(tokens) {
             Ok(a) => a,
-            Err(_) => continue,
+            Err(e) => { eprintln!("warning: failed to parse {filename}: {e}"); continue; }
         };
 
         let mut modules = Vec::new();
@@ -733,6 +869,7 @@ fn bench_command(args: &[String]) {
     let mut expr = String::new();
     let mut cycles: u64 = 100_000;
     let mut thread_counts: Vec<u64> = vec![1];
+    let mut explain = false;
 
     let mut i = 0;
     while i < rest.len() {
@@ -755,9 +892,12 @@ fn bench_command(args: &[String]) {
             cycles = arg["--cycles=".len()..].parse().unwrap_or(100_000);
         } else if arg.starts_with("--threads=") {
             thread_counts = parse_range(&arg["--threads=".len()..]);
+        } else if arg == "--explain" {
+            explain = true;
         } else if arg.starts_with('-') {
             eprintln!("error: unrecognized option '{arg}'");
-            eprintln!("  Valid options: cycles=N, threads=RANGE, --cycles N, --threads RANGE");
+            eprintln!("  Valid options: cycles=N, threads=RANGE, --cycles N, --threads RANGE, --explain");
+            eprintln!("  The expression can also be a .gk file path.");
             return;
         } else if expr.is_empty() {
             expr = arg.clone();
@@ -770,11 +910,45 @@ fn bench_command(args: &[String]) {
     }
 
     if expr.is_empty() {
-        eprintln!("Usage: nbrs bench gk <expr> [cycles=N] [threads=RANGE]");
+        eprintln!("Usage: nbrs bench gk <expr|file.gk> [cycles=N] [threads=RANGE] [--explain]");
+        eprintln!("  Example: nbrs bench gk \"hash_range(hash(cycle), 1000)\"");
+        eprintln!("  Example: nbrs bench gk tests/examples/gk/constant_folding.gk --explain");
         return;
     }
 
-    let source = format!("coordinates := (cycle)\nout := {expr}");
+    // If the expression is a .gk file path, read it as a complete program.
+    // Otherwise, treat as an inline expression to auto-wrap.
+    let source = if expr.ends_with(".gk") {
+        match std::fs::read_to_string(&expr) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: failed to read '{expr}': {e}");
+                return;
+            }
+        }
+    } else {
+        // Allow semicolons as statement separators
+        let expr = expr.replace(';', "\n");
+
+        if expr.contains(":=") {
+            let lines: Vec<&str> = expr.lines().map(|l| l.trim())
+                .filter(|l| !l.is_empty() && !l.starts_with("//"))
+                .collect();
+            let mut out_lines = vec!["coordinates := (cycle)".to_string()];
+            for (i, line) in lines.iter().enumerate() {
+                if line.contains(":=") {
+                    out_lines.push(line.to_string());
+                } else if i == lines.len() - 1 {
+                    out_lines.push(format!("out := {line}"));
+                } else {
+                    out_lines.push(format!("__expr_{i} := {line}"));
+                }
+            }
+            out_lines.join("\n")
+        } else {
+            format!("coordinates := (cycle)\nout := {expr}")
+        }
+    };
     let warmup = 1000u64;
 
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
@@ -784,10 +958,133 @@ fn bench_command(args: &[String]) {
         ("", "", "", "")
     };
 
-    println!("{bold}Benchmarking:{reset} {expr}");
-    println!("{dim}  {cycles} cycles per thread, {warmup} warmup{reset}");
+    // --explain: detailed compilation walkthrough
+    if explain {
+        use nb_variates::dsl::events::{CompileEvent, CompileEventLog};
+        let mut log = CompileEventLog::new();
+
+        println!("{bold}GK Compilation Explain{reset}");
+        println!();
+
+        // 1. Show the normalized source
+        println!("{bold}Source:{reset}");
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() && !trimmed.starts_with("//") {
+                println!("  {dim}{trimmed}{reset}");
+            }
+        }
+        println!();
+
+        // 2. Parse
+        let tokens = match nb_variates::dsl::lexer::lex(&source) {
+            Ok(t) => t,
+            Err(e) => { eprintln!("error: lex failed: {e}"); return; }
+        };
+        let ast = match nb_variates::dsl::parser::parse(tokens) {
+            Ok(a) => a,
+            Err(e) => { eprintln!("error: parse failed: {e}"); return; }
+        };
+        log.push(CompileEvent::Parsed { statements: ast.statements.len() });
+
+        // 3. Compile with event logging
+        match compile_gk_to_assembler(&source) {
+            Err(e) => { eprintln!("error: compile failed: {e}"); return; }
+            Ok(asm) => {
+                for name in asm.output_names() {
+                    log.push(CompileEvent::OutputDeclared { name: name.to_string() });
+                }
+
+                match asm.compile_with_log(Some(&mut log)) {
+                    Ok(kernel) => {
+                        let program = kernel.program();
+
+                        // 4. Show optimization events
+                        let events = log.events();
+                        let has_optimizations = events.iter().any(|e| matches!(e,
+                            CompileEvent::ConstantFolded { .. } |
+                            CompileEvent::TypeAdapterInserted { .. } |
+                            CompileEvent::FusionApplied { .. }
+                        ));
+                        if has_optimizations {
+                            println!("{bold}Optimizations:{reset}");
+                            for event in events {
+                                match event {
+                                    CompileEvent::ConstantFolded { node, value } =>
+                                        println!("  {green}constant folded:{reset} {node} → {value}"),
+                                    CompileEvent::TypeAdapterInserted { from_node, to_node, adapter } =>
+                                        println!("  type adapter: {from_node} → {to_node} ({adapter})"),
+                                    CompileEvent::FusionApplied { pattern, nodes_replaced } =>
+                                        println!("  {green}fusion:{reset} {pattern} ({nodes_replaced} nodes merged)"),
+                                    _ => {}
+                                }
+                            }
+                            println!();
+                        }
+
+                        // 5. Show per-output compile levels
+                        println!("{bold}Outputs:{reset}");
+                        for name in program.output_names() {
+                            if let Some((node_idx, _)) = program.resolve_output(name) {
+                                let level = program.node_compile_level(node_idx);
+                                let level_str = format!("{level:?}");
+                                let color = if level_str.contains("3") { green } else { "" };
+                                println!("  {name}: {color}{level_str}{reset}");
+                            }
+                        }
+                        println!();
+
+                        // 6. Summary
+                        println!("{bold}Summary:{reset} {} nodes, {} outputs, {} constant(s) folded",
+                            program.node_count(),
+                            program.output_names().len(),
+                            kernel.constants_folded);
+                        println!();
+                    }
+                    Err(e) => {
+                        eprintln!("error: assembly failed: {e}");
+                        return;
+                    }
+                }
+            }
+        }
+    }
 
     use nb_variates::dsl::compile::compile_gk_to_assembler;
+
+    // Show input/output type summary
+    if let Ok(asm) = compile_gk_to_assembler(&source) {
+        if let Ok(kernel) = asm.compile() {
+            let program = kernel.program();
+
+            // Inputs (coordinates)
+            let coords = program.coord_names();
+            if !coords.is_empty() {
+                let coord_list: Vec<String> = coords.iter()
+                    .map(|c| format!("{c}: u64"))
+                    .collect();
+                println!("{bold}Inputs:{reset}  {}", coord_list.join(", "));
+            }
+
+            // Outputs with types
+            let mut out_list: Vec<String> = Vec::new();
+            for name in program.output_names() {
+                if name.starts_with("__") { continue; }
+                if let Some((node_idx, port_idx)) = program.resolve_output(name) {
+                    let port_type = &program.node_meta(node_idx).outs[port_idx].typ;
+                    out_list.push(format!("{name}: {port_type:?}"));
+                }
+            }
+            if !out_list.is_empty() {
+                out_list.sort();
+                println!("{bold}Outputs:{reset} {}", out_list.join(", "));
+            }
+            println!();
+        }
+    }
+
+    println!("{bold}Benchmarking:{reset} {}", if expr.len() > 60 { &expr[..57] } else { &expr }.replace('\n', "; ").trim());
+    println!("{dim}  {cycles} cycles per thread, {warmup} warmup{reset}");
 
     for &nthreads in &thread_counts {
         let nthreads = nthreads.max(1) as usize;
@@ -798,21 +1095,27 @@ fn bench_command(args: &[String]) {
                 if nthreads == 1 { "" } else { "s" });
         }
         println!();
-        println!("  {bold}{:<10} {:>12} {:>12} {:>8} {:>14}  {}{reset}",
-            "Level", "Total", "Per-cycle", "Speedup", "Throughput", "");
+        println!("  {bold}{:<10} {:>12} {:>12} {:>8} {:>14}  {reset}",
+            "Level", "Total", "Per-cycle", "Speedup", "Throughput");
         println!("  {}", "-".repeat(62));
 
         let total_ops = (cycles * nthreads as u64) as f64;
         let mut p1_ns: Option<f64> = None;
 
         // Phase 1: uses Arc<GkProgram> + per-thread GkState (true multi-thread)
-        if let Ok(asm) = compile_gk_to_assembler(&source) {
-            if let Ok(kernel) = asm.compile() {
+        match compile_gk_to_assembler(&source) {
+            Err(e) => {
+                eprintln!("  {bold}compile error:{reset} {e}");
+                return;
+            }
+            Ok(asm) => if let Ok(kernel) = asm.compile() {
                 let program = kernel.program().clone();
+                let output_name = program.output_names().first()
+                    .map(|s| s.to_string()).unwrap_or_else(|| "out".to_string());
                 // Warmup
                 {
                     let mut state = program.create_state();
-                    for c in 0..warmup { state.set_coordinates(&[c]); state.pull(&program, "out"); }
+                    for c in 0..warmup { state.set_coordinates(&[c]); state.pull(&program, &output_name); }
                 }
                 let per_thread = cycles;
                 let barrier = Arc::new(std::sync::Barrier::new(nthreads));
@@ -823,6 +1126,7 @@ fn bench_command(args: &[String]) {
                         let program = program.clone();
                         let barrier = barrier.clone();
                         let elapsed = elapsed.clone();
+                        let out = output_name.clone();
                         s.spawn(move || {
                             let mut state = program.create_state();
                             let base = tid as u64 * per_thread;
@@ -830,7 +1134,7 @@ fn bench_command(args: &[String]) {
                             let start = std::time::Instant::now();
                             for c in base..base + per_thread {
                                 state.set_coordinates(&[c]);
-                                state.pull(&program, "out");
+                                state.pull(&program, &out);
                             }
                             let e = start.elapsed();
                             // Take the max elapsed across threads (wall-clock)
@@ -849,6 +1153,22 @@ fn bench_command(args: &[String]) {
             }
         }
 
+        // Find the last binding name from the source for output resolution.
+        // P2/Hybrid/P3 kernels need an output slot name to read from.
+        let last_binding: String = source.lines().rev()
+            .filter_map(|line| {
+                let line = line.trim();
+                if let Some(pos) = line.find(":=") {
+                    let target = line[..pos].trim().trim_matches(|c| c == '(' || c == ')');
+                    // Take the last target in a multi-target binding
+                    target.split(',').next_back().map(|s| s.trim().to_string())
+                } else {
+                    None
+                }
+            })
+            .next()
+            .unwrap_or_else(|| "out".to_string());
+
         // P2, Hybrid, P3: each thread gets its own compiled kernel
         // (the buffer is mutable per-kernel, no sharing needed).
         let levels: Vec<(&str, bool, &str)> = vec![
@@ -861,20 +1181,20 @@ fn bench_command(args: &[String]) {
             let kernels: Vec<_> = (0..nthreads).filter_map(|_| {
                 let asm = compile_gk_to_assembler(&source).ok()?;
                 match *level_name {
-                    "P2" => asm.try_compile().ok().map(|mut k| {
-                        let out = k.resolve_output("out").unwrap();
-                        Box::new(move |c: u64| { k.eval(&[c]); let _ = k.get_slot(out); })
-                            as Box<dyn FnMut(u64) + Send>
+                    "P2" => asm.try_compile().ok().and_then(|mut k| {
+                        let out = k.resolve_output(&last_binding)?;
+                        Some(Box::new(move |c: u64| { k.eval(&[c]); let _ = k.get_slot(out); })
+                            as Box<dyn FnMut(u64) + Send>)
                     }),
-                    "Hybrid" => asm.compile_hybrid().ok().map(|mut k| {
-                        let out = k.resolve_output("out").unwrap();
-                        Box::new(move |c: u64| { k.eval(&[c]); let _ = k.get_slot(out); })
-                            as Box<dyn FnMut(u64) + Send>
+                    "Hybrid" => asm.compile_hybrid().ok().and_then(|mut k| {
+                        let out = k.resolve_output(&last_binding)?;
+                        Some(Box::new(move |c: u64| { k.eval(&[c]); let _ = k.get_slot(out); })
+                            as Box<dyn FnMut(u64) + Send>)
                     }),
-                    "P3" => asm.try_compile_jit().ok().map(|mut k| {
-                        let out = k.resolve_output("out").unwrap();
-                        Box::new(move |c: u64| { k.eval(&[c]); let _ = k.get_slot(out); })
-                            as Box<dyn FnMut(u64) + Send>
+                    "P3" => asm.try_compile_jit().ok().and_then(|mut k| {
+                        let out = k.resolve_output(&last_binding)?;
+                        Some(Box::new(move |c: u64| { k.eval(&[c]); let _ = k.get_slot(out); })
+                            as Box<dyn FnMut(u64) + Send>)
                     }),
                     _ => None,
                 }
@@ -895,7 +1215,7 @@ fn bench_command(args: &[String]) {
             let elapsed = Arc::new(std::sync::Mutex::new(std::time::Duration::ZERO));
 
             let kernel_cells: Vec<_> = kernels.into_iter()
-                .map(|k| std::sync::Mutex::new(k))
+                .map(std::sync::Mutex::new)
                 .collect();
 
             std::thread::scope(|s| {
@@ -934,23 +1254,10 @@ fn bench_command(args: &[String]) {
     println!();
 }
 
-// =================================================================
-// Shell completions
-// =================================================================
+// Shell completions are handled by veks-completion (see cli_tree()).
+// The cli_tree() function is the single source of truth.
 
-fn print_completions(shell: &str) {
-    match shell {
-        "bash" => print_bash_completions(),
-        "zsh" => print_zsh_completions(),
-        "fish" => print_fish_completions(),
-        _ => {
-            eprintln!("Unknown shell: {shell}");
-            eprintln!("Supported: bash, zsh, fish");
-        }
-    }
-}
-
-fn print_bash_completions() {
+fn _deleted_bash_completions() {
     // Get all GK function names for completing expressions
     let funcs: Vec<&str> = nb_variates::dsl::registry::registry()
         .iter()
@@ -968,7 +1275,7 @@ fn print_bash_completions() {
     local bench_topics="gk"
     local web_flags="--daemon --stop --restart"
     local run_params="workload= adapter= cycles= threads= rate= stanzarate= tags= seq= format= errors= filename= op= gk-lib="
-    local bench_params="cycles= threads= --cycles --threads -c -t"
+    local bench_params="cycles= threads= --cycles --threads -c -t --explain --gk-explain"
     local gk_functions="{func_list}"
 
     case "${{cword}}" in
@@ -1015,7 +1322,7 @@ complete -o nospace -F _nbrs nbrs
 "#);
 }
 
-fn print_zsh_completions() {
+fn _deleted_zsh_completions() {
     print!(r#"#compdef nbrs
 
 _nbrs() {{
@@ -1045,7 +1352,8 @@ _nbrs() {{
             if (( CURRENT == 3 )); then
                 _values 'topic' gk
             else
-                _message 'expr or option (cycles=N threads=RANGE)'
+                _values 'option' --explain --gk-explain
+                _message 'expr or option (cycles=N threads=RANGE --explain)'
             fi
             ;;
         web)
@@ -1065,7 +1373,7 @@ _nbrs "$@"
 "#);
 }
 
-fn print_fish_completions() {
+fn _deleted_fish_completions() {
     println!("# nbrs fish completions");
     println!("complete -c nbrs -n '__fish_use_subcommand' -a run -d 'Execute a workload'");
     println!("complete -c nbrs -n '__fish_use_subcommand' -a describe -d 'Describe GK functions'");
@@ -1074,6 +1382,7 @@ fn print_fish_completions() {
     println!("complete -c nbrs -n '__fish_use_subcommand' -a completions -d 'Output shell completions'");
     println!("complete -c nbrs -n '__fish_seen_subcommand_from describe' -a 'gk'");
     println!("complete -c nbrs -n '__fish_seen_subcommand_from bench' -a 'gk'");
+    println!("complete -c nbrs -n '__fish_seen_subcommand_from bench' -l explain -d 'Dump GK compilation event stream'");
     println!("complete -c nbrs -n '__fish_seen_subcommand_from web' -l daemon -d 'Run in background'");
     println!("complete -c nbrs -n '__fish_seen_subcommand_from web' -l stop -d 'Stop daemon'");
     println!("complete -c nbrs -n '__fish_seen_subcommand_from web' -l restart -d 'Restart daemon'");
@@ -1211,7 +1520,7 @@ async fn run_command(args: &[String]) {
     let driver = params.get("adapter")
         .map(|s| s.as_str())
         .unwrap_or("stdout");
-    let cycles: u64 = params.get("cycles").and_then(|s| parse_count(s)).unwrap_or(1);
+    let explicit_cycles: Option<u64> = params.get("cycles").and_then(|s| parse_count(s));
     let threads: usize = params.get("threads").and_then(|s| s.parse().ok()).unwrap_or(1);
     let cycle_rate: Option<f64> = params.get("rate").and_then(|s| s.parse().ok());
     let stanza_rate: Option<f64> = params.get("stanzarate").and_then(|s| s.parse().ok());
@@ -1228,6 +1537,9 @@ async fn run_command(args: &[String]) {
     let filename = params.get("filename")
         .cloned()
         .unwrap_or_else(|| "stdout".to_string());
+
+    // Extract workload params before consuming ops
+    let workload_params = workload.params;
 
     // Filter ops by tags
     let mut ops = workload.ops;
@@ -1246,8 +1558,19 @@ async fn run_command(args: &[String]) {
         std::process::exit(1);
     }
 
+    // Warn about ops without explicit adapter selection, auto-assign to default
+    let has_explicit_adapter = params.contains_key("adapter") || params.contains_key("driver");
+    for op in &ops {
+        let op_adapter = op.params.get("adapter")
+            .and_then(|v| v.as_str())
+            .or_else(|| op.params.get("driver").and_then(|v| v.as_str()));
+        if op_adapter.is_none() && !has_explicit_adapter {
+            eprintln!("warning: op '{}' has no adapter selection — using '{driver}'", op.name);
+        }
+    }
+
     eprintln!("nbrs: {} ops selected, {} cycles, {} threads, adapter={}",
-        ops.len(), cycles, threads, driver);
+        ops.len(), explicit_cycles.map(|c| c.to_string()).unwrap_or("auto".into()), threads, driver);
 
     // Check for --strict and --dry-run flags
     let strict = args.iter().any(|a| a == "--strict");
@@ -1263,11 +1586,28 @@ async fn run_command(args: &[String]) {
         .map(std::path::PathBuf::from)
         .collect();
 
+    // Expand workload params in GK binding source before compilation.
+    if !workload_params.is_empty() {
+        for op in &mut ops {
+            if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
+                for (key, value) in &workload_params {
+                    let placeholder = format!("{{{key}}}");
+                    if src.contains(&placeholder) {
+                        *src = src.replace(&placeholder, value);
+                    }
+                }
+            }
+        }
+    }
+
     // Compile bindings into GK kernel, with module resolution from the workload directory
     let workload_dir: Option<&std::path::Path> = workload_file.as_ref()
         .and_then(|p| std::path::Path::new(p).parent())
         .or_else(|| Some(std::path::Path::new(".")));
-    let kernel = match compile_bindings_with_libs(&ops, workload_dir, gk_lib_paths, strict) {
+    // Workload params are excluded from bind-point validation —
+    // they resolve at cycle time via the synthesis pipeline.
+    let wp_names: Vec<String> = workload_params.keys().cloned().collect();
+    let kernel = match compile_bindings_with_libs_excluding(&ops, workload_dir, gk_lib_paths, strict, &wp_names) {
         Ok(k) => k,
         Err(e) => {
             eprintln!("error: failed to compile bindings: {e}");
@@ -1277,9 +1617,17 @@ async fn run_command(args: &[String]) {
 
     // Build op sequence
     let op_sequence = OpSequence::from_ops(ops, seq_type);
+
+    // Default cycles to one stanza if not specified
+    let cycles = explicit_cycles.unwrap_or(op_sequence.stanza_length() as u64);
     eprintln!("nbrs: stanza length={}, sequencer={:?}", op_sequence.stanza_length(), seq_type);
 
     // Create and run activity
+    let stanza_concurrency: usize = params.get("stanza_concurrency")
+        .or_else(|| params.get("sc"))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+
     let config = ActivityConfig {
         name: "main".into(),
         cycles,
@@ -1289,10 +1637,11 @@ async fn run_command(args: &[String]) {
         sequencer: seq_type,
         error_spec,
         max_retries: 3,
+        stanza_concurrency,
     };
 
     let builder = Arc::new(OpBuilder::new(kernel));
-    let activity = Activity::new(config, &Labels::of("session", "cli"), op_sequence);
+    let activity = Activity::with_params(config, &Labels::of("session", "cli"), op_sequence, workload_params);
 
     // Check for --tui flag
     let use_tui = args.iter().any(|a| a == "--tui");
@@ -1330,7 +1679,9 @@ async fn run_command(args: &[String]) {
         app.metrics.rate_config = cycle_rate.map(|r| format!("{r}/s")).unwrap_or("unlimited".into());
 
         let tui_thread = std::thread::spawn(move || {
-            let _ = app.run();
+            if let Err(e) = app.run() {
+                eprintln!("error: TUI failed: {e}");
+            }
         });
 
         Some((tui_thread, capture_running))
@@ -1369,47 +1720,50 @@ async fn run_command(args: &[String]) {
         running
     });
 
+    let program = builder.program();
+
     // Handle --dry-run: override adapter with a no-op or printing adapter
     if let Some(dry_mode) = dry_run {
-        let b = builder.clone();
         match dry_mode {
             "emit" => {
-                // Print each assembled op (like stdout adapter)
-                let adapter = Arc::new(StdoutAdapter::with_config(StdoutConfig {
-                    filename: "stdout".into(),
-                    newline: true,
-                    format: StdoutFormat::Statement,
-                }));
-                activity.run(
-                    adapter,
-                    Arc::new(move |cycle, template| b.build(cycle, template)),
-                ).await;
+                let adapter: Arc<dyn nb_activity::adapter::DriverAdapter> =
+                    Arc::new(StdoutAdapter::with_config(StdoutConfig {
+                        filename: "stdout".into(),
+                        newline: true,
+                        format: StdoutFormat::Statement,
+                fields_filter: Vec::new(),
+                    }));
+                activity.run_with_driver(adapter, program).await;
             }
             "json" => {
-                let adapter = Arc::new(StdoutAdapter::with_config(StdoutConfig {
-                    filename: "stdout".into(),
-                    newline: true,
-                    format: StdoutFormat::Json,
-                }));
-                activity.run(
-                    adapter,
-                    Arc::new(move |cycle, template| b.build(cycle, template)),
-                ).await;
+                let adapter: Arc<dyn nb_activity::adapter::DriverAdapter> =
+                    Arc::new(StdoutAdapter::with_config(StdoutConfig {
+                        filename: "stdout".into(),
+                        newline: true,
+                        format: StdoutFormat::Json,
+                fields_filter: Vec::new(),
+                    }));
+                activity.run_with_driver(adapter, program).await;
             }
             _ => {
-                // Silent: assemble but don't print
-                use nb_activity::adapter::{Adapter, OpResult, AdapterError};
-                struct NoopAdapter;
-                impl Adapter for NoopAdapter {
-                    fn execute(&self, _op: &nb_activity::adapter::AssembledOp)
-                        -> impl std::future::Future<Output = Result<OpResult, AdapterError>> + Send {
-                        async { Ok(OpResult { success: true, status: 0, body: None }) }
+                // Silent: assemble but don't execute
+                use nb_activity::adapter::{DriverAdapter, OpDispenser, OpResult, ExecutionError, ResolvedFields};
+                struct NoopDriverAdapter;
+                impl DriverAdapter for NoopDriverAdapter {
+                    fn name(&self) -> &str { "noop" }
+                    fn map_op(&self, _template: &nb_workload::model::ParsedOp)
+                        -> Result<Box<dyn OpDispenser>, String> {
+                        struct NoopDispenser;
+                        impl OpDispenser for NoopDispenser {
+                            fn execute<'a>(&'a self, _cycle: u64, _fields: &'a ResolvedFields)
+                                -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+                                Box::pin(async { Ok(OpResult { body: None, captures: std::collections::HashMap::new() }) })
+                            }
+                        }
+                        Ok(Box::new(NoopDispenser))
                     }
                 }
-                activity.run(
-                    Arc::new(NoopAdapter),
-                    Arc::new(move |cycle, template| b.build(cycle, template)),
-                ).await;
+                activity.run_with_driver(Arc::new(NoopDriverAdapter), program).await;
             }
         }
         eprintln!("nbrs: dry-run complete");
@@ -1417,33 +1771,29 @@ async fn run_command(args: &[String]) {
 
     match driver {
         "stdout" => {
-            let adapter = Arc::new(StdoutAdapter::with_config(StdoutConfig {
-                filename,
-                newline: true,
-                format,
-            }));
-            let b = builder.clone();
-            activity.run(
-                adapter,
-                Arc::new(move |cycle, template| b.build(cycle, template)),
-            ).await;
+            let adapter: Arc<dyn nb_activity::adapter::DriverAdapter> =
+                Arc::new(StdoutAdapter::with_config(StdoutConfig {
+                    filename,
+                    newline: true,
+                    format,
+                    fields_filter: Vec::new(),
+                }));
+            activity.run_with_driver(adapter, program).await;
         }
         "model" => {
             use nb_adapter_model::{ModelAdapter, ModelConfig};
             let diagnose = args.iter().any(|a| a == "--diagnose");
-            let adapter = Arc::new(ModelAdapter::with_config(ModelConfig {
-                stdout: StdoutConfig {
-                    filename,
-                    newline: true,
-                    format,
-                },
-                diagnose,
-            }));
-            let b = builder.clone();
-            activity.run(
-                adapter,
-                Arc::new(move |cycle, template| b.build(cycle, template)),
-            ).await;
+            let adapter: Arc<dyn nb_activity::adapter::DriverAdapter> =
+                Arc::new(ModelAdapter::with_config(ModelConfig {
+                    stdout: StdoutConfig {
+                        filename,
+                        newline: true,
+                        format,
+                        fields_filter: Vec::new(),
+                    },
+                    diagnose,
+                }));
+            activity.run_with_driver(adapter, program).await;
         }
         "http" => {
             use nb_adapter_http::{HttpAdapter, HttpConfig};
@@ -1451,16 +1801,13 @@ async fn run_command(args: &[String]) {
             let timeout = params.get("timeout")
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(30_000);
-            let adapter = Arc::new(HttpAdapter::with_config(HttpConfig {
-                base_url,
-                timeout_ms: timeout,
-                follow_redirects: true,
-            }));
-            let b = builder.clone();
-            activity.run(
-                adapter,
-                Arc::new(move |cycle, template| b.build(cycle, template)),
-            ).await;
+            let adapter: Arc<dyn nb_activity::adapter::DriverAdapter> =
+                Arc::new(HttpAdapter::with_config(HttpConfig {
+                    base_url,
+                    timeout_ms: timeout,
+                    follow_redirects: true,
+                }));
+            activity.run_with_driver(adapter, program).await;
         }
         other => {
             eprintln!("error: unknown driver '{other}' (supported: stdout, model, http)");

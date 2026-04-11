@@ -130,6 +130,12 @@ pub struct JsonMerge {
     meta: NodeMeta,
 }
 
+impl Default for JsonMerge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JsonMerge {
     pub fn new() -> Self {
         Self {
@@ -172,6 +178,12 @@ pub struct JsonToStr {
     meta: NodeMeta,
 }
 
+impl Default for JsonToStr {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JsonToStr {
     pub fn new() -> Self {
         Self {
@@ -196,6 +208,12 @@ impl GkNode for JsonToStr {
 /// Signature: `(input: json) -> (String)`
 pub struct JsonToStrPretty {
     meta: NodeMeta,
+}
+
+impl Default for JsonToStrPretty {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl JsonToStrPretty {
@@ -224,6 +242,12 @@ impl GkNode for JsonToStrPretty {
 /// Signature: `(input: String) -> (json)`
 pub struct StrToJson {
     meta: NodeMeta,
+}
+
+impl Default for StrToJson {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StrToJson {
@@ -255,6 +279,12 @@ impl GkNode for StrToJson {
 /// surrounding quotes — the result is the interior of a JSON string.
 pub struct EscapeJson {
     meta: NodeMeta,
+}
+
+impl Default for EscapeJson {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EscapeJson {

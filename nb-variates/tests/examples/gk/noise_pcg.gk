@@ -1,0 +1,11 @@
+// noise_pcg.gk — Noise functions and PCG random number generation.
+//
+// Exercises perlin_1d, simplex_2d, pcg, and shuffle.
+
+coordinates := (cycle)
+noise := perlin_1d(cycle, 42, 0.01)
+pnoise := perlin_2d(cycle, cycle, 42, 0.01)
+snoise := simplex_2d(cycle, cycle, 99, 0.005)
+rng := pcg(cycle, 12345)
+shuffled := shuffle(cycle, 1000)
+walked := cycle_walk(cycle, 1000)

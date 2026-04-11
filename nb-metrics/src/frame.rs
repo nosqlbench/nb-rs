@@ -98,7 +98,9 @@ impl MetricsFrame {
                         if let Some(entry) = timer_acc.iter_mut().find(|(l, _, _)| l == labels) {
                             entry.1 = *count; // count is cumulative, take latest
                             if let Some(ref mut merged) = entry.2 {
-                                merged.add(histogram).ok();
+                                if let Err(e) = merged.add(histogram) {
+                                    eprintln!("warning: histogram merge failed: {e}");
+                                }
                             } else {
                                 entry.2 = Some(histogram.clone());
                             }

@@ -540,6 +540,12 @@ pub struct Interleave {
     meta: NodeMeta,
 }
 
+impl Default for Interleave {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Interleave {
     pub fn new() -> Self {
         Self {

@@ -1,0 +1,27 @@
+# vector_describe.yaml — Display summary info about a vector dataset.
+#
+# Usage:
+#   nbrs run workload=workloads/vector_describe.yaml
+#   nbrs run workload=workloads/vector_describe.yaml dataset=sift-128
+#   nbrs run workload=workloads/vector_describe.yaml dataset=glove-100 cycles=5
+
+params:
+  dataset: glove-25-angular
+
+bindings: |
+  coordinates := (cycle)
+  dim := vector_dim("{dataset}")
+  count := vector_count("{dataset}")
+  base_vec := vector_at(cycle, "{dataset}")
+  query_vec := query_vector_at(cycle, "{dataset}")
+  gt := neighbor_indices_at(cycle, "{dataset}")
+
+ops:
+  summary:
+    stmt: "dataset={dataset} dimensions={dim} vectors={count}"
+  base_sample:
+    stmt: "base[{cycle}] = {base_vec}"
+  query_sample:
+    stmt: "query[{cycle}] = {query_vec}"
+  ground_truth:
+    stmt: "gt[{cycle}] = {gt}"

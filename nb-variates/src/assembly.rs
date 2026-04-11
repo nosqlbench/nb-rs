@@ -72,16 +72,53 @@ pub enum AssemblyError {
 impl std::fmt::Display for AssemblyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AssemblyError::UnknownWire(name) => write!(f, "unknown wire: {name}"),
+            AssemblyError::UnknownWire(name) => {
+                write!(f, "unknown wire: '{name}'\n\n")?;
+                writeln!(f, "  No node output or coordinate named '{name}' exists.")?;
+                write!(f, "  Check spelling, or add a node that produces this output.")
+            }
             AssemblyError::TypeMismatch {
                 from_node, from_port, from_type, to_node, to_port, to_type,
-            } => write!(
-                f, "type mismatch: {from_node}[{from_port}] ({from_type}) -> {to_node}[{to_port}] ({to_type})"
-            ),
-            AssemblyError::DuplicateNode(name) => write!(f, "duplicate node name: {name}"),
-            AssemblyError::CycleDetected => write!(f, "cycle detected in DAG"),
+            } => {
+                writeln!(f, "type mismatch: cannot connect {from_type} output to {to_type} input")?;
+                writeln!(f)?;
+                writeln!(f, "  {from_node} [{from_port}]  ──({from_type})──▶  {to_node} [{to_port}] expects {to_type}")?;
+                writeln!(f)?;
+                // Suggest auto-adapters that exist
+                let suggestion = match (from_type, to_type) {
+                    (PortType::U64, PortType::Str) => Some("This should auto-convert. If you see this, file a bug."),
+                    (PortType::F64, PortType::Str) => Some("This should auto-convert. If you see this, file a bug."),
+                    (PortType::U64, PortType::F64) => Some("This should auto-convert. If you see this, file a bug."),
+                    (PortType::U64, PortType::Bytes) => Some("Add u64_to_bytes() between them to convert."),
+                    (PortType::Str, PortType::Bytes) => Some("String cannot be directly used as bytes."),
+                    (PortType::U64, PortType::Json) => Some("Add to_json() between them to wrap as JSON."),
+                    (PortType::Str, PortType::Json) => Some("Add str_to_json() to parse the string as JSON."),
+                    (PortType::Bytes, PortType::Str) => Some("Add to_hex() or to_base64() to convert bytes to string."),
+                    (PortType::Bytes, PortType::U64) => Some("Bytes cannot be directly converted to u64."),
+                    _ => None,
+                };
+                if let Some(hint) = suggestion {
+                    write!(f, "  Hint: {hint}")?;
+                }
+                Ok(())
+            }
+            AssemblyError::DuplicateNode(name) => {
+                write!(f, "duplicate node name: '{name}'\n\n")?;
+                write!(f, "  Two nodes cannot share the same name.")
+            }
+            AssemblyError::CycleDetected => {
+                write!(f, "cycle detected in DAG\n\n")?;
+                writeln!(f, "  The graph contains a loop. GK graphs must be acyclic")?;
+                write!(f, "  (data flows in one direction only).")
+            }
             AssemblyError::ArityMismatch { node_name, expected, got } => {
-                write!(f, "node {node_name}: expected {expected} inputs, got {got}")
+                write!(f, "wrong number of inputs for '{node_name}'\n\n")?;
+                writeln!(f, "  Expected {expected} input(s), but got {got}.")?;
+                if *got < *expected {
+                    write!(f, "  Connect more wires to this node's input ports.")
+                } else {
+                    write!(f, "  Disconnect extra wires from this node.")
+                }
             }
         }
     }
@@ -139,14 +176,25 @@ impl GkAssembler {
         self
     }
 
+    /// Return the names of declared outputs.
+    pub fn output_names(&self) -> Vec<&str> {
+        self.outputs.keys().map(|s| s.as_str()).collect()
+    }
+
     /// Validate, resolve, and produce a Phase 1 runtime kernel.
     pub fn compile(self) -> Result<GkKernel, AssemblyError> {
-        let resolved = self.resolve()?;
-        Ok(GkKernel::new(
+        self.compile_with_log(None)
+    }
+
+    /// Compile with diagnostic event logging.
+    pub fn compile_with_log(self, mut log: Option<&mut crate::dsl::events::CompileEventLog>) -> Result<GkKernel, AssemblyError> {
+        let resolved = self.resolve_with_log(log.as_deref_mut())?;
+        Ok(GkKernel::new_with_log(
             resolved.nodes,
             resolved.wiring,
             resolved.coord_names,
             resolved.output_map,
+            log,
         ))
     }
 
@@ -328,6 +376,10 @@ impl GkAssembler {
 
     /// Internal: validate, resolve wiring, insert adapters, topological sort.
     fn resolve(self) -> Result<ResolvedDag, AssemblyError> {
+        self.resolve_with_log(None)
+    }
+
+    fn resolve_with_log(self, mut log: Option<&mut crate::dsl::events::CompileEventLog>) -> Result<ResolvedDag, AssemblyError> {
         // Build name → index map for nodes
         let mut name_to_idx: HashMap<String, usize> = HashMap::new();
         for (i, pn) in self.nodes.iter().enumerate() {
@@ -401,6 +453,19 @@ impl GkAssembler {
                     let adapter_name = format!("__adapt_{adapter_count}");
                     adapter_count += 1;
                     let adapter_idx = all_nodes.len();
+
+                    if let Some(ref mut log) = log {
+                        let from_name = match wire_ref {
+                            WireRef::Coord(n) => n.clone(),
+                            WireRef::Node(n, _) => n.clone(),
+                        };
+                        log.push(crate::dsl::events::CompileEvent::TypeAdapterInserted {
+                            from_node: from_name,
+                            to_node: all_nodes[node_idx].name.clone(),
+                            adapter: format!("{source_type:?}→{expected_type:?}"),
+                        });
+                    }
+
                     all_name_to_idx.insert(adapter_name.clone(), adapter_idx);
 
                     let adapter_wiring = vec![source];
@@ -453,11 +518,10 @@ impl GkAssembler {
                 // These nodes must not be consumed as interior nodes by fusion.
                 let mut output_nodes: Vec<usize> = Vec::new();
                 for wire_ref in self.outputs.values() {
-                    if let WireRef::Node(node_name, _) = wire_ref {
-                        if let Some(&idx) = all_name_to_idx.get(node_name) {
+                    if let WireRef::Node(node_name, _) = wire_ref
+                        && let Some(&idx) = all_name_to_idx.get(node_name) {
                             output_nodes.push(idx);
                         }
-                    }
                 }
 
                 // Convert to Option<Box<dyn GkNode>> for the fusion pass.
@@ -466,13 +530,20 @@ impl GkAssembler {
                     .map(|pn| Some(pn.node))
                     .collect();
 
-                let _fused_count = crate::fusion::apply_fusions(
+                let fused_count = crate::fusion::apply_fusions(
                     &mut opt_nodes,
                     &mut resolved_wiring,
                     &mut all_name_to_idx,
                     &rules,
                     &output_nodes,
                 );
+                if fused_count > 0
+                    && let Some(ref mut log) = log {
+                        log.push(crate::dsl::events::CompileEvent::FusionApplied {
+                            pattern: "subgraph".into(),
+                            nodes_replaced: fused_count,
+                        });
+                    }
 
                 // Convert back, rebuilding PendingNode wrappers.
                 // Fused-away nodes (None) get placeholder names.
@@ -504,22 +575,20 @@ impl GkAssembler {
             let mut worklist: Vec<usize> = Vec::new();
             // Seed with output nodes
             for wire_ref in self.outputs.values() {
-                if let WireRef::Node(node_name, _) = wire_ref {
-                    if let Some(&idx) = all_name_to_idx.get(node_name) {
+                if let WireRef::Node(node_name, _) = wire_ref
+                    && let Some(&idx) = all_name_to_idx.get(node_name) {
                         worklist.push(idx);
                     }
-                }
             }
             // Walk backward through wiring
             while let Some(idx) = worklist.pop() {
                 if reachable[idx] { continue; }
                 reachable[idx] = true;
                 for source in &resolved_wiring[idx] {
-                    if let WireSource::NodeOutput(upstream, _) = source {
-                        if !reachable[*upstream] {
+                    if let WireSource::NodeOutput(upstream, _) = source
+                        && !reachable[*upstream] {
                             worklist.push(*upstream);
                         }
-                    }
                 }
             }
         }

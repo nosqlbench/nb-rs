@@ -119,7 +119,7 @@ mod inner {
             self.conn.execute(
                 "INSERT OR IGNORE INTO metric_family (name, type) VALUES (?1, ?2)",
                 params![name, typ],
-            ).ok();
+            ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
             let id: i64 = self.conn.query_row(
                 "SELECT id FROM metric_family WHERE name=?1 AND type=?2",
                 params![name, typ],
@@ -136,7 +136,7 @@ mod inner {
             self.conn.execute(
                 "INSERT OR IGNORE INTO label_key (key) VALUES (?1)",
                 params![key],
-            ).ok();
+            ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
             let id: i64 = self.conn.query_row(
                 "SELECT id FROM label_key WHERE key=?1",
                 params![key], |row| row.get(0),
@@ -152,7 +152,7 @@ mod inner {
             self.conn.execute(
                 "INSERT OR IGNORE INTO label_value (value) VALUES (?1)",
                 params![value],
-            ).ok();
+            ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
             let id: i64 = self.conn.query_row(
                 "SELECT id FROM label_value WHERE value=?1",
                 params![value], |row| row.get(0),
@@ -169,7 +169,7 @@ mod inner {
             self.conn.execute(
                 "INSERT OR IGNORE INTO label_set (hash) VALUES (?1)",
                 params![hash as i64],
-            ).ok();
+            ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
             let set_id: i64 = self.conn.query_row(
                 "SELECT id FROM label_set WHERE hash=?1",
                 params![hash as i64], |row| row.get(0),
@@ -182,7 +182,7 @@ mod inner {
                 self.conn.execute(
                     "INSERT OR IGNORE INTO label_set_entry (set_id, key_id, value_id) VALUES (?1, ?2, ?3)",
                     params![set_id, key_id, val_id],
-                ).ok();
+                ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
             }
 
             self.label_set_cache.insert(hash, set_id);
@@ -197,7 +197,7 @@ mod inner {
             self.conn.execute(
                 "INSERT OR IGNORE INTO metric_instance (family_id, label_set_id) VALUES (?1, ?2)",
                 params![family_id, label_set_id],
-            ).ok();
+            ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
             let id: i64 = self.conn.query_row(
                 "SELECT id FROM metric_instance WHERE family_id=?1 AND label_set_id=?2",
                 params![family_id, label_set_id], |row| row.get(0),
@@ -226,7 +226,7 @@ mod inner {
                         "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count) \
                          VALUES (?1, ?2, ?3, ?4)",
                         params![instance_id, now_ms, interval_ms, *value as i64],
-                    ).ok();
+                    ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
                 }
                 Sample::Gauge { labels, value } => {
                     let name = labels.get("name").unwrap_or("unknown");
@@ -238,7 +238,7 @@ mod inner {
                         "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, mean) \
                          VALUES (?1, ?2, ?3, ?4)",
                         params![instance_id, now_ms, interval_ms, *value],
-                    ).ok();
+                    ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
                 }
                 Sample::Timer { labels, count, histogram } => {
                     let name = labels.get("name").unwrap_or("unknown");
@@ -270,7 +270,7 @@ mod inner {
                             instance_id, now_ms, interval_ms, obs, sum, min, max, mean, stddev,
                             p50, p75, p90, p95, p98, p99, p999
                         ],
-                    ).ok();
+                    ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
                 }
             }
         }

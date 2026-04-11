@@ -18,6 +18,12 @@ pub struct HtmlEncode {
     meta: NodeMeta,
 }
 
+impl Default for HtmlEncode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HtmlEncode {
     pub fn new() -> Self {
         Self {
@@ -57,6 +63,12 @@ impl GkNode for HtmlEncode {
 /// Decodes: `&amp; &lt; &gt; &quot; &#x27; &#39;`
 pub struct HtmlDecode {
     meta: NodeMeta,
+}
+
+impl Default for HtmlDecode {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HtmlDecode {
@@ -100,6 +112,12 @@ pub struct UrlEncode {
     meta: NodeMeta,
 }
 
+impl Default for UrlEncode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UrlEncode {
     pub fn new() -> Self {
         Self {
@@ -140,6 +158,12 @@ pub struct UrlDecode {
     meta: NodeMeta,
 }
 
+impl Default for UrlDecode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UrlDecode {
     pub fn new() -> Self {
         Self {
@@ -161,15 +185,14 @@ impl GkNode for UrlDecode {
         let mut result = Vec::with_capacity(bytes.len());
         let mut i = 0;
         while i < bytes.len() {
-            if bytes[i] == b'%' && i + 2 < bytes.len() {
-                if let Ok(byte) = u8::from_str_radix(
+            if bytes[i] == b'%' && i + 2 < bytes.len()
+                && let Ok(byte) = u8::from_str_radix(
                     &s[i + 1..i + 3], 16
                 ) {
                     result.push(byte);
                     i += 3;
                     continue;
                 }
-            }
             result.push(bytes[i]);
             i += 1;
         }

@@ -1,0 +1,17 @@
+# Static linking for the Cassandra C++ driver.
+# The -sys crate emits -l dylib=cassandra; we need the static lib.
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-C", "link-arg=-L", "-C", "link-arg=/mnt/datamir/home/jshook/projects/nb-rs/personas/cassnbrs/sysroot/lib",
+    "-C", "link-arg=-Wl,-Bstatic",
+    "-C", "link-arg=-lcassandra_static",
+    "-C", "link-arg=-Wl,-Bdynamic",
+    "-C", "link-arg=-luv",
+    "-C", "link-arg=-lssl",
+    "-C", "link-arg=-lcrypto",
+    "-C", "link-arg=-lstdc++",
+    "-C", "link-arg=-lz",
+    "-C", "link-arg=-lpthread",
+    "-C", "link-arg=-ldl",
+    "-C", "link-arg=-lm",
+]

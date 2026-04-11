@@ -80,16 +80,14 @@ impl App {
                 .checked_sub(last_tick.elapsed())
                 .unwrap_or(Duration::ZERO);
 
-            if event::poll(timeout)? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
+            if event::poll(timeout)?
+                && let Event::Key(key) = event::read()?
+                    && key.kind == KeyEventKind::Press {
                         match key.code {
                             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
                             _ => {}
                         }
                     }
-                }
-            }
 
             if self.should_quit {
                 break;

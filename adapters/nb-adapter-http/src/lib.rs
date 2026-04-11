@@ -26,8 +26,10 @@
 //!     content_type: application/json
 //! ```
 
-
-use nb_activity::adapter::{Adapter, AdapterError, AssembledOp, OpResult};
+use nb_activity::adapter::{
+    AdapterError, DriverAdapter, ExecutionError, OpDispenser, OpResult, ResolvedFields, TextBody,
+};
+use nb_workload::model::ParsedOp;
 
 /// Configuration for the HTTP adapter.
 pub struct HttpConfig {
@@ -49,7 +51,7 @@ impl Default for HttpConfig {
     }
 }
 
-/// The HTTP adapter: executes AssembledOps as HTTP requests.
+/// The HTTP adapter: executes ops as HTTP requests.
 pub struct HttpAdapter {
     client: reqwest::Client,
     base_url: Option<String>,
@@ -80,94 +82,6 @@ impl HttpAdapter {
     }
 }
 
-impl Adapter for HttpAdapter {
-    fn execute(&self, op: &AssembledOp) -> impl std::future::Future<Output = Result<OpResult, AdapterError>> + Send {
-        let method = op.fields.get("method")
-            .map(|s| s.to_uppercase())
-            .unwrap_or_else(|| "GET".into());
-
-        let uri = op.fields.get("uri")
-            .or_else(|| op.fields.get("url"))
-            .cloned()
-            .unwrap_or_default();
-
-        let full_url = if let Some(ref base) = self.base_url {
-            if uri.starts_with("http://") || uri.starts_with("https://") {
-                uri
-            } else {
-                format!("{}{}", base.trim_end_matches('/'), uri)
-            }
-        } else {
-            uri
-        };
-
-        let body = op.fields.get("body").cloned();
-        let content_type = op.fields.get("content_type")
-            .cloned()
-            .unwrap_or_else(|| "application/json".into());
-
-        // Parse additional headers
-        let extra_headers: Vec<(String, String)> = op.fields.get("headers")
-            .map(|h| {
-                h.lines()
-                    .filter_map(|line| {
-                        let mut parts = line.splitn(2, ':');
-                        let name = parts.next()?.trim().to_string();
-                        let value = parts.next()?.trim().to_string();
-                        Some((name, value))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let client = self.client.clone();
-
-        async move {
-            let mut builder = match method.as_str() {
-                "GET" => client.get(&full_url),
-                "POST" => client.post(&full_url),
-                "PUT" => client.put(&full_url),
-                "DELETE" => client.delete(&full_url),
-                "PATCH" => client.patch(&full_url),
-                "HEAD" => client.head(&full_url),
-                other => return Err(AdapterError {
-                    error_name: "InvalidMethod".into(),
-                    message: format!("unsupported HTTP method: {other}"),
-                }),
-            };
-
-            builder = builder.header("Content-Type", &content_type);
-
-            for (name, value) in &extra_headers {
-                builder = builder.header(name.as_str(), value.as_str());
-            }
-
-            if let Some(body_str) = body {
-                builder = builder.body(body_str);
-            }
-
-            let response = builder.send().await.map_err(|e| AdapterError {
-                error_name: classify_reqwest_error(&e),
-                message: e.to_string(),
-            })?;
-
-            let status = response.status().as_u16() as i32;
-            let success = response.status().is_success();
-            let body = response.text().await.ok();
-
-            if success {
-                Ok(OpResult { success: true, status, body })
-            } else {
-                Err(AdapterError {
-                    error_name: format!("HttpStatus{}", status),
-                    message: format!("HTTP {} {}: {}", status, full_url,
-                        body.as_deref().unwrap_or("(no body)")),
-                })
-            }
-        }
-    }
-}
-
 /// Classify a reqwest error into an error name for the error router.
 fn classify_reqwest_error(e: &reqwest::Error) -> String {
     if e.is_timeout() {
@@ -178,6 +92,145 @@ fn classify_reqwest_error(e: &reqwest::Error) -> String {
         "RequestError".into()
     } else {
         "HttpError".into()
+    }
+}
+
+impl DriverAdapter for HttpAdapter {
+    fn name(&self) -> &str { "http" }
+
+    fn map_op(&self, template: &ParsedOp) -> Result<Box<dyn OpDispenser>, String> {
+        // Extract static method from template (default GET)
+        let method = template.op.get("method")
+            .and_then(|v: &serde_json::Value| v.as_str())
+            .map(|s: &str| s.to_uppercase())
+            .unwrap_or_else(|| "GET".into());
+
+        // Extract content type (default application/json)
+        let content_type = template.op.get("content_type")
+            .and_then(|v: &serde_json::Value| v.as_str())
+            .unwrap_or("application/json")
+            .to_string();
+
+        Ok(Box::new(HttpDispenser {
+            client: self.client.clone(),
+            base_url: self.base_url.clone(),
+            method,
+            content_type,
+        }))
+    }
+}
+
+/// Op dispenser for the HTTP adapter. Pre-analyzes method and content type
+/// at init time; resolves URI and body from fields per-cycle.
+struct HttpDispenser {
+    client: reqwest::Client,
+    base_url: Option<String>,
+    method: String,
+    content_type: String,
+}
+
+impl OpDispenser for HttpDispenser {
+    fn execute<'a>(
+        &'a self,
+        _cycle: u64,
+        fields: &'a ResolvedFields,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        Box::pin(async move {
+            let uri = fields.get_str("uri")
+                .or_else(|| fields.get_str("url"))
+                .ok_or_else(|| ExecutionError::Op(AdapterError {
+                    error_name: "missing_field".into(),
+                    message: "HTTP op requires a 'uri' or 'url' field".into(),
+                    retryable: false,
+                }))?;
+
+            let full_url = if let Some(ref base) = self.base_url {
+                if uri.starts_with("http://") || uri.starts_with("https://") {
+                    uri.to_string()
+                } else {
+                    format!("{}{}", base.trim_end_matches('/'), uri)
+                }
+            } else {
+                uri.to_string()
+            };
+
+            let body = fields.get_str("body").map(|s| s.to_string());
+
+            // Parse additional headers from fields
+            let extra_headers: Vec<(String, String)> = fields.get_str("headers")
+                .map(|h| {
+                    h.lines()
+                        .filter_map(|line| {
+                            let mut parts = line.splitn(2, ':');
+                            let name = parts.next()?.trim().to_string();
+                            let value = parts.next()?.trim().to_string();
+                            Some((name, value))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let mut builder = match self.method.as_str() {
+                "GET" => self.client.get(&full_url),
+                "POST" => self.client.post(&full_url),
+                "PUT" => self.client.put(&full_url),
+                "DELETE" => self.client.delete(&full_url),
+                "PATCH" => self.client.patch(&full_url),
+                "HEAD" => self.client.head(&full_url),
+                other => return Err(ExecutionError::Op(AdapterError {
+                    error_name: "InvalidMethod".into(),
+                    message: format!("unsupported HTTP method: {other}"),
+                    retryable: false,
+                })),
+            };
+
+            builder = builder.header("Content-Type", &self.content_type);
+
+            for (name, value) in &extra_headers {
+                builder = builder.header(name.as_str(), value.as_str());
+            }
+
+            if let Some(body_str) = body {
+                builder = builder.body(body_str);
+            }
+
+            let response = builder.send().await.map_err(|e| {
+                let retryable = e.is_timeout() || e.is_connect();
+                let scope = if e.is_connect() {
+                    ExecutionError::Adapter
+                } else {
+                    ExecutionError::Op
+                };
+                scope(AdapterError {
+                    error_name: classify_reqwest_error(&e),
+                    message: e.to_string(),
+                    retryable,
+                })
+            })?;
+
+            let status = response.status().as_u16() as i32;
+            let success = response.status().is_success();
+            let body_text = response.text().await.map_err(|e| {
+                ExecutionError::Op(AdapterError {
+                    error_name: "BodyReadError".into(),
+                    message: format!("failed to read response body: {e}"),
+                    retryable: false,
+                })
+            })?;
+
+            if success {
+                Ok(OpResult {
+                    body: Some(Box::new(TextBody(body_text))),
+                    captures: std::collections::HashMap::new(),
+                })
+            } else {
+                Err(ExecutionError::Op(AdapterError {
+                    error_name: format!("HttpStatus{}", status),
+                    message: format!("HTTP {} {}: {}", status, full_url, &body_text),
+                    retryable: (500..600).contains(&status),
+                }))
+            }
+        })
     }
 }
 
