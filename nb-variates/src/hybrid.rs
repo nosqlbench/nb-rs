@@ -10,6 +10,14 @@
 //!
 //! This is the "best of all worlds" kernel — no node pays more
 //! overhead than it needs to.
+//!
+//! Three monomorphic kernel types, each with no runtime branching:
+//!
+//! | Type | Push (per-step skip) | Pull (cone guard) |
+//! |------|---------------------|-------------------|
+//! | `HybridKernelRaw` | — | — |
+//! | `HybridKernelPull` | — | yes |
+//! | `HybridKernelPushPull` | yes | yes |
 
 use std::collections::HashMap;
 
@@ -42,8 +50,8 @@ struct ClosureStep {
     output_slots: Vec<usize>,
 }
 
-/// A hybrid kernel where each node runs at its optimal compilation level.
-pub struct HybridKernel {
+/// Common fields shared by all hybrid kernel variants.
+struct HybridCore {
     buffer: Vec<u64>,
     coord_count: usize,
     steps: Vec<HybridStep>,
@@ -51,109 +59,343 @@ pub struct HybridKernel {
     gather_buf: Vec<u64>,
     scatter_buf: Vec<u64>,
     /// Keep source nodes alive so JIT-baked pointers remain valid.
-    _nodes: Vec<Box<dyn crate::node::GkNode>>,
-    /// Provenance caching state.
-    provenance: Option<HybridProvenanceState>,
+    _nodes: Vec<Box<dyn GkNode>>,
 }
 
-struct HybridProvenanceState {
-    /// Per-step clean flag.
-    step_clean: Vec<bool>,
-    /// Per-input: list of step indices that depend on this input.
-    input_dependents: Vec<Vec<usize>>,
+/// Run all hybrid steps unconditionally (no clean checks).
+#[inline]
+fn eval_all_hybrid_steps(core: &mut HybridCore) {
+    for step in &core.steps {
+        match step {
+            #[cfg(feature = "jit")]
+            HybridStep::Jit(seg) => unsafe {
+                (seg.code_fn)(core.buffer.as_ptr(), core.buffer.as_mut_ptr());
+            },
+            HybridStep::Closure(cs) => {
+                for (i, &slot) in cs.input_slots.iter().enumerate() {
+                    core.gather_buf[i] = core.buffer[slot];
+                }
+                (cs.op)(
+                    &core.gather_buf[..cs.input_slots.len()],
+                    &mut core.scatter_buf[..cs.output_slots.len()],
+                );
+                for (i, &slot) in cs.output_slots.iter().enumerate() {
+                    core.buffer[slot] = core.scatter_buf[i];
+                }
+            }
+        }
+    }
 }
 
-impl HybridKernel {
-    /// Evaluate the DAG. With provenance, skips cached steps.
+/// Compute per-slot provenance bitmasks for the hybrid kernel.
+///
+/// Returns `slot_provenance[slot]` = bitmask of which inputs affect
+/// that buffer slot. Used by pull-side cone guard.
+fn compute_hybrid_slot_provenance(
+    coord_count: usize,
+    total_slots: usize,
+    step_dependents: &[Vec<usize>],
+    steps: &[HybridStep],
+) -> Vec<u64> {
+    let step_count = steps.len();
+    let mut step_prov = vec![0u64; step_count];
+    for (input_idx, deps) in step_dependents.iter().enumerate() {
+        for &step_idx in deps {
+            if step_idx < step_count {
+                step_prov[step_idx] |= 1u64 << input_idx;
+            }
+        }
+    }
+    let mut slot_provenance = vec![0u64; total_slots];
+    for i in 0..coord_count.min(64) {
+        slot_provenance[i] = 1u64 << i;
+    }
+    for (step_idx, step) in steps.iter().enumerate() {
+        // Only closure steps carry explicit output_slots; JIT steps use the
+        // same buffer region but slot assignment is managed by the JIT code.
+        if let HybridStep::Closure(cs) = step {
+            for &slot in &cs.output_slots {
+                if slot < slot_provenance.len() {
+                    slot_provenance[slot] = step_prov[step_idx];
+                }
+            }
+        }
+    }
+    slot_provenance
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Raw: no provenance, no cone guard. Eval runs all steps.
+// ═══════════════════════════════════════════════════════════════
+
+/// Hybrid kernel with no provenance tracking.
+///
+/// Every `eval()` call runs all steps unconditionally. Useful as a
+/// baseline and for graphs where inputs change on every cycle.
+pub struct HybridKernelRaw {
+    core: HybridCore,
+}
+
+impl HybridKernelRaw {
+    /// Evaluate all hybrid steps unconditionally.
     #[inline]
     pub fn eval(&mut self, coords: &[u64]) {
-        if let Some(ref mut prov) = self.provenance {
-            for i in 0..coords.len().min(self.coord_count) {
-                if self.buffer[i] != coords[i] {
-                    self.buffer[i] = coords[i];
-                    if i < prov.input_dependents.len() {
-                        for &step_idx in &prov.input_dependents[i] {
-                            prov.step_clean[step_idx] = false;
-                        }
-                    }
-                }
+        self.core.buffer[..self.core.coord_count.min(coords.len())]
+            .copy_from_slice(&coords[..self.core.coord_count.min(coords.len())]);
+        eval_all_hybrid_steps(&mut self.core);
+    }
+
+    /// Eval all steps and return the value at `slot`.
+    #[inline]
+    pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
+        self.eval(coords);
+        self.core.buffer[slot]
+    }
+
+    /// Read a named output after `eval()`.
+    #[inline]
+    pub fn get(&self, name: &str) -> u64 {
+        self.core.buffer[self.core.output_map[name]]
+    }
+
+    /// Read by slot index.
+    #[inline]
+    pub fn get_slot(&self, slot: usize) -> u64 {
+        self.core.buffer[slot]
+    }
+
+    /// Number of coordinate inputs.
+    pub fn coord_count(&self) -> usize { self.core.coord_count }
+
+    /// Resolve an output name to its buffer slot.
+    pub fn resolve_output(&self, name: &str) -> Option<usize> {
+        self.core.output_map.get(name).copied()
+    }
+
+    /// Store owned nodes to keep JIT-baked pointers valid.
+    pub fn retain_nodes(&mut self, nodes: Vec<Box<dyn GkNode>>) {
+        self.core._nodes = nodes;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Pull: cone guard only, no per-step skip.
+// set_inputs tracks changed_mask. eval_for_slot checks the cone
+// then runs ALL steps if dirty.
+// ═══════════════════════════════════════════════════════════════
+
+/// Hybrid kernel with pull-side cone guard.
+///
+/// `eval_for_slot()` checks whether the output's transitive input
+/// cone changed before running steps. If nothing in the cone changed,
+/// the cached value is returned without re-evaluation.
+pub struct HybridKernelPull {
+    core: HybridCore,
+    slot_provenance: Vec<u64>,
+    changed_mask: u64,
+}
+
+impl HybridKernelPull {
+    /// Track which inputs changed. Does not mark individual steps dirty.
+    #[inline]
+    fn set_inputs(&mut self, coords: &[u64]) {
+        self.changed_mask = 0;
+        for i in 0..coords.len().min(self.core.coord_count) {
+            if self.core.buffer[i] != coords[i] {
+                self.core.buffer[i] = coords[i];
+                self.changed_mask |= 1u64 << i;
             }
-            for (step_idx, step) in self.steps.iter().enumerate() {
-                if prov.step_clean[step_idx] { continue; }
-                match step {
-                    #[cfg(feature = "jit")]
-                    HybridStep::Jit(seg) => unsafe {
-                        (seg.code_fn)(self.buffer.as_ptr(), self.buffer.as_mut_ptr());
-                    },
-                    HybridStep::Closure(cs) => {
-                        for (i, &slot) in cs.input_slots.iter().enumerate() {
-                            self.gather_buf[i] = self.buffer[slot];
-                        }
-                        (cs.op)(
-                            &self.gather_buf[..cs.input_slots.len()],
-                            &mut self.scatter_buf[..cs.output_slots.len()],
-                        );
-                        for (i, &slot) in cs.output_slots.iter().enumerate() {
-                            self.buffer[slot] = self.scatter_buf[i];
-                        }
-                    }
-                }
-                prov.step_clean[step_idx] = true;
+        }
+    }
+
+    /// Evaluate all steps (no cone guard).
+    #[inline]
+    pub fn eval(&mut self, coords: &[u64]) {
+        self.set_inputs(coords);
+        eval_all_hybrid_steps(&mut self.core);
+    }
+
+    /// Cone guard: if the output's cone is clean, skip eval entirely.
+    /// Otherwise run ALL steps (no per-step skip).
+    #[inline]
+    pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
+        self.set_inputs(coords);
+        if slot < self.slot_provenance.len() {
+            if self.slot_provenance[slot] & self.changed_mask == 0 {
+                return self.core.buffer[slot];
             }
-        } else {
-            self.buffer[..self.coord_count].copy_from_slice(coords);
-            for step in &self.steps {
-                match step {
-                    #[cfg(feature = "jit")]
-                    HybridStep::Jit(seg) => unsafe {
-                        (seg.code_fn)(self.buffer.as_ptr(), self.buffer.as_mut_ptr());
-                    },
-                    HybridStep::Closure(cs) => {
-                        for (i, &slot) in cs.input_slots.iter().enumerate() {
-                            self.gather_buf[i] = self.buffer[slot];
-                        }
-                        (cs.op)(
-                            &self.gather_buf[..cs.input_slots.len()],
-                            &mut self.scatter_buf[..cs.output_slots.len()],
-                        );
-                        for (i, &slot) in cs.output_slots.iter().enumerate() {
-                            self.buffer[slot] = self.scatter_buf[i];
-                        }
+        }
+        eval_all_hybrid_steps(&mut self.core);
+        self.core.buffer[slot]
+    }
+
+    /// Read a named output after `eval()`.
+    #[inline]
+    pub fn get(&self, name: &str) -> u64 {
+        self.core.buffer[self.core.output_map[name]]
+    }
+
+    /// Read by slot index.
+    #[inline]
+    pub fn get_slot(&self, slot: usize) -> u64 {
+        self.core.buffer[slot]
+    }
+
+    /// Number of coordinate inputs.
+    pub fn coord_count(&self) -> usize { self.core.coord_count }
+
+    /// Resolve an output name to its buffer slot.
+    pub fn resolve_output(&self, name: &str) -> Option<usize> {
+        self.core.output_map.get(name).copied()
+    }
+
+    /// Store owned nodes to keep JIT-baked pointers valid.
+    pub fn retain_nodes(&mut self, nodes: Vec<Box<dyn GkNode>>) {
+        self.core._nodes = nodes;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PushPull: push-side per-step skip + pull-side cone guard.
+// Full optimization — the production default.
+// ═══════════════════════════════════════════════════════════════
+
+/// Hybrid kernel with both push-side per-step skip and pull-side cone guard.
+///
+/// Push side: `set_inputs()` marks only steps that depend on changed inputs
+/// as dirty; clean steps are skipped during `eval()`.
+///
+/// Pull side: `eval_for_slot()` first checks whether the output's cone of
+/// influence changed at all. If not, the cached value is returned without
+/// entering the eval loop.
+pub struct HybridKernelPushPull {
+    core: HybridCore,
+    step_clean: Vec<bool>,
+    input_dependents: Vec<Vec<usize>>,
+    slot_provenance: Vec<u64>,
+    changed_mask: u64,
+}
+
+impl HybridKernelPushPull {
+    /// Track which inputs changed and dirty affected steps.
+    #[inline]
+    fn set_inputs(&mut self, coords: &[u64]) {
+        self.changed_mask = 0;
+        for i in 0..coords.len().min(self.core.coord_count) {
+            if self.core.buffer[i] != coords[i] {
+                self.core.buffer[i] = coords[i];
+                self.changed_mask |= 1u64 << i;
+                if i < self.input_dependents.len() {
+                    for &step_idx in &self.input_dependents[i] {
+                        self.step_clean[step_idx] = false;
                     }
                 }
             }
         }
     }
 
-    /// Read a named output after eval().
+    /// Evaluate with push-side step skip (no cone guard).
+    #[inline]
+    pub fn eval(&mut self, coords: &[u64]) {
+        self.set_inputs(coords);
+        for (step_idx, step) in self.core.steps.iter().enumerate() {
+            if self.step_clean[step_idx] { continue; }
+            match step {
+                #[cfg(feature = "jit")]
+                HybridStep::Jit(seg) => unsafe {
+                    (seg.code_fn)(self.core.buffer.as_ptr(), self.core.buffer.as_mut_ptr());
+                },
+                HybridStep::Closure(cs) => {
+                    for (i, &slot) in cs.input_slots.iter().enumerate() {
+                        self.core.gather_buf[i] = self.core.buffer[slot];
+                    }
+                    (cs.op)(
+                        &self.core.gather_buf[..cs.input_slots.len()],
+                        &mut self.core.scatter_buf[..cs.output_slots.len()],
+                    );
+                    for (i, &slot) in cs.output_slots.iter().enumerate() {
+                        self.core.buffer[slot] = self.core.scatter_buf[i];
+                    }
+                }
+            }
+            self.step_clean[step_idx] = true;
+        }
+    }
+
+    /// Cone guard + push-side skip: the full optimization.
+    #[inline]
+    pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
+        self.set_inputs(coords);
+        if slot < self.slot_provenance.len() {
+            if self.slot_provenance[slot] & self.changed_mask == 0 {
+                return self.core.buffer[slot];
+            }
+        }
+        for (step_idx, step) in self.core.steps.iter().enumerate() {
+            if self.step_clean[step_idx] { continue; }
+            match step {
+                #[cfg(feature = "jit")]
+                HybridStep::Jit(seg) => unsafe {
+                    (seg.code_fn)(self.core.buffer.as_ptr(), self.core.buffer.as_mut_ptr());
+                },
+                HybridStep::Closure(cs) => {
+                    for (i, &slot) in cs.input_slots.iter().enumerate() {
+                        self.core.gather_buf[i] = self.core.buffer[slot];
+                    }
+                    (cs.op)(
+                        &self.core.gather_buf[..cs.input_slots.len()],
+                        &mut self.core.scatter_buf[..cs.output_slots.len()],
+                    );
+                    for (i, &slot) in cs.output_slots.iter().enumerate() {
+                        self.core.buffer[slot] = self.core.scatter_buf[i];
+                    }
+                }
+            }
+            self.step_clean[step_idx] = true;
+        }
+        self.core.buffer[slot]
+    }
+
+    /// Read a named output after `eval()`.
     #[inline]
     pub fn get(&self, name: &str) -> u64 {
-        self.buffer[self.output_map[name]]
+        self.core.buffer[self.core.output_map[name]]
     }
 
     /// Read by slot index.
     #[inline]
     pub fn get_slot(&self, slot: usize) -> u64 {
-        self.buffer[slot]
+        self.core.buffer[slot]
     }
 
-    pub fn coord_count(&self) -> usize { self.coord_count }
+    /// Number of coordinate inputs.
+    pub fn coord_count(&self) -> usize { self.core.coord_count }
 
+    /// Resolve an output name to its buffer slot.
     pub fn resolve_output(&self, name: &str) -> Option<usize> {
-        self.output_map.get(name).copied()
+        self.core.output_map.get(name).copied()
     }
 
     /// Store owned nodes to keep JIT-baked pointers valid.
-    pub fn retain_nodes(&mut self, nodes: Vec<Box<dyn crate::node::GkNode>>) {
-        self._nodes = nodes;
+    pub fn retain_nodes(&mut self, nodes: Vec<Box<dyn GkNode>>) {
+        self.core._nodes = nodes;
     }
 }
+
+/// Type alias for the default hybrid kernel (PushPull — full optimization).
+///
+/// Assembler and bench code that references `HybridKernel` uses the full
+/// push+pull variant. Rename uses to the concrete type if different
+/// optimization trade-offs are needed.
+pub type HybridKernel = HybridKernelPushPull;
 
 /// Build a hybrid kernel from resolved DAG data.
 ///
 /// Each node is classified: if it can be JIT-compiled, it goes into
 /// a JIT segment. If not, it becomes a closure step. Adjacent JIT-able
 /// nodes are batched into a single JIT segment for efficiency.
+///
+/// Returns a `HybridKernelPushPull` (the production default).
 #[cfg(feature = "jit")]
 pub fn build_hybrid(
     nodes: &[Box<dyn GkNode>],
@@ -162,7 +404,7 @@ pub fn build_hybrid(
     total_slots: usize,
     slot_bases: &[usize],
     output_map: HashMap<String, usize>,
-) -> Result<HybridKernel, String> {
+) -> Result<HybridKernelPushPull, String> {
     let mut steps: Vec<HybridStep> = Vec::new();
     let mut max_inputs = 0usize;
     let mut max_outputs = 0usize;
@@ -221,18 +463,14 @@ pub fn build_hybrid(
 
             // Compile the batch to native code
             let empty_map = HashMap::new();
-            let _jit_kernel = jit::compile_jit(coord_count, total_slots, batch, empty_map, Vec::new())?;
-            // Extract the function pointer and module from the JitKernel
-            // We need to reach into it... let's add a method.
-            // Actually, for the hybrid, we need the raw fn pointer and module.
-            // Let me restructure to expose these.
+            let _jit_kernel = jit::compile_jit_raw(coord_count, total_slots, batch, empty_map, Vec::new())?;
 
-            // For now, just compile each JIT-able node as its own JIT segment.
+            // For now, compile each JIT-able node as its own JIT segment.
             // Batching multiple nodes into one segment is a future optimization.
             for j in batch_start..i {
                 let (ref jit_op, ref input_slots, ref output_slots) = classifications[j];
                 let single_batch = vec![(jit_op.clone(), input_slots.clone(), output_slots.clone())];
-                let jit_kernel = jit::compile_jit(coord_count, total_slots, single_batch, HashMap::new(), Vec::new())?;
+                let jit_kernel = jit::compile_jit_raw(coord_count, total_slots, single_batch, HashMap::new(), Vec::new())?;
 
                 // Extract fn and module
                 let (code_fn, module) = jit_kernel.into_parts();
@@ -244,46 +482,10 @@ pub fn build_hybrid(
         }
     }
 
-    // Compute per-step provenance: union of all nodes in each step
-    let node_provenance = crate::kernel::GkProgram::compute_provenance(nodes, wiring);
-    let step_count = steps.len();
-
-    // Map node provenance to step provenance. Each step covers
-    // one or more consecutive nodes. Build step→provenance bitmask.
-    // For single-node steps this is direct. For batched JIT segments
-    // it's the union of all nodes in the batch.
-    // Currently each step is one node, so step_provenance == node_provenance.
-    // (Batched segments would union the provenance of all nodes in the batch.)
-    let step_provenance: Vec<u64> = {
-        // Reconstruct which nodes each step covers by walking the classification
-        let mut sp = Vec::with_capacity(step_count);
-        // Since we build one step per node (JIT segments are per-node for now),
-        // step index == node index
-        for (i, _) in steps.iter().enumerate() {
-            if i < node_provenance.len() {
-                sp.push(node_provenance[i]);
-            } else {
-                sp.push(u64::MAX); // conservative: always dirty
-            }
-        }
-        sp
-    };
-
-    let step_dependents = crate::kernel::GkProgram::compute_dependents(&step_provenance, coord_count);
-
-    Ok(HybridKernel {
-        buffer: vec![0u64; total_slots],
-        coord_count,
-        steps,
-        output_map,
-        gather_buf: vec![0u64; max_inputs],
-        scatter_buf: vec![0u64; max_outputs],
-        _nodes: Vec::new(),
-        provenance: Some(HybridProvenanceState {
-            step_clean: vec![false; step_count],
-            input_dependents: step_dependents,
-        }),
-    })
+    build_pushpull_from_steps(
+        steps, wiring, nodes, coord_count, total_slots,
+        output_map, max_inputs, max_outputs,
+    )
 }
 
 /// Build a hybrid kernel without JIT (all closures).
@@ -295,7 +497,7 @@ pub fn build_hybrid(
     total_slots: usize,
     slot_bases: &[usize],
     output_map: HashMap<String, usize>,
-) -> Result<HybridKernel, String> {
+) -> Result<HybridKernelPushPull, String> {
     let mut steps: Vec<HybridStep> = Vec::new();
     let mut max_inputs = 0usize;
     let mut max_outputs = 0usize;
@@ -306,7 +508,7 @@ pub fn build_hybrid(
             .map(|source| match source {
                 WireSource::Input(c) => *c,
                 WireSource::NodeOutput(upstream, port) => slot_bases[*upstream] + port,
-                    WireSource::VolatilePort(_) | WireSource::StickyPort(_) => todo!("port slots in hybrid kernel"),
+                WireSource::VolatilePort(_) | WireSource::StickyPort(_) => todo!("port slots in hybrid kernel"),
             })
             .collect();
 
@@ -329,21 +531,51 @@ pub fn build_hybrid(
         }
     }
 
-    let node_provenance = crate::kernel::GkProgram::compute_provenance(nodes, wiring);
+    build_pushpull_from_steps(
+        steps, wiring, nodes, coord_count, total_slots,
+        output_map, max_inputs, max_outputs,
+    )
+}
+
+/// Shared construction of `HybridKernelPushPull` from assembled steps.
+///
+/// Computes provenance bitmasks from the DAG wiring and builds the
+/// step_dependents list for push-side invalidation and the slot_provenance
+/// table for pull-side cone guard.
+fn build_pushpull_from_steps(
+    steps: Vec<HybridStep>,
+    wiring: &[Vec<WireSource>],
+    nodes: &[Box<dyn GkNode>],
+    coord_count: usize,
+    total_slots: usize,
+    output_map: HashMap<String, usize>,
+    max_inputs: usize,
+    max_outputs: usize,
+) -> Result<HybridKernelPushPull, String> {
     let step_count = steps.len();
+
+    // Compute per-node provenance and invert into per-input step dependents.
+    // Since each step currently maps to one node, step index == node index.
+    let node_provenance = crate::kernel::GkProgram::compute_provenance(nodes, wiring);
     let step_dependents = crate::kernel::GkProgram::compute_dependents(&node_provenance, coord_count);
 
-    Ok(HybridKernel {
-        buffer: vec![0u64; total_slots],
-        coord_count,
-        steps,
-        output_map,
-        gather_buf: vec![0u64; max_inputs],
-        scatter_buf: vec![0u64; max_outputs],
-        _nodes: Vec::new(),
-        provenance: Some(HybridProvenanceState {
-            step_clean: vec![false; step_count],
-            input_dependents: step_dependents,
-        }),
+    let slot_provenance = compute_hybrid_slot_provenance(
+        coord_count, total_slots, &step_dependents, &steps,
+    );
+
+    Ok(HybridKernelPushPull {
+        core: HybridCore {
+            buffer: vec![0u64; total_slots],
+            coord_count,
+            steps,
+            output_map,
+            gather_buf: vec![0u64; max_inputs.max(1)],
+            scatter_buf: vec![0u64; max_outputs.max(1)],
+            _nodes: Vec::new(),
+        },
+        step_clean: vec![false; step_count],
+        input_dependents: step_dependents,
+        slot_provenance,
+        changed_mask: u64::MAX, // all dirty on first eval
     })
 }

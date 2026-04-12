@@ -246,6 +246,13 @@ impl GkProgram {
             .max()
             .unwrap_or(0);
 
+        // Identify non-deterministic nodes: zero-provenance AND no declared input slots.
+        // These produce different values on every evaluation and must never be cached.
+        let nondeterministic_nodes: Vec<usize> = self.nodes.iter().enumerate()
+            .filter(|(i, node)| self.wiring[*i].is_empty() && node.meta().ins.is_empty())
+            .map(|(i, _)| i)
+            .collect();
+
         GkState {
             core: EngineCore {
                 buffers,
@@ -257,6 +264,7 @@ impl GkProgram {
                 input_scratch: vec![Value::None; max_inputs],
             },
             input_dependents: self.input_dependents.clone(),
+            nondeterministic_nodes,
         }
     }
 
@@ -303,6 +311,11 @@ impl GkProgram {
         let max_inputs = self.wiring.iter()
             .map(|w| w.len()).max().unwrap_or(0);
 
+        let nondeterministic_nodes: Vec<usize> = self.nodes.iter().enumerate()
+            .filter(|(i, node)| self.wiring[*i].is_empty() && node.meta().ins.is_empty())
+            .map(|(i, _)| i)
+            .collect();
+
         ProvScanState {
             core: EngineCore {
                 buffers,
@@ -314,6 +327,7 @@ impl GkProgram {
                 input_scratch: vec![Value::None; max_inputs],
             },
             input_provenance: self.input_provenance.clone(),
+            nondeterministic_nodes,
         }
     }
 
@@ -766,6 +780,12 @@ pub struct GkState {
     pub core: EngineCore,
     /// Per-input dependent node lists for O(affected) invalidation.
     input_dependents: Vec<Vec<usize>>,
+    /// Indices of non-deterministic nodes (zero-provenance, no declared inputs).
+    ///
+    /// These nodes produce a different value on every evaluation (e.g.,
+    /// `counter()`, `current_epoch_millis()`). They are unconditionally
+    /// marked dirty on every `set_inputs()` call so they are never cached.
+    nondeterministic_nodes: Vec<usize>,
 }
 
 impl GkState {
@@ -774,6 +794,10 @@ impl GkState {
     /// Compares each input against its current value. Only inputs that
     /// actually changed are flagged in `changed_mask`. Nodes that don't
     /// depend on changed inputs remain cached (provenance check).
+    ///
+    /// Non-deterministic nodes (counter, current_epoch_millis, etc.) are
+    /// always marked dirty regardless of input changes, because their output
+    /// depends on internal state rather than graph inputs.
     pub fn set_inputs(&mut self, coords: &[u64]) {
         for i in 0..coords.len().min(self.core.inputs.len()) {
             if self.core.inputs[i] != coords[i] {
@@ -789,6 +813,10 @@ impl GkState {
             for &node_idx in &self.input_dependents[port_slot] {
                 self.core.node_clean[node_idx] = false;
             }
+        }
+        // Non-deterministic nodes must always re-evaluate — never use cached values.
+        for &idx in &self.nondeterministic_nodes {
+            self.core.node_clean[idx] = false;
         }
     }
 
@@ -870,9 +898,21 @@ impl RawState {
 pub struct ProvScanState {
     pub core: EngineCore,
     input_provenance: Vec<u64>,
+    /// Indices of non-deterministic nodes (zero-provenance, no declared inputs).
+    ///
+    /// Marked dirty unconditionally on every `set_inputs()` call since
+    /// their output depends on internal state rather than graph inputs.
+    nondeterministic_nodes: Vec<usize>,
 }
 
 impl ProvScanState {
+    /// Set new input values and invalidate affected nodes.
+    ///
+    /// Scans all nodes and checks each node's provenance bitmask
+    /// against the changed-inputs mask. O(all_nodes) per call.
+    ///
+    /// Non-deterministic nodes (zero provenance, no declared inputs) are
+    /// always marked dirty regardless of what inputs changed.
     pub fn set_inputs(&mut self, coords: &[u64]) {
         let mut mask = 0u64;
         for i in 0..coords.len().min(self.core.inputs.len()) {
@@ -891,6 +931,10 @@ impl ProvScanState {
                     *clean = false;
                 }
             }
+        }
+        // Non-deterministic nodes must always re-evaluate — never use cached values.
+        for &idx in &self.nondeterministic_nodes {
+            self.core.node_clean[idx] = false;
         }
     }
 
@@ -1217,7 +1261,7 @@ mod tests {
 
     impl ConfigWireTestNode {
         fn new() -> Self {
-            use crate::node::{Port, PortType, WireCost, Slot};
+            use crate::node::{Port, Slot};
             Self {
                 meta: crate::node::NodeMeta {
                     name: "config_test".into(),

@@ -83,14 +83,22 @@ pub fn analyze_dependencies(templates: &[ParsedOp]) -> Vec<DepGroup> {
         consumes.push(cons);
     }
 
-    // Step 2: Build dependency edges
+    // Step 2: Build dependency edges.
     // op[j] depends on op[i] if op[j] consumes a name that op[i] produces
-    // and i < j (earlier in stanza order)
+    // and i < j (earlier in stanza order).
+    // Only names that are actually produced by some op count as capture
+    // dependencies — unqualified {name} references that resolve to GK
+    // bindings or inputs are not inter-op captures.
     let n = templates.len();
     let mut depends_on: Vec<HashSet<usize>> = vec![HashSet::new(); n];
 
+    // Build the set of all names actually produced by any op in the stanza.
+    let all_produced: HashSet<&String> = produces.iter().flat_map(|p| p.iter()).collect();
+
     for j in 0..n {
         for name in &consumes[j] {
+            // Only treat as a capture dependency if some op actually produces it.
+            if !all_produced.contains(name) { continue; }
             // Find the latest producer of this name before j
             for i in (0..j).rev() {
                 if produces[i].contains(name) {
@@ -121,9 +129,14 @@ pub fn analyze_dependencies(templates: &[ParsedOp]) -> Vec<DepGroup> {
             let mut fallback: Vec<usize> = remaining.into_iter().collect();
             fallback.sort();
             for idx in fallback {
+                // Only include names that are actual stanza captures (produced by some op).
+                let required: HashSet<String> = consumes[idx].iter()
+                    .filter(|n| all_produced.contains(*n) && !produces[idx].contains(*n))
+                    .cloned()
+                    .collect();
                 groups.push(DepGroup {
                     op_indices: vec![idx],
-                    required_captures: consumes[idx].clone(),
+                    required_captures: required,
                     produced_captures: produces[idx].clone(),
                 });
             }
@@ -141,8 +154,12 @@ pub fn analyze_dependencies(templates: &[ParsedOp]) -> Vec<DepGroup> {
         let mut produced = HashSet::new();
         for &idx in &sorted_ready {
             for name in &consumes[idx] {
-                // Only "required" if it comes from a prior group (not self-produced)
-                if !produces[idx].contains(name) {
+                // Only "required" from a prior group if: the name is actually
+                // produced by some op in the stanza (i.e., it's a real capture),
+                // AND it is not self-produced by any op in this group.
+                if all_produced.contains(name)
+                    && !sorted_ready.iter().any(|&g| produces[g].contains(name))
+                {
                     required.insert(name.clone());
                 }
             }

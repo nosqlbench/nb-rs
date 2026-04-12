@@ -118,4 +118,5 @@ pub mod dsl;
 pub mod jit;
 pub mod hybrid;
 pub mod viz;
+pub mod engine;
 pub mod runtime;

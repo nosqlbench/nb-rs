@@ -12,7 +12,6 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main, black_box};
 
 use nb_variates::assembly::{GkAssembler, WireRef};
-use nb_variates::compiled::CompiledKernel;
 use nb_variates::kernel::GkKernel;
 use nb_variates::nodes::arithmetic::SumN;
 use nb_variates::nodes::identity::Identity;

@@ -1,216 +1,199 @@
 # Memo 09: GK Performance Results
 
-Benchmark results with push-side provenance invalidation AND
-pull-side cone guard. Driver overhead subtracted from all values.
+Benchmark results with fully monomorphic kernel variants: Raw,
+Push (per-node skip), Pull (cone guard), PushPull (both). Each
+is a distinct type produced by a distinct compiler path with
+zero runtime strategy branching in the eval loop.
 
-Run: 2026-04-12, 100K cycles × 5 iterations.
-
----
-
-## Full Results (ns/cycle, driver-adjusted)
-
-### a1: Single Input, 50 Nodes (all dirty)
-
-| Engine | Raw | Provenance | Effect |
-|--------|-----|-----------|--------|
-| P1 | **184** | 236 | +28% overhead |
-| P2 | 506 | 522 | +3% |
-| P3 | **263** | 354 | +35% |
-
-No caching benefit. **P1 raw wins** (184ns). P3 raw at 263ns.
-
-### a2: Stable Params, 49 Nodes (3 inputs, 2 stable)
-
-| Engine | Raw | Provenance | Effect |
-|--------|-----|-----------|--------|
-| P1 | 205 | 210 | ≈ |
-| P2 | 428 | **21** | **20× faster** |
-| P3 | 183 | **20** | **9× faster** |
-
-Pull-side guard: the output depends only on `cycle`. Its cone
-provenance ANDs with `changed_mask` (only cycle bit set) — match,
-so eval runs. But the eval only touches cycle-dependent steps
-(15 of 49). The pull-side guard itself doesn't skip eval here,
-but push-side provenance skips 34 stable nodes.
-
-**Wait — 21ns for 49 nodes?** The output `out := hash(cycle_out)`
-depends ONLY on cycle. Its `slot_provenance` has only the cycle
-bit. The pull-side guard confirms the cone is dirty (cycle
-changed), runs eval with provenance (skipping 34 stable nodes),
-evaluates 15 cycle nodes. At P2/P3 closure/JIT speeds, 15 nodes
-≈ 20ns. Correct.
-
-### a3: All Changing, 49 Nodes (all change every cycle)
-
-| Engine | Raw | Provenance | Effect |
-|--------|-----|-----------|--------|
-| P1 | 350 | 377 | +8% |
-| P2 | 432 | 463 | +7% |
-| P3 | **188** | 268 | +43% |
-
-True worst case. **P3 raw** at 188ns. Provenance overhead is
-7-43% with zero benefit.
-
-### a4: Mostly Stable, 101 Nodes (5 inputs, 4 stable)
-
-| Engine | Raw | Provenance | Effect |
-|--------|-----|-----------|--------|
-| P1 | 411 | 73 | 5.6× faster |
-| P2 | 884 | **24** | **37× faster** |
-| P3 | 360 | **19** | **19× faster** |
-
-**P3/prov at 19ns for 101 nodes.** The output depends only on
-`cycle` (20-node cone). Pull-side guard confirms cone is dirty,
-push-side skips 80 stable nodes, P3 JIT evaluates 20 nodes at
-~1ns each.
-
-### a5: Mixed Rates, 81 Nodes (4 inputs at different cadences)
-
-| Engine | Raw | Provenance | Effect |
-|--------|-----|-----------|--------|
-| P1 | 258 | 83 | 3.1× faster |
-| P2 | 716 | **28** | **26× faster** |
-| P3 | 302 | **28** | **11× faster** |
-
-`div(meta, 100)` and `div(meta, 10000)` hold steady for 100
-and 10000 cycles. On 99% of cycles, only `fast` changes.
-Pull-side guard + push-side provenance = 28ns for 81 nodes.
-
-### b1: Hot/Cold Outputs, 38 Nodes (weighted pull)
-
-| Engine | Raw | Provenance | Effect |
-|--------|-----|-----------|--------|
-| P1 | 197 | 86 | 2.3× faster |
-| P2 | 307 | **24** | **13× faster** |
-| P3 | 125 | **22** | **5.7× faster** |
-
-80% of pulls hit `hot_out` (cycle-dependent). 5% hit `cold_out`
-(stable cone). **Pull-side guard on cold_out returns instantly**
-(cone provenance = stable inputs, changed_mask = cycle only,
-no intersection → skip eval entirely). Average: 22ns.
-
-### b2: Selective Cone, 101 Nodes (90/10 pull split)
-
-| Engine | Raw | Provenance | Effect |
-|--------|-----|-----------|--------|
-| P1 | 967 | 865 | 1.1× faster |
-| P2 | 951 | **326** | **2.9× faster** |
-| P3 | 442 | **222** | **2.0× faster** |
-
-90% pull `leaf_a` (30-node cycle cone). 10% pull `leaf_b`
-(70-node stable cone). Pull-side guard skips eval entirely on
-the 10% that pull `leaf_b`. Push-side provenance skips 70 stable
-nodes on the 90% that pull `leaf_a`.
-
-### c1: Deep Chain, 200 Nodes (single input)
-
-| Engine | Raw | Provenance | Effect |
-|--------|-----|-----------|--------|
-| P1 | 5679 | 5794 | +2% |
-| P2 | **2005** | 2068 | +3% |
-| P3 | **993** | 1317 | +33% |
-
-All dirty. **P3 raw** at 993ns. No caching benefit.
-
-### c5: Multi-Root, 201 Nodes (4 inputs, 3 stable)
-
-| Engine | Raw | Provenance | Effect |
-|--------|-----|-----------|--------|
-| P1 | 945 | 962 | +2% |
-| P2 | 1920 | **606** | **3.2× faster** |
-| P3 | 888 | **418** | **2.1× faster** |
-
-75% of graph stable. Pull-side guard + push-side provenance.
-**P3/prov** at 418ns for 201 nodes (vs 888ns raw).
-
-### d1: Key-Value, 9 Nodes (single input)
-
-| Engine | Raw | Provenance | Effect |
-|--------|-----|-----------|--------|
-| P1 | 136 | 137 | ≈ |
-| P2 | 73 | 81 | +11% |
-| P3 | **43** | 52 | +21% |
-
-Tiny graph. **P3 raw** at 43ns.
-
-### d4: Multi-Table, 44 Nodes (single input)
-
-| Engine | Raw | Provenance | Effect |
-|--------|-----|-----------|--------|
-| P1 | 327 | 344 | +5% |
-| P2 | 327 | 372 | +14% |
-| P3 | **139** | 184 | +32% |
-
-Single input, all dirty. **P3 raw** at 139ns.
+Run: 2026-04-12, 100K cycles × 5 iterations. Driver overhead
+subtracted from all values.
 
 ---
 
-## Pull-Side Guard Impact
+## P3 JIT Results (ns/cycle, driver-adjusted)
 
-The pull-side guard (`eval_for_slot`) produces the most dramatic
-improvements. When an output's cone doesn't intersect changed
-inputs, the ENTIRE eval is skipped — no per-node provenance
-check, no JIT call, just one AND + branch.
+P3 is the dominant engine for compute-heavy graphs. All four
+monomorphic variants shown.
 
-| Scenario | P3 raw | P3/prov | Speedup | Why |
-|----------|--------|---------|---------|-----|
-| a4 (80% stable) | 360 | **19** | 19× | 20-node cone, pull-side confirms dirty, push-side skips 80 |
-| a5 (mixed rates) | 302 | **28** | 11× | 20-node cone, medium+slow cached most cycles |
-| b1 (hot/cold) | 125 | **22** | 5.7× | Cold pulls skip eval entirely |
-| a3 (all dirty) | 188 | 268 | 0.7× | No benefit, 43% overhead |
+| Scenario | Nodes | Stable% | Raw | Push | Pull | PushPull | Best |
+|----------|------:|--------:|----:|-----:|-----:|---------:|------|
+| a1 single input | 50 | 0% | **260** | 374 | 260 | 367 | Raw/Pull |
+| a2 stable params | 49 | 61% | 183 | 135 | 171 | **130** | PushPull |
+| a3 all changing | 49 | 0% | 177 | 261 | **168** | 253 | Pull |
+| a4 mostly stable | 101 | 80% | 358 | 164 | **12** | 22 | Pull |
+| a5 mixed rates | 81 | 62% | 298 | 153 | **10** | 28 | Pull |
+| b1 hot/cold | 38 | 40% | 124 | 107 | 112 | **102** | PushPull |
+| b2 selective cone | 101 | 70% | 438 | 278 | **56** | 56 | Pull/PP |
+| c1 deep chain | 200 | 0% | **988** | 1365 | 987 | 1371 | Raw/Pull |
+| c5 multi-root | 201 | 75% | 883 | 407 | **7** | 32 | Pull |
+| d1 keyvalue | 9 | 0% | **42** | 53 | 42 | 50 | Raw/Pull |
+| d4 multi-table | 44 | 0% | 136 | 195 | **135** | 191 | Pull |
+
+## P2 Closure Results (ns/cycle)
+
+| Scenario | Nodes | Raw | Push | Pull | PushPull |
+|----------|------:|----:|-----:|-----:|---------:|
+| a4 mostly stable | 101 | 892 | 260 | **11** | 16 |
+| a5 mixed rates | 81 | 731 | 251 | **16** | 17 |
+| b2 selective cone | 101 | 966 | 414 | 109 | **63** |
+| c5 multi-root | 201 | 1936 | 601 | **7** | 24 |
 
 ---
 
-## Updated Heuristic
+## Winner Analysis by Scenario Class
+
+### All-dirty, single input (a1, c1, d1, d4)
+
+**Winner: Raw or Pull (tied).** Pull has the same cost as Raw
+because every input changes every cycle, so `changed_mask` is
+always nonzero and the cone check always falls through to eval.
+Pull's `set_inputs` is slightly cheaper than Raw's `copy_from_slice`
+because it compares and copies only changed values.
+
+Push always loses on all-dirty graphs: +35-40% overhead from
+per-node clean flag checking in the JIT code.
+
+### All-dirty, multi-input (a3)
+
+**Winner: Pull (168ns) > Raw (177ns).** Same reasoning — cone
+check falls through, but Pull's `set_inputs` is marginally
+cheaper than Raw's bulk copy for 3 inputs.
+
+### Stable subgraphs, small output cone (a4, a5, c5)
+
+**Winner: Pull by 2-4× over PushPull.** The output's cone is
+small relative to the graph. On most cycles, the cone guard
+skips eval entirely. PushPull wastes time marking dependents
+dirty in `set_inputs` — work that the cone guard discards.
+
+| Scenario | Pull | PushPull | Pull advantage |
+|----------|-----:|---------:|---------------:|
+| a4 (101n, 80% stable) | 12ns | 22ns | 1.8× |
+| a5 (81n, 62% stable) | 10ns | 28ns | 2.8× |
+| c5 (201n, 75% stable) | 7ns | 32ns | 4.6× |
+
+The advantage grows with graph size because PushPull's
+`set_inputs` iterates more dependents.
+
+### Stable subgraphs, large output cone (b1, b2)
+
+**Winner: PushPull.** When the output's cone IS dirty (most
+pulls in b1 hit the cycle-dependent hot output), push-side skip
+within the cone matters. PushPull evaluates only the dirty
+nodes in the cone. Pull-only would run all nodes in the cone.
+
+| Scenario | Pull | PushPull | PushPull advantage |
+|----------|-----:|---------:|-------------------:|
+| b1 (38n, hot/cold) | 112ns | 102ns | 1.1× |
+| b2 (101n, selective) | 56ns | 56ns | 1.0× |
+
+The advantage is modest because even in PushPull, the dirty
+cone dominates the work.
+
+### Mixed stability, all outputs used equally (a2)
+
+**Winner: PushPull (130ns).** All outputs are pulled, so Pull's
+cone guard can't skip eval. Push-side skip within the dirty
+cone gives PushPull the edge.
+
+---
+
+## Optimization Overhead on All-Dirty Graphs
+
+| Graph | Raw | Push overhead | Pull overhead |
+|-------|----:|:-------------:|:-------------:|
+| a1 (50n) | 260 | +44% (374) | **0%** (260) |
+| a3 (49n) | 177 | +47% (261) | **-5%** (168) |
+| c1 (200n) | 988 | +38% (1365) | **0%** (987) |
+| d1 (9n) | 42 | +26% (53) | **0%** (42) |
+| d4 (44n) | 136 | +43% (195) | **-1%** (135) |
+
+**Push consistently costs ~40% on all-dirty graphs** from the
+per-node clean flag load + branch in the JIT code.
+
+**Pull has zero overhead on all-dirty graphs** because the only
+extra work is `changed_mask` tracking in `set_inputs` (one OR
+per changed input) and one AND + branch in `eval_for_slot` that
+always falls through. This is negligible.
+
+This means **Pull is strictly better than Raw**: same speed on
+all-dirty graphs, massive wins on stable graphs. The compiler
+can always enable Pull without risk.
+
+---
+
+## Revised Heuristic
 
 ```
 stable_ratio = stable_nodes / total_nodes
 output_cone_ratio = max_output_cone / total_nodes
 
-if total_nodes < 15:
-    P3 raw
-elif stable_ratio > 0.3 and output_cone_ratio < 0.5:
-    P3/prov + eval_for_slot    // pull-side guard + push-side skip
-elif stable_ratio > 0.5:
-    P1/prov                    // interpreter, skip most nodes
+// Pull has zero overhead, so always enable it
+if total_nodes < 15 and stable_ratio == 0:
+    P3/Raw                      // tiny all-dirty, skip provenance data
+
+elif output_cone_ratio < 0.5:
+    P3/Pull                     // cone guard alone: 7-12ns for 100+ nodes
+
+elif stable_ratio >= 0.3:
+    P3/PushPull                 // push skip within dirty cones
+
 else:
-    P3 raw                     // all dirty, pure JIT
+    P3/Pull                     // pull is free, might help if access
+                                // patterns vary at runtime
 ```
 
-The pull-side guard shifts the crossover: even moderate stable
-ratios (30%) now benefit from provenance because the pull-side
-guard eliminates eval calls for clean-cone outputs, while
-push-side provenance reduces work within dirty-cone evals.
+The key insight: **Pull is the safe default.** Zero overhead on
+all-dirty graphs, massive wins on stable graphs. Push is only
+worth its 40% overhead when the output cone is large AND has
+cacheable subgraphs.
+
+### Decision Flow
+
+```
+Is the output cone small? (cone_ratio < 0.5)
+├── Yes → Pull (7-12ns for 100+ nodes, cone guard skips eval)
+└── No  → Are there stable subgraphs? (stable_ratio >= 0.3)
+    ├── Yes → PushPull (push skips stable nodes within dirty cone)
+    └── No  → Pull (free insurance — behaves like Raw on all-dirty)
+```
+
+Push-only is never selected. It has all the overhead of push
+(40% on all-dirty) without the cone guard's ability to skip
+eval entirely. It's dominated by both Pull and PushPull.
 
 ---
 
 ## Key Findings
 
-1. **Pull-side guard is the dominant optimization for P2/P3.**
-   When the output's cone is clean, skip everything. This turns
-   19ns (P3/prov, a4) vs 360ns (P3/raw) — 19× improvement.
+1. **Pull has zero overhead on all-dirty graphs.** The monomorphic
+   Pull kernel's `set_inputs` only tracks `changed_mask` — no
+   dependent iteration. The cone guard's AND + branch is ~2ns
+   when it falls through. This makes Pull strictly better than
+   Raw as a default.
 
-2. **P1/prov loses its advantage when pull-side guard exists.**
-   P1 was faster than P3 because it only visited the output cone
-   (lazy evaluation). Now P3/prov with `eval_for_slot` also
-   skips the entire eval when the cone is clean — same benefit,
-   plus JIT speed for dirty nodes.
+2. **Pull is the dominant optimization for selective output
+   access.** P3/Pull achieves 7ns for 201 nodes on c5 (vs 883ns
+   raw = 126×). The cone guard returns the cached value without
+   entering the JIT function at all.
 
-3. **Push-side + pull-side compose.** Push-side dirties only
-   affected nodes. Pull-side skips eval when the cone is clean.
-   Together: only dirty nodes in dirty cones evaluate. Everything
-   else is free.
+3. **PushPull only beats Pull when the output cone is large AND
+   partially stable.** b1 (PushPull 102ns vs Pull 112ns = 1.1×)
+   and a2 (PushPull 130ns vs Pull 171ns = 1.3×) are the only
+   scenarios where PushPull wins meaningfully.
 
-4. **P3 raw for single-input all-dirty at all output patterns.**
-   Confirmed across a1 (single output), d4 (rotating outputs).
-   No caching benefit, pure JIT throughput.
+4. **Push-only is always dominated.** It adds 40% overhead on
+   all-dirty and is beaten by Pull on stable graphs. No scenario
+   selects it.
 
-5. **Mixed input rates validated.** a5 shows `div(meta, 100)`
-   correctly producing stable values for 100-cycle windows.
-   Provenance correctly caches the medium subgraph between
-   changes.
+5. **P2/Pull = P3/Pull** when the cone guard skips eval. Both
+   monomorphic kernels do identical work: compare inputs, set
+   changed_mask, one AND + branch, return cached value. The 
+   compilation level is irrelevant when eval doesn't run.
 
-6. **Output-based revalidation (pull-side) is symmetric with
-   input-based invalidation (push-side).** Both are modular,
-   composable, and independently beneficial. The compiler can
-   apply either or both based on graph analysis.
+6. **Monomorphization closed the P2/P3 gap.** Before: P2/pull
+   8ns vs P3/pull 18ns (P3 had `if let Some(prov)` overhead).
+   After: P2/pull 11ns vs P3/pull 12ns — equivalent.
+
+7. **Hybrid never wins.** Strictly dominated by P3 on all
+   scenarios. Should be deprecated from the selection heuristic.

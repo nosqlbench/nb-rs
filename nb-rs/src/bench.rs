@@ -8,6 +8,37 @@ use std::sync::Arc;
 use nb_variates::dsl::compile::compile_gk_to_assembler;
 use nb_variates::kernel::GkProgram;
 
+/// How a compiled kernel evaluates per cycle.
+///
+/// Each mode maps to a distinct monomorphic kernel type produced by
+/// the compiler. No runtime branching for strategy selection.
+#[derive(Clone, Copy)]
+enum EvalMode {
+    /// No provenance — eval all nodes unconditionally.
+    Raw,
+    /// Push-side only — per-node dirty tracking. `set_inputs` marks
+    /// dependents dirty, `eval` skips clean nodes. No cone guard.
+    PushOnly,
+    /// Pull-side only — cone guard checks output provenance vs changed
+    /// inputs. If cone is clean, skips eval entirely. Within dirty
+    /// cones, runs ALL nodes (no per-node skip).
+    PullOnly,
+    /// Push + pull — cone guard + per-node skip. Full optimization.
+    PushPull,
+}
+
+/// Resolve weighted output slots from a scenario using a name→slot resolver.
+fn resolve_weighted_slots(
+    scenario: &BenchScenario,
+    resolve: impl Fn(&str) -> Option<usize>,
+) -> (Vec<(usize, u32)>, u32) {
+    let slots: Vec<(usize, u32)> = scenario.pull_weights.iter()
+        .filter_map(|(name, w)| resolve(name).map(|s| (s, *w)))
+        .collect();
+    let total: u32 = slots.iter().map(|(_, w)| w).sum();
+    (slots, total)
+}
+
 // ── Stats ──────────────────────────────────────────────────────
 
 /// Stats from multiple bench iterations.
@@ -322,6 +353,8 @@ struct BenchArgs {
     iters: usize,
     provenance: bool,
     compare_provenance: bool,
+    /// Show raw / push-only / push+pull breakdown for each level.
+    compare_modes: bool,
 }
 
 fn parse_bench_args(args: &[String]) -> BenchArgs {
@@ -334,6 +367,7 @@ fn parse_bench_args(args: &[String]) -> BenchArgs {
         iters: 5,
         provenance: true,
         compare_provenance: false,
+        compare_modes: false,
     };
 
     let mut i = 0;
@@ -369,6 +403,8 @@ fn parse_bench_args(args: &[String]) -> BenchArgs {
             ba.provenance = true;
         } else if arg == "--compare" {
             ba.compare_provenance = true;
+        } else if arg == "--compare-modes" {
+            ba.compare_modes = true;
         } else if arg == "--profile" {
             ba.iters = 1;
             if ba.cycles < 1_000_000 { ba.cycles = 1_000_000; }
@@ -500,6 +536,37 @@ fn explain_source(source: &str) {
                 }
                 Err(e) => {
                     eprintln!("error: assembly failed: {e}");
+                }
+            }
+        }
+    }
+
+    // Engine auto-selection analysis
+    if let Ok(asm) = compile_gk_to_assembler(source) {
+        match asm.auto_compile_p3() {
+            Ok((engine, analysis)) => {
+                println!("{bold}Engine Selection:{reset}");
+                println!("  {dim}inputs: {}, nodes: {}, outputs: {}{reset}",
+                    analysis.num_inputs, analysis.total_nodes, analysis.num_outputs);
+                println!("  {dim}max cone ratio: {:.2}, avg cone ratio: {:.2}{reset}",
+                    analysis.max_cone_ratio, analysis.avg_cone_ratio);
+                for (name, size) in &analysis.output_cone_sizes {
+                    let ratio = if analysis.total_nodes > 0 { *size as f64 / analysis.total_nodes as f64 } else { 0.0 };
+                    println!("  {dim}  {name}: {size} nodes ({ratio:.0}%){reset}");
+                }
+                println!("  → {green}{:?}{reset}", engine.prov_mode());
+                println!();
+            }
+            Err(_) => {
+                // P3 not available, try P2
+                if let Ok(asm2) = compile_gk_to_assembler(source) {
+                    if let Ok((engine, analysis)) = asm2.auto_compile_p2() {
+                        println!("{bold}Engine Selection (P2):{reset}");
+                        println!("  {dim}max cone ratio: {:.2}, avg cone ratio: {:.2}{reset}",
+                            analysis.max_cone_ratio, analysis.avg_cone_ratio);
+                        println!("  → {green}{:?}{reset}", engine.prov_mode());
+                        println!();
+                    }
                 }
             }
         }
@@ -742,17 +809,26 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
             ("Hybrid", true),
             ("P3", true),
         ];
-        struct LevelConfig { label: String, highlight: bool, base: String, prov: bool }
+        struct LevelConfig { label: String, highlight: bool, base: String, prov: bool, eval_mode: EvalMode }
         let mut levels: Vec<LevelConfig> = Vec::new();
-        if compare_provenance {
+        if args.compare_modes {
+            // 4-way: raw, push-only, pull-only, push+pull
+            for &(name, _) in &base_levels {
+                levels.push(LevelConfig { label: name.to_string(), highlight: false, base: name.to_string(), prov: false, eval_mode: EvalMode::Raw });
+                levels.push(LevelConfig { label: format!("{name}/push"), highlight: false, base: name.to_string(), prov: true, eval_mode: EvalMode::PushOnly });
+                levels.push(LevelConfig { label: format!("{name}/pull"), highlight: false, base: name.to_string(), prov: true, eval_mode: EvalMode::PullOnly });
+                levels.push(LevelConfig { label: format!("{name}/push+pull"), highlight: true, base: name.to_string(), prov: true, eval_mode: EvalMode::PushPull });
+            }
+        } else if compare_provenance {
             for &(name, hl) in &base_levels {
-                levels.push(LevelConfig { label: name.to_string(), highlight: false, base: name.to_string(), prov: false });
-                levels.push(LevelConfig { label: format!("{name}/prov"), highlight: hl, base: name.to_string(), prov: true });
+                levels.push(LevelConfig { label: name.to_string(), highlight: false, base: name.to_string(), prov: false, eval_mode: EvalMode::Raw });
+                levels.push(LevelConfig { label: format!("{name}/prov"), highlight: hl, base: name.to_string(), prov: true, eval_mode: EvalMode::PushPull });
             }
         } else {
             for &(name, hl) in &base_levels {
                 let label = if !provenance { name.to_string() } else { format!("{name}/prov") };
-                levels.push(LevelConfig { label, highlight: hl, base: name.to_string(), prov: provenance });
+                let mode = if provenance { EvalMode::PushPull } else { EvalMode::Raw };
+                levels.push(LevelConfig { label, highlight: hl, base: name.to_string(), prov: provenance, eval_mode: mode });
             }
         }
 
@@ -760,12 +836,16 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
             let level_name = level.base.as_str();
             let use_prov = level.prov;
             let available = compile_gk_to_assembler(&source).ok()
-                .and_then(|asm| match level_name {
-                    "P2" => if use_prov { asm.try_compile().ok().map(|_| ()) }
-                            else { asm.try_compile_raw().ok().map(|_| ()) },
-                    "Hybrid" => asm.compile_hybrid().ok().map(|_| ()),
-                    "P3" => if use_prov { asm.try_compile_jit().ok().map(|_| ()) }
-                            else { asm.try_compile_jit_raw().ok().map(|_| ()) },
+                .and_then(|asm| match (level_name, &level.eval_mode) {
+                    ("P2", EvalMode::Raw) => asm.try_compile_raw().ok().map(|_| ()),
+                    ("P2", EvalMode::PushOnly) => asm.try_compile_push().ok().map(|_| ()),
+                    ("P2", EvalMode::PullOnly) => asm.try_compile_pull().ok().map(|_| ()),
+                    ("P2", EvalMode::PushPull) => asm.try_compile().ok().map(|_| ()),
+                    ("Hybrid", _) => asm.compile_hybrid().ok().map(|_| ()),
+                    ("P3", EvalMode::Raw) => asm.try_compile_jit_raw().ok().map(|_| ()),
+                    ("P3", EvalMode::PushOnly) => asm.try_compile_jit_push().ok().map(|_| ()),
+                    ("P3", EvalMode::PullOnly) => asm.try_compile_jit_pull().ok().map(|_| ()),
+                    ("P3", EvalMode::PushPull) => asm.try_compile_jit().ok().map(|_| ()),
                     _ => None,
                 }).is_some();
 
@@ -774,11 +854,12 @@ fn bench_single_expr(expr: &str, args: &BenchArgs) -> Option<ExprResult> {
                 continue;
             }
 
+            let eval_mode = level.eval_mode;
             let mut samples = run_threaded_bench(nthreads, iters, cycles, warmup, || {
                 let asm = compile_gk_to_assembler(&source).ok()?;
                 let sc = scenario.clone();
                 let lb = last_binding.clone();
-                build_compiled_kernel(asm, level_name, use_prov, &sc, &lb)
+                build_compiled_kernel(asm, level_name, use_prov, eval_mode, &sc, &lb)
             });
 
             if samples.is_empty() { continue; }
@@ -869,61 +950,138 @@ impl P1Engine for nb_variates::kernel::ProvScanState {
 fn build_compiled_kernel(
     asm: nb_variates::assembly::GkAssembler,
     level: &str,
-    use_prov: bool,
+    _use_prov: bool,
+    eval_mode: EvalMode,
     scenario: &BenchScenario,
     last_binding: &str,
 ) -> Option<Box<dyn FnMut(u64) + Send>> {
     match level {
         "P2" => {
-            let r = if use_prov { asm.try_compile() } else { asm.try_compile_raw() };
-            r.ok().and_then(|mut k: nb_variates::compiled::CompiledKernel| {
-                let default_out = k.resolve_output(last_binding)?;
-                let n = k.coord_count();
-                let weighted_slots: Vec<(usize, u32)> = scenario.pull_weights.iter()
-                    .filter_map(|(name, w)| k.resolve_output(name).map(|s| (s, *w)))
-                    .collect();
-                let total_w: u32 = weighted_slots.iter().map(|(_, w)| w).sum();
-                let mut drv = DriverState::new(scenario);
-                Some(Box::new(move |c: u64| {
-                    let iv = build_inputs_from_driver(&mut drv, c, n);
-                    let slot = pick_weighted_slot(&weighted_slots, total_w, default_out, c);
-                    let _ = k.eval_for_slot(&iv, slot);
-                }) as Box<dyn FnMut(u64) + Send>)
-            })
+            // Each EvalMode selects a distinct monomorphic kernel type
+            match eval_mode {
+                EvalMode::Raw => {
+                    asm.try_compile_raw().ok().and_then(|mut k| {
+                        let default_out = k.resolve_output(last_binding)?;
+                        let n = k.coord_count();
+                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                        let mut drv = DriverState::new(scenario);
+                        Some(Box::new(move |c: u64| {
+                            let iv = build_inputs_from_driver(&mut drv, c, n);
+                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                            let _ = k.eval_for_slot(&iv, slot);
+                        }) as Box<dyn FnMut(u64) + Send>)
+                    })
+                }
+                EvalMode::PushOnly => {
+                    asm.try_compile_push().ok().and_then(|mut k| {
+                        let default_out = k.resolve_output(last_binding)?;
+                        let n = k.coord_count();
+                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                        let mut drv = DriverState::new(scenario);
+                        Some(Box::new(move |c: u64| {
+                            let iv = build_inputs_from_driver(&mut drv, c, n);
+                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                            let _ = k.eval_for_slot(&iv, slot);
+                        }) as Box<dyn FnMut(u64) + Send>)
+                    })
+                }
+                EvalMode::PullOnly => {
+                    asm.try_compile_pull().ok().and_then(|mut k| {
+                        let default_out = k.resolve_output(last_binding)?;
+                        let n = k.coord_count();
+                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                        let mut drv = DriverState::new(scenario);
+                        Some(Box::new(move |c: u64| {
+                            let iv = build_inputs_from_driver(&mut drv, c, n);
+                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                            let _ = k.eval_for_slot(&iv, slot);
+                        }) as Box<dyn FnMut(u64) + Send>)
+                    })
+                }
+                EvalMode::PushPull => {
+                    asm.try_compile().ok().and_then(|mut k| {
+                        let default_out = k.resolve_output(last_binding)?;
+                        let n = k.coord_count();
+                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                        let mut drv = DriverState::new(scenario);
+                        Some(Box::new(move |c: u64| {
+                            let iv = build_inputs_from_driver(&mut drv, c, n);
+                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                            let _ = k.eval_for_slot(&iv, slot);
+                        }) as Box<dyn FnMut(u64) + Send>)
+                    })
+                }
+            }
         }
         "Hybrid" => {
             asm.compile_hybrid().ok().and_then(|mut k: nb_variates::hybrid::HybridKernel| {
                 let default_out = k.resolve_output(last_binding)?;
                 let n = k.coord_count();
-                let weighted_slots: Vec<(usize, u32)> = scenario.pull_weights.iter()
-                    .filter_map(|(name, w)| k.resolve_output(name).map(|s| (s, *w)))
-                    .collect();
-                let total_w: u32 = weighted_slots.iter().map(|(_, w)| w).sum();
+                let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
                 let mut drv = DriverState::new(scenario);
                 Some(Box::new(move |c: u64| {
                     let iv = build_inputs_from_driver(&mut drv, c, n);
                     k.eval(&iv);
-                    let slot = pick_weighted_slot(&weighted_slots, total_w, default_out, c);
+                    let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
                     let _ = k.get_slot(slot);
                 }) as Box<dyn FnMut(u64) + Send>)
             })
         }
         "P3" => {
-            let r = if use_prov { asm.try_compile_jit() } else { asm.try_compile_jit_raw() };
-            r.ok().and_then(|mut k: nb_variates::jit::JitKernel| {
-                let default_out = k.resolve_output(last_binding)?;
-                let n = k.coord_count();
-                let weighted_slots: Vec<(usize, u32)> = scenario.pull_weights.iter()
-                    .filter_map(|(name, w)| k.resolve_output(name).map(|s| (s, *w)))
-                    .collect();
-                let total_w: u32 = weighted_slots.iter().map(|(_, w)| w).sum();
-                let mut drv = DriverState::new(scenario);
-                Some(Box::new(move |c: u64| {
-                    let iv = build_inputs_from_driver(&mut drv, c, n);
-                    let slot = pick_weighted_slot(&weighted_slots, total_w, default_out, c);
-                    let _ = k.eval_for_slot(&iv, slot);
-                }) as Box<dyn FnMut(u64) + Send>)
-            })
+            match eval_mode {
+                EvalMode::Raw => {
+                    asm.try_compile_jit_raw().ok().and_then(|mut k| {
+                        let default_out = k.resolve_output(last_binding)?;
+                        let n = k.coord_count();
+                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                        let mut drv = DriverState::new(scenario);
+                        Some(Box::new(move |c: u64| {
+                            let iv = build_inputs_from_driver(&mut drv, c, n);
+                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                            let _ = k.eval_for_slot(&iv, slot);
+                        }) as Box<dyn FnMut(u64) + Send>)
+                    })
+                }
+                EvalMode::PushOnly => {
+                    asm.try_compile_jit_push().ok().and_then(|mut k| {
+                        let default_out = k.resolve_output(last_binding)?;
+                        let n = k.coord_count();
+                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                        let mut drv = DriverState::new(scenario);
+                        Some(Box::new(move |c: u64| {
+                            let iv = build_inputs_from_driver(&mut drv, c, n);
+                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                            let _ = k.eval_for_slot(&iv, slot);
+                        }) as Box<dyn FnMut(u64) + Send>)
+                    })
+                }
+                EvalMode::PullOnly => {
+                    asm.try_compile_jit_pull().ok().and_then(|mut k| {
+                        let default_out = k.resolve_output(last_binding)?;
+                        let n = k.coord_count();
+                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                        let mut drv = DriverState::new(scenario);
+                        Some(Box::new(move |c: u64| {
+                            let iv = build_inputs_from_driver(&mut drv, c, n);
+                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                            let _ = k.eval_for_slot(&iv, slot);
+                        }) as Box<dyn FnMut(u64) + Send>)
+                    })
+                }
+                EvalMode::PushPull => {
+                    asm.try_compile_jit().ok().and_then(|mut k| {
+                        let default_out = k.resolve_output(last_binding)?;
+                        let n = k.coord_count();
+                        let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));
+                        let mut drv = DriverState::new(scenario);
+                        Some(Box::new(move |c: u64| {
+                            let iv = build_inputs_from_driver(&mut drv, c, n);
+                            let slot = pick_weighted_slot(&ws.0, ws.1, default_out, c);
+                            let _ = k.eval_for_slot(&iv, slot);
+                        }) as Box<dyn FnMut(u64) + Send>)
+                    })
+                }
+            }
         }
         _ => None,
     }

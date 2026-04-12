@@ -32,148 +32,240 @@ mod inner {
 
     use crate::node::GkNode;
 
-    /// A JIT-compiled GK kernel.
-    ///
-    /// The entire DAG is compiled to a single native function.
-    /// `eval()` calls directly into generated machine code.
-    pub struct JitKernel {
+    /// Shared fields for all JIT kernel variants.
+    struct JitCore {
         buffer: Vec<u64>,
         coord_count: usize,
         output_map: HashMap<String, usize>,
-        /// Plain eval function (no provenance).
-        code_fn: unsafe fn(*const u64, *mut u64),
-        /// Provenance-aware eval function (with clean ptr).
-        code_fn_prov: Option<unsafe fn(*const u64, *mut u64, *mut u8)>,
         _module: JITModule,
         _nodes: Vec<Box<dyn GkNode>>,
-        /// Provenance state (only when compiled with provenance).
-        provenance: Option<JitProvenanceState>,
     }
 
-    struct JitProvenanceState {
-        node_clean: Vec<u8>, // u8 for C ABI compat
-        input_dependents: Vec<Vec<usize>>,
-        /// Per-slot provenance for pull-side guard.
-        slot_provenance: Vec<u64>,
-        changed_mask: u64,
-    }
-
-    impl JitKernel {
-        #[inline]
-        fn set_inputs_internal(&mut self, coords: &[u64]) {
-            if let Some(ref mut prov) = self.provenance {
-                prov.changed_mask = 0;
-                for i in 0..coords.len().min(self.coord_count) {
-                    if self.buffer[i] != coords[i] {
-                        self.buffer[i] = coords[i];
-                        prov.changed_mask |= 1u64 << i;
-                        if i < prov.input_dependents.len() {
-                            for &step_idx in &prov.input_dependents[i] {
-                                prov.node_clean[step_idx] = 0;
-                            }
-                        }
-                    }
-                }
-            } else {
-                self.buffer[..self.coord_count.min(coords.len())]
-                    .copy_from_slice(&coords[..self.coord_count.min(coords.len())]);
-            }
-        }
-
-        #[inline]
-        fn run_jit(&mut self) {
-            if let Some(ref mut prov) = self.provenance {
-                unsafe {
-                    (self.code_fn_prov.unwrap())(
-                        self.buffer.as_ptr(),
-                        self.buffer.as_mut_ptr(),
-                        prov.node_clean.as_mut_ptr(),
-                    );
-                }
-            } else {
-                unsafe {
-                    (self.code_fn)(self.buffer.as_ptr(), self.buffer.as_mut_ptr());
+    /// Compute slot provenance from input_dependents.
+    fn compute_jit_slot_provenance(
+        coord_count: usize,
+        buffer_len: usize,
+        step_count: usize,
+        input_dependents: &[Vec<usize>],
+    ) -> Vec<u64> {
+        let mut step_prov = vec![0u64; step_count];
+        for (input_idx, deps) in input_dependents.iter().enumerate() {
+            for &step_idx in deps {
+                if step_idx < step_count {
+                    step_prov[step_idx] |= 1u64 << input_idx;
                 }
             }
         }
+        let mut slot_prov = vec![0u64; buffer_len];
+        for i in 0..coord_count.min(64) {
+            slot_prov[i] = 1u64 << i;
+        }
+        for i in 0..step_count {
+            let slot = coord_count + i;
+            if slot < slot_prov.len() {
+                slot_prov[slot] = step_prov[i];
+            }
+        }
+        slot_prov
+    }
 
-        /// Set inputs + evaluate all nodes eagerly.
+    macro_rules! jit_accessors {
+        () => {
+            pub fn coord_count(&self) -> usize { self.core.coord_count }
+            pub fn resolve_output(&self, name: &str) -> Option<usize> {
+                self.core.output_map.get(name).copied()
+            }
+            #[inline]
+            pub fn get(&self, name: &str) -> u64 {
+                self.core.buffer[self.core.output_map[name]]
+            }
+            #[inline]
+            pub fn get_slot(&self, slot: usize) -> u64 {
+                self.core.buffer[slot]
+            }
+        };
+    }
+
+    // ── JitKernelRaw ───────────────────────────────────────────
+
+    /// Raw JIT kernel: no provenance, all nodes evaluate unconditionally.
+    pub struct JitKernelRaw {
+        core: JitCore,
+        code_fn: unsafe fn(*const u64, *mut u64),
+    }
+
+    impl JitKernelRaw {
         #[inline]
         pub fn eval(&mut self, coords: &[u64]) {
-            self.set_inputs_internal(coords);
-            self.run_jit();
+            self.core.buffer[..self.core.coord_count.min(coords.len())]
+                .copy_from_slice(&coords[..self.core.coord_count.min(coords.len())]);
+            unsafe { (self.code_fn)(self.core.buffer.as_ptr(), self.core.buffer.as_mut_ptr()); }
         }
 
-        /// Set inputs + evaluate ONLY if the requested output's cone
-        /// was affected. Pull-side guard skips JIT call entirely when
-        /// the output is clean.
         #[inline]
         pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
-            self.set_inputs_internal(coords);
-            if let Some(ref prov) = self.provenance {
-                if slot < prov.slot_provenance.len() {
-                    if prov.slot_provenance[slot] & prov.changed_mask == 0 {
-                        return self.buffer[slot]; // pull-side skip
-                    }
-                }
-            }
-            self.run_jit();
-            self.buffer[slot]
-        }
-
-        #[inline]
-        pub fn get(&self, name: &str) -> u64 {
-            self.buffer[self.output_map[name]]
-        }
-
-        #[inline]
-        pub fn get_slot(&self, slot: usize) -> u64 {
-            self.buffer[slot]
-        }
-
-        pub fn coord_count(&self) -> usize { self.coord_count }
-
-        /// Resolve output name to slot.
-        pub fn resolve_output(&self, name: &str) -> Option<usize> {
-            self.output_map.get(name).copied()
-        }
-
-        /// Set provenance dependents for the JIT kernel.
-        pub fn set_provenance_dependents(&mut self, input_dependents: Vec<Vec<usize>>) {
-            if let Some(ref mut prov) = self.provenance {
-                // Compute per-step provenance from dependents
-                let step_count = prov.node_clean.len();
-                let mut step_prov = vec![0u64; step_count];
-                for (input_idx, deps) in input_dependents.iter().enumerate() {
-                    for &step_idx in deps {
-                        if step_idx < step_count {
-                            step_prov[step_idx] |= 1u64 << input_idx;
-                        }
-                    }
-                }
-                // Map to slot provenance
-                // TODO: needs slot_bases from assembly. For now, approximate:
-                // each step produces one output at slot coord_count + step_idx
-                let mut slot_prov = vec![0u64; self.buffer.len()];
-                for i in 0..self.coord_count.min(64) {
-                    slot_prov[i] = 1u64 << i;
-                }
-                for i in 0..step_count {
-                    let slot = self.coord_count + i; // approximate
-                    if slot < slot_prov.len() {
-                        slot_prov[slot] = step_prov[i];
-                    }
-                }
-                prov.slot_provenance = slot_prov;
-                prov.input_dependents = input_dependents;
-            }
+            self.eval(coords);
+            self.core.buffer[slot]
         }
 
         /// Decompose into raw parts for hybrid kernel integration.
         pub fn into_parts(self) -> (unsafe fn(*const u64, *mut u64), JITModule) {
-            (self.code_fn, self._module)
+            (self.code_fn, self.core._module)
         }
+
+        jit_accessors!();
     }
+
+    // ── JitKernelPush ──────────────────────────────────────────
+
+    /// Push-only JIT kernel: per-node dirty tracking, no cone guard.
+    pub struct JitKernelPush {
+        core: JitCore,
+        code_fn_prov: unsafe fn(*const u64, *mut u64, *mut u8),
+        node_clean: Vec<u8>,
+        input_dependents: Vec<Vec<usize>>,
+    }
+
+    impl JitKernelPush {
+        #[inline]
+        fn set_inputs(&mut self, coords: &[u64]) {
+            for i in 0..coords.len().min(self.core.coord_count) {
+                if self.core.buffer[i] != coords[i] {
+                    self.core.buffer[i] = coords[i];
+                    if i < self.input_dependents.len() {
+                        for &step_idx in &self.input_dependents[i] {
+                            self.node_clean[step_idx] = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        #[inline]
+        pub fn eval(&mut self, coords: &[u64]) {
+            self.set_inputs(coords);
+            unsafe {
+                (self.code_fn_prov)(
+                    self.core.buffer.as_ptr(),
+                    self.core.buffer.as_mut_ptr(),
+                    self.node_clean.as_mut_ptr(),
+                );
+            }
+        }
+
+        #[inline]
+        pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
+            self.eval(coords);
+            self.core.buffer[slot]
+        }
+
+        jit_accessors!();
+    }
+
+    // ── JitKernelPull ──────────────────────────────────────────
+
+    /// Pull-only JIT kernel: cone guard, but all nodes run when cone is dirty.
+    /// Uses the raw (non-provenance) JIT function — no per-node clean checks.
+    pub struct JitKernelPull {
+        core: JitCore,
+        code_fn: unsafe fn(*const u64, *mut u64),
+        slot_provenance: Vec<u64>,
+        changed_mask: u64,
+    }
+
+    impl JitKernelPull {
+        #[inline]
+        fn set_inputs(&mut self, coords: &[u64]) {
+            self.changed_mask = 0;
+            for i in 0..coords.len().min(self.core.coord_count) {
+                if self.core.buffer[i] != coords[i] {
+                    self.core.buffer[i] = coords[i];
+                    self.changed_mask |= 1u64 << i;
+                }
+            }
+        }
+
+        #[inline]
+        pub fn eval(&mut self, coords: &[u64]) {
+            self.set_inputs(coords);
+            unsafe { (self.code_fn)(self.core.buffer.as_ptr(), self.core.buffer.as_mut_ptr()); }
+        }
+
+        #[inline]
+        pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
+            self.set_inputs(coords);
+            if slot < self.slot_provenance.len()
+                && self.slot_provenance[slot] & self.changed_mask == 0 {
+                return self.core.buffer[slot];
+            }
+            unsafe { (self.code_fn)(self.core.buffer.as_ptr(), self.core.buffer.as_mut_ptr()); }
+            self.core.buffer[slot]
+        }
+
+        jit_accessors!();
+    }
+
+    // ── JitKernelPushPull ──────────────────────────────────────
+
+    /// Full optimization: push-side dirty tracking + pull-side cone guard.
+    pub struct JitKernelPushPull {
+        core: JitCore,
+        code_fn_prov: unsafe fn(*const u64, *mut u64, *mut u8),
+        node_clean: Vec<u8>,
+        input_dependents: Vec<Vec<usize>>,
+        slot_provenance: Vec<u64>,
+        changed_mask: u64,
+    }
+
+    impl JitKernelPushPull {
+        #[inline]
+        fn set_inputs(&mut self, coords: &[u64]) {
+            self.changed_mask = 0;
+            for i in 0..coords.len().min(self.core.coord_count) {
+                if self.core.buffer[i] != coords[i] {
+                    self.core.buffer[i] = coords[i];
+                    self.changed_mask |= 1u64 << i;
+                    if i < self.input_dependents.len() {
+                        for &step_idx in &self.input_dependents[i] {
+                            self.node_clean[step_idx] = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        #[inline]
+        pub fn eval(&mut self, coords: &[u64]) {
+            self.set_inputs(coords);
+            unsafe {
+                (self.code_fn_prov)(
+                    self.core.buffer.as_ptr(),
+                    self.core.buffer.as_mut_ptr(),
+                    self.node_clean.as_mut_ptr(),
+                );
+            }
+        }
+
+        #[inline]
+        pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
+            self.set_inputs(coords);
+            if slot < self.slot_provenance.len()
+                && self.slot_provenance[slot] & self.changed_mask == 0 {
+                return self.core.buffer[slot];
+            }
+            unsafe {
+                (self.code_fn_prov)(
+                    self.core.buffer.as_ptr(),
+                    self.core.buffer.as_mut_ptr(),
+                    self.node_clean.as_mut_ptr(),
+                );
+            }
+            self.core.buffer[slot]
+        }
+
+        jit_accessors!();
+    }
+
 
     /// Extern function: xxhash3 of a u64 (called from JIT code).
     extern "C" fn jit_xxh3_hash(value: u64) -> u64 {
@@ -476,34 +568,92 @@ mod inner {
     /// Each step has: jit_op, input_slots (buffer indices), output_slots.
     /// The generated function reads coords from the buffer, executes
     /// all steps in order, and writes results to the buffer.
-    pub(crate) fn compile_jit(
+    pub(crate) fn compile_jit_raw(
         coord_count: usize,
         total_slots: usize,
         steps: Vec<(JitOp, Vec<usize>, Vec<usize>)>,
         output_map: HashMap<String, usize>,
         nodes: Vec<Box<dyn GkNode>>,
-    ) -> Result<JitKernel, String> {
-        compile_jit_impl(coord_count, total_slots, steps, output_map, nodes, false)
+    ) -> Result<JitKernelRaw, String> {
+        let (raw_fn, _, module) = compile_jit_impl(&steps, false)?;
+        Ok(JitKernelRaw {
+            core: JitCore { buffer: vec![0u64; total_slots], coord_count, output_map, _module: module, _nodes: nodes },
+            code_fn: raw_fn,
+        })
     }
 
-    pub(crate) fn compile_jit_with_provenance(
+    pub(crate) fn compile_jit_push(
         coord_count: usize,
         total_slots: usize,
         steps: Vec<(JitOp, Vec<usize>, Vec<usize>)>,
         output_map: HashMap<String, usize>,
         nodes: Vec<Box<dyn GkNode>>,
-    ) -> Result<JitKernel, String> {
-        compile_jit_impl(coord_count, total_slots, steps, output_map, nodes, true)
+        input_dependents: Vec<Vec<usize>>,
+    ) -> Result<JitKernelPush, String> {
+        let step_count = steps.len();
+        let (_, prov_fn, module) = compile_jit_impl(&steps, true)?;
+        Ok(JitKernelPush {
+            core: JitCore { buffer: vec![0u64; total_slots], coord_count, output_map, _module: module, _nodes: nodes },
+            code_fn_prov: prov_fn,
+            node_clean: vec![0u8; step_count],
+            input_dependents,
+        })
     }
 
+    pub(crate) fn compile_jit_pull(
+        coord_count: usize,
+        total_slots: usize,
+        steps: Vec<(JitOp, Vec<usize>, Vec<usize>)>,
+        output_map: HashMap<String, usize>,
+        nodes: Vec<Box<dyn GkNode>>,
+        input_dependents: &[Vec<usize>],
+    ) -> Result<JitKernelPull, String> {
+        let step_count = steps.len();
+        let buffer_len = total_slots;
+        // Pull uses the RAW jit function (no per-node clean checks)
+        let (raw_fn, _, module) = compile_jit_impl(&steps, false)?;
+        let slot_provenance = compute_jit_slot_provenance(coord_count, buffer_len, step_count, input_dependents);
+        Ok(JitKernelPull {
+            core: JitCore { buffer: vec![0u64; total_slots], coord_count, output_map, _module: module, _nodes: nodes },
+            code_fn: raw_fn,
+            slot_provenance,
+            changed_mask: u64::MAX,
+        })
+    }
+
+    pub(crate) fn compile_jit_push_pull(
+        coord_count: usize,
+        total_slots: usize,
+        steps: Vec<(JitOp, Vec<usize>, Vec<usize>)>,
+        output_map: HashMap<String, usize>,
+        nodes: Vec<Box<dyn GkNode>>,
+        input_dependents: Vec<Vec<usize>>,
+    ) -> Result<JitKernelPushPull, String> {
+        let step_count = steps.len();
+        let buffer_len = total_slots;
+        let (_, prov_fn, module) = compile_jit_impl(&steps, true)?;
+        let slot_provenance = compute_jit_slot_provenance(coord_count, buffer_len, step_count, &input_dependents);
+        Ok(JitKernelPushPull {
+            core: JitCore { buffer: vec![0u64; total_slots], coord_count, output_map, _module: module, _nodes: nodes },
+            code_fn_prov: prov_fn,
+            node_clean: vec![0u8; step_count],
+            input_dependents,
+            slot_provenance,
+            changed_mask: u64::MAX,
+        })
+    }
+
+    /// Core JIT compilation. Returns (raw_fn, prov_fn, module).
+    /// If provenance=false, prov_fn is a dummy transmute of raw_fn.
+    /// If provenance=true, raw_fn is a dummy transmute of prov_fn.
     fn compile_jit_impl(
-        coord_count: usize,
-        total_slots: usize,
-        steps: Vec<(JitOp, Vec<usize>, Vec<usize>)>,
-        output_map: HashMap<String, usize>,
-        nodes: Vec<Box<dyn GkNode>>,
+        steps: &[(JitOp, Vec<usize>, Vec<usize>)],
         provenance: bool,
-    ) -> Result<JitKernel, String> {
+    ) -> Result<(
+        unsafe fn(*const u64, *mut u64),
+        unsafe fn(*const u64, *mut u64, *mut u8),
+        JITModule,
+    ), String> {
         let mut flag_builder = settings::builder();
         flag_builder.set("opt_level", "speed").unwrap();
         let isa_builder = cranelift_codegen::isa::lookup(target_lexicon::Triple::host())
@@ -906,42 +1056,19 @@ mod inner {
             .map_err(|e| format!("finalize: {e}"))?;
 
         let code_ptr = module.get_finalized_function(func_id);
-        let step_count = steps.len();
 
         if provenance {
-            let code_fn_prov: unsafe fn(*const u64, *mut u64, *mut u8) =
+            let prov_fn: unsafe fn(*const u64, *mut u64, *mut u8) =
                 unsafe { mem::transmute(code_ptr) };
-            // Dummy plain fn for into_parts compatibility
-            let dummy: unsafe fn(*const u64, *mut u64) =
+            let dummy_raw: unsafe fn(*const u64, *mut u64) =
                 unsafe { mem::transmute(code_ptr) };
-            Ok(JitKernel {
-                buffer: vec![0u64; total_slots],
-                coord_count,
-                output_map,
-                code_fn: dummy,
-                code_fn_prov: Some(code_fn_prov),
-                _module: module,
-                _nodes: nodes,
-                provenance: Some(JitProvenanceState {
-                    node_clean: vec![0u8; step_count],
-                    input_dependents: Vec::new(),
-                    slot_provenance: Vec::new(), // set via set_provenance_dependents
-                    changed_mask: u64::MAX,
-                }),
-            })
+            Ok((dummy_raw, prov_fn, module))
         } else {
-            let code_fn: unsafe fn(*const u64, *mut u64) =
+            let raw_fn: unsafe fn(*const u64, *mut u64) =
                 unsafe { mem::transmute(code_ptr) };
-            Ok(JitKernel {
-                buffer: vec![0u64; total_slots],
-                coord_count,
-                output_map,
-                code_fn,
-                code_fn_prov: None,
-                _module: module,
-                _nodes: nodes,
-                provenance: None,
-            })
+            let dummy_prov: unsafe fn(*const u64, *mut u64, *mut u8) =
+                unsafe { mem::transmute(code_ptr) };
+            Ok((raw_fn, dummy_prov, module))
         }
     }
 
@@ -998,7 +1125,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
             kernel.eval(&[42]);
             assert_eq!(kernel.get("out"), 42);
         }
@@ -1010,7 +1137,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
             kernel.eval(&[5]);
             assert_eq!(kernel.get("out"), 105);
         }
@@ -1022,7 +1149,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
             kernel.eval(&[6]);
             assert_eq!(kernel.get("out"), 42);
         }
@@ -1034,7 +1161,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
             kernel.eval(&[542]);
             assert_eq!(kernel.get("out"), 42);
         }
@@ -1046,7 +1173,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[42]);
             let v1 = kernel.get("out");
@@ -1061,7 +1188,7 @@ mod inner {
             let steps = vec![(JitOp::Hash, vec![0], vec![1])];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[42]);
             let v1 = kernel.get("out");
@@ -1079,7 +1206,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("user_id".into(), 2);
-            let mut kernel = compile_jit(1, 3, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 3, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[42]);
             let uid = kernel.get("user_id");
@@ -1093,7 +1220,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[5]);
             assert_eq!(kernel.get("out"), 10); // below min
@@ -1112,7 +1239,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 2);
-            let mut kernel = compile_jit(2, 3, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(2, 3, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[0b101, 0b010]);
             // Same as the Interleave node test: result = 0b011001
@@ -1129,7 +1256,7 @@ mod inner {
             output_map.insert("d0".into(), 1);
             output_map.insert("d1".into(), 2);
             output_map.insert("d2".into(), 3);
-            let mut kernel = compile_jit(1, 4, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 4, steps, output_map, Vec::new()).unwrap();
 
             // 4201337 → (37, 13, 42)
             kernel.eval(&[4_201_337]);
@@ -1151,7 +1278,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
 
             // Verify same result as the node
             kernel.eval(&[42]);
@@ -1169,7 +1296,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[0]);
             let v = f64::from_bits(kernel.get("out"));
@@ -1188,7 +1315,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[3.7f64.to_bits()]);
             assert_eq!(kernel.get("out"), 3); // truncate toward zero
@@ -1199,7 +1326,7 @@ mod inner {
             let steps = vec![(JitOp::RoundToU64, vec![0], vec![1])];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[3.7f64.to_bits()]);
             assert_eq!(kernel.get("out"), 4);
@@ -1215,7 +1342,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[(-0.5f64).to_bits()]);
             assert_eq!(f64::from_bits(kernel.get("out")), 0.0);
@@ -1234,7 +1361,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[0.0f64.to_bits()]);
             assert_eq!(f64::from_bits(kernel.get("out")), 10.0);
@@ -1253,7 +1380,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[0]);
             let v = f64::from_bits(kernel.get("out"));
@@ -1271,7 +1398,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[13.0f64.to_bits()]);
             assert_eq!(f64::from_bits(kernel.get("out")), 10.0);
@@ -1287,7 +1414,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[0.0f64.to_bits()]);
             assert_eq!(kernel.get("out"), 0);
@@ -1316,7 +1443,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
 
             // Input 0.5 → should give ~50.0
             kernel.eval(&[0.5f64.to_bits()]);
@@ -1347,7 +1474,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 1);
-            let mut kernel = compile_jit(1, 2, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
 
             // Median of standard normal = 0.0
             kernel.eval(&[0.5f64.to_bits()]);
@@ -1369,7 +1496,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 2);
-            let mut kernel = compile_jit(1, 3, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 3, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[0]);
             let v = f64::from_bits(kernel.get("out"));
@@ -1390,7 +1517,7 @@ mod inner {
             ];
             let mut output_map = HashMap::new();
             output_map.insert("out".into(), 3);
-            let mut kernel = compile_jit(1, 4, steps, output_map, Vec::new()).unwrap();
+            let mut kernel = compile_jit_raw(1, 4, steps, output_map, Vec::new()).unwrap();
 
             kernel.eval(&[5]);
             // (5 + 10) * 3 = 45, 45 % 100 = 45

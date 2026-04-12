@@ -9,7 +9,8 @@
 
 use std::collections::HashMap;
 
-use crate::compiled::CompiledKernel;
+use crate::compiled::{CompiledKernelRaw, CompiledKernelPush, CompiledKernelPull, CompiledKernelPushPull};
+use crate::engine::{self, GraphAnalysis, ProvMode, P2Engine};
 use crate::kernel::{GkKernel, GkProgram, WireSource};
 use crate::node::{GkNode, PortType};
 use crate::nodes::convert::{F64ToString, U64ToF64, U64ToString};
@@ -236,10 +237,10 @@ impl GkAssembler {
 
     /// Validate, resolve, and attempt Phase 2 compilation.
     ///
-    /// Returns `Ok(CompiledKernel)` if all nodes are u64-only and provide
+    /// Returns `Ok(CompiledKernelPushPull)` if all nodes are u64-only and provide
     /// `compiled_u64()`. Falls back to `Err(GkKernel)` (a working Phase 1
     /// kernel) if any node cannot be compiled.
-    pub fn try_compile(self) -> Result<CompiledKernel, GkKernel> {
+    pub fn try_compile(self) -> Result<CompiledKernelPushPull, GkKernel> {
         // We need to resolve first, but resolve consumes self.
         // To avoid duplicating work, we resolve once and then try
         // to extract compiled ops from the resolved nodes.
@@ -312,7 +313,7 @@ impl GkAssembler {
             })
             .collect();
 
-        Ok(CompiledKernel::new_with_provenance(
+        Ok(CompiledKernelPushPull::new(
             coord_count, total_slots, steps, output_map,
             GkProgram::compute_dependents(
                 &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring),
@@ -322,7 +323,7 @@ impl GkAssembler {
     }
 
     /// Phase 2 compilation without provenance caching.
-    pub fn try_compile_raw(self) -> Result<CompiledKernel, GkKernel> {
+    pub fn try_compile_raw(self) -> Result<CompiledKernelRaw, GkKernel> {
         let resolved = match self.resolve() {
             Ok(r) => r,
             Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new())),
@@ -366,19 +367,53 @@ impl GkAssembler {
         let output_map = resolved.output_map.iter()
             .map(|(name, (node_idx, port))| (name.clone(), slot_base[*node_idx] + port))
             .collect();
-        Ok(CompiledKernel::new(coord_count, total_slots, steps, output_map))
+        Ok(CompiledKernelRaw::new(coord_count, total_slots, steps, output_map))
     }
 
-    /// Validate, resolve, and attempt Phase 3 JIT compilation.
-    ///
-    /// Returns `Ok(JitKernel)` if all nodes can be JIT-compiled.
-    /// Falls back to `Err(CompiledKernel or GkKernel)` otherwise.
-    #[cfg(feature = "jit")]
-    pub fn try_compile_jit(self) -> Result<crate::jit::JitKernel, String> {
-        let resolved = self.resolve().map_err(|e| format!("{e}"))?;
-        let coord_count = resolved.input_names.len();
+    /// Phase 2 compilation with push-side provenance only (no cone guard).
+    pub fn try_compile_push(self) -> Result<CompiledKernelPush, GkKernel> {
+        let resolved = match self.resolve() {
+            Ok(r) => r,
+            Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new())),
+        };
+        let (coord_count, total_slots, steps, output_map) =
+            match Self::build_p2_layout(&resolved) {
+                Some(r) => r,
+                None => return Err(GkKernel::new(
+                    resolved.nodes, resolved.wiring, resolved.input_names, resolved.output_map)),
+            };
+        let dependents = GkProgram::compute_dependents(
+            &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring),
+            coord_count,
+        );
+        Ok(CompiledKernelPush::new(coord_count, total_slots, steps, output_map, dependents))
+    }
 
-        // Assign buffer slots (same layout as Phase 2)
+    /// Phase 2 compilation with pull-side cone guard only (no per-node skip).
+    pub fn try_compile_pull(self) -> Result<CompiledKernelPull, GkKernel> {
+        let resolved = match self.resolve() {
+            Ok(r) => r,
+            Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new())),
+        };
+        let (coord_count, total_slots, steps, output_map) =
+            match Self::build_p2_layout(&resolved) {
+                Some(r) => r,
+                None => return Err(GkKernel::new(
+                    resolved.nodes, resolved.wiring, resolved.input_names, resolved.output_map)),
+            };
+        let dependents = GkProgram::compute_dependents(
+            &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring),
+            coord_count,
+        );
+        Ok(CompiledKernelPull::new(coord_count, total_slots, steps, output_map, &dependents))
+    }
+
+    /// Shared: extract P2 compiled steps + slot layout from resolved DAG.
+    /// Returns None if any node lacks a compiled_u64 implementation.
+    fn build_p2_layout(
+        resolved: &ResolvedDag,
+    ) -> Option<(usize, usize, Vec<(crate::node::CompiledU64Op, Vec<usize>, Vec<usize>)>, HashMap<String, usize>)> {
+        let coord_count = resolved.input_names.len();
         let mut slot_base: Vec<usize> = Vec::with_capacity(resolved.nodes.len());
         let mut next_slot = coord_count;
         for node in &resolved.nodes {
@@ -387,61 +422,41 @@ impl GkAssembler {
         }
         let total_slots = next_slot;
 
-        // Classify each node into a JitOp
-        let mut jit_steps = Vec::new();
-        for (node_idx, node) in resolved.nodes.iter().enumerate() {
-            let jit_op = crate::jit::classify_node(node.as_ref());
+        let mut compiled_ops = Vec::with_capacity(resolved.nodes.len());
+        for node in &resolved.nodes {
+            compiled_ops.push(node.compiled_u64()?);
+        }
 
-            let input_slots: Vec<usize> = resolved.wiring[node_idx]
-                .iter()
+        let mut steps = Vec::with_capacity(resolved.nodes.len());
+        for (node_idx, op) in compiled_ops.into_iter().enumerate() {
+            let input_slots: Vec<usize> = resolved.wiring[node_idx].iter()
                 .map(|source| match source {
-                    crate::kernel::WireSource::Input(c) => *c,
-                    crate::kernel::WireSource::NodeOutput(upstream, port) => slot_base[*upstream] + port,
-                    crate::kernel::WireSource::VolatilePort(idx) | crate::kernel::WireSource::StickyPort(idx) => *idx,
-                })
-                .collect();
-
-            let output_count = node.meta().outs.len();
-            let output_slots: Vec<usize> = (0..output_count)
-                .map(|p| slot_base[node_idx] + p)
-                .collect();
-
-            jit_steps.push((jit_op, input_slots, output_slots));
+                    WireSource::Input(c) => *c,
+                    WireSource::NodeOutput(upstream, port) => slot_base[*upstream] + port,
+                    _ => 0,
+                }).collect();
+            let output_count = resolved.nodes[node_idx].meta().outs.len();
+            let output_slots: Vec<usize> = (0..output_count).map(|p| slot_base[node_idx] + p).collect();
+            steps.push((op, input_slots, output_slots));
         }
-
-        // Check if any steps are fallbacks
-        let has_fallback = jit_steps.iter().any(|(op, _, _)| matches!(op, crate::jit::JitOp::Fallback));
-        if has_fallback {
-            return Err("some nodes cannot be JIT-compiled; falling back to Phase 2".into());
-        }
-
-        // Remap output names to buffer slots
-        let output_map: HashMap<String, usize> = resolved
-            .output_map
-            .iter()
-            .map(|(name, (node_idx, port))| {
-                (name.clone(), slot_base[*node_idx] + port)
-            })
+        let output_map = resolved.output_map.iter()
+            .map(|(name, (node_idx, port))| (name.clone(), slot_base[*node_idx] + port))
             .collect();
 
-        let prov = GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring);
-        let deps = GkProgram::compute_dependents(&prov, coord_count);
-        let mut kernel = crate::jit::compile_jit_with_provenance(
-            coord_count, total_slots, jit_steps, output_map, resolved.nodes,
-        )?;
-        kernel.set_provenance_dependents(deps);
-        Ok(kernel)
+        Some((coord_count, total_slots, steps, output_map))
     }
 
-    /// Phase 3 JIT compilation without provenance.
+    /// Shared: resolve nodes to JIT steps + slot layout.
     #[cfg(feature = "jit")]
-    pub fn try_compile_jit_raw(self) -> Result<crate::jit::JitKernel, String> {
-        let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+    fn build_jit_layout(resolved: &ResolvedDag)
+        -> Result<(usize, usize, Vec<(crate::jit::JitOp, Vec<usize>, Vec<usize>)>, HashMap<String, usize>), String>
+    {
         let coord_count = resolved.input_names.len();
         let mut slot_base: Vec<usize> = Vec::with_capacity(resolved.nodes.len());
         let mut next_slot = coord_count;
         for node in &resolved.nodes { slot_base.push(next_slot); next_slot += node.meta().outs.len(); }
         let total_slots = next_slot;
+
         let mut jit_steps = Vec::new();
         for (node_idx, node) in resolved.nodes.iter().enumerate() {
             let jit_op = crate::jit::classify_node(node.as_ref());
@@ -455,9 +470,116 @@ impl GkAssembler {
                 .map(|p| slot_base[node_idx] + p).collect();
             jit_steps.push((jit_op, input_slots, output_slots));
         }
+
+        if jit_steps.iter().any(|(op, _, _)| matches!(op, crate::jit::JitOp::Fallback)) {
+            return Err("some nodes cannot be JIT-compiled".into());
+        }
+
         let output_map = resolved.output_map.iter()
             .map(|(name, (ni, p))| (name.clone(), slot_base[*ni] + p)).collect();
-        crate::jit::compile_jit(coord_count, total_slots, jit_steps, output_map, resolved.nodes)
+        Ok((coord_count, total_slots, jit_steps, output_map))
+    }
+
+    /// Phase 3 JIT: push+pull (full provenance).
+    #[cfg(feature = "jit")]
+    pub fn try_compile_jit(self) -> Result<crate::jit::JitKernelPushPull, String> {
+        let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+        let (coord_count, total_slots, jit_steps, output_map) = Self::build_jit_layout(&resolved)?;
+        let deps = GkProgram::compute_dependents(
+            &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
+        crate::jit::compile_jit_push_pull(coord_count, total_slots, jit_steps, output_map, resolved.nodes, deps)
+    }
+
+    /// Phase 3 JIT: raw (no provenance).
+    #[cfg(feature = "jit")]
+    pub fn try_compile_jit_raw(self) -> Result<crate::jit::JitKernelRaw, String> {
+        let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+        let (coord_count, total_slots, jit_steps, output_map) = Self::build_jit_layout(&resolved)?;
+        crate::jit::compile_jit_raw(coord_count, total_slots, jit_steps, output_map, resolved.nodes)
+    }
+
+    /// Phase 3 JIT: push-only (per-node dirty tracking, no cone guard).
+    #[cfg(feature = "jit")]
+    pub fn try_compile_jit_push(self) -> Result<crate::jit::JitKernelPush, String> {
+        let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+        let (coord_count, total_slots, jit_steps, output_map) = Self::build_jit_layout(&resolved)?;
+        let deps = GkProgram::compute_dependents(
+            &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
+        crate::jit::compile_jit_push(coord_count, total_slots, jit_steps, output_map, resolved.nodes, deps)
+    }
+
+    /// Phase 3 JIT: pull-only (cone guard, no per-node dirty tracking).
+    #[cfg(feature = "jit")]
+    pub fn try_compile_jit_pull(self) -> Result<crate::jit::JitKernelPull, String> {
+        let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+        let (coord_count, total_slots, jit_steps, output_map) = Self::build_jit_layout(&resolved)?;
+        let deps = GkProgram::compute_dependents(
+            &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
+        crate::jit::compile_jit_pull(coord_count, total_slots, jit_steps, output_map, resolved.nodes, &deps)
+    }
+
+    /// Analyze the graph and auto-select the optimal P2 provenance mode.
+    ///
+    /// Returns a `P2Engine` enum wrapping the monomorphic kernel variant.
+    /// The selection is based on graph structure (cone sizes, input count).
+    pub fn auto_compile_p2(self) -> Result<(P2Engine, GraphAnalysis), String> {
+        let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+        let analysis = engine::analyze_graph(&resolved.nodes, &resolved.wiring, &resolved.output_map);
+        let mode = engine::select_prov_mode(&analysis);
+
+        let (coord_count, total_slots, steps, output_map) =
+            match Self::build_p2_layout(&resolved) {
+                Some(r) => r,
+                None => return Err("not all nodes support P2 compilation".into()),
+            };
+
+        let engine = match mode {
+            ProvMode::Raw => {
+                P2Engine::Raw(CompiledKernelRaw::new(coord_count, total_slots, steps, output_map))
+            }
+            ProvMode::Pull => {
+                let deps = GkProgram::compute_dependents(
+                    &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
+                P2Engine::Pull(CompiledKernelPull::new(coord_count, total_slots, steps, output_map, &deps))
+            }
+            ProvMode::PushPull => {
+                let deps = GkProgram::compute_dependents(
+                    &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
+                P2Engine::PushPull(CompiledKernelPushPull::new(coord_count, total_slots, steps, output_map, deps))
+            }
+        };
+        Ok((engine, analysis))
+    }
+
+    /// Analyze the graph and auto-select the optimal P3 JIT provenance mode.
+    #[cfg(feature = "jit")]
+    pub fn auto_compile_p3(self) -> Result<(engine::P3Engine, GraphAnalysis), String> {
+        let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+        let analysis = engine::analyze_graph(&resolved.nodes, &resolved.wiring, &resolved.output_map);
+        let mode = engine::select_prov_mode(&analysis);
+
+        let (coord_count, total_slots, jit_steps, output_map) =
+            Self::build_jit_layout(&resolved)?;
+
+        let engine = match mode {
+            ProvMode::Raw => {
+                let k = crate::jit::compile_jit_raw(coord_count, total_slots, jit_steps, output_map, resolved.nodes)?;
+                engine::P3Engine::Raw(k)
+            }
+            ProvMode::Pull => {
+                let deps = GkProgram::compute_dependents(
+                    &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
+                let k = crate::jit::compile_jit_pull(coord_count, total_slots, jit_steps, output_map, resolved.nodes, &deps)?;
+                engine::P3Engine::Pull(k)
+            }
+            ProvMode::PushPull => {
+                let deps = GkProgram::compute_dependents(
+                    &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
+                let k = crate::jit::compile_jit_push_pull(coord_count, total_slots, jit_steps, output_map, resolved.nodes, deps)?;
+                engine::P3Engine::PushPull(k)
+            }
+        };
+        Ok((engine, analysis))
     }
 
     /// Validate, resolve, and compile a hybrid kernel where each node
