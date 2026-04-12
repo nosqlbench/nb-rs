@@ -20,6 +20,29 @@ use nb_workload::tags::TagFilter;
 use crate::daemon;
 use crate::web_push;
 
+/// Completion candidates for `run`, derived from run_command's param parsing.
+/// Returns (value_options, flags).
+pub fn run_completion() -> (&'static [&'static str], &'static [&'static str]) {
+    (
+        &[
+            "adapter=", "driver=", "workload=", "op=", "cycles=", "threads=",
+            "rate=", "stanzarate=", "errors=", "seq=", "tags=", "format=",
+            "filename=", "stanza_concurrency=", "sc=", "scenario=",
+            // CQL adapter params
+            "hosts=", "host=", "port=", "keyspace=", "consistency=",
+            "username=", "password=", "request_timeout_ms=",
+            // HTTP adapter params
+            "base_url=", "timeout=",
+            // Flags with values
+            "--gk-lib=", "--report-openmetrics-to=",
+        ],
+        &[
+            "--strict", "--dry-run", "--tui", "--diagnose",
+            "--dry-run=emit", "--dry-run=json",
+        ],
+    )
+}
+
 /// Parse `key=value` pairs from command line args.
 pub fn parse_params(args: &[String]) -> HashMap<String, String> {
     let mut params = HashMap::new();

@@ -27,6 +27,22 @@ enum EvalMode {
     PushPull,
 }
 
+/// Completion candidates for `bench gk`, derived from parse_bench_args.
+/// Returns (value_options, flags).
+pub fn bench_gk_completion() -> (&'static [&'static str], &'static [&'static str]) {
+    (
+        // Options that take values (bare key= and --key= forms)
+        &[
+            "cycles=", "threads=", "iters=", "engine=",
+        ],
+        // Boolean flags (no value)
+        &[
+            "--explain", "--compare", "--compare-modes",
+            "--no-provenance", "--provenance", "--profile",
+        ],
+    )
+}
+
 /// Resolve weighted output slots from a scenario using a name→slot resolver.
 fn resolve_weighted_slots(
     scenario: &BenchScenario,

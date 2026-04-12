@@ -362,7 +362,7 @@ impl Compiler {
                     // referenced from another file/kernel.
                 }
                 Statement::ExternPort(port) => {
-                    // Declare the port on the assembler
+                    // Declare the input on the assembler
                     let default_value = match port.typ.as_str() {
                         "u64" => crate::node::Value::U64(0),
                         "f64" => crate::node::Value::F64(0.0),
@@ -374,9 +374,9 @@ impl Compiler {
                         "f64" => crate::node::PortType::F64,
                         _ => crate::node::PortType::Str,
                     };
-                    asm.add_port(&port.name, default_value);
+                    asm.add_input(&port.name, default_value);
 
-                    // Create a passthrough node wired to the port
+                    // Create a passthrough node wired to the input
                     let passthrough = Box::new(
                         crate::nodes::identity::PortPassthrough::new(&port.name, port_type)
                     );
@@ -384,7 +384,7 @@ impl Compiler {
                     asm.add_node(
                         &passthrough_name,
                         passthrough,
-                        vec![WireRef::port(&port.name)],
+                        vec![WireRef::input(&port.name)],
                     );
                     // Register as output so {name} resolves from GK
                     asm.add_output(&port.name, WireRef::node(&passthrough_name));

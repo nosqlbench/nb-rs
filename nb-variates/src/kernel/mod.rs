@@ -65,24 +65,24 @@ use crate::node::Value;
 /// Source of a value for a node input port.
 #[derive(Debug, Clone)]
 pub enum WireSource {
-    /// An input coordinate, by index into the coordinate tuple.
+    /// A named input, by index into the unified input array.
+    /// Includes both coordinate inputs and capture inputs.
     Input(usize),
     /// Output of another node: `(node_index, output_port_index)`.
     NodeOutput(usize, usize),
-    /// An external input port (capture slot), by index.
-    Port(usize),
 }
 
-/// Metadata for an external input port (capture slot).
+/// Definition of a named input to the GK graph.
 ///
-/// Ports persist across `set_inputs()` calls within a stanza.
-/// They are written by capture extraction and read by GK nodes
-/// via `WireSource::Port(idx)`.
+/// All inputs — coordinates and captures — are defined uniformly.
+/// Coordinates default to `Value::U64(0)`, captures to a
+/// user-specified default (typically empty string).
 #[derive(Debug, Clone)]
-pub struct PortDef {
-    /// Port name (used for capture wiring and bind point resolution).
+pub struct InputDef {
+    /// Input name (e.g., "cycle", "username").
     pub name: String,
-    /// Default value (initial value before any capture writes).
+    /// Default value. Coordinates default to U64(0), captures
+    /// to their declared default.
     pub default: Value,
 }
 
@@ -93,66 +93,76 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn ports_persist_across_set_inputs() {
-        let program = Arc::new(GkProgram::with_ports(
-            vec![], vec![], vec!["cycle".into()],
-            HashMap::new(),
+    fn capture_inputs_persist_across_set_inputs() {
+        // Program with 1 coordinate (cycle) + 2 capture inputs
+        let program = Arc::new(GkProgram::with_inputs(
+            vec![], vec![],
             vec![
-                PortDef { name: "balance".into(), default: Value::F64(0.0) },
-                PortDef { name: "auth_token".into(), default: Value::Str("anonymous".into()) },
+                InputDef { name: "cycle".into(), default: Value::U64(0) },
+                InputDef { name: "balance".into(), default: Value::F64(0.0) },
+                InputDef { name: "auth_token".into(), default: Value::Str("anonymous".into()) },
             ],
+            1, // coord_count
+            HashMap::new(),
         ));
         let mut state = program.create_state();
 
-        // Default values
-        assert_eq!(state.get_port(0), &Value::F64(0.0));
-        assert_eq!(state.get_port(1), &Value::Str("anonymous".into()));
+        // Default values for capture inputs
+        assert_eq!(state.get_input(1), &Value::F64(0.0));
+        assert_eq!(state.get_input(2), &Value::Str("anonymous".into()));
 
-        // Set values
-        state.set_port(0, Value::F64(1234.56));
-        state.set_port(1, Value::Str("token_abc".into()));
-        assert_eq!(state.get_port(0), &Value::F64(1234.56));
-        assert_eq!(state.get_port(1), &Value::Str("token_abc".into()));
+        // Set capture inputs individually
+        state.set_input(1, Value::F64(1234.56));
+        state.set_input(2, Value::Str("token_abc".into()));
+        assert_eq!(state.get_input(1), &Value::F64(1234.56));
+        assert_eq!(state.get_input(2), &Value::Str("token_abc".into()));
 
-        // Ports persist across set_inputs (capture values survive cycle changes)
+        // Capture inputs persist when coordinates change
         state.set_inputs(&[42]);
-        assert_eq!(state.get_port(0), &Value::F64(1234.56));
-        assert_eq!(state.get_port(1), &Value::Str("token_abc".into()));
+        assert_eq!(state.get_input(1), &Value::F64(1234.56));
+        assert_eq!(state.get_input(2), &Value::Str("token_abc".into()));
     }
 
     #[test]
-    fn reset_ports_restores_defaults() {
-        let program = Arc::new(GkProgram::with_ports(
-            vec![], vec![], vec!["cycle".into()],
+    fn reset_inputs_restores_capture_defaults() {
+        let program = Arc::new(GkProgram::with_inputs(
+            vec![], vec![],
+            vec![
+                InputDef { name: "cycle".into(), default: Value::U64(0) },
+                InputDef { name: "token".into(), default: Value::Str("anon".into()) },
+            ],
+            1,
             HashMap::new(),
-            vec![PortDef { name: "token".into(), default: Value::Str("anon".into()) }],
         ));
         let mut state = program.create_state();
 
-        state.set_port(0, Value::Str("alice".into()));
-        assert_eq!(state.get_port(0), &Value::Str("alice".into()));
+        state.set_input(1, Value::Str("alice".into()));
+        assert_eq!(state.get_input(1), &Value::Str("alice".into()));
 
-        state.reset_ports();
-        assert_eq!(state.get_port(0), &Value::Str("anon".into()));
+        // Reset only capture inputs (from coord_count onward)
+        state.reset_inputs_from(1);
+        assert_eq!(state.get_input(1), &Value::Str("anon".into()));
     }
 
     #[test]
     fn invalidate_all_resets_everything() {
-        let program = Arc::new(GkProgram::with_ports(
-            vec![], vec![], vec!["cycle".into()],
+        let program = Arc::new(GkProgram::with_inputs(
+            vec![], vec![],
+            vec![
+                InputDef { name: "cycle".into(), default: Value::U64(0) },
+                InputDef { name: "token".into(), default: Value::Str("anon".into()) },
+            ],
+            1,
             HashMap::new(),
-            vec![PortDef { name: "token".into(), default: Value::Str("anon".into()) }],
         ));
         let mut state = program.create_state();
 
         state.set_inputs(&[42]);
-        state.set_port(0, Value::Str("alice".into()));
+        state.set_input(1, Value::Str("alice".into()));
 
         state.invalidate_all();
-        // Ports reset to defaults
-        assert_eq!(state.get_port(0), &Value::Str("anon".into()));
-        // All nodes dirty (verified by the fact that subsequent
-        // pull would re-evaluate from scratch — no cached values)
+        assert_eq!(state.get_input(0), &Value::U64(0));
+        assert_eq!(state.get_input(1), &Value::Str("anon".into()));
     }
 
     #[test]

@@ -24,8 +24,6 @@ pub enum WireRef {
     Input(String),
     /// A node output: `(node_name, output_port_index)`.
     Node(String, usize),
-    /// An external port (capture slot), by name.
-    Port(String),
 }
 
 impl WireRef {
@@ -42,11 +40,6 @@ impl WireRef {
     /// Reference a graph input by name.
     pub fn input(name: impl Into<String>) -> Self {
         WireRef::Input(name.into())
-    }
-
-    /// Reference an external port by name.
-    pub fn port(name: impl Into<String>) -> Self {
-        WireRef::Port(name.into())
     }
 }
 
@@ -143,30 +136,44 @@ struct ResolvedDag {
     nodes: Vec<Box<dyn GkNode>>,
     /// Per-node wiring (in topological order).
     wiring: Vec<Vec<WireSource>>,
-    /// Coordinate names.
-    input_names: Vec<String>,
+    /// All input definitions (coordinates + captures).
+    input_defs: Vec<crate::kernel::InputDef>,
+    /// Number of coordinate inputs.
+    coord_count: usize,
     /// Output name → (node_index_in_sorted, output_port_index).
     output_map: HashMap<String, (usize, usize)>,
-    /// External port definitions (capture slots).
-    ports: Vec<crate::kernel::PortDef>,
+}
+
+impl ResolvedDag {
+    /// Coordinate input names (for P2/P3 kernels that use positional u64 buffers).
+    fn input_names(&self) -> Vec<String> {
+        self.input_defs[..self.coord_count].iter()
+            .map(|d| d.name.clone()).collect()
+    }
 }
 
 /// Builder for assembling a GK kernel programmatically.
 pub struct GkAssembler {
-    input_names: Vec<String>,
+    /// All input definitions. Coordinates come first (indices 0..coord_count).
+    input_defs: Vec<crate::kernel::InputDef>,
+    /// How many of the inputs are coordinates.
+    coord_count: usize,
     nodes: Vec<PendingNode>,
     outputs: HashMap<String, WireRef>,
-    ports: Vec<crate::kernel::PortDef>,
 }
 
 impl GkAssembler {
     /// Create a new assembler with the given coordinate names.
     pub fn new(input_names: Vec<String>) -> Self {
+        let coord_count = input_names.len();
+        let input_defs: Vec<crate::kernel::InputDef> = input_names.into_iter()
+            .map(|name| crate::kernel::InputDef { name, default: crate::node::Value::U64(0) })
+            .collect();
         Self {
-            input_names,
+            input_defs,
+            coord_count,
             nodes: Vec::new(),
             outputs: HashMap::new(),
-            ports: Vec::new(),
         }
     }
 
@@ -191,17 +198,21 @@ impl GkAssembler {
         self
     }
 
-    /// Declare an external port (capture slot).
+    /// Declare an additional named input (e.g., a capture slot).
     ///
-    /// The port persists across `set_inputs()` calls and is written
-    /// by capture extraction at runtime. Nodes can wire to it via
-    /// `WireRef::port(name)`.
-    pub fn add_port(&mut self, name: impl Into<String>, default: crate::node::Value) -> &mut Self {
-        self.ports.push(crate::kernel::PortDef {
+    /// Added after coordinate inputs. Nodes wire to it via
+    /// `WireRef::input(name)` — same as coordinate inputs.
+    pub fn add_input(&mut self, name: impl Into<String>, default: crate::node::Value) -> &mut Self {
+        self.input_defs.push(crate::kernel::InputDef {
             name: name.into(),
             default,
         });
         self
+    }
+
+    /// Return the names of all inputs (coordinates + captures).
+    pub fn input_names(&self) -> Vec<&str> {
+        self.input_defs.iter().map(|d| d.name.as_str()).collect()
     }
 
     /// Return the names of declared outputs.
@@ -227,12 +238,13 @@ impl GkAssembler {
     /// Compile with diagnostic event logging.
     pub fn compile_with_log(self, mut log: Option<&mut crate::dsl::events::CompileEventLog>) -> Result<GkKernel, AssemblyError> {
         let resolved = self.resolve_with_log(log.as_deref_mut())?;
-        Ok(GkKernel::new_with_ports(
+        let _coord_names = resolved.input_names();
+        Ok(GkKernel::new_with_inputs(
             resolved.nodes,
             resolved.wiring,
-            resolved.input_names,
+            resolved.input_defs,
+            resolved.coord_count,
             resolved.output_map,
-            resolved.ports,
             log,
         ))
     }
@@ -244,6 +256,7 @@ impl GkAssembler {
             return self.compile();
         }
         let resolved = self.resolve()?;
+        let _coord_names = resolved.input_names();
 
         // Strict: reject implicit type coercions (auto-inserted adapter nodes)
         // Adapters have names starting with "__" and containing type conversion hints
@@ -261,12 +274,12 @@ impl GkAssembler {
             )));
         }
 
-        GkKernel::new_strict_with_ports(
+        GkKernel::new_strict_with_inputs(
             resolved.nodes,
             resolved.wiring,
-            resolved.input_names,
+            resolved.input_defs,
+            resolved.coord_count,
             resolved.output_map,
-            resolved.ports,
             None,
         ).map_err(AssemblyError::Other)
     }
@@ -277,10 +290,10 @@ impl GkAssembler {
     /// `compiled_u64()`. Falls back to `Err(GkKernel)` (a working Phase 1
     /// kernel) if any node cannot be compiled.
     pub fn try_compile(self) -> Result<CompiledKernelPushPull, GkKernel> {
-        // We need to resolve first, but resolve consumes self.
-        // To avoid duplicating work, we resolve once and then try
-        // to extract compiled ops from the resolved nodes.
         let resolved = self.resolve().expect("assembly validation failed");
+        let _coord_names = resolved.input_names();
+        let coord_names = resolved.input_names();
+        let coord_count = coord_names.len();
 
         // Try to extract compiled_u64 from every node
         let mut compiled_ops = Vec::with_capacity(resolved.nodes.len());
@@ -299,13 +312,10 @@ impl GkAssembler {
             return Err(GkKernel::new(
                 resolved.nodes,
                 resolved.wiring,
-                resolved.input_names,
+                coord_names,
                 resolved.output_map,
             ));
         }
-
-        // All nodes are compilable — build the flat buffer layout.
-        let coord_count = resolved.input_names.len();
 
         // Assign buffer slots: coordinates first, then each node's
         // output ports in topological order.
@@ -328,7 +338,6 @@ impl GkAssembler {
                 .map(|source| match source {
                     WireSource::Input(c) => *c,
                     WireSource::NodeOutput(upstream, port) => slot_base[*upstream] + port,
-                    WireSource::Port(idx) => *idx, // TODO: proper port slot mapping
                 })
                 .collect();
 
@@ -364,7 +373,8 @@ impl GkAssembler {
             Ok(r) => r,
             Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new())),
         };
-        let coord_count = resolved.input_names.len();
+        let coord_names = resolved.input_names();
+        let coord_count = coord_names.len();
         let mut slot_base: Vec<usize> = Vec::with_capacity(resolved.nodes.len());
         let mut next_slot = coord_count;
         for node in &resolved.nodes {
@@ -384,7 +394,7 @@ impl GkAssembler {
         }
         if !all_compilable {
             return Err(GkKernel::new(
-                resolved.nodes, resolved.wiring, resolved.input_names, resolved.output_map,
+                resolved.nodes, resolved.wiring, coord_names.clone(), resolved.output_map,
             ));
         }
         let mut steps = Vec::with_capacity(resolved.nodes.len());
@@ -394,7 +404,6 @@ impl GkAssembler {
                 .map(|source| match source {
                     WireSource::Input(c) => *c,
                     WireSource::NodeOutput(upstream, port) => slot_base[*upstream] + port,
-                    _ => 0,
                 }).collect();
             let output_count = resolved.nodes[node_idx].meta().outs.len();
             let output_slots: Vec<usize> = (0..output_count).map(|p| slot_base[node_idx] + p).collect();
@@ -412,11 +421,12 @@ impl GkAssembler {
             Ok(r) => r,
             Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new())),
         };
+        let coord_names = resolved.input_names();
         let (coord_count, total_slots, steps, output_map) =
             match Self::build_p2_layout(&resolved) {
                 Some(r) => r,
                 None => return Err(GkKernel::new(
-                    resolved.nodes, resolved.wiring, resolved.input_names, resolved.output_map)),
+                    resolved.nodes, resolved.wiring, coord_names, resolved.output_map)),
             };
         let dependents = GkProgram::compute_dependents(
             &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring),
@@ -431,11 +441,12 @@ impl GkAssembler {
             Ok(r) => r,
             Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new())),
         };
+        let coord_names = resolved.input_names();
         let (coord_count, total_slots, steps, output_map) =
             match Self::build_p2_layout(&resolved) {
                 Some(r) => r,
                 None => return Err(GkKernel::new(
-                    resolved.nodes, resolved.wiring, resolved.input_names, resolved.output_map)),
+                    resolved.nodes, resolved.wiring, coord_names, resolved.output_map)),
             };
         let dependents = GkProgram::compute_dependents(
             &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring),
@@ -449,7 +460,7 @@ impl GkAssembler {
     fn build_p2_layout(
         resolved: &ResolvedDag,
     ) -> Option<(usize, usize, Vec<(crate::node::CompiledU64Op, Vec<usize>, Vec<usize>)>, HashMap<String, usize>)> {
-        let coord_count = resolved.input_names.len();
+        let coord_count = resolved.coord_count;
         let mut slot_base: Vec<usize> = Vec::with_capacity(resolved.nodes.len());
         let mut next_slot = coord_count;
         for node in &resolved.nodes {
@@ -469,7 +480,6 @@ impl GkAssembler {
                 .map(|source| match source {
                     WireSource::Input(c) => *c,
                     WireSource::NodeOutput(upstream, port) => slot_base[*upstream] + port,
-                    _ => 0,
                 }).collect();
             let output_count = resolved.nodes[node_idx].meta().outs.len();
             let output_slots: Vec<usize> = (0..output_count).map(|p| slot_base[node_idx] + p).collect();
@@ -487,7 +497,7 @@ impl GkAssembler {
     fn build_jit_layout(resolved: &ResolvedDag)
         -> Result<(usize, usize, Vec<(crate::jit::JitOp, Vec<usize>, Vec<usize>)>, HashMap<String, usize>), String>
     {
-        let coord_count = resolved.input_names.len();
+        let coord_count = resolved.coord_count;
         let mut slot_base: Vec<usize> = Vec::with_capacity(resolved.nodes.len());
         let mut next_slot = coord_count;
         for node in &resolved.nodes { slot_base.push(next_slot); next_slot += node.meta().outs.len(); }
@@ -500,7 +510,6 @@ impl GkAssembler {
                 .map(|s| match s {
                     WireSource::Input(c) => *c,
                     WireSource::NodeOutput(u, p) => slot_base[*u] + p,
-                    _ => 0,
                 }).collect();
             let output_slots: Vec<usize> = (0..node.meta().outs.len())
                 .map(|p| slot_base[node_idx] + p).collect();
@@ -520,6 +529,7 @@ impl GkAssembler {
     #[cfg(feature = "jit")]
     pub fn try_compile_jit(self) -> Result<crate::jit::JitKernelPushPull, String> {
         let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+        let _coord_names = resolved.input_names();
         let (coord_count, total_slots, jit_steps, output_map) = Self::build_jit_layout(&resolved)?;
         let deps = GkProgram::compute_dependents(
             &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
@@ -530,6 +540,7 @@ impl GkAssembler {
     #[cfg(feature = "jit")]
     pub fn try_compile_jit_raw(self) -> Result<crate::jit::JitKernelRaw, String> {
         let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+        let _coord_names = resolved.input_names();
         let (coord_count, total_slots, jit_steps, output_map) = Self::build_jit_layout(&resolved)?;
         crate::jit::compile_jit_raw(coord_count, total_slots, jit_steps, output_map, resolved.nodes)
     }
@@ -538,6 +549,7 @@ impl GkAssembler {
     #[cfg(feature = "jit")]
     pub fn try_compile_jit_push(self) -> Result<crate::jit::JitKernelPush, String> {
         let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+        let _coord_names = resolved.input_names();
         let (coord_count, total_slots, jit_steps, output_map) = Self::build_jit_layout(&resolved)?;
         let deps = GkProgram::compute_dependents(
             &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
@@ -548,6 +560,7 @@ impl GkAssembler {
     #[cfg(feature = "jit")]
     pub fn try_compile_jit_pull(self) -> Result<crate::jit::JitKernelPull, String> {
         let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+        let _coord_names = resolved.input_names();
         let (coord_count, total_slots, jit_steps, output_map) = Self::build_jit_layout(&resolved)?;
         let deps = GkProgram::compute_dependents(
             &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring), coord_count);
@@ -560,6 +573,7 @@ impl GkAssembler {
     /// The selection is based on graph structure (cone sizes, input count).
     pub fn auto_compile_p2(self) -> Result<(P2Engine, GraphAnalysis), String> {
         let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+        let _coord_names = resolved.input_names();
         let analysis = engine::analyze_graph(&resolved.nodes, &resolved.wiring, &resolved.output_map);
         let mode = engine::select_prov_mode(&analysis);
 
@@ -591,6 +605,7 @@ impl GkAssembler {
     #[cfg(feature = "jit")]
     pub fn auto_compile_p3(self) -> Result<(engine::P3Engine, GraphAnalysis), String> {
         let resolved = self.resolve().map_err(|e| format!("{e}"))?;
+        let _coord_names = resolved.input_names();
         let analysis = engine::analyze_graph(&resolved.nodes, &resolved.wiring, &resolved.output_map);
         let mode = engine::select_prov_mode(&analysis);
 
@@ -625,7 +640,8 @@ impl GkAssembler {
     /// fallback. JIT-able nodes get native code, others get closures.
     pub fn compile_hybrid(self) -> Result<crate::hybrid::HybridKernel, String> {
         let resolved = self.resolve().map_err(|e| format!("{e}"))?;
-        let coord_count = resolved.input_names.len();
+        let _coord_names = resolved.input_names();
+        let coord_count = resolved.coord_count;
 
         let mut slot_bases: Vec<usize> = Vec::with_capacity(resolved.nodes.len());
         let mut next_slot = coord_count;
@@ -670,15 +686,13 @@ impl GkAssembler {
             name_to_idx.insert(pn.name.clone(), i);
         }
 
-        // Build coord name → index map
+        // Build input name → index map (covers both coords and captures)
         let input_to_idx: HashMap<String, usize> = self
-            .input_names
+            .input_defs
             .iter()
             .enumerate()
-            .map(|(i, n)| (n.clone(), i))
+            .map(|(i, d)| (d.name.clone(), i))
             .collect();
-
-        let ports = &self.ports;
 
         // Validate arity
         for pn in &self.nodes {
@@ -713,22 +727,16 @@ impl GkAssembler {
 
                 let (source, source_type) = match wire_ref {
                     WireRef::Input(name) => {
-                        let coord_idx = input_to_idx
+                        let input_idx = input_to_idx
                             .get(name)
                             .ok_or_else(|| AssemblyError::UnknownWire(name.clone()))?;
-                        (WireSource::Input(*coord_idx), PortType::U64)
-                    }
-                    WireRef::Port(name) => {
-                        let port_idx = ports.iter().position(|p| p.name == *name)
-                            .ok_or_else(|| AssemblyError::UnknownWire(format!("port:{name}")))?;
-                        let source_type = match &ports[port_idx].default {
+                        let source_type = match &self.input_defs[*input_idx].default {
                             crate::node::Value::U64(_) => PortType::U64,
                             crate::node::Value::F64(_) => PortType::F64,
                             crate::node::Value::Str(_) => PortType::Str,
-                            crate::node::Value::Bool(_) => PortType::U64,
-                            _ => PortType::Str, // default for captures
+                            _ => PortType::U64,
                         };
-                        (WireSource::Port(port_idx), source_type)
+                        (WireSource::Input(*input_idx), source_type)
                     }
                     WireRef::Node(name, out_port) => {
                         let src_idx = all_name_to_idx
@@ -751,7 +759,7 @@ impl GkAssembler {
 
                     if let Some(ref mut log) = log {
                         let from_name = match wire_ref {
-                            WireRef::Input(n) | WireRef::Port(n) => n.clone(),
+                            WireRef::Input(n) => n.clone(),
                             WireRef::Node(n, _) => n.clone(),
                         };
                         log.push(crate::dsl::events::CompileEvent::TypeAdapterInserted {
@@ -778,13 +786,13 @@ impl GkAssembler {
                     node_wiring.push(WireSource::NodeOutput(adapter_idx, 0));
                 } else {
                     let from_name = match wire_ref {
-                        WireRef::Input(n) | WireRef::Port(n) => n.clone(),
+                        WireRef::Input(n) => n.clone(),
                         WireRef::Node(n, _) => n.clone(),
                     };
                     return Err(AssemblyError::TypeMismatch {
                         from_node: from_name,
                         from_port: match wire_ref {
-                            WireRef::Input(_) | WireRef::Port(_) => 0,
+                            WireRef::Input(_) => 0,
                             WireRef::Node(_, p) => *p,
                         },
                         from_type: source_type,
@@ -950,7 +958,6 @@ impl GkAssembler {
                         WireSource::NodeOutput(old_up, port) => {
                             WireSource::NodeOutput(old_to_new[*old_up], *port)
                         }
-                        WireSource::Port(idx) => WireSource::Port(*idx),
                     })
                     .collect()
             })
@@ -965,12 +972,6 @@ impl GkAssembler {
                          wire through a node instead"
                     )));
                 }
-                WireRef::Port(port_name) => {
-                    return Err(AssemblyError::UnknownWire(format!(
-                        "output '{name}' references port '{port_name}' directly; \
-                         wire through a passthrough node instead"
-                    )));
-                }
                 WireRef::Node(node_name, port) => {
                     let old_idx = all_name_to_idx
                         .get(node_name)
@@ -983,9 +984,9 @@ impl GkAssembler {
         Ok(ResolvedDag {
             nodes: final_nodes,
             wiring: final_wiring,
-            input_names: self.input_names,
+            input_defs: self.input_defs,
+            coord_count: self.coord_count,
             output_map: final_output_map,
-            ports: self.ports,
         })
     }
 }

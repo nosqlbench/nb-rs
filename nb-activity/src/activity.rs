@@ -477,7 +477,7 @@ async fn executor_task(
             srl.acquire().await;
         }
         activity.metrics.stanzas_total.inc();
-        fiber.reset_ports();
+        fiber.reset_captures();
 
         // Process stanza ops in dependency groups.
         // Track which captures have been produced so far. If a group

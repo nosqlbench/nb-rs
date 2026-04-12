@@ -420,7 +420,6 @@ pub fn build_hybrid(
                 .map(|source| match source {
                     WireSource::Input(c) => *c,
                     WireSource::NodeOutput(upstream, port) => slot_bases[*upstream] + port,
-                    WireSource::Port(_) => todo!("port slots in hybrid kernel"),
                 })
                 .collect();
 

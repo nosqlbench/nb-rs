@@ -77,7 +77,7 @@ fn resolve_bind_point(
         }
         BindQualifier::Input => {
             match kernel.get_input(name) {
-                Some(v) => v.to_string(),
+                Some(v) => v.to_display_string(),
                 None => {
                     match kernel.program().resolve_output(name) {
                         Some(_) => value_to_string(kernel.pull(name)),
@@ -151,7 +151,7 @@ fn resolve_bind_point_with_state(
         BindQualifier::Input => {
             program.input_names().iter()
                 .position(|n| n == name)
-                .map(|idx| state.get_input(idx).to_string())
+                .map(|idx| state.get_input(idx).to_display_string())
                 .or_else(|| {
                     if program.resolve_output(name).is_some() {
                         Some(state.pull(program, name).to_display_string())
@@ -166,7 +166,7 @@ fn resolve_bind_point_with_state(
             }
             if program.input_names().contains(&name.to_string()) {
                 if let Some(idx) = program.input_names().iter().position(|n| n == name) {
-                    return state.get_input(idx).to_string();
+                    return state.get_input(idx).to_display_string();
                 }
             }
             format!("{{{name}}}")
@@ -283,15 +283,15 @@ impl FiberBuilder {
         self.state.set_inputs(coords);
     }
 
-    /// Reset all ports to defaults. Called at stanza boundaries
-    /// to prevent capture leakage across stanzas.
-    pub fn reset_ports(&mut self) {
-        self.state.reset_ports();
+    /// Reset capture inputs to defaults. Called at stanza boundaries
+    /// to prevent capture leakage across stanzas. Coordinates are
+    /// not reset.
+    pub fn reset_captures(&mut self) {
+        self.state.reset_inputs_from(self.program.coord_count());
     }
 
-    /// Invalidate all state: reset ports and mark all nodes dirty.
-    /// Provides "clean slate" semantics — the next evaluation
-    /// behaves as if the state were freshly created.
+    /// Invalidate all state: reset all inputs and mark all nodes dirty.
+    /// Provides "clean slate" semantics.
     pub fn invalidate_all(&mut self) {
         self.state.invalidate_all();
     }
@@ -301,8 +301,8 @@ impl FiberBuilder {
     /// Writes to the named port in GkState. If no port with this
     /// name is declared in the program, the value is silently dropped.
     pub fn capture(&mut self, name: &str, value: Value) {
-        if let Some(idx) = self.program.find_port(name) {
-            self.state.set_port(idx, value);
+        if let Some(idx) = self.program.find_input(name) {
+            self.state.set_input(idx, value);
         }
     }
 

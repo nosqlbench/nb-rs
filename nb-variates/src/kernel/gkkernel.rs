@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::node::{GkNode, Value};
-use super::{WireSource};
+use super::{WireSource, InputDef};
 use super::program::GkProgram;
 use super::engines::GkState;
 
@@ -28,70 +28,66 @@ impl std::fmt::Debug for GkKernel {
 }
 
 impl GkKernel {
-    /// Create from pre-validated components (called by the assembler).
+    /// Create from pre-validated components (all inputs are coordinates).
     pub(crate) fn new(
         nodes: Vec<Box<dyn GkNode>>,
         wiring: Vec<Vec<WireSource>>,
         input_names: Vec<String>,
         output_map: HashMap<String, (usize, usize)>,
     ) -> Self {
-        Self::new_with_ports(nodes, wiring, input_names, output_map, Vec::new(), None)
+        let coord_count = input_names.len();
+        let input_defs: Vec<InputDef> = input_names.into_iter()
+            .map(|name| InputDef { name, default: Value::U64(0) })
+            .collect();
+        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, None, false).unwrap()
     }
 
-    /// Create from pre-validated components with external ports.
-    pub(crate) fn new_with_ports(
+    /// Create with explicit input definitions.
+    pub(crate) fn new_with_inputs(
         nodes: Vec<Box<dyn GkNode>>,
         wiring: Vec<Vec<WireSource>>,
-        input_names: Vec<String>,
+        input_defs: Vec<InputDef>,
+        coord_count: usize,
         output_map: HashMap<String, (usize, usize)>,
-        ports: Vec<super::PortDef>,
         log: Option<&mut crate::dsl::events::CompileEventLog>,
     ) -> Self {
-        let mut program = if ports.is_empty() {
-            GkProgram::new(nodes, wiring, input_names, output_map)
+        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, log, false).unwrap()
+    }
+
+    /// Construct with strict mode.
+    pub(crate) fn new_strict_with_inputs(
+        nodes: Vec<Box<dyn GkNode>>,
+        wiring: Vec<Vec<WireSource>>,
+        input_defs: Vec<InputDef>,
+        coord_count: usize,
+        output_map: HashMap<String, (usize, usize)>,
+        log: Option<&mut crate::dsl::events::CompileEventLog>,
+    ) -> Result<Self, String> {
+        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, log, true)
+    }
+
+    fn new_impl(
+        nodes: Vec<Box<dyn GkNode>>,
+        wiring: Vec<Vec<WireSource>>,
+        input_defs: Vec<InputDef>,
+        coord_count: usize,
+        output_map: HashMap<String, (usize, usize)>,
+        log: Option<&mut crate::dsl::events::CompileEventLog>,
+        strict: bool,
+    ) -> Result<Self, String> {
+        let mut program = GkProgram::with_inputs(
+            nodes, wiring, input_defs, coord_count, output_map,
+        );
+        let constants_folded = if strict {
+            program.fold_init_constants_strict(log, true)?
         } else {
-            GkProgram::with_ports(nodes, wiring, input_names, output_map, ports)
+            program.fold_init_constants_with_log(log)
         };
-        let constants_folded = program.fold_init_constants_with_log(log);
         let program = Arc::new(program);
         let mut state = program.create_state();
         // Populate buffers for folded constants so get_constant() works.
-        // After constant folding, init-time nodes are replaced with
-        // Const* nodes that have empty wiring. Pull them to populate
-        // their output buffers. Skip nodes with any wiring (they
-        // depend on inputs that aren't set yet).
-        // Populate folded constants so get_constant() works.
-        let dummy = vec![0u64; program.input_names().len()];
+        let dummy = vec![0u64; program.coord_count()];
         state.set_inputs(&dummy);
-        for name in program.output_names() {
-            if let Some(&(node_idx, _)) = program.output_map.get(name) {
-                if program.wiring[node_idx].is_empty() {
-                    state.pull(&program, name);
-                }
-            }
-        }
-        Self { program, state, constants_folded }
-    }
-
-    /// Construct with strict mode: config wire violations are errors.
-    pub(crate) fn new_strict_with_ports(
-        nodes: Vec<Box<dyn GkNode>>,
-        wiring: Vec<Vec<WireSource>>,
-        input_names: Vec<String>,
-        output_map: HashMap<String, (usize, usize)>,
-        ports: Vec<super::PortDef>,
-        log: Option<&mut crate::dsl::events::CompileEventLog>,
-    ) -> Result<Self, String> {
-        let mut program = if ports.is_empty() {
-            GkProgram::new(nodes, wiring, input_names, output_map)
-        } else {
-            GkProgram::with_ports(nodes, wiring, input_names, output_map, ports)
-        };
-        let constants_folded = program.fold_init_constants_strict(log, true)?;
-        let program = Arc::new(program);
-        let mut state = program.create_state();
-        let dummy_inputs = vec![0u64; program.input_names().len()];
-        state.set_inputs(&dummy_inputs);
         for name in program.output_names() {
             if let Some(&(node_idx, _)) = program.output_map.get(name) {
                 if program.wiring[node_idx].is_empty() {
@@ -112,15 +108,14 @@ impl GkKernel {
         &mut self.state
     }
 
-    /// Convenience: set coordinates on the owned state.
+    /// Convenience: set coordinate inputs on the owned state.
     pub fn set_inputs(&mut self, coords: &[u64]) {
         self.state.set_inputs(coords);
     }
 
-    /// Read a coordinate value by name.
-    pub fn get_input(&self, name: &str) -> Option<u64> {
-        self.program.input_names().iter()
-            .position(|n| n == name)
+    /// Read an input value by name.
+    pub fn get_input(&self, name: &str) -> Option<&Value> {
+        self.program.find_input(name)
             .map(|idx| self.state.get_input(idx))
     }
 
@@ -129,8 +124,8 @@ impl GkKernel {
         self.state.pull(&self.program, output_name)
     }
 
-    /// Return the names of the input coordinates.
-    pub fn input_names(&self) -> &[String] {
+    /// Return the names of the inputs.
+    pub fn input_names(&self) -> Vec<String> {
         self.program.input_names()
     }
 
@@ -139,9 +134,7 @@ impl GkKernel {
         self.program.output_names()
     }
 
-    /// Read the value of a named output that was folded to a constant
-    /// at init time. Returns `None` if the output doesn't exist or
-    /// wasn't folded (i.e., it depends on coordinates).
+    /// Read the value of a named output that was folded to a constant.
     pub fn get_constant(&self, name: &str) -> Option<&Value> {
         let (node_idx, port_idx) = self.program.output_map.get(name)?;
         let val = &self.state.core.buffers[*node_idx][*port_idx];
