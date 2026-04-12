@@ -9,27 +9,27 @@
 
 use std::sync::Arc;
 
-use nb_variates::kernel::{GkKernel, GkProgram, GkState, CaptureContext};
+use nb_variates::kernel::{GkKernel, GkProgram, GkState};
 use nb_variates::node::Value;
 use nb_workload::model::ParsedOp;
 use nb_workload::bindpoints::{self, BindPoint, BindQualifier};
 
-/// Resolves bind points in a string template using the GK kernel
-/// and optionally a capture context.
+/// Resolves bind points in a string template using the GK kernel.
 ///
 /// Resolution order for unqualified `{name}`:
 /// 1. GK binding outputs
-/// 2. Capture context (if provided)
-/// 3. Coordinate inputs (as raw u64)
+/// 2. Coordinate inputs (as raw u64)
 ///
 /// Qualified bind points:
 /// - `{bind:name}` → GK output only
-/// - `{capture:name}` / `{port:name}` → capture context only
-/// - `{coord:name}` → coordinate value only
+/// - `{input:name}` → coordinate value only
+///
+/// Capture-qualified bind points (`{capture:name}`) resolve from
+/// GK volatile/sticky ports once capture extraction is implemented.
+/// Until then, they resolve as unresolved placeholders.
 pub fn substitute_bind_points(
     template: &str,
     kernel: &mut GkKernel,
-    captures: Option<&CaptureContext>,
 ) -> String {
     let bind_points = bindpoints::extract_bind_points(template);
     if bind_points.is_empty() {
@@ -40,8 +40,7 @@ pub fn substitute_bind_points(
     for bp in &bind_points {
         match bp {
             BindPoint::Reference { name, qualifier } => {
-                let value_str = resolve_bind_point(name, qualifier, kernel, captures);
-                // Replace the full placeholder including qualifier
+                let value_str = resolve_bind_point(name, qualifier, kernel);
                 let placeholder = match qualifier {
                     BindQualifier::None => format!("{{{name}}}"),
                     BindQualifier::Input => format!("{{input:{name}}}"),
@@ -63,29 +62,23 @@ fn resolve_bind_point(
     name: &str,
     qualifier: &BindQualifier,
     kernel: &mut GkKernel,
-    captures: Option<&CaptureContext>,
 ) -> String {
     match qualifier {
         BindQualifier::Bind => {
-            // GK output only
             match kernel.program().resolve_output(name) {
                 Some(_) => value_to_string(kernel.pull(name)),
-                None => format!("{{bind:{name}}}"), // unresolved
+                None => format!("{{bind:{name}}}"),
             }
         }
         BindQualifier::Capture => {
-            // Capture context only
-            captures
-                .and_then(|ctx| ctx.get(name))
-                .map(value_to_string)
-                .unwrap_or_else(|| format!("{{capture:{name}}}"))
+            // Captures will resolve from GK volatile/sticky ports
+            // once capture extraction is implemented.
+            format!("{{capture:{name}}}")
         }
         BindQualifier::Input => {
-            // Coordinate value directly
             match kernel.get_input(name) {
                 Some(v) => v.to_string(),
                 None => {
-                    // Might be a GK output that shadows a coord name
                     match kernel.program().resolve_output(name) {
                         Some(_) => value_to_string(kernel.pull(name)),
                         None => format!("{{coord:{name}}}"),
@@ -94,14 +87,9 @@ fn resolve_bind_point(
             }
         }
         BindQualifier::None => {
-            // Unqualified: try GK output first, then captures, then input
             if kernel.program().resolve_output(name).is_some() {
                 return value_to_string(kernel.pull(name));
             }
-            if let Some(ctx) = captures
-                && let Some(val) = ctx.get(name) {
-                    return value_to_string(val);
-                }
             format!("{{{name}}}")
         }
     }
@@ -118,7 +106,6 @@ fn substitute_bind_points_with_state(
     template: &str,
     program: &GkProgram,
     state: &mut GkState,
-    captures: Option<&CaptureContext>,
 ) -> String {
     let bind_points = bindpoints::extract_bind_points(template);
     if bind_points.is_empty() { return template.to_string(); }
@@ -127,7 +114,7 @@ fn substitute_bind_points_with_state(
     for bp in &bind_points {
         match bp {
             BindPoint::Reference { name, qualifier } => {
-                let value_str = resolve_bind_point_with_state(name, qualifier, program, state, captures);
+                let value_str = resolve_bind_point_with_state(name, qualifier, program, state);
                 let placeholder = match qualifier {
                     BindQualifier::None => format!("{{{name}}}"),
                     BindQualifier::Input => format!("{{input:{name}}}"),
@@ -147,7 +134,6 @@ fn resolve_bind_point_with_state(
     qualifier: &BindQualifier,
     program: &GkProgram,
     state: &mut GkState,
-    captures: Option<&CaptureContext>,
 ) -> String {
     match qualifier {
         BindQualifier::Bind => {
@@ -158,10 +144,9 @@ fn resolve_bind_point_with_state(
             }
         }
         BindQualifier::Capture => {
-            captures
-                .and_then(|ctx| ctx.get(name))
-                .map(|v| v.to_display_string())
-                .unwrap_or_else(|| format!("{{capture:{name}}}"))
+            // Captures will resolve from GK volatile/sticky ports
+            // once capture extraction is implemented.
+            format!("{{capture:{name}}}")
         }
         BindQualifier::Input => {
             program.input_names().iter()
@@ -175,14 +160,10 @@ fn resolve_bind_point_with_state(
                 .unwrap_or_else(|| format!("{{coord:{name}}}"))
         }
         BindQualifier::None => {
-            // Resolution order: GK output → captures → input → unresolved
+            // Resolution order: GK output → input → unresolved
             if program.resolve_output(name).is_some() {
                 return state.pull(program, name).to_display_string();
             }
-            if let Some(ctx) = captures
-                && let Some(val) = ctx.get(name) {
-                    return val.to_display_string();
-                }
             if program.input_names().contains(&name.to_string()) {
                 if let Some(idx) = program.input_names().iter().position(|n| n == name) {
                     return state.get_input(idx).to_string();
@@ -197,8 +178,7 @@ fn resolve_bind_point_with_state(
 ///
 /// Holds the `Arc<GkProgram>` (immutable, shared). Each executor
 /// fiber calls `create_fiber_builder()` to get its own `FiberBuilder`
-/// with private `GkState` and `CaptureContext` — no locks, no
-/// contention on the hot path.
+/// with private `GkState` — no locks, no contention on the hot path.
 pub struct OpBuilder {
     program: Arc<GkProgram>,
 }
@@ -221,14 +201,17 @@ impl OpBuilder {
     }
 }
 
-/// Per-fiber op builder. Owns its own GkState and CaptureContext.
+/// Per-fiber op builder. Owns its own GkState.
 /// No locks, no synchronization, no contention.
 ///
 /// Created via `OpBuilder::create_fiber_builder()` at fiber startup.
+///
+/// When capture extraction is implemented, captured values will
+/// write directly to GK volatile/sticky ports on the state,
+/// bypassing any intermediate storage.
 pub struct FiberBuilder {
     program: Arc<GkProgram>,
     state: GkState,
-    captures: CaptureContext,
 }
 
 /// Validate that all bind points in op templates can be resolved.
@@ -292,28 +275,35 @@ impl FiberBuilder {
         Self {
             program,
             state,
-            captures: CaptureContext::new(),
         }
     }
 
-    /// Set coordinates and begin a new isolation scope.
+    /// Set coordinates and begin a new evaluation scope.
     pub fn set_inputs(&mut self, coords: &[u64]) {
         self.state.set_inputs(coords);
     }
 
-    /// Store a captured value.
+    /// Reset all ports to defaults. Called at stanza boundaries
+    /// to prevent capture leakage across stanzas.
+    pub fn reset_ports(&mut self) {
+        self.state.reset_ports();
+    }
+
+    /// Invalidate all state: reset ports and mark all nodes dirty.
+    /// Provides "clean slate" semantics — the next evaluation
+    /// behaves as if the state were freshly created.
+    pub fn invalidate_all(&mut self) {
+        self.state.invalidate_all();
+    }
+
+    /// Store a captured value directly into GK state.
+    ///
+    /// Writes to the named port in GkState. If no port with this
+    /// name is declared in the program, the value is silently dropped.
     pub fn capture(&mut self, name: &str, value: Value) {
-        self.captures.set(name, value);
-    }
-
-    /// Reset captures for a new stanza.
-    pub fn reset_captures(&mut self, cycle: u64) {
-        self.captures.reset(cycle);
-    }
-
-    /// Apply captures to volatile/sticky ports.
-    pub fn apply_captures(&mut self) {
-        self.captures.apply_to_state(&self.program, &mut self.state);
+        if let Some(idx) = self.program.find_port(name) {
+            self.state.set_port(idx, value);
+        }
     }
 
     /// Resolve all fields in a template to typed values and strings.
@@ -334,7 +324,7 @@ impl FiberBuilder {
             names.push(key.clone());
             if let serde_json::Value::String(s) = value {
                 let resolved = substitute_bind_points_with_state(
-                    s, &self.program, &mut self.state, Some(&self.captures),
+                    s, &self.program, &mut self.state,
                 );
 
                 // Preserve typed value for pure bind point references
@@ -392,7 +382,7 @@ mod tests {
     fn substitute_no_bind_points() {
         let mut kernel = make_kernel();
         kernel.set_inputs(&[0]);
-        let result = substitute_bind_points("plain text", &mut kernel, None);
+        let result = substitute_bind_points("plain text", &mut kernel);
         assert_eq!(result, "plain text");
     }
 
@@ -400,7 +390,7 @@ mod tests {
     fn substitute_single_bind_point() {
         let mut kernel = make_kernel();
         kernel.set_inputs(&[42]);
-        let result = substitute_bind_points("user:{user_id}", &mut kernel, None);
+        let result = substitute_bind_points("user:{user_id}", &mut kernel);
         assert!(result.starts_with("user:"));
         let id: u64 = result.strip_prefix("user:").unwrap().parse().unwrap();
         assert!(id < 1_000_000);
@@ -410,7 +400,7 @@ mod tests {
     fn substitute_multiple_bind_points() {
         let mut kernel = make_kernel();
         kernel.set_inputs(&[42]);
-        let result = substitute_bind_points("id={user_id} hash={hashed}", &mut kernel, None);
+        let result = substitute_bind_points("id={user_id} hash={hashed}", &mut kernel);
         assert!(result.contains("id="));
         assert!(result.contains("hash="));
     }
@@ -419,9 +409,9 @@ mod tests {
     fn substitute_deterministic() {
         let mut kernel = make_kernel();
         kernel.set_inputs(&[42]);
-        let r1 = substitute_bind_points("{user_id}", &mut kernel, None);
+        let r1 = substitute_bind_points("{user_id}", &mut kernel);
         kernel.set_inputs(&[42]);
-        let r2 = substitute_bind_points("{user_id}", &mut kernel, None);
+        let r2 = substitute_bind_points("{user_id}", &mut kernel);
         assert_eq!(r1, r2);
     }
 

@@ -123,6 +123,26 @@ dependencies.
 
 ---
 
+## Design Rationale
+
+Personas exist to solve three problems that a monolithic binary cannot:
+
+- **Fast compilation**: only compile the drivers you need. Pulling in
+  CQL, gRPC, SQL, Redis, and Kafka transitive dependencies in a single
+  binary makes every rebuild slow for every user.
+- **Minimal dependencies**: CQL users don't need gRPC libraries. HTTP
+  users don't need the Cassandra C++ driver. Each persona ships exactly
+  the drivers it needs — no more.
+- **Independent release cadence**: a driver update (e.g., a new version
+  of `cassandra-cpp`) doesn't require a core nb-rs release. The persona
+  binary crate can rev independently.
+
+The core `nb-activity` runtime, GK compiler, metrics, and rate limiting
+are shared across all personas via library crates. Only the protocol
+adapter code is persona-specific.
+
+---
+
 ## Design Principle
 
 Personas prevent dependency bloat. A user testing Cassandra

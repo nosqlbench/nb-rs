@@ -17,6 +17,20 @@ branching for strategy selection.
 | P2 | Closures: flat u64 buffer, compiled step closures | ~10ns | Medium graphs, all-u64 |
 | P3 | Cranelift JIT: native machine code | ~2-5ns | Large all-dirty graphs |
 
+### Per-Node Overhead
+
+Raw per-node costs (no provenance optimization, identity-chain benchmark):
+
+| Level | Mechanism | Per-Node Cost |
+|-------|-----------|---------------|
+| P1 | Value enum + trait dispatch | ~20-70ns |
+| P2 | u64 closures + flat buffer | ~4-10ns |
+| P3 | Cranelift native code | ~0.2-5ns |
+
+P2 eliminates: Value enum allocation, trait object dispatch,
+HashMap output lookup. P3 eliminates: closure call overhead,
+gather/scatter copies.
+
 Hybrid (P2+P3 mix) was benchmarked and found to be strictly
 dominated by P3 in all scenarios. It remains in the codebase
 but is not selected by the automatic heuristic.
@@ -149,6 +163,26 @@ Push is only added (as PushPull) when the output cone is large
 AND there are stable subgraphs within it (stable_ratio ≥ 0.3).
 Push-only is never selected — it is dominated by both Pull and
 PushPull in all measured scenarios.
+
+---
+
+## Type System
+
+The buffer stores all values as u64. The PortType enum tracks
+types statically:
+
+| PortType | Width | Storage |
+|----------|-------|---------|
+| U64 | 64-bit | native |
+| F64 | 64-bit | bit-packed (to_bits/from_bits) |
+| U32 | 32-bit | zero-extended in u64 |
+| I32 | 32-bit | sign-extended in u64 |
+| I64 | 64-bit | bit-reinterpret |
+| F32 | 32-bit | f32 bits in low 32 of u64 |
+
+The assembler auto-inserts widening adapters when types mismatch
+(e.g., U32→U64, I32→F64, F32→F64). Narrowing requires explicit
+cast functions — no implicit precision loss.
 
 ---
 

@@ -14,17 +14,13 @@ GkProgram (Arc, immutable, shared)
   ├── wiring[]         — input source tables
   ├── input_names[]    — input dimension names
   ├── output_map       — name → (node_idx, port_idx)
-  ├── globals          — resolved workload params (set once)
-  ├── volatile_ports   — port definitions (reset per eval)
-  └── sticky_ports     — port definitions (persist per stanza)
+  └── ports             — external port definitions (captures)
 
 GkState (per-fiber, mutable, private)
   ├── buffers[][]        — per-node output value slots
   ├── node_clean[]       — per-node cache validity (bool)
-  ├── input_provenance[] — copy of program's provenance bitmasks
   ├── inputs[]           — current input values
-  ├── volatile_values[]  — external ports (reset per eval)
-  └── sticky_values[]    — external ports (persist across evals)
+  └── port_values[]      — external ports (persist across set_inputs)
 ```
 
 `GkProgram` is created once at compilation time and shared via
@@ -45,7 +41,6 @@ are invalidated. Nodes depending on unchanged inputs stay cached.
    → compare each input old vs new
    → build changed_mask (only inputs that actually changed)
    → for each node: if (provenance & changed_mask) != 0 → dirty
-   → volatile ports reset (port bit 63 set in changed_mask)
 
 2. state.pull(program, "user_id")
    → if node_clean[node] → return cached buffer
@@ -76,6 +71,16 @@ for the broader discussion of provenance-based invalidation.
 
 ## Init-Time vs Cycle-Time
 
+The two lifecycles exist because some work is too expensive or
+nonsensical to repeat every cycle. Init-time bindings form their
+own DAG resolved once at assembly — before the first cycle fires.
+This lets expensive setup (LUT construction, CSV loading, alias
+table building, connection establishment) happen in a dedicated
+phase where cost doesn't matter. The cycle-time DAG then starts
+with all init values frozen, no lazy initialization, no first-cycle
+penalties. Init-time values are shared via `Arc` — one alias table
+used by many nodes is built once and referenced by all of them.
+
 ### Cycle-Time Nodes
 
 Depend on inputs (directly or transitively). Evaluated every
@@ -95,7 +100,7 @@ nodes and evaluates them:
 ```
 Phase 1: Mark nodes as init-time or cycle-time
   - Graph inputs → cycle-time
-  - Volatile/sticky ports → cycle-time
+  - External ports → cycle-time
   - NodeOutput from cycle-time node → cycle-time (propagates)
   - Everything else → init-time
 
@@ -150,15 +155,14 @@ External values injected into the GK evaluation via ports:
 ```
 Op A executes → captures "user_name" from result
   → fiber.capture("user_name", value)
-  → stored in CaptureContext
+  → writes directly to port in GkState
 
-fiber.apply_captures()
-  → CaptureContext values written to sticky ports in GkState
-
-Op B resolves → {capture:user_name} reads from sticky port
+Op B resolves → {user_name} reads from port via GK wiring
 ```
 
-Captures reset at stanza boundaries (`fiber.reset_captures()`).
+Ports persist across `set_inputs()` calls within a stanza.
+`reset_ports()` is called at stanza boundaries to prevent
+capture leakage.
 
 ---
 
@@ -192,9 +196,8 @@ The per-fiber bridge between GK and the execution engine:
 
 ```rust
 pub struct FiberBuilder {
-    program: Arc<GkProgram>,   // shared, immutable — includes globals
+    program: Arc<GkProgram>,   // shared, immutable
     state: GkState,            // per-fiber, mutable
-    captures: CaptureContext,  // per-stanza capture state
 }
 
 impl FiberBuilder {

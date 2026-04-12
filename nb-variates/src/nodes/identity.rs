@@ -54,6 +54,41 @@ impl GkNode for Identity {
     }
 }
 
+/// Passthrough for external port values (captures).
+///
+/// Reads a single input (from a `WireSource::Port`) and copies it
+/// unchanged to the output. The port type is declared based on the
+/// port's default value type at construction time.
+///
+/// This node is auto-inserted by the compiler for `extern` port
+/// declarations, making captured values available as GK outputs.
+pub struct PortPassthrough {
+    meta: NodeMeta,
+}
+
+impl PortPassthrough {
+    /// Create a port passthrough with the given output type.
+    pub fn new(name: &str, port_type: crate::node::PortType) -> Self {
+        Self {
+            meta: NodeMeta {
+                name: format!("__port_{name}"),
+                outs: vec![Port::new("output", port_type)],
+                ins: vec![Slot::Wire(Port::new("input", port_type))],
+            },
+        }
+    }
+}
+
+impl GkNode for PortPassthrough {
+    fn meta(&self) -> &NodeMeta {
+        &self.meta
+    }
+
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = inputs[0].clone();
+    }
+}
+
 /// Emit a fixed u64 value (no inputs).
 ///
 /// Signature: `const(value: u64) -> (u64)`

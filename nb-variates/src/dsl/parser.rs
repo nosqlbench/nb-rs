@@ -166,19 +166,10 @@ fn parse_module_def(p: &mut Parser) -> Result<Statement, String> {
     }))
 }
 
-/// `extern volatile name: type = default` or `extern sticky name: type`
+/// `extern name: type = default`
 fn parse_extern_port(p: &mut Parser) -> Result<Statement, String> {
     let span = p.span();
     p.advance(); // consume 'extern'
-
-    let mode = match p.peek() {
-        TokenKind::Volatile => { p.advance(); PortMode::Volatile }
-        TokenKind::Sticky => { p.advance(); PortMode::Sticky }
-        _ => return Err(format!(
-            "expected 'volatile' or 'sticky' after 'extern' at line {}, col {}",
-            p.span().line, p.span().col
-        )),
-    };
 
     let name = p.expect_ident()?;
     p.expect(&TokenKind::Colon)?;
@@ -192,7 +183,7 @@ fn parse_extern_port(p: &mut Parser) -> Result<Statement, String> {
         None
     };
 
-    Ok(Statement::ExternPort(ExternPort { name, mode, typ, default, span }))
+    Ok(Statement::ExternPort(ExternPort { name, typ, default, span }))
 }
 
 /// `coordinates := (name1, name2, ...)` or `inputs := ()` (zero inputs)

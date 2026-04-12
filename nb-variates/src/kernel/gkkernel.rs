@@ -35,18 +35,23 @@ impl GkKernel {
         input_names: Vec<String>,
         output_map: HashMap<String, (usize, usize)>,
     ) -> Self {
-        Self::new_with_log(nodes, wiring, input_names, output_map, None)
+        Self::new_with_ports(nodes, wiring, input_names, output_map, Vec::new(), None)
     }
 
-    /// Create from pre-validated components, emitting compile events to the log.
-    pub(crate) fn new_with_log(
+    /// Create from pre-validated components with external ports.
+    pub(crate) fn new_with_ports(
         nodes: Vec<Box<dyn GkNode>>,
         wiring: Vec<Vec<WireSource>>,
         input_names: Vec<String>,
         output_map: HashMap<String, (usize, usize)>,
+        ports: Vec<super::PortDef>,
         log: Option<&mut crate::dsl::events::CompileEventLog>,
     ) -> Self {
-        let mut program = GkProgram::new(nodes, wiring, input_names, output_map);
+        let mut program = if ports.is_empty() {
+            GkProgram::new(nodes, wiring, input_names, output_map)
+        } else {
+            GkProgram::with_ports(nodes, wiring, input_names, output_map, ports)
+        };
         let constants_folded = program.fold_init_constants_with_log(log);
         let program = Arc::new(program);
         let mut state = program.create_state();
@@ -69,14 +74,19 @@ impl GkKernel {
     }
 
     /// Construct with strict mode: config wire violations are errors.
-    pub(crate) fn new_strict(
+    pub(crate) fn new_strict_with_ports(
         nodes: Vec<Box<dyn GkNode>>,
         wiring: Vec<Vec<WireSource>>,
         input_names: Vec<String>,
         output_map: HashMap<String, (usize, usize)>,
+        ports: Vec<super::PortDef>,
         log: Option<&mut crate::dsl::events::CompileEventLog>,
     ) -> Result<Self, String> {
-        let mut program = GkProgram::new(nodes, wiring, input_names, output_map);
+        let mut program = if ports.is_empty() {
+            GkProgram::new(nodes, wiring, input_names, output_map)
+        } else {
+            GkProgram::with_ports(nodes, wiring, input_names, output_map, ports)
+        };
         let constants_folded = program.fold_init_constants_strict(log, true)?;
         let program = Arc::new(program);
         let mut state = program.create_state();

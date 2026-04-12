@@ -49,7 +49,7 @@ ops:
 
 ### Stanza Isolation
 
-- `CaptureContext` resets at stanza boundaries
+- Volatile ports reset at stanza boundaries
 - Captures flow within a stanza (op A's output feeds op B)
 - Captures do NOT leak across stanza boundaries
 - Each fiber processes one stanza at a time

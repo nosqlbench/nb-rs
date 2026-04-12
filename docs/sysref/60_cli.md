@@ -27,6 +27,11 @@ nbrs
 │   workload <file.yaml>
 │   gk stdlib
 │
+├── plot          Evaluate and render GK outputs to terminal
+│   gk <expr|file.gk> [cycles=N] [--width=N] [--height=N]
+│                 [--mode=plot|histogram] [--no-color]
+│                 [--xscale=N] [--yscale=N] [--max-labels=N]
+│
 └── <file.yaml>   Bare file invocation → auto-detect run
 ```
 
@@ -101,6 +106,39 @@ fn cli_tree() -> Tree {
 Workload params are discoverable: when the user has specified
 `workload=file.yaml`, the completion engine parses the YAML
 `params:` section and offers those param names as completions.
+
+---
+
+### Plot Command
+
+    nbrs plot gk <expr|file.gk> [cycles=N] [--width=N] [--height=N]
+                                 [--mode=plot|histogram] [--no-color]
+                                 [--xscale=N] [--yscale=N] [--max-labels=N]
+
+Evaluate a GK expression and render outputs to the terminal:
+- Numeric outputs → braille scatter plot (default) or histogram
+- String outputs → discrete value histogram
+- 24-bit truecolor, auto-detected terminal size
+- Auto or manual scale control
+
+---
+
+### Inline Workloads
+
+    nbrs run op='hello {cycle}'
+    nbrs run op='id={{mod(hash(cycle), 1000)}} name={{number_to_words(cycle)}}'
+
+The `op=` parameter synthesizes a complete workload from a single
+template string. `{{expr}}` are inline GK expressions compiled
+into the kernel. `{name}` are bind point references. Semicolons
+separate multiple ops with optional ratio prefixes: `3:read;1:write`.
+
+Single-brace expressions are also supported when the content is
+auto-detected as a GK expression: `{hashed_uuid(hash(cycle))}`,
+`{:=expr}`, `{:=expr:=}`.
+
+`op=` and `workload=` are mutually exclusive; `op=` takes precedence.
+Default adapter is `stdout` when `adapter=` is omitted.
 
 ---
 

@@ -420,7 +420,7 @@ pub fn build_hybrid(
                 .map(|source| match source {
                     WireSource::Input(c) => *c,
                     WireSource::NodeOutput(upstream, port) => slot_bases[*upstream] + port,
-                    WireSource::VolatilePort(_) | WireSource::StickyPort(_) => todo!("port slots in hybrid kernel"),
+                    WireSource::Port(_) => todo!("port slots in hybrid kernel"),
                 })
                 .collect();
 
@@ -508,7 +508,7 @@ pub fn build_hybrid(
             .map(|source| match source {
                 WireSource::Input(c) => *c,
                 WireSource::NodeOutput(upstream, port) => slot_bases[*upstream] + port,
-                WireSource::VolatilePort(_) | WireSource::StickyPort(_) => todo!("port slots in hybrid kernel"),
+                WireSource::Port(_) => todo!("port slots in hybrid kernel"),
             })
             .collect();
 

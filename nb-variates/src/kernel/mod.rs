@@ -13,8 +13,7 @@
 //! │  input_names[]   — graph input dimension names ("cycle")     │
 //! │  output_map      — name → (node_idx, port_idx)               │
 //! │  (workload params injected as GK constant bindings)          │
-//! │  volatile_ports  — port definitions (reset per evaluation)   │
-//! │  sticky_ports    — port definitions (persist per stanza)     │
+//! │  ports           — external port definitions (captures)      │
 //! └──────────────────────────────────────────────────────────────┘
 //!
 //! GkState (per-fiber, mutable, private — never shared)
@@ -30,15 +29,14 @@
 //! │    │ node 2    │ [Value, Value]                              │
 //! │    │ ...       │                                             │
 //! │    └───────────┘                                             │
-//! │  volatile_values[]   — external ports, reset on set_inputs() │
-//! │  volatile_defaults[] — reset targets for volatile ports      │
-//! │  sticky_values[]     — external ports, persist across evals  │
+//! │  port_values[]       — external port values (captures)        │
+//! │  port_defaults[]     — initial values for ports              │
 //! │  input_scratch[]     — temp buffer for node input gathering  │
 //! └──────────────────────────────────────────────────────────────┘
 //!
 //! Evaluation:
 //!   1. fiber.set_inputs(&[cycle])  → state.inputs = [cycle],
-//!                                    generation++, volatiles reset
+//!                                    dirty affected nodes
 //!   2. state.pull(program, "name") → walk topologically, skip nodes
 //!                                    already evaluated this generation,
 //!                                    return &buffers[node][port]
@@ -51,17 +49,15 @@
 //!
 //! Buffer layout in GkState:
 //! ```text
-//! coords[0..C) | volatile[0..V) | sticky[0..S) | node_buffers[...]
+//! coords[0..C) | ports[0..P) | node_buffers[...]
 //! ```
 
 mod program;
 mod engines;
-mod capture;
 mod gkkernel;
 
 pub use program::*;
 pub use engines::*;
-pub use capture::*;
 pub use gkkernel::*;
 
 use crate::node::Value;
@@ -73,18 +69,20 @@ pub enum WireSource {
     Input(usize),
     /// Output of another node: `(node_index, output_port_index)`.
     NodeOutput(usize, usize),
-    /// A volatile external input port, by index.
-    VolatilePort(usize),
-    /// A sticky external input port, by index.
-    StickyPort(usize),
+    /// An external input port (capture slot), by index.
+    Port(usize),
 }
 
-/// Metadata for an external input port.
+/// Metadata for an external input port (capture slot).
+///
+/// Ports persist across `set_inputs()` calls within a stanza.
+/// They are written by capture extraction and read by GK nodes
+/// via `WireSource::Port(idx)`.
 #[derive(Debug, Clone)]
 pub struct PortDef {
     /// Port name (used for capture wiring and bind point resolution).
     pub name: String,
-    /// Default value (used for volatile reset, or initial sticky value).
+    /// Default value (initial value before any capture writes).
     pub default: Value,
 }
 
@@ -95,86 +93,66 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn volatile_ports_reset_on_set_inputs() {
-        // Build a minimal program with one volatile port
+    fn ports_persist_across_set_inputs() {
         let program = Arc::new(GkProgram::with_ports(
             vec![], vec![], vec!["cycle".into()],
             HashMap::new(),
-            vec![PortDef { name: "balance".into(), default: Value::F64(0.0) }],
-            vec![],
+            vec![
+                PortDef { name: "balance".into(), default: Value::F64(0.0) },
+                PortDef { name: "auth_token".into(), default: Value::Str("anonymous".into()) },
+            ],
         ));
         let mut state = program.create_state();
 
-        // Default value
-        assert_eq!(state.get_volatile(0), &Value::F64(0.0));
+        // Default values
+        assert_eq!(state.get_port(0), &Value::F64(0.0));
+        assert_eq!(state.get_port(1), &Value::Str("anonymous".into()));
 
-        // Set a value
-        state.set_volatile(0, Value::F64(1234.56));
-        assert_eq!(state.get_volatile(0), &Value::F64(1234.56));
+        // Set values
+        state.set_port(0, Value::F64(1234.56));
+        state.set_port(1, Value::Str("token_abc".into()));
+        assert_eq!(state.get_port(0), &Value::F64(1234.56));
+        assert_eq!(state.get_port(1), &Value::Str("token_abc".into()));
 
-        // Reset via set_inputs
+        // Ports persist across set_inputs (capture values survive cycle changes)
         state.set_inputs(&[42]);
-        assert_eq!(state.get_volatile(0), &Value::F64(0.0)); // back to default
+        assert_eq!(state.get_port(0), &Value::F64(1234.56));
+        assert_eq!(state.get_port(1), &Value::Str("token_abc".into()));
     }
 
     #[test]
-    fn sticky_ports_persist_across_coordinates() {
+    fn reset_ports_restores_defaults() {
         let program = Arc::new(GkProgram::with_ports(
             vec![], vec![], vec!["cycle".into()],
             HashMap::new(),
-            vec![],
-            vec![PortDef { name: "auth_token".into(), default: Value::Str("anonymous".into()) }],
+            vec![PortDef { name: "token".into(), default: Value::Str("anon".into()) }],
         ));
         let mut state = program.create_state();
 
-        // Default
-        assert_eq!(state.get_sticky(0), &Value::Str("anonymous".into()));
+        state.set_port(0, Value::Str("alice".into()));
+        assert_eq!(state.get_port(0), &Value::Str("alice".into()));
 
-        // Set
-        state.set_sticky(0, Value::Str("token_abc".into()));
-        assert_eq!(state.get_sticky(0), &Value::Str("token_abc".into()));
-
-        // Survives coordinate change
-        state.set_inputs(&[99]);
-        assert_eq!(state.get_sticky(0), &Value::Str("token_abc".into()));
+        state.reset_ports();
+        assert_eq!(state.get_port(0), &Value::Str("anon".into()));
     }
 
     #[test]
-    fn capture_context_lifecycle() {
-        let mut ctx = CaptureContext::new();
-        ctx.reset(42);
-        assert_eq!(ctx.cycle(), 42);
-        assert!(ctx.get("balance").is_none());
-
-        ctx.set("balance", Value::F64(100.0));
-        ctx.set("user_id", Value::U64(7));
-        assert_eq!(ctx.get("balance"), Some(&Value::F64(100.0)));
-        assert_eq!(ctx.get("user_id"), Some(&Value::U64(7)));
-
-        // Reset clears everything
-        ctx.reset(43);
-        assert!(ctx.get("balance").is_none());
-        assert!(ctx.get("user_id").is_none());
-    }
-
-    #[test]
-    fn capture_context_applies_to_state() {
+    fn invalidate_all_resets_everything() {
         let program = Arc::new(GkProgram::with_ports(
             vec![], vec![], vec!["cycle".into()],
             HashMap::new(),
-            vec![PortDef { name: "balance".into(), default: Value::F64(0.0) }],
-            vec![PortDef { name: "session".into(), default: Value::U64(0) }],
+            vec![PortDef { name: "token".into(), default: Value::Str("anon".into()) }],
         ));
         let mut state = program.create_state();
-        let mut ctx = CaptureContext::new();
 
-        ctx.reset(1);
-        ctx.set("balance", Value::F64(999.0));
-        ctx.set("session", Value::U64(42));
-        ctx.apply_to_state(&program, &mut state);
+        state.set_inputs(&[42]);
+        state.set_port(0, Value::Str("alice".into()));
 
-        assert_eq!(state.get_volatile(0), &Value::F64(999.0));
-        assert_eq!(state.get_sticky(0), &Value::U64(42));
+        state.invalidate_all();
+        // Ports reset to defaults
+        assert_eq!(state.get_port(0), &Value::Str("anon".into()));
+        // All nodes dirty (verified by the fact that subsequent
+        // pull would re-evaluate from scratch — no cached values)
     }
 
     #[test]

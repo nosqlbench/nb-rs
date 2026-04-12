@@ -116,7 +116,7 @@ CLI params ───────────────────────
                     │ 3. Resolve │──▶ GK eval (per-fiber state)
                     │ 4. Execute │──▶ Adapter (CQL, HTTP, ...)
                     │ 5. Metrics │──▶ Timer, Counter
-                    │ 6. Capture │──▶ CaptureContext
+                    │ 6. Capture │──▶ GkState (ports)
                     └────────────┘
 ```
 

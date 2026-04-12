@@ -477,7 +477,7 @@ async fn executor_task(
             srl.acquire().await;
         }
         activity.metrics.stanzas_total.inc();
-        fiber.reset_captures(base_cycle);
+        fiber.reset_ports();
 
         // Process stanza ops in dependency groups.
         // Track which captures have been produced so far. If a group
@@ -486,12 +486,7 @@ async fn executor_task(
         let mut available_captures: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
-        for (group_idx, group) in dep_groups.iter().enumerate() {
-            // Apply captures from previous group before resolving
-            if group_idx > 0 {
-                fiber.apply_captures();
-            }
-
+        for group in dep_groups.iter() {
             // Check if this group's required captures are all available
             if !group.required_captures.is_empty() {
                 let missing: Vec<&String> = group.required_captures.iter()

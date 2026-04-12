@@ -24,6 +24,8 @@ pub enum WireRef {
     Input(String),
     /// A node output: `(node_name, output_port_index)`.
     Node(String, usize),
+    /// An external port (capture slot), by name.
+    Port(String),
 }
 
 impl WireRef {
@@ -40,6 +42,11 @@ impl WireRef {
     /// Reference a graph input by name.
     pub fn input(name: impl Into<String>) -> Self {
         WireRef::Input(name.into())
+    }
+
+    /// Reference an external port by name.
+    pub fn port(name: impl Into<String>) -> Self {
+        WireRef::Port(name.into())
     }
 }
 
@@ -140,6 +147,8 @@ struct ResolvedDag {
     input_names: Vec<String>,
     /// Output name → (node_index_in_sorted, output_port_index).
     output_map: HashMap<String, (usize, usize)>,
+    /// External port definitions (capture slots).
+    ports: Vec<crate::kernel::PortDef>,
 }
 
 /// Builder for assembling a GK kernel programmatically.
@@ -147,6 +156,7 @@ pub struct GkAssembler {
     input_names: Vec<String>,
     nodes: Vec<PendingNode>,
     outputs: HashMap<String, WireRef>,
+    ports: Vec<crate::kernel::PortDef>,
 }
 
 impl GkAssembler {
@@ -156,6 +166,7 @@ impl GkAssembler {
             input_names,
             nodes: Vec::new(),
             outputs: HashMap::new(),
+            ports: Vec::new(),
         }
     }
 
@@ -177,6 +188,19 @@ impl GkAssembler {
     /// Designate a wire as a named output variate.
     pub fn add_output(&mut self, name: impl Into<String>, wire: WireRef) -> &mut Self {
         self.outputs.insert(name.into(), wire);
+        self
+    }
+
+    /// Declare an external port (capture slot).
+    ///
+    /// The port persists across `set_inputs()` calls and is written
+    /// by capture extraction at runtime. Nodes can wire to it via
+    /// `WireRef::port(name)`.
+    pub fn add_port(&mut self, name: impl Into<String>, default: crate::node::Value) -> &mut Self {
+        self.ports.push(crate::kernel::PortDef {
+            name: name.into(),
+            default,
+        });
         self
     }
 
@@ -203,11 +227,12 @@ impl GkAssembler {
     /// Compile with diagnostic event logging.
     pub fn compile_with_log(self, mut log: Option<&mut crate::dsl::events::CompileEventLog>) -> Result<GkKernel, AssemblyError> {
         let resolved = self.resolve_with_log(log.as_deref_mut())?;
-        Ok(GkKernel::new_with_log(
+        Ok(GkKernel::new_with_ports(
             resolved.nodes,
             resolved.wiring,
             resolved.input_names,
             resolved.output_map,
+            resolved.ports,
             log,
         ))
     }
@@ -236,11 +261,12 @@ impl GkAssembler {
             )));
         }
 
-        GkKernel::new_strict(
+        GkKernel::new_strict_with_ports(
             resolved.nodes,
             resolved.wiring,
             resolved.input_names,
             resolved.output_map,
+            resolved.ports,
             None,
         ).map_err(AssemblyError::Other)
     }
@@ -302,7 +328,7 @@ impl GkAssembler {
                 .map(|source| match source {
                     WireSource::Input(c) => *c,
                     WireSource::NodeOutput(upstream, port) => slot_base[*upstream] + port,
-                    WireSource::VolatilePort(idx) | WireSource::StickyPort(idx) => *idx, // TODO: proper port slot mapping
+                    WireSource::Port(idx) => *idx, // TODO: proper port slot mapping
                 })
                 .collect();
 
@@ -652,6 +678,8 @@ impl GkAssembler {
             .map(|(i, n)| (n.clone(), i))
             .collect();
 
+        let ports = &self.ports;
+
         // Validate arity
         for pn in &self.nodes {
             let expected = pn.node.meta().wire_inputs().len();
@@ -690,6 +718,18 @@ impl GkAssembler {
                             .ok_or_else(|| AssemblyError::UnknownWire(name.clone()))?;
                         (WireSource::Input(*coord_idx), PortType::U64)
                     }
+                    WireRef::Port(name) => {
+                        let port_idx = ports.iter().position(|p| p.name == *name)
+                            .ok_or_else(|| AssemblyError::UnknownWire(format!("port:{name}")))?;
+                        let source_type = match &ports[port_idx].default {
+                            crate::node::Value::U64(_) => PortType::U64,
+                            crate::node::Value::F64(_) => PortType::F64,
+                            crate::node::Value::Str(_) => PortType::Str,
+                            crate::node::Value::Bool(_) => PortType::U64,
+                            _ => PortType::Str, // default for captures
+                        };
+                        (WireSource::Port(port_idx), source_type)
+                    }
                     WireRef::Node(name, out_port) => {
                         let src_idx = all_name_to_idx
                             .get(name)
@@ -711,7 +751,7 @@ impl GkAssembler {
 
                     if let Some(ref mut log) = log {
                         let from_name = match wire_ref {
-                            WireRef::Input(n) => n.clone(),
+                            WireRef::Input(n) | WireRef::Port(n) => n.clone(),
                             WireRef::Node(n, _) => n.clone(),
                         };
                         log.push(crate::dsl::events::CompileEvent::TypeAdapterInserted {
@@ -738,13 +778,13 @@ impl GkAssembler {
                     node_wiring.push(WireSource::NodeOutput(adapter_idx, 0));
                 } else {
                     let from_name = match wire_ref {
-                        WireRef::Input(n) => n.clone(),
+                        WireRef::Input(n) | WireRef::Port(n) => n.clone(),
                         WireRef::Node(n, _) => n.clone(),
                     };
                     return Err(AssemblyError::TypeMismatch {
                         from_node: from_name,
                         from_port: match wire_ref {
-                            WireRef::Input(_) => 0,
+                            WireRef::Input(_) | WireRef::Port(_) => 0,
                             WireRef::Node(_, p) => *p,
                         },
                         from_type: source_type,
@@ -910,8 +950,7 @@ impl GkAssembler {
                         WireSource::NodeOutput(old_up, port) => {
                             WireSource::NodeOutput(old_to_new[*old_up], *port)
                         }
-                        WireSource::VolatilePort(idx) => WireSource::VolatilePort(*idx),
-                        WireSource::StickyPort(idx) => WireSource::StickyPort(*idx),
+                        WireSource::Port(idx) => WireSource::Port(*idx),
                     })
                     .collect()
             })
@@ -924,6 +963,12 @@ impl GkAssembler {
                     return Err(AssemblyError::UnknownWire(format!(
                         "output '{name}' references coordinate '{coord_name}' directly; \
                          wire through a node instead"
+                    )));
+                }
+                WireRef::Port(port_name) => {
+                    return Err(AssemblyError::UnknownWire(format!(
+                        "output '{name}' references port '{port_name}' directly; \
+                         wire through a passthrough node instead"
                     )));
                 }
                 WireRef::Node(node_name, port) => {
@@ -940,6 +985,7 @@ impl GkAssembler {
             wiring: final_wiring,
             input_names: self.input_names,
             output_map: final_output_map,
+            ports: self.ports,
         })
     }
 }

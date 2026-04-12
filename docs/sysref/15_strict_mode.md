@@ -146,7 +146,7 @@ but otherwise allowed in non-strict mode.
 | Mode | Non-deterministic node without annotation |
 |------|------------------------------------------|
 | Non-strict | Allowed, excluded from folding |
-| Strict | Error: "mark as `volatile` or use a deterministic alternative" |
+| Strict | Error: "use a deterministic alternative" |
 
 **Rationale:** Non-deterministic nodes break the core invariant
 that the same `(cycle, template)` produces the same output. In

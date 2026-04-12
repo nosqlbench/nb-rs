@@ -267,7 +267,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
         for name in &input_names {
             input_ports.push(name.clone());
         }
-        // TODO: add volatile and sticky ports here when SRD 28 is implemented
+        // TODO: add external ports here when capture wiring is implemented
         nodes.push(VizNode {
             id: inputs_id.clone(),
             label: "INPUTS".into(),

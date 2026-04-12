@@ -361,11 +361,33 @@ impl Compiler {
                     // templates resolved by the module system when
                     // referenced from another file/kernel.
                 }
-                Statement::ExternPort(_port) => {
-                    // External port declarations are handled at the
-                    // program level — they define volatile/sticky port
-                    // metadata. TODO: collect port defs and pass to
-                    // GkProgram::with_ports() during assembly.
+                Statement::ExternPort(port) => {
+                    // Declare the port on the assembler
+                    let default_value = match port.typ.as_str() {
+                        "u64" => crate::node::Value::U64(0),
+                        "f64" => crate::node::Value::F64(0.0),
+                        "bool" => crate::node::Value::Bool(false),
+                        _ => crate::node::Value::Str(String::new()),
+                    };
+                    let port_type = match port.typ.as_str() {
+                        "u64" => crate::node::PortType::U64,
+                        "f64" => crate::node::PortType::F64,
+                        _ => crate::node::PortType::Str,
+                    };
+                    asm.add_port(&port.name, default_value);
+
+                    // Create a passthrough node wired to the port
+                    let passthrough = Box::new(
+                        crate::nodes::identity::PortPassthrough::new(&port.name, port_type)
+                    );
+                    let passthrough_name = format!("__port_{}", port.name);
+                    asm.add_node(
+                        &passthrough_name,
+                        passthrough,
+                        vec![WireRef::port(&port.name)],
+                    );
+                    // Register as output so {name} resolves from GK
+                    asm.add_output(&port.name, WireRef::node(&passthrough_name));
                 }
             }
         }

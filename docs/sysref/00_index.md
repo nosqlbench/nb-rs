@@ -48,7 +48,7 @@ explains the design intent behind it.
 | 31 | [Op Execution Pipeline](31_op_pipeline.md) | Resolve → wrap → execute → metrics flow, stanza concurrency |
 | 32 | [Dispenser Wrappers](32_wrappers.md) | TraversingDispenser, ValidatingDispenser, composition order |
 | 33 | [Result Validation](33_result_validation.md) | Assertions, relevancy metrics, ground truth, binding visibility |
-| 34 | [Capture Points](34_capture_points.md) | Inter-op data flow, capture context, volatile/sticky ports |
+| 34 | [Capture Points](34_capture_points.md) | Inter-op data flow, GK ports, capture extraction |
 
 ### 5. Metrics and Observability (nb-metrics)
 

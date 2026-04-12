@@ -29,6 +29,21 @@ iteration patterns via mixed-radix decomposition.
 > during transition. All new code and documentation should use
 > `inputs`.
 
+### Coordinate Decomposition
+
+Most workloads use a single `cycle` input. Multi-dimensional
+iteration is modeled inside the GK via mixed_radix decomposition:
+
+    inputs := (cycle)
+    (row, col) := mixed_radix(cycle, 1000, 1000)
+
+This keeps the activity executor simple (it only passes `[cycle]`)
+while enabling N-dimensional access patterns within the DAG.
+Decomposed coordinates are ordinary GK wires — they can feed into
+hash, interleave, mod, or any other node. Any traversal strategy
+(nested loop, strided, random) is expressed as GK nodes rather
+than activity-layer configuration, keeping domain logic in one place.
+
 ### Bindings
 
 ```
@@ -195,6 +210,90 @@ nbrs bench gk mymodule.gk --explain
 
 ---
 
+## Bitwise Operations
+
+GK provides six u64 bitwise node functions. Applying bitwise
+operators to f64 operands is a compile-time error.
+
+| Node | Signature | Description |
+|------|-----------|-------------|
+| `u64_and` | `u64, u64 → u64` | bitwise AND |
+| `u64_or` | `u64, u64 → u64` | bitwise OR |
+| `u64_xor` | `u64, u64 → u64` | bitwise XOR |
+| `u64_shl` | `u64, u64 → u64` | left shift |
+| `u64_shr` | `u64, u64 → u64` | logical right shift |
+| `u64_not` | `u64 → u64` | bitwise complement |
+
+```
+// Mask the low byte
+low_byte := u64_and(hash(cycle), 0xFF)
+
+// Pack fields into a single u64
+packed := u64_or(u64_shl(region, 48), u64_shl(tenant, 32))
+
+// Flip bits deterministically
+flipped := u64_xor(hash(cycle), 0xDEADBEEF)
+
+// Complement (infix: !x)
+inv := u64_not(flags)
+```
+
+Infix operator `&` desugars to `u64_and`, `|` to `u64_or`,
+`^` to `u64_xor`, `<<` to `u64_shl`, `>>` to `u64_shr`,
+prefix `!` to `u64_not`.
+
+---
+
+## Const Expression Syntax
+
+Braces in binding values trigger compile-time evaluation.
+Three equivalent forms:
+
+```
+// Implicit: bare braces around an expression
+dim := {vector_dim("glove-25-angular")}
+
+// Explicit open form
+dim := {:=vector_dim("glove-25-angular")}
+
+// Explicit bracketed form
+dim := {:=vector_dim("glove-25-angular"):=}
+```
+
+Resolution order for `{expr}`:
+1. Named binding — if `expr` matches a declared binding name,
+   wire to that binding's output.
+2. Const expression eval — evaluate `expr` at compile time
+   (init-time fold). Result becomes a `ConstNode`.
+3. Error — if neither succeeds, compilation fails with a
+   diagnostic describing the unresolved reference.
+
+The explicit `{:=...}` forms bypass step 1 and force const
+expression evaluation regardless of name shadowing.
+
+---
+
+## Type Inference Details
+
+The compiler selects operator variants according to this
+dispatch table:
+
+| Left operand | Right operand | Operator | Selected variant |
+|-------------|--------------|----------|-----------------|
+| u64 | u64 | `+` `-` `*` `/` `%` | u64 variant |
+| f64 | f64 | `+` `-` `*` `/` `%` | f64 variant |
+| u64 | f64 | `+` `-` `*` `/` `%` | u64 auto-widened → f64, f64 variant |
+| f64 | u64 | `+` `-` `*` `/` `%` | u64 auto-widened → f64, f64 variant |
+| any | any | `**` | always f64 (`pow`) |
+| u64 | u64 | `&` `\|` `^` `<<` `>>` | always u64 |
+| f64 | any | `&` `\|` `^` `<<` `>>` `!` | **compile error** |
+
+Auto-widening inserts an implicit `to_f64` adapter and emits
+a `gk[advisory]` diagnostic. Narrowing (f64 → u64) is never
+implicit — use an explicit cast function.
+
+---
+
 ## Compilation Pipeline
 
 ```
@@ -211,7 +310,7 @@ Desugar ───────▶ Normalize sugar forms:
   │
   ▼
 Wire Resolution ▶ Map names to node outputs, input indices,
-  │               or external ports (volatile/sticky)
+  │               or external ports
   │
   ▼
 Type Inference ─▶ Validate port types match wiring.
@@ -323,7 +422,7 @@ to its own output buffer slots in `GkState`.
 
 The GK kernel should be the single state holder for all inter-op
 data flow, not just input-driven generation. Captured values
-from op results are already injected via sticky ports, but the
+from op results are already injected via ports, but the
 current model treats them as second-class inputs. The target
 design unifies captures with GK inputs:
 

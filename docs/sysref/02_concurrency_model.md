@@ -11,7 +11,7 @@ and no stride.
 ```
 tokio runtime (num_cpus OS worker threads)
   │
-  ├── Fiber 0 ── FiberBuilder (own GkState, CaptureContext)
+  ├── Fiber 0 ── FiberBuilder (own GkState)
   ├── Fiber 1 ── FiberBuilder
   ├── Fiber 2 ── FiberBuilder
   │   ...
@@ -27,7 +27,7 @@ tokio runtime (num_cpus OS worker threads)
 
 Each fiber is a tokio task (~300 bytes). No shared mutable state
 between fibers. The `GkProgram` is immutable and shared via `Arc`;
-each fiber owns its own `GkState` and `CaptureContext`.
+each fiber owns its own `GkState`.
 
 ---
 

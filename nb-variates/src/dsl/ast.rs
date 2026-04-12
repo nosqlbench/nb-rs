@@ -22,29 +22,22 @@ pub enum Statement {
     CycleBinding(CycleBinding),
     /// `name(param: type, ...) -> (output: type, ...) := { body }`
     ModuleDef(ModuleDef),
-    /// `extern volatile name: type = default` or `extern sticky name: type = default`
+    /// `extern name: type = default`
     ExternPort(ExternPort),
-}
-
-/// Port lifecycle mode.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PortMode {
-    /// Resets to default on each set_inputs().
-    Volatile,
-    /// Persists across coordinate changes until explicitly overwritten.
-    Sticky,
 }
 
 /// An external input port declaration.
 ///
+/// Ports persist across `set_inputs()` calls within a stanza.
+/// Written by capture extraction, read by GK nodes.
+///
 /// ```text
-/// extern volatile balance: f64 = 0.0
-/// extern sticky session_id: u64 = 0
+/// extern balance: f64 = 0.0
+/// extern session_id: u64 = 0
 /// ```
 #[derive(Debug, Clone)]
 pub struct ExternPort {
     pub name: String,
-    pub mode: PortMode,
     pub typ: String,
     pub default: Option<Expr>,
     pub span: Span,

@@ -19,10 +19,10 @@ pub struct GkProgram {
     input_names: Vec<String>,
     /// Map from output variate name to `(node_index, output_port_index)`.
     pub(crate) output_map: HashMap<String, (usize, usize)>,
-    /// Volatile port definitions (reset on each set_inputs).
-    volatile_ports: Vec<PortDef>,
-    /// Sticky port definitions (persist until explicitly overwritten).
-    sticky_ports: Vec<PortDef>,
+    /// External port definitions (capture slots). Persist across
+    /// `set_inputs()` calls — written by capture extraction, read
+    /// by GK nodes via `WireSource::Port(idx)`.
+    ports: Vec<PortDef>,
     /// Per-node input provenance bitmask. Bit i is set if the node
     /// transitively depends on graph input i. Computed once from the
     /// DAG wiring. Supports up to 64 distinct inputs.
@@ -43,8 +43,7 @@ impl std::fmt::Debug for GkProgram {
         f.debug_struct("GkProgram")
             .field("nodes", &self.nodes.len())
             .field("coords", &self.input_names)
-            .field("volatile_ports", &self.volatile_ports.len())
-            .field("sticky_ports", &self.sticky_ports.len())
+            .field("ports", &self.ports.len())
             .finish()
     }
 }
@@ -61,8 +60,7 @@ impl GkProgram {
         let input_dependents = Self::compute_dependents(&input_provenance, input_names.len());
         Self {
             nodes, wiring, input_names, output_map,
-            volatile_ports: Vec::new(),
-            sticky_ports: Vec::new(),
+            ports: Vec::new(),
             input_provenance,
             input_dependents,
         }
@@ -75,14 +73,13 @@ impl GkProgram {
         wiring: Vec<Vec<WireSource>>,
         input_names: Vec<String>,
         output_map: HashMap<String, (usize, usize)>,
-        volatile_ports: Vec<PortDef>,
-        sticky_ports: Vec<PortDef>,
+        ports: Vec<PortDef>,
     ) -> Self {
         let input_provenance = Self::compute_provenance(&nodes, &wiring);
         let input_dependents = Self::compute_dependents(&input_provenance, input_names.len());
         Self {
             nodes, wiring, input_names, output_map,
-            volatile_ports, sticky_ports,
+            ports,
             input_provenance,
             input_dependents,
         }
@@ -113,6 +110,7 @@ impl GkProgram {
     /// Compute per-node input provenance bitmask from the DAG wiring.
     ///
     /// Bit i is set if the node transitively depends on input i.
+    /// Bit 63 is set if the node depends on any external port.
     /// Processed in topological order (nodes are already sorted).
     pub(crate) fn compute_provenance(
         nodes: &[Box<dyn GkNode>],
@@ -129,12 +127,9 @@ impl GkProgram {
                     WireSource::NodeOutput(upstream, _) => {
                         prov[i] |= prov[*upstream];
                     }
-                    WireSource::VolatilePort(_) | WireSource::StickyPort(_) => {
-                        // Ports are external — treated as always-changing
-                        // (all bits set would force re-eval, but that's too
-                        // aggressive). Instead, port changes bump a separate
-                        // generation counter that forces re-eval for nodes
-                        // that depend on ports. Use bit 63 as the "port" bit.
+                    WireSource::Port(_) => {
+                        // Ports are external capture slots. Use bit 63
+                        // as the "port" provenance bit.
                         prov[i] |= 1u64 << 63;
                     }
                 }
@@ -149,17 +144,15 @@ impl GkProgram {
             .iter().map(|n| vec![Value::None; n.meta().outs.len()]).collect();
         let node_count = self.nodes.len();
         let coord_count = self.input_names.len();
-        let volatile_values: Vec<Value> = self.volatile_ports.iter()
+        let port_values: Vec<Value> = self.ports.iter()
             .map(|p| p.default.clone()).collect();
-        let volatile_defaults: Vec<Value> = volatile_values.clone();
-        let sticky_values: Vec<Value> = self.sticky_ports.iter()
-            .map(|p| p.default.clone()).collect();
+        let port_defaults: Vec<Value> = port_values.clone();
         let max_inputs = self.wiring.iter().map(|w| w.len()).max().unwrap_or(0);
         EngineCore {
             buffers,
             node_clean: vec![false; node_count],
             inputs: vec![0; coord_count],
-            volatile_values, volatile_defaults, sticky_values,
+            port_values, port_defaults,
             input_scratch: vec![Value::None; max_inputs],
         }
     }
@@ -173,14 +166,10 @@ impl GkProgram {
         let node_count = self.nodes.len();
         let coord_count = self.input_names.len();
 
-        // Initialize port values to defaults
-        let volatile_values: Vec<Value> = self.volatile_ports.iter()
+        let port_values: Vec<Value> = self.ports.iter()
             .map(|p| p.default.clone())
             .collect();
-        let volatile_defaults: Vec<Value> = volatile_values.clone();
-        let sticky_values: Vec<Value> = self.sticky_ports.iter()
-            .map(|p| p.default.clone())
-            .collect();
+        let port_defaults: Vec<Value> = port_values.clone();
 
         // Pre-allocate scratch buffer for the largest node input count
         let max_inputs = self.wiring.iter()
@@ -199,9 +188,8 @@ impl GkProgram {
             buffers,
             node_clean: vec![false; node_count],
             inputs: vec![0; coord_count],
-            volatile_values,
-            volatile_defaults,
-            sticky_values,
+            port_values,
+            port_defaults,
             input_scratch: vec![Value::None; max_inputs],
         };
 
@@ -222,11 +210,9 @@ impl GkProgram {
             .collect();
         let node_count = self.nodes.len();
         let coord_count = self.input_names.len();
-        let volatile_values: Vec<Value> = self.volatile_ports.iter()
+        let port_values: Vec<Value> = self.ports.iter()
             .map(|p| p.default.clone()).collect();
-        let volatile_defaults: Vec<Value> = volatile_values.clone();
-        let sticky_values: Vec<Value> = self.sticky_ports.iter()
-            .map(|p| p.default.clone()).collect();
+        let port_defaults: Vec<Value> = port_values.clone();
         let max_inputs = self.wiring.iter()
             .map(|w| w.len()).max().unwrap_or(0);
 
@@ -239,9 +225,8 @@ impl GkProgram {
             buffers,
             node_clean: vec![false; node_count],
             inputs: vec![0; coord_count],
-            volatile_values,
-            volatile_defaults,
-            sticky_values,
+            port_values,
+            port_defaults,
             input_scratch: vec![Value::None; max_inputs],
         };
 
@@ -303,32 +288,22 @@ impl GkProgram {
         self.node_compile_level(self.nodes.len() - 1)
     }
 
-    /// Volatile port definitions.
-    pub fn volatile_ports(&self) -> &[PortDef] {
-        &self.volatile_ports
+    /// External port definitions.
+    pub fn ports(&self) -> &[PortDef] {
+        &self.ports
     }
 
-    /// Sticky port definitions.
-    pub fn sticky_ports(&self) -> &[PortDef] {
-        &self.sticky_ports
-    }
-
-    /// Find a volatile port by name. Returns its index.
-    pub fn find_volatile_port(&self, name: &str) -> Option<usize> {
-        self.volatile_ports.iter().position(|p| p.name == name)
-    }
-
-    /// Find a sticky port by name. Returns its index.
-    pub fn find_sticky_port(&self, name: &str) -> Option<usize> {
-        self.sticky_ports.iter().position(|p| p.name == name)
+    /// Find a port by name. Returns its index.
+    pub fn find_port(&self, name: &str) -> Option<usize> {
+        self.ports.iter().position(|p| p.name == name)
     }
 
     /// Fold init-time constant nodes (SRD 44).
     ///
     /// Identifies nodes whose transitive dependencies contain no
-    /// coordinate inputs, volatile ports, or sticky ports — these are
-    /// init-time evaluable. Evaluates them once, then replaces their
-    /// outputs with constant nodes in the program.
+    /// coordinate inputs or ports — these are init-time evaluable.
+    /// Evaluates them once, then replaces their outputs with constant
+    /// nodes in the program.
     ///
     /// Returns the number of nodes folded. The program is modified
     /// in place.
@@ -369,11 +344,7 @@ impl GkProgram {
         // Phase 1: Determine which nodes are init-time evaluable.
         // A node is init-time if ALL its wire sources are either:
         //   - NodeOutput from another init-time node
-        //   - (nothing else — no Coordinate, Volatile, Sticky)
-        // Nodes with zero inputs (constants, context nodes like counter)
-        // are init-time IF they have no side effects that matter at cycle time.
-        // We conservatively exclude nodes with zero inputs that are
-        // non-deterministic (like current_epoch_millis, counter, thread_id).
+        //   - (nothing else — no Input, Port)
         let mut is_init: Vec<bool> = vec![true; n];
 
         // Mark nodes that directly depend on coordinates or external ports
@@ -381,8 +352,7 @@ impl GkProgram {
             for source in wiring {
                 match source {
                     WireSource::Input(_) |
-                    WireSource::VolatilePort(_) |
-                    WireSource::StickyPort(_) => {
+                    WireSource::Port(_) => {
                         is_init[i] = false;
                     }
                     WireSource::NodeOutput(_, _) => {}
@@ -400,10 +370,7 @@ impl GkProgram {
             }
             // Note: auto-inserted type adapter nodes (names starting with
             // `__`) are intentionally NOT excluded here.  Adapters are pure
-            // functions and should participate in constant folding.  A chain
-            // such as `ConstU64(42) → __u64_to_f64 → sin` correctly folds
-            // to a single constant because the propagation pass below marks
-            // each node init-time as long as all its inputs are init-time.
+            // functions and should participate in constant folding.
         }
 
         // Propagate: if any input is not init-time, this node isn't either
@@ -424,7 +391,6 @@ impl GkProgram {
         }
 
         // Wire cost check: warn when a Config wire connects to a cycle-time source.
-        // This catches accidental performance traps (e.g., rebuilding an LUT every cycle).
         for i in 0..n {
             let wire_inputs = self.nodes[i].meta().wire_inputs();
             for (port_idx, wire_source) in self.wiring[i].iter().enumerate() {
@@ -432,12 +398,10 @@ impl GkProgram {
                 if wire_inputs[port_idx].wire_cost != crate::node::WireCost::Config {
                     continue;
                 }
-                // This is a Config wire. Check if the source is cycle-time.
                 let source_is_cycle = match wire_source {
                     WireSource::Input(_) => true,
                     WireSource::NodeOutput(src_idx, _) => !is_init[*src_idx],
-                    WireSource::VolatilePort(_) => true,
-                    WireSource::StickyPort(_) => true,
+                    WireSource::Port(_) => true,
                 };
                 if source_is_cycle {
                     let node_name = &self.nodes[i].meta().name;
@@ -464,8 +428,7 @@ impl GkProgram {
             }
         }
 
-        // Non-deterministic node check: nodes with no inputs that are
-        // excluded from init (counter, current_epoch_millis, etc.)
+        // Non-deterministic node check
         for i in 0..n {
             let name = &self.nodes[i].meta().name;
             let is_nondeterministic = self.wiring[i].is_empty() && !is_init[i]
@@ -475,7 +438,7 @@ impl GkProgram {
                     "non-deterministic node '{name}' used without explicit acknowledgment"
                 );
                 if strict {
-                    return Err(format!("strict mode: {msg}. Mark as volatile or use a deterministic alternative."));
+                    return Err(format!("strict mode: {msg}. Use a deterministic alternative."));
                 }
                 eprintln!("warning: {msg}");
                 if let Some(ref mut log) = log {
@@ -484,7 +447,7 @@ impl GkProgram {
             }
         }
 
-        // Implicit type coercion check: auto-inserted adapter nodes
+        // Implicit type coercion check
         for i in 0..n {
             let name = &self.nodes[i].meta().name;
             if name.starts_with("__adapt_") {
@@ -501,14 +464,12 @@ impl GkProgram {
             }
         }
 
-        // Unused binding check: output nodes with no downstream consumers
-        // An output is "used" if it's in the output_map.
+        // Unused binding check
         let output_node_indices: std::collections::HashSet<usize> =
             self.output_map.values().map(|(idx, _)| *idx).collect();
         for i in 0..n {
             let name = &self.nodes[i].meta().name;
             if name.starts_with("__") { continue; }
-            // Check if this node is consumed by any downstream node or is an output
             let is_output = output_node_indices.contains(&i);
             let is_consumed = (0..n).any(|j| {
                 self.wiring[j].iter().any(|w| matches!(w, WireSource::NodeOutput(src, _) if *src == i))
@@ -518,7 +479,6 @@ impl GkProgram {
                 if strict {
                     return Err(format!("strict mode: {msg}. Remove it or mark as output."));
                 }
-                // Only warn for user-defined nodes (not auto-generated)
                 if !name.contains("__") {
                     eprintln!("warning: {msg}");
                     if let Some(ref mut log) = log {
@@ -528,20 +488,16 @@ impl GkProgram {
             }
         }
 
-        // Count how many init-time nodes have downstream cycle-time consumers
         let init_count = is_init.iter().filter(|&&b| b).count();
         if init_count == 0 { return Ok(0); }
 
         // Phase 2: Evaluate init-time nodes.
-        // Use catch_unwind to handle any panics gracefully —
-        // if a node panics during init evaluation, skip folding it.
         let mut state = self.create_state();
         let dummy_inputs = vec![0u64; self.input_names.len()];
         state.set_inputs(&dummy_inputs);
 
         for i in 0..n {
             if is_init[i] {
-                // Only fold nodes with exactly 1 output (simple constants)
                 if self.nodes[i].meta().outs.len() != 1 {
                     is_init[i] = false;
                     continue;
@@ -550,7 +506,7 @@ impl GkProgram {
                     state.eval_node_public(self, i);
                 }));
                 if result.is_err() {
-                    is_init[i] = false; // evaluation panicked, don't fold
+                    is_init[i] = false;
                 }
             }
         }
@@ -561,16 +517,15 @@ impl GkProgram {
             if !is_init[i] { continue; }
 
             let value = state.core.buffers[i][0].clone();
-            if matches!(value, Value::None) { continue; } // not evaluated
+            if matches!(value, Value::None) { continue; }
             let port_type = self.nodes[i].meta().outs[0].typ;
 
-            // Replace the node with a constant
             let const_node: Box<dyn crate::node::GkNode> = match (&value, port_type) {
                 (Value::U64(v), _) => Box::new(ConstU64::new(*v)),
                 (Value::F64(v), _) => Box::new(ConstF64::new(*v)),
                 (Value::Bool(v), _) => Box::new(ConstU64::new(if *v { 1 } else { 0 })),
                 (Value::Str(s), _) => Box::new(ConstStr::new(s.clone())),
-                _ => continue, // Can't fold this type
+                _ => continue,
             };
 
             let node_name = self.nodes[i].meta().name.clone();
@@ -581,7 +536,7 @@ impl GkProgram {
                 });
             }
             self.nodes[i] = const_node;
-            self.wiring[i] = Vec::new(); // Constants have no inputs
+            self.wiring[i] = Vec::new();
             folded += 1;
         }
 

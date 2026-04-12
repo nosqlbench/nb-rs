@@ -5,40 +5,32 @@ A SELECT result feeds a subsequent UPDATE. A token from one
 request authenticates the next.
 
 **Status:** Core capture flow implemented with automatic
-linearization (dependency group analysis). Target design: GK as
-unified state holder for all inter-op data (sysref 10).
+linearization (dependency group analysis). Captured values write
+directly to GK ports on the fiber's GkState.
 
 ---
 
-## Capture Context
+## Capture Flow
 
-Each fiber owns a `CaptureContext` — a key-value store for
-captured values:
-
-```rust
-pub struct CaptureContext {
-    values: HashMap<String, Value>,
-    cycle: u64,
-}
-```
+Captured values write directly to GK state ports — no
+intermediate storage. Each fiber owns its own `GkState` with
+port buffers that persist across `set_inputs()` calls.
 
 ### Lifecycle
 
-1. **Stanza start**: `fiber.reset_captures(base_cycle)` — clears
-   all captured values
-2. **After each op**: `fiber.capture(name, value)` — stores a
-   captured value from the result
-3. **Before next window**: `fiber.apply_captures()` — writes
-   captured values to sticky ports in GkState
-4. **Resolution**: `{capture:name}` in bind points reads from
-   the capture context
+1. **Stanza start**: `fiber.reset_ports()` — ports reset to
+   defaults (prevents capture leakage across stanzas)
+2. **After each op**: `fiber.capture(name, value)` writes
+   directly to the matching port in GkState
+3. **Resolution**: `{name}` in bind points resolves from GK
+   outputs (which may read from ports via graph wiring)
 
 ### Isolation
 
 Captures are scoped to a single stanza:
 - Within a stanza: ops can read captures from earlier ops
-- Across stanzas: captures reset, no leakage
-- Across fibers: each fiber has its own context, no sharing
+- Across stanzas: ports reset to defaults, no leakage
+- Across fibers: each fiber has its own GkState, no sharing
 
 ---
 
@@ -62,12 +54,14 @@ ops:
 ```yaml
 ops:
   update_user:
-    prepared: "UPDATE users SET name = {capture:username} WHERE id = {id}"
+    prepared: "UPDATE users SET name = {username} WHERE id = {id}"
 ```
 
-`{capture:username}` reads from the capture context. Also
-available as unqualified `{username}` (capture is checked after
-GK bindings).
+Unqualified `{username}` resolves from GK outputs. If the
+program has a port named `username` and a GK node wired
+to it, the captured value flows through the DAG. The
+`{capture:name}` qualifier is also accepted for explicit
+disambiguation.
 
 ---
 
@@ -79,7 +73,8 @@ The `TraversingDispenser` extracts captures from the result:
 2. If yes, serialize result body to JSON via `to_json()`
 3. Look up each capture source name in the JSON
 4. Store as `Value` in the result's `captures` HashMap
-5. Executor stores captures in `CaptureContext`
+5. Executor calls `fiber.capture(name, value)` which writes
+   directly to GkState ports
 
 Current implementation: top-level JSON field lookup (naive).
 Future: JSON pointer paths for nested results
@@ -98,9 +93,7 @@ cannot see each other's captures.
 
 ```
 Window 1: [op_A, op_B] execute concurrently
-  → captures from A and B collected after window completes
-
-fiber.apply_captures()
+  → captures from A and B written to GkState after window
 
 Window 2: [op_C, op_D] execute concurrently
   → op_C and op_D can see captures from window 1
@@ -108,42 +101,35 @@ Window 2: [op_C, op_D] execute concurrently
 
 ---
 
-## Port Types
+## Port Model
 
-GkState has two external port types for captures:
+GkState has a single external port type for captures. Ports
+persist across `set_inputs()` calls within a stanza and are
+reset to defaults at stanza boundaries via `reset_ports()`.
 
-- **Volatile**: reset to defaults on `set_inputs()`.
-  Per-cycle external inputs.
-- **Sticky**: persist across `set_inputs()` within a stanza.
-  Used for capture flow — a captured value from op A remains
-  available for op B's GK evaluation even though inputs
-  changed.
+```
+extern balance: f64 = 0.0
+extern session_id: u64 = 0
+```
 
-`apply_captures()` writes captured values to sticky ports.
-`reset_captures()` clears both captures and sticky ports.
+`fiber.capture(name, value)` writes directly to the matching
+port by looking up the name in the program's port definitions.
+The provenance system marks downstream nodes dirty when a port
+value changes, ensuring re-evaluation of dependent outputs.
 
 ---
 
-## Relationship to Memo 06 (GK Through-Instance)
+## Design: GK as Unified State Holder
 
-Memo 06 proposed eliminating CaptureContext entirely and routing
-captures as direct GK stanza inputs alongside `cycle`. After
-analysis, the current architecture already achieves the memo's
-intent via the port mechanism:
+Captured values write to GK state ports, which are read by GK
+nodes via the standard wiring model. This means:
 
-1. Captures write to GK sticky ports (via `apply_captures()`)
-2. GK evaluation reads from those ports as node inputs
-3. Downstream ops see captured values through normal GK wiring
+1. Captures are GK inputs — they feed into the DAG
+2. Downstream GK nodes can compute derived values from captures
+3. Op templates consume those derived values via `{name}`
+4. Everything flows through one namespace: GK outputs
 
-The CaptureContext serves as a thin bridging layer that maps
-capture names to port indices. Eliminating it would require the
-GK compiler to know about captures at compile time, before any
-ops have executed -- which introduces a circular dependency
-between the synthesis pipeline and runtime capture discovery.
-
-**Decision:** CaptureContext is retained. The sticky port
-mechanism IS the GK through-instance path. The bridging step
-(`apply_captures()`) is a one-time per-window cost with no
-measurable impact on throughput. Future optimization, if needed,
-would target the bridging step itself rather than restructuring
-the capture-to-port architecture.
+The GK kernel acts as the single state holder for all inter-op
+data flow. There is no separate capture storage, no priority
+chain between multiple resolution sources — just GK state and
+GK evaluation.

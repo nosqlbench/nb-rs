@@ -61,6 +61,22 @@ $ nbrs bench --explain "hash(cycle)" cycles=1
 Shows parsing, wiring, type adaptation, constant folding, fusion,
 and output selection decisions.
 
+### GK Compiler Events
+
+| Event | Level | Description |
+|-------|-------|-------------|
+| Parsed | Info | AST created |
+| BindingResolved | Info | Name → node |
+| ModuleInlined | Info | Module expanded |
+| TypeAdapterInserted | Advisory | Auto-coercion |
+| TypeWidening | Advisory | u64→f64 promotion |
+| ConstantFolded | Info | Init-time eval |
+| FusionApplied | Info | DAG rewrite |
+| ConfigWireCycleWarning | Warning | Config wire perf |
+| Warning | Warning | General |
+
+Query advisories: `nbrs bench gk file.gk --explain`
+
 ---
 
 ## Validation Diagnostics

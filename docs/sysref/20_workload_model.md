@@ -137,6 +137,57 @@ Auto-generated tags: `name` (op name), `op` (op name), `block`
 
 ---
 
+## Phased Execution
+
+Workloads can define named phases that run sequentially.
+Each phase has its own cycles, concurrency, rate, and op set.
+
+### Scenarios
+
+A scenario is an ordered list of phase names:
+
+```yaml
+scenarios:
+  default:
+    - schema
+    - rampup
+    - main
+```
+
+### Phases
+
+Each phase declares its config and either inline ops or
+a tag filter to select from blocks:
+
+```yaml
+phases:
+  schema:
+    cycles: 1
+    concurrency: 1
+    ops:
+      create_table:
+        stmt: "CREATE TABLE IF NOT EXISTS ..."
+  rampup:
+    cycles: "{vector_count('{dataset}')}"
+    concurrency: 100
+    tags: block:rampup
+  main:
+    cycles: 1000000
+    concurrency: 50
+    rate: 5000
+    tags: "block:read|block:write"
+```
+
+Phase cycles support GK config expressions for data-driven
+cycle counts.
+
+### Backward Compatibility
+
+Workloads without `phases:` or `scenarios:` work exactly as
+before — single implicit phase with all ops.
+
+---
+
 ## Op Field Routing
 
 When the parser normalizes an op object, fields are routed:
