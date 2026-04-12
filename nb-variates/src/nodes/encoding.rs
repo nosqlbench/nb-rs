@@ -200,6 +200,71 @@ impl GkNode for UrlDecode {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for encoding/decoding nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "html_encode", category: C::Encoding, outputs: 1,
+            description: "HTML entity encode",
+            help: "Escape HTML special characters: & < > \" ' become entity references.\nUse when embedding generated strings into HTML content to prevent\ninjection or rendering issues.\nParameters:\n  input — String wire input",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "html_decode", category: C::Encoding, outputs: 1,
+            description: "HTML entity decode",
+            help: "Decode HTML entity references back to literal characters.\nHandles named entities (&amp;, &lt;, etc.) and numeric references.\nUse when processing HTML content that needs to be plain text.\nParameters:\n  input — String wire input",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "url_encode", category: C::Encoding, outputs: 1,
+            description: "URL percent-encode",
+            help: "Percent-encode a string for safe use in URLs (RFC 3986).\nReserved and non-ASCII characters become %XX hex sequences.\nUse when generating query parameters or path segments.\nParameters:\n  input — String wire input",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "url_decode", category: C::Encoding, outputs: 1,
+            description: "URL percent-decode",
+            help: "Decode percent-encoded URL sequences back to literal characters.\nConverts %XX hex sequences and '+' (as space) to their originals.\nUse when processing URL-encoded input data.\nParameters:\n  input — String wire input",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+    ]
+}
+
+/// Try to build an encoding node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "html_encode" => Some(Ok(Box::new(HtmlEncode::new()))),
+        "html_decode" => Some(Ok(Box::new(HtmlDecode::new()))),
+        "url_encode" => Some(Ok(Box::new(UrlEncode::new()))),
+        "url_decode" => Some(Ok(Box::new(UrlDecode::new()))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -280,6 +280,53 @@ fn parse_spec(spec: &str, index: usize) -> FormatSpec {
     result
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for string formatting nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "printf", category: C::Formatting,
+            outputs: 1, description: "printf-style formatting: printf(fmt, a, b, ...) -> String",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "format", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::VariadicWires { min_wires: 0 },
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Printf-style string formatting with positional wire inputs.\nFormat string uses Rust-style {} placeholders with optional specifiers:\n  {:05} zero-pad, {:.2} precision, {:x} hex, {:X} HEX, {:b} binary, {:o} octal.\nParameters:\n  format   — format string constant (e.g. \"user-{:05}-score-{:.1}\")\n  input... — wire inputs matched positionally to placeholders\nExample: printf(\"id={:08x} val={:.2}\", hash(cycle), score)",
+        },
+    ]
+}
+
+/// Try to build a format node from a function name, const args, and wire refs.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "printf" => {
+            let fmt = consts.first()
+                .map(|c| c.as_str())
+                .unwrap_or("{}");
+            // Infer input types: all wire inputs default to u64.
+            // The Printf node handles any Value type at eval time,
+            // so u64 ports work as the default — the actual value
+            // type is determined by what's wired upstream.
+            let types: Vec<crate::node::PortType> = (0..wires.len()).map(|_| crate::node::PortType::U64).collect();
+            Some(Ok(Box::new(Printf::new(fmt, &types))))
+        }
+        _ => None,
+    }
+}
+
+crate::register_nodes!(signatures, build_node);
+
 #[cfg(test)]
 mod tests {
     use super::*;

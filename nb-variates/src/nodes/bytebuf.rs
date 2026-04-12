@@ -393,6 +393,76 @@ fn parse_charset(spec: &str) -> Vec<char> {
     chars
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for byte buffer nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "u64_to_bytes", category: C::ByteBuffers, outputs: 1,
+            description: "convert u64 to 8 bytes LE",
+            help: "Convert a u64 to an 8-byte little-endian byte buffer.\nThis is the bridge from the integer domain to the bytes domain.\nFeed the result into sha256, md5, to_hex, or to_base64.\nParameters:\n  input — u64 wire input",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "bytes_from_hash", category: C::ByteBuffers,
+            outputs: 1, description: "generate N deterministic bytes",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "size", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Generate N deterministic bytes from a u64 seed via chained hashing.\nEach 8-byte chunk is hash(seed + chunk_index). Fresh per cycle.\nParameters:\n  input — u64 wire input (seed value)\n  size  — number of bytes to generate (u64)\nExample: bytes_from_hash(hash(cycle), 32)  // 32 pseudo-random bytes",
+        },
+        FuncSig {
+            name: "to_hex", category: C::ByteBuffers, outputs: 1,
+            description: "encode bytes as hex string",
+            help: "Encode a byte buffer as a lowercase hexadecimal string.\nEach byte becomes two hex digits: [0xDE, 0xAD] -> \"dead\".\nUse after sha256/md5/u64_to_bytes for human-readable output.\nParameters:\n  input — Bytes wire input",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "from_hex", category: C::ByteBuffers, outputs: 1,
+            description: "decode hex string to bytes",
+            help: "Decode a hexadecimal string to a byte buffer.\nAccepts uppercase or lowercase hex digits. The string length\nmust be even (two hex chars per byte).\nParameters:\n  input — String wire input (hex-encoded)",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+    ]
+}
+
+/// Try to build a byte-buffer node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "bytes_from_hash" => Some(Ok(Box::new(BytesFromHash::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(16) as usize,
+        )))),
+        "u64_to_bytes" => Some(Ok(Box::new(U64ToBytes::new()))),
+        "to_hex" => Some(Ok(Box::new(ToHex::new()))),
+        "from_hex" => Some(Ok(Box::new(FromHex::new()))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

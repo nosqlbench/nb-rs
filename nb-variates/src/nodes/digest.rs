@@ -213,6 +213,75 @@ impl GkNode for FromBase32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for digest and encoding nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "sha256", category: C::Digest,
+            outputs: 1, description: "SHA-256 digest",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Compute the SHA-256 cryptographic digest of a byte buffer.\nOutput is always 32 bytes. Use with to_hex or to_base64 for string output.\nParameters:\n  input — bytes wire input\nExample: sha256(bytes_from_hash(cycle, 64)) -> to_hex(...)",
+        },
+        FuncSig {
+            name: "md5", category: C::Digest,
+            outputs: 1, description: "MD5 digest",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Compute the MD5 digest of a byte buffer.\nOutput is always 16 bytes. Not cryptographically secure — use for\nchecksums, deduplication keys, or legacy compatibility only.\nParameters:\n  input — bytes wire input\nExample: md5(u64_to_bytes(hash(cycle))) -> to_hex(...)",
+        },
+        FuncSig {
+            name: "to_base64", category: C::Digest, outputs: 1,
+            description: "base64 encode",
+            help: "Encode a byte buffer as a standard base64 string (RFC 4648).\nUse after digest functions for compact, printable output.\nExample: sha256(...) -> to_base64(...)\nParameters:\n  input — Bytes wire input",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "from_base64", category: C::Digest, outputs: 1,
+            description: "base64 decode",
+            help: "Decode a standard base64 string back to a byte buffer.\nAccepts standard base64 (RFC 4648) with optional padding.\nUse when processing base64-encoded input data.\nParameters:\n  input — String wire input (base64-encoded)",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+    ]
+}
+
+/// Try to build a digest or base64 node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "sha256" => Some(Ok(Box::new(DigestSha256::new()))),
+        "md5" => Some(Ok(Box::new(DigestMd5::new()))),
+        "to_base64" => Some(Ok(Box::new(ToBase64::new()))),
+        "from_base64" => Some(Ok(Box::new(FromBase64::new()))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

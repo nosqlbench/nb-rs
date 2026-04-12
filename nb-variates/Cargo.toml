@@ -26,6 +26,7 @@ cranelift-module = { version = "0.116", optional = true }
 cranelift-codegen = { version = "0.116", optional = true }
 cranelift-frontend = { version = "0.116", optional = true }
 target-lexicon = { version = "0.13", optional = true }
+inventory = "0.3.24"
 
 [features]
 default = ["jit", "vectordata"]

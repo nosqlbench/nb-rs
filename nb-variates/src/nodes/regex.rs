@@ -103,6 +103,63 @@ impl GkNode for RegexExtract {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for regex nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "regex_replace", category: C::Regex,
+            outputs: 1, description: "regex substitution",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true },
+                ParamSpec { name: "replacement", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Substitute all matches of a regex pattern in the input string.\nThe regex is compiled at init time for fast cycle-time evaluation.\nParameters:\n  input       — String wire input\n  pattern     — regex pattern (Rust regex syntax)\n  replacement — replacement string ($1, $2 for capture groups)\nExample: regex_replace(name, \"[^a-zA-Z]\", \"_\")",
+        },
+        FuncSig {
+            name: "regex_match", category: C::Regex,
+            outputs: 1, description: "test if string matches regex",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Test if a string matches a regex pattern. Returns 1 (match) or 0 (no match).\nThe regex is compiled at init time. Tests for a partial match\n(use ^...$ anchors for a full match).\nParameters:\n  input   — String wire input\n  pattern — regex pattern (Rust regex syntax)\nExample: regex_match(email, \"^[^@]+@[^@]+$\")",
+        },
+    ]
+}
+
+/// Try to build a regex node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "regex_replace" => Some(Ok(Box::new(RegexReplace::new(
+            consts.first().map(|c| c.as_str()).unwrap_or(""),
+            consts.get(1).map(|c| c.as_str()).unwrap_or(""),
+        )))),
+        "regex_match" => Some(Ok(Box::new(RegexMatch::new(
+            consts.first().map(|c| c.as_str()).unwrap_or(".*"),
+        )))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

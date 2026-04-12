@@ -242,6 +242,56 @@ fn chunk_to_words(n: u32) -> String {
     parts.join(" ")
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for string generation nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "combinations", category: C::String,
+            outputs: 1, description: "mixed-radix character set mapping",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Map a u64 to a string via mixed-radix indexing into character sets.\nPattern is semicolon-delimited character set specs per position.\nEach spec uses ranges (A-Z, 0-9) or literal characters.\nA single literal (like -) is emitted as-is without consuming a radix digit.\nParameters:\n  input   — u64 wire input\n  pattern — semicolon-separated charset specs\nExample: combinations(cycle, \"0-9;0-9;0-9;-;0-9;0-9;0-9;0-9\")  // \"372-8419\"",
+        },
+        FuncSig {
+            name: "number_to_words", category: C::String, outputs: 1,
+            description: "spell out number in English",
+            help: "Convert a u64 to its English word representation.\nExample: 42 becomes \"forty-two\", 1000 becomes \"one thousand\".\nUseful for generating human-readable labels or test data.\nParameters:\n  input — u64 wire input",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+    ]
+}
+
+/// Try to build a string node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "combinations" => Some(Ok(Box::new(Combinations::new(
+            consts.first().map(|c| c.as_str()).unwrap_or("a-z"),
+        )))),
+        "number_to_words" => Some(Ok(Box::new(NumberToWords::new()))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

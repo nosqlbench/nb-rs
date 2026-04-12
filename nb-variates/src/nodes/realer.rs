@@ -355,6 +355,71 @@ impl GkNode for FullNames {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for real-world data generation nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "first_names", category: C::RealData, outputs: 1,
+            description: "Census first name (weighted)",
+            help: "Select a first name from US Census data, weighted by frequency.\nMore common names appear proportionally more often.\nUse for realistic person-name generation in test data.\nParameters:\n  input — u64 wire input (typically hashed)",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "full_names", category: C::RealData, outputs: 1,
+            description: "full name (first + last)",
+            help: "Generate a full name (first + last) from Census data.\nFirst and last names are selected independently, both weighted\nby frequency. Produces realistic \"Jane Smith\" style names.\nParameters:\n  input — u64 wire input (typically hashed)",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "state_codes", category: C::RealData, outputs: 1,
+            description: "US state abbreviation",
+            help: "Select a US state abbreviation (e.g., \"CA\", \"NY\", \"TX\").\nAll 50 states plus DC are included with equal probability.\nUse for generating realistic US address data.\nParameters:\n  input — u64 wire input (typically hashed)",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "country_names", category: C::RealData, outputs: 1,
+            description: "country name",
+            help: "Select a country name from the full ISO list.\nAll countries are included with equal probability.\nUse for generating geographic diversity in test data.\nParameters:\n  input — u64 wire input (typically hashed)",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+    ]
+}
+
+/// Try to build a real-world data node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "first_names" => Some(Ok(Box::new(FirstNames::female()))),
+        "full_names" => Some(Ok(Box::new(FullNames::new()))),
+        "state_codes" => Some(Ok(Box::new(StateCodes::new()))),
+        "country_names" => Some(Ok(Box::new(CountryNames::new()))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -394,6 +394,84 @@ impl GkNode for FractalNoise2D {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for coherent noise nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "perlin_1d", category: C::Noise,
+            outputs: 1, description: "1D Perlin noise",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true },
+                ParamSpec { name: "frequency", slot_type: SlotType::ConstF64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "1D Perlin noise: coherent pseudo-random f64 in [-1, 1].\nThe u64 input is scaled to the float domain by frequency.\nNearby inputs produce smoothly varying outputs (spatial correlation).\nParameters:\n  input     — u64 wire input\n  seed      — permutation table seed (u64)\n  frequency — spatial frequency (f64; higher = more detail)\nExample: perlin_1d(cycle, 42, 0.01)  // slow-varying noise",
+        },
+        FuncSig {
+            name: "perlin_2d", category: C::Noise,
+            outputs: 1, description: "2D Perlin noise",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "x", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "y", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true },
+                ParamSpec { name: "frequency", slot_type: SlotType::ConstF64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "2D Perlin noise: coherent pseudo-random f64 in [-1, 1].\nTwo u64 coordinate inputs are scaled by frequency.\nProduces spatially correlated values for terrain, textures, etc.\nParameters:\n  x         — u64 x-coordinate wire input\n  y         — u64 y-coordinate wire input\n  seed      — permutation table seed (u64)\n  frequency — spatial frequency (f64)\nExample: perlin_2d(row, col, 42, 0.05)",
+        },
+        FuncSig {
+            name: "simplex_2d", category: C::Noise,
+            outputs: 1, description: "2D simplex noise",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "x", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "y", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true },
+                ParamSpec { name: "frequency", slot_type: SlotType::ConstF64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "2D simplex noise: faster than Perlin for 2D+ with fewer directional artifacts.\nOutput is f64 in [-1, 1]. Uses a simplex grid instead of a square grid.\nParameters:\n  x         — u64 x-coordinate wire input\n  y         — u64 y-coordinate wire input\n  seed      — permutation table seed (u64)\n  frequency — spatial frequency (f64)\nExample: simplex_2d(row, col, 99, 0.1)",
+        },
+    ]
+}
+
+/// Try to build a noise node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "perlin_1d" => Some(Ok(Box::new(Perlin1D::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
+            consts.get(1).map(|c| c.as_f64()).unwrap_or(0.01),
+        )))),
+        "perlin_2d" => Some(Ok(Box::new(Perlin2D::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
+            consts.get(1).map(|c| c.as_f64()).unwrap_or(0.01),
+        )))),
+        "simplex_2d" => Some(Ok(Box::new(SimplexNoise2D::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
+            consts.get(1).map(|c| c.as_f64()).unwrap_or(0.01),
+        )))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

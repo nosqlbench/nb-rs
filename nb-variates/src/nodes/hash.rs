@@ -190,6 +190,43 @@ impl FusedNode for HashInterval {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for hash-related nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "hash", category: C::Hashing, outputs: 1,
+            description: "64-bit xxHash3",
+            help: "Deterministic 64-bit hash using xxHash3.\nThis is the fundamental entropy source: feed a cycle counter in,\nget pseudo-random bits out. Hash before mod/lerp to avoid patterns.\nParameters:\n  input — any u64 value (typically a cycle ordinal)\nExample: hash(cycle) -> mod(1000)\nTheory: xxHash3 is a non-cryptographic hash with excellent\navalanche properties and very high throughput.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+    ]
+}
+
+/// Try to build a hash node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "hash" => Some(Ok(Box::new(Hash64::new()))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

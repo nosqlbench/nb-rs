@@ -10,6 +10,10 @@ pub mod compile;
 pub mod error;
 pub mod registry;
 pub mod events;
+pub(crate) mod factory;
+pub(crate) mod validate;
+mod modules;
+mod binding;
 
 pub use compile::{compile_gk, compile_gk_checked, compile_gk_with_path, compile_gk_strict, compile_gk_with_outputs, compile_gk_with_libs};
 

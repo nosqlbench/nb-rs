@@ -161,6 +161,157 @@ impl GkNode for Pow {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for mathematical function nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "sin", category: C::Math,
+            outputs: 1, description: "sine (radians)",
+            help: "Sine of an f64 value in radians.\nOutput oscillates between -1 and 1.\n\nExample: sin(scale_range(hash(cycle), 0.0, 6.2832))",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "cos", category: C::Math,
+            outputs: 1, description: "cosine (radians)",
+            help: "Cosine of an f64 value in radians.\nOutput oscillates between -1 and 1.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "tan", category: C::Math,
+            outputs: 1, description: "tangent (radians)",
+            help: "Tangent of an f64 value in radians.\nUnbounded output — has poles at odd multiples of pi/2.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "asin", category: C::Math,
+            outputs: 1, description: "arc sine (inverse sin)",
+            help: "Arc sine: input in [-1, 1], output in [-pi/2, pi/2] radians.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "acos", category: C::Math,
+            outputs: 1, description: "arc cosine (inverse cos)",
+            help: "Arc cosine: input in [-1, 1], output in [0, pi] radians.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "atan", category: C::Math,
+            outputs: 1, description: "arc tangent",
+            help: "Arc tangent: output in (-pi/2, pi/2) radians.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "atan2", category: C::Math,
+            outputs: 1, description: "two-argument arc tangent",
+            help: "atan2(y, x): angle in radians from positive x-axis to point (x,y).\nOutput in (-pi, pi]. Use for Cartesian-to-polar conversion.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "y", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "x", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "sqrt", category: C::Math,
+            outputs: 1, description: "square root",
+            help: "Square root of an f64 value.\nReturns NaN for negative inputs.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "abs_f64", category: C::Math,
+            outputs: 1, description: "absolute value (f64)",
+            help: "Absolute value of an f64. Always non-negative.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "ln", category: C::Math,
+            outputs: 1, description: "natural logarithm",
+            help: "Natural logarithm (base e).\nReturns -inf for 0, NaN for negative inputs.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "exp", category: C::Math,
+            outputs: 1, description: "exponential (e^x)",
+            help: "Exponential function: e raised to the power of input.\nexp(0) = 1, exp(1) ≈ 2.718.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "pow", category: C::Math,
+            outputs: 1, description: "power (base^exponent)",
+            help: "Raise base to the power of exponent.\npow(2, 10) = 1024. Both inputs are f64 wires.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "base", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "exponent", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+    ]
+}
+
+/// Try to build a math (trig/elementary) node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "sin" => Some(Ok(Box::new(Sin::new()))),
+        "cos" => Some(Ok(Box::new(Cos::new()))),
+        "tan" => Some(Ok(Box::new(Tan::new()))),
+        "asin" => Some(Ok(Box::new(Asin::new()))),
+        "acos" => Some(Ok(Box::new(Acos::new()))),
+        "atan" => Some(Ok(Box::new(Atan::new()))),
+        "atan2" => Some(Ok(Box::new(Atan2::new()))),
+        "sqrt" => Some(Ok(Box::new(Sqrt::new()))),
+        "abs_f64" => Some(Ok(Box::new(Abs::new()))),
+        "ln" => Some(Ok(Box::new(Ln::new()))),
+        "exp" => Some(Ok(Box::new(Exp::new()))),
+        "pow" => Some(Ok(Box::new(Pow::new()))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

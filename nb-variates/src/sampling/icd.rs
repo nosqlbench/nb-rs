@@ -705,6 +705,155 @@ pub fn dist_empirical_weighted(values: &[f64], weights: &[f64], resolution: usiz
     )
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for distribution and sampling nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "dist_normal", category: C::Distributions,
+            outputs: 1, description: "build normal distribution LUT",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "mean", slot_type: SlotType::ConstF64, required: true },
+                ParamSpec { name: "stddev", slot_type: SlotType::ConstF64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Build a normal (Gaussian) distribution lookup table.\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  mean   — center of the distribution\n  stddev — standard deviation (must be > 0)\nExample: dist_normal(50.0, 10.0) -> lut_sample(hash(cycle))\nTheory: pre-computes the inverse CDF into a table for O(1) sampling.",
+        },
+        FuncSig {
+            name: "dist_exponential", category: C::Distributions,
+            outputs: 1, description: "build exponential distribution LUT",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "rate", slot_type: SlotType::ConstF64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Build an exponential distribution lookup table.\nModels time between events (inter-arrival times, latencies).\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  rate — rate parameter lambda (mean = 1/rate, must be > 0)\nExample: dist_exponential(0.5) -> lut_sample(hash(cycle))",
+        },
+        FuncSig {
+            name: "dist_uniform", category: C::Distributions,
+            outputs: 1, description: "build uniform distribution LUT",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "min", slot_type: SlotType::ConstF64, required: true },
+                ParamSpec { name: "max", slot_type: SlotType::ConstF64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Build a uniform distribution lookup table over [min, max].\nEvery value in the range is equally likely.\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  min — lower bound (inclusive, f64)\n  max — upper bound (exclusive, f64)\nExample: dist_uniform(0.0, 1000.0) -> lut_sample(hash(cycle))",
+        },
+        FuncSig {
+            name: "dist_pareto", category: C::Distributions,
+            outputs: 1, description: "build Pareto distribution LUT",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "scale", slot_type: SlotType::ConstF64, required: true },
+                ParamSpec { name: "shape", slot_type: SlotType::ConstF64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Build a Pareto (power-law) distribution lookup table.\nModels heavy-tailed phenomena: wealth, file sizes, city populations.\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  scale — minimum value (x_m, must be > 0)\n  shape — tail index (alpha, larger = thinner tail)\nExample: dist_pareto(1.0, 2.0) -> lut_sample(hash(cycle))",
+        },
+        FuncSig {
+            name: "dist_zipf", category: C::Distributions,
+            outputs: 1, description: "build Zipf distribution LUT",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "n", slot_type: SlotType::ConstU64, required: true },
+                ParamSpec { name: "exponent", slot_type: SlotType::ConstF64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Build a Zipf distribution lookup table over ranks [1, n].\nModels rank-frequency phenomena: word frequency, cache access patterns.\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  n        — number of elements (u64, must be > 0)\n  exponent — Zipf exponent s (f64, typically 1.0-2.0; higher = more skewed)\nExample: dist_zipf(1000, 1.07) -> lut_sample(hash(cycle))",
+        },
+        FuncSig {
+            name: "lut_sample", category: C::Distributions,
+            outputs: 1, description: "interpolating lookup table sample",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Sample from a precomputed lookup table via linear interpolation.\nInput is an f64 in [0, 1]; output is the interpolated table value.\nThis is the runtime half of distribution sampling: build the table\nwith dist_normal/dist_zipf/etc, then sample with lut_sample.\nParameters:\n  input — f64 wire in [0.0, 1.0] (typically from unit_interval)\nExample: lut_sample(unit_interval(hash(cycle)))  // wired to a dist_* LUT",
+        },
+        FuncSig {
+            name: "icd_normal", category: C::Distributions,
+            outputs: 1, description: "sample from normal distribution",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "mean", slot_type: SlotType::ConstF64, required: true },
+                ParamSpec { name: "stddev", slot_type: SlotType::ConstF64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "One-step normal distribution sampling (builds LUT + samples internally).\nConvenience wrapper: equivalent to dist_normal -> lut_sample but\ncombined into a single node for simpler graph construction.\nParameters:\n  input  — u64 wire input (typically hashed)\n  mean   — center of the distribution (f64)\n  stddev — standard deviation (f64, must be > 0)\nExample: icd_normal(hash(cycle), 100.0, 15.0)",
+        },
+        FuncSig {
+            name: "icd_exponential", category: C::Distributions,
+            outputs: 1, description: "sample from exponential distribution",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "rate", slot_type: SlotType::ConstF64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "One-step exponential distribution sampling (builds LUT + samples).\nConvenience wrapper for modeling inter-arrival times and latencies.\nParameters:\n  input — u64 wire input (typically hashed)\n  rate  — rate parameter lambda (f64, mean = 1/rate)\nExample: icd_exponential(hash(cycle), 0.1)  // mean = 10.0",
+        },
+        FuncSig {
+            name: "histribution", category: C::Distributions,
+            outputs: 1, description: "discrete histogram distribution",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Sample from a discrete histogram distribution.\nParse an inline frequency spec into an alias table at init time.\nTwo formats:\n  Implicit labels: histribution(hash(cycle), \"50 25 13 12\") → outcomes 0-3\n  Explicit labels: histribution(hash(cycle), \"234:50 33:25 17:13 3:12\")\nDelimiters: space, comma, or semicolon.\nOutput is a u64 label.",
+        },
+        FuncSig {
+            name: "dist_empirical", category: C::Distributions,
+            outputs: 1, description: "empirical distribution from data points",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "data", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Sample from an empirical distribution defined by observed data points.\nThe data string is a space/comma/semicolon-separated list of f64 values.\nAt init time, values are sorted and used as the inverse CDF directly.\nThe input is an f64 in [0,1] (from unit_interval); output is interpolated.\nExample: dist_empirical(unit_interval(hash(cycle)), \"1.2 3.5 5.0 7.8 12.1\")",
+        },
+    ]
+}
+
+/// Sampling nodes have no dedicated builder here — construction is handled
+/// by the sampling fallback in `dsl::factory`.
+///
+/// This stub satisfies the `NodeRegistration::build` signature so the
+/// signatures can still be collected via inventory without duplicating the
+/// builder logic.
+pub(crate) fn build_node(
+    _name: &str,
+    _wires: &[crate::assembly::WireRef],
+    _consts: &[crate::dsl::factory::ConstArg],
+) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    None
+}
+
+crate::register_nodes!(signatures, build_node);
+
 #[cfg(test)]
 mod tests {
     use super::*;

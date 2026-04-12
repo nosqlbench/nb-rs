@@ -226,6 +226,79 @@ fn epoch_ms_to_iso(epoch_ms: u64) -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{ms:03}Z")
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for datetime nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "epoch_scale", category: C::Datetime,
+            outputs: 1, description: "scale u64 to epoch millis",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "factor", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Scale a u64 to epoch milliseconds by multiplying by a factor.\nUse to convert a counter in coarse units to millisecond timestamps.\nParameters:\n  input  — u64 wire input (e.g., a cycle counter)\n  factor — milliseconds per input unit (u64)\nExample: epoch_scale(cycle, 1000)  // treat input as seconds -> millis",
+        },
+        FuncSig {
+            name: "epoch_offset", category: C::Datetime,
+            outputs: 1, description: "add base epoch offset",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "base", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Add a base epoch offset (milliseconds) to a u64 value.\nShifts a relative millisecond value into absolute epoch time.\nParameters:\n  input — u64 wire input (relative millis)\n  base  — epoch milliseconds to add (e.g., 1704067200000 for 2024-01-01)\nExample: epoch_offset(epoch_scale(cycle, 1000), 1704067200000)",
+        },
+        FuncSig {
+            name: "to_timestamp", category: C::Datetime,
+            outputs: 1, description: "format epoch millis as ISO-8601",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Format an epoch-millis u64 as an ISO-8601 timestamp string.\nProduces: \"YYYY-MM-DDThh:mm:ss.mmmZ\" (UTC, no timezone conversion).\nParameters:\n  input — u64 epoch milliseconds\nExample: to_timestamp(epoch_offset(epoch_scale(cycle, 1000), 1704067200000))",
+        },
+        FuncSig {
+            name: "date_components", category: C::Datetime, outputs: 7,
+            description: "decompose epoch to year/month/day/hour/min/sec/ms",
+            help: "Decompose epoch milliseconds into 7 output ports:\nyear, month (1-12), day (1-31), hour (0-23), minute (0-59),\nsecond (0-59), millisecond (0-999). All values are UTC.\nUse when you need individual date/time fields for structured output.\nParameters:\n  input — u64 epoch milliseconds",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+    ]
+}
+
+/// Try to build a datetime node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "epoch_scale" => Some(Ok(Box::new(EpochScale::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
+        "epoch_offset" => Some(Ok(Box::new(EpochOffset::new(consts.first().map(|c| c.as_u64()).unwrap_or(0))))),
+        "to_timestamp" => Some(Ok(Box::new(ToTimestamp::new()))),
+        "date_components" => Some(Ok(Box::new(DateComponents::new()))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

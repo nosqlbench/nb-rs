@@ -578,6 +578,151 @@ impl GkNode for Blend {
     fn jit_constants(&self) -> Vec<u64> { vec![self.mix.to_bits()] }
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for probability and conditional selection nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "fair_coin", category: C::Probability,
+            outputs: 1, description: "50/50 binary outcome (0 or 1)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Fair coin flip: deterministically returns 0 or 1 with 50/50 probability.\nEquivalent to mod(hash(input), 2). Use for simple binary decisions\nlike choosing between two data centers or two code paths.\nParameters:\n  input — u64 wire input (hashed internally)\nExample: fair_coin(cycle)  // 0 or 1",
+        },
+        FuncSig {
+            name: "unfair_coin", category: C::Probability,
+            outputs: 1, description: "biased coin: 1 with probability p, else 0",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "p", slot_type: SlotType::ConstF64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Biased coin: returns 1 with probability p, else 0.\nThe input is hashed to [0,1) and compared against p.\nUse for modeling probabilistic events: error injection, cache miss rates.\nParameters:\n  input — u64 wire input (hashed internally)\n  p     — probability of returning 1 (f64 in [0.0, 1.0])\nExample: unfair_coin(cycle, 0.1)  // 10% chance of 1",
+        },
+        FuncSig {
+            name: "select", category: C::Probability,
+            outputs: 1, description: "binary conditional: if_true when cond != 0, else if_false",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "cond", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "if_true", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "if_false", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Ternary conditional: returns if_true when cond != 0, else if_false.\nAll three inputs are always evaluated (no short-circuit — this is a DAG).\nCombine with fair_coin/unfair_coin/n_of for the condition wire.\nParameters:\n  cond     — u64 condition (0 = false, nonzero = true)\n  if_true  — value returned when cond != 0\n  if_false — value returned when cond == 0\nExample: select(unfair_coin(cycle, 0.1), slow_path, fast_path)",
+        },
+        FuncSig {
+            name: "chance", category: C::Probability,
+            outputs: 1, description: "like unfair_coin but returns f64 (0.0 or 1.0)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "p", slot_type: SlotType::ConstF64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Like unfair_coin but returns 0.0 or 1.0 as f64.\nUse when the result feeds directly into f64 arithmetic\nwithout needing an explicit type conversion step.\nParameters:\n  input — u64 wire input (hashed internally)\n  p     — probability of returning 1.0 (f64 in [0.0, 1.0])\nExample: chance(cycle, 0.3)  // 30% chance of 1.0, else 0.0",
+        },
+        FuncSig {
+            name: "n_of", category: C::Probability,
+            outputs: 1, description: "exactly n of every m inputs return 1",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "n", slot_type: SlotType::ConstU64, required: true },
+                ParamSpec { name: "m", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Deterministic fractional selection: exactly n out of every m inputs return 1.\nUnlike unfair_coin (probabilistic), n_of guarantees exact counts\nover each window of m consecutive inputs.\nParameters:\n  input — u64 wire input\n  n     — number of selected inputs per window (u64, n <= m)\n  m     — window size (u64, must be > 0)\nExample: n_of(cycle, 3, 10)  // exactly 3 of every 10 cycles are 1",
+        },
+        FuncSig {
+            name: "one_of", category: C::Probability,
+            outputs: 1, description: "uniform selection from N constant values",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "values", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Uniform selection from a comma-separated list of string values.\nHashes the input, picks one value with equal probability.\nUse for simple categorical selection when all outcomes are equally likely.\nParameters:\n  input  — u64 wire input (hashed internally)\n  values — comma-separated string values\nExample: one_of(cycle, \"red,green,blue\")",
+        },
+        FuncSig {
+            name: "one_of_weighted", category: C::Probability,
+            outputs: 1, description: "weighted selection from 'val:weight,...' spec",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Weighted selection from a \"value:weight,...\" spec string.\nWeights are relative and do not need to sum to 1.\nUse for unequal-probability categorical selection.\nParameters:\n  input — u64 wire input (hashed internally)\n  spec  — comma-separated value:weight pairs\nExample: one_of_weighted(cycle, \"200:80,404:10,500:5,503:5\")",
+        },
+        FuncSig {
+            name: "blend", category: C::Probability,
+            outputs: 1, description: "weighted mix: a*(1-mix) + b*mix",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "mix", slot_type: SlotType::ConstF64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Weighted linear blend of two f64 wire inputs.\nResult = a * (1 - mix) + b * mix. At mix=0 you get pure a, at mix=1 pure b.\nParameters:\n  a   — first f64 wire input\n  b   — second f64 wire input\n  mix — blend factor (f64 in [0.0, 1.0])\nExample: blend(fast_latency, slow_latency, 0.3)  // 70% fast, 30% slow",
+        },
+    ]
+}
+
+/// Try to build a probability node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "fair_coin" => Some(Ok(Box::new(FairCoin::new()))),
+        "unfair_coin" => Some(Ok(Box::new(UnfairCoin::new(
+            consts.first().map(|c| c.as_f64()).unwrap_or(0.5),
+        )))),
+        "select" => Some(Ok(Box::new(Select::new()))),
+        "chance" => Some(Ok(Box::new(Chance::new(
+            consts.first().map(|c| c.as_f64()).unwrap_or(0.5),
+        )))),
+        "n_of" => Some(Ok(Box::new(NofM::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(1),
+            consts.get(1).map(|c| c.as_u64()).unwrap_or(2),
+        )))),
+        "one_of" => {
+            let values: Vec<String> = consts.iter().map(|c| c.as_str().to_string()).collect();
+            Some(Ok(Box::new(OneOf::new(values))))
+        }
+        "one_of_weighted" => Some(Ok(Box::new(OneOfWeighted::new(
+            consts.first().map(|c| c.as_str()).unwrap_or("a:1"),
+        )))),
+        "blend" => Some(Ok(Box::new(Blend::new(
+            consts.first().map(|c| c.as_f64()).unwrap_or(0.5),
+        )))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

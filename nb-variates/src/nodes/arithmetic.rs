@@ -590,6 +590,182 @@ impl GkNode for Interleave {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for arithmetic and variadic nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        // --- Variadic arithmetic ---
+        FuncSig {
+            name: "sum", category: C::Variadic, outputs: 1,
+            description: "sum of N inputs (wrapping); identity = 0",
+            help: "Wrapping addition of N wire inputs. With zero inputs returns 0.\nUseful for combining multiple independently generated components.\nParameters:\n  input... — any number of u64 wire inputs\nExample: sum(hash(cycle), hash(add(cycle, 1000)))\nIdentity element is 0. Overflow wraps at 2^64.",
+            identity: Some(0),
+            variadic_ctor: Some(|n| Box::new(SumN::new(n))),
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false }],
+            arity: Arity::VariadicWires { min_wires: 0 },
+            commutativity: crate::node::Commutativity::AllCommutative,
+        },
+        FuncSig {
+            name: "product", category: C::Variadic, outputs: 1,
+            description: "product of N inputs (wrapping); identity = 1",
+            help: "Wrapping multiplication of N wire inputs. With zero inputs returns 1.\nUseful for combining independent scaling factors.\nParameters:\n  input... — any number of u64 wire inputs\nExample: product(hash(cycle), mod(cycle, 10))\nIdentity element is 1. Overflow wraps at 2^64.",
+            identity: Some(1),
+            variadic_ctor: Some(|n| Box::new(ProductN::new(n))),
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false }],
+            arity: Arity::VariadicWires { min_wires: 0 },
+            commutativity: crate::node::Commutativity::AllCommutative,
+        },
+        FuncSig {
+            name: "min", category: C::Variadic, outputs: 1,
+            description: "minimum of N inputs; identity = u64::MAX",
+            help: "Returns the smallest of N wire inputs. With zero inputs returns u64::MAX.\nUseful for clamping to the lowest of several generated bounds.\nParameters:\n  input... — any number of u64 wire inputs\nExample: min(hash(cycle), mod(cycle, 1000))\nIdentity element is u64::MAX.",
+            identity: Some(u64::MAX),
+            variadic_ctor: Some(|n| Box::new(MinN::new(n))),
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false }],
+            arity: Arity::VariadicWires { min_wires: 0 },
+            commutativity: crate::node::Commutativity::AllCommutative,
+        },
+        FuncSig {
+            name: "max", category: C::Variadic, outputs: 1,
+            description: "maximum of N inputs; identity = 0",
+            help: "Returns the largest of N wire inputs. With zero inputs returns 0.\nUseful for selecting the highest of several generated values.\nParameters:\n  input... — any number of u64 wire inputs\nExample: max(hash(cycle), mod(cycle, 500))\nIdentity element is 0.",
+            identity: Some(0),
+            variadic_ctor: Some(|n| Box::new(MaxN::new(n))),
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false }],
+            arity: Arity::VariadicWires { min_wires: 0 },
+            commutativity: crate::node::Commutativity::AllCommutative,
+        },
+
+        // --- Arithmetic ---
+        FuncSig {
+            name: "add", category: C::Arithmetic,
+            outputs: 1, description: "add a constant (wrapping)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "addend", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Add a constant to a u64 value using wrapping arithmetic.\nUseful for offsetting ranges or shifting cycle ordinals.\nParameters:\n  input  — u64 wire input\n  addend — constant to add (wraps at 2^64)\nExample: add(hash(cycle), 1000000)",
+        },
+        FuncSig {
+            name: "mul", category: C::Arithmetic,
+            outputs: 1, description: "multiply by a constant (wrapping)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "factor", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Multiply a u64 value by a constant using wrapping arithmetic.\nUseful for scaling counters or spreading values across a stride.\nParameters:\n  input  — u64 wire input\n  factor — constant multiplier (wraps at 2^64)\nExample: mul(cycle, 7)",
+        },
+        FuncSig {
+            name: "div", category: C::Arithmetic,
+            outputs: 1, description: "divide by a constant",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "divisor", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Integer division by a constant (truncating toward zero).\nUseful for coarsening values — e.g., grouping cycles into blocks.\nParameters:\n  input   — u64 wire input\n  divisor — constant divisor (must be > 0)\nExample: div(cycle, 100)  // groups into blocks of 100",
+        },
+        FuncSig {
+            name: "mod", category: C::Arithmetic,
+            outputs: 1, description: "modulo by a constant",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "modulus", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Modular reduction: output = input % modulus, producing [0, K).\nThe most common operation after hash — bounds a hashed value\ninto a usable integer range.\nParameters:\n  input   — u64 wire input (typically hashed)\n  modulus — upper bound (exclusive, must be > 0)\nExample: mod(hash(cycle), 1000)  // yields 0..999",
+        },
+        FuncSig {
+            name: "clamp", category: C::Arithmetic,
+            outputs: 1, description: "clamp u64 to [min, max]",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "min", slot_type: SlotType::ConstU64, required: true },
+                ParamSpec { name: "max", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Saturating clamp: values below min become min, above max become max.\nUnlike mod (which wraps), clamp preserves relative ordering within\nthe valid range. Use when you need hard bounds without wrap-around.\nParameters:\n  input — u64 wire input\n  min   — lower bound (inclusive)\n  max   — upper bound (inclusive)\nExample: clamp(hash(cycle), 10, 500)",
+        },
+        FuncSig {
+            name: "interleave", category: C::Arithmetic,
+            outputs: 1, description: "interleave bits of two u64 values",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Interleave the bits of two u64 values into a single u64 (Morton code).\nBit 0 of a goes to bit 0, bit 0 of b goes to bit 1, bit 1 of a to bit 2, etc.\nUseful for combining two independent coordinates into one value\nthat preserves spatial locality.\nParameters:\n  a — first u64 wire input (even bits in output)\n  b — second u64 wire input (odd bits in output)\nExample: hash(interleave(x_coord, y_coord))",
+        },
+        FuncSig {
+            name: "mixed_radix", category: C::Arithmetic, outputs: 0,
+            description: "decompose into mixed-radix digits (output count = number of radixes)",
+            help: "Decompose a single u64 into multiple coordinate digits, like\nnested loops unrolled into a flat index. Each radix defines the\nmodulus for that digit; radix=0 means unbounded (captures remainder).\nProduces one output port per radix.\nParameters:\n  input    — u64 wire input\n  radix... — one or more u64 constants (variadic)\nExample: mixed_radix(cycle, 10, 26, 0)  // 3 outputs: d0 in [0,10), d1 in [0,26), d2 unbounded\nTheory: mixed-radix decomposition generalizes base conversion;\neach position can have a different base.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::VariadicConsts { min_consts: 1 },
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "identity", category: C::Arithmetic, outputs: 1,
+            description: "passthrough",
+            help: "Passes the input value through unchanged.\nUseful for debugging, naming intermediate values, or as a\nplaceholder during graph construction.\nParameters:\n  input — any wire value\nExample: identity(hash(cycle))  // same as hash(cycle)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+    ]
+}
+
+/// Try to build an arithmetic node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "add" => Some(Ok(Box::new(AddU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(0))))),
+        "mul" => Some(Ok(Box::new(MulU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
+        "div" => Some(Ok(Box::new(DivU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
+        "mod" => Some(Ok(Box::new(ModU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
+        "clamp" => Some(Ok(Box::new(ClampU64::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
+            consts.get(1).map(|c| c.as_u64()).unwrap_or(u64::MAX),
+        )))),
+        "interleave" => Some(Ok(Box::new(Interleave::new()))),
+        "mixed_radix" => {
+            let radixes: Vec<u64> = consts.iter().map(|c| c.as_u64()).collect();
+            Some(Ok(Box::new(MixedRadix::new(radixes))))
+        }
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

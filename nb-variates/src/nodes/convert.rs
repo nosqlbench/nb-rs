@@ -601,6 +601,162 @@ impl GkNode for ZeroPadU64 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for type conversion nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "unit_interval", category: C::Conversions, outputs: 1,
+            description: "normalize u64 to f64 in [0, 1)",
+            help: "Convert a u64 to an f64 in [0.0, 1.0) by dividing by 2^64.\nBridges the integer hash domain into the probability domain.\nFeed the result to lerp, distribution samplers, or coin flips.\nParameters:\n  input — u64 wire input (typically hashed)\nExample: unit_interval(hash(cycle)) -> lerp(0.0, 100.0)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "clamp_f64", category: C::Conversions,
+            outputs: 1, description: "clamp f64 to [min, max]",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "min", slot_type: SlotType::ConstF64, required: true },
+                ParamSpec { name: "max", slot_type: SlotType::ConstF64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Clamp an f64 value to [min, max].\nUse after distributions with unbounded tails (normal, Cauchy)\nto enforce domain constraints, or to guard against edge values.\nParameters:\n  input — f64 wire input\n  min   — lower bound (inclusive, f64)\n  max   — upper bound (inclusive, f64)\nExample: clamp_f64(icd_normal(hash(cycle), 50.0, 10.0), 0.0, 100.0)",
+        },
+        FuncSig {
+            name: "f64_to_u64", category: C::Conversions, outputs: 1,
+            description: "truncate f64 to u64 (lossy)",
+            help: "Truncate an f64 to u64 by dropping the fractional part toward zero.\nNegative values and NaN produce 0. Values above u64::MAX saturate.\nUse when you need a raw integer from a float without rounding.\nParameters:\n  input — f64 wire input",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "round_to_u64", category: C::Conversions, outputs: 1,
+            description: "round f64 to nearest u64",
+            help: "Round an f64 to the nearest u64 (half-to-even / banker's rounding).\nPreferred over truncation when you want the closest integer.\nNegative values and NaN produce 0.\nParameters:\n  input — f64 wire input",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "floor_to_u64", category: C::Conversions, outputs: 1,
+            description: "floor f64 to u64",
+            help: "Floor an f64 to the next lower u64 (round toward negative infinity).\nFor positive values, equivalent to truncation. Negative values yield 0.\nUse when you want consistent downward rounding.\nParameters:\n  input — f64 wire input",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "ceil_to_u64", category: C::Conversions, outputs: 1,
+            description: "ceil f64 to u64",
+            help: "Ceiling of an f64 to u64 (round toward positive infinity).\nAlways rounds up: 2.1 becomes 3. Negative values yield 0.\nUse when you need the next integer above a continuous value.\nParameters:\n  input — f64 wire input",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "discretize", category: C::Conversions,
+            outputs: 1, description: "bin f64 into N equal-width buckets",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "range", slot_type: SlotType::ConstU64, required: true },
+                ParamSpec { name: "buckets", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Bin a continuous f64 into N equal-width integer buckets.\nInput is an f64 in [0, range); output is a u64 bucket index in [0, buckets).\nOut-of-range inputs are clamped to the first or last bucket.\nParameters:\n  input   — f64 wire input\n  range   — upper bound of the input domain (u64, cast to f64)\n  buckets — number of output bins (u64)\nExample: discretize(scale_range(hash(cycle), 0.0, 100.0), 100, 10)",
+        },
+        FuncSig {
+            name: "format_u64", category: C::Conversions,
+            outputs: 1, description: "format u64 as string (decimal/hex/octal/binary)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "radix", slot_type: SlotType::ConstU64, required: false },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Format a u64 as a string in the specified radix.\nRadix: 10=decimal (default), 16=hex (0x prefix), 8=octal (0o),\n2=binary (0b). Omit radix for plain decimal.\nParameters:\n  input — u64 wire input\n  radix — optional base (2, 8, 10, or 16; default 10)\nExample: format_u64(hash(cycle), 16)  // \"0x1a2b3c4d\"",
+        },
+        FuncSig {
+            name: "format_f64", category: C::Conversions,
+            outputs: 1, description: "format f64 with decimal precision",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "precision", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Format an f64 with a fixed number of decimal places.\nPrecision 0 rounds to the nearest integer string.\nParameters:\n  input     — f64 wire input\n  precision — number of decimal digits (u64)\nExample: format_f64(scale_range(hash(cycle), 0.0, 100.0), 2)  // \"73.41\"",
+        },
+        FuncSig {
+            name: "zero_pad_u64", category: C::Conversions,
+            outputs: 1, description: "zero-pad u64 to fixed width string",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "width", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Zero-pad a u64 to a fixed-width decimal string.\nShorter numbers are left-padded with zeros; longer numbers pass through.\nUseful for fixed-width identifiers, partition keys, or filenames.\nParameters:\n  input — u64 wire input\n  width — minimum string width (u64)\nExample: zero_pad_u64(mod(hash(cycle), 10000), 8)  // \"00004217\"",
+        },
+    ]
+}
+
+/// Try to build a conversion node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "unit_interval" => Some(Ok(Box::new(crate::sampling::icd::UnitInterval::new()))),
+        "clamp_f64" => Some(Ok(Box::new(crate::sampling::icd::ClampF64::new(
+            consts.first().map(|c| c.as_f64()).unwrap_or(f64::MIN),
+            consts.get(1).map(|c| c.as_f64()).unwrap_or(f64::MAX),
+        )))),
+        "f64_to_u64" => Some(Ok(Box::new(F64ToU64::new()))),
+        "round_to_u64" => Some(Ok(Box::new(RoundToU64::new()))),
+        "floor_to_u64" => Some(Ok(Box::new(FloorToU64::new()))),
+        "ceil_to_u64" => Some(Ok(Box::new(CeilToU64::new()))),
+        "discretize" => Some(Ok(Box::new(Discretize::new(
+            consts.first().map(|c| c.as_f64()).unwrap_or(1.0),
+            consts.get(1).map(|c| c.as_u64()).unwrap_or(10),
+        )))),
+        "format_u64" => Some(Ok(Box::new(FormatU64::with_radix(
+            consts.first().map(|c| c.as_u64()).unwrap_or(10) as u32,
+        )))),
+        "format_f64" => Some(Ok(Box::new(FormatF64::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(2) as usize,
+        )))),
+        "zero_pad_u64" => Some(Ok(Box::new(ZeroPadU64::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(10) as usize,
+        )))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

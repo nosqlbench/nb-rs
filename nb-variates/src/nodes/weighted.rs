@@ -332,6 +332,106 @@ impl GkNode for DynamicWeightedSelect {
 unsafe impl Send for DynamicWeightedSelect {}
 unsafe impl Sync for DynamicWeightedSelect {}
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for weighted categorical selection nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "weighted_strings", category: C::Weighted,
+            outputs: 1, description: "weighted string selection from inline spec",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Weighted string selection from a compact spec string.\nSpec format: \"value:weight,value:weight,...\" — weights are relative.\nParameters:\n  input — u64 wire input (typically hashed)\n  spec  — comma-separated value:weight pairs\nExample: weighted_strings(hash(cycle), \"red:3,green:2,blue:1\")",
+        },
+        FuncSig {
+            name: "weighted_u64", category: C::Weighted,
+            outputs: 1, description: "weighted u64 selection from inline spec",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Weighted u64 selection from a compact spec string.\nSpec format: \"value:weight,value:weight,...\" — values are parsed as u64.\nParameters:\n  input — u64 wire input (typically hashed)\n  spec  — comma-separated value:weight pairs (e.g. \"10:0.5,20:0.3,30:0.2\")\nExample: weighted_u64(hash(cycle), \"100:5,200:3,300:2\")",
+        },
+        FuncSig {
+            name: "weighted_pick", category: C::Weighted,
+            outputs: 1, description: "weighted u64 selection from inline weight/value pairs",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "weight", slot_type: SlotType::ConstF64, required: true },
+                ParamSpec { name: "value", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::VariadicGroup {
+                group: &[SlotType::ConstF64, SlotType::ConstU64],
+                min_repeats: 1,
+            },
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Weighted categorical selection from inline weight/value pairs.\nUses the alias method for O(1) lookup after initialization.\nParameters:\n  input      — u64 wire input (typically hashed)\n  weight,val — repeating pairs: f64 weight, u64 value\nWeights are relative (need not sum to 1).\nExample: weighted_pick(hash(cycle), 3.0, 100, 1.0, 200, 1.0, 300)\nTheory: the alias method pre-computes a table so each lookup is\nconstant-time regardless of the number of categories.",
+        },
+        FuncSig {
+            name: "dynamic_weighted_select", category: C::Weighted,
+            outputs: 1, description: "weighted string selection with dynamic weight spec (Config wire)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "selector", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "weights_spec", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Dynamic weighted string selection where the weight spec is a wire input.\n\
+                   The weights_spec input is a Config wire — changing it rebuilds the alias table (O(n)).\n\
+                   Wire weights_spec to an init-time constant for normal use. Wiring to a cycle-time\n\
+                   source triggers a compiler warning.\n\n\
+                   Parameters:\n  selector     — u64 wire input (typically hashed)\n  \
+                   weights_spec — String wire input (e.g. \"alpha:0.3;beta:0.5;gamma:0.2\")\n\n\
+                   Example: dynamic_weighted_select(hash(cycle), my_weights)",
+        },
+    ]
+}
+
+/// Try to build a weighted-selection node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "weighted_strings" => Some(Ok(Box::new(WeightedStrings::new(
+            consts.first().map(|c| c.as_str()).unwrap_or(""),
+        )))),
+        "weighted_u64" => Some(Ok(Box::new(WeightedU64::new(
+            consts.first().map(|c| c.as_str()).unwrap_or(""),
+        )))),
+        "weighted_pick" => {
+            let pairs: Vec<(f64, u64)> = consts.chunks(2)
+                .map(|chunk| {
+                    let w = chunk.first().map(|c| c.as_f64()).unwrap_or(1.0);
+                    let v = chunk.get(1).map(|c| c.as_u64()).unwrap_or(0);
+                    (w, v)
+                })
+                .collect();
+            Some(Ok(Box::new(WeightedPick::new(&pairs))))
+        }
+        "dynamic_weighted_select" => Some(Ok(Box::new(DynamicWeightedSelect::new()))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

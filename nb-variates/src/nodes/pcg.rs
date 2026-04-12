@@ -367,6 +367,100 @@ impl GkNode for CycleWalk {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for PCG RNG and permutation nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "pcg", category: C::Permutation,
+            outputs: 1, description: "PCG-RXS-M-XS seekable RNG (pure function)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true },
+                ParamSpec { name: "stream", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Seekable pseudo-random generator: a pure function from position.\nPCG-RXS-M-XS variant — given the same input, seed, and stream,\nalways returns the same output. Stateless alternative to hash.\nParameters:\n  input  — u64 position (cycle ordinal)\n  seed   — initialization constant\n  stream — stream selector (different streams = independent sequences)\nExample: pcg(cycle, 42, 0)\nTheory: PCG uses a linear congruential core with permuted output;\nthe RXS-M-XS variant supports O(1) seeking to any position.",
+        },
+        FuncSig {
+            name: "pcg_stream", category: C::Permutation,
+            outputs: 1, description: "PCG with dynamic stream ID from wire",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "stream", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "PCG with a runtime (wire) stream ID instead of a fixed constant.\nUse when the stream identity is data-dependent (e.g., derived from\na partition key) and cannot be fixed at assembly time.\nParameters:\n  input  — u64 position (cycle ordinal)\n  stream — u64 wire input selecting the stream\n  seed   — initialization constant (u64)\nExample: pcg_stream(cycle, partition_id, 42)",
+        },
+        FuncSig {
+            name: "cycle_walk", category: C::Permutation,
+            outputs: 1, description: "bijective permutation via Feistel + cycle-walking",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "range", slot_type: SlotType::ConstU64, required: true },
+                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true },
+                ParamSpec { name: "stream", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Bijective permutation of [0, range) via a Feistel network + cycle-walking.\nEvery input maps to a unique output (and vice versa) within [0, range).\nUse to visit every row exactly once in pseudo-random order, or to\ngenerate unique IDs without a tracking structure.\nParameters:\n  input  — u64 wire input (position in [0, range))\n  range  — domain size (u64, must be > 0)\n  seed   — Feistel round key seed (u64)\n  stream — stream selector (u64)\nExample: cycle_walk(cycle, 1000000, 42, 0)",
+        },
+        FuncSig {
+            name: "shuffle", category: C::Permutation,
+            outputs: 1, description: "bijective LFSR permutation",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "min", slot_type: SlotType::ConstU64, required: false },
+                ParamSpec { name: "size", slot_type: SlotType::ConstU64, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Bijective permutation: maps [0, size) to [0, size) with no collisions.\nEvery input maps to a unique output and vice versa — a perfect shuffle.\nParameters:\n  input — u64 wire input\n  min   — optional offset added to output (default 0)\n  size  — range size (required)\nExample: shuffle(cycle, 0, 10000)  // permute 0..9999\nTheory: uses a maximal-length LFSR (linear feedback shift register)\nto generate a permutation without storing a full table.",
+        },
+    ]
+}
+
+/// Try to build a PCG or shuffle node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "pcg" => Some(Ok(Box::new(Pcg::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
+            consts.get(1).map(|c| c.as_u64()).unwrap_or(0),
+        )))),
+        "pcg_stream" => Some(Ok(Box::new(PcgStream::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
+        )))),
+        "cycle_walk" => Some(Ok(Box::new(CycleWalk::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(1000),
+            consts.get(1).map(|c| c.as_u64()).unwrap_or(0),
+            consts.get(2).map(|c| c.as_u64()).unwrap_or(0),
+        )))),
+        "shuffle" => Some(Ok(Box::new(crate::sampling::metashift::Shuffle::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
+            consts.get(1).map(|c| c.as_u64()).unwrap_or(1024),
+        )))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

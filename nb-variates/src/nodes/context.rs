@@ -223,6 +223,80 @@ impl GkNode for Counter {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig};
+
+/// Signatures for non-deterministic context nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "current_epoch_millis", category: C::Context, outputs: 1,
+            description: "current wall-clock time (non-deterministic)",
+            help: "Returns the current wall-clock time as epoch milliseconds.\nNON-DETERMINISTIC: returns a different value on each evaluation.\nUse for real-time timestamps in generated records.\nTakes no wire inputs.",
+            identity: None, variadic_ctor: None,
+            params: &[],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "counter", category: C::Context, outputs: 1,
+            description: "monotonic counter (non-deterministic)",
+            help: "Returns a monotonically increasing u64 counter.\nNON-DETERMINISTIC: increments on each evaluation across all threads.\nUse for sequence numbers, unique IDs, or ordering guarantees.\nTakes no wire inputs.",
+            identity: None, variadic_ctor: None,
+            params: &[],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "session_start_millis", category: C::Context, outputs: 1,
+            description: "session start time (frozen at init)",
+            help: "Returns the epoch milliseconds when the session was initialized.\nFrozen at init time — returns the same value on every evaluation.\nUse as a stable base timestamp for relative time calculations.\nTakes no wire inputs.",
+            identity: None, variadic_ctor: None,
+            params: &[],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "elapsed_millis", category: C::Context, outputs: 1,
+            description: "elapsed milliseconds since session start",
+            help: "Returns elapsed milliseconds since the session was initialized.\nNon-deterministic: grows monotonically over the session.\nUse for relative time offsets in generated records.\nTakes no wire inputs.",
+            identity: None, variadic_ctor: None,
+            params: &[],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "thread_id", category: C::Context, outputs: 1,
+            description: "current OS thread numeric ID",
+            help: "Returns the current OS thread's numeric identifier as u64.\nNon-deterministic: different fibers may run on different threads.\nUseful for partitioning or sharding in multi-threaded workloads.\nTakes no wire inputs.",
+            identity: None, variadic_ctor: None,
+            params: &[],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+    ]
+}
+
+/// Try to build a context node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "current_epoch_millis" => Some(Ok(Box::new(CurrentEpochMillis::new()))),
+        "counter" => Some(Ok(Box::new(Counter::new()))),
+        "session_start_millis" => Some(Ok(Box::new(SessionStartMillis::new()))),
+        "elapsed_millis" => Some(Ok(Box::new(ElapsedMillis::new()))),
+        "thread_id" => Some(Ok(Box::new(ThreadId::new()))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

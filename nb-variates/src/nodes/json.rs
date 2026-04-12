@@ -366,6 +366,78 @@ fn value_to_json(v: &Value) -> serde_json::Value {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for JSON construction and serialization nodes.
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "to_json", category: C::Json,
+            outputs: 1, description: "promote value to JSON",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Promote a scalar value to a JSON value.\nU64 -> JSON number, F64 -> JSON number, Bool -> JSON bool,\nStr -> JSON string, Json -> passed through unchanged.\nParameters:\n  input — any wire value\nExample: to_json(hash(cycle))  // JSON number",
+        },
+        FuncSig {
+            name: "json_to_str", category: C::Json,
+            outputs: 1, description: "serialize JSON to compact string",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Serialize a JSON value to a compact string representation.\nProduces minified JSON with no extra whitespace.\nParameters:\n  input — JSON wire input\nExample: json_to_str(to_json(hash(cycle)))  // \"42\"",
+        },
+        FuncSig {
+            name: "escape_json", category: C::Json, outputs: 1,
+            description: "escape string for JSON embedding",
+            help: "Escape a string for safe embedding inside a JSON string literal.\nBackslashes, quotes, control characters, and unicode are escaped.\nUse when building JSON by hand via printf rather than to_json.\nParameters:\n  input — String wire input",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "json_merge", category: C::Json, outputs: 1,
+            description: "shallow merge two JSON objects",
+            help: "Shallow-merge two JSON objects: keys in b override keys in a.\nBoth inputs must be JSON objects. Non-object inputs produce an error.\nUse to combine independently generated JSON fragments.\nParameters:\n  a — JSON object wire input (base)\n  b — JSON object wire input (overrides)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+    ]
+}
+
+/// Try to build a JSON node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    match name {
+        "to_json" => Some(Ok(Box::new(ToJson::new(crate::node::PortType::U64)))),
+        "json_to_str" => Some(Ok(Box::new(JsonToStr::new()))),
+        "escape_json" => Some(Ok(Box::new(EscapeJson::new()))),
+        "json_merge" => Some(Ok(Box::new(JsonMerge::new()))),
+        _ => None,
+    }
+}
+
+
+crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;

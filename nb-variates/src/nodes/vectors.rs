@@ -493,3 +493,199 @@ impl GkNode for VectorCount {
         outputs[0] = Value::U64(self.count);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Signature declarations for the DSL registry
+// ---------------------------------------------------------------------------
+
+use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use crate::node::SlotType;
+
+/// Signatures for vector dataset access nodes (feature-gated).
+pub fn signatures() -> &'static [FuncSig] {
+    use FuncCategory as C;
+    &[
+        FuncSig {
+            name: "vector_at", category: C::RealData, outputs: 1,
+            description: "access base vector by index (string)",
+            help: "Look up a base vector by index from a loaded dataset.\nReturns the vector as a JSON array string: [0.1,0.2,...].\nThe index wraps modulo the dataset size.\nRequires a dataset loaded at init time.\nExample: vector_at(mod(cycle, vector_count), dataset)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "vector_at_bytes", category: C::RealData, outputs: 1,
+            description: "access base vector by index (bytes)",
+            help: "Look up a base vector by index, returning raw f32 little-endian bytes.\nSuitable for CQL blob columns or binary protocols.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "query_vector_at", category: C::RealData, outputs: 1,
+            description: "access query vector by index (string)",
+            help: "Look up a query vector by index from a loaded dataset.\nReturns the vector as a JSON array string.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "query_vector_at_bytes", category: C::RealData, outputs: 1,
+            description: "access query vector by index (bytes)",
+            help: "Look up a query vector by index, returning raw f32 little-endian bytes.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "neighbor_indices_at", category: C::RealData, outputs: 1,
+            description: "ground-truth neighbor indices for a query",
+            help: "Look up ground-truth k-nearest neighbor indices for a query.\nReturns indices as a JSON array string: [42,17,99,...].\nUsed for recall verification in vector search workloads.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "neighbor_distances_at", category: C::RealData, outputs: 1,
+            description: "ground-truth neighbor distances for a query",
+            help: "Look up ground-truth distances for a query's k-nearest neighbors.\nReturns distances as a JSON array string.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "filtered_neighbor_indices_at", category: C::RealData, outputs: 1,
+            description: "filtered ground-truth neighbor indices",
+            help: "Look up filtered ground-truth neighbor indices for a query.\nUsed for filtered ANN recall verification.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "filtered_neighbor_distances_at", category: C::RealData, outputs: 1,
+            description: "filtered ground-truth neighbor distances",
+            help: "Look up filtered ground-truth distances for a query.\nUsed for filtered ANN recall verification.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "dataset_distance_function", category: C::RealData, outputs: 1,
+            description: "dataset distance/similarity function name",
+            help: "Returns the distance function declared in the dataset metadata\n(e.g., 'cosine', 'euclidean', 'dot_product').\nConstant per dataset.\nExample: dataset_distance_function(\"glove-25-angular\")",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "vector_dim", category: C::RealData, outputs: 1,
+            description: "dataset vector dimensionality",
+            help: "Returns the dimensionality of vectors in the loaded dataset.\nConstant per dataset — evaluated once at init time.\nExample: vector_dim(\"glove-100\")",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "vector_count", category: C::RealData, outputs: 1,
+            description: "dataset vector count",
+            help: "Returns the number of vectors in the loaded dataset.\nConstant per dataset — evaluated once at init time.\nExample: vector_count(\"glove-100\")",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+    ]
+}
+
+/// Try to build a vector dataset node from a function name and const args.
+///
+/// Returns `None` if the name is not handled by this module.
+/// All functions in this module are feature-gated on `vectordata`.
+#[cfg(feature = "vectordata")]
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    let src = consts.first().map(|c| c.as_str()).unwrap_or("");
+    match name {
+        "vector_at" => Some(
+            VectorAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "vector_at_bytes" => Some(
+            VectorAtBytes::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "query_vector_at" => Some(
+            QueryVectorAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "query_vector_at_bytes" => Some(
+            QueryVectorAtBytes::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "neighbor_indices_at" => Some(
+            NeighborIndicesAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "neighbor_distances_at" => Some(
+            NeighborDistancesAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "filtered_neighbor_indices_at" => Some(
+            FilteredNeighborIndicesAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "filtered_neighbor_distances_at" => Some(
+            FilteredNeighborDistancesAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "dataset_distance_function" => Some(
+            DatasetDistanceFunction::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "vector_dim" => Some(
+            VectorDim::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "vector_count" => Some(
+            VectorCount::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "vectordata")]
+crate::register_nodes!(signatures, build_node);
