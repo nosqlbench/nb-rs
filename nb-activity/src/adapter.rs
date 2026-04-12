@@ -1,4 +1,4 @@
-// Copyright 2024-2026 nosqlbench contributors
+// Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
 //! Adapter traits: the tiered interface that database/protocol drivers implement (SRD 38).

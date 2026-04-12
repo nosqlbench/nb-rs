@@ -1,4 +1,4 @@
-// Copyright 2024-2026 nosqlbench contributors
+// Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
 //! PCG-RXS-M-XS 64/64 random number generator nodes.

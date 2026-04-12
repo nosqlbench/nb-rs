@@ -1,4 +1,4 @@
-// Copyright 2024-2026 nosqlbench contributors
+// Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
 //! Fixed value and value-list nodes across fundamental types.

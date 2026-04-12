@@ -1,4 +1,4 @@
-// Copyright 2024-2026 nosqlbench contributors
+// Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
 //! Capture dependency analysis and op linearization (sysref 02).
