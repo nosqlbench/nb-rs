@@ -1,0 +1,14 @@
+// Benchmark: 10-node chain (degree=1)
+inputs := (cycle)
+
+n0 := hash(cycle)
+n1 := mod(n0, 1001)
+n2 := hash(n1)
+n3 := mod(n2, 1003)
+n4 := hash(n3)
+n5 := mod(n4, 1005)
+n6 := hash(n5)
+n7 := mod(n6, 1007)
+n8 := hash(n7)
+n9 := mod(n8, 1009)
+out := n9

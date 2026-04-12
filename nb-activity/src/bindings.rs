@@ -674,7 +674,7 @@ mod tests {
             op
         }];
         let mut kernel = compile_bindings(&ops).unwrap();
-        kernel.set_coordinates(&[42]);
+        kernel.set_inputs(&[42]);
         assert_eq!(kernel.pull("myval").as_u64(), 42);
     }
 
@@ -686,7 +686,7 @@ mod tests {
             op
         }];
         let mut kernel = compile_bindings(&ops).unwrap();
-        kernel.set_coordinates(&[42]);
+        kernel.set_inputs(&[42]);
         let val = kernel.pull("id").as_u64();
         assert!(val < 1_000_000, "got {val}");
     }
@@ -699,9 +699,9 @@ mod tests {
             op
         }];
         let mut kernel = compile_bindings(&ops).unwrap();
-        kernel.set_coordinates(&[42]);
+        kernel.set_inputs(&[42]);
         let v1 = kernel.pull("id").as_u64();
-        kernel.set_coordinates(&[42]);
+        kernel.set_inputs(&[42]);
         let v2 = kernel.pull("id").as_u64();
         assert_eq!(v1, v2);
     }
@@ -715,7 +715,7 @@ mod tests {
             op
         }];
         let mut kernel = compile_bindings(&ops).unwrap();
-        kernel.set_coordinates(&[5]);
+        kernel.set_inputs(&[5]);
         assert_eq!(kernel.pull("a").as_u64(), 5);
         assert!(kernel.pull("b").as_u64() < 100);
     }
@@ -737,7 +737,7 @@ mod tests {
             op
         }];
         let mut kernel = compile_bindings(&ops).unwrap();
-        kernel.set_coordinates(&[5]);
+        kernel.set_inputs(&[5]);
         // 5 + 100 = 105, 105 % 1000 = 105
         assert_eq!(kernel.pull("val").as_u64(), 105);
     }
@@ -746,7 +746,7 @@ mod tests {
     fn compile_provides_cycle_output() {
         let ops = vec![ParsedOp::simple("test", "cycle={cycle}")];
         let mut kernel = compile_bindings(&ops).unwrap();
-        kernel.set_coordinates(&[99]);
+        kernel.set_inputs(&[99]);
         assert_eq!(kernel.pull("cycle").as_u64(), 99);
     }
 

@@ -25,7 +25,7 @@
 //!     user_id := mod(hashed, 1000000)
 //! "#).unwrap();
 //!
-//! kernel.set_coordinates(&[42]);
+//! kernel.set_inputs(&[42]);
 //! let user_id = kernel.pull("user_id").as_u64();
 //! assert!(user_id < 1_000_000);
 //! ```
@@ -40,12 +40,12 @@
 //! use nb_variates::nodes::arithmetic::ModU64;
 //!
 //! let mut asm = GkAssembler::new(vec!["cycle".into()]);
-//! asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::coord("cycle")]);
+//! asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
 //! asm.add_node("user_id", Box::new(ModU64::new(1_000_000)), vec![WireRef::node("hashed")]);
 //! asm.add_output("user_id", WireRef::node("user_id"));
 //!
 //! let mut kernel = asm.compile().unwrap();
-//! kernel.set_coordinates(&[42]);
+//! kernel.set_inputs(&[42]);
 //! assert!(kernel.pull("user_id").as_u64() < 1_000_000);
 //! ```
 //!

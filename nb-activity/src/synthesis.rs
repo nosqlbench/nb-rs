@@ -44,10 +44,10 @@ pub fn substitute_bind_points(
                 // Replace the full placeholder including qualifier
                 let placeholder = match qualifier {
                     BindQualifier::None => format!("{{{name}}}"),
-                    BindQualifier::Coord => format!("{{coord:{name}}}"),
+                    BindQualifier::Input => format!("{{input:{name}}}"),
                     BindQualifier::Bind => format!("{{bind:{name}}}"),
                     BindQualifier::Capture => format!("{{capture:{name}}}"),
-                    BindQualifier::Port => format!("{{port:{name}}}"),
+                    BindQualifier::Param => format!("{{param:{name}}}"),
                 };
                 result = result.replace(&placeholder, &value_str);
             }
@@ -74,16 +74,16 @@ fn resolve_bind_point(
                 None => format!("{{bind:{name}}}"), // unresolved
             }
         }
-        BindQualifier::Capture | BindQualifier::Port => {
+        BindQualifier::Capture => {
             // Capture context only
             captures
                 .and_then(|ctx| ctx.get(name))
                 .map(value_to_string)
                 .unwrap_or_else(|| format!("{{capture:{name}}}"))
         }
-        BindQualifier::Coord => {
+        BindQualifier::Input => {
             // Coordinate value directly
-            match kernel.get_coord(name) {
+            match kernel.get_input(name) {
                 Some(v) => v.to_string(),
                 None => {
                     // Might be a GK output that shadows a coord name
@@ -94,8 +94,12 @@ fn resolve_bind_point(
                 }
             }
         }
+        BindQualifier::Param => {
+            // Param-only — this function doesn't have params access
+            format!("{{param:{name}}}")
+        }
         BindQualifier::None => {
-            // Unqualified: try GK output first, then captures, then coordinate
+            // Unqualified: try GK output first, then captures, then input
             if kernel.program().resolve_output(name).is_some() {
                 return value_to_string(kernel.pull(name));
             }
@@ -103,7 +107,6 @@ fn resolve_bind_point(
                 && let Some(val) = ctx.get(name) {
                     return value_to_string(val);
                 }
-            // Last resort: might be a coordinate exposed as output
             format!("{{{name}}}")
         }
     }
@@ -133,10 +136,10 @@ fn substitute_bind_points_with_state(
                 let value_str = resolve_bind_point_with_state(name, qualifier, program, state, captures, params);
                 let placeholder = match qualifier {
                     BindQualifier::None => format!("{{{name}}}"),
-                    BindQualifier::Coord => format!("{{coord:{name}}}"),
+                    BindQualifier::Input => format!("{{input:{name}}}"),
                     BindQualifier::Bind => format!("{{bind:{name}}}"),
                     BindQualifier::Capture => format!("{{capture:{name}}}"),
-                    BindQualifier::Port => format!("{{port:{name}}}"),
+                    BindQualifier::Param => format!("{{param:{name}}}"),
                 };
                 result = result.replace(&placeholder, &value_str);
             }
@@ -162,16 +165,16 @@ fn resolve_bind_point_with_state(
                 format!("{{bind:{name}}}")
             }
         }
-        BindQualifier::Capture | BindQualifier::Port => {
+        BindQualifier::Capture => {
             captures
                 .and_then(|ctx| ctx.get(name))
                 .map(|v| v.to_display_string())
                 .unwrap_or_else(|| format!("{{capture:{name}}}"))
         }
-        BindQualifier::Coord => {
-            program.coord_names().iter()
+        BindQualifier::Input => {
+            program.input_names().iter()
                 .position(|n| n == name)
-                .map(|idx| state.get_coord(idx).to_string())
+                .map(|idx| state.get_input(idx).to_string())
                 .or_else(|| {
                     if program.resolve_output(name).is_some() {
                         Some(state.pull(program, name).to_display_string())
@@ -179,8 +182,13 @@ fn resolve_bind_point_with_state(
                 })
                 .unwrap_or_else(|| format!("{{coord:{name}}}"))
         }
+        BindQualifier::Param => {
+            params.get(name)
+                .cloned()
+                .unwrap_or_else(|| format!("{{param:{name}}}"))
+        }
         BindQualifier::None => {
-            // Resolution order: GK output → captures → workload params → unresolved
+            // Resolution order: GK output → captures → input → params → unresolved
             if program.resolve_output(name).is_some() {
                 return state.pull(program, name).to_display_string();
             }
@@ -188,6 +196,11 @@ fn resolve_bind_point_with_state(
                 && let Some(val) = ctx.get(name) {
                     return val.to_display_string();
                 }
+            if program.input_names().contains(&name.to_string()) {
+                if let Some(idx) = program.input_names().iter().position(|n| n == name) {
+                    return state.get_input(idx).to_string();
+                }
+            }
             if let Some(val) = params.get(name) {
                 return val.clone();
             }
@@ -220,12 +233,7 @@ impl OpBuilder {
     /// Create a per-fiber builder. No locks, no sharing — the fiber
     /// owns its state exclusively.
     pub fn create_fiber_builder(&self) -> FiberBuilder {
-        FiberBuilder {
-            program: self.program.clone(),
-            state: self.program.create_state(),
-            captures: CaptureContext::new(),
-            params: Arc::new(std::collections::HashMap::new()),
-        }
+        FiberBuilder::new(self.program.clone())
     }
 }
 
@@ -237,30 +245,78 @@ pub struct FiberBuilder {
     program: Arc<GkProgram>,
     state: GkState,
     captures: CaptureContext,
-    /// Workload parameters: constant per run, shared across fibers.
-    params: Arc<std::collections::HashMap<String, String>>,
+}
+
+/// Validate that all bind points in op templates can be resolved.
+///
+/// Called at init time. Warns for each unresolvable `{name}` reference.
+/// A bind point is resolvable if it matches a GK output, input name,
+/// workload param, or a known capture declaration from another op.
+pub fn validate_bind_points(
+    templates: &[ParsedOp],
+    program: &GkProgram,
+    params: &std::collections::HashMap<String, String>,
+) {
+    // Collect all capture declarations across templates
+    let mut capture_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for template in templates {
+        for value in template.op.values() {
+            if let serde_json::Value::String(s) = value {
+                let result = bindpoints::parse_capture_points(s);
+                for cp in result.captures {
+                    capture_names.insert(cp.as_name);
+                }
+            }
+        }
+    }
+
+    for template in templates {
+        for (field_name, value) in &template.op {
+            if let serde_json::Value::String(s) = value {
+                let bps = bindpoints::extract_bind_points(s);
+                for bp in &bps {
+                    if let BindPoint::Reference { name, qualifier } = bp {
+                        let resolvable = match qualifier {
+                            BindQualifier::Bind => program.resolve_output(name).is_some(),
+                            BindQualifier::Capture => capture_names.contains(name),
+                            BindQualifier::Input => program.input_names().contains(&name.to_string()),
+                            BindQualifier::Param => params.contains_key(name),
+                            BindQualifier::None => {
+                                program.resolve_output(name).is_some()
+                                    || capture_names.contains(name)
+                                    || program.input_names().contains(&name.to_string())
+                                    || params.contains_key(name)
+                            }
+                        };
+                        if !resolvable {
+                            eprintln!(
+                                "warning: unresolved bind point '{{{name}}}' in op '{}' field '{field_name}'. \
+                                 Not found in GK bindings, captures, inputs, or workload params.",
+                                template.name
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl FiberBuilder {
     /// Create a new fiber builder from a shared GK program.
+    /// Globals (workload params) are read from `program.globals()`.
     pub fn new(program: Arc<GkProgram>) -> Self {
-        Self::with_params(program, Arc::new(std::collections::HashMap::new()))
-    }
-
-    /// Create with workload parameters available for bind-point resolution.
-    pub fn with_params(program: Arc<GkProgram>, params: Arc<std::collections::HashMap<String, String>>) -> Self {
         let state = program.create_state();
         Self {
             program,
             state,
             captures: CaptureContext::new(),
-            params,
         }
     }
 
     /// Set coordinates and begin a new isolation scope.
-    pub fn set_coordinates(&mut self, coords: &[u64]) {
-        self.state.set_coordinates(coords);
+    pub fn set_inputs(&mut self, coords: &[u64]) {
+        self.state.set_inputs(coords);
     }
 
     /// Store a captured value.
@@ -296,7 +352,7 @@ impl FiberBuilder {
             names.push(key.clone());
             if let serde_json::Value::String(s) = value {
                 let resolved = substitute_bind_points_with_state(
-                    s, &self.program, &mut self.state, Some(&self.captures), &self.params,
+                    s, &self.program, &mut self.state, Some(&self.captures), self.program.globals(),
                 );
 
                 // Preserve typed value for pure bind point references
@@ -343,7 +399,7 @@ mod tests {
 
     fn make_kernel() -> GkKernel {
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
-        asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::coord("cycle")]);
+        asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
         asm.add_node("user_id", Box::new(ModU64::new(1_000_000)), vec![WireRef::node("hashed")]);
         asm.add_output("user_id", WireRef::node("user_id"));
         asm.add_output("hashed", WireRef::node("hashed"));
@@ -353,7 +409,7 @@ mod tests {
     #[test]
     fn substitute_no_bind_points() {
         let mut kernel = make_kernel();
-        kernel.set_coordinates(&[0]);
+        kernel.set_inputs(&[0]);
         let result = substitute_bind_points("plain text", &mut kernel, None);
         assert_eq!(result, "plain text");
     }
@@ -361,7 +417,7 @@ mod tests {
     #[test]
     fn substitute_single_bind_point() {
         let mut kernel = make_kernel();
-        kernel.set_coordinates(&[42]);
+        kernel.set_inputs(&[42]);
         let result = substitute_bind_points("user:{user_id}", &mut kernel, None);
         assert!(result.starts_with("user:"));
         let id: u64 = result.strip_prefix("user:").unwrap().parse().unwrap();
@@ -371,7 +427,7 @@ mod tests {
     #[test]
     fn substitute_multiple_bind_points() {
         let mut kernel = make_kernel();
-        kernel.set_coordinates(&[42]);
+        kernel.set_inputs(&[42]);
         let result = substitute_bind_points("id={user_id} hash={hashed}", &mut kernel, None);
         assert!(result.contains("id="));
         assert!(result.contains("hash="));
@@ -380,9 +436,9 @@ mod tests {
     #[test]
     fn substitute_deterministic() {
         let mut kernel = make_kernel();
-        kernel.set_coordinates(&[42]);
+        kernel.set_inputs(&[42]);
         let r1 = substitute_bind_points("{user_id}", &mut kernel, None);
-        kernel.set_coordinates(&[42]);
+        kernel.set_inputs(&[42]);
         let r2 = substitute_bind_points("{user_id}", &mut kernel, None);
         assert_eq!(r1, r2);
     }
@@ -394,7 +450,7 @@ mod tests {
         let mut fiber = builder.create_fiber_builder();
         let template = ParsedOp::simple("test", "SELECT * FROM t WHERE id={user_id}");
 
-        fiber.set_coordinates(&[42]);
+        fiber.set_inputs(&[42]);
         let fields = fiber.resolve(&template);
 
         assert_eq!(fields.names, vec!["stmt"]);
@@ -410,9 +466,9 @@ mod tests {
         let mut fiber = builder.create_fiber_builder();
         let template = ParsedOp::simple("op1", "id={user_id}");
 
-        fiber.set_coordinates(&[42]);
+        fiber.set_inputs(&[42]);
         let a = fiber.resolve(&template);
-        fiber.set_coordinates(&[42]);
+        fiber.set_inputs(&[42]);
         let b = fiber.resolve(&template);
         assert_eq!(a.strings()[0], b.strings()[0]);
     }
@@ -424,9 +480,9 @@ mod tests {
         let mut fiber = builder.create_fiber_builder();
         let template = ParsedOp::simple("op1", "id={user_id}");
 
-        fiber.set_coordinates(&[42]);
+        fiber.set_inputs(&[42]);
         let a = fiber.resolve(&template);
-        fiber.set_coordinates(&[43]);
+        fiber.set_inputs(&[43]);
         let b = fiber.resolve(&template);
         assert_ne!(a.strings()[0], b.strings()[0]);
     }

@@ -252,6 +252,86 @@ impl FusedNode for WeightedPick {
     }
 }
 
+/// Dynamic weighted selection where the weight spec is a wire input.
+///
+/// Unlike `WeightedStrings` (which parses weights at init time and
+/// builds the alias table once), this node accepts the weight spec
+/// as a runtime wire input. Changing the spec rebuilds the alias
+/// table — an O(n) operation for n categories.
+///
+/// The `weights_spec` input is marked `WireCost::Config` to signal
+/// that it is expensive to change per-cycle. The compiler warns when
+/// this port is wired to a cycle-time source.
+///
+/// Typical use: wire `weights_spec` to an init-time constant or a
+/// rarely-changing captured value. Wire `selector` to a per-cycle
+/// hash for O(1) lookup.
+///
+/// Signature: `(selector: u64, weights_spec: String) -> (String)`
+///
+/// Spec format: `"alpha:0.3;beta:0.5;gamma:0.2"`
+pub struct DynamicWeightedSelect {
+    meta: NodeMeta,
+    /// Cached alias table. Rebuilt when weights_spec changes.
+    cached_spec: std::cell::RefCell<String>,
+    cached_values: std::cell::RefCell<Vec<String>>,
+    cached_table: std::cell::RefCell<Option<AliasTableU64>>,
+}
+
+impl DynamicWeightedSelect {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "dynamic_weighted_select".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![
+                    Slot::Wire(Port::u64("selector")),
+                    Slot::Wire(Port::str("weights_spec").config()),
+                ],
+            },
+            cached_spec: std::cell::RefCell::new(String::new()),
+            cached_values: std::cell::RefCell::new(Vec::new()),
+            cached_table: std::cell::RefCell::new(None),
+        }
+    }
+
+    fn rebuild_if_needed(&self, spec: &str) {
+        let mut cached_spec = self.cached_spec.borrow_mut();
+        if *cached_spec == spec {
+            return; // no change
+        }
+        let (values, weights) = parse_weighted_str_spec(spec);
+        let table = AliasTableU64::from_weights(&weights);
+        *cached_spec = spec.to_string();
+        *self.cached_values.borrow_mut() = values;
+        *self.cached_table.borrow_mut() = Some(table);
+    }
+}
+
+impl GkNode for DynamicWeightedSelect {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let selector = inputs[0].as_u64();
+        let spec = inputs[1].as_str();
+        self.rebuild_if_needed(spec);
+        let values = self.cached_values.borrow();
+        let table = self.cached_table.borrow();
+        if let Some(ref table) = *table {
+            let idx = table.sample(selector) as usize;
+            outputs[0] = Value::Str(values[idx].clone());
+        } else {
+            outputs[0] = Value::Str(String::new());
+        }
+    }
+}
+
+// Safety: DynamicWeightedSelect uses RefCell internally but is only
+// accessed from a single fiber's eval path (no concurrent access).
+// GkNode requires Send + Sync for the program Arc, but evaluation
+// is always single-threaded per GkState.
+unsafe impl Send for DynamicWeightedSelect {}
+unsafe impl Sync for DynamicWeightedSelect {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +485,135 @@ mod tests {
             assert_eq!(fused_out[0].as_u64(), decomposed_out[0].as_u64(),
                 "equivalence failed at seed {i}");
         }
+    }
+
+    // --- DynamicWeightedSelect tests ---
+
+    #[test]
+    fn dynamic_weighted_select_basic() {
+        let node = DynamicWeightedSelect::new();
+        let spec = "alpha:0.3;beta:0.5;gamma:0.2";
+        let valid = ["alpha", "beta", "gamma"];
+        let mut out = [Value::None];
+        for i in 0..100u64 {
+            node.eval(
+                &[Value::U64(xxh3_64(&i.to_le_bytes())), Value::Str(spec.into())],
+                &mut out,
+            );
+            assert!(valid.contains(&out[0].as_str()), "unexpected: {}", out[0].as_str());
+        }
+    }
+
+    #[test]
+    fn dynamic_weighted_select_caches_table() {
+        let node = DynamicWeightedSelect::new();
+        let spec = "a:0.5;b:0.5";
+        let mut out = [Value::None];
+
+        // First call builds the table
+        node.eval(&[Value::U64(42), Value::Str(spec.into())], &mut out);
+        let first = out[0].as_str().to_string();
+
+        // Same spec → same table (cached), same result for same input
+        node.eval(&[Value::U64(42), Value::Str(spec.into())], &mut out);
+        assert_eq!(out[0].as_str(), first);
+
+        // Different spec → rebuilds table
+        node.eval(&[Value::U64(42), Value::Str("x:1.0".into())], &mut out);
+        assert_eq!(out[0].as_str(), "x");
+    }
+
+    #[test]
+    fn dynamic_weighted_select_config_wire_annotation() {
+        let node = DynamicWeightedSelect::new();
+        let meta = node.meta();
+        // Second input (weights_spec) should be marked Config
+        let wire_inputs = meta.wire_inputs();
+        assert_eq!(wire_inputs.len(), 2);
+        assert_eq!(wire_inputs[0].wire_cost, crate::node::WireCost::Data);
+        assert_eq!(wire_inputs[1].wire_cost, crate::node::WireCost::Config);
+    }
+
+    #[test]
+    fn dynamic_weighted_select_e2e_init_config() {
+        // Init-time config wire: no warning expected
+        use crate::dsl::events::CompileEventLog;
+
+        let source = r#"
+            coordinates := (cycle)
+            init spec = "alpha:0.3;beta:0.7"
+            result := dynamic_weighted_select(hash(cycle), spec)
+        "#;
+        let mut log = CompileEventLog::new();
+        let _k = crate::dsl::compile::compile_gk_with_log(source, &mut log).unwrap();
+
+        let warnings: Vec<_> = log.events().iter().filter(|e|
+            matches!(e, crate::dsl::events::CompileEvent::ConfigWireCycleWarning { .. })
+        ).collect();
+        assert!(warnings.is_empty(), "init-time config should not warn");
+    }
+
+    #[test]
+    fn dynamic_weighted_select_e2e_cycle_config_warns() {
+        // Cycle-time config wire: should warn
+        use crate::dsl::events::CompileEventLog;
+
+        // Spec derived from cycle → cycle-time → config wire warning
+        let source = r#"
+            coordinates := (cycle)
+            spec := format_u64(hash(cycle), 10)
+            result := dynamic_weighted_select(hash(cycle), spec)
+        "#;
+        let mut log = CompileEventLog::new();
+        let _k = crate::dsl::compile::compile_gk_with_log(source, &mut log).unwrap();
+
+        let warnings: Vec<_> = log.events().iter().filter(|e|
+            matches!(e, crate::dsl::events::CompileEvent::ConfigWireCycleWarning { .. })
+        ).collect();
+        assert_eq!(warnings.len(), 1, "cycle-time config should warn: {warnings:?}");
+    }
+
+    #[test]
+    #[test]
+    fn dynamic_weighted_select_strict_rejects_cycle_config() {
+        // In strict mode, Config wire from cycle source is a hard error.
+        use crate::assembly::{GkAssembler, WireRef};
+        use crate::nodes::hash::Hash64;
+        use crate::nodes::convert::U64ToString;
+        use crate::dsl::events::CompileEventLog;
+
+        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+        asm.add_node("spec", Box::new(U64ToString::default()), vec![WireRef::node("hashed")]);
+        asm.add_node("dws", Box::new(DynamicWeightedSelect::new()), vec![
+            WireRef::node("hashed"),  // selector ← cycle (Data, ok)
+            WireRef::node("spec"),    // weights_spec ← cycle (Config, BAD)
+        ]);
+        asm.add_output("result", WireRef::node("dws"));
+
+        // Non-strict compile: should succeed with warning
+        let mut log = CompileEventLog::new();
+        let _kernel = asm.compile_with_log(Some(&mut log)).unwrap();
+        let warnings: Vec<_> = log.events().iter().filter(|e|
+            matches!(e, crate::dsl::events::CompileEvent::ConfigWireCycleWarning { .. })
+        ).collect();
+        assert_eq!(warnings.len(), 1, "should warn in non-strict");
+
+        // Strict compile: rebuild and fold with strict=true
+        let mut asm2 = GkAssembler::new(vec!["cycle".into()]);
+        asm2.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+        asm2.add_node("spec", Box::new(U64ToString::default()), vec![WireRef::node("hashed")]);
+        asm2.add_node("dws", Box::new(DynamicWeightedSelect::new()), vec![
+            WireRef::node("hashed"),
+            WireRef::node("spec"),
+        ]);
+        asm2.add_output("result", WireRef::node("dws"));
+
+        let result = asm2.compile_strict(true);
+        assert!(result.is_err(), "strict mode should reject cycle-time config wire");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("strict") || msg.contains("config"),
+            "error should mention strict or config: {msg}");
     }
 
     #[test]

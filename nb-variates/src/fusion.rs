@@ -813,7 +813,7 @@ mod tests {
     #[test]
     fn hash_mod_fuses_to_hash_range() {
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
-        asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::coord("cycle")]);
+        asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
         asm.add_node("m", Box::new(ModU64::new(100)), vec![WireRef::node("h")]);
         asm.add_output("out", WireRef::node("m"));
 
@@ -821,7 +821,7 @@ mod tests {
 
         // Verify output correctness after fusion.
         for cycle in 0..1000u64 {
-            kernel.set_coordinates(&[cycle]);
+            kernel.set_inputs(&[cycle]);
             let result = kernel.pull("out").as_u64();
             // Must match hash_range semantics: hash(cycle) % 100
             let expected = xxhash_rust::xxh3::xxh3_64(&cycle.to_le_bytes()) % 100;
@@ -832,7 +832,7 @@ mod tests {
     #[test]
     fn fusion_skipped_when_intermediate_has_consumers() {
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
-        asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::coord("cycle")]);
+        asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
         asm.add_node("m", Box::new(ModU64::new(100)), vec![WireRef::node("h")]);
         // Also wire hash output to a second consumer.
         asm.add_node("m2", Box::new(ModU64::new(50)), vec![WireRef::node("h")]);
@@ -843,7 +843,7 @@ mod tests {
 
         // Both outputs should still work correctly.
         for cycle in 0..100u64 {
-            kernel.set_coordinates(&[cycle]);
+            kernel.set_inputs(&[cycle]);
             let h = xxhash_rust::xxh3::xxh3_64(&cycle.to_le_bytes());
             assert_eq!(kernel.pull("out1").as_u64(), h % 100, "out1 cycle {cycle}");
             assert_eq!(kernel.pull("out2").as_u64(), h % 50, "out2 cycle {cycle}");
@@ -997,14 +997,14 @@ mod tests {
         // Build a graph: sum(a, b, c) where a, b, c are coordinates
         let mut asm = GkAssembler::new(vec!["a".into(), "b".into(), "c".into()]);
         asm.add_node("s", Box::new(SumN::new(3)), vec![
-            WireRef::coord("a"), WireRef::coord("b"), WireRef::coord("c"),
+            WireRef::input("a"), WireRef::input("b"), WireRef::input("c"),
         ]);
         asm.add_output("out", WireRef::node("s"));
 
         let mut kernel = asm.compile().unwrap();
 
         // Verify it works.
-        kernel.set_coordinates(&[10, 20, 30]);
+        kernel.set_inputs(&[10, 20, 30]);
         assert_eq!(kernel.pull("out").as_u64(), 60);
     }
 
@@ -1015,7 +1015,7 @@ mod tests {
 
         // Build: hash_range(cycle, 100)
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
-        asm.add_node("hr", Box::new(HashRange::new(100)), vec![WireRef::coord("cycle")]);
+        asm.add_node("hr", Box::new(HashRange::new(100)), vec![WireRef::input("cycle")]);
         asm.add_output("out", WireRef::node("hr"));
 
         // Manually test pattern matching on the resolved graph.
@@ -1033,7 +1033,7 @@ mod tests {
     fn match_result_string_bindings() {
         // Verify String bindings work correctly for lookup.
         let mut m = MatchResult::new();
-        m.wires.push(("x".to_string(), WireSource::Coordinate(0)));
+        m.wires.push(("x".to_string(), WireSource::Input(0)));
         m.constants.push(("mod_node".to_string(), vec![42]));
         m.typed_constants.push(("mod_node".to_string(), vec![
             crate::node::ConstValue::U64(42),
@@ -1041,6 +1041,6 @@ mod tests {
 
         assert_eq!(m.const_u64("mod_node"), 42);
         assert_eq!(m.typed_consts("mod_node").len(), 1);
-        assert!(matches!(m.wire("x"), WireSource::Coordinate(0)));
+        assert!(matches!(m.wire("x"), WireSource::Input(0)));
     }
 }

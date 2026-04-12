@@ -14,6 +14,130 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::cli;
+
+/// Entry point for `nbrs web` — daemon lifecycle, bind, and serve.
+pub fn web_command(args: &[String]) {
+    // Handle --stop: kill a running daemon
+    if args.iter().any(|a| a == "--stop") {
+        match stop_daemon() {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // Handle --restart: stop the old daemon, re-launch with its saved args.
+    // Falls back to process-table scan if no anchor file exists.
+    // If nothing is found at all, starts fresh.
+    if args.iter().any(|a| a == "--restart") {
+        if let Some(anchor) = read_anchor() {
+            // Anchor file exists — use it for a clean restart.
+            let _ = stop_daemon();
+            if !anchor.args.is_empty() {
+                let exe = std::env::current_exe().unwrap_or_else(|_| "nbrs".into());
+                eprintln!("nbrs web: restarting with: {} {}", exe.display(),
+                    anchor.args.join(" "));
+                let status = std::process::Command::new(&exe)
+                    .args(&anchor.args)
+                    .status()
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: failed to restart: {e}");
+                        std::process::exit(1);
+                    });
+                std::process::exit(status.code().unwrap_or(1));
+            }
+            eprintln!("nbrs web: anchor has no saved args, starting with defaults");
+        } else {
+            // No anchor — scan the process table for orphaned nbrs web processes.
+            let procs = find_nbrs_web_processes();
+            if procs.is_empty() {
+                eprintln!("nbrs web: no running instance found, starting fresh");
+            } else {
+                eprintln!("nbrs web: no anchor file, but found {} running nbrs web process(es):",
+                    procs.len());
+                for p in &procs {
+                    eprintln!("  pid {} — {}", p.pid, p.cmdline);
+                }
+                if confirm_prompt("Kill these and start fresh?") {
+                    for p in &procs {
+                        match kill_pid(p.pid) {
+                            Ok(()) => eprintln!("  stopped pid {}", p.pid),
+                            Err(e) => eprintln!("  warning: {e}"),
+                        }
+                    }
+                    // Clean up any leftover PID/anchor files.
+                    let _ = fs::remove_file(pid_file_path());
+                    remove_anchor();
+                } else {
+                    eprintln!("nbrs web: aborted");
+                    return;
+                }
+            }
+        }
+    }
+
+    // Warn about unrecognized --flags.
+    let known_flags = ["--daemon", "--stop", "--restart"];
+    for a in args.iter().filter(|a| a.starts_with("--")) {
+        let key = a.split('=').next().unwrap_or(a);
+        if !known_flags.contains(&key) && key != "--bind" && key != "--port" {
+            eprintln!("warning: unrecognized option '{a}' (known: --daemon, --stop, --restart, --bind=, --port=)");
+        }
+    }
+
+    let bind_raw = args.iter()
+        .find_map(|a| a.strip_prefix("bind=").or_else(|| a.strip_prefix("--bind=")))
+        .unwrap_or("0.0.0.0");
+    let port_raw = args.iter()
+        .find_map(|a| a.strip_prefix("port=").or_else(|| a.strip_prefix("--port=")));
+
+    // Parse bind flexibly: accept bare IP, host:port, or full URL
+    let (bind, port) = cli::parse_bind_address(bind_raw, port_raw);
+    let addr: SocketAddr = format!("{bind}:{port}").parse()
+        .unwrap_or_else(|e| { eprintln!("error: invalid bind address '{bind}:{port}': {e}"); std::process::exit(1); });
+
+    // Clean up stale anchor if the recorded PID is dead.
+    cleanup_stale_anchor();
+
+    // Check if the port is already in use before attempting to bind.
+    if let Err(msg) = check_port_available(&addr) {
+        eprintln!("error: {msg}");
+        std::process::exit(1);
+    }
+
+    // Handle --daemon: fork to background
+    if args.iter().any(|a| a == "--daemon") {
+        eprintln!("nbrs web: daemonizing on {addr}...");
+        daemonize().unwrap_or_else(|e| {
+            eprintln!("error: failed to daemonize: {e}");
+            std::process::exit(1);
+        });
+    }
+
+    // Write anchor file so `nbrs run` in this directory auto-discovers us.
+    // Save the full "web ..." args (excluding --restart) for --restart.
+    let saved_args: Vec<String> = std::env::args().skip(1)
+        .filter(|a| a != "--restart")
+        .collect();
+    write_anchor(&addr, &saved_args);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let broadcast = nb_web::ws::MetricsBroadcast::new(16);
+        if let Err(e) = nb_web::server::serve_with(addr, broadcast).await {
+            eprintln!("error: web server failed: {e}");
+        }
+    });
+
+    // Clean up on exit.
+    let _ = fs::remove_file(pid_file_path());
+    remove_anchor();
+}
+
 /// Name of the anchor file written to the working directory.
 const ANCHOR_FILE: &str = ".nbrs-web.json";
 

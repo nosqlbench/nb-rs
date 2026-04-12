@@ -37,44 +37,136 @@ mod inner {
     /// The entire DAG is compiled to a single native function.
     /// `eval()` calls directly into generated machine code.
     pub struct JitKernel {
-        /// The flat u64 buffer (same layout as CompiledKernel).
         buffer: Vec<u64>,
         coord_count: usize,
         output_map: HashMap<String, usize>,
-        /// The JIT-compiled function pointer.
+        /// Plain eval function (no provenance).
         code_fn: unsafe fn(*const u64, *mut u64),
-        /// Keep the module alive so the code isn't freed.
+        /// Provenance-aware eval function (with clean ptr).
+        code_fn_prov: Option<unsafe fn(*const u64, *mut u64, *mut u8)>,
         _module: JITModule,
-        /// Keep source nodes alive so JIT-baked pointers (e.g., LUT
-        /// pointers, alias table arrays) remain valid.
         _nodes: Vec<Box<dyn GkNode>>,
+        /// Provenance state (only when compiled with provenance).
+        provenance: Option<JitProvenanceState>,
+    }
+
+    struct JitProvenanceState {
+        node_clean: Vec<u8>, // u8 for C ABI compat
+        input_dependents: Vec<Vec<usize>>,
+        /// Per-slot provenance for pull-side guard.
+        slot_provenance: Vec<u64>,
+        changed_mask: u64,
     }
 
     impl JitKernel {
-        /// Evaluate the kernel with the given coordinates.
         #[inline]
-        pub fn eval(&mut self, coords: &[u64]) {
-            self.buffer[..self.coord_count].copy_from_slice(coords);
-            unsafe {
-                (self.code_fn)(self.buffer.as_ptr(), self.buffer.as_mut_ptr());
+        fn set_inputs_internal(&mut self, coords: &[u64]) {
+            if let Some(ref mut prov) = self.provenance {
+                prov.changed_mask = 0;
+                for i in 0..coords.len().min(self.coord_count) {
+                    if self.buffer[i] != coords[i] {
+                        self.buffer[i] = coords[i];
+                        prov.changed_mask |= 1u64 << i;
+                        if i < prov.input_dependents.len() {
+                            for &step_idx in &prov.input_dependents[i] {
+                                prov.node_clean[step_idx] = 0;
+                            }
+                        }
+                    }
+                }
+            } else {
+                self.buffer[..self.coord_count.min(coords.len())]
+                    .copy_from_slice(&coords[..self.coord_count.min(coords.len())]);
             }
         }
 
-        /// Read a named output after eval().
+        #[inline]
+        fn run_jit(&mut self) {
+            if let Some(ref mut prov) = self.provenance {
+                unsafe {
+                    (self.code_fn_prov.unwrap())(
+                        self.buffer.as_ptr(),
+                        self.buffer.as_mut_ptr(),
+                        prov.node_clean.as_mut_ptr(),
+                    );
+                }
+            } else {
+                unsafe {
+                    (self.code_fn)(self.buffer.as_ptr(), self.buffer.as_mut_ptr());
+                }
+            }
+        }
+
+        /// Set inputs + evaluate all nodes eagerly.
+        #[inline]
+        pub fn eval(&mut self, coords: &[u64]) {
+            self.set_inputs_internal(coords);
+            self.run_jit();
+        }
+
+        /// Set inputs + evaluate ONLY if the requested output's cone
+        /// was affected. Pull-side guard skips JIT call entirely when
+        /// the output is clean.
+        #[inline]
+        pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
+            self.set_inputs_internal(coords);
+            if let Some(ref prov) = self.provenance {
+                if slot < prov.slot_provenance.len() {
+                    if prov.slot_provenance[slot] & prov.changed_mask == 0 {
+                        return self.buffer[slot]; // pull-side skip
+                    }
+                }
+            }
+            self.run_jit();
+            self.buffer[slot]
+        }
+
         #[inline]
         pub fn get(&self, name: &str) -> u64 {
             self.buffer[self.output_map[name]]
         }
 
-        /// Read by pre-resolved slot index.
         #[inline]
         pub fn get_slot(&self, slot: usize) -> u64 {
             self.buffer[slot]
         }
 
+        pub fn coord_count(&self) -> usize { self.coord_count }
+
         /// Resolve output name to slot.
         pub fn resolve_output(&self, name: &str) -> Option<usize> {
             self.output_map.get(name).copied()
+        }
+
+        /// Set provenance dependents for the JIT kernel.
+        pub fn set_provenance_dependents(&mut self, input_dependents: Vec<Vec<usize>>) {
+            if let Some(ref mut prov) = self.provenance {
+                // Compute per-step provenance from dependents
+                let step_count = prov.node_clean.len();
+                let mut step_prov = vec![0u64; step_count];
+                for (input_idx, deps) in input_dependents.iter().enumerate() {
+                    for &step_idx in deps {
+                        if step_idx < step_count {
+                            step_prov[step_idx] |= 1u64 << input_idx;
+                        }
+                    }
+                }
+                // Map to slot provenance
+                // TODO: needs slot_bases from assembly. For now, approximate:
+                // each step produces one output at slot coord_count + step_idx
+                let mut slot_prov = vec![0u64; self.buffer.len()];
+                for i in 0..self.coord_count.min(64) {
+                    slot_prov[i] = 1u64 << i;
+                }
+                for i in 0..step_count {
+                    let slot = self.coord_count + i; // approximate
+                    if slot < slot_prov.len() {
+                        slot_prov[slot] = step_prov[i];
+                    }
+                }
+                prov.slot_provenance = slot_prov;
+                prov.input_dependents = input_dependents;
+            }
         }
 
         /// Decompose into raw parts for hybrid kernel integration.
@@ -391,6 +483,27 @@ mod inner {
         output_map: HashMap<String, usize>,
         nodes: Vec<Box<dyn GkNode>>,
     ) -> Result<JitKernel, String> {
+        compile_jit_impl(coord_count, total_slots, steps, output_map, nodes, false)
+    }
+
+    pub(crate) fn compile_jit_with_provenance(
+        coord_count: usize,
+        total_slots: usize,
+        steps: Vec<(JitOp, Vec<usize>, Vec<usize>)>,
+        output_map: HashMap<String, usize>,
+        nodes: Vec<Box<dyn GkNode>>,
+    ) -> Result<JitKernel, String> {
+        compile_jit_impl(coord_count, total_slots, steps, output_map, nodes, true)
+    }
+
+    fn compile_jit_impl(
+        coord_count: usize,
+        total_slots: usize,
+        steps: Vec<(JitOp, Vec<usize>, Vec<usize>)>,
+        output_map: HashMap<String, usize>,
+        nodes: Vec<Box<dyn GkNode>>,
+        provenance: bool,
+    ) -> Result<JitKernel, String> {
         let mut flag_builder = settings::builder();
         flag_builder.set("opt_level", "speed").unwrap();
         let isa_builder = cranelift_codegen::isa::lookup(target_lexicon::Triple::host())
@@ -498,10 +611,15 @@ mod inner {
             );
         }
 
-        // Define the kernel function: fn(coords: *const u64, buffer: *mut u64)
+        // Function signature depends on provenance mode:
+        // Without: fn(coords: *const u64, buffer: *mut u64)
+        // With:    fn(coords: *const u64, buffer: *mut u64, clean: *mut u8)
         let mut sig = module.make_signature();
         sig.params.push(AbiParam::new(types::I64)); // coords ptr
         sig.params.push(AbiParam::new(types::I64)); // buffer ptr
+        if provenance {
+            sig.params.push(AbiParam::new(types::I64)); // clean ptr
+        }
         let func_id = module.declare_function("gk_kernel", Linkage::Local, &sig)
             .map_err(|e| format!("declare kernel: {e}"))?;
 
@@ -518,6 +636,7 @@ mod inner {
 
             let _coords_ptr = builder.block_params(block)[0];
             let buffer_ptr = builder.block_params(block)[1];
+            let clean_ptr = if provenance { Some(builder.block_params(block)[2]) } else { None };
 
             // Import extern functions for calls
             let hash_func_ref = module.declare_func_in_func(hash_func_id, builder.func);
@@ -533,7 +652,24 @@ mod inner {
                 .collect();
 
             // Generate code for each step
-            for (jit_op, input_slots, output_slots) in &steps {
+            for (step_idx, (jit_op, input_slots, output_slots)) in steps.iter().enumerate() {
+                // Provenance guard: if clean[step_idx] != 0, skip this node
+                let skip_block = if let Some(cp) = clean_ptr {
+                    let skip = builder.create_block();
+                    let cont = builder.create_block();
+                    // Load clean[step_idx] (u8)
+                    let offset = builder.ins().iconst(types::I64, step_idx as i64);
+                    let addr = builder.ins().iadd(cp, offset);
+                    let flag = builder.ins().load(types::I8, ir::MemFlags::new(), addr, 0);
+                    let zero = builder.ins().iconst(types::I8, 0);
+                    let is_clean = builder.ins().icmp(ir::condcodes::IntCC::NotEqual, flag, zero);
+                    builder.ins().brif(is_clean, skip, &[], cont, &[]);
+                    builder.switch_to_block(cont);
+                    builder.seal_block(cont);
+                    Some(skip)
+                } else {
+                    None
+                };
                 match jit_op {
                     JitOp::Identity => {
                         let val = load_slot(&mut builder, buffer_ptr, input_slots[0]);
@@ -746,6 +882,17 @@ mod inner {
                         // not include fallback ops in JIT steps)
                     }
                 }
+
+                // Provenance: set clean[step_idx] = 1, then jump to skip block
+                if let (Some(cp), Some(skip)) = (clean_ptr, skip_block) {
+                    let offset = builder.ins().iconst(types::I64, step_idx as i64);
+                    let addr = builder.ins().iadd(cp, offset);
+                    let one = builder.ins().iconst(types::I8, 1);
+                    builder.ins().store(ir::MemFlags::new(), one, addr, 0);
+                    builder.ins().jump(skip, &[]);
+                    builder.switch_to_block(skip);
+                    builder.seal_block(skip);
+                }
             }
 
             builder.ins().return_(&[]);
@@ -759,16 +906,43 @@ mod inner {
             .map_err(|e| format!("finalize: {e}"))?;
 
         let code_ptr = module.get_finalized_function(func_id);
-        let code_fn: unsafe fn(*const u64, *mut u64) = unsafe { mem::transmute(code_ptr) };
+        let step_count = steps.len();
 
-        Ok(JitKernel {
-            buffer: vec![0u64; total_slots],
-            coord_count,
-            output_map,
-            code_fn,
-            _module: module,
-            _nodes: nodes,
-        })
+        if provenance {
+            let code_fn_prov: unsafe fn(*const u64, *mut u64, *mut u8) =
+                unsafe { mem::transmute(code_ptr) };
+            // Dummy plain fn for into_parts compatibility
+            let dummy: unsafe fn(*const u64, *mut u64) =
+                unsafe { mem::transmute(code_ptr) };
+            Ok(JitKernel {
+                buffer: vec![0u64; total_slots],
+                coord_count,
+                output_map,
+                code_fn: dummy,
+                code_fn_prov: Some(code_fn_prov),
+                _module: module,
+                _nodes: nodes,
+                provenance: Some(JitProvenanceState {
+                    node_clean: vec![0u8; step_count],
+                    input_dependents: Vec::new(),
+                    slot_provenance: Vec::new(), // set via set_provenance_dependents
+                    changed_mask: u64::MAX,
+                }),
+            })
+        } else {
+            let code_fn: unsafe fn(*const u64, *mut u64) =
+                unsafe { mem::transmute(code_ptr) };
+            Ok(JitKernel {
+                buffer: vec![0u64; total_slots],
+                coord_count,
+                output_map,
+                code_fn,
+                code_fn_prov: None,
+                _module: module,
+                _nodes: nodes,
+                provenance: None,
+            })
+        }
     }
 
     /// Load a u64 from buffer[slot].

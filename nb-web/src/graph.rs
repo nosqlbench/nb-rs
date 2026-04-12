@@ -164,7 +164,7 @@ pub fn compile_graph(graph_json: &str) -> CompileResult {
             let output_names: Vec<String> = kernel.output_names().iter().map(|s| s.to_string()).collect();
             (0..5u64)
                 .map(|cycle| {
-                    kernel.set_coordinates(&[cycle]);
+                    kernel.set_inputs(&[cycle]);
                     let vals: Vec<String> = output_names
                         .iter()
                         .map(|name| {
@@ -446,7 +446,7 @@ pub fn plot_graph(req: PlotRequest) -> PlotResult {
             let mut c = req.cycle_start;
             while c <= req.cycle_end {
                 cycles.push(c);
-                kernel.set_coordinates(&[c]);
+                kernel.set_inputs(&[c]);
                 for name in &output_names {
                     let v = kernel.pull(name);
                     let f = match v {
@@ -499,7 +499,7 @@ pub fn eval_graph(req: EvalRequest) -> EvalResult {
 
     match nb_variates::dsl::compile_gk(&translation.source) {
         Ok(mut kernel) => {
-            kernel.set_coordinates(&[req.cycle]);
+            kernel.set_inputs(&[req.cycle]);
 
             // Pull all outputs and collect their display values.
             let output_names: Vec<String> = kernel.output_names().iter().map(|s| s.to_string()).collect();

@@ -159,7 +159,7 @@ pub fn gk_to_mermaid(source: &str) -> Result<String, String> {
     lines.push("    classDef coord fill:#16213e,stroke:#4da6ff,color:#4da6ff".into());
     lines.push("    classDef func fill:#16213e,stroke:#0f3460,color:#e0e0e0".into());
     for node in &nodes {
-        let class = if node.is_coord { "coord" } else { "func" };
+        let class = if node.is_coord { "input" } else { "func" };
         lines.push(format!("    class {} {class}", node.id));
     }
 
@@ -206,13 +206,13 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
     let mut node_counter = 0usize;
 
     // Collect coordinates and defined names
-    let mut coord_names: Vec<String> = Vec::new();
+    let mut input_names: Vec<String> = Vec::new();
     let mut defined_names: HashSet<String> = HashSet::new();
     let mut all_output_names: Vec<String> = Vec::new();
 
     for stmt in &ast.statements {
         match stmt {
-            Statement::Coordinates(names, _) => coord_names.extend(names.clone()),
+            Statement::Coordinates(names, _) => input_names.extend(names.clone()),
             Statement::InitBinding(b) => {
                 defined_names.insert(b.name.clone());
                 all_output_names.push(b.name.clone());
@@ -228,7 +228,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
     }
 
     // Infer coordinates
-    if coord_names.is_empty() {
+    if input_names.is_empty() {
         let mut refs: HashSet<String> = HashSet::new();
         for stmt in &ast.statements {
             let expr = match stmt {
@@ -239,9 +239,9 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
             collect_expr_idents(expr, &mut refs);
         }
         for name in refs {
-            if !defined_names.contains(&name) { coord_names.push(name); }
+            if !defined_names.contains(&name) { input_names.push(name); }
         }
-        coord_names.sort();
+        input_names.sort();
     }
 
     // Determine which outputs are terminal (not consumed by other nodes)
@@ -264,7 +264,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
     let inputs_id = "inputs".to_string();
     {
         let mut input_ports: Vec<String> = Vec::new();
-        for name in &coord_names {
+        for name in &input_names {
             input_ports.push(name.clone());
         }
         // TODO: add volatile and sticky ports here when SRD 28 is implemented
@@ -275,7 +275,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
             outputs: input_ports,
             is_coord: true,
         });
-        for name in &coord_names {
+        for name in &input_names {
             name_to_node_id.insert(name.clone(), inputs_id.clone());
         }
     }

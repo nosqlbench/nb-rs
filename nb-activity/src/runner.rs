@@ -120,35 +120,37 @@ pub fn prepare(args: &[String]) -> Result<PreparedRun, String> {
     // Workload params are excluded from the "undeclared bind point"
     // check — they resolve at cycle time via the synthesis pipeline.
     let param_names: Vec<String> = workload_params.keys().cloned().collect();
-    let kernel = compile_bindings_excluding(&ops, &param_names)
+    let mut kernel = compile_bindings_excluding(&ops, &param_names)
         .map_err(|e| format!("compile bindings: {e}"))?;
+
+    // Store resolved workload params as globals on the program.
+    // Fibers read from program.globals() — no separate params map needed.
+    kernel.set_globals(workload_params.clone());
 
     // Build op sequence
     let op_sequence = OpSequence::from_ops(ops, seq_type);
 
-    // Resolve cycles: CLI > workload param > one stanza
+    // Resolve activity settings: CLI > workload param (with GK constant substitution)
     let cycles = if let Some(c) = explicit_cycles {
         c
     } else {
-        resolve_param(&params, &workload_params, "cycles")
+        resolve_param_with_gk(&params, &workload_params, &kernel, "cycles")
             .and_then(|s| s.parse().ok())
             .unwrap_or(op_sequence.stanza_length() as u64)
     };
-
-    // Resolve activity settings: CLI params override workload params
-    let concurrency: usize = resolve_param(&params, &workload_params, "concurrency")
+    let concurrency: usize = resolve_param_with_gk(&params, &workload_params, &kernel, "concurrency")
         .map(|s| s.parse().map_err(|e| format!("invalid concurrency='{s}': {e}")))
         .transpose()?
         .unwrap_or(1);
-    let stanza_concurrency: usize = resolve_param(&params, &workload_params, "stanza_concurrency")
-        .or_else(|| resolve_param(&params, &workload_params, "sc"))
+    let stanza_concurrency: usize = resolve_param_with_gk(&params, &workload_params, &kernel, "stanza_concurrency")
+        .or_else(|| resolve_param_with_gk(&params, &workload_params, &kernel, "sc"))
         .map(|s| s.parse().map_err(|e| format!("invalid stanza_concurrency='{s}': {e}")))
         .transpose()?
         .unwrap_or(1);
-    let cycle_rate: Option<f64> = resolve_param(&params, &workload_params, "rate")
+    let cycle_rate: Option<f64> = resolve_param_with_gk(&params, &workload_params, &kernel, "rate")
         .map(|s| s.parse().map_err(|e| format!("invalid rate='{s}': {e}")))
         .transpose()?;
-    let stanza_rate: Option<f64> = resolve_param(&params, &workload_params, "stanzarate")
+    let stanza_rate: Option<f64> = resolve_param_with_gk(&params, &workload_params, &kernel, "stanzarate")
         .map(|s| s.parse().map_err(|e| format!("invalid stanzarate='{s}': {e}")))
         .transpose()?;
 
@@ -193,13 +195,60 @@ pub fn prepare(args: &[String]) -> Result<PreparedRun, String> {
     Ok(PreparedRun { driver, params, activity, builder })
 }
 
-/// Resolve a parameter: CLI params override workload params.
-fn resolve_param<'a>(
-    cli: &'a HashMap<String, String>,
-    workload: &'a HashMap<String, String>,
+/// Resolve a parameter with GK constant substitution.
+///
+/// After CLI > workload resolution, `{name}` references in the value
+/// are substituted from GK init-time constants. This enables:
+///   `cycles: "{train_count}"` → `cycles: "1183514"`
+fn resolve_param_with_gk(
+    cli: &HashMap<String, String>,
+    workload: &HashMap<String, String>,
+    kernel: &nb_variates::kernel::GkKernel,
     key: &str,
 ) -> Option<String> {
-    cli.get(key).or_else(|| workload.get(key)).cloned()
+    // CLI values are never GK-substituted (user typed a literal)
+    if let Some(v) = cli.get(key) {
+        return Some(v.clone());
+    }
+    // Workload param values may contain {name} references
+    if let Some(v) = workload.get(key) {
+        return Some(resolve_gk_refs(v, kernel));
+    }
+    None
+}
+
+/// Substitute `{name}` references in a string from GK init-time constants.
+fn resolve_gk_refs(value: &str, kernel: &nb_variates::kernel::GkKernel) -> String {
+    if !value.contains('{') {
+        return value.to_string();
+    }
+    let mut result = value.to_string();
+    // Find all {name} patterns and substitute from folded constants
+    let mut i = 0;
+    while let Some(open) = result[i..].find('{') {
+        let open = i + open;
+        if let Some(close) = result[open..].find('}') {
+            let close = open + close;
+            let name = &result[open + 1..close];
+            // Skip escaped {{ or empty
+            if name.is_empty() || result.as_bytes().get(open + 1) == Some(&b'{') {
+                i = close + 1;
+                continue;
+            }
+            if let Some(val) = kernel.get_constant(name) {
+                let replacement = val.to_display_string();
+                result.replace_range(open..=close, &replacement);
+                i = open + replacement.len();
+            } else {
+                // Not a GK constant — leave as-is (might be a workload param
+                // that was already expanded, or a literal brace)
+                i = close + 1;
+            }
+        } else {
+            break;
+        }
+    }
+    result
 }
 
 /// Parse `key=value` pairs from command line args.

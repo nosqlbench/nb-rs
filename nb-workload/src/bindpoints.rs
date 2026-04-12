@@ -10,16 +10,17 @@
 /// Namespace qualifier for a bind point reference.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BindQualifier {
-    /// No qualifier — resolved by priority order: bind → capture → coord.
+    /// No qualifier — resolved by priority: bind → capture → input → param.
     None,
-    /// `{coord:name}` or `{coordinate:name}` — coordinate input.
-    Coord,
+    /// `{input:name}` — graph input value.
+    Input,
     /// `{bind:name}` — GK binding output.
     Bind,
     /// `{capture:name}` — capture context (volatile or sticky port).
+    /// Also accepts `{port:name}` as an alias.
     Capture,
-    /// `{port:name}` — explicit external input port.
-    Port,
+    /// `{param:name}` — workload parameter value.
+    Param,
 }
 
 /// A detected bind point in an op template field.
@@ -108,10 +109,10 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
 fn parse_qualified_ref(raw: &str) -> (BindQualifier, String) {
     if let Some((prefix, name)) = raw.split_once(':') {
         let qualifier = match prefix.trim().to_lowercase().as_str() {
-            "coord" | "coordinate" => BindQualifier::Coord,
+            "input" | "coord" | "coordinate" => BindQualifier::Input,
             "bind" => BindQualifier::Bind,
             "capture" => BindQualifier::Capture,
-            "port" => BindQualifier::Port,
+            "param" => BindQualifier::Param,
             _ => return (BindQualifier::None, raw.to_string()), // not a known qualifier
         };
         (qualifier, name.trim().to_string())
@@ -316,7 +317,7 @@ mod tests {
         assert_eq!(points.len(), 1);
         assert_eq!(points[0], BindPoint::Reference {
             name: "cycle".into(),
-            qualifier: BindQualifier::Coord,
+            qualifier: BindQualifier::Input,
         });
     }
 
@@ -341,12 +342,14 @@ mod tests {
     }
 
     #[test]
-    fn qualified_port() {
+    #[test]
+    fn unknown_qualifier_becomes_unqualified() {
+        // "port" is not a recognized qualifier — treated as unqualified
         let points = extract_bind_points("{port:auth_token}");
         assert_eq!(points.len(), 1);
         assert_eq!(points[0], BindPoint::Reference {
-            name: "auth_token".into(),
-            qualifier: BindQualifier::Port,
+            name: "port:auth_token".into(),
+            qualifier: BindQualifier::None,
         });
     }
 
@@ -370,7 +373,7 @@ mod tests {
         let points = extract_bind_points("{coordinate:row}");
         assert_eq!(points[0], BindPoint::Reference {
             name: "row".into(),
-            qualifier: BindQualifier::Coord,
+            qualifier: BindQualifier::Input,
         });
     }
 

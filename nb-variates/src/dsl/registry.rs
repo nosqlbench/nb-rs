@@ -1044,6 +1044,25 @@ pub fn registry() -> Vec<FuncSig> {
             help: "Weighted categorical selection from inline weight/value pairs.\nUses the alias method for O(1) lookup after initialization.\nParameters:\n  input      — u64 wire input (typically hashed)\n  weight,val — repeating pairs: f64 weight, u64 value\nWeights are relative (need not sum to 1).\nExample: weighted_pick(hash(cycle), 3.0, 100, 1.0, 200, 1.0, 300)\nTheory: the alias method pre-computes a table so each lookup is\nconstant-time regardless of the number of categories.",
         },
 
+        FuncSig {
+            name: "dynamic_weighted_select", category: C::Weighted,
+            outputs: 1, description: "weighted string selection with dynamic weight spec (Config wire)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "selector", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "weights_spec", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Dynamic weighted string selection where the weight spec is a wire input.\n\
+                   The weights_spec input is a Config wire — changing it rebuilds the alias table (O(n)).\n\
+                   Wire weights_spec to an init-time constant for normal use. Wiring to a cycle-time\n\
+                   source triggers a compiler warning.\n\n\
+                   Parameters:\n  selector     — u64 wire input (typically hashed)\n  \
+                   weights_spec — String wire input (e.g. \"alpha:0.3;beta:0.5;gamma:0.2\")\n\n\
+                   Example: dynamic_weighted_select(hash(cycle), my_weights)",
+        },
+
         // --- String ---
         FuncSig {
             name: "combinations", category: C::String,

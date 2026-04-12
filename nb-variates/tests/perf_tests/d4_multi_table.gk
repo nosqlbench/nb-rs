@@ -1,0 +1,68 @@
+/// @driver
+/// cycle := meta
+
+/// @selector
+/// bucket := mod(hash(meta), 4)
+/// output_idx := bucket
+//  Rotates across 4 table outputs equally.
+
+/// @pull_weights
+/// u_out: 25
+/// o_out: 25
+/// p_out: 25
+/// e_out: 25
+
+/// @graph
+/// Multi-table workload. 4 independent table generators.
+/// 44 nodes, single input. Tests fan-out from shared cycle.
+inputs := (cycle)
+
+// Table 1: users
+u_h := hash(cycle)
+u_id := mod(u_h, 1000000)
+u_name := hash(u_id)
+u_email := hash(u_name)
+u_region := mod(u_h, 50)
+u_balance := mod(u_name, 10000)
+u_status := mod(u_email, 3)
+u_created := hash(u_balance)
+u_tag := mod(u_created, 200)
+u_out := hash(u_tag)
+
+// Table 2: orders
+o_h := hash(hash(cycle))
+o_id := mod(o_h, 5000000)
+o_user := mod(o_h, 1000000)
+o_amount := mod(o_id, 99999)
+o_item := hash(o_amount)
+o_qty := mod(o_item, 20)
+o_status := mod(o_qty, 4)
+o_ts := hash(o_status)
+o_region := mod(o_ts, 50)
+o_out := hash(o_region)
+
+// Table 3: products
+p_h := hash(mod(cycle, 10000))
+p_id := mod(p_h, 100000)
+p_name := hash(p_id)
+p_price := mod(p_name, 99999)
+p_cat := mod(p_h, 20)
+p_stock := mod(p_price, 1000)
+p_rating := mod(p_stock, 5)
+p_vendor := hash(p_rating)
+p_tag := mod(p_vendor, 100)
+p_out := hash(p_tag)
+
+// Table 4: events
+e_h := hash(mod(cycle, 50000))
+e_id := mod(e_h, 10000000)
+e_type := mod(e_h, 8)
+e_user := mod(e_id, 1000000)
+e_data := hash(e_user)
+e_ts := hash(e_data)
+e_src := mod(e_ts, 10)
+e_level := mod(e_src, 5)
+e_tag := hash(e_level)
+e_out := mod(e_tag, 999)
+
+out := hash(u_out)

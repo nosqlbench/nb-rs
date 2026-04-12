@@ -1,4 +1,4 @@
-# MEMO: Annotated Implementation of U64ToString
+# Memo 02: Annotated Implementation of U64ToString
 
 A walkthrough of the `U64ToString` node in `nb-variates/src/nodes/convert.rs`,
 explaining how a minimal GK node is structured and how it connects to the

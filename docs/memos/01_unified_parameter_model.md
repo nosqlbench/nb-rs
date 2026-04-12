@@ -1,4 +1,4 @@
-# MEMO: Unified Parameter Model for GK Nodes
+# Memo 01: Unified Parameter Model for GK Nodes
 
 Describes the refactoring of node metadata and function signatures
 from a split wire/constant model to a unified slot-based model.

@@ -24,7 +24,7 @@ fn main() {
                 let mut state = program.create_state();
                 let base = tid as u64 * cycles_per_thread;
                 for c in base..base + cycles_per_thread {
-                    state.set_coordinates(&[c]);
+                    state.set_inputs(&[c]);
                     state.pull(&program, "user_id");
                 }
             });

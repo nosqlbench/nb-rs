@@ -19,7 +19,7 @@ fn vector_at_produces_100d_vector() {
         vec := vector_at(cycle, "glove-100")
     "#).expect("compile failed");
 
-    k.set_coordinates(&[0]);
+    k.set_inputs(&[0]);
     let s = k.pull("vec").to_display_string();
     assert!(s.starts_with('['), "should be a JSON array: {}", &s[..60.min(s.len())]);
     assert!(s.ends_with(']'));
@@ -36,7 +36,7 @@ fn vector_at_bytes_correct_length() {
         vec := vector_at_bytes(cycle, "glove-100")
     "#).expect("compile failed");
 
-    k.set_coordinates(&[0]);
+    k.set_inputs(&[0]);
     let val = k.pull("vec");
     match val {
         nb_variates::node::Value::Bytes(b) => {
@@ -56,7 +56,7 @@ fn vector_count_and_dim() {
         dim := vector_dim("glove-100")
     "#).expect("compile failed");
 
-    k.set_coordinates(&[0]);
+    k.set_inputs(&[0]);
     let count = k.pull("count").as_u64();
     let dim = k.pull("dim").as_u64();
     assert!(count > 0, "dataset should have vectors, got count={count}");
@@ -72,7 +72,7 @@ fn query_vector_at_produces_output() {
         qvec := query_vector_at(cycle, "glove-100")
     "#).expect("compile failed");
 
-    k.set_coordinates(&[0]);
+    k.set_inputs(&[0]);
     let s = k.pull("qvec").to_display_string();
     assert!(s.starts_with('[') && s.ends_with(']'), "should be array: {}", &s[..60.min(s.len())]);
 }
@@ -85,7 +85,7 @@ fn neighbor_indices_at_produces_output() {
         neighbors := neighbor_indices_at(cycle, "glove-100")
     "#).expect("compile failed");
 
-    k.set_coordinates(&[0]);
+    k.set_inputs(&[0]);
     let s = k.pull("neighbors").to_display_string();
     assert!(s.starts_with('[') && s.ends_with(']'), "should be array: {}", &s[..60.min(s.len())]);
     // Should have multiple neighbor indices
@@ -101,9 +101,9 @@ fn vector_at_deterministic() {
         vec := vector_at(cycle, "glove-100")
     "#).expect("compile failed");
 
-    k.set_coordinates(&[42]);
+    k.set_inputs(&[42]);
     let a = k.pull("vec").to_display_string();
-    k.set_coordinates(&[42]);
+    k.set_inputs(&[42]);
     let b = k.pull("vec").to_display_string();
     assert_eq!(a, b, "same cycle should produce same vector");
 }
@@ -117,12 +117,12 @@ fn vector_at_wraps_modulo() {
         vec0 := vector_at(cycle, "glove-100")
     "#).expect("compile failed");
 
-    k.set_coordinates(&[0]);
+    k.set_inputs(&[0]);
     let count = k.pull("count").as_u64();
     let v0 = k.pull("vec0").to_display_string();
 
     // Accessing at index=count should wrap to index=0
-    k.set_coordinates(&[count]);
+    k.set_inputs(&[count]);
     let v_wrap = k.pull("vec0").to_display_string();
     assert_eq!(v0, v_wrap, "index should wrap modulo count");
 }

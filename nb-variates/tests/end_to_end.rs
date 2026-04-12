@@ -14,22 +14,22 @@ use nb_variates::nodes::hash::{Hash64, HashRange};
 fn simple_hash_mod_chain() {
     let mut asm = GkAssembler::new(vec!["cycle".into()]);
 
-    asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::coord("cycle")]);
+    asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
     asm.add_node("m", Box::new(ModU64::new(1000)), vec![WireRef::node("h")]);
     asm.add_output("result", WireRef::node("m"));
 
     let mut kernel = asm.compile().unwrap();
 
-    kernel.set_coordinates(&[42]);
+    kernel.set_inputs(&[42]);
     let v = kernel.pull("result").as_u64();
     assert!(v < 1000, "expected < 1000, got {v}");
 
     // Deterministic: same coordinate → same result
-    kernel.set_coordinates(&[42]);
+    kernel.set_inputs(&[42]);
     assert_eq!(kernel.pull("result").as_u64(), v);
 
     // Different coordinate → (likely) different result
-    kernel.set_coordinates(&[43]);
+    kernel.set_inputs(&[43]);
     let v2 = kernel.pull("result").as_u64();
     assert!(v2 < 1000);
     // Not strictly guaranteed to differ, but astronomically unlikely
@@ -44,7 +44,7 @@ fn mixed_radix_decomposition() {
     asm.add_node(
         "decompose",
         Box::new(MixedRadix::new(vec![100, 1000, 0])),
-        vec![WireRef::coord("cycle")],
+        vec![WireRef::input("cycle")],
     );
 
     // Expose each digit as a separate output
@@ -55,7 +55,7 @@ fn mixed_radix_decomposition() {
     let mut kernel = asm.compile().unwrap();
 
     // 4_201_337 → tenant=37, device=13, reading=42
-    kernel.set_coordinates(&[4_201_337]);
+    kernel.set_inputs(&[4_201_337]);
     assert_eq!(kernel.pull("tenant").as_u64(), 37);
     assert_eq!(kernel.pull("device").as_u64(), 13);
     assert_eq!(kernel.pull("reading").as_u64(), 42);
@@ -69,7 +69,7 @@ fn shared_intermediate() {
     asm.add_node(
         "decompose",
         Box::new(MixedRadix::new(vec![100, 1000, 0])),
-        vec![WireRef::coord("cycle")],
+        vec![WireRef::input("cycle")],
     );
 
     // Hash the tenant coordinate
@@ -96,7 +96,7 @@ fn shared_intermediate() {
 
     let mut kernel = asm.compile().unwrap();
 
-    kernel.set_coordinates(&[42]);
+    kernel.set_inputs(&[42]);
     let code = kernel.pull("code").as_u64();
     let bucket = kernel.pull("bucket").as_u64();
 
@@ -116,7 +116,7 @@ fn auto_edge_adapter_u64_to_string() {
     asm.add_node(
         "val",
         Box::new(ModU64::new(100)),
-        vec![WireRef::coord("cycle")],
+        vec![WireRef::input("cycle")],
     );
 
     // U64ToString is normally auto-inserted, but let's test with an
@@ -139,7 +139,7 @@ fn auto_edge_adapter_u64_to_string() {
 
     let mut kernel = asm.compile().unwrap();
 
-    kernel.set_coordinates(&[542]);
+    kernel.set_inputs(&[542]);
     let result = kernel.pull("result");
     assert_eq!(result.as_str(), "42"); // 542 % 100 = 42
 }
@@ -152,7 +152,7 @@ fn two_input_interleave() {
     asm.add_node(
         "mixed",
         Box::new(Interleave::new()),
-        vec![WireRef::coord("a"), WireRef::coord("b")],
+        vec![WireRef::input("a"), WireRef::input("b")],
     );
     asm.add_node(
         "hashed",
@@ -169,12 +169,12 @@ fn two_input_interleave() {
 
     let mut kernel = asm.compile().unwrap();
 
-    kernel.set_coordinates(&[5, 10]);
+    kernel.set_inputs(&[5, 10]);
     let v1 = kernel.pull("result").as_u64();
     assert!(v1 < 1000);
 
     // Different coordinates → different result
-    kernel.set_coordinates(&[10, 5]);
+    kernel.set_inputs(&[10, 5]);
     let v2 = kernel.pull("result").as_u64();
     assert!(v2 < 1000);
     assert_ne!(v1, v2, "interleave(5,10) should differ from interleave(10,5)");
@@ -186,13 +186,13 @@ fn two_input_interleave() {
 fn memoization_within_context() {
     let mut asm = GkAssembler::new(vec!["cycle".into()]);
 
-    asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::coord("cycle")]);
+    asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
     asm.add_node("m", Box::new(ModU64::new(1000)), vec![WireRef::node("h")]);
     asm.add_output("result", WireRef::node("m"));
 
     let mut kernel = asm.compile().unwrap();
 
-    kernel.set_coordinates(&[99]);
+    kernel.set_inputs(&[99]);
     let v1 = kernel.pull("result").as_u64();
     let v2 = kernel.pull("result").as_u64();
     assert_eq!(v1, v2, "same context, same output");
@@ -203,15 +203,15 @@ fn memoization_within_context() {
 fn context_change_invalidates() {
     let mut asm = GkAssembler::new(vec!["cycle".into()]);
 
-    asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::coord("cycle")]);
+    asm.add_node("h", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
     asm.add_output("result", WireRef::node("h"));
 
     let mut kernel = asm.compile().unwrap();
 
-    kernel.set_coordinates(&[1]);
+    kernel.set_inputs(&[1]);
     let v1 = kernel.pull("result").as_u64();
 
-    kernel.set_coordinates(&[2]);
+    kernel.set_inputs(&[2]);
     let v2 = kernel.pull("result").as_u64();
 
     assert_ne!(v1, v2, "different coordinates must produce different hashes");
@@ -225,7 +225,7 @@ fn error_unknown_wire() {
     asm.add_node(
         "h",
         Box::new(Hash64::new()),
-        vec![WireRef::coord("nonexistent")],
+        vec![WireRef::input("nonexistent")],
     );
     asm.add_output("result", WireRef::node("h"));
 
@@ -242,7 +242,7 @@ fn error_arity_mismatch() {
     asm.add_node(
         "h",
         Box::new(Hash64::new()),
-        vec![WireRef::coord("cycle"), WireRef::coord("cycle")],
+        vec![WireRef::input("cycle"), WireRef::input("cycle")],
     );
     asm.add_output("result", WireRef::node("h"));
 
@@ -259,7 +259,7 @@ fn timeseries_workload_sketch() {
     asm.add_node(
         "decompose",
         Box::new(MixedRadix::new(vec![100, 1000, 0])),
-        vec![WireRef::coord("cycle")],
+        vec![WireRef::input("cycle")],
     );
 
     // Tenant hash and code
@@ -333,7 +333,7 @@ fn timeseries_workload_sketch() {
     let mut kernel = asm.compile().unwrap();
 
     // cycle 4_201_337 → tenant=37, device=13, reading=42
-    kernel.set_coordinates(&[4_201_337]);
+    kernel.set_inputs(&[4_201_337]);
 
     let tenant_code = kernel.pull("tenant_code").as_u64();
     let device_seq = kernel.pull("device_seq").as_u64();
@@ -348,13 +348,13 @@ fn timeseries_workload_sketch() {
     assert!(reading_h < 1_000_000, "reading_h={reading_h}");
 
     // Deterministic: same cycle → same outputs
-    kernel.set_coordinates(&[4_201_337]);
+    kernel.set_inputs(&[4_201_337]);
     assert_eq!(kernel.pull("tenant_code").as_u64(), tenant_code);
     assert_eq!(kernel.pull("device_seq").as_u64(), device_seq);
     assert_eq!(kernel.pull("reading_h").as_u64(), reading_h);
 
     // Different cycle → different outputs
-    kernel.set_coordinates(&[4_201_338]);
+    kernel.set_inputs(&[4_201_338]);
     let tc2 = kernel.pull("tenant_code").as_u64();
     let ds2 = kernel.pull("device_seq").as_u64();
     // tenant changes (38 vs 37), so outputs should differ

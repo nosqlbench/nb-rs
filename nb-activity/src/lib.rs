@@ -17,3 +17,4 @@ pub mod runner;
 pub mod wrappers;
 pub mod relevancy;
 pub mod validation;
+pub mod linearize;

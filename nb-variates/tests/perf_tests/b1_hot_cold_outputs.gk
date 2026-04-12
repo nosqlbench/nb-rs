@@ -1,0 +1,77 @@
+/// @driver
+/// cycle := meta
+/// ks := 42
+/// ds := 7
+
+/// @selector
+/// bucket := mod(hash(meta), 20)
+/// output_idx := mod(bucket, 3)
+//  0 = hot_out (pulled ~33%), 1 = warm_9 (~33%), 2 = cold_out (~33%)
+//  Simplified from the original weighted scheme for GK expressibility.
+//  The actual pull frequency is driven by the hash distribution.
+
+/// @pull_weights
+/// hot_out: 80
+/// warm_0: 2
+/// warm_1: 2
+/// warm_2: 2
+/// warm_3: 2
+/// warm_4: 1
+/// warm_5: 1
+/// warm_6: 1
+/// warm_7: 1
+/// warm_8: 1
+/// warm_9: 2
+/// cold_out: 5
+
+/// @graph
+/// 38 nodes, 3 inputs (2 stable). Hot/warm/cold output access.
+/// Hot output: small cycle-dependent cone (80% of pulls).
+/// Cold output: stable ks/ds subgraph (5% of pulls).
+inputs := (cycle, ks, ds)
+
+// Hot path: cycle-dependent, small cone
+h0 := hash(cycle)
+h1 := mod(h0, 1000000)
+h2 := hash(h1)
+hot_out := mod(h2, 997)
+
+// Warm paths: cycle-dependent, moderate cones
+w0 := hash(h1)
+warm_0 := mod(w0, 500)
+warm_1 := hash(warm_0)
+warm_2 := mod(warm_1, 499)
+w3 := hash(h2)
+warm_3 := mod(w3, 497)
+warm_4 := hash(warm_3)
+warm_5 := mod(warm_4, 491)
+w6 := hash(warm_5)
+warm_6 := mod(w6, 487)
+warm_7 := hash(warm_6)
+warm_8 := mod(warm_7, 479)
+warm_9 := hash(warm_8)
+
+// Cold paths: stable inputs (cached by provenance)
+k0 := hash(ks)
+k1 := mod(k0, 300)
+k2 := hash(k1)
+k3 := mod(k2, 293)
+k4 := hash(k3)
+k5 := mod(k4, 283)
+k6 := hash(k5)
+k7 := mod(k6, 281)
+k8 := hash(k7)
+k9 := mod(k8, 277)
+
+d0 := hash(ds)
+d1 := mod(d0, 200)
+d2 := hash(d1)
+d3 := mod(d2, 199)
+d4 := hash(d3)
+d5 := mod(d4, 197)
+d6 := hash(d5)
+d7 := mod(d6, 193)
+d8 := hash(d7)
+d9 := mod(d8, 191)
+
+cold_out := hash(k9)

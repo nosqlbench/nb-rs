@@ -46,15 +46,30 @@ pub struct CompiledKernel {
     output_map: HashMap<String, usize>,
 
     /// Scratch space for gathering inputs per step.
-    /// Reused across evaluations to avoid allocation.
     gather_buf: Vec<u64>,
 
     /// Scratch space for scattering outputs per step.
     scatter_buf: Vec<u64>,
+
+    /// Provenance caching state. Only present when built with
+    /// `new_with_provenance`. When absent, eval is straight-through.
+    provenance: Option<ProvenanceState>,
+}
+
+struct ProvenanceState {
+    node_clean: Vec<bool>,
+    input_dependents: Vec<Vec<usize>>,
+    /// Per-slot provenance: which inputs affect each buffer slot.
+    /// Used for pull-side guard: if the pulled slot's provenance
+    /// doesn't intersect changed inputs, skip eval entirely.
+    slot_provenance: Vec<u64>,
+    /// Bitmask of inputs that changed since last eval.
+    changed_mask: u64,
 }
 
 impl CompiledKernel {
-    /// Create a compiled kernel. Called by the assembly phase.
+    /// Create a compiled kernel without provenance (unconditional eval).
+    #[allow(dead_code)]
     pub(crate) fn new(
         coord_count: usize,
         total_slots: usize,
@@ -81,33 +96,126 @@ impl CompiledKernel {
             output_map,
             gather_buf: vec![0u64; max_inputs],
             scatter_buf: vec![0u64; max_outputs],
+            provenance: None,
         }
     }
 
-    /// Set coordinates and evaluate the entire DAG eagerly.
+    /// Create a compiled kernel with provenance-aware caching.
+    /// The generated eval path includes per-step clean checks.
+    pub(crate) fn new_with_provenance(
+        coord_count: usize,
+        total_slots: usize,
+        steps: Vec<(CompiledU64Op, Vec<usize>, Vec<usize>)>,
+        output_map: HashMap<String, usize>,
+        input_dependents: Vec<Vec<usize>>,
+    ) -> Self {
+        let max_inputs = steps.iter().map(|s| s.1.len()).max().unwrap_or(0);
+        let max_outputs = steps.iter().map(|s| s.2.len()).max().unwrap_or(0);
+        let step_count = steps.len();
+
+        // Compute per-step provenance from input_dependents (inverted).
+        // step_prov[i] = bitmask of which inputs step i depends on.
+        let mut step_prov = vec![0u64; step_count];
+        for (input_idx, deps) in input_dependents.iter().enumerate() {
+            for &step_idx in deps {
+                if step_idx < step_count {
+                    step_prov[step_idx] |= 1u64 << input_idx;
+                }
+            }
+        }
+
+        // Map output slots to their step's provenance.
+        // slot_provenance[slot] = bitmask of inputs affecting that slot.
+        let mut slot_provenance = vec![0u64; total_slots];
+        // Coordinate slots depend on their own input
+        for i in 0..coord_count.min(64) {
+            slot_provenance[i] = 1u64 << i;
+        }
+        // Node output slots inherit the step's provenance
+        let compiled_steps: Vec<CompiledStep> = steps
+            .into_iter()
+            .enumerate()
+            .map(|(step_idx, (op, input_slots, output_slots))| {
+                for &slot in &output_slots {
+                    if slot < slot_provenance.len() {
+                        slot_provenance[slot] = step_prov[step_idx];
+                    }
+                }
+                CompiledStep { op, input_slots, output_slots }
+            })
+            .collect();
+
+        Self {
+            buffer: vec![0u64; total_slots],
+            coord_count,
+            steps: compiled_steps,
+            output_map,
+            gather_buf: vec![0u64; max_inputs],
+            scatter_buf: vec![0u64; max_outputs],
+            provenance: Some(ProvenanceState {
+                node_clean: vec![false; step_count],
+                input_dependents,
+                slot_provenance,
+                changed_mask: u64::MAX, // all dirty initially
+            }),
+        }
+    }
+
+    /// Set inputs with change detection. Tracks which inputs changed
+    /// for pull-side guard in `get_slot`.
+    #[inline]
+    pub fn set_inputs(&mut self, coords: &[u64]) {
+        if let Some(ref mut prov) = self.provenance {
+            prov.changed_mask = 0;
+            for i in 0..coords.len().min(self.coord_count) {
+                if self.buffer[i] != coords[i] {
+                    self.buffer[i] = coords[i];
+                    prov.changed_mask |= 1u64 << i;
+                    if i < prov.input_dependents.len() {
+                        for &step_idx in &prov.input_dependents[i] {
+                            prov.node_clean[step_idx] = false;
+                        }
+                    }
+                }
+            }
+        } else {
+            self.buffer[..self.coord_count.min(coords.len())]
+                .copy_from_slice(&coords[..self.coord_count.min(coords.len())]);
+        }
+    }
+
+    /// Evaluate the DAG eagerly. All dirty steps run.
     #[inline]
     pub fn eval(&mut self, coords: &[u64]) {
-        // Write coordinates into the front of the buffer
-        self.buffer[..self.coord_count].copy_from_slice(coords);
-
-        // Execute every step in topological order
-        for step in &self.steps {
-            // Gather inputs from buffer
-            let input_count = step.input_slots.len();
-            for (i, &slot) in step.input_slots.iter().enumerate() {
-                self.gather_buf[i] = self.buffer[slot];
+        self.set_inputs(coords);
+        if let Some(ref mut prov) = self.provenance {
+            for (step_idx, step) in self.steps.iter().enumerate() {
+                if prov.node_clean[step_idx] { continue; }
+                for (i, &slot) in step.input_slots.iter().enumerate() {
+                    self.gather_buf[i] = self.buffer[slot];
+                }
+                (step.op)(
+                    &self.gather_buf[..step.input_slots.len()],
+                    &mut self.scatter_buf[..step.output_slots.len()],
+                );
+                for (i, &slot) in step.output_slots.iter().enumerate() {
+                    self.buffer[slot] = self.scatter_buf[i];
+                }
+                prov.node_clean[step_idx] = true;
             }
-
-            // Execute
-            let output_count = step.output_slots.len();
-            (step.op)(
-                &self.gather_buf[..input_count],
-                &mut self.scatter_buf[..output_count],
-            );
-
-            // Scatter outputs to buffer
-            for (i, &slot) in step.output_slots.iter().enumerate() {
-                self.buffer[slot] = self.scatter_buf[i];
+        } else {
+            self.buffer[..self.coord_count].copy_from_slice(coords);
+            for step in &self.steps {
+                for (i, &slot) in step.input_slots.iter().enumerate() {
+                    self.gather_buf[i] = self.buffer[slot];
+                }
+                (step.op)(
+                    &self.gather_buf[..step.input_slots.len()],
+                    &mut self.scatter_buf[..step.output_slots.len()],
+                );
+                for (i, &slot) in step.output_slots.iter().enumerate() {
+                    self.buffer[slot] = self.scatter_buf[i];
+                }
             }
         }
     }
@@ -125,7 +233,61 @@ impl CompiledKernel {
         self.buffer[slot]
     }
 
-    /// Resolve an output name to a slot index for repeated fast access.
+    /// Set inputs and evaluate ONLY if the requested output's cone
+    /// was affected by the input changes. Pull-side guard: if the
+    /// output's provenance doesn't intersect the changed inputs,
+    /// skip eval entirely and return the cached value.
+    ///
+    /// This is the optimal call pattern for provenance-enabled
+    /// kernels with selective output access.
+    #[inline]
+    pub fn eval_for_slot(&mut self, coords: &[u64], slot: usize) -> u64 {
+        self.set_inputs(coords);
+        if let Some(ref mut prov) = self.provenance {
+            // Pull-side guard: check if this output's cone was affected
+            if slot < prov.slot_provenance.len() {
+                let output_prov = prov.slot_provenance[slot];
+                if output_prov & prov.changed_mask == 0 {
+                    // Output's cone is clean — skip eval entirely
+                    return self.buffer[slot];
+                }
+            }
+            // Cone was affected — run dirty steps
+            for (step_idx, step) in self.steps.iter().enumerate() {
+                if prov.node_clean[step_idx] { continue; }
+                for (i, &s) in step.input_slots.iter().enumerate() {
+                    self.gather_buf[i] = self.buffer[s];
+                }
+                (step.op)(
+                    &self.gather_buf[..step.input_slots.len()],
+                    &mut self.scatter_buf[..step.output_slots.len()],
+                );
+                for (i, &s) in step.output_slots.iter().enumerate() {
+                    self.buffer[s] = self.scatter_buf[i];
+                }
+                prov.node_clean[step_idx] = true;
+            }
+        } else {
+            self.buffer[..self.coord_count.min(coords.len())]
+                .copy_from_slice(&coords[..self.coord_count.min(coords.len())]);
+            for step in &self.steps {
+                for (i, &s) in step.input_slots.iter().enumerate() {
+                    self.gather_buf[i] = self.buffer[s];
+                }
+                (step.op)(
+                    &self.gather_buf[..step.input_slots.len()],
+                    &mut self.scatter_buf[..step.output_slots.len()],
+                );
+                for (i, &s) in step.output_slots.iter().enumerate() {
+                    self.buffer[s] = self.scatter_buf[i];
+                }
+            }
+        }
+        self.buffer[slot]
+    }
+
+    pub fn coord_count(&self) -> usize { self.coord_count }
+
     pub fn resolve_output(&self, name: &str) -> Option<usize> {
         self.output_map.get(name).copied()
     }

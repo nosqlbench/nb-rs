@@ -30,6 +30,8 @@ pub enum CompileEvent {
     CompileLevelSelected { node: String, level: String },
     /// Workload parameter injected as constant.
     ParamInjected { name: String, value: String },
+    /// Config wire connected to a cycle-time source (performance warning).
+    ConfigWireCycleWarning { node: String, port: String },
     /// Warning during compilation.
     Warning { message: String },
     /// Summary of the compiled program.
@@ -82,6 +84,8 @@ impl CompileEventLog {
                 format!("gk: {node} → {level}"),
             CompileEvent::ParamInjected { name, value } =>
                 format!("gk: param '{name}' = {value}"),
+            CompileEvent::ConfigWireCycleWarning { node, port } =>
+                format!("gk: warning: config wire '{port}' on '{node}' connected to cycle-time source"),
             CompileEvent::Warning { message } =>
                 format!("gk: warning: {message}"),
             CompileEvent::Summary { nodes, outputs, constants_folded } =>

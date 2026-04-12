@@ -14,7 +14,7 @@ fn main() {
     println!("cycle  user_id  bucket");
     println!("-----  -------  ------");
     for cycle in 0..10 {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         let uid = kernel.pull("user_id").as_u64();
         let bucket = kernel.pull("bucket").as_u64();
         println!("{cycle:>5}  {uid:>7}  {bucket:>6}");

@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 
 use nb_errorhandler::ErrorRouter;
 use nb_metrics::instruments::counter::Counter;
+use nb_metrics::instruments::histogram::Histogram;
 use nb_metrics::instruments::timer::Timer;
 use nb_metrics::frame::{MetricsFrame, Sample};
 use nb_metrics::labels::Labels;
@@ -60,11 +61,21 @@ pub struct ActivityMetrics {
     pub service_time: Timer,
     pub wait_time: Timer,
     pub response_time: Timer,
+    /// Service time for successful ops only. Allows isolating
+    /// success latency from error/retry latency.
+    pub result_success_time: Timer,
+    /// Number of tries per op (1 = succeeded first try, 2+ = retried).
+    /// Distribution shape reveals incremental saturation.
+    pub tries_histogram: Histogram,
     pub cycles_total: Counter,
     pub errors_total: Counter,
     pub stanzas_total: Counter,
     pub result_elements: Counter,
     pub result_bytes: Counter,
+    /// Per-error-type counters, keyed by error_name.
+    /// Created on demand when a new error type is first seen.
+    error_type_counts: std::sync::Mutex<std::collections::HashMap<String, Counter>>,
+    labels: Labels,
 }
 
 impl ActivityMetrics {
@@ -73,12 +84,28 @@ impl ActivityMetrics {
             service_time: Timer::new(labels.with("name", "cycles_servicetime")),
             wait_time: Timer::new(labels.with("name", "cycles_waittime")),
             response_time: Timer::new(labels.with("name", "cycles_responsetime")),
+            result_success_time: Timer::new(labels.with("name", "result_success")),
+            tries_histogram: Histogram::new(labels.with("name", "tries")),
             cycles_total: Counter::new(labels.with("name", "cycles_total")),
             errors_total: Counter::new(labels.with("name", "errors_total")),
             stanzas_total: Counter::new(labels.with("name", "stanzas_total")),
             result_elements: Counter::new(labels.with("name", "result_elements")),
             result_bytes: Counter::new(labels.with("name", "result_bytes")),
+            error_type_counts: std::sync::Mutex::new(std::collections::HashMap::new()),
+            labels: labels.clone(),
         }
+    }
+
+    /// Increment counter for a specific error type. Creates the
+    /// counter on first occurrence of each error name.
+    pub fn count_error_type(&self, error_name: &str) {
+        let mut map = self.error_type_counts.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let counter = map.entry(error_name.to_string())
+            .or_insert_with(|| {
+                Counter::new(self.labels.with("name", &format!("errors.{error_name}")))
+            });
+        counter.inc();
     }
 
     /// Capture a metrics frame from the current instrument state.
@@ -88,8 +115,10 @@ impl ActivityMetrics {
         let service_snap = self.service_time.snapshot();
         let wait_snap = self.wait_time.snapshot();
         let response_snap = self.response_time.snapshot();
+        let success_snap = self.result_success_time.snapshot();
+        let tries_snap = self.tries_histogram.snapshot();
 
-        MetricsFrame {
+        let mut frame = MetricsFrame {
             captured_at: Instant::now(),
             interval,
             samples: vec![
@@ -107,6 +136,11 @@ impl ActivityMetrics {
                     labels: self.response_time.labels().clone(),
                     count: response_snap.count,
                     histogram: response_snap.histogram,
+                },
+                Sample::Timer {
+                    labels: self.result_success_time.labels().clone(),
+                    count: success_snap.count,
+                    histogram: success_snap.histogram,
                 },
                 Sample::Counter {
                     labels: self.cycles_total.labels().clone(),
@@ -128,8 +162,25 @@ impl ActivityMetrics {
                     labels: self.result_bytes.labels().clone(),
                     value: self.result_bytes.get(),
                 },
+                Sample::Timer {
+                    labels: self.tries_histogram.labels().clone(),
+                    count: tries_snap.len(),
+                    histogram: tries_snap,
+                },
             ],
+        };
+
+        // Add per-error-type counters
+        let error_counts = self.error_type_counts.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for counter in error_counts.values() {
+            frame.samples.push(Sample::Counter {
+                labels: counter.labels().clone(),
+                value: counter.get(),
+            });
         }
+
+        frame
     }
 }
 
@@ -215,6 +266,12 @@ impl Activity {
         // Init time: map each template to a dispenser from its adapter,
         // then wrap with result traverser for consumption/capture
         let templates = activity.op_sequence.templates();
+
+        // Validate all bind points are resolvable before execution
+        crate::synthesis::validate_bind_points(
+            templates, &program, program.globals(),
+        );
+
         let traversal_stats = Arc::new(crate::wrappers::TraversalStats {
             metrics: activity.metrics.clone(),
         });
@@ -263,6 +320,22 @@ impl Activity {
         let extra_bindings_per_template = Arc::new(extra_bindings_per_template);
         let validation_metrics = Arc::new(validation_metrics);
 
+        // Analyze capture dependencies across the stanza sequence to
+        // determine which ops can execute concurrently vs must be
+        // sequenced. Uses the expanded stanza (via LUT), not just
+        // the unique templates, because weighted ops repeat.
+        let stanza_templates: Vec<&nb_workload::model::ParsedOp> =
+            (0..activity.op_sequence.stanza_length())
+            .map(|offset| activity.op_sequence.get(offset as u64))
+            .collect();
+        let stanza_owned: Vec<nb_workload::model::ParsedOp> =
+            stanza_templates.iter().map(|t| (*t).clone()).collect();
+        let dep_groups = Arc::new(crate::linearize::analyze_dependencies(&stanza_owned));
+        if dep_groups.len() > 1 {
+            eprintln!("linearization: {} dependency group(s) in stanza of {} ops",
+                dep_groups.len(), stanza_owned.len());
+        }
+
         let cycle_rl = activity.config.cycle_rate.map(|r| {
             Arc::new(RateLimiter::start(nb_rate::RateSpec::new(r)))
         });
@@ -276,14 +349,15 @@ impl Activity {
             let activity = activity.clone();
             let dispensers = dispensers.clone();
             let extra_bindings = extra_bindings_per_template.clone();
+            let dep_groups = dep_groups.clone();
             let program = program.clone();
             let cycle_rl = cycle_rl.clone();
             let stanza_rl = stanza_rl.clone();
 
             handles.push(tokio::spawn(async move {
                 executor_task(
-                    activity, dispensers, extra_bindings, program,
-                    cycle_rl, stanza_rl,
+                    activity, dispensers, extra_bindings, dep_groups,
+                    program, cycle_rl, stanza_rl,
                 ).await;
             }));
         }
@@ -332,17 +406,17 @@ impl Activity {
 /// Executor task for the tiered DriverAdapter interface.
 ///
 /// Each fiber has its own FiberBuilder (lock-free GK state).
-/// Ops within a stanza are processed in windows of `stanza_concurrency`:
-/// - Resolve all ops in the window (sequential, uses GK state)
-/// - Execute all ops in the window concurrently (join_all)
-/// - Process results (metrics, captures)
+/// Ops within a stanza are processed in dependency groups:
+/// - Groups execute sequentially (captures flow between groups)
+/// - Ops within a group execute concurrently (join_all)
 ///
-/// With stanza_concurrency=1 (default), each window is one op,
-/// yielding sequential execution with capture flow between every op.
+/// Groups are determined at init time by analyzing capture
+/// declarations and references across templates.
 async fn executor_task(
     activity: Arc<Activity>,
     dispensers: Arc<Vec<Arc<dyn OpDispenser>>>,
     extra_bindings: Arc<Vec<Vec<String>>>,
+    dep_groups: Arc<Vec<crate::linearize::DepGroup>>,
     program: Arc<nb_variates::kernel::GkProgram>,
     cycle_rl: Option<Arc<RateLimiter>>,
     stanza_rl: Option<Arc<RateLimiter>>,
@@ -352,8 +426,7 @@ async fn executor_task(
 
     let stanza_len = activity.op_sequence.stanza_length() as u64;
     let max_retries = activity.config.max_retries;
-    let stanza_concurrency = activity.config.stanza_concurrency.max(1) as u64;
-    let mut fiber = FiberBuilder::with_params(program, activity.workload_params.clone());
+    let mut fiber = FiberBuilder::new(program);
 
     loop {
         let Some(base_cycle) = activity.cycle_source.next_n(stanza_len) else { break };
@@ -364,21 +437,48 @@ async fn executor_task(
         activity.metrics.stanzas_total.inc();
         fiber.reset_captures(base_cycle);
 
-        // Process stanza ops in windows of stanza_concurrency
-        let mut offset = 0u64;
-        while offset < stanza_len {
-            let window_end = (offset + stanza_concurrency).min(stanza_len);
-            let window_size = window_end - offset;
+        // Process stanza ops in dependency groups.
+        // Track which captures have been produced so far. If a group
+        // requires captures that were not produced (due to upstream
+        // failure), the entire group is skipped.
+        let mut available_captures: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
-            // Apply captures from previous window before resolving
-            if offset > 0 {
+        for (group_idx, group) in dep_groups.iter().enumerate() {
+            // Apply captures from previous group before resolving
+            if group_idx > 0 {
                 fiber.apply_captures();
             }
 
-            // Phase 1: Resolve all ops in the window (sequential, uses GK state)
-            let mut window: Vec<(u64, usize, ResolvedFields, u64)> = Vec::with_capacity(window_size as usize);
-            for i in offset..window_end {
-                let cycle = base_cycle + i;
+            // Check if this group's required captures are all available
+            if !group.required_captures.is_empty() {
+                let missing: Vec<&String> = group.required_captures.iter()
+                    .filter(|c| !available_captures.contains(*c))
+                    .collect();
+                if !missing.is_empty() {
+                    // Skip this group — upstream captures were not produced
+                    let _skip_count = group.op_indices.len();
+                    for &stanza_offset in &group.op_indices {
+                        let cycle = base_cycle + stanza_offset as u64;
+                        activity.metrics.errors_total.inc();
+                        activity.metrics.count_error_type("upstream_capture_missing");
+                        activity.error_router.handle_error(
+                            "upstream_capture_missing",
+                            &format!("skipped: required capture(s) {} not produced by upstream ops",
+                                missing.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", ")),
+                            cycle,
+                            0,
+                        );
+                    }
+                    continue; // skip to next group
+                }
+            }
+
+            // Phase 1: Resolve all ops in the group (sequential, uses GK state)
+            let mut window: Vec<(u64, usize, ResolvedFields, u64)> =
+                Vec::with_capacity(group.op_indices.len());
+            for &stanza_offset in &group.op_indices {
+                let cycle = base_cycle + stanza_offset as u64;
 
                 let wait_start = Instant::now();
                 if let Some(crl) = &cycle_rl {
@@ -387,12 +487,12 @@ async fn executor_task(
                 let wait_nanos = wait_start.elapsed().as_nanos() as u64;
 
                 let (template_idx, template) = activity.op_sequence.get_with_index(cycle);
-                fiber.set_coordinates(&[cycle]);
+                fiber.set_inputs(&[cycle]);
                 let fields = fiber.resolve_with_extras(template, &extra_bindings[template_idx]);
                 window.push((cycle, template_idx, fields, wait_nanos));
             }
 
-            // Phase 2: Execute all ops in the window concurrently
+            // Phase 2: Execute all ops in the group concurrently
             let futures: Vec<_> = window.iter().map(|(cycle, template_idx, fields, _)| {
                 let dispenser = dispensers[*template_idx].clone();
                 let cycle = *cycle;
@@ -400,12 +500,12 @@ async fn executor_task(
                 let activity = activity.clone();
                 async move {
                     let service_start = Instant::now();
-                    let mut retries = 0u32;
+                    let mut tries = 1u32;
                     loop {
                         match dispenser.execute(cycle, fields).await {
                             Ok(result) => {
                                 let service_nanos = service_start.elapsed().as_nanos() as u64;
-                                return (true, service_nanos, result.captures);
+                                return (true, service_nanos, tries, result.captures);
                             }
                             Err(e) => {
                                 let duration_nanos = service_start.elapsed().as_nanos() as u64;
@@ -414,14 +514,15 @@ async fn executor_task(
                                     &inner.error_name, &inner.message, cycle, duration_nanos,
                                 );
                                 activity.metrics.errors_total.inc();
+                                activity.metrics.count_error_type(&inner.error_name);
 
-                                if !e.is_adapter_level() && detail.is_retryable() && retries < max_retries {
-                                    retries += 1;
+                                if !e.is_adapter_level() && detail.is_retryable() && tries <= max_retries {
+                                    tries += 1;
                                     continue;
                                 }
 
                                 let service_nanos = service_start.elapsed().as_nanos() as u64;
-                                return (false, service_nanos, std::collections::HashMap::new());
+                                return (false, service_nanos, tries, std::collections::HashMap::new());
                             }
                         }
                     }
@@ -430,21 +531,27 @@ async fn executor_task(
 
             let results = futures::future::join_all(futures).await;
 
-            // Phase 3: Record metrics and store captures
-            for (i, (success, service_nanos, captures)) in results.into_iter().enumerate() {
+            // Phase 3: Record metrics, store captures, track produced captures
+            let mut _group_all_success = true;
+            for (i, (success, service_nanos, tries, captures)) in results.into_iter().enumerate() {
                 let wait_nanos = window[i].3;
                 activity.metrics.service_time.record(service_nanos);
                 activity.metrics.wait_time.record(wait_nanos);
                 activity.metrics.response_time.record(service_nanos + wait_nanos);
+                activity.metrics.tries_histogram.record(tries as u64);
                 if success {
                     activity.metrics.cycles_total.inc();
-                }
-                for (name, value) in captures {
-                    fiber.capture(&name, value);
+                    activity.metrics.result_success_time.record(service_nanos);
+                    for (name, value) in captures {
+                        available_captures.insert(name.clone());
+                        fiber.capture(&name, value);
+                    }
+                } else {
+                    _group_all_success = false;
+                    // Failed op's captures are NOT added to available_captures.
+                    // Downstream groups that need them will be skipped.
                 }
             }
-
-            offset = window_end;
         }
     }
 }
@@ -544,7 +651,7 @@ mod tests {
         use nb_variates::assembly::{GkAssembler, WireRef};
         use nb_variates::nodes::identity::Identity;
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
-        asm.add_node("id", Box::new(Identity::new()), vec![WireRef::coord("cycle")]);
+        asm.add_node("id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
         asm.add_output("id", WireRef::node("id"));
         asm.compile().unwrap().into_program()
     }

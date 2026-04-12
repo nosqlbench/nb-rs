@@ -24,7 +24,7 @@ use nb_variates::nodes::hash::{Hash64, HashRange};
 
 fn build_hello_world() -> nb_variates::kernel::GkKernel {
     let mut asm = GkAssembler::new(vec!["cycle".into()]);
-    asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::coord("cycle")]);
+    asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
     asm.add_node("user_id", Box::new(ModU64::new(1_000_000)), vec![WireRef::node("hashed")]);
     asm.add_output("user_id", WireRef::node("user_id"));
     asm.compile().unwrap()
@@ -34,7 +34,7 @@ fn build_hello_world() -> nb_variates::kernel::GkKernel {
 fn hello_world_bounded() {
     let mut k = build_hello_world();
     for cycle in 0..1000 {
-        k.set_coordinates(&[cycle]);
+        k.set_inputs(&[cycle]);
         let uid = k.pull("user_id").as_u64();
         assert!(uid < 1_000_000, "cycle {cycle}: user_id={uid}");
     }
@@ -43,9 +43,9 @@ fn hello_world_bounded() {
 #[test]
 fn hello_world_deterministic() {
     let mut k = build_hello_world();
-    k.set_coordinates(&[42]);
+    k.set_inputs(&[42]);
     let first = k.pull("user_id").as_u64();
-    k.set_coordinates(&[42]);
+    k.set_inputs(&[42]);
     assert_eq!(k.pull("user_id").as_u64(), first);
 }
 
@@ -55,7 +55,7 @@ fn hello_world_dispersed() {
     let mut k = build_hello_world();
     let mut vals = Vec::new();
     for cycle in 0..100 {
-        k.set_coordinates(&[cycle]);
+        k.set_inputs(&[cycle]);
         vals.push(k.pull("user_id").as_u64());
     }
     // Check that the values are not monotonically increasing
@@ -80,7 +80,7 @@ fn build_cartesian_space() -> nb_variates::kernel::GkKernel {
     let mut asm = GkAssembler::new(vec!["cycle".into()]);
 
     asm.add_node("decompose", Box::new(MixedRadix::new(vec![50, 200, 0])),
-        vec![WireRef::coord("cycle")]);
+        vec![WireRef::input("cycle")]);
 
     asm.add_node("region_h", Box::new(Hash64::new()),
         vec![WireRef::node_port("decompose", 0)]);
@@ -116,13 +116,13 @@ fn cartesian_decomposition_covers_space() {
     let mut k = build_cartesian_space();
     // cycles 0..49 should cover regions 0..49 with store=0, tx=0
     for cycle in 0u64..50 {
-        k.set_coordinates(&[cycle]);
+        k.set_inputs(&[cycle]);
         assert_eq!(k.pull("region").as_u64(), cycle);
         assert_eq!(k.pull("store").as_u64(), 0);
         assert_eq!(k.pull("tx").as_u64(), 0);
     }
     // cycle 50 wraps to region=0, store=1
-    k.set_coordinates(&[50]);
+    k.set_inputs(&[50]);
     assert_eq!(k.pull("region").as_u64(), 0);
     assert_eq!(k.pull("store").as_u64(), 1);
 }
@@ -131,11 +131,11 @@ fn cartesian_decomposition_covers_space() {
 fn cartesian_tx_increments() {
     let mut k = build_cartesian_space();
     // 50 regions × 200 stores = 10,000 cycles per tx increment
-    k.set_coordinates(&[0]);
+    k.set_inputs(&[0]);
     assert_eq!(k.pull("tx").as_u64(), 0);
-    k.set_coordinates(&[10_000]);
+    k.set_inputs(&[10_000]);
     assert_eq!(k.pull("tx").as_u64(), 1);
-    k.set_coordinates(&[20_000]);
+    k.set_inputs(&[20_000]);
     assert_eq!(k.pull("tx").as_u64(), 2);
 }
 
@@ -143,7 +143,7 @@ fn cartesian_tx_increments() {
 fn cartesian_codes_bounded() {
     let mut k = build_cartesian_space();
     for cycle in 0..500 {
-        k.set_coordinates(&[cycle]);
+        k.set_inputs(&[cycle]);
         assert!(k.pull("region_code").as_u64() < 10000);
         assert!(k.pull("store_code").as_u64() < 100000);
         assert!(k.pull("tx_id").as_u64() < 1_000_000_000);
@@ -168,7 +168,7 @@ fn build_shared_computation() -> nb_variates::kernel::GkKernel {
     let mut asm = GkAssembler::new(vec!["cycle".into()]);
 
     asm.add_node("user_h", Box::new(Hash64::new()),
-        vec![WireRef::coord("cycle")]);
+        vec![WireRef::input("cycle")]);
     asm.add_node("user_id", Box::new(ModU64::new(10_000_000)),
         vec![WireRef::node("user_h")]);
     asm.add_node("user_bucket", Box::new(ModU64::new(64)),
@@ -201,7 +201,7 @@ fn shared_bucket_shard_consistent() {
     // Since 64 is a multiple of 16: user_shard == user_bucket % 16
     let mut k = build_shared_computation();
     for cycle in 0..500 {
-        k.set_coordinates(&[cycle]);
+        k.set_inputs(&[cycle]);
         let bucket = k.pull("user_bucket").as_u64();
         let shard = k.pull("user_shard").as_u64();
         assert_eq!(shard, bucket % 16,
@@ -213,7 +213,7 @@ fn shared_bucket_shard_consistent() {
 fn shared_fields_bounded() {
     let mut k = build_shared_computation();
     for cycle in 0..500 {
-        k.set_coordinates(&[cycle]);
+        k.set_inputs(&[cycle]);
         assert!(k.pull("user_id").as_u64() < 10_000_000);
         assert!(k.pull("user_bucket").as_u64() < 64);
         assert!(k.pull("user_shard").as_u64() < 16);
@@ -229,7 +229,7 @@ fn shared_chained_hashes_differ() {
     let mut k = build_shared_computation();
     let mut all_same = true;
     for cycle in 0..100 {
-        k.set_coordinates(&[cycle]);
+        k.set_inputs(&[cycle]);
         let uid = k.pull("user_id").as_u64();
         let nidx = k.pull("name_idx").as_u64();
         let age = k.pull("account_age_days").as_u64();
@@ -257,12 +257,12 @@ fn build_multi_coordinate() -> nb_variates::kernel::GkKernel {
     let mut asm = GkAssembler::new(vec!["cycle".into(), "thread".into()]);
 
     asm.add_node("combined", Box::new(Interleave::new()),
-        vec![WireRef::coord("cycle"), WireRef::coord("thread")]);
+        vec![WireRef::input("cycle"), WireRef::input("thread")]);
     asm.add_node("row_h", Box::new(Hash64::new()),
         vec![WireRef::node("combined")]);
 
     asm.add_node("thread_h", Box::new(Hash64::new()),
-        vec![WireRef::coord("thread")]);
+        vec![WireRef::input("thread")]);
     asm.add_node("partition", Box::new(ModU64::new(256)),
         vec![WireRef::node("thread_h")]);
 
@@ -285,11 +285,11 @@ fn build_multi_coordinate() -> nb_variates::kernel::GkKernel {
 fn multi_coord_same_thread_stable_partition() {
     // The partition depends only on thread, not cycle.
     let mut k = build_multi_coordinate();
-    k.set_coordinates(&[0, 7]);
+    k.set_inputs(&[0, 7]);
     let p1 = k.pull("partition").as_u64();
-    k.set_coordinates(&[100, 7]);
+    k.set_inputs(&[100, 7]);
     let p2 = k.pull("partition").as_u64();
-    k.set_coordinates(&[99999, 7]);
+    k.set_inputs(&[99999, 7]);
     let p3 = k.pull("partition").as_u64();
     assert_eq!(p1, p2);
     assert_eq!(p2, p3);
@@ -298,9 +298,9 @@ fn multi_coord_same_thread_stable_partition() {
 #[test]
 fn multi_coord_different_threads_different_partitions() {
     let mut k = build_multi_coordinate();
-    k.set_coordinates(&[0, 0]);
+    k.set_inputs(&[0, 0]);
     let p0 = k.pull("partition").as_u64();
-    k.set_coordinates(&[0, 1]);
+    k.set_inputs(&[0, 1]);
     let p1 = k.pull("partition").as_u64();
     // Not strictly guaranteed to differ, but for two small inputs
     // through a good hash + mod 256, collision is very unlikely.
@@ -310,9 +310,9 @@ fn multi_coord_different_threads_different_partitions() {
 #[test]
 fn multi_coord_same_cycle_different_thread_different_row() {
     let mut k = build_multi_coordinate();
-    k.set_coordinates(&[100, 0]);
+    k.set_inputs(&[100, 0]);
     let r0 = k.pull("row_key").as_u64();
-    k.set_coordinates(&[100, 1]);
+    k.set_inputs(&[100, 1]);
     let r1 = k.pull("row_key").as_u64();
     assert_ne!(r0, r1, "interleave should make (cycle,thread) order-dependent");
 }
@@ -322,7 +322,7 @@ fn multi_coord_bounded() {
     let mut k = build_multi_coordinate();
     for cycle in 0..100 {
         for thread in 0..8 {
-            k.set_coordinates(&[cycle, thread]);
+            k.set_inputs(&[cycle, thread]);
             assert!(k.pull("partition").as_u64() < 256);
             assert!(k.pull("row_key").as_u64() < 1_000_000);
             assert!(k.pull("value").as_u64() < 1000);
@@ -348,7 +348,7 @@ fn build_hashing_provenance() -> nb_variates::kernel::GkKernel {
     let mut asm = GkAssembler::new(vec!["cycle".into()]);
 
     asm.add_node("decompose", Box::new(MixedRadix::new(vec![100, 0])),
-        vec![WireRef::coord("cycle")]);
+        vec![WireRef::input("cycle")]);
 
     // Pattern 1: direct hash
     asm.add_node("tenant_h", Box::new(Hash64::new()),
@@ -389,7 +389,7 @@ fn build_hashing_provenance() -> nb_variates::kernel::GkKernel {
 fn provenance_direct_hash_bounded() {
     let mut k = build_hashing_provenance();
     for cycle in 0..500 {
-        k.set_coordinates(&[cycle]);
+        k.set_inputs(&[cycle]);
         assert!(k.pull("tenant_id").as_u64() < 10000);
     }
 }
@@ -401,9 +401,9 @@ fn provenance_combined_hash_order_matters() {
     // cycle that gives tenant=1, device=0: cycle=1 → tenant=1, device=0
     // cycle that gives tenant=2, device=0: cycle=2 → tenant=2, device=0
     // These have different tenants, so device_id should differ even with same device=0
-    k.set_coordinates(&[1]);
+    k.set_inputs(&[1]);
     let d1 = k.pull("device_id").as_u64();
-    k.set_coordinates(&[2]);
+    k.set_inputs(&[2]);
     let d2 = k.pull("device_id").as_u64();
     assert_ne!(d1, d2);
 }
@@ -415,7 +415,7 @@ fn provenance_chained_hashes_produce_different_fields() {
     let mut k = build_hashing_provenance();
     let mut any_differ = false;
     for cycle in 0..100 {
-        k.set_coordinates(&[cycle]);
+        k.set_inputs(&[cycle]);
         let a = k.pull("field_a").as_u64();
         let b = k.pull("field_b").as_u64();
         let c = k.pull("field_c").as_u64();
@@ -435,13 +435,13 @@ fn provenance_same_tenant_same_fields() {
     // tenant_id, field_a, field_b, field_c (tenant repeats every 100 cycles)
     let mut k = build_hashing_provenance();
 
-    k.set_coordinates(&[5]); // tenant=5
+    k.set_inputs(&[5]); // tenant=5
     let tid1 = k.pull("tenant_id").as_u64();
     let a1 = k.pull("field_a").as_u64();
     let b1 = k.pull("field_b").as_u64();
     let c1 = k.pull("field_c").as_u64();
 
-    k.set_coordinates(&[105]); // also tenant=5 (105 % 100 = 5)
+    k.set_inputs(&[105]); // also tenant=5 (105 % 100 = 5)
     let tid2 = k.pull("tenant_id").as_u64();
     let a2 = k.pull("field_a").as_u64();
     let b2 = k.pull("field_b").as_u64();
@@ -464,7 +464,7 @@ fn build_timeseries() -> nb_variates::kernel::GkKernel {
     let mut asm = GkAssembler::new(vec!["cycle".into()]);
 
     asm.add_node("decompose", Box::new(MixedRadix::new(vec![100, 1000, 0])),
-        vec![WireRef::coord("cycle")]);
+        vec![WireRef::input("cycle")]);
 
     asm.add_node("tenant_h", Box::new(Hash64::new()),
         vec![WireRef::node_port("decompose", 0)]);
@@ -506,7 +506,7 @@ fn timeseries_timestamp_tracks_reading() {
     // Readings 0, 1, 2 → timestamps base+0, base+1, base+2
     for reading in 0u64..10 {
         let cycle = reading * 100_000; // reading = cycle / (100 * 1000)
-        k.set_coordinates(&[cycle]);
+        k.set_inputs(&[cycle]);
         assert_eq!(k.pull("reading").as_u64(), reading);
         assert_eq!(k.pull("timestamp").as_u64(), 1_710_000_000_000 + reading);
     }
@@ -519,10 +519,10 @@ fn timeseries_same_tenant_across_devices() {
     // Tenant code should be the same for same tenant, different device.
     let mut k = build_timeseries();
 
-    k.set_coordinates(&[5]); // tenant=5, device=0
+    k.set_inputs(&[5]); // tenant=5, device=0
     let tc_d0 = k.pull("tenant_code").as_u64();
 
-    k.set_coordinates(&[105]); // tenant=5, device=1
+    k.set_inputs(&[105]); // tenant=5, device=1
     let tc_d1 = k.pull("tenant_code").as_u64();
 
     assert_eq!(tc_d0, tc_d1, "same tenant across devices → same tenant_code");
@@ -534,10 +534,10 @@ fn timeseries_different_tenant_same_device() {
     // because interleave(tenant, device) differs.
     let mut k = build_timeseries();
 
-    k.set_coordinates(&[5]); // tenant=5, device=0
+    k.set_inputs(&[5]); // tenant=5, device=0
     let ds1 = k.pull("device_seq").as_u64();
 
-    k.set_coordinates(&[6]); // tenant=6, device=0
+    k.set_inputs(&[6]); // tenant=6, device=0
     let ds2 = k.pull("device_seq").as_u64();
 
     assert_ne!(ds1, ds2, "different tenant, same device → different device_seq");
@@ -550,17 +550,17 @@ fn timeseries_time_bucket_groups_readings() {
     //   reading = cycle / (100 * 1000) = cycle / 100_000
     //   time_bucket = reading / 1000
 
-    k.set_coordinates(&[0]); // reading=0, bucket=0
+    k.set_inputs(&[0]); // reading=0, bucket=0
     assert_eq!(k.pull("reading").as_u64(), 0);
     assert_eq!(k.pull("time_bucket").as_u64(), 0);
 
     // reading=999 → cycle = 999 * 100_000 = 99_900_000
-    k.set_coordinates(&[99_900_000]);
+    k.set_inputs(&[99_900_000]);
     assert_eq!(k.pull("reading").as_u64(), 999);
     assert_eq!(k.pull("time_bucket").as_u64(), 0); // 999 / 1000 = 0
 
     // reading=1000 → cycle = 1000 * 100_000 = 100_000_000
-    k.set_coordinates(&[100_000_000]);
+    k.set_inputs(&[100_000_000]);
     assert_eq!(k.pull("reading").as_u64(), 1000);
     assert_eq!(k.pull("time_bucket").as_u64(), 1); // 1000 / 1000 = 1
 }

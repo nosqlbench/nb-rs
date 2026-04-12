@@ -74,17 +74,17 @@ fn constant_folding_compiles_and_folds() {
         "seed (hash of base) should be folded\n{}", log.format());
 
     // user_id should vary per cycle (not folded)
-    kernel.set_coordinates(&[0]);
+    kernel.set_inputs(&[0]);
     let a = kernel.pull("user_id").as_u64();
-    kernel.set_coordinates(&[1]);
+    kernel.set_inputs(&[1]);
     let b = kernel.pull("user_id").as_u64();
     assert_ne!(a, b, "user_id should vary per cycle");
     assert!(a < 1_000_000 && b < 1_000_000);
 
     // seed should be constant across cycles
-    kernel.set_coordinates(&[0]);
+    kernel.set_inputs(&[0]);
     let s0 = kernel.pull("seed").as_u64();
-    kernel.set_coordinates(&[999]);
+    kernel.set_inputs(&[999]);
     let s1 = kernel.pull("seed").as_u64();
     assert_eq!(s0, s1, "seed should be folded to a constant");
 }
@@ -100,7 +100,7 @@ fn type_adapters_compiles() {
 
     // sin and cos should produce values in [-1, 1]
     for cycle in 0..100 {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         let s = kernel.pull("s").as_f64();
         let c = kernel.pull("c").as_f64();
         assert!(s >= -1.0 && s <= 1.0, "sin out of range: {s}");
@@ -119,17 +119,17 @@ fn multi_output_compiles() {
     let source = load_gk("multi_output.gk");
     let (mut kernel, log) = compile_with_events(&source);
 
-    kernel.set_coordinates(&[0]);
+    kernel.set_inputs(&[0]);
     assert_eq!(kernel.pull("region").as_u64(), 0);
     assert_eq!(kernel.pull("store").as_u64(), 0);
 
-    kernel.set_coordinates(&[51]);
+    kernel.set_inputs(&[51]);
     assert_eq!(kernel.pull("region").as_u64(), 1); // 51 % 50 = 1
     assert_eq!(kernel.pull("store").as_u64(), 1); // 51 / 50 = 1
 
     // region_id and store_id should be bounded
     for cycle in 0..200 {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         assert!(kernel.pull("region_id").as_u64() < 10000);
         assert!(kernel.pull("store_id").as_u64() < 100000);
     }
@@ -147,7 +147,7 @@ fn string_generation_compiles() {
     let (mut kernel, log) = compile_with_events(&source);
 
     for cycle in 0..10 {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         let code = kernel.pull("code").to_display_string();
         let decimal = kernel.pull("decimal").to_display_string();
         let hex = kernel.pull("hex").to_display_string();
@@ -171,7 +171,7 @@ fn distributions_compiles() {
     let mut normal_sum = 0.0;
     let valid_outcomes = [100u64, 200, 300];
     for cycle in 0..1000 {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         normal_sum += kernel.pull("normal").as_f64();
         let outcome = kernel.pull("outcome").as_u64();
         assert!(valid_outcomes.contains(&outcome), "unexpected outcome: {outcome}");
@@ -193,7 +193,7 @@ fn weighted_selection_compiles() {
 
     let mut heads = 0u64;
     for cycle in 0..1000 {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         if kernel.pull("coin").as_u64() == 1 { heads += 1; }
         let color = kernel.pull("color").to_display_string();
         assert!(["red", "blue", "green"].contains(&color.as_str()),
@@ -216,7 +216,7 @@ fn datetime_context_compiles() {
     let source = load_gk("datetime_context.gk");
     let (mut kernel, log) = compile_with_events(&source);
 
-    kernel.set_coordinates(&[0]);
+    kernel.set_inputs(&[0]);
     let ts = kernel.pull("ts").to_display_string();
     assert!(ts.contains("2024"), "timestamp should contain year 2024: {ts}");
 
@@ -239,7 +239,7 @@ fn math_trig_compiles() {
     let (mut kernel, log) = compile_with_events(&source);
 
     for cycle in 0..100 {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         let sine = kernel.pull("sine").as_f64();
         let cosine = kernel.pull("cosine").as_f64();
         let root = kernel.pull("root").as_f64();
@@ -267,7 +267,7 @@ fn json_encoding_compiles() {
     let source = load_gk("json_encoding.gk");
     let (mut kernel, log) = compile_with_events(&source);
 
-    kernel.set_coordinates(&[42]);
+    kernel.set_inputs(&[42]);
     let js = kernel.pull("js").to_display_string();
     assert!(!js.is_empty(), "json_to_str should produce output");
 
@@ -290,7 +290,7 @@ fn noise_pcg_compiles() {
     let (mut kernel, log) = compile_with_events(&source);
 
     for cycle in 0..100 {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         let noise = kernel.pull("noise").as_f64();
         assert!(noise >= -1.0 && noise <= 1.0, "perlin_1d: {noise}");
 
@@ -311,7 +311,7 @@ fn real_data_compiles() {
     let (mut kernel, log) = compile_with_events(&source);
 
     for cycle in 0..10 {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         let fname = kernel.pull("fname").to_display_string();
         let fullname = kernel.pull("fullname").to_display_string();
         let state = kernel.pull("state").to_display_string();
@@ -337,7 +337,7 @@ fn empirical_dist_compiles() {
     let (mut kernel, log) = compile_with_events(&source);
 
     for cycle in 0..1000 {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         let v = kernel.pull("latency").as_f64();
         assert!(v >= 0.5 && v <= 100.0,
             "empirical should be in [0.5, 100.0]: {v} at cycle={cycle}");

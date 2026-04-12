@@ -224,22 +224,40 @@ pub enum Lifecycle {
     Init,
 }
 
+/// Cost class for an input wire, indicating how expensive it is
+/// to change the value on this port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WireCost {
+    /// Data wire: cheap per-cycle input. The node's primary
+    /// computation path. Default for most ports.
+    #[default]
+    Data,
+    /// Config wire: changing this input invalidates expensive
+    /// internal state (LUT, distribution table). Expected to be
+    /// wired to init-time constants or rarely-changing values.
+    /// The compiler warns when a config wire connects to a
+    /// cycle-time binding.
+    Config,
+}
+
 /// Descriptor for a single input or output port on a node.
 #[derive(Debug, Clone)]
 pub struct Port {
     pub name: String,
     pub typ: PortType,
     pub lifecycle: Lifecycle,
+    /// Cost class for input ports. Ignored for output ports.
+    pub wire_cost: WireCost,
 }
 
 impl Port {
     pub fn new(name: impl Into<String>, typ: PortType) -> Self {
-        Self { name: name.into(), typ, lifecycle: Lifecycle::Cycle }
+        Self { name: name.into(), typ, lifecycle: Lifecycle::Cycle, wire_cost: WireCost::Data }
     }
 
     /// Create a port with explicit lifecycle.
     pub fn with_lifecycle(name: impl Into<String>, typ: PortType, lifecycle: Lifecycle) -> Self {
-        Self { name: name.into(), typ, lifecycle }
+        Self { name: name.into(), typ, lifecycle, wire_cost: WireCost::Data }
     }
 
     pub fn u64(name: impl Into<String>) -> Self {
@@ -265,6 +283,12 @@ impl Port {
     /// Create an init-time port (frozen at assembly).
     pub fn init(name: impl Into<String>, typ: PortType) -> Self {
         Self::with_lifecycle(name, typ, Lifecycle::Init)
+    }
+
+    /// Mark this port as a config wire (expensive to change).
+    pub fn config(mut self) -> Self {
+        self.wire_cost = WireCost::Config;
+        self
     }
 }
 

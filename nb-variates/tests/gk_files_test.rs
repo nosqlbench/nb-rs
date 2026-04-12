@@ -16,15 +16,15 @@ fn gk_hello_world() {
 
     // Bounded
     for cycle in 0..1000u64 {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         let uid = kernel.pull("user_id").as_u64();
         assert!(uid < 1_000_000, "cycle {cycle}: user_id={uid}");
     }
 
     // Deterministic
-    kernel.set_coordinates(&[42]);
+    kernel.set_inputs(&[42]);
     let first = kernel.pull("user_id").as_u64();
-    kernel.set_coordinates(&[42]);
+    kernel.set_inputs(&[42]);
     assert_eq!(kernel.pull("user_id").as_u64(), first);
 }
 
@@ -35,20 +35,20 @@ fn gk_cartesian_space() {
 
     // First 50 cycles: region 0..49, store=0, tx=0
     for cycle in 0u64..50 {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         assert_eq!(kernel.pull("region").as_u64(), cycle);
         assert_eq!(kernel.pull("store").as_u64(), 0);
         assert_eq!(kernel.pull("tx").as_u64(), 0);
     }
 
     // Cycle 50 wraps to region=0, store=1
-    kernel.set_coordinates(&[50]);
+    kernel.set_inputs(&[50]);
     assert_eq!(kernel.pull("region").as_u64(), 0);
     assert_eq!(kernel.pull("store").as_u64(), 1);
 
     // Codes bounded
     for cycle in 0..100u64 {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         assert!(kernel.pull("region_code").as_u64() < 10000);
         assert!(kernel.pull("store_code").as_u64() < 100000);
         assert!(kernel.pull("tx_id").as_u64() < 1_000_000_000);
@@ -63,7 +63,7 @@ fn gk_shared_computation() {
     // bucket = user_h % 64, shard = user_h % 16
     // Since 64 is a multiple of 16: shard == bucket % 16
     for cycle in 0..100u64 {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         let bucket = kernel.pull("user_bucket").as_u64();
         let shard = kernel.pull("user_shard").as_u64();
         assert!(bucket < 64);
@@ -78,16 +78,16 @@ fn gk_multi_coordinate() {
     let mut kernel = compile_gk(src).unwrap();
 
     // Same thread, different cycles → same partition
-    kernel.set_coordinates(&[0, 7]);
+    kernel.set_inputs(&[0, 7]);
     let p1 = kernel.pull("partition").as_u64();
-    kernel.set_coordinates(&[100, 7]);
+    kernel.set_inputs(&[100, 7]);
     let p2 = kernel.pull("partition").as_u64();
     assert_eq!(p1, p2);
 
     // All bounded
     for cycle in 0..50u64 {
         for thread in 0..4u64 {
-            kernel.set_coordinates(&[cycle, thread]);
+            kernel.set_inputs(&[cycle, thread]);
             assert!(kernel.pull("partition").as_u64() < 256);
             assert!(kernel.pull("row_key").as_u64() < 1_000_000);
             assert!(kernel.pull("value").as_u64() < 1000);
@@ -101,17 +101,17 @@ fn gk_hashing_provenance() {
     let mut kernel = compile_gk(src).unwrap();
 
     // Same tenant across cycles that map to the same tenant
-    kernel.set_coordinates(&[5]);
+    kernel.set_inputs(&[5]);
     let tid1 = kernel.pull("tenant_id").as_u64();
     let a1 = kernel.pull("field_a").as_u64();
-    kernel.set_coordinates(&[105]); // also tenant=5
+    kernel.set_inputs(&[105]); // also tenant=5
     let tid2 = kernel.pull("tenant_id").as_u64();
     let a2 = kernel.pull("field_a").as_u64();
     assert_eq!(tid1, tid2);
     assert_eq!(a1, a2);
 
     // Chained hashes produce different fields
-    kernel.set_coordinates(&[42]);
+    kernel.set_inputs(&[42]);
     let a = kernel.pull("field_a").as_u64();
     let b = kernel.pull("field_b").as_u64();
     let c = kernel.pull("field_c").as_u64();

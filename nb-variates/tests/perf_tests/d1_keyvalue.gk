@@ -1,0 +1,19 @@
+/// @driver
+/// cycle := meta
+
+/// @selector
+/// output_idx := 0
+
+/// @graph
+/// Realistic key-value INSERT. 9 nodes, single input.
+inputs := (cycle)
+
+hashed := hash(cycle)
+user_id := mod(hashed, 1000000)
+padded_id := hash(user_id)
+bucket := mod(padded_id, 100)
+name_hash := hash(bucket)
+email_hash := hash(name_hash)
+balance := mod(hashed, 10000)
+region := mod(name_hash, 50)
+out := hash(balance)

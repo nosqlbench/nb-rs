@@ -29,7 +29,7 @@ pub enum Statement {
 /// Port lifecycle mode.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PortMode {
-    /// Resets to default on each set_coordinates().
+    /// Resets to default on each set_inputs().
     Volatile,
     /// Persists across coordinate changes until explicitly overwritten.
     Sticky,

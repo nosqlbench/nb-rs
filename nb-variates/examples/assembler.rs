@@ -12,7 +12,7 @@ fn main() {
 
     // Decompose cycle into (region, device, reading) coordinates
     asm.add_node("decompose", Box::new(MixedRadix::new(vec![100, 1000, 0])),
-        vec![WireRef::coord("cycle")]);
+        vec![WireRef::input("cycle")]);
 
     // Hash region for a deterministic region code
     asm.add_node("region_h", Box::new(Hash64::new()),
@@ -31,7 +31,7 @@ fn main() {
     println!("cycle     region  device  reading  region_code");
     println!("--------  ------  ------  -------  -----------");
     for cycle in [0, 1, 50, 100, 10000, 100000] {
-        kernel.set_coordinates(&[cycle]);
+        kernel.set_inputs(&[cycle]);
         println!("{cycle:>8}  {:>6}  {:>6}  {:>7}  {:>11}",
             kernel.pull("region").as_u64(),
             kernel.pull("device").as_u64(),

@@ -28,7 +28,7 @@ pub enum TokenKind {
     /// `init` keyword
     Init,
     /// `coordinates` keyword
-    Coordinates,
+    Inputs,
     /// `extern` keyword
     Extern,
     /// `volatile` keyword
@@ -91,12 +91,34 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
             continue;
         }
 
-        // Skip line comments
-        if c == '/' && pos + 1 < chars.len() && chars[pos + 1] == '/' {
-            while pos < chars.len() && chars[pos] != '\n' {
-                pos += 1;
+        // Skip comments
+        if c == '/' && pos + 1 < chars.len() {
+            if chars[pos + 1] == '/' {
+                // Line comment (// or ///) — skip to end of line
+                while pos < chars.len() && chars[pos] != '\n' {
+                    pos += 1;
+                }
+                continue;
             }
-            continue;
+            if chars[pos + 1] == '*' {
+                // Block comment /* ... */ — skip to closing */
+                pos += 2;
+                col += 2;
+                while pos + 1 < chars.len() {
+                    if chars[pos] == '\n' {
+                        line += 1;
+                        col = 1;
+                    }
+                    if chars[pos] == '*' && chars[pos + 1] == '/' {
+                        pos += 2;
+                        col += 2;
+                        break;
+                    }
+                    pos += 1;
+                    col += 1;
+                }
+                continue;
+            }
         }
 
         let span = Span { line, col };
@@ -232,7 +254,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
             let word: String = chars[start..pos].iter().collect();
             let kind = match word.as_str() {
                 "init" => TokenKind::Init,
-                "coordinates" => TokenKind::Coordinates,
+                "coordinates" | "inputs" => TokenKind::Inputs,
                 "extern" => TokenKind::Extern,
                 "volatile" => TokenKind::Volatile,
                 "sticky" => TokenKind::Sticky,
@@ -278,7 +300,7 @@ mod tests {
     #[test]
     fn lex_coordinates() {
         let tokens = lex("coordinates := (cycle, thread)").unwrap();
-        assert!(matches!(tokens[0].kind, TokenKind::Coordinates));
+        assert!(matches!(tokens[0].kind, TokenKind::Inputs));
     }
 
     #[test]
@@ -335,5 +357,34 @@ mod tests {
     fn lex_hex_int() {
         let tokens = lex("0xFF").unwrap();
         assert!(matches!(tokens[0].kind, TokenKind::IntLit(255)));
+    }
+
+    #[test]
+    fn lex_block_comment() {
+        let tokens = lex("a := /* skip this */ hash(b)").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Ident(ref s) if s == "a"));
+        assert!(matches!(tokens[1].kind, TokenKind::ColonEq));
+        assert!(matches!(tokens[2].kind, TokenKind::Ident(ref s) if s == "hash"));
+    }
+
+    #[test]
+    fn lex_block_comment_multiline() {
+        let tokens = lex("a := 42\n/* this\nis\na\nblock */\nb := 7").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Ident(ref s) if s == "a"));
+        assert!(matches!(tokens[2].kind, TokenKind::IntLit(42)));
+        assert!(matches!(tokens[3].kind, TokenKind::Ident(ref s) if s == "b"));
+    }
+
+    #[test]
+    fn lex_doc_comment() {
+        // Triple-slash doc comments are stripped like line comments
+        let tokens = lex("/// doc comment\nseed := hash(cycle)").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Ident(ref s) if s == "seed"));
+    }
+
+    #[test]
+    fn lex_inputs_keyword() {
+        let tokens = lex("inputs := (cycle)").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Inputs));
     }
 }

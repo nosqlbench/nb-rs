@@ -1,4 +1,4 @@
-# MEMO: Annotated Reference Implementation — WeightedPick
+# Memo 04: Annotated Reference Implementation — WeightedPick
 
 `WeightedPick` in `nb-variates/src/nodes/weighted.rs` is the reference
 implementation that exercises every GK metadata feature. Use it as a

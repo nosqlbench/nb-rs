@@ -23,14 +23,14 @@ use nb_variates::nodes::identity::Identity;
 
 fn asm_single_identity() -> GkAssembler {
     let mut asm = GkAssembler::new(vec!["cycle".into()]);
-    asm.add_node("id", Box::new(Identity::new()), vec![WireRef::coord("cycle")]);
+    asm.add_node("id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
     asm.add_output("out", WireRef::node("id"));
     asm
 }
 
 fn asm_identity_chain(depth: usize) -> GkAssembler {
     let mut asm = GkAssembler::new(vec!["cycle".into()]);
-    asm.add_node("id_0", Box::new(Identity::new()), vec![WireRef::coord("cycle")]);
+    asm.add_node("id_0", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
     for i in 1..depth {
         let name = format!("id_{i}");
         let prev = format!("id_{}", i - 1);
@@ -44,7 +44,7 @@ fn asm_identity_chain(depth: usize) -> GkAssembler {
 fn asm_wide_sum(width: usize) -> GkAssembler {
     let coord_names: Vec<String> = (0..width).map(|i| format!("c{i}")).collect();
     let mut asm = GkAssembler::new(coord_names.clone());
-    let inputs: Vec<WireRef> = coord_names.iter().map(|n| WireRef::coord(n)).collect();
+    let inputs: Vec<WireRef> = coord_names.iter().map(|n| WireRef::input(n)).collect();
     asm.add_node("sum", Box::new(SumN::new(width)), inputs);
     asm.add_output("out", WireRef::node("sum"));
     asm
@@ -59,7 +59,7 @@ fn bench_p1_single_identity(c: &mut Criterion) {
     c.bench_function("p1/single_identity", |b| {
         let mut cycle = 0u64;
         b.iter(|| {
-            kernel.set_coordinates(&[cycle]);
+            kernel.set_inputs(&[cycle]);
             black_box(kernel.pull("out"));
             cycle = cycle.wrapping_add(1);
         });
@@ -73,7 +73,7 @@ fn bench_p1_identity_chain(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, _| {
             let mut cycle = 0u64;
             b.iter(|| {
-                kernel.set_coordinates(&[cycle]);
+                kernel.set_inputs(&[cycle]);
                 black_box(kernel.pull("out"));
                 cycle = cycle.wrapping_add(1);
             });
@@ -91,7 +91,7 @@ fn bench_p1_wide_sum(c: &mut Criterion) {
             let mut base = 0u64;
             b.iter(|| {
                 let c: Vec<u64> = coords.iter().map(|x| x.wrapping_add(base)).collect();
-                kernel.set_coordinates(&c);
+                kernel.set_inputs(&c);
                 black_box(kernel.pull("out"));
                 base = base.wrapping_add(1);
             });
@@ -227,6 +227,67 @@ fn bench_hybrid_identity_chain(c: &mut Criterion) {
 
 // =================================================================
 
+// =================================================================
+// Invalidation strategy benchmarks
+// =================================================================
+
+use nb_variates::nodes::hash::Hash64;
+use nb_variates::nodes::arithmetic::ModU64;
+
+fn asm_hash_chain(depth: usize) -> GkAssembler {
+    let mut asm = GkAssembler::new(vec!["cycle".into()]);
+    asm.add_node("h0", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
+    for i in 1..depth {
+        let name = format!("h{i}");
+        let prev = format!("h{}", i - 1);
+        asm.add_node(&name, Box::new(ModU64::new(1_000_000)), vec![WireRef::node(prev)]);
+    }
+    let last = format!("h{}", depth - 1);
+    asm.add_output("out", WireRef::node(last));
+    asm
+}
+
+fn bench_invalidation_strategy(c: &mut Criterion) {
+    let mut group = c.benchmark_group("invalidation");
+    for depth in [5, 20, 50] {
+        let kernel = asm_hash_chain(depth).compile().unwrap();
+        let program = kernel.into_program();
+
+        // Engine 1: Dependent List
+        group.bench_with_input(
+            BenchmarkId::new("dependent_list", depth),
+            &depth,
+            |b, _| {
+                let mut state = program.create_state();
+                let mut cycle = 0u64;
+                b.iter(|| {
+                    state.set_inputs(&[cycle]);
+                    state.pull(&program, "out");
+                    black_box(());
+                    cycle = cycle.wrapping_add(1);
+                });
+            },
+        );
+
+        // Engine 2: Provenance Scan
+        group.bench_with_input(
+            BenchmarkId::new("provenance_scan", depth),
+            &depth,
+            |b, _| {
+                let mut state = program.create_provscan_state();
+                let mut cycle = 0u64;
+                b.iter(|| {
+                    state.set_inputs(&[cycle]);
+                    state.pull(&program, "out");
+                    black_box(());
+                    cycle = cycle.wrapping_add(1);
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 #[cfg(not(feature = "jit"))]
 criterion_group!(
     benches,
@@ -238,6 +299,7 @@ criterion_group!(
     bench_p2_wide_sum,
     bench_hybrid_single_identity,
     bench_hybrid_identity_chain,
+    bench_invalidation_strategy,
 );
 
 #[cfg(feature = "jit")]

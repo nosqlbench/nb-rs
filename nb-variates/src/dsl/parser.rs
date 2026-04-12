@@ -78,7 +78,7 @@ pub fn parse(tokens: Vec<Token>) -> Result<GkFile, String> {
 
 fn parse_statement(p: &mut Parser) -> Result<Statement, String> {
     match p.peek() {
-        TokenKind::Coordinates => parse_coordinates(p),
+        TokenKind::Inputs => parse_inputs(p),
         TokenKind::Init => parse_init_binding(p),
         TokenKind::Extern => parse_extern_port(p),
         TokenKind::LParen => parse_destructuring_binding(p),
@@ -192,7 +192,7 @@ fn parse_extern_port(p: &mut Parser) -> Result<Statement, String> {
 }
 
 /// `coordinates := (name1, name2, ...)`
-fn parse_coordinates(p: &mut Parser) -> Result<Statement, String> {
+fn parse_inputs(p: &mut Parser) -> Result<Statement, String> {
     let span = p.span();
     p.advance(); // consume 'coordinates'
     p.expect(&TokenKind::ColonEq)?;
@@ -365,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_coordinates() {
+    fn parse_inputs() {
         let f = parse_str("coordinates := (cycle, thread)");
         assert_eq!(f.statements.len(), 1);
         match &f.statements[0] {

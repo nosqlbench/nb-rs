@@ -1,4 +1,4 @@
-# MEMO: Annotated Implementation of HashRange
+# Memo 03: Annotated Implementation of HashRange
 
 A walkthrough of the `HashRange` node in `nb-variates/src/nodes/hash.rs`.
 This node exercises five metadata features: wire input, constant input,

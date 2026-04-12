@@ -23,23 +23,23 @@ fn gk2(bindings: &str) -> GkKernel {
 }
 
 fn eval_u64(k: &mut GkKernel, cycle: u64) -> u64 {
-    k.set_coordinates(&[cycle]);
+    k.set_inputs(&[cycle]);
     k.pull("out").as_u64()
 }
 
 fn eval_f64(k: &mut GkKernel, cycle: u64) -> f64 {
-    k.set_coordinates(&[cycle]);
+    k.set_inputs(&[cycle]);
     k.pull("out").as_f64()
 }
 
 fn eval_str(k: &mut GkKernel, cycle: u64) -> String {
-    k.set_coordinates(&[cycle]);
+    k.set_inputs(&[cycle]);
     k.pull("out").as_str().to_string()
 }
 
 #[allow(dead_code)]
 fn eval_val(k: &mut GkKernel, cycle: u64) -> String {
-    k.set_coordinates(&[cycle]);
+    k.set_inputs(&[cycle]);
     k.pull("out").to_display_string()
 }
 
@@ -135,7 +135,7 @@ fn clamp_above() {
 fn mixed_radix_decomposition() {
     let src = "coordinates := (cycle)\n(a, b) := mixed_radix(cycle, 10, 0)";
     let mut k = compile_gk(src).unwrap();
-    k.set_coordinates(&[42]);
+    k.set_inputs(&[42]);
     let a = k.pull("a").as_u64();
     let b = k.pull("b").as_u64();
     // 42 = 2 * 10 + remainder 4 reversed? mixed_radix: digit0 = 42 % 10 = 2, digit1 = 42 / 10 = 4
@@ -185,11 +185,11 @@ fn interleave_known() {
     let src = "coordinates := (a, b)\nout := interleave(a, b)";
     let mut k = compile_gk(src).unwrap();
     // interleave(1, 0) should give 1 (bit0 of a=1 -> bit0)
-    k.set_coordinates(&[1, 0]);
+    k.set_inputs(&[1, 0]);
     let v = k.pull("out").as_u64();
     assert_eq!(v & 1, 1, "bit 0 should be from a");
     // interleave(0, 1) should give 2 (bit0 of b=1 -> bit1)
-    k.set_coordinates(&[0, 1]);
+    k.set_inputs(&[0, 1]);
     let v = k.pull("out").as_u64();
     assert_eq!(v & 2, 2, "bit 1 should be from b");
 }
@@ -555,7 +555,7 @@ fn regex_replace_works() {
 #[test]
 fn regex_match_works() {
     let mut k = gk("s := format_u64(cycle, 10)\nout := regex_match(s, \"^[0-9]+$\")");
-    k.set_coordinates(&[42]);
+    k.set_inputs(&[42]);
     let v = k.pull("out").as_bool();
     assert!(v, "digit string should match digit pattern");
 }
@@ -590,9 +590,9 @@ fn base64_roundtrip() {
     let mut k = gk("b := u64_to_bytes(cycle)\ne := to_base64(b)\nout := from_base64(e)");
     let mut k_orig = gk("out := u64_to_bytes(cycle)");
     for cycle in 0..10 {
-        k.set_coordinates(&[cycle]);
+        k.set_inputs(&[cycle]);
         let roundtrip = k.pull("out").as_bytes().to_vec();
-        k_orig.set_coordinates(&[cycle]);
+        k_orig.set_inputs(&[cycle]);
         let original = k_orig.pull("out").as_bytes().to_vec();
         assert_eq!(roundtrip, original, "base64 roundtrip failed at cycle={cycle}");
     }
@@ -633,7 +633,7 @@ fn date_components_decomposes() {
                e := epoch_offset(cycle, 1704067200000)\n\
                (y, mo, d, h, mi, s, ms) := date_components(e)";
     let mut k = compile_gk(src).unwrap();
-    k.set_coordinates(&[0]);
+    k.set_inputs(&[0]);
     let y = k.pull("y").as_u64();
     let mo = k.pull("mo").as_u64();
     let d = k.pull("d").as_u64();
@@ -776,9 +776,9 @@ fn perlin_1d_deterministic() {
 #[test]
 fn perlin_2d_deterministic() {
     let mut k = gk2("out := perlin_2d(x, y, 42, 0.01)");
-    k.set_coordinates(&[10, 20]);
+    k.set_inputs(&[10, 20]);
     let a = k.pull("out").as_f64();
-    k.set_coordinates(&[10, 20]);
+    k.set_inputs(&[10, 20]);
     let b = k.pull("out").as_f64();
     assert_eq!(a, b, "perlin_2d must be deterministic");
     assert!(a >= -1.0 && a <= 1.0, "perlin_2d out of range: {a}");
@@ -787,9 +787,9 @@ fn perlin_2d_deterministic() {
 #[test]
 fn simplex_2d_deterministic() {
     let mut k = gk2("out := simplex_2d(x, y, 42, 0.01)");
-    k.set_coordinates(&[10, 20]);
+    k.set_inputs(&[10, 20]);
     let a = k.pull("out").as_f64();
-    k.set_coordinates(&[10, 20]);
+    k.set_inputs(&[10, 20]);
     let b = k.pull("out").as_f64();
     assert_eq!(a, b, "simplex_2d must be deterministic");
     assert!(a >= -1.0 && a <= 1.0, "simplex_2d out of range: {a}");
@@ -802,7 +802,7 @@ fn simplex_2d_deterministic() {
 #[test]
 fn to_json_wraps() {
     let mut k = gk("out := to_json(cycle)");
-    k.set_coordinates(&[42]);
+    k.set_inputs(&[42]);
     let j = k.pull("out").as_json();
     assert_eq!(j.as_u64(), Some(42));
 }
@@ -891,7 +891,7 @@ fn country_names_nonempty() {
 #[test]
 fn u64_to_bytes_length() {
     let mut k = gk("out := u64_to_bytes(cycle)");
-    k.set_coordinates(&[42]);
+    k.set_inputs(&[42]);
     let b = k.pull("out").as_bytes();
     assert_eq!(b.len(), 8, "u64_to_bytes should produce 8 bytes");
 }
@@ -899,9 +899,9 @@ fn u64_to_bytes_length() {
 #[test]
 fn bytes_from_hash_deterministic() {
     let mut k = gk("out := bytes_from_hash(hash(cycle), 32)");
-    k.set_coordinates(&[42]);
+    k.set_inputs(&[42]);
     let a = k.pull("out").as_bytes().to_vec();
-    k.set_coordinates(&[42]);
+    k.set_inputs(&[42]);
     let b = k.pull("out").as_bytes().to_vec();
     assert_eq!(a, b, "bytes_from_hash must be deterministic");
     assert_eq!(a.len(), 32, "expected 32 bytes");
@@ -921,9 +921,9 @@ fn from_hex_roundtrip() {
     let mut k = gk("b := u64_to_bytes(cycle)\nh := to_hex(b)\nout := from_hex(h)");
     let mut k_orig = gk("out := u64_to_bytes(cycle)");
     for cycle in 0..10 {
-        k.set_coordinates(&[cycle]);
+        k.set_inputs(&[cycle]);
         let roundtrip = k.pull("out").as_bytes().to_vec();
-        k_orig.set_coordinates(&[cycle]);
+        k_orig.set_inputs(&[cycle]);
         let original = k_orig.pull("out").as_bytes().to_vec();
         assert_eq!(roundtrip, original, "hex roundtrip failed at cycle={cycle}");
     }
@@ -1104,7 +1104,7 @@ fn sin_known_values() {
     }
     // sin(0) = 0
     let mut k2 = gk2("f := unit_interval(x)\nout := sin(f)");
-    k2.set_coordinates(&[0, 0]);
+    k2.set_inputs(&[0, 0]);
     let v = k2.pull("out").as_f64();
     assert!(v.abs() < 1e-10, "sin(0) should be ~0, got {v}");
 }
@@ -1118,7 +1118,7 @@ fn cos_known_values() {
     }
     // cos(0) = 1
     let mut k2 = gk2("f := unit_interval(x)\nout := cos(f)");
-    k2.set_coordinates(&[0, 0]);
+    k2.set_inputs(&[0, 0]);
     let v = k2.pull("out").as_f64();
     assert!((v - 1.0).abs() < 1e-10, "cos(0) should be ~1, got {v}");
 }

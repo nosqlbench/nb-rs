@@ -1,0 +1,68 @@
+/// @driver
+/// cycle := meta
+/// ks := 42
+/// ds := 7
+
+/// @selector
+/// output_idx := 0
+
+/// @graph
+/// 49 nodes, 3 inputs. Only cycle changes per eval.
+/// ks/ds subgraphs are stable — provenance should cache them.
+inputs := (cycle, ks, ds)
+
+// Cycle-dependent subgraph (15 nodes, changes every eval)
+c0 := hash(cycle)
+c1 := mod(c0, 1000000)
+c2 := hash(c1)
+c3 := mod(c2, 997)
+c4 := hash(c3)
+c5 := mod(c4, 991)
+c6 := hash(c5)
+c7 := mod(c6, 983)
+c8 := hash(c7)
+c9 := mod(c8, 977)
+c10 := hash(c9)
+c11 := mod(c10, 971)
+c12 := hash(c11)
+c13 := mod(c12, 967)
+c14 := hash(c13)
+cycle_out := mod(c14, 953)
+
+// ks-dependent subgraph (15 nodes, stable)
+k0 := hash(ks)
+k1 := mod(k0, 500)
+k2 := hash(k1)
+k3 := mod(k2, 499)
+k4 := hash(k3)
+k5 := mod(k4, 497)
+k6 := hash(k5)
+k7 := mod(k6, 491)
+k8 := hash(k7)
+k9 := mod(k8, 487)
+k10 := hash(k9)
+k11 := mod(k10, 479)
+k12 := hash(k11)
+k13 := mod(k12, 467)
+k14 := hash(k13)
+ks_out := mod(k14, 463)
+
+// ds-dependent subgraph (15 nodes, stable)
+d0 := hash(ds)
+d1 := mod(d0, 300)
+d2 := hash(d1)
+d3 := mod(d2, 293)
+d4 := hash(d3)
+d5 := mod(d4, 283)
+d6 := hash(d5)
+d7 := mod(d6, 281)
+d8 := hash(d7)
+d9 := mod(d8, 277)
+d10 := hash(d9)
+d11 := mod(d10, 271)
+d12 := hash(d11)
+d13 := mod(d12, 269)
+d14 := hash(d13)
+ds_out := mod(d14, 263)
+
+out := hash(cycle_out)

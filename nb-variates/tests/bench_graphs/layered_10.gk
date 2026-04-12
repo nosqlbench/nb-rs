@@ -1,0 +1,14 @@
+// Benchmark: 10-node layered DAG (degree~3, width=4, layers=3)
+inputs := (cycle)
+
+n0 := hash(cycle)
+n1 := hash(n0)
+n2 := hash(n1)
+n3 := hash(n2)
+n4 := mod(n1, 104)
+n5 := mod(n0, 105)
+n6 := hash(n3)
+n7 := mod(n2, 107)
+n8 := mod(n6, 108)
+n9 := hash(n5)
+out := n9
