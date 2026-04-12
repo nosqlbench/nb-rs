@@ -4,6 +4,10 @@
 //! CLI tree definition, usage text, and utility functions shared
 //! across subcommands.
 
+use crate::bench::bench_gk_completion;
+use crate::plot::plot_gk_completion;
+use crate::run::run_completion;
+
 /// Discover workload-declared parameters for dynamic completion.
 ///
 /// When `workload=somefile.yaml` is on the command line, parse the
@@ -27,27 +31,19 @@ fn discover_workload_params(_partial: &str, context: &[&str]) -> Vec<String> {
     Vec::new()
 }
 
-/// Build the definitive CLI command tree. This is the single source of
-/// truth for all subcommands, options, and flags. Shell completions,
-/// help text, and option validation all derive from this definition.
+/// Build the definitive CLI command tree. Completion candidates are
+/// derived from each subcommand's definition — no separate lists
+/// to keep in sync.
 pub fn cli_tree() -> veks_completion::CommandTree {
     use veks_completion::Node;
 
+    let (run_opts, run_flags) = run_completion();
+    let (bench_opts, bench_flags) = bench_gk_completion();
+    let (plot_opts, plot_flags) = plot_gk_completion();
+
     veks_completion::CommandTree::new("nbrs")
-        .command("run", Node::leaf_with_flags(
-            &[
-                "adapter=", "driver=", "workload=", "op=", "cycles=", "threads=",
-                "rate=", "stanzarate=", "errors=", "seq=", "tags=", "format=",
-                "filename=", "stanza_concurrency=", "sc=",
-                // CQL adapter params
-                "hosts=", "host=", "port=", "keyspace=", "consistency=",
-                "username=", "password=", "request_timeout_ms=",
-                // HTTP adapter params
-                "base_url=", "timeout=",
-            ],
-            &["--strict", "--dry-run", "--tui", "--diagnose",
-              "--dry-run=emit", "--dry-run=json"],
-        ).with_dynamic_options(discover_workload_params))
+        .command("run", Node::leaf_with_flags(run_opts, run_flags)
+            .with_dynamic_options(discover_workload_params))
         .command("describe", Node::group(vec![
             ("gk", Node::group(vec![
                 ("functions", Node::leaf(&[])),
@@ -57,16 +53,10 @@ pub fn cli_tree() -> veks_completion::CommandTree {
             ])),
         ]))
         .command("bench", Node::group(vec![
-            ("gk", Node::leaf_with_flags(
-                &["cycles=", "concurrency=", "--cycles", "--concurrency", "-c"],
-                &["--explain"],
-            )),
+            ("gk", Node::leaf_with_flags(bench_opts, bench_flags)),
         ]))
         .command("plot", Node::group(vec![
-            ("gk", Node::leaf_with_flags(
-                &["cycles=", "output=", "--width=", "--height=", "--max-labels="],
-                &["--no-color"],
-            )),
+            ("gk", Node::leaf_with_flags(plot_opts, plot_flags)),
         ]))
         .command("web", Node::leaf_with_flags(
             &["bind=", "port="],
@@ -114,7 +104,6 @@ pub fn print_usage() {
 ///
 /// Returns `Some(path)` if a workload file exists, `None` otherwise.
 pub fn resolve_workload_path(name: &str) -> Option<String> {
-    // Already has extension
     if name.ends_with(".yaml") || name.ends_with(".yml") {
         if std::path::Path::new(name).exists() {
             return Some(name.to_string());
@@ -122,7 +111,6 @@ pub fn resolve_workload_path(name: &str) -> Option<String> {
         return None;
     }
 
-    // Try appending extensions
     for ext in &[".yaml", ".yml"] {
         let path = format!("{name}{ext}");
         if std::path::Path::new(&path).exists() {
@@ -130,7 +118,6 @@ pub fn resolve_workload_path(name: &str) -> Option<String> {
         }
     }
 
-    // Try in workloads/ subdirectory
     for ext in &["", ".yaml", ".yml"] {
         let path = format!("workloads/{name}{ext}");
         if std::path::Path::new(&path).exists() {
@@ -142,29 +129,15 @@ pub fn resolve_workload_path(name: &str) -> Option<String> {
 }
 
 /// Parse a bind address flexibly: bare IP, host:port, or full URL.
-///
-/// Examples:
-///   `8085`                         → (0.0.0.0, 8085)
-///   `0.0.0.0`                     → (0.0.0.0, default_port)
-///   `0.0.0.0:8085`                → (0.0.0.0, 8085)
-///   `http://0.0.0.0:8085/`        → (0.0.0.0, 8085)
-///   `http://0.0.0.0/`             → (0.0.0.0, default_port)
-///   `https://localhost:9090/path`  → (localhost, 9090)
-///
-/// The `port_override` from a separate `port=` arg takes precedence
-/// over any port embedded in the bind string.
 pub fn parse_bind_address(raw: &str, port_override: Option<&str>) -> (String, u16) {
     let default_port = 8080u16;
 
-    // Strip scheme (http://, https://)
     let without_scheme = raw
         .strip_prefix("http://").or_else(|| raw.strip_prefix("https://"))
         .unwrap_or(raw);
 
-    // Strip trailing path (everything after first /)
     let host_port = without_scheme.split('/').next().unwrap_or(without_scheme);
 
-    // Split host and port
     let (host, embedded_port) = if let Some(colon_pos) = host_port.rfind(':') {
         let maybe_port = &host_port[colon_pos + 1..];
         if let Ok(p) = maybe_port.parse::<u16>() {
@@ -176,7 +149,6 @@ pub fn parse_bind_address(raw: &str, port_override: Option<&str>) -> (String, u1
         (host_port.to_string(), None)
     };
 
-    // port= arg overrides embedded port, which overrides default
     let port = port_override
         .and_then(|s| s.parse::<u16>().ok())
         .or(embedded_port)
