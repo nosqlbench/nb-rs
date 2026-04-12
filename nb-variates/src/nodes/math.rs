@@ -59,7 +59,64 @@ unary_f64_node!(Abs, "abs_f64", f64::abs);
 unary_f64_node!(Ln, "ln", f64::ln);
 unary_f64_node!(Exp, "exp", f64::exp);
 
-// --- Binary f64 nodes ---
+// --- Binary f64 arithmetic ---
+
+macro_rules! binary_f64_node {
+    ($struct_name:ident, $func_name:expr, $desc:expr, $a_name:expr, $b_name:expr, $op:expr) => {
+        pub struct $struct_name {
+            meta: NodeMeta,
+        }
+
+        impl Default for $struct_name {
+            fn default() -> Self { Self::new() }
+        }
+
+        impl $struct_name {
+            pub fn new() -> Self {
+                Self {
+                    meta: NodeMeta {
+                        name: $func_name.into(),
+                        ins: vec![
+                            Slot::Wire(Port::f64($a_name)),
+                            Slot::Wire(Port::f64($b_name)),
+                        ],
+                        outs: vec![Port::f64("output")],
+                    },
+                }
+            }
+        }
+
+        impl GkNode for $struct_name {
+            fn meta(&self) -> &NodeMeta { &self.meta }
+
+            fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+                let a = inputs[0].as_f64();
+                let b = inputs[1].as_f64();
+                let f: fn(f64, f64) -> f64 = $op;
+                outputs[0] = Value::F64(f(a, b));
+            }
+
+            fn compiled_u64(&self) -> Option<CompiledU64Op> {
+                Some(Box::new(|inputs, outputs| {
+                    let a = f64::from_bits(inputs[0]);
+                    let b = f64::from_bits(inputs[1]);
+                    let f: fn(f64, f64) -> f64 = $op;
+                    outputs[0] = f(a, b).to_bits();
+                }))
+            }
+
+            fn jit_constants(&self) -> Vec<u64> { vec![] }
+        }
+    };
+}
+
+binary_f64_node!(F64Add, "f64_add", "add two f64 values", "a", "b", |a, b| a + b);
+binary_f64_node!(F64Sub, "f64_sub", "subtract two f64 values", "a", "b", |a, b| a - b);
+binary_f64_node!(F64Mul, "f64_mul", "multiply two f64 values", "a", "b", |a, b| a * b);
+binary_f64_node!(F64Div, "f64_div", "divide two f64 values", "a", "b", |a, b| if b != 0.0 { a / b } else { 0.0 });
+binary_f64_node!(F64Mod, "f64_mod", "modulo two f64 values", "a", "b", |a, b| if b != 0.0 { a % b } else { 0.0 });
+
+// --- Binary f64 math functions ---
 
 /// Two-argument arc tangent: atan2(y, x).
 ///
@@ -286,6 +343,66 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
+        FuncSig {
+            name: "f64_add", category: C::Math,
+            outputs: 1, description: "add two f64 values",
+            help: "Add two f64 wire inputs: a + b.\nUse for composing waveforms, accumulating values, etc.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::AllCommutative,
+        },
+        FuncSig {
+            name: "f64_sub", category: C::Math,
+            outputs: 1, description: "subtract two f64 values",
+            help: "Subtract two f64 wire inputs: a - b.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "f64_mul", category: C::Math,
+            outputs: 1, description: "multiply two f64 values",
+            help: "Multiply two f64 wire inputs: a * b.\nUse for scaling waveforms by amplitude, combining signals, etc.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::AllCommutative,
+        },
+        FuncSig {
+            name: "f64_div", category: C::Math,
+            outputs: 1, description: "divide two f64 values",
+            help: "Divide two f64 wire inputs: a / b.\nReturns 0.0 if b is zero.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "f64_mod", category: C::Math,
+            outputs: 1, description: "modulo two f64 values",
+            help: "Modulo of two f64 wire inputs: a % b.\nReturns 0.0 if b is zero.\nUsed by the `%` infix operator.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
     ]
 }
 
@@ -306,6 +423,11 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _const
         "ln" => Some(Ok(Box::new(Ln::new()))),
         "exp" => Some(Ok(Box::new(Exp::new()))),
         "pow" => Some(Ok(Box::new(Pow::new()))),
+        "f64_add" => Some(Ok(Box::new(F64Add::new()))),
+        "f64_sub" => Some(Ok(Box::new(F64Sub::new()))),
+        "f64_mul" => Some(Ok(Box::new(F64Mul::new()))),
+        "f64_div" => Some(Ok(Box::new(F64Div::new()))),
+        "f64_mod" => Some(Ok(Box::new(F64Mod::new()))),
         _ => None,
     }
 }

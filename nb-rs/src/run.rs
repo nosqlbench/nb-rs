@@ -128,11 +128,18 @@ pub async fn run_command(args: &[String]) {
         .cloned()
         .unwrap_or_else(|| "stdout".to_string());
 
-    // Extract workload params before consuming ops
+    // Extract workload params and phase definitions before consuming ops
     let workload_params = workload.params;
+    let phases = workload.phases;
+    let phase_order = workload.phase_order;
+    let scenarios = workload.scenarios;
 
-    // Filter ops by tags
+    // Collect ALL ops: top-level ops + all phase inline ops.
+    // All ops are needed for GK kernel compilation so that the shared
+    // program covers every binding referenced by any phase.
     let mut ops = workload.ops;
+
+    // Filter top-level ops by tags (CLI-level tag filter)
     if let Some(filter) = tag_filter {
         ops = match TagFilter::filter_ops(&ops, filter) {
             Ok(filtered) => filtered,
@@ -143,24 +150,40 @@ pub async fn run_command(args: &[String]) {
         };
     }
 
-    if ops.is_empty() {
+    // Collect phase inline ops for GK compilation (separate from top-level ops)
+    let mut phase_ops_for_compile: Vec<nb_workload::model::ParsedOp> = Vec::new();
+    for phase in phases.values() {
+        phase_ops_for_compile.extend(phase.ops.iter().cloned());
+    }
+
+    // For non-phased workloads, require at least some ops
+    if ops.is_empty() && phases.is_empty() {
         eprintln!("error: no ops selected (tag filter may have excluded all ops)");
         std::process::exit(1);
     }
 
     // Warn about ops without explicit adapter selection, auto-assign to default
     let has_explicit_adapter = params.contains_key("adapter") || params.contains_key("driver");
-    for op in &ops {
-        let op_adapter = op.params.get("adapter")
-            .and_then(|v| v.as_str())
-            .or_else(|| op.params.get("driver").and_then(|v| v.as_str()));
-        if op_adapter.is_none() && !has_explicit_adapter {
-            eprintln!("warning: op '{}' has no adapter selection — using '{driver}'", op.name);
+    let warn_no_adapter = |op_list: &[nb_workload::model::ParsedOp]| {
+        for op in op_list {
+            let op_adapter = op.params.get("adapter")
+                .and_then(|v| v.as_str())
+                .or_else(|| op.params.get("driver").and_then(|v| v.as_str()));
+            if op_adapter.is_none() && !has_explicit_adapter {
+                eprintln!("warning: op '{}' has no adapter selection — using '{driver}'", op.name);
+            }
         }
-    }
+    };
+    warn_no_adapter(&ops);
+    warn_no_adapter(&phase_ops_for_compile);
 
-    eprintln!("nbrs: {} ops selected, {} cycles, {} threads, adapter={}",
-        ops.len(), explicit_cycles.map(|c| c.to_string()).unwrap_or("auto".into()), threads, driver);
+    if phases.is_empty() {
+        eprintln!("nbrs: {} ops selected, {} cycles, {} threads, adapter={}",
+            ops.len(), explicit_cycles.map(|c| c.to_string()).unwrap_or("auto".into()), threads, driver);
+    } else {
+        eprintln!("nbrs: {} phases, {} top-level ops, adapter={}",
+            phases.len(), ops.len(), driver);
+    }
 
     // Check for --strict and --dry-run flags
     let strict = args.iter().any(|a| a == "--strict");
@@ -176,9 +199,19 @@ pub async fn run_command(args: &[String]) {
         .map(std::path::PathBuf::from)
         .collect();
 
+    // Merge all ops for param expansion and GK compilation.
+    // Phase inline ops are appended so they share the same GK program.
+    let mut all_ops_for_compile: Vec<nb_workload::model::ParsedOp> = ops.clone();
+    all_ops_for_compile.extend(phase_ops_for_compile);
+
     // Expand workload params in GK binding source before compilation.
+    // After string substitution, inject standalone GK bindings for any
+    // params referenced in op templates that aren't already defined as
+    // GK bindings. This lets {dataset} resolve from the GK output
+    // namespace without a separate globals mechanism.
     if !workload_params.is_empty() {
-        for op in &mut ops {
+        // Phase 1: string substitution inside GK source (existing behavior)
+        for op in &mut all_ops_for_compile {
             if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
                 for (key, value) in &workload_params {
                     let placeholder = format!("{{{key}}}");
@@ -188,16 +221,145 @@ pub async fn run_command(args: &[String]) {
                 }
             }
         }
+
+        // Phase 2: inject param bindings into GK source for params
+        // referenced in op templates but not already defined as GK bindings.
+        let mut op_refs: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for op in all_ops_for_compile.iter() {
+            for value in op.op.values() {
+                if let Some(s) = value.as_str() {
+                    for name in nb_workload::bindpoints::referenced_bindings(s) {
+                        if workload_params.contains_key(&name) {
+                            op_refs.insert(name);
+                        }
+                    }
+                }
+            }
+        }
+        if !op_refs.is_empty() {
+            for op in &mut all_ops_for_compile {
+                if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
+                    for name in &op_refs {
+                        // Skip if the GK source already defines this binding
+                        let def_pattern = format!("{name} :=");
+                        if src.contains(&def_pattern) {
+                            continue;
+                        }
+                        let value = &workload_params[name];
+                        // Numeric params: inject as bare literal; string params: inject quoted
+                        let binding = if value.parse::<u64>().is_ok() || value.parse::<f64>().is_ok() {
+                            format!("\n{name} := {value}")
+                        } else {
+                            format!("\n{name} := \"{value}\"")
+                        };
+                        src.push_str(&binding);
+                    }
+                }
+            }
+        }
     }
 
-    // Compile bindings into GK kernel, with module resolution from the workload directory
+    // Phase 3: rewrite inline expressions in op templates to GK bindings.
+    // Detect {func(...)}, {:=expr}, {:=expr:=} bind points and inject them
+    // as named GK bindings (__expr_N), then rewrite the op template strings
+    // to use {__expr_N} references. This ensures the synthesis resolver
+    // only sees Reference bind points, not InlineDefinition.
+    {
+        let mut inline_idx = 0usize;
+        let mut expr_to_name: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+        // First pass: collect all inline expressions across all ops
+        for op in all_ops_for_compile.iter() {
+            for value in op.op.values() {
+                if let Some(s) = value.as_str() {
+                    for bp in nb_workload::bindpoints::extract_bind_points(s) {
+                        if let nb_workload::bindpoints::BindPoint::InlineDefinition(ref expr) = bp {
+                            if !expr_to_name.contains_key(expr) {
+                                let name = format!("__expr_{inline_idx}");
+                                inline_idx += 1;
+                                expr_to_name.insert(expr.clone(), name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !expr_to_name.is_empty() {
+            // Inject GK bindings for each discovered inline expression
+            for op in all_ops_for_compile.iter_mut() {
+                if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
+                    for (expr, name) in &expr_to_name {
+                        let def_pattern = format!("{name} :=");
+                        if !src.contains(&def_pattern) {
+                            src.push_str(&format!("\n{name} := {expr}"));
+                        }
+                    }
+                }
+            }
+
+            // Rewrite op templates: replace inline expressions with binding refs.
+            // Handles {{expr}}, {:=expr}, {:=expr:=}, and auto-detected {expr}.
+            for op in all_ops_for_compile.iter_mut() {
+                for value in op.op.values_mut() {
+                    if let Some(s) = value.as_str() {
+                        let mut rewritten = s.to_string();
+                        for (expr, name) in &expr_to_name {
+                            // Double-brace: {{expr}}
+                            rewritten = rewritten.replace(
+                                &format!("{{{{{expr}}}}}"),
+                                &format!("{{{name}}}"),
+                            );
+                            // {:=expr:=}
+                            rewritten = rewritten.replace(
+                                &format!("{{:={expr}:=}}"),
+                                &format!("{{{name}}}"),
+                            );
+                            // {:=expr}
+                            rewritten = rewritten.replace(
+                                &format!("{{:={expr}}}"),
+                                &format!("{{{name}}}"),
+                            );
+                            // Auto-detected {expr} (single brace)
+                            rewritten = rewritten.replace(
+                                &format!("{{{expr}}}"),
+                                &format!("{{{name}}}"),
+                            );
+                        }
+                        *value = serde_json::Value::String(rewritten);
+                    }
+                }
+            }
+        }
+    }
+
+    // Compile bindings into GK kernel, with module resolution from the workload directory.
+    // The kernel is compiled ONCE from all ops (top-level + phase inline).
     let workload_dir: Option<&std::path::Path> = workload_file.as_ref()
         .and_then(|p| std::path::Path::new(p).parent())
         .or_else(|| Some(std::path::Path::new(".")));
-    // Workload params are excluded from bind-point validation —
-    // they resolve at cycle time via the synthesis pipeline.
-    let wp_names: Vec<String> = workload_params.keys().cloned().collect();
-    let kernel = match compile_bindings_with_libs_excluding(&ops, workload_dir, gk_lib_paths, strict, &wp_names) {
+
+    // Scan CLI params AND phase cycles for GK constant references like
+    // cycles={train_count}. These bindings must survive DCE so
+    // get_constant() can read them.
+    let mut config_refs: Vec<String> = params.values()
+        .filter(|v| v.starts_with('{') && v.ends_with('}'))
+        .map(|v| v[1..v.len()-1].to_string())
+        .collect();
+    // Also preserve GK constants referenced in phase cycle configs
+    for phase in phases.values() {
+        if let Some(ref c) = phase.cycles {
+            if c.starts_with('{') && c.ends_with('}') {
+                config_refs.push(c[1..c.len()-1].to_string());
+            }
+        }
+    }
+
+    // No exclusions needed — workload params are now injected as GK
+    // bindings (Phase 2 above), so they resolve from the GK namespace.
+    let kernel = match compile_bindings_with_libs_excluding(
+        &all_ops_for_compile, workload_dir, gk_lib_paths, strict, &[], &config_refs,
+    ) {
         Ok(k) => k,
         Err(e) => {
             eprintln!("error: failed to compile bindings: {e}");
@@ -205,220 +367,415 @@ pub async fn run_command(args: &[String]) {
         }
     };
 
-    // Build op sequence
-    let op_sequence = OpSequence::from_ops(ops, seq_type);
+    // GK config expression resolution: resolve {name} references in
+    // activity config values from GK folded constants. This enables
+    // data-driven config like cycles={train_count}.
+    // We eagerly resolve all config values before moving kernel into OpBuilder.
+    // Resolution order:
+    //   1. Named binding from GK kernel constants
+    //   2. Inline const expression (zero-input GK eval)
+    //   3. Plain numeric parse (with K/M/B suffixes)
+    /// Convert a GK Value to u64, handling f64→u64 truncation.
+    fn value_to_u64(v: &nb_variates::node::Value) -> u64 {
+        match v {
+            nb_variates::node::Value::U64(n) => *n,
+            nb_variates::node::Value::F64(f) => *f as u64,
+            nb_variates::node::Value::Bool(b) => if *b { 1 } else { 0 },
+            _ => 0,
+        }
+    }
 
-    // Default cycles to one stanza if not specified
-    let cycles = explicit_cycles.unwrap_or(op_sequence.stanza_length() as u64);
-    eprintln!("nbrs: stanza length={}, sequencer={:?}", op_sequence.stanza_length(), seq_type);
-
-    // Create and run activity
-    let stanza_concurrency: usize = params.get("stanza_concurrency")
-        .or_else(|| params.get("sc"))
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1);
-
-    let config = ActivityConfig {
-        name: "main".into(),
-        cycles,
-        concurrency: threads,
-        cycle_rate,
-        stanza_rate,
-        sequencer: seq_type,
-        error_spec,
-        max_retries: 3,
-        stanza_concurrency,
+    let resolve_gk_config_with_kernel = |value: &str, kernel: &nb_variates::kernel::GkKernel| -> Option<u64> {
+        if value.starts_with('{') && value.ends_with('}') {
+            let inner = &value[1..value.len() - 1];
+            // Try named binding first
+            if let Some(v) = kernel.get_constant(inner) {
+                return Some(value_to_u64(v));
+            }
+            // Try inline const expression
+            match nb_variates::dsl::compile::eval_const_expr(inner) {
+                Ok(v) => Some(value_to_u64(&v)),
+                Err(e) => {
+                    eprintln!("error: const expression failed: '{{{inner}}}'");
+                    eprintln!("  {e}");
+                    None
+                }
+            }
+        } else {
+            parse_count(value)
+        }
     };
+
+    // Pre-resolve CLI config values that reference GK constants
+    let resolved_cli_cycles: Option<u64> = explicit_cycles.or_else(||
+        params.get("cycles").and_then(|s| resolve_gk_config_with_kernel(s, &kernel))
+    );
+    let resolved_cli_threads: Option<u64> = params.get("threads")
+        .and_then(|s| resolve_gk_config_with_kernel(s, &kernel));
+
+    // Pre-resolve phase cycle counts from GK constants
+    let mut resolved_phase_cycles: HashMap<String, Option<u64>> = HashMap::new();
+    for (name, phase) in &phases {
+        let resolved = phase.cycles.as_ref()
+            .and_then(|s| resolve_gk_config_with_kernel(s, &kernel));
+        resolved_phase_cycles.insert(name.clone(), resolved);
+    }
 
     let builder = Arc::new(OpBuilder::new(kernel));
-    let activity = Activity::with_params(config, &Labels::of("session", "cli"), op_sequence, workload_params);
-
-    // Check for --tui flag
-    let use_tui = args.iter().any(|a| a == "--tui");
-
-    // Get shared metrics before activity is consumed by run()
-    let shared_metrics = activity.shared_metrics();
-
-    // If TUI mode, spawn metrics capture thread + TUI thread
-    let tui_handle = if use_tui {
-        let (tui_reporter, tui_rx) = TuiReporter::channel();
-
-        // Start a metrics capture thread that periodically snapshots
-        // the activity's instruments and sends frames to the TUI.
-        let capture_metrics = shared_metrics.clone();
-        let capture_interval = std::time::Duration::from_millis(500);
-        let capture_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let capture_flag = capture_running.clone();
-
-        let mut reporter = tui_reporter;
-        std::thread::spawn(move || {
-            use nb_metrics::scheduler::Reporter;
-            while capture_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                std::thread::sleep(capture_interval);
-                let frame = capture_metrics.capture(capture_interval);
-                reporter.report(&frame);
-            }
-        });
-
-        // Start TUI on its own thread
-        let mut app = App::with_metrics(tui_rx);
-        app.metrics.activity_name = "main".to_string();
-        app.metrics.driver_name = driver.to_string();
-        app.metrics.threads = threads;
-        app.metrics.total_target = cycles;
-        app.metrics.rate_config = cycle_rate.map(|r| format!("{r}/s")).unwrap_or("unlimited".into());
-
-        let tui_thread = std::thread::spawn(move || {
-            if let Err(e) = app.run() {
-                eprintln!("error: TUI failed: {e}");
-            }
-        });
-
-        Some((tui_thread, capture_running))
-    } else {
-        None
-    };
-
-    // Determine the openmetrics push URL: explicit flag, or auto-discover
-    // from a running `nbrs web` instance in this directory.
-    let explicit_url: Option<String> = args.iter()
-        .find_map(|a| a.strip_prefix("--report-openmetrics-to=")
-            .or_else(|| a.strip_prefix("report-openmetrics-to=")))
-        .map(|s| s.to_string());
-    let push_url = explicit_url.or_else(|| {
-        let url = daemon::discover_web_instance()?;
-        eprintln!("nbrs: discovered local web instance, auto-pushing metrics");
-        Some(url)
-    });
-
-    // If we have a push URL, spawn a metrics push thread.
-    let openmetrics_push_flag = push_url.map(|url| {
-        let mut reporter = web_push::OpenMetricsPushReporter::new(&url);
-        let capture_metrics = shared_metrics.clone();
-        let capture_interval = std::time::Duration::from_secs(1);
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let flag = running.clone();
-        eprintln!("nbrs: pushing openmetrics to {url}");
-        std::thread::spawn(move || {
-            use nb_metrics::scheduler::Reporter;
-            while flag.load(std::sync::atomic::Ordering::Relaxed) {
-                std::thread::sleep(capture_interval);
-                let frame = capture_metrics.capture(capture_interval);
-                reporter.report(&frame);
-            }
-        });
-        running
-    });
-
     let program = builder.program();
 
-    // Handle --dry-run: override adapter with a no-op or printing adapter
-    if let Some(dry_mode) = dry_run {
-        match dry_mode {
-            "emit" => {
-                let adapter: Arc<dyn nb_activity::adapter::DriverAdapter> =
-                    Arc::new(StdoutAdapter::with_config(StdoutConfig {
-                        filename: "stdout".into(),
-                        newline: true,
-                        format: StdoutFormat::Statement,
-                fields_filter: Vec::new(),
-                    }));
-                activity.run_with_driver(adapter, program).await;
-            }
-            "json" => {
-                let adapter: Arc<dyn nb_activity::adapter::DriverAdapter> =
-                    Arc::new(StdoutAdapter::with_config(StdoutConfig {
-                        filename: "stdout".into(),
-                        newline: true,
-                        format: StdoutFormat::Json,
-                fields_filter: Vec::new(),
-                    }));
-                activity.run_with_driver(adapter, program).await;
-            }
-            _ => {
-                // Silent: assemble but don't execute
-                use nb_activity::adapter::{DriverAdapter, OpDispenser, OpResult, ExecutionError, ResolvedFields};
-                struct NoopDriverAdapter;
-                impl DriverAdapter for NoopDriverAdapter {
-                    fn name(&self) -> &str { "noop" }
-                    fn map_op(&self, _template: &nb_workload::model::ParsedOp)
-                        -> Result<Box<dyn OpDispenser>, String> {
-                        struct NoopDispenser;
-                        impl OpDispenser for NoopDispenser {
-                            fn execute<'a>(&'a self, _cycle: u64, _fields: &'a ResolvedFields)
-                                -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
-                                Box::pin(async { Ok(OpResult { body: None, captures: std::collections::HashMap::new() }) })
-                            }
-                        }
-                        Ok(Box::new(NoopDispenser))
-                    }
-                }
-                activity.run_with_driver(Arc::new(NoopDriverAdapter), program).await;
-            }
-        }
-        eprintln!("nbrs: dry-run complete");
-    } else {
-
-    match driver {
-        "stdout" => {
-            let adapter: Arc<dyn nb_activity::adapter::DriverAdapter> =
+    // Resolve the adapter for a given driver name string.
+    let make_adapter = |driver_name: &str| -> Arc<dyn nb_activity::adapter::DriverAdapter> {
+        match driver_name {
+            "stdout" => {
                 Arc::new(StdoutAdapter::with_config(StdoutConfig {
-                    filename,
+                    filename: filename.clone(),
                     newline: true,
                     format,
                     fields_filter: Vec::new(),
-                }));
-            activity.run_with_driver(adapter, program).await;
-        }
-        "model" => {
-            use nb_adapter_model::{ModelAdapter, ModelConfig};
-            let diagnose = args.iter().any(|a| a == "--diagnose");
-            let adapter: Arc<dyn nb_activity::adapter::DriverAdapter> =
+                }))
+            }
+            "model" => {
+                use nb_adapter_model::{ModelAdapter, ModelConfig};
+                let diagnose = args.iter().any(|a| a == "--diagnose");
                 Arc::new(ModelAdapter::with_config(ModelConfig {
                     stdout: StdoutConfig {
-                        filename,
+                        filename: filename.clone(),
                         newline: true,
                         format,
                         fields_filter: Vec::new(),
                     },
                     diagnose,
-                }));
-            activity.run_with_driver(adapter, program).await;
-        }
-        "http" => {
-            use nb_adapter_http::{HttpAdapter, HttpConfig};
-            let base_url = params.get("base_url").or_else(|| params.get("host")).cloned();
-            let timeout = params.get("timeout")
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(30_000);
-            let adapter: Arc<dyn nb_activity::adapter::DriverAdapter> =
+                }))
+            }
+            "http" => {
+                use nb_adapter_http::{HttpAdapter, HttpConfig};
+                let base_url = params.get("base_url").or_else(|| params.get("host")).cloned();
+                let timeout = params.get("timeout")
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(30_000);
                 Arc::new(HttpAdapter::with_config(HttpConfig {
                     base_url,
                     timeout_ms: timeout,
                     follow_redirects: true,
-                }));
-            activity.run_with_driver(adapter, program).await;
-        }
-        other => {
-            eprintln!("error: unknown driver '{other}' (supported: stdout, model, http)");
-            std::process::exit(1);
+                }))
+            }
+            other => {
+                eprintln!("error: unknown driver '{other}' (supported: stdout, model, http)");
+                std::process::exit(1);
+            }
         }
     };
 
-    } // end of else block for dry-run check
+    // --- Phased execution ---
+    if !phases.is_empty() {
+        // Determine which scenario to run
+        let scenario_name = params.get("scenario").map(|s| s.as_str()).unwrap_or("default");
+        let phase_names = resolve_scenario(&scenarios, &phase_order, scenario_name);
 
-    // Stop the openmetrics push thread if running.
-    if let Some(running) = openmetrics_push_flag {
-        running.store(false, std::sync::atomic::Ordering::Relaxed);
-    }
+        eprintln!("nbrs: scenario '{scenario_name}' with {} phases: [{}]",
+            phase_names.len(), phase_names.join(", "));
 
-    if let Some((tui_thread, capture_running)) = tui_handle {
-        // Stop the capture thread
-        capture_running.store(false, std::sync::atomic::Ordering::Relaxed);
-        // TUI will exit when user presses q
-        eprintln!("nbrs: activity complete. Press q in TUI to exit.");
-        let _ = tui_thread.join();
+        for phase_name in &phase_names {
+            let phase = match phases.get(phase_name) {
+                Some(p) => p,
+                None => {
+                    eprintln!("error: phase '{phase_name}' referenced in scenario '{scenario_name}' not found in phases section");
+                    std::process::exit(1);
+                }
+            };
+
+            eprintln!("nbrs: === phase: {phase_name} ===");
+
+            // Resolve ops for this phase: inline ops, tag-filtered from
+            // top-level ops, or all top-level ops.
+            // The ops used here come from all_ops_for_compile (already
+            // had param expansion applied). We need to split them back
+            // out. Phase inline ops were appended after top-level ops.
+            let phase_ops = if !phase.ops.is_empty() {
+                // Use inline ops (find them in all_ops_for_compile by matching names)
+                let phase_op_names: std::collections::HashSet<String> =
+                    phase.ops.iter().map(|o| o.name.clone()).collect();
+                all_ops_for_compile.iter()
+                    .filter(|o| {
+                        phase_op_names.contains(&o.name)
+                            && o.tags.get("phase").map(|p| p == phase_name).unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else if let Some(ref tag_spec) = phase.tags {
+                // Filter from top-level ops by tag
+                match TagFilter::filter_ops(&all_ops_for_compile, tag_spec) {
+                    Ok(filtered) => filtered,
+                    Err(e) => {
+                        eprintln!("error: invalid tag filter in phase '{phase_name}': {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                // No filter — use top-level ops (first `ops.len()` entries)
+                all_ops_for_compile[..ops.len()].to_vec()
+            };
+
+            if phase_ops.is_empty() {
+                eprintln!("warning: phase '{phase_name}' has no ops, skipping");
+                continue;
+            }
+
+            // Build op sequence for this phase
+            let op_sequence = OpSequence::from_ops(phase_ops, seq_type);
+            let stanza_len = op_sequence.stanza_length() as u64;
+
+            // Resolve phase config with GK constant support.
+            // Phase cycles specifies number of stanzas to execute.
+            // Multiply by stanza_length to get the raw cycle count that
+            // the activity engine consumes (it claims stanza_length
+            // cycles per stanza from the CycleSource).
+            let phase_stanzas = resolved_phase_cycles.get(phase_name)
+                .copied()
+                .flatten()
+                .unwrap_or(1);
+            let phase_cycles = phase_stanzas * stanza_len;
+            let phase_concurrency = phase.concurrency.unwrap_or(1);
+            let phase_rate = phase.rate.or(cycle_rate);
+            let phase_error_spec = phase.errors.clone().unwrap_or_else(|| error_spec.clone());
+
+            eprintln!("nbrs: phase '{phase_name}': {} ops, cycles={phase_cycles}, concurrency={phase_concurrency}",
+                op_sequence.stanza_length());
+
+            let config = ActivityConfig {
+                name: phase_name.clone(),
+                cycles: phase_cycles,
+                concurrency: phase_concurrency,
+                cycle_rate: phase_rate,
+                stanza_rate: None,
+                sequencer: seq_type,
+                error_spec: phase_error_spec,
+                max_retries: 3,
+                stanza_concurrency: 1,
+            };
+
+            let phase_driver = phase.adapter.as_deref().unwrap_or(driver);
+            let adapter = make_adapter(phase_driver);
+            let activity = Activity::with_params(
+                config, &Labels::of("session", "cli"), op_sequence, workload_params.clone(),
+            );
+            activity.run_with_driver(adapter, program.clone()).await;
+
+            eprintln!("nbrs: phase '{phase_name}' complete");
+        }
+
+        eprintln!("nbrs: all phases complete");
     } else {
-        eprintln!("nbrs: done");
+        // --- Legacy single-activity execution (no phases) ---
+
+        // Build op sequence
+        // Use the param-expanded ops from all_ops_for_compile (which equals
+        // ops when there are no phases).
+        let ops = all_ops_for_compile;
+        let op_sequence = OpSequence::from_ops(ops, seq_type);
+        eprintln!("nbrs: stanza length={}, sequencer={:?}", op_sequence.stanza_length(), seq_type);
+
+        let cycles = if let Some(c) = resolved_cli_cycles {
+            if explicit_cycles.is_none() && params.contains_key("cycles") {
+                eprintln!("nbrs: cycles={c} (from GK constant)");
+            }
+            c
+        } else {
+            op_sequence.stanza_length() as u64
+        };
+
+        let threads = if let Some(c) = resolved_cli_threads {
+            c as usize
+        } else {
+            threads
+        };
+
+        let stanza_concurrency: usize = params.get("stanza_concurrency")
+            .or_else(|| params.get("sc"))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+
+        let config = ActivityConfig {
+            name: "main".into(),
+            cycles,
+            concurrency: threads,
+            cycle_rate,
+            stanza_rate,
+            sequencer: seq_type,
+            error_spec,
+            max_retries: 3,
+            stanza_concurrency,
+        };
+
+        let activity = Activity::with_params(config, &Labels::of("session", "cli"), op_sequence, workload_params);
+
+        // Check for --tui flag
+        let use_tui = args.iter().any(|a| a == "--tui");
+
+        // Get shared metrics before activity is consumed by run()
+        let shared_metrics = activity.shared_metrics();
+
+        // If TUI mode, spawn metrics capture thread + TUI thread
+        let tui_handle = if use_tui {
+            let (tui_reporter, tui_rx) = TuiReporter::channel();
+
+            // Start a metrics capture thread that periodically snapshots
+            // the activity's instruments and sends frames to the TUI.
+            let capture_metrics = shared_metrics.clone();
+            let capture_interval = std::time::Duration::from_millis(500);
+            let capture_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let capture_flag = capture_running.clone();
+
+            let mut reporter = tui_reporter;
+            std::thread::spawn(move || {
+                use nb_metrics::scheduler::Reporter;
+                while capture_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(capture_interval);
+                    let frame = capture_metrics.capture(capture_interval);
+                    reporter.report(&frame);
+                }
+            });
+
+            // Start TUI on its own thread
+            let mut app = App::with_metrics(tui_rx);
+            app.metrics.activity_name = "main".to_string();
+            app.metrics.driver_name = driver.to_string();
+            app.metrics.threads = threads;
+            app.metrics.total_target = cycles;
+            app.metrics.rate_config = cycle_rate.map(|r| format!("{r}/s")).unwrap_or("unlimited".into());
+
+            let tui_thread = std::thread::spawn(move || {
+                if let Err(e) = app.run() {
+                    eprintln!("error: TUI failed: {e}");
+                }
+            });
+
+            Some((tui_thread, capture_running))
+        } else {
+            None
+        };
+
+        // Determine the openmetrics push URL: explicit flag, or auto-discover
+        // from a running `nbrs web` instance in this directory.
+        let explicit_url: Option<String> = args.iter()
+            .find_map(|a| a.strip_prefix("--report-openmetrics-to=")
+                .or_else(|| a.strip_prefix("report-openmetrics-to=")))
+            .map(|s| s.to_string());
+        let push_url = explicit_url.or_else(|| {
+            let url = daemon::discover_web_instance()?;
+            eprintln!("nbrs: discovered local web instance, auto-pushing metrics");
+            Some(url)
+        });
+
+        // If we have a push URL, spawn a metrics push thread.
+        let openmetrics_push_flag = push_url.map(|url| {
+            let mut reporter = web_push::OpenMetricsPushReporter::new(&url);
+            let capture_metrics = shared_metrics.clone();
+            let capture_interval = std::time::Duration::from_secs(1);
+            let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let flag = running.clone();
+            eprintln!("nbrs: pushing openmetrics to {url}");
+            std::thread::spawn(move || {
+                use nb_metrics::scheduler::Reporter;
+                while flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(capture_interval);
+                    let frame = capture_metrics.capture(capture_interval);
+                    reporter.report(&frame);
+                }
+            });
+            running
+        });
+
+        // Handle --dry-run: override adapter with a no-op or printing adapter
+        if let Some(dry_mode) = dry_run {
+            match dry_mode {
+                "emit" => {
+                    let adapter: Arc<dyn nb_activity::adapter::DriverAdapter> =
+                        Arc::new(StdoutAdapter::with_config(StdoutConfig {
+                            filename: "stdout".into(),
+                            newline: true,
+                            format: StdoutFormat::Statement,
+                    fields_filter: Vec::new(),
+                        }));
+                    activity.run_with_driver(adapter, program).await;
+                }
+                "json" => {
+                    let adapter: Arc<dyn nb_activity::adapter::DriverAdapter> =
+                        Arc::new(StdoutAdapter::with_config(StdoutConfig {
+                            filename: "stdout".into(),
+                            newline: true,
+                            format: StdoutFormat::Json,
+                    fields_filter: Vec::new(),
+                        }));
+                    activity.run_with_driver(adapter, program).await;
+                }
+                _ => {
+                    // Silent: assemble but don't execute
+                    use nb_activity::adapter::{DriverAdapter, OpDispenser, OpResult, ExecutionError, ResolvedFields};
+                    struct NoopDriverAdapter;
+                    impl DriverAdapter for NoopDriverAdapter {
+                        fn name(&self) -> &str { "noop" }
+                        fn map_op(&self, _template: &nb_workload::model::ParsedOp)
+                            -> Result<Box<dyn OpDispenser>, String> {
+                            struct NoopDispenser;
+                            impl OpDispenser for NoopDispenser {
+                                fn execute<'a>(&'a self, _cycle: u64, _fields: &'a ResolvedFields)
+                                    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+                                    Box::pin(async { Ok(OpResult { body: None, captures: std::collections::HashMap::new() }) })
+                                }
+                            }
+                            Ok(Box::new(NoopDispenser))
+                        }
+                    }
+                    activity.run_with_driver(Arc::new(NoopDriverAdapter), program).await;
+                }
+            }
+            eprintln!("nbrs: dry-run complete");
+        } else {
+            let adapter = make_adapter(driver);
+            activity.run_with_driver(adapter, program).await;
+        }
+
+        // Stop the openmetrics push thread if running.
+        if let Some(running) = openmetrics_push_flag {
+            running.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        if let Some((tui_thread, capture_running)) = tui_handle {
+            // Stop the capture thread
+            capture_running.store(false, std::sync::atomic::Ordering::Relaxed);
+            // TUI will exit when user presses q
+            eprintln!("nbrs: activity complete. Press q in TUI to exit.");
+            let _ = tui_thread.join();
+        } else {
+            eprintln!("nbrs: done");
+        }
     }
+}
+
+/// Resolve a scenario name to a list of phase names.
+///
+/// If the scenario is defined in the `scenarios:` section, returns the
+/// listed phase names. If no scenarios section exists but phases are
+/// defined and the requested name is `"default"`, returns all phases
+/// in YAML definition order.
+fn resolve_scenario(
+    scenarios: &HashMap<String, Vec<nb_workload::model::ScenarioStep>>,
+    phase_order: &[String],
+    name: &str,
+) -> Vec<String> {
+    // Check if a scenario with this name exists
+    if let Some(steps) = scenarios.get(name) {
+        return steps.iter().map(|s| s.name.clone()).collect();
+    }
+
+    // If no scenarios section but phases exist, and name is "default",
+    // run all phases in definition order
+    if name == "default" && !phase_order.is_empty() {
+        return phase_order.to_vec();
+    }
+
+    eprintln!("error: scenario '{name}' not found");
+    std::process::exit(1);
 }

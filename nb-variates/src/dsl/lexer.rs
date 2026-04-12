@@ -63,6 +63,30 @@ pub enum TokenKind {
     Colon,
     /// `->`
     Arrow,
+    /// `+`
+    Plus,
+    /// `-` (both binary subtract and unary negate)
+    Minus,
+    /// `*`
+    Star,
+    /// `/`
+    Slash,
+    /// `%`
+    Percent,
+    /// `^` (bitwise XOR)
+    Caret,
+    /// `**` (power)
+    StarStar,
+    /// `<<` (shift left)
+    ShiftLeft,
+    /// `>>` (shift right)
+    ShiftRight,
+    /// `&` (bitwise AND)
+    Ampersand,
+    /// `|` (bitwise OR)
+    Pipe,
+    /// `!` (unary bitwise NOT)
+    Bang,
     /// End of input
     Eof,
 }
@@ -91,7 +115,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
             continue;
         }
 
-        // Skip comments
+        // Skip comments (// and /* */)
         if c == '/' && pos + 1 < chars.len() {
             if chars[pos + 1] == '/' {
                 // Line comment (// or ///) — skip to end of line
@@ -121,6 +145,15 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
             }
         }
 
+        // Arithmetic operator `/` (not a comment start)
+        if c == '/' {
+            let span = Span { line, col };
+            tokens.push(Token { kind: TokenKind::Slash, span });
+            pos += 1;
+            col += 1;
+            continue;
+        }
+
         let span = Span { line, col };
 
         // Two-character operators
@@ -137,56 +170,11 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
             continue;
         }
 
-        // Single-character tokens
-        match c {
-            '(' => { tokens.push(Token { kind: TokenKind::LParen, span }); pos += 1; col += 1; continue; }
-            ')' => { tokens.push(Token { kind: TokenKind::RParen, span }); pos += 1; col += 1; continue; }
-            '[' => { tokens.push(Token { kind: TokenKind::LBracket, span }); pos += 1; col += 1; continue; }
-            ']' => { tokens.push(Token { kind: TokenKind::RBracket, span }); pos += 1; col += 1; continue; }
-            '{' => { tokens.push(Token { kind: TokenKind::LBrace, span }); pos += 1; col += 1; continue; }
-            '}' => { tokens.push(Token { kind: TokenKind::RBrace, span }); pos += 1; col += 1; continue; }
-            ',' => { tokens.push(Token { kind: TokenKind::Comma, span }); pos += 1; col += 1; continue; }
-            '=' => { tokens.push(Token { kind: TokenKind::Eq, span }); pos += 1; col += 1; continue; }
-            ':' => { tokens.push(Token { kind: TokenKind::Colon, span }); pos += 1; col += 1; continue; }
-            _ => {}
-        }
-
-        // String literal
-        if c == '"' {
-            pos += 1;
-            col += 1;
-            let mut s = String::new();
-            while pos < chars.len() && chars[pos] != '"' {
-                if chars[pos] == '\\' && pos + 1 < chars.len() {
-                    pos += 1;
-                    col += 1;
-                    match chars[pos] {
-                        'n' => s.push('\n'),
-                        't' => s.push('\t'),
-                        '\\' => s.push('\\'),
-                        '"' => s.push('"'),
-                        other => { s.push('\\'); s.push(other); }
-                    }
-                } else {
-                    s.push(chars[pos]);
-                }
-                pos += 1;
-                col += 1;
-            }
-            if pos < chars.len() {
-                pos += 1; // skip closing quote
-                col += 1;
-            } else {
-                return Err(format!("unterminated string at line {}, col {}", span.line, span.col));
-            }
-            tokens.push(Token { kind: TokenKind::StringLit(s), span });
-            continue;
-        }
-
-        // Number literal (integer or float)
-        if c.is_ascii_digit() || (c == '-' && pos + 1 < chars.len() && chars[pos + 1].is_ascii_digit()) {
+        // Number literal (integer or float).
+        // The `-` character is always lexed as `Minus`; negative values
+        // are handled by the parser via `UnaryNeg`.
+        if c.is_ascii_digit() {
             let start = pos;
-            if c == '-' { pos += 1; col += 1; }
 
             // Check for hex: 0x...
             if pos + 1 < chars.len() && chars[pos] == '0' && (chars[pos + 1] == 'x' || chars[pos + 1] == 'X') {
@@ -234,6 +222,22 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                 let val: f64 = num.parse()
                     .map_err(|e| format!("invalid float at line {}, col {}: {e}", span.line, span.col))?;
                 tokens.push(Token { kind: TokenKind::FloatLit(val), span });
+            } else if pos < chars.len() && (chars[pos] == 'e' || chars[pos] == 'E') {
+                // Scientific notation without a decimal point: 1e10, 2E-3
+                pos += 1;
+                col += 1;
+                if pos < chars.len() && (chars[pos] == '+' || chars[pos] == '-') {
+                    pos += 1;
+                    col += 1;
+                }
+                while pos < chars.len() && chars[pos].is_ascii_digit() {
+                    pos += 1;
+                    col += 1;
+                }
+                let num: String = chars[start..pos].iter().collect();
+                let val: f64 = num.parse()
+                    .map_err(|e| format!("invalid float at line {}, col {}: {e}", span.line, span.col))?;
+                tokens.push(Token { kind: TokenKind::FloatLit(val), span });
             } else {
                 // Skip trailing underscore separators in int literals
                 let num: String = chars[start..pos].iter().filter(|c| **c != '_').collect();
@@ -241,6 +245,85 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                     .map_err(|e| format!("invalid integer at line {}, col {}: {e}", span.line, span.col))?;
                 tokens.push(Token { kind: TokenKind::IntLit(val), span });
             }
+            continue;
+        }
+
+        // Single-character tokens
+        match c {
+            '(' => { tokens.push(Token { kind: TokenKind::LParen, span }); pos += 1; col += 1; continue; }
+            ')' => { tokens.push(Token { kind: TokenKind::RParen, span }); pos += 1; col += 1; continue; }
+            '[' => { tokens.push(Token { kind: TokenKind::LBracket, span }); pos += 1; col += 1; continue; }
+            ']' => { tokens.push(Token { kind: TokenKind::RBracket, span }); pos += 1; col += 1; continue; }
+            '{' => { tokens.push(Token { kind: TokenKind::LBrace, span }); pos += 1; col += 1; continue; }
+            '}' => { tokens.push(Token { kind: TokenKind::RBrace, span }); pos += 1; col += 1; continue; }
+            ',' => { tokens.push(Token { kind: TokenKind::Comma, span }); pos += 1; col += 1; continue; }
+            '=' => { tokens.push(Token { kind: TokenKind::Eq, span }); pos += 1; col += 1; continue; }
+            ':' => { tokens.push(Token { kind: TokenKind::Colon, span }); pos += 1; col += 1; continue; }
+            '+' => { tokens.push(Token { kind: TokenKind::Plus, span }); pos += 1; col += 1; continue; }
+            '-' => { tokens.push(Token { kind: TokenKind::Minus, span }); pos += 1; col += 1; continue; }
+            '*' => {
+                if pos + 1 < chars.len() && chars[pos + 1] == '*' {
+                    tokens.push(Token { kind: TokenKind::StarStar, span });
+                    pos += 2; col += 2;
+                } else {
+                    tokens.push(Token { kind: TokenKind::Star, span });
+                    pos += 1; col += 1;
+                }
+                continue;
+            }
+            '%' => { tokens.push(Token { kind: TokenKind::Percent, span }); pos += 1; col += 1; continue; }
+            '^' => { tokens.push(Token { kind: TokenKind::Caret, span }); pos += 1; col += 1; continue; }
+            '<' => {
+                if pos + 1 < chars.len() && chars[pos + 1] == '<' {
+                    tokens.push(Token { kind: TokenKind::ShiftLeft, span });
+                    pos += 2; col += 2;
+                    continue;
+                }
+                // bare `<` is not a valid token currently
+            }
+            '>' => {
+                if pos + 1 < chars.len() && chars[pos + 1] == '>' {
+                    tokens.push(Token { kind: TokenKind::ShiftRight, span });
+                    pos += 2; col += 2;
+                    continue;
+                }
+                // bare `>` is not a valid token currently
+            }
+            '&' => { tokens.push(Token { kind: TokenKind::Ampersand, span }); pos += 1; col += 1; continue; }
+            '|' => { tokens.push(Token { kind: TokenKind::Pipe, span }); pos += 1; col += 1; continue; }
+            '!' => { tokens.push(Token { kind: TokenKind::Bang, span }); pos += 1; col += 1; continue; }
+            _ => {}
+        }
+
+        // String literal
+        if c == '"' {
+            pos += 1;
+            col += 1;
+            let mut s = String::new();
+            while pos < chars.len() && chars[pos] != '"' {
+                if chars[pos] == '\\' && pos + 1 < chars.len() {
+                    pos += 1;
+                    col += 1;
+                    match chars[pos] {
+                        'n' => s.push('\n'),
+                        't' => s.push('\t'),
+                        '\\' => s.push('\\'),
+                        '"' => s.push('"'),
+                        other => { s.push('\\'); s.push(other); }
+                    }
+                } else {
+                    s.push(chars[pos]);
+                }
+                pos += 1;
+                col += 1;
+            }
+            if pos < chars.len() {
+                pos += 1; // skip closing quote
+                col += 1;
+            } else {
+                return Err(format!("unterminated string at line {}, col {}", span.line, span.col));
+            }
+            tokens.push(Token { kind: TokenKind::StringLit(s), span });
             continue;
         }
 
@@ -386,5 +469,116 @@ mod tests {
     fn lex_inputs_keyword() {
         let tokens = lex("inputs := (cycle)").unwrap();
         assert!(matches!(tokens[0].kind, TokenKind::Inputs));
+    }
+
+    #[test]
+    fn lex_arithmetic_operators() {
+        let tokens = lex("a + b * 2.0 - c / d % e ^ f").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Ident(ref s) if s == "a"));
+        assert!(matches!(tokens[1].kind, TokenKind::Plus));
+        assert!(matches!(tokens[2].kind, TokenKind::Ident(ref s) if s == "b"));
+        assert!(matches!(tokens[3].kind, TokenKind::Star));
+        assert!(matches!(tokens[4].kind, TokenKind::FloatLit(v) if v == 2.0));
+        assert!(matches!(tokens[5].kind, TokenKind::Minus));
+        assert!(matches!(tokens[6].kind, TokenKind::Ident(ref s) if s == "c"));
+        assert!(matches!(tokens[7].kind, TokenKind::Slash));
+        assert!(matches!(tokens[8].kind, TokenKind::Ident(ref s) if s == "d"));
+        assert!(matches!(tokens[9].kind, TokenKind::Percent));
+        assert!(matches!(tokens[10].kind, TokenKind::Ident(ref s) if s == "e"));
+        assert!(matches!(tokens[11].kind, TokenKind::Caret));
+        assert!(matches!(tokens[12].kind, TokenKind::Ident(ref s) if s == "f"));
+    }
+
+    #[test]
+    fn lex_minus_binary_vs_negative_literal() {
+        // After an identifier, `-` is a binary Minus, not a negative literal.
+        let tokens = lex("x - 3").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Ident(ref s) if s == "x"));
+        assert!(matches!(tokens[1].kind, TokenKind::Minus));
+        assert!(matches!(tokens[2].kind, TokenKind::IntLit(3)));
+    }
+
+    #[test]
+    fn lex_negative_via_minus_token() {
+        // `-3.0` is lexed as Minus + FloatLit(3.0); the parser
+        // handles negation via UnaryNeg.
+        let tokens = lex("-3.0").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Minus));
+        assert!(matches!(tokens[1].kind, TokenKind::FloatLit(v) if v == 3.0));
+
+        // `-3` is Minus + IntLit(3).
+        let tokens = lex("-3").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Minus));
+        assert!(matches!(tokens[1].kind, TokenKind::IntLit(3)));
+    }
+
+    #[test]
+    fn lex_scientific_notation() {
+        let tokens = lex("1e10").unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(v) if (*v - 1e10).abs() < 1e5));
+    }
+
+    #[test]
+    fn lex_scientific_notation_negative_exponent() {
+        let tokens = lex("1e-10").unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(v) if *v > 0.0 && *v < 1e-5));
+    }
+
+    #[test]
+    fn lex_scientific_notation_with_decimal() {
+        let tokens = lex("2.5e3").unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(v) if (*v - 2500.0).abs() < 0.1));
+    }
+
+    #[test]
+    fn lex_scientific_notation_positive_exponent() {
+        let tokens = lex("3E+5").unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::FloatLit(v) if (*v - 3e5).abs() < 1.0));
+    }
+
+    #[test]
+    fn lex_sci_uppercase_e() {
+        let t = lex("2.5E3").unwrap();
+        assert!(matches!(&t[0].kind, TokenKind::FloatLit(v) if (*v - 2500.0).abs() < 0.1));
+    }
+
+    #[test]
+    fn lex_sci_explicit_positive_exp() {
+        let t = lex("1e+10").unwrap();
+        assert!(matches!(&t[0].kind, TokenKind::FloatLit(v) if (*v - 1e10).abs() < 1e5));
+    }
+
+    #[test]
+    fn lex_sci_decimal_negative_exp() {
+        let t = lex("3.14e-2").unwrap();
+        assert!(matches!(&t[0].kind, TokenKind::FloatLit(v) if (*v - 0.0314).abs() < 0.001));
+    }
+
+    #[test]
+    fn lex_sci_zero_exponent() {
+        let t = lex("0.5e0").unwrap();
+        assert!(matches!(&t[0].kind, TokenKind::FloatLit(v) if (*v - 0.5).abs() < 0.001));
+    }
+
+    #[test]
+    fn lex_sci_very_small() {
+        let t = lex("1e-300").unwrap();
+        assert!(matches!(&t[0].kind, TokenKind::FloatLit(v) if *v > 0.0 && *v < 1e-299));
+    }
+
+    #[test]
+    fn lex_sci_uppercase_no_decimal() {
+        let t = lex("1E10").unwrap();
+        assert!(matches!(&t[0].kind, TokenKind::FloatLit(v) if (*v - 1e10).abs() < 1e5));
+    }
+
+    #[test]
+    fn lex_slash_vs_comment() {
+        // Single `/` is Slash, `//` is a comment.
+        let tokens = lex("a / b // comment").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Ident(ref s) if s == "a"));
+        assert!(matches!(tokens[1].kind, TokenKind::Slash));
+        assert!(matches!(tokens[2].kind, TokenKind::Ident(ref s) if s == "b"));
+        assert!(matches!(tokens[3].kind, TokenKind::Eof));
     }
 }

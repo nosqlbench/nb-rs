@@ -1230,3 +1230,594 @@ fn pow_known_values() {
         assert!(v >= 0.0, "pow of positive base should be non-negative: {v} at cycle={cycle}");
     }
 }
+
+// ===========================================================================
+// f64 binary arithmetic (two-wire nodes)
+// ===========================================================================
+
+#[test]
+fn f64_add_basic() {
+    // Use float literals for constants; to_f64(cycle) for the dynamic input
+    let mut k = gk("a := to_f64(cycle)\nb := 42.0\nout := f64_add(a, b)");
+    assert_eq!(eval_f64(&mut k, 10), 52.0);
+}
+
+#[test]
+fn f64_sub_basic() {
+    let mut k = gk("a := to_f64(cycle)\nb := 3.0\nout := f64_sub(a, b)");
+    assert_eq!(eval_f64(&mut k, 10), 7.0);
+}
+
+#[test]
+fn f64_mul_basic() {
+    let mut k = gk("a := to_f64(cycle)\nb := 3.0\nout := f64_mul(a, b)");
+    assert_eq!(eval_f64(&mut k, 10), 30.0);
+}
+
+#[test]
+fn f64_div_basic() {
+    let mut k = gk("a := to_f64(cycle)\nb := 4.0\nout := f64_div(a, b)");
+    assert_eq!(eval_f64(&mut k, 20), 5.0);
+}
+
+#[test]
+fn f64_div_by_zero() {
+    // f64_div returns 0.0 when divisor is 0.0
+    let mut k = gk("a := to_f64(cycle)\nb := 0.0\nout := f64_div(a, b)");
+    assert_eq!(eval_f64(&mut k, 10), 0.0);
+}
+
+#[test]
+fn f64_mod_basic() {
+    let mut k = gk("a := to_f64(cycle)\nb := 3.0\nout := f64_mod(a, b)");
+    let v = eval_f64(&mut k, 10);
+    assert!((v - 1.0).abs() < 0.001, "10 % 3 should be 1.0, got {v}");
+}
+
+#[test]
+fn to_f64_conversion() {
+    let mut k = gk("out := to_f64(cycle)");
+    assert_eq!(eval_f64(&mut k, 42), 42.0);
+}
+
+#[test]
+fn to_f64_large_value() {
+    let mut k = gk("out := to_f64(cycle)");
+    // Large u64 values lose precision in f64 but should still be a large positive number
+    let v = eval_f64(&mut k, u64::MAX);
+    assert!(v > 1e18, "to_f64(u64::MAX) should be a large number, got {v}");
+}
+
+// ===========================================================================
+// u64 two-wire arithmetic
+// ===========================================================================
+
+#[test]
+fn u64_add_basic() {
+    let mut k = gk("b := 100\nout := u64_add(cycle, b)");
+    assert_eq!(eval_u64(&mut k, 42), 142);
+}
+
+#[test]
+fn u64_add_wrapping() {
+    let mut k = gk("b := 1\nout := u64_add(cycle, b)");
+    assert_eq!(eval_u64(&mut k, u64::MAX), 0);
+}
+
+#[test]
+fn u64_sub_basic() {
+    let mut k = gk("b := 10\nout := u64_sub(cycle, b)");
+    assert_eq!(eval_u64(&mut k, 42), 32);
+}
+
+#[test]
+fn u64_sub_underflow_wraps() {
+    let mut k = gk("b := 1\nout := u64_sub(cycle, b)");
+    assert_eq!(eval_u64(&mut k, 0), u64::MAX);
+}
+
+#[test]
+fn u64_mul_basic() {
+    let mut k = gk("b := 7\nout := u64_mul(cycle, b)");
+    assert_eq!(eval_u64(&mut k, 6), 42);
+}
+
+#[test]
+fn u64_mul_overflow_wraps() {
+    let mut k = gk("b := 2\nout := u64_mul(cycle, b)");
+    assert_eq!(eval_u64(&mut k, u64::MAX), u64::MAX.wrapping_mul(2));
+}
+
+#[test]
+fn u64_div_basic() {
+    let mut k = gk("b := 7\nout := u64_div(cycle, b)");
+    assert_eq!(eval_u64(&mut k, 42), 6);
+}
+
+#[test]
+fn u64_div_by_zero() {
+    let mut k = gk("b := 0\nout := u64_div(cycle, b)");
+    assert_eq!(eval_u64(&mut k, 42), 0);
+}
+
+// ===========================================================================
+// Bitwise operations (two-wire DSL)
+// ===========================================================================
+
+#[test]
+fn u64_and_dsl_basic() {
+    let mut k = gk("mask := 0xFF\nout := u64_and(cycle, mask)");
+    assert_eq!(eval_u64(&mut k, 0x1234), 0x34);
+}
+
+#[test]
+fn u64_or_dsl_basic() {
+    let mut k = gk("bits := 0xF0\nout := u64_or(cycle, bits)");
+    assert_eq!(eval_u64(&mut k, 0x0A), 0xFA);
+}
+
+#[test]
+fn u64_xor_dsl_basic() {
+    let mut k = gk("mask := 0xFF\nout := u64_xor(cycle, mask)");
+    assert_eq!(eval_u64(&mut k, 0xAA), 0x55);
+}
+
+#[test]
+fn u64_xor_self_is_zero() {
+    let mut k = gk("out := u64_xor(cycle, cycle)");
+    assert_eq!(eval_u64(&mut k, 12345), 0);
+}
+
+#[test]
+fn u64_shl_dsl_basic() {
+    let mut k = gk("n := 8\nout := u64_shl(cycle, n)");
+    assert_eq!(eval_u64(&mut k, 1), 256);
+}
+
+#[test]
+fn u64_shl_overflow() {
+    // wrapping_shl: shift by 64 is equivalent to shift by 0 (modular shift amount)
+    let mut k = gk("n := 64\nout := u64_shl(cycle, n)");
+    assert_eq!(eval_u64(&mut k, 1), 1);
+}
+
+#[test]
+fn u64_shr_dsl_basic() {
+    let mut k = gk("n := 4\nout := u64_shr(cycle, n)");
+    assert_eq!(eval_u64(&mut k, 0xFF), 0x0F);
+}
+
+#[test]
+fn u64_not_dsl_basic() {
+    let mut k = gk("out := u64_not(cycle)");
+    assert_eq!(eval_u64(&mut k, 0), u64::MAX);
+}
+
+#[test]
+fn u64_not_involution() {
+    // NOT(NOT(x)) == x
+    let mut k = gk("inner := u64_not(cycle)\nout := u64_not(inner)");
+    assert_eq!(eval_u64(&mut k, 12345), 12345);
+}
+
+// ===========================================================================
+// Infix operator tests (through the DSL Pratt parser and desugar)
+// ===========================================================================
+
+#[test]
+fn infix_multiply() {
+    // Inline to_f64 call so the infix operand type is resolved as f64
+    let mut k = gk("out := to_f64(cycle) * 3.0");
+    assert_eq!(eval_f64(&mut k, 10), 30.0);
+}
+
+#[test]
+fn infix_add_sub() {
+    // Chain f64 operations inline to avoid named f64 binding in infix context
+    let mut k = gk("out := to_f64(cycle) + 1.0 - 0.5");
+    assert_eq!(eval_f64(&mut k, 10), 10.5);
+}
+
+#[test]
+fn infix_precedence() {
+    // * binds tighter than +: to_f64(10) + (2.0 * 3.0) = 16.0
+    let mut k = gk("out := to_f64(cycle) + 2.0 * 3.0");
+    assert_eq!(eval_f64(&mut k, 10), 16.0);
+}
+
+#[test]
+fn infix_parentheses() {
+    // Explicit grouping overrides default precedence: (to_f64(10)+2.0)*3.0 = 36.0
+    let mut k = gk("out := (to_f64(cycle) + 2.0) * 3.0");
+    assert_eq!(eval_f64(&mut k, 10), 36.0);
+}
+
+#[test]
+fn infix_power() {
+    // ** operator desugars to pow(base, exponent)
+    let mut k = gk("out := to_f64(cycle) ** 2.0");
+    assert_eq!(eval_f64(&mut k, 3), 9.0);
+}
+
+#[test]
+fn infix_bitwise_and() {
+    let mut k = gk("out := cycle & 0xFF");
+    assert_eq!(eval_u64(&mut k, 0x1234), 0x34);
+}
+
+#[test]
+fn infix_bitwise_or() {
+    let mut k = gk("out := cycle | 0xF0");
+    assert_eq!(eval_u64(&mut k, 0x0A), 0xFA);
+}
+
+#[test]
+fn infix_bitwise_xor() {
+    let mut k = gk("out := cycle ^ 0xFF");
+    assert_eq!(eval_u64(&mut k, 0xAA), 0x55);
+}
+
+#[test]
+fn infix_shift_left() {
+    let mut k = gk("out := cycle << 8");
+    assert_eq!(eval_u64(&mut k, 1), 256);
+}
+
+#[test]
+fn infix_shift_right() {
+    let mut k = gk("out := cycle >> 4");
+    assert_eq!(eval_u64(&mut k, 0xFF), 0x0F);
+}
+
+#[test]
+fn infix_bitwise_not() {
+    let mut k = gk("out := !cycle");
+    assert_eq!(eval_u64(&mut k, 0), u64::MAX);
+}
+
+#[test]
+fn infix_unary_neg() {
+    // -expr desugars to f64_sub(0.0, expr); inline to_f64 so types match
+    let mut k = gk("out := -to_f64(cycle)");
+    assert_eq!(eval_f64(&mut k, 5), -5.0);
+}
+
+#[test]
+fn infix_complex_bitwise_expression() {
+    // (cycle & 0xFF) ^ (cycle >> 8)
+    let mut k = gk("out := (cycle & 0xFF) ^ (cycle >> 8)");
+    let v = eval_u64(&mut k, 0x1234);
+    assert_eq!(v, 0x34 ^ 0x12);
+}
+
+#[test]
+fn infix_bitwise_precedence() {
+    // & binds tighter than |: (0xFF & 0x0F) | 0xF0 = 0x0F | 0xF0 = 0xFF
+    let mut k = gk("a := 0xFF\nb := 0x0F\nc := 0xF0\nout := a & b | c");
+    assert_eq!(eval_u64(&mut k, 0), 0x0F | 0xF0);
+}
+
+// ===========================================================================
+// Math edge cases
+// ===========================================================================
+
+#[test]
+fn sin_of_zero() {
+    let mut k = gk("out := sin(to_f64(cycle))");
+    assert_eq!(eval_f64(&mut k, 0), 0.0);
+}
+
+#[test]
+fn sin_of_pi_half() {
+    let mut k = gk("pi_half := 1.5707963267948966\nout := sin(pi_half)");
+    let v = eval_f64(&mut k, 0);
+    assert!((v - 1.0).abs() < 1e-10, "sin(pi/2) should be ~1.0, got {v}");
+}
+
+#[test]
+fn f64_mul_by_zero() {
+    // zero is a float literal (ConstF64), a is to_f64(cycle)
+    let mut k = gk("a := to_f64(cycle)\nzero := 0.0\nout := f64_mul(a, zero)");
+    assert_eq!(eval_f64(&mut k, 42), 0.0);
+}
+
+
+#[test]
+fn f64_add_negative() {
+    // -3.0 desugars through UnaryNeg to f64_sub(0.0, 3.0) producing a const -3.0 wire
+    let mut k = gk("a := 5.0\nb := -3.0\nout := f64_add(a, b)");
+    assert_eq!(eval_f64(&mut k, 0), 2.0);
+}
+
+#[test]
+fn pow_square_root() {
+    let mut k = gk("a := 9.0\nhalf := 0.5\nout := pow(a, half)");
+    let v = eval_f64(&mut k, 0);
+    assert!((v - 3.0).abs() < 1e-10, "pow(9, 0.5) should be ~3.0, got {v}");
+}
+
+#[test]
+fn pow_zero_exponent() {
+    // x^0 = 1 for any nonzero x
+    let mut k = gk("a := to_f64(cycle)\nzero := 0.0\nout := pow(a, zero)");
+    assert_eq!(eval_f64(&mut k, 42), 1.0);
+}
+
+#[test]
+fn f64_div_negative() {
+    let mut k = gk("a := -10.0\nb := 2.0\nout := f64_div(a, b)");
+    assert_eq!(eval_f64(&mut k, 0), -5.0);
+}
+
+// ===========================================================================
+// Checked arithmetic nodes (opt-in overflow detection)
+// ===========================================================================
+
+#[test]
+fn checked_add_normal() {
+    let mut k = gk("b := 100\nout := checked_add(cycle, b)");
+    assert_eq!(eval_u64(&mut k, 42), 142);
+}
+
+#[test]
+fn checked_add_overflow_returns_zero() {
+    let mut k = gk("b := 1\nout := checked_add(cycle, b)");
+    assert_eq!(eval_u64(&mut k, u64::MAX), 0);
+}
+
+#[test]
+fn checked_sub_normal() {
+    let mut k = gk("b := 10\nout := checked_sub(cycle, b)");
+    assert_eq!(eval_u64(&mut k, 42), 32);
+}
+
+#[test]
+fn checked_sub_underflow_returns_zero() {
+    let mut k = gk("b := 1\nout := checked_sub(cycle, b)");
+    assert_eq!(eval_u64(&mut k, 0), 0);
+}
+
+#[test]
+fn checked_mul_overflow_returns_zero() {
+    let mut k = gk("b := 2\nout := checked_mul(cycle, b)");
+    assert_eq!(eval_u64(&mut k, u64::MAX), 0);
+}
+
+#[test]
+fn checked_mul_normal() {
+    let mut k = gk("b := 7\nout := checked_mul(cycle, b)");
+    assert_eq!(eval_u64(&mut k, 6), 42);
+}
+
+// ===========================================================================
+// Floating-point precision and edge cases
+// ===========================================================================
+
+#[test]
+fn fp_associativity_not_guaranteed() {
+    // (a + b) + c != a + (b + c) in floating point
+    // 1e18 + 1.0 - 1e18 should NOT equal 1.0 due to precision loss
+    let mut k = gk("big := 1000000000000000000.0\none := 1.0\n\
+        sum1 := f64_add(big, one)\nout := f64_sub(sum1, big)");
+    let v = eval_f64(&mut k, 0);
+    // In f64, 1e18 + 1.0 == 1e18 (1.0 is below the ULP)
+    assert_eq!(v, 0.0, "1e18 + 1 - 1e18 should be 0 due to precision loss");
+}
+
+#[test]
+fn fp_catastrophic_cancellation() {
+    // Subtracting nearly equal numbers loses precision
+    let mut k = gk("a := 1.0000000000000002\nb := 1.0000000000000000\nout := f64_sub(a, b)");
+    let v = eval_f64(&mut k, 0);
+    // The difference is the smallest representable increment above 1.0
+    assert!(v > 0.0 && v < 1e-15, "should be tiny positive: {v}");
+}
+
+#[test]
+fn fp_subnormal_multiplication() {
+    // Multiplying very small numbers near subnormal territory
+    // Use pow to construct a tiny value since 1e-300 isn't parseable (negative exponent)
+    let mut k = gk("base := 10.0\nexp := -300.0\ntiny := pow(base, exp)\ntwo := 2.0\nout := f64_mul(tiny, two)");
+    let v = eval_f64(&mut k, 0);
+    assert!(v > 0.0, "tiny * 2 should be positive: {v}");
+}
+
+#[test]
+fn fp_infinity_from_overflow() {
+    // f64::MAX * 2 = infinity
+    let mut k = gk("big := 1.7976931348623157e308\ntwo := 2.0\nout := f64_mul(big, two)");
+    let v = eval_f64(&mut k, 0);
+    assert!(v.is_infinite(), "f64::MAX * 2 should be inf, got {v}");
+}
+
+#[test]
+fn fp_negative_infinity() {
+    let mut k = gk("big := -1.7976931348623157e308\ntwo := 2.0\nout := f64_mul(big, two)");
+    let v = eval_f64(&mut k, 0);
+    assert!(v.is_infinite() && v < 0.0, "should be -inf, got {v}");
+}
+
+#[test]
+fn fp_nan_from_zero_div_zero() {
+    // 0.0 / 0.0 = NaN, but our f64_div returns 0.0 on div-by-zero
+    let mut k = gk("a := 0.0\nb := 0.0\nout := f64_div(a, b)");
+    let v = eval_f64(&mut k, 0);
+    assert_eq!(v, 0.0, "f64_div(0, 0) should return 0 (guarded)");
+}
+
+#[test]
+fn fp_nan_propagation_in_add() {
+    // NaN + anything = NaN — but we can't easily produce NaN
+    // via the DSL. Test via inf - inf instead:
+    let mut k = gk("big := 1.7976931348623157e308\ntwo := 2.0\n\
+        inf := f64_mul(big, two)\nout := f64_sub(inf, inf)");
+    let v = eval_f64(&mut k, 0);
+    assert!(v.is_nan(), "inf - inf should be NaN, got {v}");
+}
+
+#[test]
+fn fp_negative_zero() {
+    // -0.0 == 0.0 in IEEE 754
+    let mut k = gk("z := 0.0\nzero := 0.0\nnz := f64_sub(zero, z)\nout := f64_add(nz, zero)");
+    let v = eval_f64(&mut k, 0);
+    assert_eq!(v, 0.0, "negative zero + 0 should equal zero");
+}
+
+#[test]
+fn fp_roundtrip_u64_to_f64_small() {
+    // Small u64 values round-trip exactly
+    let mut k = gk("f := to_f64(cycle)\nout := f64_to_u64(f)");
+    assert_eq!(eval_u64(&mut k, 0), 0);
+    assert_eq!(eval_u64(&mut k, 1), 1);
+    assert_eq!(eval_u64(&mut k, 1000000), 1000000);
+}
+
+#[test]
+fn fp_roundtrip_u64_to_f64_loses_precision_above_2_53() {
+    // u64 values above 2^53 can't all be represented in f64
+    let mut k = gk("f := to_f64(cycle)\nout := f64_to_u64(f)");
+    let big = (1u64 << 53) + 1; // 2^53 + 1: not exactly representable
+    let result = eval_u64(&mut k, big);
+    // The round-trip may lose the +1
+    assert!(result == big || result == big - 1,
+        "2^53+1 may round-trip imprecisely: in={big}, out={result}");
+}
+
+#[test]
+fn fp_unit_interval_bounds() {
+    // unit_interval should be in [0.0, 1.0) for all u64 inputs
+    let mut k = gk("out := unit_interval(cycle)");
+    for &c in &[0u64, 1, 100, u64::MAX / 2, u64::MAX - 1, u64::MAX] {
+        let v = eval_f64(&mut k, c);
+        assert!(v >= 0.0 && v <= 1.0, "unit_interval({c}) = {v}, expected [0, 1]");
+    }
+}
+
+#[test]
+fn fp_scale_range_bounds() {
+    // scale_range should map [0, u64::MAX] to [min, max]
+    let mut k = gk("out := scale_range(cycle, -10.0, 10.0)");
+    let v0 = eval_f64(&mut k, 0);
+    let vmax = eval_f64(&mut k, u64::MAX);
+    assert!((v0 - (-10.0)).abs() < 0.01, "scale_range(0) should be near -10: {v0}");
+    assert!((vmax - 10.0).abs() < 0.01, "scale_range(MAX) should be near 10: {vmax}");
+}
+
+#[test]
+fn fp_sin_cos_pythagorean() {
+    // sin²(x) + cos²(x) = 1 for any x
+    let mut k = gk("x := to_f64(cycle)\nfactor := 0.1\nscaled := f64_mul(x, factor)\n\
+        s := sin(scaled)\nc := cos(scaled)\n\
+        two := 2.0\ns2 := pow(s, two)\nc2 := pow(c, two)\nout := f64_add(s2, c2)");
+    for c in 0..20 {
+        let v = eval_f64(&mut k, c);
+        assert!((v - 1.0).abs() < 1e-10,
+            "sin²+cos² at cycle {c} should be 1.0, got {v}");
+    }
+}
+
+#[test]
+fn fp_exp_ln_roundtrip() {
+    // exp(ln(x)) = x for x > 0
+    let mut k = gk("x := to_f64(cycle) + 1.0\nout := exp(ln(x))");
+    for c in 1..10 {
+        let v = eval_f64(&mut k, c);
+        let expected = c as f64 + 1.0;
+        assert!((v - expected).abs() < 1e-10,
+            "exp(ln({expected})) = {v}");
+    }
+}
+
+#[test]
+fn fp_pow_integer_exact() {
+    // Integer powers should be exact for small values
+    let mut k = gk("x := to_f64(cycle)\nexp := 3.0\nout := pow(x, exp)");
+    assert_eq!(eval_f64(&mut k, 2), 8.0);
+    assert_eq!(eval_f64(&mut k, 3), 27.0);
+    assert_eq!(eval_f64(&mut k, 10), 1000.0);
+}
+
+#[test]
+fn fp_mod_preserves_sign() {
+    // f64 modulo: result has the sign of the dividend
+    let mut k = gk("a := -7.0\nb := 3.0\nout := f64_mod(a, b)");
+    let v = eval_f64(&mut k, 0);
+    assert!((v - (-1.0)).abs() < 1e-10, "-7 mod 3 should be -1, got {v}");
+}
+
+#[test]
+fn fp_lerp_boundary() {
+    // lerp(x, a, b) = a + (b-a)*x. At x=0 → a, at x=1 → b.
+    // unit_interval(0) = 0.0
+    let mut k = gk("x := unit_interval(cycle)\nout := lerp(x, 10.0, 20.0)");
+    let v = eval_f64(&mut k, 0);
+    assert!((v - 10.0).abs() < 0.01, "lerp(0, 10, 20) should be ~10, got {v}");
+    let v = eval_f64(&mut k, u64::MAX);
+    assert!((v - 20.0).abs() < 0.01, "lerp(1, 10, 20) should be ~20, got {v}");
+}
+
+#[test]
+fn fp_lerp_midpoint() {
+    // unit_interval(u64::MAX/2) ≈ 0.5
+    let mut k = gk("x := unit_interval(cycle)\nout := lerp(x, 0.0, 100.0)");
+    let v = eval_f64(&mut k, u64::MAX / 2);
+    assert!((v - 50.0).abs() < 1.0, "lerp(0.5, 0, 100) should be ~50, got {v}");
+}
+
+
+// ===========================================================================
+// Fourier module: stdlib waveform functions
+// ===========================================================================
+
+#[test]
+fn sine_wave_module() {
+    let src = "coordinates := (cycle)\nout := sine_wave(input: cycle, period: 20)";
+    let mut k = compile_gk(src).unwrap();
+    // At cycle 0, sin(0) = 0
+    k.set_inputs(&[0]);
+    let v0 = k.pull("out").as_f64();
+    assert!((v0).abs() < 0.01, "sine_wave(0, 20) should be ~0, got {v0}");
+    // At cycle 5 (quarter period), sin(π/2) = 1
+    k.set_inputs(&[5]);
+    let v5 = k.pull("out").as_f64();
+    assert!((v5 - 1.0).abs() < 0.1, "sine_wave(5, 20) should be ~1, got {v5}");
+}
+
+#[test]
+fn square_wave_module() {
+    let src = "coordinates := (cycle)\nout := square_wave(input: cycle, period: 100)";
+    let mut k = compile_gk(src).unwrap();
+    // First quarter: positive
+    k.set_inputs(&[10]);
+    let v = k.pull("out").as_f64();
+    assert!(v > 0.0, "square_wave early should be positive, got {v}");
+    // Third quarter: negative
+    k.set_inputs(&[60]);
+    let v = k.pull("out").as_f64();
+    assert!(v < 0.0, "square_wave late should be negative, got {v}");
+}
+
+#[test]
+fn sine_unit_module() {
+    let src = "coordinates := (cycle)\nout := sine_unit(input: cycle, period: 20)";
+    let mut k = compile_gk(src).unwrap();
+    // sine_unit maps to [0, 1]
+    for c in 0..20u64 {
+        k.set_inputs(&[c]);
+        let v = k.pull("out").as_f64();
+        assert!(v >= -0.01 && v <= 1.01, "sine_unit({c}) = {v}, expected [0,1]");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// eval_const_expr integration tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn const_expr_via_cli_cycles() {
+    // Tests the eval_const_expr API used for CLI config resolution
+    use nb_variates::dsl::compile::eval_const_expr;
+    let v = eval_const_expr("42 + 1").unwrap();
+    // 42 + 1: both IntLit → u64_add → u64(43)
+    assert_eq!(v.as_u64(), 43, "expected u64(43), got {:?}", v);
+}

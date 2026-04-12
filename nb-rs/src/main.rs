@@ -12,6 +12,7 @@ mod bench;
 mod cli;
 mod daemon;
 mod describe;
+mod plot;
 mod run;
 mod web_push;
 
@@ -37,6 +38,9 @@ fn main() {
         }
         "bench" => {
             bench::bench_command(&args[1..]);
+        }
+        "plot" => {
+            plot::plot_command(&args[1..]);
         }
         "completions" => {
             completions_command(&args);

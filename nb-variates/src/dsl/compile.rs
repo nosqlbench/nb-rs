@@ -35,6 +35,7 @@ pub(super) static STDLIB_MODULES: &[(&str, &str)] = &[
     ("latency.gk", include_str!("../../stdlib/latency.gk")),
     ("timeseries.gk", include_str!("../../stdlib/timeseries.gk")),
     ("waves.gk", include_str!("../../stdlib/waves.gk")),
+    ("fourier.gk", include_str!("../../stdlib/fourier.gk")),
     ("modeling.gk", include_str!("../../stdlib/modeling.gk")),
 ];
 
@@ -182,6 +183,33 @@ pub fn compile_gk_checked(source: &str) -> (Result<GkKernel, ()>, DiagnosticRepo
     }
 }
 
+/// Evaluate a GK expression as a compile-time constant.
+///
+/// The expression must have no input dependencies. It is compiled
+/// as a zero-input program and constant-folded. Returns the folded
+/// value, or an error if the expression depends on runtime inputs
+/// or fails to compile.
+///
+/// # Examples
+///
+/// ```
+/// use nb_variates::dsl::compile::eval_const_expr;
+/// let v = eval_const_expr("4 * 4").unwrap();
+/// assert_eq!(v.as_u64(), 16);  // both int literals → u64_mul
+/// let v = eval_const_expr("4.0 * 4.0").unwrap();
+/// assert_eq!(v.as_f64(), 16.0);  // both float literals → f64_mul
+/// ```
+pub fn eval_const_expr(source: &str) -> Result<crate::node::Value, String> {
+    let wrapped = format!("inputs := ()\nout := {source}");
+    let kernel = compile_gk(&wrapped)?;
+    kernel.get_constant("out")
+        .cloned()
+        .ok_or_else(|| format!(
+            "not a const expression: '{}' depends on runtime inputs",
+            source
+        ))
+}
+
 /// Compile a parsed AST into a runtime kernel.
 pub fn compile_ast(file: &GkFile) -> Result<GkKernel, String> {
     compile_ast_with_path(file, None)
@@ -249,14 +277,16 @@ impl Compiler {
 
     pub(super) fn compile(&mut self, file: &GkFile) -> Result<GkKernel, String> {
         // First pass: find explicit coordinates
+        let mut has_explicit_coords = false;
         for stmt in &file.statements {
             if let Statement::Coordinates(names, _) = stmt {
                 self.input_names = names.clone();
+                has_explicit_coords = true;
             }
         }
 
         // Input declaration check: warn (or error in strict) when missing
-        if self.input_names.is_empty() {
+        if !has_explicit_coords {
             if self.strict {
                 return Err(
                     "strict mode: no 'inputs' declaration — add 'inputs := (cycle)' \
@@ -269,7 +299,7 @@ impl Compiler {
         }
 
         // If no explicit coordinates, infer from unbound references
-        if self.input_names.is_empty() {
+        if !has_explicit_coords {
             let defined: HashSet<String> = file.statements.iter().flat_map(|stmt| {
                 match stmt {
                     Statement::InitBinding(b) => vec![b.name.clone()],
@@ -297,7 +327,9 @@ impl Compiler {
             self.input_names = inferred;
         }
 
-        if self.input_names.is_empty() {
+        // Zero inputs is only valid when explicitly declared as `inputs := ()`.
+        // Without an explicit declaration and nothing inferred, that's an error.
+        if self.input_names.is_empty() && !has_explicit_coords {
             return Err("no coordinate inputs found — reference at least one unbound name (e.g., 'cycle')".into());
         }
 
@@ -907,6 +939,8 @@ mod tests {
             // PCG with 2 wires
             ("pcg_stream", "coordinates := (cycle)\nout := pcg_stream(cycle, cycle, 42)"),
             ("format_u64", "coordinates := (cycle)\nout := format_u64(cycle, 16)"),
+            // fft_analyze creates files — skip in this compile-only test
+            ("fft_analyze", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := fft_analyze(f, \"test_fft_compile.jsonl\", 8)"),
         ].into_iter().collect();
 
         for sig in &reg {
@@ -940,6 +974,11 @@ mod tests {
                 "neighbor_indices_at", "neighbor_distances_at",
                 "filtered_neighbor_indices_at", "filtered_neighbor_distances_at",
                 "dataset_distance_function", "vector_dim", "vector_count",
+                "query_count", "neighbor_count",
+                "metadata_indices_at", "metadata_indices_len_at", "metadata_indices_count",
+                "dataset_facets",
+                // file_line_at requires a real file path — cannot test with a dummy name
+                "file_line_at",
             ];
             if vectordata_fns.contains(&sig.name) { continue; }
 
@@ -1031,5 +1070,120 @@ mod tests {
         let required = vec!["id".to_string()];
         let result = compile_gk_with_outputs(src, None, &required, true);
         assert!(result.is_ok(), "clean program should pass strict: {:?}", result.err());
+    }
+
+    #[test]
+    fn compile_bitwise_and() {
+        let src = r#"
+            coordinates := (cycle)
+            out := cycle & 0xFF
+        "#;
+        let mut kernel = compile_gk(src).unwrap();
+        kernel.set_inputs(&[0x1234]);
+        assert_eq!(kernel.pull("out").as_u64(), 0x34);
+    }
+
+    #[test]
+    fn compile_shift_left() {
+        let src = r#"
+            coordinates := (cycle)
+            out := cycle << 8
+        "#;
+        let mut kernel = compile_gk(src).unwrap();
+        kernel.set_inputs(&[1]);
+        assert_eq!(kernel.pull("out").as_u64(), 256);
+    }
+
+    #[test]
+    fn compile_bitwise_not() {
+        let src = r#"
+            coordinates := (cycle)
+            out := !cycle
+        "#;
+        let mut kernel = compile_gk(src).unwrap();
+        kernel.set_inputs(&[0]);
+        assert_eq!(kernel.pull("out").as_u64(), u64::MAX);
+    }
+
+    #[test]
+    fn compile_bitwise_xor() {
+        let src = r#"
+            coordinates := (cycle)
+            out := cycle ^ 0xFF
+        "#;
+        let mut kernel = compile_gk(src).unwrap();
+        kernel.set_inputs(&[0xF0]);
+        assert_eq!(kernel.pull("out").as_u64(), 0x0F);
+    }
+
+    #[test]
+    fn compile_bitwise_or() {
+        let src = r#"
+            coordinates := (cycle)
+            out := cycle | 0x0F
+        "#;
+        let mut kernel = compile_gk(src).unwrap();
+        kernel.set_inputs(&[0xF0]);
+        assert_eq!(kernel.pull("out").as_u64(), 0xFF);
+    }
+
+    #[test]
+    fn compile_shift_right() {
+        let src = r#"
+            coordinates := (cycle)
+            out := cycle >> 4
+        "#;
+        let mut kernel = compile_gk(src).unwrap();
+        kernel.set_inputs(&[0xFF]);
+        assert_eq!(kernel.pull("out").as_u64(), 0x0F);
+    }
+
+    #[test]
+    fn compile_power_operator() {
+        let src = r#"
+            coordinates := (cycle)
+            out := to_f64(cycle) ** 2.0
+        "#;
+        let mut kernel = compile_gk(src).unwrap();
+        kernel.set_inputs(&[3]);
+        // pow(3.0, 2.0) = 9.0
+        let result = kernel.pull("out").as_f64();
+        assert!((result - 9.0).abs() < 0.001);
+    }
+
+    // --- eval_const_expr tests ---
+
+    #[test]
+    fn eval_const_expr_arithmetic() {
+        // 4 * 4: both operands are IntLit → u64_mul → returns u64(16)
+        let v = eval_const_expr("4 * 4").unwrap();
+        assert_eq!(v.as_u64(), 16, "expected u64(16), got {:?}", v);
+
+        // 4.0 * 4.0: both operands are FloatLit → f64_mul → returns f64(16.0)
+        let v = eval_const_expr("4.0 * 4.0").unwrap();
+        assert!((v.as_f64() - 16.0).abs() < 0.001, "expected 16.0, got {}", v.as_f64());
+
+        // Mixed: 4 * 4.0 → auto-widen LHS to f64, f64_mul → returns f64(16.0)
+        let v = eval_const_expr("4 * 4.0").unwrap();
+        assert!((v.as_f64() - 16.0).abs() < 0.001, "expected 16.0, got {}", v.as_f64());
+    }
+
+    #[test]
+    fn eval_const_expr_function() {
+        let v = eval_const_expr("hash(42)").unwrap();
+        assert!(v.as_u64() != 0, "hash(42) should be non-zero");
+    }
+
+    #[test]
+    fn eval_const_expr_fails_on_inputs() {
+        // 'cycle' is a runtime input — should fail as const expr
+        let r = eval_const_expr("hash(cycle)");
+        assert!(r.is_err(), "hash(cycle) should fail as a const expression");
+    }
+
+    #[test]
+    fn eval_const_expr_nested() {
+        let v = eval_const_expr("mod(hash(42), 100)").unwrap();
+        assert!(v.as_u64() < 100, "mod(hash(42), 100) should be < 100, got {}", v.as_u64());
     }
 }

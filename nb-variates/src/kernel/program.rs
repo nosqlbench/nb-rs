@@ -23,10 +23,6 @@ pub struct GkProgram {
     volatile_ports: Vec<PortDef>,
     /// Sticky port definitions (persist until explicitly overwritten).
     sticky_ports: Vec<PortDef>,
-    /// Global values: resolved workload params stored on the program.
-    /// Set once after compilation, before any fibers are created.
-    /// Fibers read these via `globals()` — no separate params map needed.
-    globals: std::collections::HashMap<String, String>,
     /// Per-node input provenance bitmask. Bit i is set if the node
     /// transitively depends on graph input i. Computed once from the
     /// DAG wiring. Supports up to 64 distinct inputs.
@@ -67,7 +63,6 @@ impl GkProgram {
             nodes, wiring, input_names, output_map,
             volatile_ports: Vec::new(),
             sticky_ports: Vec::new(),
-            globals: HashMap::new(),
             input_provenance,
             input_dependents,
         }
@@ -88,7 +83,6 @@ impl GkProgram {
         Self {
             nodes, wiring, input_names, output_map,
             volatile_ports, sticky_ports,
-            globals: HashMap::new(),
             input_provenance,
             input_dependents,
         }
@@ -254,22 +248,6 @@ impl GkProgram {
         ProvScanState::from_parts(core, self.input_provenance.clone(), nondeterministic_nodes)
     }
 
-    /// Set global values (resolved workload params). Called once
-    /// after compilation, before any fibers are created.
-    pub fn set_globals(&mut self, globals: HashMap<String, String>) {
-        self.globals = globals;
-    }
-
-    /// Access global values (workload params stored on the program).
-    pub fn globals(&self) -> &HashMap<String, String> {
-        &self.globals
-    }
-
-    /// Get a global value by name.
-    pub fn get_global(&self, name: &str) -> Option<&str> {
-        self.globals.get(name).map(|s| s.as_str())
-    }
-
     /// Return the names of the graph inputs.
     pub fn input_names(&self) -> &[String] {
         &self.input_names
@@ -420,11 +398,12 @@ impl GkProgram {
                     is_init[i] = false;
                 }
             }
-            // Exclude auto-inserted type adapter nodes (internal wiring)
-            let name = &self.nodes[i].meta().name;
-            if name.starts_with("__") {
-                is_init[i] = false;
-            }
+            // Note: auto-inserted type adapter nodes (names starting with
+            // `__`) are intentionally NOT excluded here.  Adapters are pure
+            // functions and should participate in constant folding.  A chain
+            // such as `ConstU64(42) → __u64_to_f64 → sin` correctly folds
+            // to a single constant because the propagation pass below marks
+            // each node init-time as long as all its inputs are init-time.
         }
 
         // Propagate: if any input is not init-time, this node isn't either

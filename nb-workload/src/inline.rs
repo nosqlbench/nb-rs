@@ -55,13 +55,26 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
     let mut inline_exprs: Vec<String> = Vec::new();
     let mut expr_index: HashMap<String, usize> = HashMap::new();
 
-    // First pass: discover all {{expr}} across all segments.
+    // First pass: discover all inline expressions across all segments.
+    // Sources: {{expr}} (double-brace), {expr} (detected expression),
+    // {:=expr}, {:=expr:=}
     for seg in &segments {
+        // Double-brace {{expr}}
         for expr in extract_inline_exprs(&seg.template) {
             if !expr_index.contains_key(&expr) {
                 let idx = inline_exprs.len();
                 expr_index.insert(expr.clone(), idx);
                 inline_exprs.push(expr);
+            }
+        }
+        // Single-brace expressions detected by bind point parser
+        for bp in crate::bindpoints::extract_bind_points(&seg.template) {
+            if let crate::bindpoints::BindPoint::InlineDefinition(expr) = bp {
+                if !expr_index.contains_key(&expr) {
+                    let idx = inline_exprs.len();
+                    expr_index.insert(expr.clone(), idx);
+                    inline_exprs.push(expr);
+                }
             }
         }
     }
@@ -107,6 +120,8 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
         scenarios: HashMap::new(),
         ops,
         params: HashMap::new(),
+        phases: HashMap::new(),
+        phase_order: Vec::new(),
     })
 }
 
@@ -216,8 +231,73 @@ fn extract_inline_exprs(template: &str) -> Vec<String> {
     exprs
 }
 
-/// Rewrite a template by replacing `{{expr}}` with `{__inline_N}`.
+/// Rewrite a template by replacing inline expressions with `{__inline_N}`.
+/// Handles both `{{expr}}` (double-brace) and single-brace expressions
+/// ({:=expr}, {:=expr:=}, and auto-detected {expr}).
 fn rewrite_template(template: &str, expr_index: &HashMap<String, usize>) -> String {
+    // First pass: rewrite {{expr}} double-brace forms
+    let after_double = rewrite_double_brace(template, expr_index);
+    // Second pass: rewrite single-brace expressions {expr}, {:=expr}, {:=expr:=}
+    rewrite_single_brace_exprs(&after_double, expr_index)
+}
+
+fn rewrite_single_brace_exprs(template: &str, expr_index: &HashMap<String, usize>) -> String {
+    let mut result = String::with_capacity(template.len());
+    let chars: Vec<char> = template.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        if chars[i] == '{' && (i + 1 >= chars.len() || chars[i + 1] != '{') {
+            let start = i + 1;
+            let mut depth = 1u32;
+            let mut j = start;
+            while j < chars.len() {
+                if chars[j] == '{' { depth += 1; }
+                if chars[j] == '}' { depth -= 1; if depth == 0 { break; } }
+                j += 1;
+            }
+            if j < chars.len() {
+                let raw: String = chars[start..j].iter().collect();
+                let raw = raw.trim();
+
+                // Check for {:=expr} or {:=expr:=}
+                let expr = if let Some(e) = raw.strip_prefix(":=") {
+                    Some(e.strip_suffix(":=").unwrap_or(e).trim())
+                } else if crate::bindpoints::is_expression_public(raw) {
+                    Some(raw)
+                } else {
+                    None
+                };
+
+                if let Some(expr) = expr {
+                    if let Some(&idx) = expr_index.get(expr) {
+                        result.push_str(&format!("{{__inline_{idx}}}"));
+                    } else {
+                        // Not in index — preserve as-is
+                        result.push('{');
+                        result.push_str(raw);
+                        result.push('}');
+                    }
+                } else {
+                    // Simple reference — preserve
+                    result.push('{');
+                    result.push_str(raw);
+                    result.push('}');
+                }
+                i = j + 1;
+            } else {
+                result.push(chars[i]);
+                i += 1;
+            }
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    result
+}
+
+fn rewrite_double_brace(template: &str, expr_index: &HashMap<String, usize>) -> String {
     let mut result = String::with_capacity(template.len());
     let bytes = template.as_bytes();
     let len = bytes.len();

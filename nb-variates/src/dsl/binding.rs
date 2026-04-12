@@ -6,15 +6,86 @@
 //! `compile_binding` maps each AST statement to assembler operations:
 //! function calls become nodes, literals become constant nodes, and
 //! identifiers become identity (alias) nodes.
+//!
+//! Literal promotion: when a literal constant (integer, float, string)
+//! appears in a position where the function's signature expects a wire
+//! input, the compiler automatically inserts an anonymous `ConstU64`,
+//! `ConstF64`, or `ConstStr` node and wires from it.  This lets you
+//! write `pow(x, 3.0)` or `f64_mul(x, 0.1)` directly without first
+//! binding the constant to a name.
 
 use crate::assembly::{GkAssembler, WireRef};
 use crate::dsl::ast::*;
 use crate::dsl::factory::{build_node, ConstArg};
+use crate::dsl::registry;
+use crate::node::{PortType, SlotType};
 use crate::nodes::fixed::*;
 use crate::nodes::identity::*;
 use crate::nodes::format::*;
 
 use super::compile::Compiler;
+
+/// Infer the output `PortType` of an expression without compiling it.
+///
+/// Uses heuristics to determine whether an expression produces a u64 or f64
+/// value. This drives type-aware operator dispatch: when both operands of
+/// an arithmetic operator are u64, the compiler selects the u64 variant
+/// (e.g. `u64_mul`) instead of the f64 variant (`f64_mul`).
+///
+/// For unknown cases, defaults to `PortType::U64`.
+fn infer_expr_type(
+    expr: &Expr,
+    asm: &GkAssembler,
+    input_names: &[String],
+) -> PortType {
+    match expr {
+        Expr::IntLit(_, _) => PortType::U64,
+        Expr::FloatLit(_, _) => PortType::F64,
+        Expr::StringLit(_, _) => PortType::Str,
+        Expr::Ident(name, _) => {
+            // Coordinate inputs are always u64.
+            if input_names.contains(name) {
+                return PortType::U64;
+            }
+            // Check if it's a known binding — look up output type from assembler.
+            asm.output_type(name).unwrap_or(PortType::U64)
+        }
+        Expr::Call(call) => {
+            // Heuristic based on function name prefix/membership.
+            let f = call.func.as_str();
+            if f.starts_with("f64_") || f.starts_with("to_f64")
+                || ["sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+                    "sqrt", "abs_f64", "ln", "exp", "pow", "lerp",
+                    "scale_range", "unit_interval", "clamp_f64",
+                    "quantize", "discretize", "f64_mod",
+                    "icd_normal", "icd_uniform",
+                ].contains(&f) {
+                PortType::F64
+            } else {
+                PortType::U64
+            }
+        }
+        Expr::BinOp(lhs, op, rhs) => {
+            match op {
+                BinOpKind::BitAnd | BinOpKind::BitOr | BinOpKind::BitXor |
+                BinOpKind::Shl | BinOpKind::Shr => PortType::U64,
+                BinOpKind::Pow => PortType::F64,
+                _ => {
+                    let lt = infer_expr_type(lhs, asm, input_names);
+                    let rt = infer_expr_type(rhs, asm, input_names);
+                    if lt == PortType::F64 || rt == PortType::F64 {
+                        PortType::F64
+                    } else {
+                        PortType::U64
+                    }
+                }
+            }
+        }
+        Expr::UnaryNeg(_, _) => PortType::F64,
+        Expr::UnaryBitNot(_, _) => PortType::U64,
+        Expr::ArrayLit(_, _) => PortType::U64,
+    }
+}
 
 impl Compiler {
     /// Compile one binding statement into the assembler.
@@ -43,11 +114,39 @@ impl Compiler {
                 let mut wire_refs = Vec::new();
                 let mut const_args = Vec::new();
 
+                // Look up the function signature so we can determine which
+                // arg positions are wire slots vs const slots.  When a
+                // literal appears in a wire slot we promote it to an
+                // anonymous const node and wire from it instead of
+                // treating it as a build-time constant.
+                let sig = registry::lookup(&call.func);
+
+                // Build an iterator over the param slot-types.  We step
+                // through it once per argument, wire-position by wire-position
+                // or const-position by const-position, depending on what each
+                // arg is.  For functions without a registry entry (or variadic
+                // ones) we fall back to the original literal-as-const behaviour.
+                let param_slot_types: Vec<SlotType> = sig
+                    .map(|s| s.params.iter().map(|p| p.slot_type).collect())
+                    .unwrap_or_default();
+
+                // Cursor into the param list.  We advance it for each call arg.
+                let mut param_cursor = 0usize;
+
                 for arg in &call.args {
                     let (expr, _name) = match arg {
                         Arg::Positional(e) => (e, None),
                         Arg::Named(n, e) => (e, Some(n.as_str())),
                     };
+
+                    // Determine the expected slot type for this argument
+                    // position, if known from the signature.
+                    let expected_slot = param_slot_types.get(param_cursor).copied();
+                    param_cursor += 1;
+
+                    // Helper: is this arg position expected to be a wire input?
+                    let wants_wire = expected_slot.map(|s| s.is_wire()).unwrap_or(false);
+
                     match expr {
                         Expr::Ident(id, _) => {
                             // Is it a coordinate?
@@ -58,15 +157,34 @@ impl Compiler {
                             }
                         }
                         Expr::IntLit(v, _) => {
-                            const_args.push(ConstArg::Int(*v));
-                            // Constants don't become wire refs — they're
-                            // baked into the node constructor.
+                            if wants_wire {
+                                // Promote to an anonymous ConstU64 wire node.
+                                let anon = self.anon_name();
+                                asm.add_node(&anon, Box::new(ConstU64::new(*v)), vec![]);
+                                wire_refs.push(WireRef::node(anon));
+                            } else {
+                                const_args.push(ConstArg::Int(*v));
+                            }
                         }
                         Expr::FloatLit(v, _) => {
-                            const_args.push(ConstArg::Float(*v));
+                            if wants_wire {
+                                // Promote to an anonymous ConstF64 wire node.
+                                let anon = self.anon_name();
+                                asm.add_node(&anon, Box::new(ConstF64::new(*v)), vec![]);
+                                wire_refs.push(WireRef::node(anon));
+                            } else {
+                                const_args.push(ConstArg::Float(*v));
+                            }
                         }
                         Expr::StringLit(s, _) => {
-                            const_args.push(ConstArg::Str(s.clone()));
+                            if wants_wire {
+                                // Promote to an anonymous ConstStr wire node.
+                                let anon = self.anon_name();
+                                asm.add_node(&anon, Box::new(ConstStr::new(s.clone())), vec![]);
+                                wire_refs.push(WireRef::node(anon));
+                            } else {
+                                const_args.push(ConstArg::Str(s.clone()));
+                            }
                         }
                         Expr::Call(inner) => {
                             // Inline nesting: desugar to an anonymous node
@@ -81,6 +199,45 @@ impl Compiler {
                                 _ => 0.0,
                             }).collect();
                             const_args.push(ConstArg::FloatArray(floats));
+                        }
+                        Expr::UnaryNeg(inner, _) => {
+                            // Special case: `-literal` as a constant or wire argument.
+                            // e.g. lerp(u, -10.0, 10.0) treats -10.0 as const.
+                            // e.g. pow(x, -2.0) promotes to a ConstF64 wire node.
+                            match inner.as_ref() {
+                                Expr::FloatLit(v, _) => {
+                                    if wants_wire {
+                                        let anon = self.anon_name();
+                                        asm.add_node(&anon, Box::new(ConstF64::new(-v)), vec![]);
+                                        wire_refs.push(WireRef::node(anon));
+                                    } else {
+                                        const_args.push(ConstArg::Float(-v));
+                                    }
+                                }
+                                Expr::IntLit(v, _) => {
+                                    if wants_wire {
+                                        // Negative integer: promote as ConstF64
+                                        let anon = self.anon_name();
+                                        asm.add_node(&anon, Box::new(ConstF64::new(-(*v as f64))), vec![]);
+                                        wire_refs.push(WireRef::node(anon));
+                                    } else {
+                                        // Wrapping negate for u64 (effectively i64 reinterpret)
+                                        const_args.push(ConstArg::Float(-(*v as f64)));
+                                    }
+                                }
+                                _ => {
+                                    // General case: wire input via anonymous node
+                                    let anon = self.anon_name();
+                                    self.compile_binding(asm, &[anon.clone()], expr)?;
+                                    wire_refs.push(WireRef::node(anon));
+                                }
+                            }
+                        }
+                        Expr::BinOp(..) | Expr::UnaryBitNot(..) => {
+                            // Inline arithmetic: desugar to an anonymous node
+                            let anon = self.anon_name();
+                            self.compile_binding(asm, &[anon.clone()], expr)?;
+                            wire_refs.push(WireRef::node(anon));
                         }
                     }
                 }
@@ -205,10 +362,149 @@ impl Compiler {
                 asm.add_node(name, Box::new(ConstF64::new(*v)), vec![]);
                 self.all_names.push(name.clone());
             }
+            Expr::BinOp(lhs, op, rhs) => {
+                // Desugar infix arithmetic to the equivalent function call node.
+                // Type-aware dispatch: infer operand types and select the
+                // appropriate u64 or f64 variant. When one operand is u64 and
+                // the other is f64, the u64 operand is auto-widened via to_f64.
+                let lhs_type = infer_expr_type(lhs, asm, &self.input_names);
+                let rhs_type = infer_expr_type(rhs, asm, &self.input_names);
+
+                let (func_name, need_widen_lhs, need_widen_rhs) = match op {
+                    BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul |
+                    BinOpKind::Div | BinOpKind::Mod => {
+                        if lhs_type == PortType::U64 && rhs_type == PortType::U64 {
+                            let name = match op {
+                                BinOpKind::Add => "u64_add",
+                                BinOpKind::Sub => "u64_sub",
+                                BinOpKind::Mul => "u64_mul",
+                                BinOpKind::Div => "u64_div",
+                                BinOpKind::Mod => "u64_mod",
+                                _ => unreachable!(),
+                            };
+                            (name, false, false)
+                        } else {
+                            let name = match op {
+                                BinOpKind::Add => "f64_add",
+                                BinOpKind::Sub => "f64_sub",
+                                BinOpKind::Mul => "f64_mul",
+                                BinOpKind::Div => "f64_div",
+                                BinOpKind::Mod => "f64_mod",
+                                _ => unreachable!(),
+                            };
+                            (name, lhs_type == PortType::U64, rhs_type == PortType::U64)
+                        }
+                    }
+                    BinOpKind::Pow => ("pow", lhs_type == PortType::U64, rhs_type == PortType::U64),
+                    BinOpKind::BitAnd => ("u64_and", false, false),
+                    BinOpKind::BitOr  => ("u64_or", false, false),
+                    BinOpKind::BitXor => ("u64_xor", false, false),
+                    BinOpKind::Shl    => ("u64_shl", false, false),
+                    BinOpKind::Shr    => ("u64_shr", false, false),
+                };
+
+                // Compile each operand. Simple identifiers and literals
+                // are resolved directly as wire references to avoid
+                // inserting Identity nodes that lose type information.
+                let lhs_ref = self.compile_binop_operand(asm, lhs)?;
+                let rhs_ref = self.compile_binop_operand(asm, rhs)?;
+
+                // Insert to_f64 widening adapters where needed.
+                let lhs_final = if need_widen_lhs {
+                    let adapted = self.anon_name();
+                    asm.add_node(
+                        &adapted,
+                        Box::new(crate::nodes::convert::ToF64::new()),
+                        vec![lhs_ref],
+                    );
+                    WireRef::node(&adapted)
+                } else {
+                    lhs_ref
+                };
+                let rhs_final = if need_widen_rhs {
+                    let adapted = self.anon_name();
+                    asm.add_node(
+                        &adapted,
+                        Box::new(crate::nodes::convert::ToF64::new()),
+                        vec![rhs_ref],
+                    );
+                    WireRef::node(&adapted)
+                } else {
+                    rhs_ref
+                };
+
+                let wire_refs = vec![lhs_final, rhs_final];
+                let node = build_node(func_name, &wire_refs, &[])?;
+                let name = &targets[0];
+                asm.add_node(name, node, wire_refs);
+                self.all_names.push(name.clone());
+            }
+            Expr::UnaryNeg(inner, _) => {
+                // Desugar `-x` to `f64_sub(0.0, x)`.
+                let zero_name = self.anon_name();
+                asm.add_node(&zero_name, Box::new(ConstF64::new(0.0)), vec![]);
+
+                let inner_name = self.anon_name();
+                self.compile_binding(asm, &[inner_name.clone()], inner)?;
+
+                let wire_refs = vec![WireRef::node(&zero_name), WireRef::node(&inner_name)];
+                let node = build_node("f64_sub", &wire_refs, &[])?;
+                let name = &targets[0];
+                asm.add_node(name, node, wire_refs);
+                self.all_names.push(name.clone());
+            }
+            Expr::UnaryBitNot(inner, _) => {
+                // Desugar `!x` to `u64_not(x)`.
+                let inner_name = self.anon_name();
+                self.compile_binding(asm, &[inner_name.clone()], inner)?;
+
+                let wire_refs = vec![WireRef::node(&inner_name)];
+                let node = build_node("u64_not", &wire_refs, &[])?;
+                let name = &targets[0];
+                asm.add_node(name, node, wire_refs);
+                self.all_names.push(name.clone());
+            }
             _ => {
                 return Err("unsupported expression in binding".to_string());
             }
         }
         Ok(())
+    }
+
+    /// Compile a BinOp operand, returning a `WireRef` without creating
+    /// unnecessary Identity intermediates.
+    ///
+    /// Simple identifiers resolve directly to wire refs. Literals become
+    /// anonymous const nodes. Complex expressions (calls, nested BinOps)
+    /// are compiled into anonymous intermediate nodes.
+    fn compile_binop_operand(
+        &mut self,
+        asm: &mut GkAssembler,
+        expr: &Expr,
+    ) -> Result<WireRef, String> {
+        match expr {
+            Expr::Ident(id, _) => {
+                if self.input_names.contains(id) {
+                    Ok(WireRef::input(id))
+                } else {
+                    Ok(WireRef::node(id))
+                }
+            }
+            Expr::IntLit(v, _) => {
+                let anon = self.anon_name();
+                asm.add_node(&anon, Box::new(ConstU64::new(*v)), vec![]);
+                Ok(WireRef::node(anon))
+            }
+            Expr::FloatLit(v, _) => {
+                let anon = self.anon_name();
+                asm.add_node(&anon, Box::new(ConstF64::new(*v)), vec![]);
+                Ok(WireRef::node(anon))
+            }
+            _ => {
+                let anon = self.anon_name();
+                self.compile_binding(asm, &[anon.clone()], expr)?;
+                Ok(WireRef::node(anon))
+            }
+        }
     }
 }

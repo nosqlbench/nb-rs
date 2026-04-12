@@ -176,6 +176,13 @@ pub(crate) fn validate_expr(
                 validate_expr(inner, defined, coords, referenced, report);
             }
         }
+        Expr::BinOp(lhs, _, rhs) => {
+            validate_expr(lhs, defined, coords, referenced, report);
+            validate_expr(rhs, defined, coords, referenced, report);
+        }
+        Expr::UnaryNeg(inner, _) | Expr::UnaryBitNot(inner, _) => {
+            validate_expr(inner, defined, coords, referenced, report);
+        }
         Expr::ArrayLit(elems, _) => {
             for e in elems {
                 validate_expr(e, defined, coords, referenced, report);
@@ -244,6 +251,13 @@ pub(crate) fn collect_references(expr: &Expr, referenced: &mut HashSet<String>) 
                 collect_references(inner, referenced);
             }
         }
+        Expr::BinOp(lhs, _, rhs) => {
+            collect_references(lhs, referenced);
+            collect_references(rhs, referenced);
+        }
+        Expr::UnaryNeg(inner, _) | Expr::UnaryBitNot(inner, _) => {
+            collect_references(inner, referenced);
+        }
         Expr::ArrayLit(elems, _) => {
             for e in elems { collect_references(e, referenced); }
         }
@@ -299,6 +313,13 @@ pub(crate) fn check_forward_refs(
                 };
                 check_forward_refs(inner, seen, stmt_span, report);
             }
+        }
+        Expr::BinOp(lhs, _, rhs) => {
+            check_forward_refs(lhs, seen, stmt_span, report);
+            check_forward_refs(rhs, seen, stmt_span, report);
+        }
+        Expr::UnaryNeg(inner, _) | Expr::UnaryBitNot(inner, _) => {
+            check_forward_refs(inner, seen, stmt_span, report);
         }
         Expr::ArrayLit(elems, _) => {
             for e in elems {

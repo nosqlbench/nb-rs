@@ -81,6 +81,42 @@ pub enum Expr {
     ArrayLit(Vec<Expr>, Span),
     /// A function call: `hash(cycle)`, `dist_normal(mean: 72.0, stddev: 5.0)`
     Call(CallExpr),
+    /// A binary arithmetic operation: `a + b`, `x * 0.25`.
+    /// Desugared by the compiler into the equivalent function call.
+    BinOp(Box<Expr>, BinOpKind, Box<Expr>),
+    /// Unary negation: `-x`.
+    /// Desugared to `f64_sub(0.0, x)`.
+    UnaryNeg(Box<Expr>, Span),
+    /// Unary bitwise NOT: `!x`.
+    /// Desugared to `u64_not(x)`.
+    UnaryBitNot(Box<Expr>, Span),
+}
+
+/// Binary arithmetic operator kind.
+#[derive(Debug, Clone, Copy)]
+pub enum BinOpKind {
+    /// `+` — desugars to `u64_add` or `f64_add` based on operand types
+    Add,
+    /// `-` — desugars to `u64_sub` or `f64_sub` based on operand types
+    Sub,
+    /// `*` — desugars to `u64_mul` or `f64_mul` based on operand types
+    Mul,
+    /// `/` — desugars to `u64_div` or `f64_div` based on operand types
+    Div,
+    /// `%` — desugars to `u64_mod` or `f64_mod` based on operand types
+    Mod,
+    /// `**` — desugars to `pow(a, b)` (always f64)
+    Pow,
+    /// `&` — desugars to `u64_and(a, b)`
+    BitAnd,
+    /// `|` — desugars to `u64_or(a, b)`
+    BitOr,
+    /// `^` — desugars to `u64_xor(a, b)`
+    BitXor,
+    /// `<<` — desugars to `u64_shl(a, b)`
+    Shl,
+    /// `>>` — desugars to `u64_shr(a, b)`
+    Shr,
 }
 
 /// A typed parameter in a module signature.

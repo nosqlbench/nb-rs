@@ -12,3 +12,5 @@ nb-workload = { path = "../../../nb-workload", version = "0.1.1" }
 cassandra-cpp = "3"
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "rt"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+inventory = "0.3"

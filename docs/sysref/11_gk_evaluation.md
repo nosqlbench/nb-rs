@@ -104,6 +104,15 @@ Phase 2: Evaluate init-time nodes with dummy inputs
 Phase 3: Replace evaluated nodes with ConstU64/ConstF64/ConstStr
 ```
 
+Type adapter nodes (`__u64_to_f64`, etc.) participate in folding.
+A chain like `ConstU64(42) → __u64_to_f64 → sin` folds to
+`ConstF64(sin(42.0))` — the entire chain is evaluated once and
+replaced with a single constant.
+
+Non-deterministic nodes (`counter`, `current_epoch_millis`,
+`elapsed_millis`, `thread_id`) are excluded from folding regardless
+of their input status.
+
 Folded constants are available via `kernel.get_constant(name)` for
 use by activity config resolution (cycles, concurrency from
 dataset metadata).
@@ -200,11 +209,10 @@ impl FiberBuilder {
 }
 ```
 
-No separate params argument — workload params (globals) are
-stored on `GkProgram` and accessed via `program.globals()`.
-Fibers read from the shared immutable program; no per-fiber
-params map.
+No separate params argument — workload params are injected into
+the GK source as constant bindings before compilation and resolve
+as normal GK outputs. No globals mechanism needed.
 
 `resolve_with_extras` iterates the op's field map, substitutes
-`{name}` bind points from GK outputs, captures, and globals,
+`{name}` bind points from GK outputs and captures,
 and pulls any extra bindings needed by validation.

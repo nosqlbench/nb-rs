@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use serde_json::Value as JVal;
-use crate::model::{BindingsDef, ParsedOp, ScenarioStep, Workload};
+use crate::model::{BindingsDef, ParsedOp, ScenarioStep, Workload, WorkloadPhase};
 use crate::template::expand_templates;
 
 /// Parse a YAML workload string into a normalized Workload.
@@ -49,7 +49,10 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
             }
     }
 
-    // Stage 5: Auto-tag all ops
+    // Stage 5: Parse phases
+    let (phases, phase_order) = parse_phases(obj.get("phases"), &doc_bindings, &doc_params, &doc_tags);
+
+    // Stage 6: Auto-tag all ops (top-level and phase inline ops)
     for op in &mut all_ops {
         if !op.tags.contains_key("name") {
             op.tags.insert("name".to_string(), op.name.clone());
@@ -59,7 +62,7 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         }
     }
 
-    // Stage 6: Resolve workload parameters
+    // Stage 7: Resolve workload parameters
     // Priority: CLI params > workload defaults > env vars
     let yaml_params = extract_string_map(obj.get("params"));
     let mut resolved_params = HashMap::new();
@@ -83,7 +86,7 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         }
     }
 
-    Ok(Workload { description, scenarios, ops: all_ops, params: resolved_params })
+    Ok(Workload { description, scenarios, ops: all_ops, params: resolved_params, phases, phase_order })
 }
 
 /// Parse a YAML source into just the list of normalized ParsedOps.
@@ -113,9 +116,15 @@ fn parse_scenarios(val: Option<&JVal>) -> HashMap<String, Vec<ScenarioStep>> {
                 }).collect()
             }
             JVal::Array(arr) => {
-                arr.iter().enumerate().map(|(i, cmd)| ScenarioStep {
-                    name: format!("{:03}", i + 1),
-                    command: cmd.as_str().unwrap_or("").to_string(),
+                // New format: array of phase name strings like ["schema", "rampup", "main"].
+                // Old format: array of command strings.
+                // Both parse the same way — the name is the string value itself.
+                arr.iter().enumerate().map(|(_i, item)| {
+                    let s = item.as_str().unwrap_or("").to_string();
+                    ScenarioStep {
+                        name: s.clone(),
+                        command: s,
+                    }
                 }).collect()
             }
             _ => Vec::new(),
@@ -123,6 +132,94 @@ fn parse_scenarios(val: Option<&JVal>) -> HashMap<String, Vec<ScenarioStep>> {
         scenarios.insert(scenario_name.clone(), steps);
     }
     scenarios
+}
+
+// -----------------------------------------------------------------
+// Phases
+// -----------------------------------------------------------------
+
+/// Parse the `phases:` section of a workload YAML.
+///
+/// Each phase is a named map with optional `cycles`, `concurrency`,
+/// `rate`, `adapter`, `errors`, `tags`, and `ops` fields.
+/// Returns the phase map and a Vec preserving YAML definition order.
+fn parse_phases(
+    val: Option<&JVal>,
+    doc_bindings: &BindingsDef,
+    doc_params: &HashMap<String, JVal>,
+    doc_tags: &HashMap<String, String>,
+) -> (HashMap<String, WorkloadPhase>, Vec<String>) {
+    let mut phases = HashMap::new();
+    let mut phase_order = Vec::new();
+    let Some(val) = val else { return (phases, phase_order); };
+    let Some(obj) = val.as_object() else { return (phases, phase_order); };
+
+    for (phase_name, phase_val) in obj {
+        let Some(phase_obj) = phase_val.as_object() else { continue; };
+
+        let cycles = phase_obj.get("cycles")
+            .map(|v| match v {
+                JVal::Number(n) => n.to_string(),
+                JVal::String(s) => s.clone(),
+                other => other.to_string(),
+            });
+
+        let concurrency = phase_obj.get("concurrency")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+
+        let rate = phase_obj.get("rate")
+            .and_then(|v| v.as_f64());
+
+        let adapter = phase_obj.get("adapter")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let errors = phase_obj.get("errors")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let tags = phase_obj.get("tags")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // Parse inline ops if present
+        let mut inline_ops = Vec::new();
+        for key in ["ops", "op", "operations", "statements", "statement"] {
+            if let Some(ops_val) = phase_obj.get(key) {
+                let phase_tags = {
+                    let mut t = doc_tags.clone();
+                    t.insert("phase".to_string(), phase_name.clone());
+                    t
+                };
+                let _ = parse_ops_field(ops_val, phase_name, doc_bindings, doc_params, &phase_tags, &mut inline_ops);
+                break;
+            }
+        }
+
+        // Auto-tag inline ops
+        for op in &mut inline_ops {
+            if !op.tags.contains_key("name") {
+                op.tags.insert("name".to_string(), op.name.clone());
+            }
+            if !op.tags.contains_key("op") {
+                op.tags.insert("op".to_string(), op.name.clone());
+            }
+        }
+
+        phases.insert(phase_name.clone(), WorkloadPhase {
+            cycles,
+            concurrency,
+            rate,
+            adapter,
+            errors,
+            tags,
+            ops: inline_ops,
+        });
+        phase_order.push(phase_name.clone());
+    }
+
+    (phases, phase_order)
 }
 
 // -----------------------------------------------------------------
@@ -707,6 +804,149 @@ ops:
 "#;
         let ops = parse_ops(yaml).unwrap();
         assert_eq!(ops[0].bindings.as_map()["id"], "Hash(); Mod(100)");
+    }
+
+    #[test]
+    fn parse_phased_workload() {
+        let yaml = r#"
+scenarios:
+  default:
+    - schema
+    - main
+
+phases:
+  schema:
+    cycles: 1
+    concurrency: 1
+    ops:
+      create_table:
+        stmt: "CREATE TABLE t (id int PRIMARY KEY);"
+  main:
+    cycles: 1000
+    concurrency: 10
+    rate: 500.0
+    ops:
+      read:
+        stmt: "SELECT * FROM t WHERE id={id};"
+      write:
+        stmt: "INSERT INTO t (id) VALUES ({id});"
+"#;
+        let workload = parse_workload(yaml, &HashMap::new()).unwrap();
+
+        // Phases parsed
+        assert_eq!(workload.phases.len(), 2);
+        assert!(workload.phases.contains_key("schema"));
+        assert!(workload.phases.contains_key("main"));
+
+        // Phase order preserved
+        assert_eq!(workload.phase_order, vec!["schema", "main"]);
+
+        // Schema phase config
+        let schema = &workload.phases["schema"];
+        assert_eq!(schema.cycles.as_deref(), Some("1"));
+        assert_eq!(schema.concurrency, Some(1));
+        assert_eq!(schema.rate, None);
+        assert_eq!(schema.ops.len(), 1);
+        assert_eq!(schema.ops[0].name, "create_table");
+
+        // Main phase config
+        let main = &workload.phases["main"];
+        assert_eq!(main.cycles.as_deref(), Some("1000"));
+        assert_eq!(main.concurrency, Some(10));
+        assert_eq!(main.rate, Some(500.0));
+        assert_eq!(main.ops.len(), 2);
+
+        // Scenario parsed as phase name list
+        let default = &workload.scenarios["default"];
+        assert_eq!(default.len(), 2);
+        assert_eq!(default[0].name, "schema");
+        assert_eq!(default[1].name, "main");
+    }
+
+    #[test]
+    fn parse_phased_workload_with_tags() {
+        let yaml = r#"
+blocks:
+  schema:
+    ops:
+      create: "CREATE TABLE t (id int PRIMARY KEY);"
+  main:
+    ops:
+      read: "SELECT * FROM t;"
+
+phases:
+  setup:
+    tags: "block:schema"
+    cycles: 1
+  run:
+    tags: "block:main"
+    cycles: 1000
+"#;
+        let workload = parse_workload(yaml, &HashMap::new()).unwrap();
+        assert_eq!(workload.phases.len(), 2);
+
+        let setup = &workload.phases["setup"];
+        assert_eq!(setup.tags.as_deref(), Some("block:schema"));
+        assert!(setup.ops.is_empty()); // No inline ops, uses tag filter
+
+        let run = &workload.phases["run"];
+        assert_eq!(run.tags.as_deref(), Some("block:main"));
+    }
+
+    #[test]
+    fn parse_phased_workload_gk_cycles() {
+        let yaml = r#"
+phases:
+  rampup:
+    cycles: "{train_count}"
+    concurrency: 100
+    ops:
+      insert:
+        stmt: "INSERT INTO t (id) VALUES ({id});"
+"#;
+        let workload = parse_workload(yaml, &HashMap::new()).unwrap();
+        let rampup = &workload.phases["rampup"];
+        assert_eq!(rampup.cycles.as_deref(), Some("{train_count}"));
+    }
+
+    #[test]
+    fn parse_phased_workload_default_scenario_from_order() {
+        // No scenarios section — phases should run in definition order
+        let yaml = r#"
+phases:
+  alpha:
+    cycles: 1
+    ops:
+      op1:
+        stmt: "a"
+  beta:
+    cycles: 2
+    ops:
+      op2:
+        stmt: "b"
+  gamma:
+    cycles: 3
+    ops:
+      op3:
+        stmt: "c"
+"#;
+        let workload = parse_workload(yaml, &HashMap::new()).unwrap();
+        assert_eq!(workload.phase_order, vec!["alpha", "beta", "gamma"]);
+        assert!(workload.scenarios.is_empty());
+    }
+
+    #[test]
+    fn parse_backward_compat_no_phases() {
+        // Workload without phases should work exactly as before
+        let yaml = r#"
+ops:
+  op1: "SELECT 1;"
+  op2: "SELECT 2;"
+"#;
+        let workload = parse_workload(yaml, &HashMap::new()).unwrap();
+        assert!(workload.phases.is_empty());
+        assert!(workload.phase_order.is_empty());
+        assert_eq!(workload.ops.len(), 2);
     }
 
     #[test]

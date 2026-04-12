@@ -14,94 +14,92 @@ HashRange(0,2); Mul(3600000); Save('hour'); Shuffle(0,2); Mul(60000); Save('minu
 HashRange(0,60); Mul(1000); Save('second'); Expr('hour + minute + second');
 StartingEpochMillis('2018-10-02 04:00:00'); ToDate(); ToString()
 ```
-Exercises Save/Load (stateful context), expressions, arithmetic,
-and type cascading long→timestamp→date→string.
+
+GK equivalent:
+```gk
+inputs := (cycle)
+h := hash(cycle)
+hour_ms := (h % 3) * 3600000
+minute_ms := (hash(shuffle(cycle, 0, 3)) % 3) * 60000
+second_ms := (hash(hash(cycle)) % 60) * 1000
+offset_ms := hour_ms + minute_ms + second_ms
+timestamp_ms := offset_ms + 1538452800000  // 2018-10-02 04:00:00 UTC
+flight_date := to_timestamp(timestamp_ms)
+```
+**Status: Supported.** Infix operators replace Expr(). DAG
+wiring replaces Save/Load.
 
 **2. Bulky Key-Value CharBuf (4 nodes, massive buffer)**
 Source: `baselines/cql_keyvalue2_bulky.yaml`
 ```
 Hash(); Mod(1000000000); CharBufImage('A-Za-z0-9 _|/',16000000,HashRange(50000,150000)); ToString()
 ```
+**Gap: `char_buf` node** — deterministic string from seed + charset + length.
 
 ### Higher-Order / Nested Functions
 
-**3. Normalized Vectors with Dynamic Sizing**
-Source: `examples/bindings_vectors.yaml`
-```
-HashedDoubleVectors(long->HashRange(1,5)->int, long->HashRange(2.0d,3.0d)->double); NormalizeDoubleVector(); Stringify()
-```
-HOF syntax with nested lambdas and type annotations — great for
-testing the node graph builder.
-
-**4. CQL Vector with Variable Dimensions**
-Source: `adapter-cqld4/.../bindings/cqlvectors.yaml`
-```
-CqlVector(ListSizedHashed(HashRange(3,5)->int, HashRange(0.0f,1.0f))); NormalizeCqlVector()
+**3-5. Collection Builders**
+HOF patterns like `long->HashRange(1,5)->int` are subsumed by
+GK's DAG model. The inner function is a node, not a lambda:
+```gk
+dim := hash_range(hash(cycle), 1, 5)  // replaces long->HashRange(1,5)->int
 ```
 
-**5. Nested Collections**
-Source: `examples/bindings_collections.yaml`
-```
-SetSizedStepped(HashRange(3,4), ListSizedStepped(HashRange(2,3), Combinations('A-Z;0-9;a-z')))
-MapSized(2, NumberNameToString(), MapSized(2, NumberNameToString(), long->ToString()))
-```
+**Remaining gap:** Collection *builders* that need to call an
+inner function N times with different seeds. See memo 12 for
+the `random_vector`/`random_list` design.
 
 ### Distribution / Probability Chains
 
 **6. Normal + Clamp + Conditional**
-Source: `adapter-cqld4/.../bindings/expr.yaml`
+```gk
+risk_score := clamp_f64(dist_normal(hash(cycle), 0.0, 5.0), 1.0, 100.0)
+bucket := discretize(risk_score, 90.0, 2)
+is_active := select(bucket, 1, 0)
 ```
-Normal(0.0,5.0); Clamp(1,100); Save('riskScore') -> int
-Expr('riskScore > 90 ? 0 : 1') -> long; ToBoolean(); ToString()
-```
+**Status: Supported.** `discretize` + `select` replaces `Expr()`.
 
-**7. WeightedStrings (real-world categorical)**
-Source: `baselines/graph_wheels.yaml`, `bindings/text.yaml`
+**7. WeightedStrings**
+```gk
+platform := weighted_strings(hash(cycle), "android:6;ios:4;linux:2;osx:7;windows:3")
 ```
-WeightedStrings('android:6;ios:4;linux:2;osx:7;windows:3')
-WeightedStrings('Mr:0.45;Mrs:0.25;Ms:0.1;Miss:0.1;Dr:0.05')
-```
+**Status: Supported.** `weighted_strings` exists.
 
 ### Crypto / Buffer Chains
 
 **8. Digest Pipeline**
-Source: `examples/bindings_bytebuffers.yaml`
+```gk
+buf := bytes_from_hash(hash(cycle), 1000)
+digest := sha256(buf)
+hex := to_hex(digest)
 ```
-ByteBufferSizedHashed(1000); DigestToByteBuffer('SHA-256'); ToHexString()
-NumberNameToString(); ToCharBuffer(); ToByteBuffer(); ToHexString()
-```
+**Status: Supported.**
 
 ### Access Pattern / Partitioning
 
-**9. Scaled Hash Ranges**
-Source: `baselines/incremental.yaml`
+**9-10. Scaled Hash Ranges and Partitioning**
+```gk
+scaled := hash(div(cycle, 2)) * 1.0   // HashRangeScaled
+partition := (cycle / 10000) % 100
 ```
-Div(2L); Hash(); HashRangeScaled(1.0d); Hash(); ToString()
-```
+**Status: Supported.** Infix operators make this natural.
 
-**10. Multi-Modulo Partitioning**
-Source: `baselines/cql_iot.yaml`
-```
-Div(10000); Mod(100); ToHashedUUID() -> java.util.UUID
-```
+## Remaining Gaps
 
-## Coverage Gap Analysis
+| Gap | Priority | Description |
+|-----|----------|-------------|
+| `char_buf(seed, charset, len)` | Medium | Deterministic string generation from seed |
+| `hashed_uuid(seed)` | High | UUID v4 from deterministic seed |
+| `random_vector(seed, dim, min, max)` | Medium | Generate f32 vector as JSON array |
+| `normalize_vector(json)` | Medium | L2-normalize a vector |
+| `random_list(seed, size, spec)` | Low | Collection builders |
+| `file_line_at(seed, filename)` | Low | Read line from file by hashed index |
+| Template-as-wire | Low | Printf with wire-selected format string |
 
-- Linear chains (Hash;Mod;ToString) — well covered, no gap
-- HOF / nested lambdas (`long->HashRange(1,5)->int`) — partially covered via registry. **Gap: HOF node builder**
-- Save/Load context vars — not implemented. **Gap: stateful context**
-- `Expr()` evaluation — not implemented. **Gap: expression engine**
-- WeightedStrings/Longs — not implemented. **Moderate priority**
-- File-backed (HashedLineToString) — not implemented. **Lower priority**
-- Nested collections (SetSizedStepped of ListSizedStepped) — not implemented. **Gap: complex HOF composition**
-- Vector normalization — not implemented. **Needed for vector workloads**
-- Template-based strings — not implemented. **Common pattern**
-- BigDecimal precision/rounding — not applicable (Rust). Adapt to f64
+## What GK Eliminates
 
-## Notes
-
-The **flight date chain** (#1) and the **nested HOF
-vector/collection chains** (#3-5) are the most interesting for
-stress-testing GK's graph composition and type inference. The
-Save/Load + Expr pattern (#6) would require a new stateful-context
-feature in the node graph.
+- **Save/Load** → DAG wiring (every intermediate is a named node)
+- **Expr()** → infix operators + const expressions
+- **HOF lambdas** → nodes in the DAG
+- **Type casting** → auto-widening adapters
+- **Chain syntax** → DAG composition with named bindings

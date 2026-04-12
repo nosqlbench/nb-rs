@@ -187,11 +187,13 @@ name = "cassnbrs-adapter-cql"
 version = "0.1.1"
 dependencies = [
  "cassandra-cpp",
+ "inventory",
  "nb-activity",
  "nb-variates",
  "nb-workload",
  "serde_json",
  "tokio",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -1013,6 +1015,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inventory"
+version = "0.3.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1271,6 +1282,7 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "data-encoding",
+ "inventory",
  "layout-rs",
  "md-5",
  "petgraph",
@@ -2228,9 +2240,9 @@ dependencies = [
 
 [[package]]
 name = "vectordata"
-version = "0.15.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e97bf8bad3731e85fef076592f89d6d28d0aa083aeb85bcae61d3bc5600eb2fe"
+checksum = "61af801516290eafa358e176062f17daa1e3ccf6c9f767b9f6fb1a5094390abc"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -2253,9 +2265,9 @@ dependencies = [
 
 [[package]]
 name = "veks-anode"
-version = "0.14.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfe5f9fa99bb672baec37815a2855cf0db809bbd2962c1c08daef6f07fdc2b22"
+checksum = "3a8e7c116c54b9ee8576b0947d6954016af0fa972b5b6df96db7f808a07c4743"
 dependencies = [
  "byteorder",
  "indexmap",

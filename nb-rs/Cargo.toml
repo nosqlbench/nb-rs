@@ -34,4 +34,4 @@ nb-adapter-http = { path = "../adapters/nb-adapter-http", version = "0.1.1" }
 reqwest = { version = "0.12", features = ["blocking"] }
 serde = { version = "1", features = ["derive"] }
 libc = "0.2"
-veks-completion = "0.13"
+veks-completion = "0.17"

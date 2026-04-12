@@ -100,10 +100,13 @@ pub fn prepare(args: &[String]) -> Result<PreparedRun, String> {
 
     let num_ops = ops.len();
 
-    // Expand workload params in GK binding source strings before compilation.
-    // This resolves {param} references in const arguments like dataset names
-    // that node constructors need at compile time (not cycle time).
+    // Expand workload params in GK binding source before compilation.
+    // After string substitution, inject standalone GK bindings for any
+    // params referenced in op templates that aren't already defined as
+    // GK bindings. This lets {dataset} resolve from the GK output
+    // namespace without a separate globals mechanism.
     if !workload_params.is_empty() {
+        // Phase 1: string substitution inside GK source (existing behavior)
         for op in &mut ops {
             if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
                 for (key, value) in &workload_params {
@@ -114,18 +117,50 @@ pub fn prepare(args: &[String]) -> Result<PreparedRun, String> {
                 }
             }
         }
+
+        // Phase 2: inject param bindings into GK source for params
+        // referenced in op templates but not already defined as GK bindings.
+        let mut op_refs: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for op in ops.iter() {
+            for value in op.op.values() {
+                if let Some(s) = value.as_str() {
+                    for name in nb_workload::bindpoints::referenced_bindings(s) {
+                        if workload_params.contains_key(&name) {
+                            op_refs.insert(name);
+                        }
+                    }
+                }
+            }
+        }
+        if !op_refs.is_empty() {
+            for op in &mut ops {
+                if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
+                    for name in &op_refs {
+                        // Skip if the GK source already defines this binding
+                        let def_pattern = format!("{name} :=");
+                        if src.contains(&def_pattern) {
+                            continue;
+                        }
+                        let value = &workload_params[name];
+                        // Numeric params: inject as bare literal; string params: inject quoted
+                        let binding = if value.parse::<u64>().is_ok() || value.parse::<f64>().is_ok() {
+                            format!("\n{name} := {value}")
+                        } else {
+                            format!("\n{name} := \"{value}\"")
+                        };
+                        src.push_str(&binding);
+                    }
+                }
+            }
+        }
     }
 
     // Compile GK bindings.
     // Workload params are excluded from the "undeclared bind point"
     // check — they resolve at cycle time via the synthesis pipeline.
     let param_names: Vec<String> = workload_params.keys().cloned().collect();
-    let mut kernel = compile_bindings_excluding(&ops, &param_names)
+    let kernel = compile_bindings_excluding(&ops, &param_names)
         .map_err(|e| format!("compile bindings: {e}"))?;
-
-    // Store resolved workload params as globals on the program.
-    // Fibers read from program.globals() — no separate params map needed.
-    kernel.set_globals(workload_params.clone());
 
     // Build op sequence
     let op_sequence = OpSequence::from_ops(ops, seq_type);

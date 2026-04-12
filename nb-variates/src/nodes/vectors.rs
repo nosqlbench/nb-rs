@@ -3,10 +3,15 @@
 
 //! Vector dataset access nodes via the `vectordata` crate.
 //!
-//! Each node takes a dataset source string (URL or local path) as a
-//! const parameter and loads the dataset handle at construction time.
-//! The `vectordata` crate manages I/O, caching, and lazy access
-//! internally — the node just holds a `Send + Sync` reader handle.
+//! Each node takes a dataset source string (URL, local path, or
+//! catalog name) as a const parameter and loads the dataset handle at
+//! construction time.
+//!
+//! Resolution order:
+//! 1. Direct URL (`https://...`) — fetched via HTTP
+//! 2. Local path — loaded from filesystem
+//! 3. Catalog name (`glove-25-angular`) — resolved via configured
+//!    vectordata catalogs (`~/.config/vectordata/catalogs.yaml`)
 //!
 //! At cycle time, vectors are accessed by index with wrapping.
 //!
@@ -16,7 +21,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, LazyLock};
 
 use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, Value};
-use vectordata::{TestDataGroup, VectorReader};
+use vectordata::TestDataGroup;
+use vectordata::io::{VectorReader, VvecReader};
+use vectordata::catalog::sources::CatalogSources;
+use vectordata::catalog::resolver::Catalog;
 
 /// Global cache for loaded dataset groups keyed by source string.
 /// Ensures each dataset is loaded exactly once regardless of how many
@@ -31,9 +39,13 @@ static DATASET_CACHE: LazyLock<Mutex<HashMap<String, Arc<TestDataGroup>>>> =
 /// Load a dataset group from a source string.
 ///
 /// Resolution order:
-/// 1. Direct URL (starts with `http://` or `https://`)
-/// 2. Local path (contains `/` or exists as a directory)
-/// 3. Catalog lookup by name via `~/.config/vectordata/catalogs.yaml`
+/// 1. Cache hit — return immediately
+/// 2. URL (http/https) — pass directly to TestDataGroup::load
+/// 3. Local path — if the path exists, load from filesystem
+/// 4. Catalog lookup — search configured catalogs by name
+///
+/// Catalogs are configured in ~/.config/vectordata/catalogs.yaml.
+/// Use `veks datasets config add-catalog <url>` to add sources.
 fn load_dataset_group(source: &str) -> Result<Arc<TestDataGroup>, String> {
     // Check cache first
     {
@@ -43,11 +55,23 @@ fn load_dataset_group(source: &str) -> Result<Arc<TestDataGroup>, String> {
         }
     }
 
-    // Load the dataset
-    let group = load_dataset_group_uncached(source)?;
+    // Determine the load URL: direct URL, local path, or catalog lookup
+    let load_url = if source.starts_with("http://") || source.starts_with("https://") {
+        // Already a URL — use directly
+        source.to_string()
+    } else if std::path::Path::new(source).exists() {
+        // Local path — use directly
+        source.to_string()
+    } else {
+        // Try catalog lookup by name
+        resolve_from_catalog(source)?
+    };
+
+    let group = TestDataGroup::load(&load_url)
+        .map_err(|e| format!("failed to load dataset '{source}' (resolved to '{load_url}'): {e}"))?;
     let arc = Arc::new(group);
 
-    // Cache it
+    // Cache under the original source name
     {
         let mut cache = DATASET_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         cache.insert(source.to_string(), arc.clone());
@@ -56,32 +80,39 @@ fn load_dataset_group(source: &str) -> Result<Arc<TestDataGroup>, String> {
     Ok(arc)
 }
 
-fn load_dataset_group_uncached(source: &str) -> Result<TestDataGroup, String> {
-    // Direct URL
-    if source.starts_with("http://") || source.starts_with("https://") {
-        return TestDataGroup::load(source)
-            .map_err(|e| format!("failed to load dataset '{source}': {e}"));
+/// Resolve a dataset name via configured vectordata catalogs.
+///
+/// Loads catalog sources from ~/.config/vectordata/catalogs.yaml,
+/// searches for an exact name match, and returns the full dataset URL.
+fn resolve_from_catalog(name: &str) -> Result<String, String> {
+    let sources = CatalogSources::new().configure_default();
+    let catalog = Catalog::of(&sources);
+
+    if catalog.is_empty() {
+        return Err(format!(
+            "dataset '{name}' not found: no catalogs configured.\n\
+             Configure a catalog with: veks datasets config add-catalog <url>\n\
+             Or provide a direct URL or local path."
+        ));
     }
 
-    // Local path
-    if source.contains('/') || std::path::Path::new(source).exists() {
-        return TestDataGroup::load(source)
-            .map_err(|e| format!("failed to load dataset '{source}': {e}"));
+    match catalog.find_exact(name) {
+        Some(entry) => {
+            eprintln!("nbrs: resolved dataset '{name}' from catalog → {}", entry.path);
+            Ok(entry.path.clone())
+        }
+        None => {
+            let mut msg = format!("dataset '{name}' not found in any configured catalog.");
+            let matches = catalog.match_glob(&format!("*{}*", name));
+            if !matches.is_empty() {
+                msg.push_str("\n  Similar datasets:");
+                for m in matches.iter().take(5) {
+                    msg.push_str(&format!("\n    - {}", m.name));
+                }
+            }
+            Err(msg)
+        }
     }
-
-    // Catalog resolution by name
-    let sources = vectordata::catalog::CatalogSources::new().configure_default();
-    let catalog = vectordata::catalog::Catalog::of(&sources);
-
-    if let Some(entry) = catalog.find_exact(source) {
-        eprintln!("vectordata: resolved '{source}' → {}", entry.path);
-        return TestDataGroup::load(&entry.path)
-            .map_err(|e| format!("failed to load dataset '{source}' from catalog: {e}"));
-    }
-
-    // Not found — show available datasets
-    catalog.list_datasets(source);
-    Err(format!("dataset '{source}' not found in catalog or as a local path"))
 }
 
 // =================================================================
@@ -117,6 +148,7 @@ impl F32Dataset {
         if self.count == 0 { return vec![]; }
         self.reader.get(index % self.count).unwrap_or_default()
     }
+
 
     fn format_str(&self, index: usize) -> String {
         let vec = self.get(index);
@@ -445,10 +477,10 @@ pub struct DatasetDistanceFunction {
 impl DatasetDistanceFunction {
     pub fn from_source(source: &str) -> Result<Self, String> {
         let group = load_dataset_group(source)?;
-        let view = group.profile("default")
-            .ok_or_else(|| format!("profile 'default' not found in '{source}'"))?;
-        let df = view.distance_function()
-            .unwrap_or_else(|| "unknown".to_string());
+        let df = group.attribute("distance_function")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
         Ok(Self {
             meta: NodeMeta {
                 name: "dataset_distance_function".into(),
@@ -491,6 +523,209 @@ impl GkNode for VectorCount {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(self.count);
+    }
+}
+
+/// Return the query vector count as a constant.
+pub struct QueryCount {
+    meta: NodeMeta,
+    count: u64,
+}
+
+impl QueryCount {
+    pub fn from_source(source: &str) -> Result<Self, String> {
+        let dataset = F32Dataset::load(source, "default", "query")?;
+        Ok(Self {
+            meta: NodeMeta {
+                name: "query_count".into(),
+                outs: vec![Port::u64("output")],
+                ins: Vec::new(),
+            },
+            count: dataset.count as u64,
+        })
+    }
+}
+
+impl GkNode for QueryCount {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::U64(self.count);
+    }
+}
+
+/// Return the ground-truth neighbor count (maxk) as a constant.
+pub struct NeighborCount {
+    meta: NodeMeta,
+    count: u64,
+}
+
+impl NeighborCount {
+    pub fn from_source(source: &str) -> Result<Self, String> {
+        let dataset = I32Dataset::load(source, "default", "neighbor_indices")?;
+        Ok(Self {
+            meta: NodeMeta {
+                name: "neighbor_count".into(),
+                outs: vec![Port::u64("output")],
+                ins: Vec::new(),
+            },
+            count: dataset.dim as u64,
+        })
+    }
+}
+
+impl GkNode for NeighborCount {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::U64(self.count);
+    }
+}
+
+// =================================================================
+// Metadata facet nodes
+// =================================================================
+
+/// Handle to a loaded variable-length i32 facet (metadata_indices).
+struct Ivvec32Dataset {
+    reader: Arc<dyn VvecReader<i32>>,
+    count: usize,
+}
+
+impl Ivvec32Dataset {
+    fn load(source: &str, profile: &str) -> Result<Arc<Self>, String> {
+        let group = load_dataset_group(source)?;
+        let view = group.profile(profile)
+            .ok_or_else(|| format!("profile '{profile}' not found in '{source}'"))?;
+        let reader = view.metadata_indices()
+            .map_err(|e| format!("failed to access metadata_indices from '{source}': {e}"))?;
+        let count = reader.count();
+        Ok(Arc::new(Self { reader, count }))
+    }
+
+    fn format_str(&self, index: usize) -> String {
+        if self.count == 0 { return "[]".into(); }
+        let vec = self.reader.get(index % self.count).unwrap_or_default();
+        let inner: String = vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+        format!("[{inner}]")
+    }
+}
+
+/// Access metadata indices (variable-length matching base ordinals per query).
+pub struct MetadataIndicesAt {
+    meta: NodeMeta,
+    dataset: Arc<Ivvec32Dataset>,
+}
+
+impl MetadataIndicesAt {
+    pub fn from_source(source: &str) -> Result<Self, String> {
+        let dataset = Ivvec32Dataset::load(source, "default")?;
+        Ok(Self {
+            meta: NodeMeta {
+                name: "metadata_indices_at".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("index"))],
+            },
+            dataset,
+        })
+    }
+}
+
+impl GkNode for MetadataIndicesAt {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::Str(self.dataset.format_str(inputs[0].as_u64() as usize));
+    }
+}
+
+/// Return the length of a specific metadata_indices record (number of
+/// matching base vectors for one query) without loading the data.
+///
+/// Uses `dim_at()` which reads only the 4-byte header per record.
+pub struct MetadataIndicesLenAt {
+    meta: NodeMeta,
+    dataset: Arc<Ivvec32Dataset>,
+}
+
+impl MetadataIndicesLenAt {
+    pub fn from_source(source: &str) -> Result<Self, String> {
+        let dataset = Ivvec32Dataset::load(source, "default")?;
+        Ok(Self {
+            meta: NodeMeta {
+                name: "metadata_indices_len_at".into(),
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::u64("index"))],
+            },
+            dataset,
+        })
+    }
+}
+
+impl GkNode for MetadataIndicesLenAt {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let idx = inputs[0].as_u64() as usize;
+        let len = if self.dataset.count == 0 { 0 }
+            else { self.dataset.reader.dim_at(idx % self.dataset.count).unwrap_or(0) };
+        outputs[0] = Value::U64(len as u64);
+    }
+}
+
+/// Return the metadata indices count (number of predicate result sets).
+pub struct MetadataIndicesCount {
+    meta: NodeMeta,
+    count: u64,
+}
+
+impl MetadataIndicesCount {
+    pub fn from_source(source: &str) -> Result<Self, String> {
+        let dataset = Ivvec32Dataset::load(source, "default")?;
+        Ok(Self {
+            meta: NodeMeta {
+                name: "metadata_indices_count".into(),
+                outs: vec![Port::u64("output")],
+                ins: Vec::new(),
+            },
+            count: dataset.count as u64,
+        })
+    }
+}
+
+impl GkNode for MetadataIndicesCount {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::U64(self.count);
+    }
+}
+
+/// Report which facets are available in a dataset as a comma-separated list.
+pub struct DatasetFacets {
+    meta: NodeMeta,
+    facets: String,
+}
+
+impl DatasetFacets {
+    pub fn from_source(source: &str) -> Result<Self, String> {
+        let group = load_dataset_group(source)?;
+        let view = group.profile("default")
+            .ok_or_else(|| format!("profile 'default' not found in '{source}'"))?;
+        let manifest = view.facet_manifest();
+        let mut names: Vec<&String> = manifest.keys().collect();
+        names.sort();
+        let facets = names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
+        Ok(Self {
+            meta: NodeMeta {
+                name: "dataset_facets".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: Vec::new(),
+            },
+            facets,
+        })
+    }
+}
+
+impl GkNode for DatasetFacets {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::Str(self.facets.clone());
     }
 }
 
@@ -628,6 +863,66 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
+        FuncSig {
+            name: "query_count", category: C::RealData, outputs: 1,
+            description: "dataset query vector count",
+            help: "Returns the number of query vectors in the dataset.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "neighbor_count", category: C::RealData, outputs: 1,
+            description: "ground-truth neighbors per query (maxk)",
+            help: "Returns the number of ground-truth neighbors per query (the k in k-NN).",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "metadata_indices_len_at", category: C::RealData, outputs: 1,
+            description: "length of metadata indices for a query (no data load)",
+            help: "Returns the number of matching base vectors for a query's\npredicate without loading the full index list.\nUses dim_at() which reads only the 4-byte header.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "metadata_indices_at", category: C::RealData, outputs: 1,
+            description: "matching base ordinals for a query predicate",
+            help: "Variable-length list of base vector ordinals that match\nthe predicate for a given query index.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "metadata_indices_count", category: C::RealData, outputs: 1,
+            description: "number of predicate result sets",
+            help: "Returns the number of metadata index result sets (typically equals query count).",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "dataset_facets", category: C::RealData, outputs: 1,
+            description: "list available facets in a dataset",
+            help: "Returns a comma-separated list of facet names available\nin the dataset's default profile.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
     ]
 }
 
@@ -681,6 +976,30 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
         ),
         "vector_count" => Some(
             VectorCount::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "query_count" => Some(
+            QueryCount::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "neighbor_count" => Some(
+            NeighborCount::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "metadata_indices_len_at" => Some(
+            MetadataIndicesLenAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "metadata_indices_at" => Some(
+            MetadataIndicesAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "metadata_indices_count" => Some(
+            MetadataIndicesCount::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "dataset_facets" => Some(
+            DatasetFacets::from_source(src)
                 .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
         ),
         _ => None,

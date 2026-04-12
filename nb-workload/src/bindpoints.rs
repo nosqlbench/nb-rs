@@ -10,7 +10,7 @@
 /// Namespace qualifier for a bind point reference.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BindQualifier {
-    /// No qualifier — resolved by priority: bind → capture → input → param.
+    /// No qualifier — resolved by priority: bind → capture → input.
     None,
     /// `{input:name}` — graph input value.
     Input,
@@ -19,8 +19,6 @@ pub enum BindQualifier {
     /// `{capture:name}` — capture context (volatile or sticky port).
     /// Also accepts `{port:name}` as an alias.
     Capture,
-    /// `{param:name}` — workload parameter value.
-    Param,
 }
 
 /// A detected bind point in an op template field.
@@ -83,17 +81,31 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
                     i += 2; // skip }}
                 }
             } else {
-                // Reference: {name} or {qualifier:name}
+                // Single brace: {name}, {:=expr}, {:=expr:=}, or {expr}
                 i += 1;
                 let start = i;
-                while i < chars.len() && chars[i] != '}' {
+                let mut depth = 1u32;
+                while i < chars.len() {
+                    if chars[i] == '{' { depth += 1; }
+                    if chars[i] == '}' { depth -= 1; if depth == 0 { break; } }
                     i += 1;
                 }
                 if i < chars.len() {
                     let raw: String = chars[start..i].iter().collect();
                     let raw = raw.trim();
-                    let (qualifier, name) = parse_qualified_ref(raw);
-                    points.push(BindPoint::Reference { name, qualifier });
+
+                    // Check for explicit {:=expr} or {:=expr:=} syntax
+                    if let Some(expr) = raw.strip_prefix(":=") {
+                        let expr = expr.strip_suffix(":=").unwrap_or(expr).trim();
+                        points.push(BindPoint::InlineDefinition(expr.to_string()));
+                    } else if is_expression(raw) {
+                        // Content has operators/parens — treat as inline expression
+                        points.push(BindPoint::InlineDefinition(raw.to_string()));
+                    } else {
+                        // Simple identifier — reference bind point
+                        let (qualifier, name) = parse_qualified_ref(raw);
+                        points.push(BindPoint::Reference { name, qualifier });
+                    }
                     i += 1; // skip }
                 }
             }
@@ -105,6 +117,30 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
     points
 }
 
+/// Detect whether bind point content is a GK expression (not a simple name).
+///
+/// Returns true if the content contains operators, function calls,
+/// or other syntax that can't be a plain identifier.
+pub fn is_expression_public(s: &str) -> bool {
+    is_expression(s)
+}
+
+fn is_expression(s: &str) -> bool {
+    // Simple identifiers: [a-zA-Z_][a-zA-Z0-9_-]*
+    // Hyphens are valid in identifiers (e.g. my-variable), so only treat
+    // `-` as an expression indicator when it is a unary minus (first char
+    // followed by a digit) which marks a negative numeric literal.
+    s.contains('(') || s.contains(')') ||
+    s.contains('+') || s.contains('*') || s.contains('/') ||
+    s.contains('%') || s.contains('^') || s.contains('&') ||
+    s.contains('|') || s.contains('!') || s.contains('<') ||
+    s.contains('>') ||
+    // Numeric literal (starts with digit)
+    s.starts_with(|c: char| c.is_ascii_digit()) ||
+    // Negative literal: starts with - followed by digit
+    (s.starts_with('-') && s.len() > 1 && s.as_bytes()[1].is_ascii_digit())
+}
+
 /// Parse a qualified reference like "coord:cycle" or just "cycle".
 fn parse_qualified_ref(raw: &str) -> (BindQualifier, String) {
     if let Some((prefix, name)) = raw.split_once(':') {
@@ -112,7 +148,6 @@ fn parse_qualified_ref(raw: &str) -> (BindQualifier, String) {
             "input" | "coord" | "coordinate" => BindQualifier::Input,
             "bind" => BindQualifier::Bind,
             "capture" => BindQualifier::Capture,
-            "param" => BindQualifier::Param,
             _ => return (BindQualifier::None, raw.to_string()), // not a known qualifier
         };
         (qualifier, name.trim().to_string())
@@ -256,6 +291,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn is_expression_detects_function_calls() {
+        assert!(is_expression("hash(cycle)"));
+        assert!(is_expression("mod(x, 100)"));
+    }
+
+    #[test]
+    fn is_expression_detects_operators() {
+        assert!(is_expression("x + 1"));
+        assert!(is_expression("a * b"));
+        assert!(is_expression("x & 0xFF"));
+    }
+
+    #[test]
+    fn is_expression_rejects_simple_names() {
+        assert!(!is_expression("cycle"));
+        assert!(!is_expression("my_var"));
+        assert!(!is_expression("user_id"));
+    }
+
+    #[test]
+    fn is_expression_rejects_hyphenated_names() {
+        assert!(!is_expression("my-variable"));
+        assert!(!is_expression("some-long-name"));
+    }
+
+    #[test]
+    fn is_expression_detects_numeric_literals() {
+        assert!(is_expression("42"));
+        assert!(is_expression("3.14"));
+        assert!(is_expression("-5"));
+    }
+
+    #[test]
     fn static_field() {
         assert_eq!(classify_field("plain text"), FieldType::Static);
         assert_eq!(classify_field("42"), FieldType::Static);
@@ -341,7 +409,6 @@ mod tests {
         });
     }
 
-    #[test]
     #[test]
     fn unknown_qualifier_becomes_unqualified() {
         // "port" is not a recognized qualifier — treated as unqualified

@@ -73,6 +73,126 @@ following binding — these are extractable by tooling for
 auto-generated documentation. Block comments (`/* ... */`) for
 temporarily disabling sections.
 
+### Infix Operators
+
+GK supports arithmetic, bitwise, and power operators with
+standard precedence. Operators desugar to function calls in
+the DAG — `a + b` becomes `f64_add(a, b)`, `a & b` becomes
+`u64_and(a, b)`.
+
+```
+// Arithmetic (f64)
+wave := sin(to_f64(cycle) * 0.1)
+scaled := (x + 1.0) / 2.0
+
+// Bitwise (u64)
+low_byte := hash(cycle) & 0xFF
+flags := (region << 48) | (tenant << 32) | sequence
+masked := hash(cycle) ^ 0xDEADBEEF
+
+// Power
+decay := amplitude ** 0.5
+```
+
+**Precedence** (lowest to highest, follows Rust):
+
+| Level | Operators | Associativity |
+|-------|-----------|---------------|
+| 1 | `\|` (bitwise OR) | left |
+| 2 | `^` (bitwise XOR) | left |
+| 3 | `&` (bitwise AND) | left |
+| 4 | `<<` `>>` (shifts) | left |
+| 5 | `+` `-` (add/sub) | left |
+| 6 | `*` `/` `%` (mul/div/mod) | left |
+| 7 | `**` (power) | right |
+| 8 | `-` `!` (unary neg/not) | prefix |
+
+Parentheses override precedence: `(a + b) * c`.
+
+**Operator → Node mapping:**
+
+| Operator | Node function |
+|----------|--------------|
+| `+` `-` `*` `/` | `f64_add`, `f64_sub`, `f64_mul`, `f64_div` |
+| `%` | `f64_mod` |
+| `**` | `pow` |
+| `&` `\|` `^` | `u64_and`, `u64_or`, `u64_xor` |
+| `<<` `>>` | `u64_shl`, `u64_shr` |
+| `!` (prefix) | `u64_not` |
+| `-` (prefix) | `f64_sub(0.0, x)` |
+
+### Literal Promotion
+
+Literal values in wire positions are automatically promoted to
+constant nodes. This means function calls with mixed wire and
+literal arguments work naturally:
+
+```
+// All equivalent:
+exp := 2.0
+out := pow(x, exp)
+
+out := pow(x, 2.0)   // 2.0 auto-promoted to ConstF64 node
+```
+
+The compiler inserts anonymous `ConstF64(2.0)` nodes for literals
+in wire positions. These nodes are constant-folded at compile time,
+so there is no runtime cost.
+
+### Type Inference and Auto-Widening
+
+Infix operators select the correct function variant based on
+operand types:
+
+```
+cycle * 2          → u64_mul (both u64)
+to_f64(cycle) * 0.5  → f64_mul (both f64)
+cycle * 0.5        → f64_mul (cycle auto-widened to f64)
+hash(cycle) & 0xFF → u64_and (bitwise always u64)
+```
+
+When operands have different types, the compiler auto-widens
+the narrower operand (u64 → f64 via `to_f64`). This is a safe,
+lossless conversion. The compiler emits an advisory event:
+
+```
+gk[advisory]: widening u64 → f64 in operator *
+```
+
+### Auto-Conversion to String
+
+When a non-string value feeds a string wire input, the compiler
+auto-inserts a conversion adapter:
+
+| From | To | Adapter |
+|------|----|---------|
+| u64 | String | `__u64_to_str` (decimal) |
+| f64 | String | `__f64_to_str` |
+| bool | String | `__bool_to_str` ("true"/"false") |
+| JSON | String | `__json_to_str` (compact JSON) |
+
+These are inserted transparently. The compiler emits an
+advisory event for each insertion, queryable via `--diagnose`.
+
+### Compiler Diagnostics
+
+The compiler emits tagged diagnostic events at three levels:
+
+| Level | Tag | Meaning |
+|-------|-----|---------|
+| Info | `gk[info]` | Normal compilation steps |
+| Advisory | `gk[advisory]` | Implicit conversions, type widenings — review for module design quality |
+| Warning | `gk[warning]` | Potential performance or correctness issues |
+
+Query advisories with `--diagnose` to review all implicit
+conversions in your module:
+
+```bash
+nbrs bench gk mymodule.gk --explain
+# Shows: gk[advisory]: type adapter U64→F64: cycle → sin
+# Shows: gk[advisory]: widening u64 → f64 in operator *
+```
+
 ---
 
 ## Compilation Pipeline

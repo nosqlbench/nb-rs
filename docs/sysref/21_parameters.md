@@ -107,9 +107,9 @@ fn resolve_param_with_gk(cli, workload, kernel, key) -> Option<String> {
 }
 ```
 
-Resolved workload params are stored as globals on `GkProgram`
-after compilation. Fibers read them via `program.globals()` —
-no separate params map per fiber.
+Workload params referenced in op templates are injected into the
+GK source as constant bindings before compilation. They resolve
+as normal GK outputs at cycle time — no separate globals mechanism.
 
 Settings resolved this way:
 - `cycles` — total cycle count
@@ -149,8 +149,8 @@ This is pure string substitution — the GK compiler never sees
 GK node constructors (like `vector_dim`) need the dataset name
 at compile time, not cycle time.
 
-After compilation, the resolved params are stored as globals on
-`GkProgram`. Fibers read them via `program.globals()` at cycle
-time for `{param:name}` resolution and op field substitution.
-The params are resolved once, stored once, never re-read from
-external sources.
+Additionally, params referenced in op templates (e.g., `{dataset}`
+in a stmt field) are injected as standalone GK constant bindings
+(e.g., `dataset := "glove-25-angular"`) before compilation. This
+makes them available as normal GK outputs at cycle time, eliminating
+the need for a separate globals mechanism on `GkProgram`.

@@ -12,10 +12,17 @@ pub mod registry;
 pub mod events;
 pub(crate) mod factory;
 pub(crate) mod validate;
+
+/// Re-exported for external crates that register GK nodes via `register_nodes!`.
+///
+/// External node crates need to name `ConstArg` in their builder function
+/// signatures.  Exporting it here (via `pub use`) makes it reachable as
+/// `nb_variates::dsl::ConstArg` without exposing the full factory module.
+pub use factory::ConstArg;
 mod modules;
 mod binding;
 
-pub use compile::{compile_gk, compile_gk_checked, compile_gk_with_path, compile_gk_strict, compile_gk_with_outputs, compile_gk_with_libs};
+pub use compile::{compile_gk, compile_gk_checked, compile_gk_with_path, compile_gk_strict, compile_gk_with_outputs, compile_gk_with_libs, eval_const_expr};
 
 /// Return the embedded standard library module sources.
 ///

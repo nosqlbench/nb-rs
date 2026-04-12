@@ -185,6 +185,16 @@ impl GkAssembler {
         self.outputs.keys().map(|s| s.as_str()).collect()
     }
 
+    /// Look up the output port type of a named node.
+    ///
+    /// Returns the first output port's `PortType` if the node exists.
+    pub fn output_type(&self, name: &str) -> Option<PortType> {
+        self.nodes.iter()
+            .find(|pn| pn.name == name)
+            .and_then(|pn| pn.node.meta().outs.first())
+            .map(|port| port.typ)
+    }
+
     /// Validate, resolve, and produce a Phase 1 runtime kernel.
     pub fn compile(self) -> Result<GkKernel, AssemblyError> {
         self.compile_with_log(None)
@@ -714,7 +724,10 @@ impl GkAssembler {
                     all_name_to_idx.insert(adapter_name.clone(), adapter_idx);
 
                     let adapter_wiring = vec![source];
-                    resolved_wiring.push(adapter_wiring);
+                    while resolved_wiring.len() <= adapter_idx {
+                        resolved_wiring.push(Vec::new());
+                    }
+                    resolved_wiring[adapter_idx] = adapter_wiring;
 
                     all_nodes.push(PendingNode {
                         name: adapter_name,
@@ -933,11 +946,36 @@ impl GkAssembler {
 
 /// Return an auto-insert edge adapter for common coercions, if one exists.
 fn auto_adapter(from: PortType, to: PortType) -> Option<Box<dyn GkNode>> {
+    use crate::nodes::convert::{
+        BoolToStr, BoolToU64,
+        U32ToU64, U32ToF64, U32ToString,
+        I32ToI64, I32ToF64, I32ToString,
+        I64ToF64, I64ToString,
+        F32ToF64, F32ToString,
+    };
     match (from, to) {
+        // Widening: safe, no precision loss
+        (PortType::U64, PortType::F64) => Some(Box::new(U64ToF64::new())),
+        // Widening: unsigned integers
+        (PortType::U32, PortType::U64) => Some(Box::new(U32ToU64::new())),
+        (PortType::U32, PortType::F64) => Some(Box::new(U32ToF64::new())),
+        // Widening: signed integers
+        (PortType::I32, PortType::I64) => Some(Box::new(I32ToI64::new())),
+        (PortType::I32, PortType::F64) => Some(Box::new(I32ToF64::new())),
+        (PortType::I64, PortType::F64) => Some(Box::new(I64ToF64::new())),
+        // Widening: floats
+        (PortType::F32, PortType::F64) => Some(Box::new(F32ToF64::new())),
+        // To-string: all types render as strings
         (PortType::U64, PortType::Str) => Some(Box::new(U64ToString::new())),
         (PortType::F64, PortType::Str) => Some(Box::new(F64ToString::new())),
-        (PortType::U64, PortType::F64) => Some(Box::new(U64ToF64::new())),
+        (PortType::Bool, PortType::Str) => Some(Box::new(BoolToStr::new())),
         (PortType::Json, PortType::Str) => Some(Box::new(JsonToStr::new())),
+        (PortType::U32, PortType::Str) => Some(Box::new(U32ToString::new())),
+        (PortType::I32, PortType::Str) => Some(Box::new(I32ToString::new())),
+        (PortType::I64, PortType::Str) => Some(Box::new(I64ToString::new())),
+        (PortType::F32, PortType::Str) => Some(Box::new(F32ToString::new())),
+        // Bool to numeric
+        (PortType::Bool, PortType::U64) => Some(Box::new(BoolToU64::new())),
         _ => None,
     }
 }

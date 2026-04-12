@@ -9,7 +9,7 @@
 //! - **Explicit conversions**: user-placed nodes for lossy, formatted,
 //!   or parameterized conversions. These require deliberate intent.
 
-use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value};
 
 /// Convert u64 to its decimal string representation.
 ///
@@ -145,6 +145,35 @@ impl GkNode for U64ToF64 {
 /// results to flow into arithmetic or indexing nodes.
 ///
 /// JIT level: P1 (no compiled_u64; bool input type).
+/// Convert bool to string ("true"/"false").
+///
+/// Signature: `__bool_to_str(input: bool) -> (str)`
+///
+/// Edge adapter auto-inserted when a bool port feeds a string port.
+pub struct BoolToStr {
+    meta: NodeMeta,
+}
+
+impl BoolToStr {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "__bool_to_str".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::bool("input"))],
+            },
+        }
+    }
+}
+
+impl GkNode for BoolToStr {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::Str(if inputs[0].as_bool() { "true" } else { "false" }.into());
+    }
+}
+
+/// Convert bool to u64 (false=0, true=1).
 pub struct BoolToU64 {
     meta: NodeMeta,
 }
@@ -216,6 +245,336 @@ impl GkNode for U64ToBool {
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Bool(inputs[0].as_u64() != 0);
+    }
+}
+
+// =================================================================
+// Narrower type widening adapters
+// =================================================================
+
+/// Convert U32 to U64 (zero-extend).
+///
+/// Signature: `__u32_to_u64(input: u32) -> (u64)`
+///
+/// Edge adapter auto-inserted when a u32 port feeds a u64 port.
+/// Masks the low 32 bits to ensure clean zero-extension.
+///
+/// JIT level: P1 (no compiled_u64 path).
+pub struct U32ToU64 {
+    meta: NodeMeta,
+}
+
+impl U32ToU64 {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "__u32_to_u64".into(),
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::new("input", PortType::U32))],
+            },
+        }
+    }
+}
+
+impl GkNode for U32ToU64 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::U64(inputs[0].as_u64() & 0xFFFF_FFFF);
+    }
+}
+
+/// Convert I32 to I64 (sign-extend).
+///
+/// Signature: `__i32_to_i64(input: i32) -> (i64)`
+///
+/// Edge adapter auto-inserted when an i32 port feeds an i64 port.
+/// Sign-extends the 32-bit value stored in the low bits of u64.
+///
+/// JIT level: P1 (no compiled_u64 path).
+pub struct I32ToI64 {
+    meta: NodeMeta,
+}
+
+impl I32ToI64 {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "__i32_to_i64".into(),
+                outs: vec![Port::new("output", PortType::I64)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::I32))],
+            },
+        }
+    }
+}
+
+impl GkNode for I32ToI64 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let i32_val = inputs[0].as_u64() as i32;
+        outputs[0] = Value::U64(i32_val as i64 as u64);
+    }
+}
+
+/// Convert F32 to F64 (precision widening).
+///
+/// Signature: `__f32_to_f64(input: f32) -> (f64)`
+///
+/// Edge adapter auto-inserted when an f32 port feeds an f64 port.
+/// Extracts f32 bits from the low 32 bits of u64 and widens to f64.
+///
+/// JIT level: P1 (no compiled_u64 path).
+pub struct F32ToF64 {
+    meta: NodeMeta,
+}
+
+impl F32ToF64 {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "__f32_to_f64".into(),
+                outs: vec![Port::f64("output")],
+                ins: vec![Slot::Wire(Port::new("input", PortType::F32))],
+            },
+        }
+    }
+}
+
+impl GkNode for F32ToF64 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let bits = inputs[0].as_u64() as u32;
+        let f32_val = f32::from_bits(bits);
+        outputs[0] = Value::F64(f32_val as f64);
+    }
+}
+
+/// Convert I32 to F64.
+///
+/// Signature: `__i32_to_f64(input: i32) -> (f64)`
+///
+/// Edge adapter auto-inserted when an i32 port feeds an f64 port.
+/// Sign-extends the 32-bit value and converts to f64 (lossless).
+///
+/// JIT level: P1 (no compiled_u64 path).
+pub struct I32ToF64 {
+    meta: NodeMeta,
+}
+
+impl I32ToF64 {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "__i32_to_f64".into(),
+                outs: vec![Port::f64("output")],
+                ins: vec![Slot::Wire(Port::new("input", PortType::I32))],
+            },
+        }
+    }
+}
+
+impl GkNode for I32ToF64 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let i32_val = inputs[0].as_u64() as i32;
+        outputs[0] = Value::F64(i32_val as f64);
+    }
+}
+
+/// Convert U32 to F64.
+///
+/// Signature: `__u32_to_f64(input: u32) -> (f64)`
+///
+/// Edge adapter auto-inserted when a u32 port feeds an f64 port.
+/// Masks the low 32 bits and converts to f64 (lossless for all u32 values).
+///
+/// JIT level: P1 (no compiled_u64 path).
+pub struct U32ToF64 {
+    meta: NodeMeta,
+}
+
+impl U32ToF64 {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "__u32_to_f64".into(),
+                outs: vec![Port::f64("output")],
+                ins: vec![Slot::Wire(Port::new("input", PortType::U32))],
+            },
+        }
+    }
+}
+
+impl GkNode for U32ToF64 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let u32_val = (inputs[0].as_u64() & 0xFFFF_FFFF) as u32;
+        outputs[0] = Value::F64(u32_val as f64);
+    }
+}
+
+/// Convert I64 to F64.
+///
+/// Signature: `__i64_to_f64(input: i64) -> (f64)`
+///
+/// Edge adapter auto-inserted when an i64 port feeds an f64 port.
+/// Reinterprets the u64 bits as i64 and converts to f64. Lossless
+/// for values with magnitude up to 2^53.
+///
+/// JIT level: P1 (no compiled_u64 path).
+pub struct I64ToF64 {
+    meta: NodeMeta,
+}
+
+impl I64ToF64 {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "__i64_to_f64".into(),
+                outs: vec![Port::f64("output")],
+                ins: vec![Slot::Wire(Port::new("input", PortType::I64))],
+            },
+        }
+    }
+}
+
+impl GkNode for I64ToF64 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let i64_val = inputs[0].as_u64() as i64;
+        outputs[0] = Value::F64(i64_val as f64);
+    }
+}
+
+// -----------------------------------------------------------------
+// To-string adapters for narrower types
+// -----------------------------------------------------------------
+
+/// Convert I32 to its decimal string representation.
+///
+/// Signature: `__i32_to_string(input: i32) -> (String)`
+///
+/// Edge adapter auto-inserted when an i32 port feeds a string port.
+/// Sign-extends the 32-bit value and formats as a signed decimal.
+///
+/// JIT level: P1 (String output; no compiled_u64 path).
+pub struct I32ToString {
+    meta: NodeMeta,
+}
+
+impl I32ToString {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "__i32_to_string".into(),
+                outs: vec![Port::str("output")],
+                ins: vec![Slot::Wire(Port::new("input", PortType::I32))],
+            },
+        }
+    }
+}
+
+impl GkNode for I32ToString {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let i32_val = inputs[0].as_u64() as i32;
+        outputs[0] = Value::Str(i32_val.to_string());
+    }
+}
+
+/// Convert I64 to its decimal string representation.
+///
+/// Signature: `__i64_to_string(input: i64) -> (String)`
+///
+/// Edge adapter auto-inserted when an i64 port feeds a string port.
+/// Reinterprets the u64 bits as i64 and formats as a signed decimal.
+///
+/// JIT level: P1 (String output; no compiled_u64 path).
+pub struct I64ToString {
+    meta: NodeMeta,
+}
+
+impl I64ToString {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "__i64_to_string".into(),
+                outs: vec![Port::str("output")],
+                ins: vec![Slot::Wire(Port::new("input", PortType::I64))],
+            },
+        }
+    }
+}
+
+impl GkNode for I64ToString {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let i64_val = inputs[0].as_u64() as i64;
+        outputs[0] = Value::Str(i64_val.to_string());
+    }
+}
+
+/// Convert F32 to its string representation.
+///
+/// Signature: `__f32_to_string(input: f32) -> (String)`
+///
+/// Edge adapter auto-inserted when an f32 port feeds a string port.
+/// Extracts f32 bits from the low 32 bits and formats via Display.
+///
+/// JIT level: P1 (String output; no compiled_u64 path).
+pub struct F32ToString {
+    meta: NodeMeta,
+}
+
+impl F32ToString {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "__f32_to_string".into(),
+                outs: vec![Port::str("output")],
+                ins: vec![Slot::Wire(Port::new("input", PortType::F32))],
+            },
+        }
+    }
+}
+
+impl GkNode for F32ToString {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let bits = inputs[0].as_u64() as u32;
+        let f32_val = f32::from_bits(bits);
+        outputs[0] = Value::Str(f32_val.to_string());
+    }
+}
+
+/// Convert U32 to its decimal string representation.
+///
+/// Signature: `__u32_to_string(input: u32) -> (String)`
+///
+/// Edge adapter auto-inserted when a u32 port feeds a string port.
+/// Masks to 32 bits and formats as unsigned decimal.
+///
+/// JIT level: P1 (String output; no compiled_u64 path).
+pub struct U32ToString {
+    meta: NodeMeta,
+}
+
+impl U32ToString {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "__u32_to_string".into(),
+                outs: vec![Port::str("output")],
+                ins: vec![Slot::Wire(Port::new("input", PortType::U32))],
+            },
+        }
+    }
+}
+
+impl GkNode for U32ToString {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let u32_val = (inputs[0].as_u64() & 0xFFFF_FFFF) as u32;
+        outputs[0] = Value::Str(u32_val.to_string());
     }
 }
 
@@ -637,6 +996,15 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Clamp an f64 value to [min, max].\nUse after distributions with unbounded tails (normal, Cauchy)\nto enforce domain constraints, or to guard against edge values.\nParameters:\n  input — f64 wire input\n  min   — lower bound (inclusive, f64)\n  max   — upper bound (inclusive, f64)\nExample: clamp_f64(icd_normal(hash(cycle), 50.0, 10.0), 0.0, 100.0)",
         },
         FuncSig {
+            name: "to_f64", category: C::Conversions, outputs: 1,
+            description: "convert u64 integer to f64",
+            help: "Numeric conversion: 42u64 becomes 42.0f64.\nNot a bit reinterpret. Values above 2^53 lose precision.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
             name: "f64_to_u64", category: C::Conversions, outputs: 1,
             description: "truncate f64 to u64 (lossy)",
             help: "Truncate an f64 to u64 by dropping the fractional part toward zero.\nNegative values and NaN produce 0. Values above u64::MAX saturate.\nUse when you need a raw integer from a float without rounding.\nParameters:\n  input — f64 wire input",
@@ -724,6 +1092,40 @@ pub fn signatures() -> &'static [FuncSig] {
     ]
 }
 
+/// Convert u64 integer value to f64: `x as f64`.
+///
+/// NOT a bit reinterpret — this is numeric conversion.
+/// `42u64` becomes `42.0f64`. Values > 2^53 lose precision.
+///
+/// Signature: `to_f64(input: u64) -> (f64)`
+pub struct ToF64 {
+    meta: NodeMeta,
+}
+
+impl ToF64 {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "to_f64".into(),
+                ins: vec![Slot::Wire(Port::u64("input"))],
+                outs: vec![Port::f64("output")],
+            },
+        }
+    }
+}
+
+impl GkNode for ToF64 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::F64(inputs[0].as_u64() as f64);
+    }
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        Some(Box::new(|inputs, outputs| {
+            outputs[0] = (inputs[0] as f64).to_bits();
+        }))
+    }
+}
+
 /// Try to build a conversion node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
@@ -734,6 +1136,7 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
             consts.first().map(|c| c.as_f64()).unwrap_or(f64::MIN),
             consts.get(1).map(|c| c.as_f64()).unwrap_or(f64::MAX),
         )))),
+        "to_f64" => Some(Ok(Box::new(ToF64::new()))),
         "f64_to_u64" => Some(Ok(Box::new(F64ToU64::new()))),
         "round_to_u64" => Some(Ok(Box::new(RoundToU64::new()))),
         "floor_to_u64" => Some(Ok(Box::new(FloorToU64::new()))),
@@ -870,6 +1273,111 @@ mod tests {
     #[test]
     fn zero_pad_no_truncation() {
         let node = ZeroPadU64::new(3);
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(12345)], &mut out);
+        assert_eq!(out[0].as_str(), "12345");
+    }
+
+    // ---- Narrower type widening adapter tests ----
+
+    #[test]
+    fn u32_to_u64_zero_extends() {
+        let node = U32ToU64::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(42)], &mut out);
+        assert_eq!(out[0].as_u64(), 42);
+        // High bits are masked off
+        node.eval(&[Value::U64(0xFFFF_FFFF_0000_0001)], &mut out);
+        assert_eq!(out[0].as_u64(), 1);
+    }
+
+    #[test]
+    fn i32_to_i64_sign_extends() {
+        let node = I32ToI64::new();
+        let mut out = [Value::None];
+        // Positive value
+        node.eval(&[Value::U64(42)], &mut out);
+        assert_eq!(out[0].as_u64(), 42);
+        // Negative i32 (-1 as u32 = 0xFFFFFFFF)
+        node.eval(&[Value::U64(0xFFFF_FFFF)], &mut out);
+        assert_eq!(out[0].as_u64(), (-1i64) as u64);
+    }
+
+    #[test]
+    fn f32_to_f64_widens() {
+        let node = F32ToF64::new();
+        let mut out = [Value::None];
+        let f32_bits = 3.14f32.to_bits() as u64;
+        node.eval(&[Value::U64(f32_bits)], &mut out);
+        // f32 3.14 widened to f64 should be close to 3.14
+        let result = out[0].as_f64();
+        assert!((result - 3.14).abs() < 0.001, "got {result}");
+    }
+
+    #[test]
+    fn i32_to_f64_converts() {
+        let node = I32ToF64::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(42)], &mut out);
+        assert_eq!(out[0].as_f64(), 42.0);
+        // Negative: -10 as u32
+        node.eval(&[Value::U64((-10i32) as u32 as u64)], &mut out);
+        assert_eq!(out[0].as_f64(), -10.0);
+    }
+
+    #[test]
+    fn u32_to_f64_converts() {
+        let node = U32ToF64::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(1000)], &mut out);
+        assert_eq!(out[0].as_f64(), 1000.0);
+    }
+
+    #[test]
+    fn i64_to_f64_converts() {
+        let node = I64ToF64::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(42)], &mut out);
+        assert_eq!(out[0].as_f64(), 42.0);
+        // Negative: -1i64 as u64
+        node.eval(&[Value::U64((-1i64) as u64)], &mut out);
+        assert_eq!(out[0].as_f64(), -1.0);
+    }
+
+    // ---- Narrower to-string adapter tests ----
+
+    #[test]
+    fn i32_to_string_formats_signed() {
+        let node = I32ToString::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(42)], &mut out);
+        assert_eq!(out[0].as_str(), "42");
+        node.eval(&[Value::U64((-7i32) as u32 as u64)], &mut out);
+        assert_eq!(out[0].as_str(), "-7");
+    }
+
+    #[test]
+    fn i64_to_string_formats_signed() {
+        let node = I64ToString::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(100)], &mut out);
+        assert_eq!(out[0].as_str(), "100");
+        node.eval(&[Value::U64((-42i64) as u64)], &mut out);
+        assert_eq!(out[0].as_str(), "-42");
+    }
+
+    #[test]
+    fn f32_to_string_formats() {
+        let node = F32ToString::new();
+        let mut out = [Value::None];
+        let bits = 2.5f32.to_bits() as u64;
+        node.eval(&[Value::U64(bits)], &mut out);
+        assert_eq!(out[0].as_str(), "2.5");
+    }
+
+    #[test]
+    fn u32_to_string_formats() {
+        let node = U32ToString::new();
         let mut out = [Value::None];
         node.eval(&[Value::U64(12345)], &mut out);
         assert_eq!(out[0].as_str(), "12345");

@@ -308,17 +308,19 @@ pub fn compile_bindings_with_libs(
     gk_lib_paths: Vec<std::path::PathBuf>,
     strict: bool,
 ) -> Result<GkKernel, String> {
-    compile_bindings_with_libs_excluding(ops, source_dir, gk_lib_paths, strict, &[])
+    compile_bindings_with_libs_excluding(ops, source_dir, gk_lib_paths, strict, &[], &[])
 }
 
 /// Like `compile_bindings_with_libs` but excludes named bind points from
-/// the "undeclared" check. Used for workload params that resolve at cycle time.
+/// validation and accepts additional required output names (for GK config
+/// expression references like `cycles={train_count}`).
 pub fn compile_bindings_with_libs_excluding(
     ops: &[ParsedOp],
     source_dir: Option<&std::path::Path>,
     gk_lib_paths: Vec<std::path::PathBuf>,
     strict: bool,
     exclude: &[String],
+    extra_required: &[String],
 ) -> Result<GkKernel, String> {
     use nb_workload::model::BindingsDef;
 
@@ -342,6 +344,12 @@ pub fn compile_bindings_with_libs_excluding(
                         }
                     }
                 }
+            }
+        }
+        // Include config expression references so DCE preserves them
+        for name in extra_required {
+            if !required.contains(name) {
+                required.push(name.clone());
             }
         }
         return nb_variates::dsl::compile_gk_with_libs(&source, source_dir, gk_lib_paths, &required, strict);

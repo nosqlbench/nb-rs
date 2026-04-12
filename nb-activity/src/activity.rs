@@ -4,7 +4,8 @@
 //! Activity: the unit of concurrent execution.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
 
@@ -94,6 +95,14 @@ impl ActivityMetrics {
             error_type_counts: std::sync::Mutex::new(std::collections::HashMap::new()),
             labels: labels.clone(),
         }
+    }
+
+    /// Return the number of cycles completed so far.
+    ///
+    /// Reads from the `cycles_total` counter atomically. Used by the
+    /// progress reporter thread to display live throughput.
+    pub fn cycles_completed(&self) -> u64 {
+        self.cycles_total.get()
     }
 
     /// Increment counter for a specific error type. Creates the
@@ -269,7 +278,7 @@ impl Activity {
 
         // Validate all bind points are resolvable before execution
         crate::synthesis::validate_bind_points(
-            templates, &program, program.globals(),
+            templates, &program,
         );
 
         let traversal_stats = Arc::new(crate::wrappers::TraversalStats {
@@ -343,6 +352,33 @@ impl Activity {
             Arc::new(RateLimiter::start(nb_rate::RateSpec::new(r)))
         });
 
+        // Spawn a progress reporter thread that prints cycle count to stderr
+        // every 500 ms when stderr is a TTY and cycle count is large enough
+        // to be worth reporting. The flag is cleared after all executor
+        // fibers finish so the thread terminates and clears its line.
+        let progress_flag = Arc::new(AtomicBool::new(true));
+        let total_cycles = activity.config.cycles;
+        let is_stderr_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+        if is_stderr_tty && total_cycles > 1000 {
+            let flag = progress_flag.clone();
+            let progress_metrics = activity.metrics.clone();
+            std::thread::spawn(move || {
+                while flag.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(500));
+                    if !flag.load(Ordering::Relaxed) { break; }
+                    let completed = progress_metrics.cycles_completed();
+                    let pct = if total_cycles > 0 {
+                        completed * 100 / total_cycles
+                    } else {
+                        0
+                    };
+                    eprint!("\r  progress: {completed}/{total_cycles} ({pct}%)    ");
+                }
+                // Clear the progress line when done
+                eprint!("\r                                                        \r");
+            });
+        }
+
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
 
         for _task_id in 0..activity.config.concurrency {
@@ -372,6 +408,12 @@ impl Activity {
                 activity.metrics.errors_total.inc();
             }
         }
+
+        // Signal the progress thread to stop and allow it to clear its line.
+        progress_flag.store(false, Ordering::Relaxed);
+        // Brief yield so the progress thread can print the clear sequence
+        // before any subsequent output appears on stderr.
+        std::thread::sleep(Duration::from_millis(10));
 
         // Print validation summary if any validation was active
         if !validation_metrics.is_empty() {

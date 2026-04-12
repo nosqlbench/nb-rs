@@ -188,6 +188,45 @@ pub(crate) enum JitOp {
     /// 0=atan2 1=pow
     MathBinary(u8),
 
+    // --- Two-wire u64 integer ops ---
+    /// output = input[0] + input[1]  (wrapping)
+    U64Add2,
+    /// output = input[0] - input[1]  (wrapping)
+    U64Sub2,
+    /// output = input[0] * input[1]  (wrapping)
+    U64Mul2,
+    /// output = input[0] / input[1]  (0 if divisor is 0)
+    U64Div2,
+    /// output = input[0] % input[1]  (0 if divisor is 0)
+    U64Mod2,
+    /// output = input[0] & input[1]
+    U64And,
+    /// output = input[0] | input[1]
+    U64Or,
+    /// output = input[0] ^ input[1]
+    U64Xor,
+    /// output = input[0] << input[1]
+    U64Shl,
+    /// output = input[0] >> input[1]  (logical)
+    U64Shr,
+    /// output = !input[0]  (unary bitwise NOT)
+    U64Not,
+
+    // --- Inline binary f64 arithmetic (no extern call) ---
+    /// output = input as f64 (integer to float conversion, not bit reinterpret)
+    ToF64,
+
+    /// output = f64(a) + f64(b)
+    F64Add,
+    /// output = f64(a) - f64(b)
+    F64Sub,
+    /// output = f64(a) * f64(b)
+    F64Mul,
+    /// output = f64(a) / f64(b) (0 if b==0)
+    F64Div,
+    /// output = f64(a) % f64(b) (0 if b==0)
+    F64Mod,
+
     /// Fallback: call the Phase 2 closure
     Fallback,
 }
@@ -316,6 +355,25 @@ pub(crate) fn classify_node(node: &dyn GkNode) -> JitOp {
         "exp" => JitOp::MathUnary(9),
         "atan2" => JitOp::MathBinary(0),
         "pow" => JitOp::MathBinary(1),
+        "to_f64" => JitOp::ToF64,
+        // Two-wire u64 ops (no constants)
+        "u64_add" => JitOp::U64Add2,
+        "u64_sub" => JitOp::U64Sub2,
+        "u64_mul" => JitOp::U64Mul2,
+        "u64_div" => JitOp::U64Div2,
+        "u64_mod" => JitOp::U64Mod2,
+        "u64_and" => JitOp::U64And,
+        "u64_or"  => JitOp::U64Or,
+        "u64_xor" => JitOp::U64Xor,
+        "u64_shl" => JitOp::U64Shl,
+        "u64_shr" => JitOp::U64Shr,
+        "u64_not" => JitOp::U64Not,
+
+        "f64_add" => JitOp::F64Add,
+        "f64_sub" => JitOp::F64Sub,
+        "f64_mul" => JitOp::F64Mul,
+        "f64_div" => JitOp::F64Div,
+        "f64_mod" => JitOp::F64Mod,
 
         "weighted_pick" => {
             if consts.len() >= 5 {
@@ -797,6 +855,150 @@ fn compile_jit_impl(
                     let call = builder.ins().call(func_ref, &[a, b]);
                     let result = builder.inst_results(call)[0];
                     store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+
+                JitOp::ToF64 => {
+                    let val = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let fval = builder.ins().fcvt_from_uint(types::F64, val);
+                    store_slot_f64(&mut builder, buffer_ptr, output_slots[0], fval);
+                }
+
+                // Two-wire u64 integer ops — pure Cranelift, no extern call
+                JitOp::U64Add2 => {
+                    let a = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot(&mut builder, buffer_ptr, input_slots[1]);
+                    let result = builder.ins().iadd(a, b);
+                    store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+                JitOp::U64Sub2 => {
+                    let a = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot(&mut builder, buffer_ptr, input_slots[1]);
+                    let result = builder.ins().isub(a, b);
+                    store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+                JitOp::U64Mul2 => {
+                    let a = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot(&mut builder, buffer_ptr, input_slots[1]);
+                    let result = builder.ins().imul(a, b);
+                    store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+                JitOp::U64Div2 => {
+                    let a = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot(&mut builder, buffer_ptr, input_slots[1]);
+                    // Guard: if b == 0, store 0; else store a / b.
+                    // Must branch because udiv traps on zero divisor.
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let is_zero = builder.ins().icmp(ir::condcodes::IntCC::Equal, b, zero);
+                    let div_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I64);
+                    builder.ins().brif(is_zero, merge_block, &[zero], div_block, &[]);
+                    builder.switch_to_block(div_block);
+                    builder.seal_block(div_block);
+                    let div_result = builder.ins().udiv(a, b);
+                    builder.ins().jump(merge_block, &[div_result]);
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    let result = builder.block_params(merge_block)[0];
+                    store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+                JitOp::U64Mod2 => {
+                    let a = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot(&mut builder, buffer_ptr, input_slots[1]);
+                    // Guard: if b == 0, store 0; else store a % b.
+                    // Must branch because urem traps on zero divisor.
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let is_zero = builder.ins().icmp(ir::condcodes::IntCC::Equal, b, zero);
+                    let rem_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I64);
+                    builder.ins().brif(is_zero, merge_block, &[zero], rem_block, &[]);
+                    builder.switch_to_block(rem_block);
+                    builder.seal_block(rem_block);
+                    let rem_result = builder.ins().urem(a, b);
+                    builder.ins().jump(merge_block, &[rem_result]);
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    let result = builder.block_params(merge_block)[0];
+                    store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+                JitOp::U64And => {
+                    let a = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot(&mut builder, buffer_ptr, input_slots[1]);
+                    let result = builder.ins().band(a, b);
+                    store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+                JitOp::U64Or => {
+                    let a = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot(&mut builder, buffer_ptr, input_slots[1]);
+                    let result = builder.ins().bor(a, b);
+                    store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+                JitOp::U64Xor => {
+                    let a = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot(&mut builder, buffer_ptr, input_slots[1]);
+                    let result = builder.ins().bxor(a, b);
+                    store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+                JitOp::U64Shl => {
+                    let a = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot(&mut builder, buffer_ptr, input_slots[1]);
+                    let result = builder.ins().ishl(a, b);
+                    store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+                JitOp::U64Shr => {
+                    let a = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot(&mut builder, buffer_ptr, input_slots[1]);
+                    let result = builder.ins().ushr(a, b);
+                    store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+                JitOp::U64Not => {
+                    let a = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let result = builder.ins().bnot(a);
+                    store_slot(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+
+                // Inline binary f64 arithmetic — pure Cranelift, no extern call
+                JitOp::F64Add => {
+                    let a = load_slot_f64(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot_f64(&mut builder, buffer_ptr, input_slots[1]);
+                    let result = builder.ins().fadd(a, b);
+                    store_slot_f64(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+                JitOp::F64Sub => {
+                    let a = load_slot_f64(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot_f64(&mut builder, buffer_ptr, input_slots[1]);
+                    let result = builder.ins().fsub(a, b);
+                    store_slot_f64(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+                JitOp::F64Mul => {
+                    let a = load_slot_f64(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot_f64(&mut builder, buffer_ptr, input_slots[1]);
+                    let result = builder.ins().fmul(a, b);
+                    store_slot_f64(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+                JitOp::F64Div => {
+                    let a = load_slot_f64(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot_f64(&mut builder, buffer_ptr, input_slots[1]);
+                    // Guard: if b == 0, result = 0; else result = a / b
+                    let zero = builder.ins().f64const(0.0);
+                    let is_zero = builder.ins().fcmp(ir::condcodes::FloatCC::Equal, b, zero);
+                    let div_result = builder.ins().fdiv(a, b);
+                    let result = builder.ins().select(is_zero, zero, div_result);
+                    store_slot_f64(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+                JitOp::F64Mod => {
+                    let a = load_slot_f64(&mut builder, buffer_ptr, input_slots[0]);
+                    let b = load_slot_f64(&mut builder, buffer_ptr, input_slots[1]);
+                    // a % b = a - floor(a / b) * b, guarded for b == 0
+                    let zero = builder.ins().f64const(0.0);
+                    let is_zero = builder.ins().fcmp(ir::condcodes::FloatCC::Equal, b, zero);
+                    let quotient = builder.ins().fdiv(a, b);
+                    let floored = builder.ins().floor(quotient);
+                    let product = builder.ins().fmul(floored, b);
+                    let mod_result = builder.ins().fsub(a, product);
+                    let result = builder.ins().select(is_zero, zero, mod_result);
+                    store_slot_f64(&mut builder, buffer_ptr, output_slots[0], result);
                 }
 
                 JitOp::Fallback => {

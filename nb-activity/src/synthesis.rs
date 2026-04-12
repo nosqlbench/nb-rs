@@ -47,7 +47,6 @@ pub fn substitute_bind_points(
                     BindQualifier::Input => format!("{{input:{name}}}"),
                     BindQualifier::Bind => format!("{{bind:{name}}}"),
                     BindQualifier::Capture => format!("{{capture:{name}}}"),
-                    BindQualifier::Param => format!("{{param:{name}}}"),
                 };
                 result = result.replace(&placeholder, &value_str);
             }
@@ -94,10 +93,6 @@ fn resolve_bind_point(
                 }
             }
         }
-        BindQualifier::Param => {
-            // Param-only — this function doesn't have params access
-            format!("{{param:{name}}}")
-        }
         BindQualifier::None => {
             // Unqualified: try GK output first, then captures, then input
             if kernel.program().resolve_output(name).is_some() {
@@ -124,7 +119,6 @@ fn substitute_bind_points_with_state(
     program: &GkProgram,
     state: &mut GkState,
     captures: Option<&CaptureContext>,
-    params: &std::collections::HashMap<String, String>,
 ) -> String {
     let bind_points = bindpoints::extract_bind_points(template);
     if bind_points.is_empty() { return template.to_string(); }
@@ -133,13 +127,12 @@ fn substitute_bind_points_with_state(
     for bp in &bind_points {
         match bp {
             BindPoint::Reference { name, qualifier } => {
-                let value_str = resolve_bind_point_with_state(name, qualifier, program, state, captures, params);
+                let value_str = resolve_bind_point_with_state(name, qualifier, program, state, captures);
                 let placeholder = match qualifier {
                     BindQualifier::None => format!("{{{name}}}"),
                     BindQualifier::Input => format!("{{input:{name}}}"),
                     BindQualifier::Bind => format!("{{bind:{name}}}"),
                     BindQualifier::Capture => format!("{{capture:{name}}}"),
-                    BindQualifier::Param => format!("{{param:{name}}}"),
                 };
                 result = result.replace(&placeholder, &value_str);
             }
@@ -155,7 +148,6 @@ fn resolve_bind_point_with_state(
     program: &GkProgram,
     state: &mut GkState,
     captures: Option<&CaptureContext>,
-    params: &std::collections::HashMap<String, String>,
 ) -> String {
     match qualifier {
         BindQualifier::Bind => {
@@ -182,13 +174,8 @@ fn resolve_bind_point_with_state(
                 })
                 .unwrap_or_else(|| format!("{{coord:{name}}}"))
         }
-        BindQualifier::Param => {
-            params.get(name)
-                .cloned()
-                .unwrap_or_else(|| format!("{{param:{name}}}"))
-        }
         BindQualifier::None => {
-            // Resolution order: GK output → captures → input → params → unresolved
+            // Resolution order: GK output → captures → input → unresolved
             if program.resolve_output(name).is_some() {
                 return state.pull(program, name).to_display_string();
             }
@@ -200,9 +187,6 @@ fn resolve_bind_point_with_state(
                 if let Some(idx) = program.input_names().iter().position(|n| n == name) {
                     return state.get_input(idx).to_string();
                 }
-            }
-            if let Some(val) = params.get(name) {
-                return val.clone();
             }
             format!("{{{name}}}")
         }
@@ -251,11 +235,12 @@ pub struct FiberBuilder {
 ///
 /// Called at init time. Warns for each unresolvable `{name}` reference.
 /// A bind point is resolvable if it matches a GK output, input name,
-/// workload param, or a known capture declaration from another op.
+/// or a known capture declaration from another op. Workload params are
+/// injected into the GK source as constant bindings before compilation,
+/// so they resolve as GK outputs.
 pub fn validate_bind_points(
     templates: &[ParsedOp],
     program: &GkProgram,
-    params: &std::collections::HashMap<String, String>,
 ) {
     // Collect all capture declarations across templates
     let mut capture_names: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -280,18 +265,16 @@ pub fn validate_bind_points(
                             BindQualifier::Bind => program.resolve_output(name).is_some(),
                             BindQualifier::Capture => capture_names.contains(name),
                             BindQualifier::Input => program.input_names().contains(&name.to_string()),
-                            BindQualifier::Param => params.contains_key(name),
                             BindQualifier::None => {
                                 program.resolve_output(name).is_some()
                                     || capture_names.contains(name)
                                     || program.input_names().contains(&name.to_string())
-                                    || params.contains_key(name)
                             }
                         };
                         if !resolvable {
                             eprintln!(
                                 "warning: unresolved bind point '{{{name}}}' in op '{}' field '{field_name}'. \
-                                 Not found in GK bindings, captures, inputs, or workload params.",
+                                 Not found in GK bindings, captures, or inputs.",
                                 template.name
                             );
                         }
@@ -304,7 +287,6 @@ pub fn validate_bind_points(
 
 impl FiberBuilder {
     /// Create a new fiber builder from a shared GK program.
-    /// Globals (workload params) are read from `program.globals()`.
     pub fn new(program: Arc<GkProgram>) -> Self {
         let state = program.create_state();
         Self {
@@ -352,7 +334,7 @@ impl FiberBuilder {
             names.push(key.clone());
             if let serde_json::Value::String(s) = value {
                 let resolved = substitute_bind_points_with_state(
-                    s, &self.program, &mut self.state, Some(&self.captures), self.program.globals(),
+                    s, &self.program, &mut self.state, Some(&self.captures),
                 );
 
                 // Preserve typed value for pure bind point references

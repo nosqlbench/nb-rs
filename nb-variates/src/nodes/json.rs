@@ -420,18 +420,265 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
+        FuncSig {
+            name: "array_len", category: C::Json, outputs: 1,
+            description: "count elements in a bracket-encoded array",
+            help: "Parse [a,b,c,...] and return the element count.\nWorks on JSON arrays and bracket-format vectors.\nReturns 0 for empty or non-array input.\nExample: array_len(metadata_indices_at(cycle, \"sift1m\"))",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "array", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "array_at", category: C::Json, outputs: 1,
+            description: "access element at index in bracket-encoded array",
+            help: "Return the element at a given index from [a,b,c,...].\nIndex wraps modulo array length.\nReturns empty string for empty arrays.\nExample: array_at(neighbor_indices_at(0, \"sift1m\"), cycle)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "array", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "normalize_vector", category: C::Json, outputs: 1,
+            description: "L2-normalize a bracket-encoded float vector string",
+            help: "Parse [x,y,z,...], compute L2 norm, return normalized vector string.\nPasses through unchanged if input is not bracket-encoded or norm is zero.\nParameters:\n  vector — Str wire input\nExample: normalize_vector(random_vector(seed, 128))",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "vector", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "random_vector", category: C::Json, outputs: 1,
+            description: "generate deterministic float vector as bracket-encoded string",
+            help: "Generate a deterministic vector of `dim` f64 values in [min, max).\nSeed and dim are cycle-time wires; min and max are consts (default 0.0, 1.0).\nUses xxHash3 for each element — same seed always produces the same vector.\nParameters:\n  seed — u64 wire input\n  dim  — u64 wire input\n  min  — f64 const (default 0.0)\n  max  — f64 const (default 1.0)\nExample: random_vector(hash(cycle), 128, 0.0, 1.0)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "seed", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "dim",  slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "min",  slot_type: SlotType::ConstF64, required: false },
+                ParamSpec { name: "max",  slot_type: SlotType::ConstF64, required: false },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
     ]
+}
+
+// =================================================================
+// Vector operations: normalize and random generation
+// =================================================================
+
+/// L2-normalize a bracket-encoded float vector string `[1.0,2.0,3.0]`.
+///
+/// Parses the bracket-format vector, computes the L2 norm, and returns
+/// a normalized vector in the same bracket format. Passes through
+/// unchanged if the input is not bracket-encoded or the norm is
+/// effectively zero.
+///
+/// Signature: `normalize_vector(vector: Str) -> (output: Str)`
+pub struct NormalizeVector {
+    meta: NodeMeta,
+}
+
+impl Default for NormalizeVector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NormalizeVector {
+    /// Create a new NormalizeVector node.
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "normalize_vector".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("vector", PortType::Str))],
+            },
+        }
+    }
+}
+
+impl GkNode for NormalizeVector {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let s = inputs[0].as_str();
+        let trimmed = s.trim();
+        if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+            outputs[0] = Value::Str(s.to_string());
+            return;
+        }
+        let inner = &trimmed[1..trimmed.len()-1];
+        let values: Vec<f64> = inner.split(',')
+            .filter_map(|v| v.trim().parse::<f64>().ok())
+            .collect();
+        let norm = values.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if norm < 1e-15 {
+            outputs[0] = Value::Str(s.to_string());
+            return;
+        }
+        let normalized: Vec<String> = values.iter()
+            .map(|v| format!("{}", v / norm))
+            .collect();
+        outputs[0] = Value::Str(format!("[{}]", normalized.join(",")));
+    }
+}
+
+/// Generate a deterministic f64 vector as a bracket-encoded JSON array string.
+///
+/// Uses xxHash3 to derive pseudo-random values in `[min, max)` for each
+/// dimension. The seed and dimension are provided at cycle time; `min`
+/// and `max` are constants set at construction.
+///
+/// Signature: `random_vector(seed: u64, dim: u64) -> (output: Str)`
+/// Consts: `min: f64 = 0.0`, `max: f64 = 1.0`
+pub struct RandomVector {
+    meta: NodeMeta,
+    min: f64,
+    max: f64,
+}
+
+impl RandomVector {
+    /// Create a new RandomVector node with the given value range.
+    pub fn new(min: f64, max: f64) -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "random_vector".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![
+                    Slot::Wire(Port::u64("seed")),
+                    Slot::Wire(Port::u64("dim")),
+                ],
+            },
+            min,
+            max,
+        }
+    }
+}
+
+impl GkNode for RandomVector {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let seed = inputs[0].as_u64();
+        let dim = inputs[1].as_u64() as usize;
+        let range = self.max - self.min;
+        let mut h = seed;
+        let mut values = Vec::with_capacity(dim);
+        for _ in 0..dim {
+            h = xxhash_rust::xxh3::xxh3_64(&h.to_le_bytes());
+            let unit = (h as f64) / (u64::MAX as f64); // [0, 1)
+            values.push(format!("{}", self.min + range * unit));
+        }
+        outputs[0] = Value::Str(format!("[{}]", values.join(",")));
+    }
+}
+
+// =================================================================
+// Array inspection: operate on bracket-encoded arrays like [1,2,3]
+// =================================================================
+
+/// Return the number of elements in a bracket-encoded array string.
+///
+/// Parses `[a,b,c,...]` and counts elements. Returns 0 for empty
+/// arrays or non-array input.
+pub struct ArrayLen {
+    meta: NodeMeta,
+}
+
+impl ArrayLen {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "array_len".into(),
+                outs: vec![Port::u64("output")],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
+            },
+        }
+    }
+}
+
+impl GkNode for ArrayLen {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let s = inputs[0].as_str();
+        let trimmed = s.trim();
+        if trimmed == "[]" || trimmed.is_empty() {
+            outputs[0] = Value::U64(0);
+        } else if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let inner = &trimmed[1..trimmed.len() - 1];
+            outputs[0] = Value::U64(inner.split(',').count() as u64);
+        } else {
+            outputs[0] = Value::U64(0);
+        }
+    }
+}
+
+/// Return the element at a given index from a bracket-encoded array.
+///
+/// `array_at(array_str, index)` → string element at position.
+/// Index wraps modulo array length. Returns "" for empty arrays.
+pub struct ArrayAt {
+    meta: NodeMeta,
+}
+
+impl ArrayAt {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "array_at".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![
+                    Slot::Wire(Port::new("array", PortType::Str)),
+                    Slot::Wire(Port::u64("index")),
+                ],
+            },
+        }
+    }
+}
+
+impl GkNode for ArrayAt {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let s = inputs[0].as_str();
+        let idx = inputs[1].as_u64() as usize;
+        let trimmed = s.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let inner = &trimmed[1..trimmed.len() - 1];
+            let elements: Vec<&str> = inner.split(',').map(|e| e.trim()).collect();
+            if elements.is_empty() || (elements.len() == 1 && elements[0].is_empty()) {
+                outputs[0] = Value::Str(String::new());
+            } else {
+                outputs[0] = Value::Str(elements[idx % elements.len()].to_string());
+            }
+        } else {
+            outputs[0] = Value::Str(String::new());
+        }
+    }
 }
 
 /// Try to build a JSON node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "to_json" => Some(Ok(Box::new(ToJson::new(crate::node::PortType::U64)))),
         "json_to_str" => Some(Ok(Box::new(JsonToStr::new()))),
         "escape_json" => Some(Ok(Box::new(EscapeJson::new()))),
         "json_merge" => Some(Ok(Box::new(JsonMerge::new()))),
+        "array_len" => Some(Ok(Box::new(ArrayLen::new()))),
+        "array_at" => Some(Ok(Box::new(ArrayAt::new()))),
+        "normalize_vector" => Some(Ok(Box::new(NormalizeVector::new()))),
+        "random_vector" => Some(Ok(Box::new(RandomVector::new(
+            consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
+            consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
+        )))),
         _ => None,
     }
 }

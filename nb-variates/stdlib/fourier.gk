@@ -1,0 +1,92 @@
+// Copyright 2024-2026 Jonathan Shook
+// SPDX-License-Identifier: Apache-2.0
+
+// @category: Math
+// fourier.gk — Fourier synthesis: periodic waveforms from harmonics.
+//
+// Uses type-aware infix operators: `mod(input, period)` and `to_f64`
+// for u64→f64 conversion, then infix `/` and `*` resolve to f64
+// variants automatically since the operands are f64.
+//
+// All modules are P3 JIT-ready.
+
+// Pure sine wave: sin(2π * cycle / period).
+// Output range: [-1.0, 1.0].
+//
+// Example:
+//   wave := sine_wave(input: cycle, period: 100)
+sine_wave(input: u64, period: u64) -> (value: f64) := {
+    pos := to_f64(input % period)
+    per := to_f64(identity(period))
+    t := (pos / per) * 6.283185307179586
+    value := sin(t)
+}
+
+// Pure cosine wave: cos(2π * cycle / period).
+cosine_wave(input: u64, period: u64) -> (value: f64) := {
+    pos := to_f64(input % period)
+    per := to_f64(identity(period))
+    t := (pos / per) * 6.283185307179586
+    value := cos(t)
+}
+
+// Bipolar sine mapped to [0.0, 1.0]: (sin(t) + 1) / 2.
+sine_unit(input: u64, period: u64) -> (value: f64) := {
+    pos := to_f64(input % period)
+    per := to_f64(identity(period))
+    t := (pos / per) * 6.283185307179586
+    raw := sin(t)
+    value := lerp(raw, 0.5, 1.0)
+}
+
+// Square wave from 5 odd harmonics.
+square_wave(input: u64, period: u64) -> (value: f64) := {
+    pos := to_f64(input % period)
+    per := to_f64(identity(period))
+    phase := pos / per
+
+    t := phase * 6.283185307179586
+    h1 := sin(t)
+
+    t3 := phase * 18.84955592153876
+    h3 := sin(t3) * 0.3333333333333333
+
+    t5 := phase * 31.41592653589793
+    h5 := sin(t5) * 0.2
+
+    t7 := phase * 43.982297150257104
+    h7 := sin(t7) * 0.14285714285714285
+
+    t9 := phase * 56.548667764616276
+    h9 := sin(t9) * 0.1111111111111111
+
+    s1 := h1 + h3
+    s2 := s1 + h5
+    s3 := s2 + h7
+    s4 := s3 + h9
+    value := s4 * 1.2732395447351628
+}
+
+// Triangle wave from 4 odd harmonics.
+triangle_wave(input: u64, period: u64) -> (value: f64) := {
+    pos := to_f64(input % period)
+    per := to_f64(identity(period))
+    phase := pos / per
+
+    t := phase * 6.283185307179586
+    h1 := sin(t)
+
+    t3 := phase * 18.84955592153876
+    h3 := sin(t3) * -0.1111111111111111
+
+    t5 := phase * 31.41592653589793
+    h5 := sin(t5) * 0.04
+
+    t7 := phase * 43.982297150257104
+    h7 := sin(t7) * -0.020408163265306124
+
+    s1 := h1 + h3
+    s2 := s1 + h5
+    s3 := s2 + h7
+    value := s3 * 0.8105694691387022
+}

@@ -270,6 +270,25 @@ impl Compiler {
                     *span,
                 )
             }
+            Expr::BinOp(lhs, op, rhs) => {
+                Expr::BinOp(
+                    Box::new(self.rewrite_module_expr(lhs, prefix, module_inputs, arg_map)),
+                    *op,
+                    Box::new(self.rewrite_module_expr(rhs, prefix, module_inputs, arg_map)),
+                )
+            }
+            Expr::UnaryNeg(inner, span) => {
+                Expr::UnaryNeg(
+                    Box::new(self.rewrite_module_expr(inner, prefix, module_inputs, arg_map)),
+                    *span,
+                )
+            }
+            Expr::UnaryBitNot(inner, span) => {
+                Expr::UnaryBitNot(
+                    Box::new(self.rewrite_module_expr(inner, prefix, module_inputs, arg_map)),
+                    *span,
+                )
+            }
             other => other.clone(),
         }
     }

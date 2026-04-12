@@ -4,6 +4,10 @@
 //! Recursive descent parser for the GK DSL.
 //!
 //! Parses a token stream (from the lexer) into an AST.
+//! Infix arithmetic expressions (`+`, `-`, `*`, `/`, `%`, `^`) are
+//! handled by a Pratt (precedence-climbing) parser that produces
+//! `Expr::BinOp` nodes, later desugared by the compiler into
+//! function calls.
 
 use crate::dsl::ast::*;
 use crate::dsl::lexer::{Token, TokenKind, Span};
@@ -191,12 +195,18 @@ fn parse_extern_port(p: &mut Parser) -> Result<Statement, String> {
     Ok(Statement::ExternPort(ExternPort { name, mode, typ, default, span }))
 }
 
-/// `coordinates := (name1, name2, ...)`
+/// `coordinates := (name1, name2, ...)` or `inputs := ()` (zero inputs)
 fn parse_inputs(p: &mut Parser) -> Result<Statement, String> {
     let span = p.span();
-    p.advance(); // consume 'coordinates'
+    p.advance(); // consume 'coordinates' / 'inputs'
     p.expect(&TokenKind::ColonEq)?;
     p.expect(&TokenKind::LParen)?;
+
+    // Allow empty input list: `inputs := ()`
+    if matches!(p.peek(), TokenKind::RParen) {
+        p.advance(); // consume ')'
+        return Ok(Statement::Coordinates(vec![], span));
+    }
 
     let mut names = Vec::new();
     loop {
@@ -261,18 +271,88 @@ fn parse_destructuring_binding(p: &mut Parser) -> Result<Statement, String> {
     }))
 }
 
-/// Parse an expression.
+/// Parse an expression with operator precedence (Pratt parsing).
+///
+/// Handles infix arithmetic operators (`+`, `-`, `*`, `/`, `%`, `^`)
+/// with correct precedence and associativity. Atoms are literals,
+/// identifiers, function calls, parenthesized groups, and unary negation.
 fn parse_expr(p: &mut Parser) -> Result<Expr, String> {
+    parse_expr_bp(p, 0)
+}
+
+/// Pratt parser core: parse expression with minimum binding power.
+///
+/// Precedence levels (lowest to highest):
+///   Level 1: `|`  (BitOr)        — bp (1, 2)
+///   Level 2: `^`  (BitXor)       — bp (3, 4)
+///   Level 3: `&`  (BitAnd)       — bp (5, 6)
+///   Level 4: `<<` `>>` (Shl/Shr) — bp (7, 8)
+///   Level 5: `+` `-` (Add/Sub)   — bp (9, 10)
+///   Level 6: `*` `/` `%`         — bp (11, 12)
+///   Level 7: `**` (Pow, right)   — bp (14, 13)
+///   Level 8: `-` `!` (unary, in parse_atom)
+fn parse_expr_bp(p: &mut Parser, min_bp: u8) -> Result<Expr, String> {
+    let mut lhs = parse_atom(p)?;
+
+    loop {
+        let op = match p.peek() {
+            TokenKind::Pipe      => Some((BinOpKind::BitOr,  1,  2)),
+            TokenKind::Caret     => Some((BinOpKind::BitXor, 3,  4)),
+            TokenKind::Ampersand => Some((BinOpKind::BitAnd, 5,  6)),
+            TokenKind::ShiftLeft => Some((BinOpKind::Shl,    7,  8)),
+            TokenKind::ShiftRight=> Some((BinOpKind::Shr,    7,  8)),
+            TokenKind::Plus      => Some((BinOpKind::Add,    9, 10)),
+            TokenKind::Minus     => Some((BinOpKind::Sub,    9, 10)),
+            TokenKind::Star      => Some((BinOpKind::Mul,   11, 12)),
+            TokenKind::Slash     => Some((BinOpKind::Div,   11, 12)),
+            TokenKind::Percent   => Some((BinOpKind::Mod,   11, 12)),
+            TokenKind::StarStar  => Some((BinOpKind::Pow,   14, 13)), // right-associative
+            _ => None,
+        };
+
+        let Some((op_kind, l_bp, r_bp)) = op else { break; };
+        if l_bp < min_bp { break; }
+
+        p.advance(); // consume operator token
+        let rhs = parse_expr_bp(p, r_bp)?;
+        lhs = Expr::BinOp(Box::new(lhs), op_kind, Box::new(rhs));
+    }
+
+    Ok(lhs)
+}
+
+/// Parse an atomic expression: literal, identifier, function call,
+/// parenthesized group, or unary negation.
+fn parse_atom(p: &mut Parser) -> Result<Expr, String> {
     let span = p.span();
 
     match p.peek().clone() {
+        TokenKind::Minus => {
+            // Unary negation: `-expr`
+            p.advance();
+            let inner = parse_atom(p)?;
+            Ok(Expr::UnaryNeg(Box::new(inner), span))
+        }
+        TokenKind::Bang => {
+            // Unary bitwise NOT: `!expr`
+            p.advance();
+            let inner = parse_atom(p)?;
+            Ok(Expr::UnaryBitNot(Box::new(inner), span))
+        }
+        TokenKind::LParen => {
+            // Parenthesized grouping (not a function call — that is
+            // handled inside the Ident branch below).
+            p.advance(); // consume '('
+            let inner = parse_expr(p)?;
+            p.expect(&TokenKind::RParen)?;
+            Ok(inner)
+        }
         TokenKind::StringLit(s) => {
             p.advance();
             Ok(Expr::StringLit(s, span))
         }
         TokenKind::IntLit(v) => {
             p.advance();
-            // Check if this is followed by `.` making it a float
             Ok(Expr::IntLit(v, span))
         }
         TokenKind::FloatLit(v) => {
@@ -371,6 +451,19 @@ mod tests {
         match &f.statements[0] {
             Statement::Coordinates(names, _) => {
                 assert_eq!(names, &["cycle", "thread"]);
+            }
+            _ => panic!("expected coordinates"),
+        }
+    }
+
+    #[test]
+    fn parse_inputs_empty() {
+        // Zero-input declaration for const expression programs
+        let f = parse_str("inputs := ()");
+        assert_eq!(f.statements.len(), 1);
+        match &f.statements[0] {
+            Statement::Coordinates(names, _) => {
+                assert_eq!(names.len(), 0, "expected empty input list");
             }
             _ => panic!("expected coordinates"),
         }
@@ -533,6 +626,252 @@ mod tests {
                 }
             }
             _ => panic!("expected init"),
+        }
+    }
+
+    #[test]
+    fn parse_simple_addition() {
+        let f = parse_str("y := a + b");
+        match &f.statements[0] {
+            Statement::CycleBinding(b) => {
+                match &b.value {
+                    Expr::BinOp(lhs, BinOpKind::Add, rhs) => {
+                        assert!(matches!(**lhs, Expr::Ident(ref s, _) if s == "a"));
+                        assert!(matches!(**rhs, Expr::Ident(ref s, _) if s == "b"));
+                    }
+                    _ => panic!("expected BinOp Add, got {:?}", b.value),
+                }
+            }
+            _ => panic!("expected cycle binding"),
+        }
+    }
+
+    #[test]
+    fn parse_precedence_mul_over_add() {
+        // `a + b * c` should parse as `a + (b * c)`
+        let f = parse_str("y := a + b * c");
+        match &f.statements[0] {
+            Statement::CycleBinding(b) => {
+                match &b.value {
+                    Expr::BinOp(lhs, BinOpKind::Add, rhs) => {
+                        assert!(matches!(**lhs, Expr::Ident(ref s, _) if s == "a"));
+                        match &**rhs {
+                            Expr::BinOp(rl, BinOpKind::Mul, rr) => {
+                                assert!(matches!(**rl, Expr::Ident(ref s, _) if s == "b"));
+                                assert!(matches!(**rr, Expr::Ident(ref s, _) if s == "c"));
+                            }
+                            _ => panic!("expected inner Mul"),
+                        }
+                    }
+                    _ => panic!("expected outer Add"),
+                }
+            }
+            _ => panic!("expected cycle binding"),
+        }
+    }
+
+    #[test]
+    fn parse_parenthesized_grouping() {
+        // `(a + b) * c` — parens override precedence
+        let f = parse_str("y := (a + b) * c");
+        match &f.statements[0] {
+            Statement::CycleBinding(b) => {
+                match &b.value {
+                    Expr::BinOp(lhs, BinOpKind::Mul, rhs) => {
+                        match &**lhs {
+                            Expr::BinOp(_, BinOpKind::Add, _) => {} // correct
+                            _ => panic!("expected inner Add in lhs"),
+                        }
+                        assert!(matches!(**rhs, Expr::Ident(ref s, _) if s == "c"));
+                    }
+                    _ => panic!("expected outer Mul"),
+                }
+            }
+            _ => panic!("expected cycle binding"),
+        }
+    }
+
+    #[test]
+    fn parse_unary_negation() {
+        let f = parse_str("y := -x");
+        match &f.statements[0] {
+            Statement::CycleBinding(b) => {
+                match &b.value {
+                    Expr::UnaryNeg(inner, _) => {
+                        assert!(matches!(**inner, Expr::Ident(ref s, _) if s == "x"));
+                    }
+                    _ => panic!("expected UnaryNeg"),
+                }
+            }
+            _ => panic!("expected cycle binding"),
+        }
+    }
+
+    #[test]
+    fn parse_func_call_with_infix_arg() {
+        // `sin(cycle * 0.25)` — infix inside function args
+        let f = parse_str("y := sin(cycle * 0.25)");
+        match &f.statements[0] {
+            Statement::CycleBinding(b) => {
+                match &b.value {
+                    Expr::Call(c) => {
+                        assert_eq!(c.func, "sin");
+                        assert_eq!(c.args.len(), 1);
+                        match &c.args[0] {
+                            Arg::Positional(Expr::BinOp(_, BinOpKind::Mul, _)) => {}
+                            _ => panic!("expected Mul inside sin() arg"),
+                        }
+                    }
+                    _ => panic!("expected call"),
+                }
+            }
+            _ => panic!("expected cycle binding"),
+        }
+    }
+
+    #[test]
+    fn parse_power_right_associative() {
+        // `a ** b ** c` should parse as `a ** (b ** c)` (right-associative)
+        let f = parse_str("y := a ** b ** c");
+        match &f.statements[0] {
+            Statement::CycleBinding(b) => {
+                match &b.value {
+                    Expr::BinOp(lhs, BinOpKind::Pow, rhs) => {
+                        assert!(matches!(**lhs, Expr::Ident(ref s, _) if s == "a"));
+                        match &**rhs {
+                            Expr::BinOp(rl, BinOpKind::Pow, rr) => {
+                                assert!(matches!(**rl, Expr::Ident(ref s, _) if s == "b"));
+                                assert!(matches!(**rr, Expr::Ident(ref s, _) if s == "c"));
+                            }
+                            _ => panic!("expected inner Pow"),
+                        }
+                    }
+                    _ => panic!("expected outer Pow"),
+                }
+            }
+            _ => panic!("expected cycle binding"),
+        }
+    }
+
+    #[test]
+    fn parse_negate_function_call() {
+        // `-sin(x)` — unary negation of a function call
+        let f = parse_str("y := -sin(x)");
+        match &f.statements[0] {
+            Statement::CycleBinding(b) => {
+                match &b.value {
+                    Expr::UnaryNeg(inner, _) => {
+                        match &**inner {
+                            Expr::Call(c) => assert_eq!(c.func, "sin"),
+                            _ => panic!("expected Call inside UnaryNeg"),
+                        }
+                    }
+                    _ => panic!("expected UnaryNeg"),
+                }
+            }
+            _ => panic!("expected cycle binding"),
+        }
+    }
+
+    #[test]
+    fn parse_all_operators() {
+        // Ensure all operators parse without error.
+        let f = parse_str("y := a + b - c * d / e % f ** g");
+        match &f.statements[0] {
+            Statement::CycleBinding(_) => {} // just checking it parses
+            _ => panic!("expected cycle binding"),
+        }
+    }
+
+    #[test]
+    fn parse_star_star_power() {
+        // `x ** 2.0` parses as BinOp(x, Pow, 2.0)
+        let f = parse_str("y := x ** 2.0");
+        match &f.statements[0] {
+            Statement::CycleBinding(b) => {
+                match &b.value {
+                    Expr::BinOp(lhs, BinOpKind::Pow, rhs) => {
+                        assert!(matches!(**lhs, Expr::Ident(ref s, _) if s == "x"));
+                        assert!(matches!(**rhs, Expr::FloatLit(v, _) if v == 2.0));
+                    }
+                    _ => panic!("expected BinOp Pow, got {:?}", b.value),
+                }
+            }
+            _ => panic!("expected cycle binding"),
+        }
+    }
+
+    #[test]
+    fn parse_caret_is_xor() {
+        // `a ^ b` parses as BinOp(a, BitXor, b)
+        let f = parse_str("y := a ^ b");
+        match &f.statements[0] {
+            Statement::CycleBinding(b) => {
+                match &b.value {
+                    Expr::BinOp(lhs, BinOpKind::BitXor, rhs) => {
+                        assert!(matches!(**lhs, Expr::Ident(ref s, _) if s == "a"));
+                        assert!(matches!(**rhs, Expr::Ident(ref s, _) if s == "b"));
+                    }
+                    _ => panic!("expected BinOp BitXor, got {:?}", b.value),
+                }
+            }
+            _ => panic!("expected cycle binding"),
+        }
+    }
+
+    #[test]
+    fn parse_bitand_binds_tighter_than_bitor() {
+        // `a & b | c` should parse as `(a & b) | c`
+        let f = parse_str("y := a & b | c");
+        match &f.statements[0] {
+            Statement::CycleBinding(b) => {
+                match &b.value {
+                    Expr::BinOp(lhs, BinOpKind::BitOr, rhs) => {
+                        match &**lhs {
+                            Expr::BinOp(_, BinOpKind::BitAnd, _) => {} // correct
+                            _ => panic!("expected inner BitAnd in lhs"),
+                        }
+                        assert!(matches!(**rhs, Expr::Ident(ref s, _) if s == "c"));
+                    }
+                    _ => panic!("expected outer BitOr"),
+                }
+            }
+            _ => panic!("expected cycle binding"),
+        }
+    }
+
+    #[test]
+    fn parse_shift_left() {
+        // `a << 4` parses as BinOp(a, Shl, 4)
+        let f = parse_str("y := a << 4");
+        match &f.statements[0] {
+            Statement::CycleBinding(b) => {
+                match &b.value {
+                    Expr::BinOp(lhs, BinOpKind::Shl, rhs) => {
+                        assert!(matches!(**lhs, Expr::Ident(ref s, _) if s == "a"));
+                        assert!(matches!(**rhs, Expr::IntLit(4, _)));
+                    }
+                    _ => panic!("expected BinOp Shl, got {:?}", b.value),
+                }
+            }
+            _ => panic!("expected cycle binding"),
+        }
+    }
+
+    #[test]
+    fn parse_unary_bitnot() {
+        // `!x` parses as UnaryBitNot(x)
+        let f = parse_str("y := !x");
+        match &f.statements[0] {
+            Statement::CycleBinding(b) => {
+                match &b.value {
+                    Expr::UnaryBitNot(inner, _) => {
+                        assert!(matches!(**inner, Expr::Ident(ref s, _) if s == "x"));
+                    }
+                    _ => panic!("expected UnaryBitNot, got {:?}", b.value),
+                }
+            }
+            _ => panic!("expected cycle binding"),
         }
     }
 }

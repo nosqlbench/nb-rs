@@ -192,6 +192,10 @@ impl Value {
 pub enum PortType {
     U64,
     F64,
+    U32,
+    I32,
+    I64,
+    F32,
     Bool,
     Str,
     Bytes,
@@ -205,6 +209,10 @@ impl fmt::Display for PortType {
         match self {
             PortType::U64 => write!(f, "u64"),
             PortType::F64 => write!(f, "f64"),
+            PortType::U32 => write!(f, "u32"),
+            PortType::I32 => write!(f, "i32"),
+            PortType::I64 => write!(f, "i64"),
+            PortType::F32 => write!(f, "f32"),
             PortType::Bool => write!(f, "bool"),
             PortType::Str => write!(f, "String"),
             PortType::Bytes => write!(f, "bytes"),

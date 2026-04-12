@@ -23,9 +23,52 @@ pub struct Workload {
     /// Populated from: workload `params:` defaults, CLI overrides, env vars.
     #[serde(default)]
     pub params: HashMap<String, String>,
+    /// Phase definitions. Each phase has its own config and either
+    /// inline ops or tag filters to select from blocks/top-level ops.
+    #[serde(default)]
+    pub phases: HashMap<String, WorkloadPhase>,
+    /// Phase names in YAML definition order. HashMap does not preserve
+    /// insertion order, so this Vec tracks the order phases appeared in
+    /// the workload YAML for deterministic default scenario execution.
+    #[serde(default)]
+    pub phase_order: Vec<String>,
+}
+
+/// A workload phase: runs as a separate Activity with its own
+/// cycle count, concurrency, rate limit, and op selection.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WorkloadPhase {
+    /// Number of stanzas for this phase. Each stanza executes all
+    /// ops in sequence once. String type to support GK constant
+    /// references like `"{train_count}"`. Default 1 (one stanza).
+    #[serde(default)]
+    pub cycles: Option<String>,
+    /// Concurrency (async fibers). Default 1.
+    #[serde(default)]
+    pub concurrency: Option<usize>,
+    /// Rate limit (ops/sec). Default unlimited.
+    #[serde(default)]
+    pub rate: Option<f64>,
+    /// Adapter override for this phase.
+    #[serde(default)]
+    pub adapter: Option<String>,
+    /// Error routing spec override.
+    #[serde(default)]
+    pub errors: Option<String>,
+    /// Tag filter to select ops from blocks (e.g., `"block:schema"`).
+    #[serde(default)]
+    pub tags: Option<String>,
+    /// Inline ops for this phase (parsed into `ParsedOp` list).
+    #[serde(default)]
+    pub ops: Vec<ParsedOp>,
 }
 
 /// A single step in a scenario.
+///
+/// For the new phased format (`scenarios.default: [schema, rampup, main]`),
+/// `name` is the phase name and `command` is also set to the phase name.
+/// For the legacy command-string format (`scenarios.default.schema: "run ..."`),
+/// `name` is the step key and `command` is the full command string.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScenarioStep {
     pub name: String,

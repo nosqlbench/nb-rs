@@ -1,0 +1,67 @@
+# vector_inspect.yaml — Comprehensive dataset inspection.
+#
+# Discovers and displays all available information about a vector
+# dataset, then iterates through the metadata indices for a single
+# query to show each matching base ordinal.
+#
+# Uses phased execution: the summary phase runs once (1 cycle),
+# the matches phase runs {mi_len} cycles (one per matching index).
+#
+# Usage:
+#   nbrs vector_inspect.yaml
+#   nbrs vector_inspect.yaml dataset=sift1m
+#   nbrs vector_inspect.yaml dataset=sift1m qi=42
+
+params:
+  dataset: sift1m
+  qi: "5"
+
+bindings: |
+  inputs := (cycle)
+
+  dim := vector_dim("{dataset}")
+  base_count := vector_count("{dataset}")
+  query_count := query_count("{dataset}")
+  neighbor_k := neighbor_count("{dataset}")
+  dist_fn := dataset_distance_function("{dataset}")
+  facets := dataset_facets("{dataset}")
+
+  query_idx := {qi}
+  mi_len := metadata_indices_len_at(query_idx, "{dataset}")
+  mi := metadata_indices_at(query_idx, "{dataset}")
+  mi_count := metadata_indices_count("{dataset}")
+  base_ordinal := array_at(mi, cycle)
+
+scenarios:
+  default:
+    - summary
+    - matches
+
+phases:
+  summary:
+    cycles: 1
+    concurrency: 1
+    ops:
+      header:
+        stmt: "=== Dataset: {dataset} ==="
+      dimensions:
+        stmt: "  dimensions:         {dim}"
+      base_count:
+        stmt: "  base vectors:       {base_count}"
+      query_count:
+        stmt: "  query vectors:      {query_count}"
+      neighbor_k:
+        stmt: "  neighbors (maxk):   {neighbor_k}"
+      distance_fn:
+        stmt: "  distance function:  {dist_fn}"
+      facets:
+        stmt: "  available facets:   {facets}"
+      mi_summary:
+        stmt: "  metadata indices:   {mi_count} result sets, query[{qi}] has {mi_len} matches"
+
+  matches:
+    cycles: "{mi_len}"
+    concurrency: 1
+    ops:
+      entry:
+        stmt: "  query[{qi}] match[{cycle}] = base[{base_ordinal}]"

@@ -62,6 +62,12 @@ pub fn cli_tree() -> veks_completion::CommandTree {
                 &["--explain"],
             )),
         ]))
+        .command("plot", Node::group(vec![
+            ("gk", Node::leaf_with_flags(
+                &["cycles=", "output=", "--width=", "--height=", "--max-labels="],
+                &["--no-color"],
+            )),
+        ]))
         .command("web", Node::leaf_with_flags(
             &["bind=", "port="],
             &["--daemon", "--stop", "--restart"],
@@ -81,6 +87,8 @@ pub fn print_usage() {
     eprintln!("  nbrs describe gk stdlib       List standard library modules");
     eprintln!("  nbrs describe gk dag <file>   Render a .gk file as DOT/Mermaid/SVG");
     eprintln!("  nbrs bench gk <expr>    Benchmark a GK expression at all compilation levels");
+    eprintln!("  nbrs plot gk <expr>     Evaluate a GK expression and plot outputs to terminal");
+    eprintln!("  nbrs plot gk <file.gk>  Plot a .gk file's outputs to the terminal");
     eprintln!("  nbrs web [bind=0.0.0.0] [port=8080]  Start the web dashboard");
     eprintln!("  nbrs web --daemon             Start web dashboard in the background");
     eprintln!("  nbrs web --stop               Stop a running background web dashboard");

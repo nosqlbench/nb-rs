@@ -274,7 +274,219 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
+        FuncSig {
+            name: "hashed_uuid", category: C::String, outputs: 1,
+            description: "deterministic UUID v4 from u64 seed",
+            help: "Generate a deterministic UUID v4 string from a u64 seed.\nSame seed always produces the same UUID. The 128 bits are\nderived from xxHash3 with version/variant bits set per RFC 4122.\nExample: hashed_uuid(hash(cycle))",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "char_buf", category: C::String, outputs: 1,
+            description: "deterministic string from seed + charset + length",
+            help: "Generate a deterministic string of the given length from a\nseed and character set. Charset uses range syntax: A-Za-z0-9.\nSame seed always produces the same string.\nExample: char_buf(hash(cycle), \"A-Za-z0-9\", 100)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "seed", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "charset", slot_type: SlotType::ConstStr, required: true },
+                ParamSpec { name: "length", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "file_line_at", category: C::String, outputs: 1,
+            description: "select a line from a file by index",
+            help: "Read a file at construction time and return a line at cycle-time index.\nIndex wraps modulo line count so every u64 input is valid.\nFile path is a const string argument.\nParameters:\n  index    — u64 wire input\n  filename — ConstStr path to file\nExample: file_line_at(mod(hash(cycle), 1000), \"words.txt\")",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "index",    slot_type: SlotType::Wire,     required: true },
+                ParamSpec { name: "filename", slot_type: SlotType::ConstStr, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
     ]
+}
+
+// =================================================================
+// HashedUuid: deterministic UUID v4 from a u64 seed
+// =================================================================
+
+/// Generate a deterministic UUID v4 string from a u64 seed.
+///
+/// The hash output fills the 128 UUID bits, with version (4) and
+/// variant (RFC 4122) bits set per spec. Same seed always produces
+/// the same UUID.
+///
+/// Signature: `hashed_uuid(input: u64) -> (String)`
+pub struct HashedUuid {
+    meta: NodeMeta,
+}
+
+impl HashedUuid {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "hashed_uuid".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("input"))],
+            },
+        }
+    }
+}
+
+impl GkNode for HashedUuid {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let seed = inputs[0].as_u64();
+        // Use two hashes to fill 128 bits
+        let h1 = xxhash_rust::xxh3::xxh3_64(&seed.to_le_bytes());
+        let h2 = xxhash_rust::xxh3::xxh3_64(&h1.to_le_bytes());
+
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&h1.to_le_bytes());
+        bytes[8..].copy_from_slice(&h2.to_le_bytes());
+
+        // Set version 4 (bits 12-15 of byte 6)
+        bytes[6] = (bytes[6] & 0x0F) | 0x40;
+        // Set variant RFC 4122 (bits 6-7 of byte 8)
+        bytes[8] = (bytes[8] & 0x3F) | 0x80;
+
+        let uuid = format!(
+            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5],
+            bytes[6], bytes[7],
+            bytes[8], bytes[9],
+            bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        );
+        outputs[0] = Value::Str(uuid);
+    }
+}
+
+// =================================================================
+// CharBuf: deterministic string from seed + charset + length
+// =================================================================
+
+/// Generate a deterministic string of a given length from a seed
+/// and character set.
+///
+/// The seed is hashed and used to index into the charset repeatedly.
+/// Same seed + charset + length always produces the same string.
+///
+/// Signature: `char_buf(seed: u64, charset: &str, length: u64) -> (String)`
+pub struct CharBuf {
+    meta: NodeMeta,
+    charset: Vec<char>,
+}
+
+impl CharBuf {
+    pub fn new(charset: &str) -> Self {
+        let chars: Vec<char> = if charset.is_empty() {
+            ('a'..='z').collect()
+        } else {
+            // Expand ranges: "A-Za-z0-9" → all chars in those ranges
+            let mut result = Vec::new();
+            let chars_vec: Vec<char> = charset.chars().collect();
+            let mut i = 0;
+            while i < chars_vec.len() {
+                if i + 2 < chars_vec.len() && chars_vec[i + 1] == '-' {
+                    let start = chars_vec[i];
+                    let end = chars_vec[i + 2];
+                    for c in start..=end {
+                        result.push(c);
+                    }
+                    i += 3;
+                } else {
+                    result.push(chars_vec[i]);
+                    i += 1;
+                }
+            }
+            if result.is_empty() { ('a'..='z').collect() } else { result }
+        };
+        Self {
+            meta: NodeMeta {
+                name: "char_buf".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![
+                    Slot::Wire(Port::u64("seed")),
+                    Slot::Wire(Port::u64("length")),
+                ],
+            },
+            charset: chars,
+        }
+    }
+}
+
+impl GkNode for CharBuf {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let seed = inputs[0].as_u64();
+        let length = inputs[1].as_u64() as usize;
+        let n = self.charset.len();
+        if n == 0 || length == 0 {
+            outputs[0] = Value::Str(String::new());
+            return;
+        }
+        let mut result = String::with_capacity(length);
+        let mut h = seed;
+        for _ in 0..length {
+            h = xxhash_rust::xxh3::xxh3_64(&h.to_le_bytes());
+            result.push(self.charset[(h as usize) % n]);
+        }
+        outputs[0] = Value::Str(result);
+    }
+}
+
+// =================================================================
+// FileLineAt: index into a file of lines at cycle time
+// =================================================================
+
+/// Select a line from a file by index, wrapping modulo line count.
+///
+/// The file is read once at node construction (init time). The index
+/// input selects a line at cycle time, wrapping modulo the total
+/// number of lines.
+///
+/// Signature: `file_line_at(index: u64) -> (output: Str)`
+/// Const: `filename: Str` — path to file, read at construction
+pub struct FileLineAt {
+    meta: NodeMeta,
+    lines: Vec<String>,
+}
+
+impl FileLineAt {
+    /// Read `filename` and prepare the line table.
+    ///
+    /// Returns an error if the file cannot be read or has no lines.
+    pub fn new(filename: &str) -> Result<Self, String> {
+        let content = std::fs::read_to_string(filename)
+            .map_err(|e| format!("failed to read file '{filename}': {e}"))?;
+        let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+        if lines.is_empty() {
+            return Err(format!("file '{filename}' has no lines"));
+        }
+        Ok(Self {
+            meta: NodeMeta {
+                name: "file_line_at".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("index"))],
+            },
+            lines,
+        })
+    }
+}
+
+impl GkNode for FileLineAt {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let idx = inputs[0].as_u64() as usize;
+        outputs[0] = Value::Str(self.lines[idx % self.lines.len()].clone());
+    }
 }
 
 /// Try to build a string node from a function name and const args.
@@ -286,6 +498,14 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
             consts.first().map(|c| c.as_str()).unwrap_or("a-z"),
         )))),
         "number_to_words" => Some(Ok(Box::new(NumberToWords::new()))),
+        "hashed_uuid" => Some(Ok(Box::new(HashedUuid::new()))),
+        "char_buf" => Some(Ok(Box::new(CharBuf::new(
+            consts.first().map(|c| c.as_str()).unwrap_or("a-z"),
+        )))),
+        "file_line_at" => {
+            let path = consts.first().map(|c| c.as_str()).unwrap_or("");
+            Some(FileLineAt::new(path).map(|n| Box::new(n) as Box<dyn crate::node::GkNode>))
+        }
         _ => None,
     }
 }

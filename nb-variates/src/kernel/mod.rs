@@ -12,7 +12,7 @@
 //! │  wiring[]        — per-node input source tables              │
 //! │  input_names[]   — graph input dimension names ("cycle")     │
 //! │  output_map      — name → (node_idx, port_idx)               │
-//! │  globals         — resolved workload params (set once)       │
+//! │  (workload params injected as GK constant bindings)          │
 //! │  volatile_ports  — port definitions (reset per evaluation)   │
 //! │  sticky_ports    — port definitions (persist per stanza)     │
 //! └──────────────────────────────────────────────────────────────┘
@@ -43,11 +43,10 @@
 //!                                    already evaluated this generation,
 //!                                    return &buffers[node][port]
 //!
-//! Globals:
-//!   Resolved workload params stored on GkProgram. Set once after
-//!   compilation, read by fibers via program.globals(). Never
-//!   re-resolved from external sources. Each fiber reads the same
-//!   immutable Arc<GkProgram>.
+//! Workload params:
+//!   Numeric and string workload params are injected into the GK
+//!   source as constant bindings before compilation. They resolve
+//!   as normal GK outputs — no separate globals mechanism needed.
 //! ```
 //!
 //! Buffer layout in GkState:
@@ -420,5 +419,19 @@ mod tests {
         // outer's config from cycle-tainted mixer should warn.
         // mixer's config from constant should NOT warn.
         assert_eq!(warnings.len(), 1, "exactly one warning for outer's config: {warnings:?}");
+    }
+
+    #[test]
+    fn implicit_u64_to_f64_adapter_does_not_crash() {
+        use crate::dsl::compile::compile_gk;
+        // sin() expects f64, cycle is u64. The compiler should auto-insert
+        // a __u64_to_f64 adapter. This must not panic.
+        let mut k = compile_gk("coordinates := (cycle)\nout := sin(cycle)").unwrap();
+        k.set_inputs(&[1]);
+        let v = k.pull("out");
+        // sin(1.0) ≈ 0.8414709848078965
+        let f = v.as_f64();
+        assert!((f - 0.8414709848078965).abs() < 0.001,
+            "sin(1) should be ~0.841, got {f}");
     }
 }

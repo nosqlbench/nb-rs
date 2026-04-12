@@ -7,6 +7,7 @@
 
 params:
   dataset: glove-25-angular
+  adapter: stdout
 
 bindings: |
   coordinates := (cycle)

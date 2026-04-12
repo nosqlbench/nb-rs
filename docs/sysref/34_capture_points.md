@@ -121,3 +121,29 @@ GkState has two external port types for captures:
 
 `apply_captures()` writes captured values to sticky ports.
 `reset_captures()` clears both captures and sticky ports.
+
+---
+
+## Relationship to Memo 06 (GK Through-Instance)
+
+Memo 06 proposed eliminating CaptureContext entirely and routing
+captures as direct GK stanza inputs alongside `cycle`. After
+analysis, the current architecture already achieves the memo's
+intent via the port mechanism:
+
+1. Captures write to GK sticky ports (via `apply_captures()`)
+2. GK evaluation reads from those ports as node inputs
+3. Downstream ops see captured values through normal GK wiring
+
+The CaptureContext serves as a thin bridging layer that maps
+capture names to port indices. Eliminating it would require the
+GK compiler to know about captures at compile time, before any
+ops have executed -- which introduces a circular dependency
+between the synthesis pipeline and runtime capture discovery.
+
+**Decision:** CaptureContext is retained. The sticky port
+mechanism IS the GK through-instance path. The bridging step
+(`apply_captures()`) is a one-time per-window cost with no
+measurable impact on throughput. Future optimization, if needed,
+would target the bridging step itself rather than restructuring
+the capture-to-port architecture.

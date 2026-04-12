@@ -49,7 +49,22 @@ impl GkKernel {
         let mut program = GkProgram::new(nodes, wiring, input_names, output_map);
         let constants_folded = program.fold_init_constants_with_log(log);
         let program = Arc::new(program);
-        let state = program.create_state();
+        let mut state = program.create_state();
+        // Populate buffers for folded constants so get_constant() works.
+        // After constant folding, init-time nodes are replaced with
+        // Const* nodes that have empty wiring. Pull them to populate
+        // their output buffers. Skip nodes with any wiring (they
+        // depend on inputs that aren't set yet).
+        // Populate folded constants so get_constant() works.
+        let dummy = vec![0u64; program.input_names().len()];
+        state.set_inputs(&dummy);
+        for name in program.output_names() {
+            if let Some(&(node_idx, _)) = program.output_map.get(name) {
+                if program.wiring[node_idx].is_empty() {
+                    state.pull(&program, name);
+                }
+            }
+        }
         Self { program, state, constants_folded }
     }
 
@@ -64,7 +79,16 @@ impl GkKernel {
         let mut program = GkProgram::new(nodes, wiring, input_names, output_map);
         let constants_folded = program.fold_init_constants_strict(log, true)?;
         let program = Arc::new(program);
-        let state = program.create_state();
+        let mut state = program.create_state();
+        let dummy_inputs = vec![0u64; program.input_names().len()];
+        state.set_inputs(&dummy_inputs);
+        for name in program.output_names() {
+            if let Some(&(node_idx, _)) = program.output_map.get(name) {
+                if program.wiring[node_idx].is_empty() {
+                    state.pull(&program, name);
+                }
+            }
+        }
         Ok(Self { program, state, constants_folded })
     }
 
@@ -112,14 +136,6 @@ impl GkKernel {
         let (node_idx, port_idx) = self.program.output_map.get(name)?;
         let val = &self.state.core.buffers[*node_idx][*port_idx];
         if matches!(val, Value::None) { None } else { Some(val) }
-    }
-
-    /// Set global values (resolved workload params) on the program.
-    /// Must be called before `into_program()` or `program().clone()`.
-    pub fn set_globals(&mut self, globals: HashMap<String, String>) {
-        Arc::get_mut(&mut self.program)
-            .expect("set_globals must be called before program is shared")
-            .set_globals(globals);
     }
 
     /// Extract the program for concurrent use.

@@ -5,6 +5,10 @@
 //!
 //! Uses the Apache Cassandra C++ driver via the `cassandra-cpp` crate.
 //! Compatible with Apache Cassandra, ScyllaDB, and DataStax Astra.
+//!
+//! Also registers CQL-specific GK nodes via the `inventory` mechanism:
+//! - `cql_timeuuid`: generates a deterministic type-1-like UUID string
+//!   from a u64 seed, suitable for CQL `timeuuid` columns.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -439,3 +443,109 @@ impl OpDispenser for CqlPreparedDispenser {
         })
     }
 }
+
+// =========================================================================
+// CqlTimeuuid GK node: deterministic type-1-like UUID from a seed
+// =========================================================================
+
+/// GK node that generates a deterministic UUID string formatted as a CQL
+/// `timeuuid` (RFC 4122 version 1 layout) from a u64 seed.
+///
+/// The output is always a valid UUID string; the bits are derived entirely
+/// from two successive xxHash3 passes over the seed, so the same seed always
+/// produces the same UUID with no external state.
+///
+/// Signature: `cql_timeuuid(seed: u64) -> (String)`
+///
+/// JIT level: P1 (eval only; string allocation prevents P2).
+pub struct CqlTimeuuid {
+    meta: nb_variates::node::NodeMeta,
+}
+
+impl Default for CqlTimeuuid {
+    fn default() -> Self { Self::new() }
+}
+
+impl CqlTimeuuid {
+    /// Create a new `CqlTimeuuid` node.
+    pub fn new() -> Self {
+        use nb_variates::node::{NodeMeta, Port, PortType, Slot};
+        Self {
+            meta: NodeMeta {
+                name: "cql_timeuuid".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("seed"))],
+            },
+        }
+    }
+}
+
+impl nb_variates::node::GkNode for CqlTimeuuid {
+    fn meta(&self) -> &nb_variates::node::NodeMeta { &self.meta }
+
+    /// Evaluate: derive UUID bits from two xxHash3 passes over the seed.
+    ///
+    /// Bit layout follows RFC 4122 §4.1:
+    /// - `version` field set to `1` (time-based)
+    /// - `variant` field set to `10` (RFC 4122)
+    fn eval(&self, inputs: &[nb_variates::node::Value], outputs: &mut [nb_variates::node::Value]) {
+        let seed = inputs[0].as_u64();
+        let h1 = xxhash_rust::xxh3::xxh3_64(&seed.to_le_bytes());
+        let h2 = xxhash_rust::xxh3::xxh3_64(&h1.to_le_bytes());
+
+        // Split h1 into time fields (version 1 layout)
+        let time_low   = (h1 & 0xFFFF_FFFF) as u32;
+        let time_mid   = ((h1 >> 32) & 0xFFFF) as u16;
+        let time_hi    = (((h1 >> 48) & 0x0FFF) as u16) | 0x1000; // version 1
+
+        // Split h2 into clock sequence + node
+        let clock_seq: u16 = ((h2 & 0x3FFF) as u16) | 0x8000;     // variant RFC 4122
+        let node       = h2 >> 16 & 0xFFFF_FFFF_FFFF;             // 48-bit node
+
+        outputs[0] = nb_variates::node::Value::Str(format!(
+            "{time_low:08x}-{time_mid:04x}-{time_hi:04x}-{clock_seq:04x}-{node:012x}"
+        ));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GK registry integration: signatures + builder + inventory submit
+// ---------------------------------------------------------------------------
+
+/// Return the static signature slice for `cql_timeuuid`.
+pub fn cql_signatures() -> &'static [nb_variates::dsl::registry::FuncSig] {
+    use nb_variates::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+    use nb_variates::node::{Commutativity, SlotType};
+    static SIGS: std::sync::OnceLock<Vec<nb_variates::dsl::registry::FuncSig>> =
+        std::sync::OnceLock::new();
+    SIGS.get_or_init(|| {
+        vec![FuncSig {
+            name: "cql_timeuuid",
+            category: FuncCategory::RealData,
+            outputs: 1,
+            description: "deterministic CQL timeuuid from seed",
+            help: "Generate a deterministic RFC 4122 version-1 UUID string suitable \
+                   for CQL timeuuid columns. The same seed always produces the same UUID. \
+                   Example: cql_timeuuid(hash(cycle))",
+            identity: None,
+            variadic_ctor: None,
+            params: &[ParamSpec { name: "seed", slot_type: SlotType::Wire, required: true }],
+            arity: Arity::Fixed,
+            commutativity: Commutativity::Positional,
+        }]
+    })
+}
+
+/// Attempt to build a `cql_timeuuid` node from the registry dispatch path.
+pub fn cql_build_node(
+    name: &str,
+    _wires: &[nb_variates::assembly::WireRef],
+    _consts: &[nb_variates::dsl::ConstArg],
+) -> Option<Result<Box<dyn nb_variates::node::GkNode>, String>> {
+    match name {
+        "cql_timeuuid" => Some(Ok(Box::new(CqlTimeuuid::new()))),
+        _ => None,
+    }
+}
+
+nb_variates::register_nodes!(cql_signatures, cql_build_node);
