@@ -207,7 +207,7 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Deterministic 64-bit hash using xxHash3.\nThis is the fundamental entropy source: feed a cycle counter in,\nget pseudo-random bits out. Hash before mod/lerp to avoid patterns.\nParameters:\n  input — any u64 value (typically a cycle ordinal)\nExample: hash(cycle) -> mod(1000)\nTheory: xxHash3 is a non-cryptographic hash with excellent\navalanche properties and very high throughput.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,

@@ -1,0 +1,92 @@
+#!/usr/bin/env cassnbrs
+# pvs_test.yaml — Predicated Vector Search test workload.
+#
+# Discovers all profiles in a vector dataset and emits metadata
+# about each one, then iterates through the filtered ground-truth
+# neighbors for a chosen query index against the default profile.
+#
+# Profiles are enumerated dynamically via GK constant expressions
+# so the cycle count adapts to whatever the dataset declares.
+#
+# Usage:
+#   nbrs pvs_test.yaml
+#   nbrs pvs_test.yaml dataset=sift1m
+#   nbrs pvs_test.yaml dataset=sift1m qi=10
+
+params:
+  dataset: sift1m
+  qi: "0"
+
+bindings: |
+  inputs := (cycle)
+
+  # Prebuffer — eagerly download all facets before workload runs
+  _prebuffer := dataset_prebuffer("{dataset}")
+
+  # Dataset-level constants (init-time, from default profile)
+  dim := vector_dim("{dataset}")
+  base_count := vector_count("{dataset}")
+  query_count := query_count("{dataset}")
+  neighbor_k := neighbor_count("{dataset}")
+  dist_fn := dataset_distance_function("{dataset}")
+  facets := dataset_facets("{dataset}")
+
+  # Profile enumeration constants
+  profile_count := dataset_profile_count("{dataset}")
+  profile_names := dataset_profile_names("{dataset}")
+
+  # Per-cycle profile inspection (index = cycle)
+  pname := dataset_profile_name_at(cycle, "{dataset}")
+  pbase := profile_base_count(cycle, "{dataset}")
+  pfacets := profile_facets(cycle, "{dataset}")
+
+  # Query-level bindings for filtered neighbor walkthrough
+  query_idx := {qi}
+  fni := filtered_neighbor_indices_at(query_idx, "{dataset}")
+  fnd := filtered_neighbor_distances_at(query_idx, "{dataset}")
+
+scenarios:
+  default:
+    - summary
+    - profiles
+    - filtered_neighbors
+
+phases:
+  summary:
+    cycles: 1
+    concurrency: 1
+    ops:
+      header:
+        stmt: "=== Predicated Vector Search: {dataset} ==="
+      dimensions:
+        stmt: "  dimensions:         {dim}"
+      base_count:
+        stmt: "  base vectors:       {base_count}"
+      query_count:
+        stmt: "  query vectors:      {query_count}"
+      neighbor_k:
+        stmt: "  neighbors (maxk):   {neighbor_k}"
+      distance_fn:
+        stmt: "  distance function:  {dist_fn}"
+      facets:
+        stmt: "  available facets:   {facets}"
+      profile_summary:
+        stmt: "  profiles ({profile_count}): {profile_names}"
+
+  profiles:
+    cycles: "{dataset_profile_count('{dataset}')}"
+    concurrency: 1
+    ops:
+      profile_detail:
+        stmt: "  profile[{cycle}] name={pname}  base_count={pbase}  facets=[{pfacets}]"
+
+  filtered_neighbors:
+    cycles: 1
+    concurrency: 1
+    ops:
+      fn_header:
+        stmt: "--- Filtered neighbors for query[{qi}] ---"
+      fn_indices:
+        stmt: "  indices:   {fni}"
+      fn_distances:
+        stmt: "  distances: {fnd}"

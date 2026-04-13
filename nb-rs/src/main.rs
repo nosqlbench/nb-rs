@@ -58,7 +58,17 @@ fn main() {
                 if let Some(path) = cli::resolve_workload_path(cmd) {
                     let rt = tokio::runtime::Runtime::new().unwrap();
                     let mut run_args = vec![format!("workload={path}")];
-                    run_args.extend(args[1..].iter().cloned());
+                    // First bare arg (no = or --) after the workload file
+                    // is treated as the scenario name.
+                    let mut scenario_set = false;
+                    for extra in &args[1..] {
+                        if !scenario_set && !extra.contains('=') && !extra.starts_with('-') {
+                            run_args.push(format!("scenario={extra}"));
+                            scenario_set = true;
+                        } else {
+                            run_args.push(extra.clone());
+                        }
+                    }
                     rt.block_on(run::run_command(&run_args));
                     return;
                 }

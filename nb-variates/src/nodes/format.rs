@@ -296,7 +296,7 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "printf-style formatting: printf(fmt, a, b, ...) -> String",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "format", slot_type: SlotType::ConstStr, required: true },
+                ParamSpec { name: "format", slot_type: SlotType::ConstStr, required: true, example: "\"%d\"" },
             ],
             arity: Arity::VariadicWires { min_wires: 0 },
             commutativity: crate::node::Commutativity::Positional,

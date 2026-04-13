@@ -10,13 +10,13 @@ members = [
     "nb-tui",
     "nb-web",
     "adapters/nb-adapter-stdout",
-    "adapters/nb-adapter-model",
+    "adapters/nb-adapter-testkit",
     "adapters/nb-adapter-http",
     "adapters/nb-adapter-plotter",
     "personas/opennbrs",
 ]
-# cassnbrs and its interior adapter crate require the Apache
-# Cassandra C++ driver. Build separately: cd personas/cassnbrs && bash build.sh
+# cassnbrs requires the Apache Cassandra C++ driver (-lcassandra).
+# Build separately: cd personas/cassnbrs && cargo build --release
 exclude = [
     "personas/cassnbrs",
     "personas/cassnbrs/adapter",

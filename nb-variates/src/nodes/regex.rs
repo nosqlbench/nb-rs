@@ -119,9 +119,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "regex substitution",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
-                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true },
-                ParamSpec { name: "replacement", slot_type: SlotType::ConstStr, required: true },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true, example: "\"[a-z]+\"" },
+                ParamSpec { name: "replacement", slot_type: SlotType::ConstStr, required: true, example: "\"X\"" },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -132,8 +132,8 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "test if string matches regex",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
-                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true, example: "\"[a-z]+\"" },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,

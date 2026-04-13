@@ -346,6 +346,7 @@ impl OpDispenser for CqlRawDispenser {
             Ok(OpResult {
                 body,
                 captures: std::collections::HashMap::new(),
+                skipped: false,
             })
         })
     }
@@ -439,6 +440,7 @@ impl OpDispenser for CqlPreparedDispenser {
             Ok(OpResult {
                 body,
                 captures: std::collections::HashMap::new(),
+                skipped: false,
             })
         })
     }
@@ -529,7 +531,7 @@ pub fn cql_signatures() -> &'static [nb_variates::dsl::registry::FuncSig] {
                    Example: cql_timeuuid(hash(cycle))",
             identity: None,
             variadic_ctor: None,
-            params: &[ParamSpec { name: "seed", slot_type: SlotType::Wire, required: true }],
+            params: &[ParamSpec { name: "seed", slot_type: SlotType::Wire, required: true, example: "cycle" }],
             arity: Arity::Fixed,
             commutativity: Commutativity::Positional,
         }]
@@ -549,3 +551,26 @@ pub fn cql_build_node(
 }
 
 nb_variates::register_nodes!(cql_signatures, cql_build_node);
+
+// =========================================================================
+// Adapter Registration (inventory-based, link-time)
+// =========================================================================
+
+inventory::submit! {
+    nb_activity::adapter::AdapterRegistration {
+        names: || &["cql", "cassandra"],
+        known_params: || &[
+            "hosts", "host", "port", "keyspace", "consistency",
+            "username", "password", "request_timeout_ms",
+        ],
+        create: |params| Box::pin(async move {
+            let config = CqlConfig::from_params(&params);
+            eprintln!("cassnbrs: connecting to {} (keyspace: {})",
+                config.hosts,
+                if config.keyspace.is_empty() { "<none>" } else { &config.keyspace });
+            CqlAdapter::connect(&config).await
+                .map(|a| std::sync::Arc::new(a) as std::sync::Arc<dyn nb_activity::adapter::DriverAdapter>)
+                .map_err(|e| format!("CQL connection failed: {e}"))
+        }),
+    }
+}

@@ -86,6 +86,24 @@ impl Default for StdoutConfig {
     }
 }
 
+impl StdoutConfig {
+    /// Construct a config from CLI/workload params.
+    pub fn from_params(params: &std::collections::HashMap<String, String>) -> Self {
+        let format = params.get("format")
+            .map(|s| StdoutFormat::parse(s).unwrap_or(StdoutFormat::Assignments))
+            .unwrap_or(StdoutFormat::Statement);
+        Self {
+            filename: params.get("filename").cloned().unwrap_or("stdout".into()),
+            newline: true,
+            format,
+            fields_filter: Vec::new(),
+            separator: params.get("separator").cloned().unwrap_or(",".into()),
+            header: params.get("header").map(|s| s == "true" || s == "1" || s == "yes").unwrap_or(false),
+            color: params.get("color").map(|s| s == "true" || s == "1" || s == "yes").unwrap_or(false),
+        }
+    }
+}
+
 /// How to render the resolved op fields.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StdoutFormat {
@@ -516,5 +534,20 @@ mod tests {
         assert_eq!(lines[1], "alice,30");
         assert_eq!(lines[2], "bob,25");
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+// =========================================================================
+// Adapter Registration (inventory-based, link-time)
+// =========================================================================
+
+inventory::submit! {
+    nb_activity::adapter::AdapterRegistration {
+        names: || &["stdout"],
+        known_params: || &["filename", "format", "separator", "header", "color", "fields"],
+        create: |params| Box::pin(async move {
+            Ok(std::sync::Arc::new(StdoutAdapter::with_config(StdoutConfig::from_params(&params)))
+                as std::sync::Arc<dyn nb_activity::adapter::DriverAdapter>)
+        }),
     }
 }

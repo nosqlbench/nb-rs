@@ -120,22 +120,29 @@ pub fn probe_compile_level(func_name: &str) -> nb_variates::node::CompileLevel {
         None => return nb_variates::node::CompileLevel::Phase1,
     };
 
-    // Generate representative const args (1000 for ints, 1000.0 for floats)
-    let const_args: Vec<String> = sig.const_param_info().iter().map(|(_name, _req)| {
-        "1000".to_string()
-    }).collect();
-
-    // Build wire args
+    // Build args from per-parameter example values declared in FuncSig.
+    // Wire params use their example (typically "cycle"), const params
+    // use representative values that pass the node's validation.
     let mut parts = Vec::new();
-    for _ in 0..std::cmp::max(sig.wire_input_count(), 1) {
+    let mut has_wire = false;
+    for p in sig.params {
+        parts.push(p.example.to_string());
+        if p.slot_type.is_wire() { has_wire = true; }
+    }
+    // Ensure at least one wire input for the coordinates declaration.
+    if !has_wire && parts.is_empty() {
         parts.push("cycle".to_string());
     }
-    parts.extend(const_args);
 
     let source = format!("coordinates := (cycle)\nout := {func_name}({})", parts.join(", "));
-    // Catch panics from nodes that validate const params (e.g.
-    // unfair_coin rejects probabilities outside [0,1]).
-    match std::panic::catch_unwind(|| nb_variates::dsl::compile_gk(&source)) {
+
+    // Suppress panic output during probing — fallback is Phase1.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(|| nb_variates::dsl::compile_gk(&source));
+    std::panic::set_hook(prev_hook);
+
+    match result {
         Ok(Ok(kernel)) => kernel.program().last_node_compile_level(),
         _ => nb_variates::node::CompileLevel::Phase1,
     }

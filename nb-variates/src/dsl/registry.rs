@@ -207,6 +207,10 @@ pub struct ParamSpec {
     pub slot_type: SlotType,
     /// Whether this parameter must be provided.
     pub required: bool,
+    /// Example value for this parameter, used for probing compile
+    /// level and for documentation. Wire params use `"cycle"`,
+    /// const params use a representative value that passes validation.
+    pub example: &'static str,
 }
 
 /// Arity specification for a function signature.

@@ -169,7 +169,7 @@ mod tests {
                     identity: None,
                     variadic_ctor: None,
                     params: &[
-                        ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                        ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
                     ],
                     arity: Arity::Fixed,
                     commutativity: crate::node::Commutativity::Positional,
@@ -205,7 +205,7 @@ mod tests {
                     identity: None,
                     variadic_ctor: None,
                     params: &[
-                        ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                        ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
                     ],
                     arity: Arity::Fixed,
                     commutativity: crate::node::Commutativity::Positional,
@@ -247,7 +247,7 @@ mod tests {
                     identity: None,
                     variadic_ctor: None,
                     params: &[
-                        ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                        ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
                     ],
                     arity: Arity::Fixed,
                     commutativity: crate::node::Commutativity::Positional,

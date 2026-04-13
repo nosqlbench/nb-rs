@@ -14,19 +14,14 @@ name = "cassnbrs"
 path = "src/main.rs"
 
 [dependencies]
-# Interior CQL adapter crate
+# CQL adapter + GK nodes (registers itself via inventory at link time)
 cassnbrs-adapter-cql = { path = "adapter", version = "0.1.1" }
 
-# Core adapters (included in every persona)
+# Standard adapters (register themselves via inventory at link time)
 nb-adapter-stdout = { path = "../../adapters/nb-adapter-stdout", version = "0.1.1" }
-nb-adapter-model = { path = "../../adapters/nb-adapter-model", version = "0.1.1" }
+nb-adapter-testkit = { path = "../../adapters/nb-adapter-testkit", version = "0.1.1" }
 nb-adapter-http = { path = "../../adapters/nb-adapter-http", version = "0.1.1" }
 
-# Core framework
+# Shared runner (provides the full run pipeline)
 nb-activity = { path = "../../nb-activity", version = "0.1.1" }
-nb-variates = { path = "../../nb-variates", version = "0.1.1" }
-nb-metrics = { path = "../../nb-metrics", version = "0.1.1" }
-nb-workload = { path = "../../nb-workload", version = "0.1.1" }
-nb-rate = { path = "../../nb-rate", version = "0.1.1" }
-nb-errorhandler = { path = "../../nb-errorhandler", version = "0.1.1" }
 tokio = { version = "1", features = ["full"] }

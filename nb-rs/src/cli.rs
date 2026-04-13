@@ -121,6 +121,7 @@ pub fn print_usage() {
     eprintln!("  nbrs run op='hello {{{{cycle}}}}' cycles=10");
     eprintln!("  nbrs run op='id={{{{mod(hash(cycle), 1000)}}}}' cycles=100 format=json");
     eprintln!("  nbrs describe gk functions    List all GK node functions");
+    eprintln!("  nbrs describe gk functions-md Dump all functions to markdown file");
     eprintln!("  nbrs describe gk stdlib       List standard library modules");
     eprintln!("  nbrs describe gk dag <file>   Render a .gk file as DOT/Mermaid/SVG");
     eprintln!("  nbrs bench gk <expr>    Benchmark a GK expression at all compilation levels");

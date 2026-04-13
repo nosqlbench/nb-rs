@@ -1,0 +1,29 @@
+#!/usr/bin/env nbrs
+# polar_rose.yaml — Polar rose curve
+#
+# A rose curve in polar coordinates: r = cos(k * theta)
+# k=2 → 4 petals, k=3 → 3 petals, k=5/3 → intricate pattern
+#
+# The plotter's polar mode interprets the first two outputs as
+# (r, theta) and converts to Cartesian for display.
+#
+# Usage:
+#   nbrs run workload=examples/workloads/visual/polar_rose.yaml
+#   nbrs run workload=examples/workloads/visual/polar_rose.yaml k=5 cycles=5000
+#   nbrs run workload=examples/workloads/visual/polar_rose.yaml k=2.5 cycles=10000
+
+params:
+  adapter: plotter
+  mode: polar
+  k: "3"
+  cycles: "3000"
+
+bindings: |
+  inputs := (cycle)
+  theta := to_f64(cycle) * 0.01
+  r := cos(theta * {k})
+
+ops:
+  point:
+    r: "{r}"
+    theta: "{theta}"

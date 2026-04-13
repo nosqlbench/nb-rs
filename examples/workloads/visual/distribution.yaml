@@ -1,0 +1,32 @@
+#!/usr/bin/env nbrs
+# distribution.yaml — Visualize statistical distributions
+#
+# Generates samples from different distributions and plots them.
+# In plot mode, shows the waveform. Use format=readout on stdout
+# to see individual values.
+#
+# Usage:
+#   nbrs run workload=examples/workloads/visual/distribution.yaml
+#   nbrs run workload=examples/workloads/visual/distribution.yaml cycles=5000
+
+params:
+  adapter: plotter
+  cycles: "2000"
+
+bindings: |
+  inputs := (cycle)
+
+  // Uniform random in [0, 1]
+  uniform := unit_interval(hash(cycle))
+
+  // Normal distribution (mean=0.5, stddev=0.15)
+  normal := dist_normal(hash(cycle), 0.5, 0.15)
+
+  // Exponential decay
+  exponential := dist_exponential(hash(cycle), 2.0)
+
+ops:
+  sample:
+    uniform: "{uniform}"
+    normal: "{normal}"
+    exponential: "{exponential}"

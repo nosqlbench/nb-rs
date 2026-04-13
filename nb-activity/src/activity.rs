@@ -398,7 +398,10 @@ impl Activity {
         let progress_flag = Arc::new(AtomicBool::new(true));
         let total_cycles = activity.config.cycles;
         let is_stderr_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
-        if is_stderr_tty && total_cycles > 1000 {
+        // Suppress progress indicator when the adapter uses raw terminal mode
+        let suppress_progress = adapters.values()
+            .any(|a| a.name() == "plotter");
+        if is_stderr_tty && total_cycles > 1000 && !suppress_progress {
             let flag = progress_flag.clone();
             let progress_metrics = activity.metrics.clone();
             std::thread::spawn(move || {

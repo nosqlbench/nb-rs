@@ -348,8 +348,8 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "weighted string selection from inline spec",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
-                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true, example: "\"1:10,2:20,3:30\"" },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -360,8 +360,8 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "weighted u64 selection from inline spec",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
-                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true, example: "\"1:10,2:20,3:30\"" },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -372,9 +372,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "weighted u64 selection from inline weight/value pairs",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
-                ParamSpec { name: "weight", slot_type: SlotType::ConstF64, required: true },
-                ParamSpec { name: "value", slot_type: SlotType::ConstU64, required: true },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "weight", slot_type: SlotType::ConstF64, required: true, example: "1.0" },
+                ParamSpec { name: "value", slot_type: SlotType::ConstU64, required: true, example: "100" },
             ],
             arity: Arity::VariadicGroup {
                 group: &[SlotType::ConstF64, SlotType::ConstU64],
@@ -388,8 +388,8 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "weighted string selection with dynamic weight spec (Config wire)",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "selector", slot_type: SlotType::Wire, required: true },
-                ParamSpec { name: "weights_spec", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "selector", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "weights_spec", slot_type: SlotType::Wire, required: true, example: "cycle" },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,

@@ -1,0 +1,39 @@
+#!/usr/bin/env nbrs
+# spirograph.yaml — Spirograph (epitrochoid) pattern
+#
+# Traces the path of a point on a circle rolling around another:
+#   x = (R+r)*cos(t) - d*cos((R+r)/r * t)
+#   y = (R+r)*sin(t) - d*sin((R+r)/r * t)
+#
+# Classic parameters:
+#   R=5, r=3, d=5  → 5-petal flower
+#   R=7, r=2, d=5  → 7-pointed star
+#   R=10, r=7, d=5 → dense weave
+#
+# Usage:
+#   ./examples/workloads/visual/spirograph.yaml
+#   ./examples/workloads/visual/spirograph.yaml R=7 r=2
+
+params:
+  adapter: plotter
+  mode: parametric
+  R: "5"
+  r: "3"
+  d: "5"
+  cycles: "5000"
+
+bindings: |
+  inputs := (cycle)
+  t := to_f64(cycle) * 0.01
+
+  // (R+r) and (R+r)/r as constants
+  sum_Rr := to_f64({R}) + to_f64({r})
+  ratio := sum_Rr / to_f64({r})
+
+  x := sum_Rr * cos(t) - to_f64({d}) * cos(ratio * t)
+  y := sum_Rr * sin(t) - to_f64({d}) * sin(ratio * t)
+
+ops:
+  trace:
+    x: "{x}"
+    y: "{y}"

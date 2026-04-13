@@ -228,8 +228,8 @@ async fn run_command(args: &[String]) {
                 ..Default::default()
             }))
         }
-        "model" => {
-            use nb_adapter_model::{ModelAdapter, ModelConfig};
+        "testkit" => {
+            use nb_adapter_testkit::{ModelAdapter, ModelConfig};
             use nb_adapter_stdout::{StdoutConfig, StdoutFormat};
             Arc::new(ModelAdapter::with_config(ModelConfig {
                 stdout: StdoutConfig {

@@ -1,9 +1,9 @@
 [package]
-name = "nb-adapter-model"
+name = "nb-adapter-testkit"
 version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
-description = "Model adapter for nb-rs: simulates operation execution with configurable results, latency, and error injection"
+description = "Testkit adapter for nb-rs: simulates operation execution with configurable results, latency, and error injection"
 keywords = ["nosqlbench", "workload", "benchmark", "simulation"]
 categories = ["command-line-utilities", "simulation"]
 repository = "https://github.com/nosqlbench/nb-rs"
@@ -18,3 +18,4 @@ tokio = { version = "1", features = ["time"] }
 serde_json = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 nb-variates = { path = "../../nb-variates", version = "0.1.1" }
+inventory = "0.3.24"

@@ -132,7 +132,7 @@ impl ModelAdapter {
 }
 
 impl DriverAdapter for ModelAdapter {
-    fn name(&self) -> &str { "model" }
+    fn name(&self) -> &str { "testkit" }
 
     fn map_op(&self, template: &ParsedOp) -> Result<Box<dyn OpDispenser>, String> {
         let model_params = extract_model_params(&template.params);
@@ -334,5 +334,22 @@ mod tests {
         );
         let result = dispenser.execute(0, &fields).await.unwrap();
         assert!(result.body.is_some());
+    }
+}
+
+// =========================================================================
+// Adapter Registration (inventory-based, link-time)
+// =========================================================================
+
+inventory::submit! {
+    nb_activity::adapter::AdapterRegistration {
+        names: || &["testkit"],
+        known_params: || &[],
+        create: |params| Box::pin(async move {
+            Ok(std::sync::Arc::new(ModelAdapter::with_config(ModelConfig {
+                stdout: StdoutConfig::from_params(&params),
+                diagnose: false,
+            })) as std::sync::Arc<dyn nb_activity::adapter::DriverAdapter>)
+        }),
     }
 }

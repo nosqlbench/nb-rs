@@ -31,7 +31,7 @@ pub const KNOWN_PARAMS: &[&str] = &[
     // Activity-level
     "adapter", "driver", "workload", "op", "cycles", "threads",
     "rate", "stanzarate", "errors", "seq", "tags", "format",
-    "filename", "separator", "header", "color",
+    "filename", "separator", "header", "color", "mode", "fade", "lanes",
     "stanza_concurrency", "sc", "scenario",
     // CQL adapter
     "hosts", "host", "port", "keyspace", "consistency",
@@ -106,6 +106,8 @@ fn levenshtein(a: &str, b: &str) -> usize {
 pub fn parse_params(args: &[String]) -> HashMap<String, String> {
     let mut params = HashMap::new();
     for arg in args {
+        // Skip --flags (handled separately by args.iter().any())
+        if arg.starts_with('-') { continue; }
         if let Some(eq_pos) = arg.find('=') {
             let key = arg[..eq_pos].to_string();
             let value = arg[eq_pos + 1..].to_string();
@@ -229,7 +231,7 @@ pub async fn run_command(args: &[String]) {
         })
         .unwrap_or(false);
 
-    // Warn about unrecognized CLI parameters
+    // Reject unrecognized CLI parameters
     for key in params.keys() {
         if !KNOWN_PARAMS.contains(&key.as_str())
             && !workload.declared_params.contains(key)
@@ -239,11 +241,11 @@ pub async fn run_command(args: &[String]) {
                 .collect();
             let suggestion = closest_match(key, &all_known);
             if let Some(closest) = suggestion {
-                eprintln!("warning: unrecognized parameter '{key}='. Did you mean '{closest}='?");
+                eprintln!("error: unrecognized parameter '{key}='. Did you mean '{closest}='?");
             } else {
-                eprintln!("warning: unrecognized parameter '{key}=' — \
-                    not a known activity parameter or workload-declared param");
+                eprintln!("error: unrecognized parameter '{key}='");
             }
+            std::process::exit(1);
         }
     }
 
@@ -568,8 +570,8 @@ pub async fn run_command(args: &[String]) {
                     ..Default::default()
                 }))
             }
-            "model" => {
-                use nb_adapter_model::{ModelAdapter, ModelConfig};
+            "testkit" => {
+                use nb_adapter_testkit::{ModelAdapter, ModelConfig};
                 let diagnose = args.iter().any(|a| a == "--diagnose");
                 Arc::new(ModelAdapter::with_config(ModelConfig {
                     stdout: StdoutConfig {
@@ -598,14 +600,24 @@ pub async fn run_command(args: &[String]) {
                 use nb_adapter_plotter::{PlotterAdapter, PlotterConfig};
                 let mode = merged_params.get("mode")
                     .cloned().unwrap_or_else(|| "plot".into());
+                let fade = merged_params.get("fade")
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                let lanes = merged_params.get("lanes")
+                    .map(|s| s.split(';')
+                        .map(|lane| lane.split(',').map(|f| f.trim().to_string()).collect())
+                        .collect())
+                    .unwrap_or_default();
                 Arc::new(PlotterAdapter::with_config(PlotterConfig {
                     mode,
+                    fade,
+                    lanes,
                     no_color: args.iter().any(|a| a == "--no-color"),
                     ..Default::default()
                 }))
             }
             other => {
-                eprintln!("error: unknown driver '{other}' (supported: stdout, model, http, plotter)");
+                eprintln!("error: unknown driver '{other}' (supported: stdout, testkit, http, plotter)");
                 std::process::exit(1);
             }
         }

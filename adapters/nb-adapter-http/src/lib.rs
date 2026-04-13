@@ -51,6 +51,18 @@ impl Default for HttpConfig {
     }
 }
 
+impl HttpConfig {
+    /// Construct a config from CLI/workload params.
+    pub fn from_params(params: &std::collections::HashMap<String, String>) -> Self {
+        Self {
+            base_url: params.get("base_url").or(params.get("host")).cloned(),
+            timeout_ms: params.get("timeout")
+                .and_then(|s| s.parse().ok()).unwrap_or(30_000),
+            follow_redirects: true,
+        }
+    }
+}
+
 /// The HTTP adapter: executes ops as HTTP requests.
 pub struct HttpAdapter {
     client: reqwest::Client,
@@ -250,5 +262,20 @@ mod tests {
     #[test]
     fn adapter_creates() {
         let _adapter = HttpAdapter::new();
+    }
+}
+
+// =========================================================================
+// Adapter Registration (inventory-based, link-time)
+// =========================================================================
+
+inventory::submit! {
+    nb_activity::adapter::AdapterRegistration {
+        names: || &["http"],
+        known_params: || &["base_url", "host", "timeout"],
+        create: |params| Box::pin(async move {
+            Ok(std::sync::Arc::new(HttpAdapter::with_config(HttpConfig::from_params(&params)))
+                as std::sync::Arc<dyn nb_activity::adapter::DriverAdapter>)
+        }),
     }
 }

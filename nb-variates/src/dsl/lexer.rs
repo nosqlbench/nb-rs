@@ -111,6 +111,14 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
             continue;
         }
 
+        // Skip hash comments (# to end of line, YAML-style)
+        if c == '#' {
+            while pos < chars.len() && chars[pos] != '\n' {
+                pos += 1;
+            }
+            continue;
+        }
+
         // Skip comments (// and /* */)
         if c == '/' && pos + 1 < chars.len() {
             if chars[pos + 1] == '/' {

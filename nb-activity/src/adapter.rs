@@ -349,3 +349,53 @@ mod tests {
         assert!(adapter_err.is_adapter_level());
     }
 }
+
+// =========================================================================
+// Adapter Registration (inventory-based, link-time collection)
+// =========================================================================
+
+/// An adapter module's registration, submitted at link time via `inventory`.
+///
+/// Each adapter crate (nb-adapter-stdout, cassnbrs-adapter-cql, etc.)
+/// submits one of these. The shared runner collects all submissions to
+/// build the adapter dispatch table without any explicit adapter list.
+pub struct AdapterRegistration {
+    /// Driver names this adapter responds to (e.g., `&["stdout"]` or `&["cql", "cassandra"]`).
+    pub names: fn() -> &'static [&'static str],
+    /// Extra param names this adapter accepts (for CLI validation).
+    pub known_params: fn() -> &'static [&'static str],
+    /// Async factory: given params, create the adapter.
+    /// Returns a boxed future so async connect is supported (e.g., CQL).
+    pub create: fn(std::collections::HashMap<String, String>)
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<std::sync::Arc<dyn DriverAdapter>, String>> + Send>>,
+}
+
+inventory::collect!(AdapterRegistration);
+
+/// Look up an adapter by driver name from all link-time registrations.
+pub fn find_adapter_registration(driver: &str) -> Option<&'static AdapterRegistration> {
+    for reg in inventory::iter::<AdapterRegistration> {
+        if (reg.names)().contains(&driver) {
+            return Some(reg);
+        }
+    }
+    None
+}
+
+/// List all registered driver names.
+pub fn registered_driver_names() -> Vec<&'static str> {
+    let mut names = Vec::new();
+    for reg in inventory::iter::<AdapterRegistration> {
+        names.extend_from_slice((reg.names)());
+    }
+    names
+}
+
+/// Collect all extra known params from registered adapters.
+pub fn registered_adapter_params() -> Vec<&'static str> {
+    let mut params = Vec::new();
+    for reg in inventory::iter::<AdapterRegistration> {
+        params.extend_from_slice((reg.known_params)());
+    }
+    params
+}

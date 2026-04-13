@@ -13,6 +13,7 @@ readme = "README.md"
 [dependencies]
 nb-activity = { path = "../../nb-activity", version = "0.1.1" }
 nb-workload = { path = "../../nb-workload", version = "0.1.1" }
+inventory = "0.3.24"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
