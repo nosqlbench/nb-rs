@@ -129,10 +129,15 @@ pub async fn run(args: &[String]) -> Result<(), String> {
             .map_err(|e| format!("invalid tag filter: {e}"))?;
     }
 
-    // Collect phase inline ops for GK compilation (separate from top-level ops)
+    // Separate phase ops: non-for_each go into outer kernel, for_each saved raw
     let mut phase_ops_for_compile: Vec<nb_workload::model::ParsedOp> = Vec::new();
-    for phase in phases.values() {
-        phase_ops_for_compile.extend(phase.ops.iter().cloned());
+    let mut for_each_raw_ops: HashMap<String, Vec<nb_workload::model::ParsedOp>> = HashMap::new();
+    for (name, phase) in &phases {
+        if phase.for_each.is_some() {
+            for_each_raw_ops.insert(name.clone(), phase.ops.clone());
+        } else {
+            phase_ops_for_compile.extend(phase.ops.iter().cloned());
+        }
     }
 
     // For non-phased workloads, require at least some ops
@@ -176,145 +181,8 @@ pub async fn run(args: &[String]) -> Result<(), String> {
     let mut all_ops_for_compile: Vec<nb_workload::model::ParsedOp> = ops;
     all_ops_for_compile.extend(phase_ops_for_compile);
 
-    // === GK Expansion Pipeline ===
-
-    // Phase 1: string substitution inside GK source AND op template strings
-    if !workload_params.is_empty() {
-        for op in &mut all_ops_for_compile {
-            // Expand in GK source
-            if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                for (key, value) in &workload_params {
-                    let placeholder = format!("{{{key}}}");
-                    if src.contains(&placeholder) {
-                        *src = src.replace(&placeholder, value);
-                    }
-                }
-            }
-            // Expand in op template strings (stmt, prepared, etc.)
-            // so that Phase 3 inline expression extraction sees resolved values.
-            for value in op.op.values_mut() {
-                if let Some(s) = value.as_str() {
-                    let mut rewritten = s.to_string();
-                    let mut changed = false;
-                    for (key, param_value) in &workload_params {
-                        let placeholder = format!("{{{key}}}");
-                        if rewritten.contains(&placeholder) {
-                            rewritten = rewritten.replace(&placeholder, param_value);
-                            changed = true;
-                        }
-                    }
-                    if changed {
-                        *value = serde_json::Value::String(rewritten);
-                    }
-                }
-            }
-        }
-
-        // Phase 2: inject param bindings
-        let mut op_refs: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for op in all_ops_for_compile.iter() {
-            for value in op.op.values() {
-                if let Some(s) = value.as_str() {
-                    for name in nb_workload::bindpoints::referenced_bindings(s) {
-                        if workload_params.contains_key(&name) {
-                            op_refs.insert(name);
-                        }
-                    }
-                }
-            }
-        }
-        for phase in phases.values() {
-            for config_val in [&phase.cycles].into_iter().flatten() {
-                if config_val.starts_with('{') && config_val.ends_with('}') {
-                    let name = &config_val[1..config_val.len()-1];
-                    if workload_params.contains_key(name) {
-                        op_refs.insert(name.to_string());
-                    }
-                }
-            }
-        }
-        if !op_refs.is_empty() {
-            for op in &mut all_ops_for_compile {
-                if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                    for name in &op_refs {
-                        let def_pattern = format!("{name} :=");
-                        if src.contains(&def_pattern) {
-                            continue;
-                        }
-                        let value = &workload_params[name];
-                        let binding = if value.parse::<u64>().is_ok() || value.parse::<f64>().is_ok() {
-                            format!("\n{name} := {value}")
-                        } else {
-                            format!("\n{name} := \"{value}\"")
-                        };
-                        src.push_str(&binding);
-                    }
-                }
-            }
-        }
-    }
-
-    // Phase 3: rewrite inline expressions in op templates to GK bindings.
-    {
-        let mut inline_idx = 0usize;
-        let mut expr_to_name: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-
-        for op in all_ops_for_compile.iter() {
-            for value in op.op.values() {
-                if let Some(s) = value.as_str() {
-                    for bp in nb_workload::bindpoints::extract_bind_points(s) {
-                        if let nb_workload::bindpoints::BindPoint::InlineDefinition(ref expr) = bp {
-                            if !expr_to_name.contains_key(expr) {
-                                let name = format!("__expr_{inline_idx}");
-                                inline_idx += 1;
-                                expr_to_name.insert(expr.clone(), name);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if !expr_to_name.is_empty() {
-            for op in all_ops_for_compile.iter_mut() {
-                if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                    for (expr, name) in &expr_to_name {
-                        let def_pattern = format!("{name} :=");
-                        if !src.contains(&def_pattern) {
-                            src.push_str(&format!("\n{name} := {expr}"));
-                        }
-                    }
-                }
-            }
-
-            for op in all_ops_for_compile.iter_mut() {
-                for value in op.op.values_mut() {
-                    if let Some(s) = value.as_str() {
-                        let mut rewritten = s.to_string();
-                        for (expr, name) in &expr_to_name {
-                            rewritten = rewritten.replace(
-                                &format!("{{{{{expr}}}}}"),
-                                &format!("{{{name}}}"),
-                            );
-                            rewritten = rewritten.replace(
-                                &format!("{{:={expr}:=}}"),
-                                &format!("{{{name}}}"),
-                            );
-                            rewritten = rewritten.replace(
-                                &format!("{{:={expr}}}"),
-                                &format!("{{{name}}}"),
-                            );
-                            rewritten = rewritten.replace(
-                                &format!("{{{expr}}}"),
-                                &format!("{{{name}}}"),
-                            );
-                        }
-                        *value = serde_json::Value::String(rewritten);
-                    }
-                }
-            }
-        }
-    }
+    // === GK Expansion Pipeline (outer kernel ops only) ===
+    expand_gk_bindings(&mut all_ops_for_compile, &workload_params, &phases);
 
     // === GK Compilation ===
 
@@ -336,7 +204,10 @@ pub async fn run(args: &[String]) -> Result<(), String> {
             inner
         })
         .collect();
-    for phase in phases.values() {
+    for (name, phase) in &phases {
+        if phase.for_each.is_some() {
+            continue; // for_each phase cycles resolved per-iteration
+        }
         if let Some(ref c) = phase.cycles {
             if c.starts_with('{') && c.ends_with('}') {
                 let mut inner = c[1..c.len()-1].to_string();
@@ -349,10 +220,11 @@ pub async fn run(args: &[String]) -> Result<(), String> {
                 config_refs.push(inner);
             }
         }
+        let _ = name; // suppress unused warning
     }
 
     let kernel = compile_bindings_with_libs_excluding(
-        &all_ops_for_compile, workload_dir, gk_lib_paths, strict, &[], &config_refs,
+        &all_ops_for_compile, workload_dir, gk_lib_paths.clone(), strict, &[], &config_refs,
     ).map_err(|e| format!("compile bindings: {e}"))?;
 
     // === GK Config Resolution (all done before kernel is consumed) ===
@@ -412,15 +284,64 @@ pub async fn run(args: &[String]) -> Result<(), String> {
                 .cloned()
                 .unwrap_or_else(|| vec![HashMap::new()]);
 
+            let is_for_each = phase.for_each.is_some();
+
             for (iter_idx, iter_bindings) in iterations.iter().enumerate() {
                 if !iter_bindings.is_empty() {
                     let label = iter_bindings.values().next().unwrap_or(&String::new()).clone();
                     eprintln!("  iteration {iter_idx}: {label}");
                 }
 
-                // Clone phase ops and substitute for_each variables
-                let phase_ops = {
-                    let mut ops = if !phase.ops.is_empty() {
+                // For for_each phases: clone raw ops, substitute iteration var,
+                // run full expansion pipeline, compile inner kernel.
+                // For non-for_each phases: use pre-compiled outer kernel ops.
+                let (phase_ops, iter_program) = if is_for_each {
+                    // Clone raw (pre-expansion) ops for this iteration
+                    let mut iter_ops = for_each_raw_ops.get(phase_name)
+                        .cloned()
+                        .unwrap_or_default();
+
+                    // Substitute iteration variable BEFORE expansion pipeline
+                    for op in &mut iter_ops {
+                        for (var, val) in iter_bindings {
+                            let placeholder = format!("{{{var}}}");
+                            // Substitute in op templates
+                            for value in op.op.values_mut() {
+                                if let Some(s) = value.as_str() {
+                                    if s.contains(&placeholder) {
+                                        *value = serde_json::Value::String(
+                                            s.replace(&placeholder, val)
+                                        );
+                                    }
+                                }
+                            }
+                            // Substitute in GK source
+                            if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
+                                *src = src.replace(&placeholder, val);
+                            }
+                        }
+                    }
+
+                    // Strip adapter/driver from op params
+                    for op in &mut iter_ops {
+                        op.params.remove("adapter");
+                        op.params.remove("driver");
+                    }
+
+                    // Run full GK expansion pipeline on substituted ops
+                    expand_gk_bindings(&mut iter_ops, &workload_params, &phases);
+
+                    // Compile inner kernel for this iteration
+                    let inner_kernel = compile_bindings_with_libs_excluding(
+                        &iter_ops, workload_dir, gk_lib_paths.clone(), strict, &[], &[],
+                    ).map_err(|e| format!("compile bindings for {phase_name} iteration {iter_idx}: {e}"))?;
+
+                    let inner_builder = Arc::new(OpBuilder::new(inner_kernel));
+                    let inner_program = inner_builder.program();
+                    (iter_ops, inner_program)
+                } else {
+                    // Non-for_each: use ops from outer compilation
+                    let ops = if !phase.ops.is_empty() {
                         let phase_op_names: std::collections::HashSet<String> =
                             phase.ops.iter().map(|o| o.name.clone()).collect();
                         all_ops_for_compile.iter()
@@ -436,29 +357,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
                     } else {
                         all_ops_for_compile[..num_top_level_ops].to_vec()
                     };
-
-                    // Substitute for_each variables in op templates and GK source
-                    if !iter_bindings.is_empty() {
-                        for op in &mut ops {
-                            for value in op.op.values_mut() {
-                                if let Some(s) = value.as_str() {
-                                    let mut rewritten = s.to_string();
-                                    for (var, val) in iter_bindings {
-                                        let placeholder = format!("{{{var}}}");
-                                        rewritten = rewritten.replace(&placeholder, val);
-                                    }
-                                    *value = serde_json::Value::String(rewritten);
-                                }
-                            }
-                            if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                                for (var, val) in iter_bindings {
-                                    let placeholder = format!("{{{var}}}");
-                                    *src = src.replace(&placeholder, val);
-                                }
-                            }
-                        }
-                    }
-                    ops
+                    (ops, program.clone())
                 };
 
                 if phase_ops.is_empty() {
@@ -469,20 +368,16 @@ pub async fn run(args: &[String]) -> Result<(), String> {
                 let op_sequence = OpSequence::from_ops(phase_ops, seq_type);
                 let stanza_len = op_sequence.stanza_length() as u64;
 
-                // Resolve cycles with for_each variable substitution
-                let phase_stanzas = if !iter_bindings.is_empty() {
+                let phase_stanzas = if is_for_each {
+                    // Already resolved above via inner kernel (encoded in iter_program)
+                    // But we need the cycle count. Re-resolve from phase config.
                     phase.cycles.as_ref().and_then(|c| {
                         let mut expanded = c.clone();
                         for (var, val) in iter_bindings {
-                            let placeholder = format!("{{{var}}}");
-                            expanded = expanded.replace(&placeholder, val);
+                            expanded = expanded.replace(&format!("{{{var}}}"), val);
                         }
-                        // Also expand workload params
-                        for (key, value) in &workload_params {
-                            let placeholder = format!("{{{key}}}");
-                            expanded = expanded.replace(&placeholder, value);
-                        }
-                        // Kernel is consumed; use eval_const_expr for dynamic resolution
+                        let expanded = expand_workload_params(&expanded, &workload_params);
+                        // Use eval_const_expr since the inner kernel is consumed
                         if expanded.starts_with('{') && expanded.ends_with('}') {
                             let inner = &expanded[1..expanded.len()-1];
                             nb_variates::dsl::compile::eval_const_expr(inner)
@@ -499,12 +394,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
                         .unwrap_or(1)
                 };
                 let phase_cycles = phase_stanzas * stanza_len;
-                let phase_concurrency = if !iter_bindings.is_empty() {
-                    // Resolve concurrency with for_each substitution
-                    phase.concurrency.unwrap_or(1)
-                } else {
-                    phase.concurrency.unwrap_or(1)
-                };
+                let phase_concurrency = phase.concurrency.unwrap_or(1);
                 let phase_rate = phase.rate.or(cycle_rate);
                 let phase_error_spec = phase.errors.clone().unwrap_or_else(|| error_spec.clone());
 
@@ -528,7 +418,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
                 let activity = Activity::with_params(
                     config, &Labels::of("session", "cli"), op_sequence, workload_params.clone(),
                 );
-                run_activity(activity, adapter, program.clone(), openmetrics_url.as_deref()).await;
+                run_activity(activity, adapter, iter_program, openmetrics_url.as_deref()).await;
             }
 
             eprintln!("phase '{phase_name}' complete");
@@ -688,6 +578,151 @@ impl crate::adapter::OpDispenser for DryRunDispenser {
 // =========================================================================
 // Helpers
 // =========================================================================
+
+/// GK expansion pipeline (Phases 1-3): workload param substitution,
+/// param binding injection, and inline expression extraction.
+///
+/// Called once for the outer kernel's ops and once per for_each iteration.
+fn expand_gk_bindings(
+    ops: &mut [nb_workload::model::ParsedOp],
+    workload_params: &HashMap<String, String>,
+    phases: &HashMap<String, nb_workload::model::WorkloadPhase>,
+) {
+    // Phase 1: string substitution in GK source AND op template strings
+    if !workload_params.is_empty() {
+        for op in ops.iter_mut() {
+            if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
+                for (key, value) in workload_params {
+                    let placeholder = format!("{{{key}}}");
+                    if src.contains(&placeholder) {
+                        *src = src.replace(&placeholder, value);
+                    }
+                }
+            }
+            for value in op.op.values_mut() {
+                if let Some(s) = value.as_str() {
+                    let mut rewritten = s.to_string();
+                    let mut changed = false;
+                    for (key, param_value) in workload_params {
+                        let placeholder = format!("{{{key}}}");
+                        if rewritten.contains(&placeholder) {
+                            rewritten = rewritten.replace(&placeholder, param_value);
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        *value = serde_json::Value::String(rewritten);
+                    }
+                }
+            }
+        }
+
+        // Phase 2: inject param bindings into GK source
+        let mut op_refs: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for op in ops.iter() {
+            for value in op.op.values() {
+                if let Some(s) = value.as_str() {
+                    for name in nb_workload::bindpoints::referenced_bindings(s) {
+                        if workload_params.contains_key(&name) {
+                            op_refs.insert(name);
+                        }
+                    }
+                }
+            }
+        }
+        for phase in phases.values() {
+            for config_val in [&phase.cycles].into_iter().flatten() {
+                if config_val.starts_with('{') && config_val.ends_with('}') {
+                    let name = &config_val[1..config_val.len()-1];
+                    if workload_params.contains_key(name) {
+                        op_refs.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        if !op_refs.is_empty() {
+            for op in ops.iter_mut() {
+                if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
+                    for name in &op_refs {
+                        let def_pattern = format!("{name} :=");
+                        if src.contains(&def_pattern) {
+                            continue;
+                        }
+                        let value = &workload_params[name];
+                        let binding = if value.parse::<u64>().is_ok() || value.parse::<f64>().is_ok() {
+                            format!("\n{name} := {value}")
+                        } else {
+                            format!("\n{name} := \"{value}\"")
+                        };
+                        src.push_str(&binding);
+                    }
+                }
+            }
+        }
+    }
+
+    // Phase 3: rewrite inline expressions in op templates to GK bindings
+    {
+        let mut inline_idx = 0usize;
+        let mut expr_to_name: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+        for op in ops.iter() {
+            for value in op.op.values() {
+                if let Some(s) = value.as_str() {
+                    for bp in nb_workload::bindpoints::extract_bind_points(s) {
+                        if let nb_workload::bindpoints::BindPoint::InlineDefinition(ref expr) = bp {
+                            if !expr_to_name.contains_key(expr) {
+                                let name = format!("__expr_{inline_idx}");
+                                inline_idx += 1;
+                                expr_to_name.insert(expr.clone(), name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !expr_to_name.is_empty() {
+            for op in ops.iter_mut() {
+                if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
+                    for (expr, name) in &expr_to_name {
+                        let def_pattern = format!("{name} :=");
+                        if !src.contains(&def_pattern) {
+                            src.push_str(&format!("\n{name} := {expr}"));
+                        }
+                    }
+                }
+            }
+
+            for op in ops.iter_mut() {
+                for value in op.op.values_mut() {
+                    if let Some(s) = value.as_str() {
+                        let mut rewritten = s.to_string();
+                        for (expr, name) in &expr_to_name {
+                            rewritten = rewritten.replace(
+                                &format!("{{{{{expr}}}}}"),
+                                &format!("{{{name}}}"),
+                            );
+                            rewritten = rewritten.replace(
+                                &format!("{{:={expr}:=}}"),
+                                &format!("{{{name}}}"),
+                            );
+                            rewritten = rewritten.replace(
+                                &format!("{{:={expr}}}"),
+                                &format!("{{{name}}}"),
+                            );
+                            rewritten = rewritten.replace(
+                                &format!("{{{expr}}}"),
+                                &format!("{{{name}}}"),
+                            );
+                        }
+                        *value = serde_json::Value::String(rewritten);
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// Resolve a phase's `for_each` directive into iteration bindings.
 ///

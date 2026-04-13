@@ -12,7 +12,7 @@
 # Usage:
 #   cassnbrs cql_vector.yaml dataset=sift1m prefix=label
 #   cassnbrs cql_vector.yaml dataset=sift1m prefix=label adapter=stdout
-#   cassnbrs cql_vector.yaml schema adapter=stdout   # just show DDL
+#   cassnbrs cql_vector.yaml schema adapter=stdout
 
 params:
   adapter: cassandra
@@ -34,25 +34,34 @@ bindings: |
 scenarios:
   default:
     - discover
+    - create_keyspace
     - schema
     - rampup
     - search
 
 phases:
   discover:
+    adapter: stdout
     cycles: 1
     concurrency: 1
     ops:
       info:
         stmt: "=== {dataset}: matching profiles for prefix '{prefix}': {profiles} ==="
 
+  # Create keyspace — the CQL adapter auto-falls back to no-keyspace
+  # connection if the target keyspace doesn't exist yet.
+  create_keyspace:
+    cycles: 1
+    concurrency: 1
+    ops:
+      ks:
+        raw: "CREATE KEYSPACE IF NOT EXISTS {keyspace} WITH replication = {replication} AND durable_writes = true"
+
   schema:
     for_each: "pname in matching_profiles('{dataset}', '{prefix}')"
     cycles: 1
     concurrency: 1
     ops:
-      create_keyspace:
-        raw: "CREATE KEYSPACE IF NOT EXISTS {keyspace} WITH replication = {replication} AND durable_writes = true"
       create_table:
         raw: "CREATE TABLE IF NOT EXISTS {keyspace}.vec_{pname} (key text PRIMARY KEY, value vector<float, {dim}>)"
       create_index:

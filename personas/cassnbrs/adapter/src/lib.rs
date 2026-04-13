@@ -125,6 +125,9 @@ impl ResultBody for CqlResultBody {
 pub struct CqlConfig {
     pub hosts: String,
     pub port: u16,
+    /// Keyspace to connect to. If empty, connects without a keyspace
+    /// (required for CREATE KEYSPACE DDL). The `{keyspace}` bind point
+    /// in op templates resolves from the workload param, not this field.
     pub keyspace: String,
     pub consistency: String,
     pub username: Option<String>,
@@ -151,7 +154,14 @@ impl CqlConfig {
         let mut config = Self::default();
         if let Some(v) = params.get("hosts").or(params.get("host")) { config.hosts = v.clone(); }
         if let Some(v) = params.get("port") { config.port = v.parse().unwrap_or(9042); }
-        if let Some(v) = params.get("keyspace") { config.keyspace = v.clone(); }
+        // connect_keyspace overrides keyspace for the driver connection,
+        // leaving {keyspace} in op templates to resolve from workload params.
+        // Use connect_keyspace="" to connect without a keyspace (for DDL).
+        if let Some(v) = params.get("connect_keyspace") {
+            config.keyspace = v.clone();
+        } else if let Some(v) = params.get("keyspace") {
+            config.keyspace = v.clone();
+        }
         if let Some(v) = params.get("consistency") { config.consistency = v.clone(); }
         if let Some(v) = params.get("username") { config.username = Some(v.clone()); }
         if let Some(v) = params.get("password") { config.password = Some(v.clone()); }
@@ -197,11 +207,19 @@ impl CqlAdapter {
         }
         cluster.set_request_timeout(std::time::Duration::from_millis(config.request_timeout_ms));
 
+        // Try to connect to the specified keyspace. If it doesn't exist,
+        // fall back to connecting without a keyspace (needed for DDL phases
+        // that create the keyspace).
         let session = if config.keyspace.is_empty() {
             cluster.connect().await.map_err(|e| format!("connect: {e}"))?
         } else {
-            cluster.connect_keyspace(&config.keyspace).await
-                .map_err(|e| format!("connect keyspace '{}': {e}", config.keyspace))?
+            match cluster.connect_keyspace(&config.keyspace).await {
+                Ok(s) => s,
+                Err(_) => {
+                    eprintln!("cassnbrs: keyspace '{}' not found, connecting without keyspace", config.keyspace);
+                    cluster.connect().await.map_err(|e| format!("connect (no keyspace): {e}"))?
+                }
+            }
         };
 
         Ok(Self {
