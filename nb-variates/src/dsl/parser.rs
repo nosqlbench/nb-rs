@@ -85,6 +85,7 @@ fn parse_statement(p: &mut Parser) -> Result<Statement, String> {
         TokenKind::Inputs => parse_inputs(p),
         TokenKind::Init => parse_init_binding(p),
         TokenKind::Extern => parse_extern_port(p),
+        TokenKind::Shared | TokenKind::Final => parse_modified_binding(p),
         TokenKind::LParen => parse_destructuring_binding(p),
         TokenKind::Ident(_) => {
             // Lookahead to distinguish:
@@ -215,17 +216,44 @@ fn parse_inputs(p: &mut Parser) -> Result<Statement, String> {
 
 /// `init name = expr`
 fn parse_init_binding(p: &mut Parser) -> Result<Statement, String> {
+    parse_init_binding_with_modifier(p, BindingModifier::None)
+}
+
+fn parse_init_binding_with_modifier(p: &mut Parser, modifier: BindingModifier) -> Result<Statement, String> {
     let span = p.span();
     p.advance(); // consume 'init'
     let name = p.expect_ident()?;
     p.expect(&TokenKind::Eq)?;
     let value = parse_expr(p)?;
 
-    Ok(Statement::InitBinding(InitBinding { name, value, span }))
+    Ok(Statement::InitBinding(InitBinding { name, value, modifier, span }))
+}
+
+/// `shared name := expr` or `final name := expr`
+fn parse_modified_binding(p: &mut Parser) -> Result<Statement, String> {
+    let modifier = match p.peek() {
+        TokenKind::Shared => BindingModifier::Shared,
+        TokenKind::Final => BindingModifier::Final,
+        _ => unreachable!(),
+    };
+    p.advance(); // consume 'shared' or 'final'
+
+    match p.peek() {
+        TokenKind::Init => parse_init_binding_with_modifier(p, modifier),
+        TokenKind::Ident(_) => parse_cycle_binding_with_modifier(p, modifier),
+        _ => Err(format!(
+            "expected binding after {:?} at line {}, col {}",
+            modifier, p.span().line, p.span().col
+        )),
+    }
 }
 
 /// `name := expr`
 fn parse_cycle_binding(p: &mut Parser) -> Result<Statement, String> {
+    parse_cycle_binding_with_modifier(p, BindingModifier::None)
+}
+
+fn parse_cycle_binding_with_modifier(p: &mut Parser, modifier: BindingModifier) -> Result<Statement, String> {
     let span = p.span();
     let name = p.expect_ident()?;
     p.expect(&TokenKind::ColonEq)?;
@@ -234,6 +262,7 @@ fn parse_cycle_binding(p: &mut Parser) -> Result<Statement, String> {
     Ok(Statement::CycleBinding(CycleBinding {
         targets: vec![name],
         value,
+        modifier,
         span,
     }))
 }
@@ -258,6 +287,7 @@ fn parse_destructuring_binding(p: &mut Parser) -> Result<Statement, String> {
     Ok(Statement::CycleBinding(CycleBinding {
         targets,
         value,
+        modifier: BindingModifier::None,
         span,
     }))
 }

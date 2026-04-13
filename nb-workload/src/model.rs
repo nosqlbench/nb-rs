@@ -74,6 +74,22 @@ pub struct WorkloadPhase {
     /// Example: `for_each: "profile in matching_profiles('{dataset}', '{prefix}')"`
     #[serde(default)]
     pub for_each: Option<String>,
+    /// Loop scope mode for `for_each` phases.
+    ///
+    /// Controls how the loop context is seeded from the outer scope:
+    /// - `clean` (default): snapshot of outer scope at loop entry
+    /// - `inherit`: outer scope's live state (includes prior phase mutations)
+    #[serde(default)]
+    pub loop_scope: Option<String>,
+    /// Iteration scope mode for `for_each` phases.
+    ///
+    /// Controls how each iteration is seeded from the loop scope:
+    /// - `inherit` (default for for_each): each iteration starts from the loop
+    ///   scope's current state. All loop-level variables are implicitly shared
+    ///   with iterations, so iteration N+1 sees what N wrote.
+    /// - `clean`: each iteration starts from the loop scope snapshot (isolated)
+    #[serde(default)]
+    pub iter_scope: Option<String>,
 }
 
 /// A single step in a scenario.

@@ -214,6 +214,13 @@ fn parse_phases(
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        let loop_scope = phase_obj.get("loop_scope")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let iter_scope = phase_obj.get("iter_scope")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         phases.insert(phase_name.clone(), WorkloadPhase {
             cycles,
             concurrency,
@@ -223,6 +230,8 @@ fn parse_phases(
             tags,
             ops: inline_ops,
             for_each,
+            loop_scope,
+            iter_scope,
         });
         phase_order.push(phase_name.clone());
     }

@@ -496,7 +496,8 @@ pub struct VectorCount {
 
 impl VectorCount {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = F32Dataset::load(source, "default", "base")?;
+        let (_dataset_name, profile) = parse_source_specifier(source);
+        let dataset = F32Dataset::load(source, profile, "base")?;
         Ok(Self {
             meta: NodeMeta {
                 name: "vector_count".into(),

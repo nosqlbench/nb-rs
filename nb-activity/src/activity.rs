@@ -49,7 +49,7 @@ impl Default for ActivityConfig {
             cycle_rate: None,
             stanza_rate: None,
             sequencer: SequencerType::Bucket,
-            error_spec: ".*:warn,counter".into(),
+            error_spec: ".*:warn,stop".into(),
             max_retries: 3,
             stanza_concurrency: 1,
         }
@@ -69,9 +69,12 @@ pub struct ActivityMetrics {
     /// Distribution shape reveals incremental saturation.
     pub tries_histogram: Histogram,
     pub cycles_total: Counter,
+    pub successes_total: Counter,
     pub skips_total: Counter,
     pub errors_total: Counter,
     pub stanzas_total: Counter,
+    /// Number of cycles currently in-flight (started but not completed).
+    pub active: std::sync::atomic::AtomicU64,
     pub result_elements: Counter,
     pub result_bytes: Counter,
     /// Per-error-type counters, keyed by error_name.
@@ -89,9 +92,11 @@ impl ActivityMetrics {
             result_success_time: Timer::new(labels.with("name", "result_success")),
             tries_histogram: Histogram::new(labels.with("name", "tries")),
             cycles_total: Counter::new(labels.with("name", "cycles_total")),
+            successes_total: Counter::new(labels.with("name", "successes_total")),
             skips_total: Counter::new(labels.with("name", "skips_total")),
             errors_total: Counter::new(labels.with("name", "errors_total")),
             stanzas_total: Counter::new(labels.with("name", "stanzas_total")),
+            active: std::sync::atomic::AtomicU64::new(0),
             result_elements: Counter::new(labels.with("name", "result_elements")),
             result_bytes: Counter::new(labels.with("name", "result_bytes")),
             error_type_counts: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -397,6 +402,7 @@ impl Activity {
         // fibers finish so the thread terminates and clears its line.
         let progress_flag = Arc::new(AtomicBool::new(true));
         let total_cycles = activity.config.cycles;
+        let activity_name = activity.config.name.clone();
         let is_stderr_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
         // Suppress progress indicator when the adapter uses raw terminal mode
         let suppress_progress = adapters.values()
@@ -404,17 +410,52 @@ impl Activity {
         if is_stderr_tty && total_cycles > 1000 && !suppress_progress {
             let flag = progress_flag.clone();
             let progress_metrics = activity.metrics.clone();
+            let start_time = Instant::now();
             std::thread::spawn(move || {
                 while flag.load(Ordering::Relaxed) {
                     std::thread::sleep(Duration::from_millis(500));
                     if !flag.load(Ordering::Relaxed) { break; }
                     let completed = progress_metrics.cycles_completed();
+                    let active = progress_metrics.active.load(Ordering::Relaxed);
+                    let pending = total_cycles.saturating_sub(completed).saturating_sub(active);
                     let pct = if total_cycles > 0 {
-                        completed * 100 / total_cycles
+                        completed as f64 * 100.0 / total_cycles as f64
                     } else {
-                        0
+                        0.0
                     };
-                    eprint!("\r  progress: {completed}/{total_cycles} ({pct}%)    ");
+                    let elapsed = start_time.elapsed().as_secs_f64();
+                    let rate = if elapsed > 0.0 { completed as f64 / elapsed } else { 0.0 };
+                    let rate_str = if rate >= 1_000_000.0 {
+                        format!("{:.1}M/s", rate / 1_000_000.0)
+                    } else if rate >= 1_000.0 {
+                        format!("{:.1}K/s", rate / 1_000.0)
+                    } else {
+                        format!("{:.0}/s", rate)
+                    };
+                    let successes = progress_metrics.successes_total.get();
+                    let ok_pct = if completed > 0 {
+                        successes as f64 * 100.0 / completed as f64
+                    } else {
+                        100.0
+                    };
+                    let errors = progress_metrics.errors_total.get();
+                    // Retry ratio: errors/completed shows retry amplification.
+                    // 0 = no retries. 0.5 = half of completed ops needed at least one retry.
+                    // Only shown when retries are happening.
+                    let retry_str = if errors > 0 && completed > 0 {
+                        let failed_cycles = completed.saturating_sub(successes).saturating_sub(
+                            progress_metrics.skips_total.get());
+                        let retries = errors.saturating_sub(failed_cycles);
+                        if retries > 0 {
+                            format!(" retries:{retries}")
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    };
+                    let ok_str = if ok_pct < 100.0 { format!(" ok:{ok_pct:.1}%") } else { String::new() };
+                    eprint!("\r{activity_name} (pending,active,complete)=({pending},{active},{completed}) {pct:.2}% {rate_str}{ok_str}{retry_str}    ");
                 }
                 // Clear the progress line when done
                 eprint!("\r                                                        \r");
@@ -578,12 +619,14 @@ async fn executor_task(
                 let max_retries = max_retries;
                 let activity = activity.clone();
                 async move {
+                    activity.metrics.active.fetch_add(1, Ordering::Relaxed);
                     let service_start = Instant::now();
                     let mut tries = 1u32;
                     loop {
                         match dispenser.execute(cycle, fields).await {
                             Ok(result) => {
                                 let service_nanos = service_start.elapsed().as_nanos() as u64;
+                                activity.metrics.active.fetch_sub(1, Ordering::Relaxed);
                                 return (true, service_nanos, tries, result.captures, result.skipped);
                             }
                             Err(e) => {
@@ -601,6 +644,7 @@ async fn executor_task(
                                 }
 
                                 let service_nanos = service_start.elapsed().as_nanos() as u64;
+                                activity.metrics.active.fetch_sub(1, Ordering::Relaxed);
                                 return (false, service_nanos, tries, std::collections::HashMap::new(), false);
                             }
                         }
@@ -625,6 +669,7 @@ async fn executor_task(
                 activity.metrics.response_time.record(service_nanos + wait_nanos);
                 activity.metrics.tries_histogram.record(tries as u64);
                 if success {
+                    activity.metrics.successes_total.inc();
                     activity.metrics.result_success_time.record(service_nanos);
                     for (name, value) in captures {
                         available_captures.insert(name.clone());

@@ -34,13 +34,15 @@ impl GkKernel {
         wiring: Vec<Vec<WireSource>>,
         input_names: Vec<String>,
         output_map: HashMap<String, (usize, usize)>,
+        source: &str,
+        context: &str,
     ) -> Self {
         let coord_count = input_names.len();
         let input_defs: Vec<InputDef> = input_names.into_iter()
             .map(|name| InputDef { name, default: Value::U64(0), port_type: crate::node::PortType::U64 })
             .collect();
         let order: Vec<String> = output_map.keys().cloned().collect();
-        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, order, None, false).unwrap()
+        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, order, source, context, None, false).unwrap()
     }
 
     /// Create with explicit input definitions.
@@ -51,9 +53,11 @@ impl GkKernel {
         coord_count: usize,
         output_map: HashMap<String, (usize, usize)>,
         output_order: Vec<String>,
+        source: &str,
+        context: &str,
         log: Option<&mut crate::dsl::events::CompileEventLog>,
     ) -> Self {
-        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, log, false).unwrap()
+        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, source, context, log, false).unwrap()
     }
 
     /// Construct with strict mode.
@@ -64,9 +68,11 @@ impl GkKernel {
         coord_count: usize,
         output_map: HashMap<String, (usize, usize)>,
         output_order: Vec<String>,
+        source: &str,
+        context: &str,
         log: Option<&mut crate::dsl::events::CompileEventLog>,
     ) -> Result<Self, String> {
-        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, log, true)
+        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, source, context, log, true)
     }
 
     fn new_impl(
@@ -76,11 +82,14 @@ impl GkKernel {
         coord_count: usize,
         output_map: HashMap<String, (usize, usize)>,
         output_order: Vec<String>,
+        source: &str,
+        context: &str,
         log: Option<&mut crate::dsl::events::CompileEventLog>,
         strict: bool,
     ) -> Result<Self, String> {
         let mut program = GkProgram::with_inputs(
             nodes, wiring, input_defs, coord_count, output_map, output_order,
+            source, context,
         );
         let constants_folded = if strict {
             program.fold_init_constants_strict(log, true)?
@@ -100,6 +109,19 @@ impl GkKernel {
             }
         }
         Ok(Self { program, state, constants_folded })
+    }
+
+    /// Apply output binding modifiers to the program.
+    ///
+    /// Must be called immediately after construction, before the
+    /// `Arc<GkProgram>` is shared. Panics if the Arc has other
+    /// references.
+    pub(crate) fn set_output_modifiers(&mut self, modifiers: &std::collections::HashMap<String, crate::dsl::ast::BindingModifier>) {
+        let program = Arc::get_mut(&mut self.program)
+            .expect("set_output_modifiers called after program was shared");
+        for (name, modifier) in modifiers {
+            program.set_output_modifier(name, *modifier);
+        }
     }
 
     /// The shared immutable program.
@@ -143,6 +165,44 @@ impl GkKernel {
         let (node_idx, port_idx) = self.program.output_map.get(name)?;
         let val = &self.state.core.buffers[*node_idx][*port_idx];
         if matches!(val, Value::None) { None } else { Some(val) }
+    }
+
+    /// Bind this kernel's extern inputs from an outer scope kernel.
+    ///
+    /// For each output in the outer kernel that matches an input name
+    /// in this kernel, copies the outer value into this kernel's
+    /// input state. This is the scope composition wiring described
+    /// in sysref 16 — the inner kernel sees outer constants as
+    /// pre-populated inputs.
+    ///
+    /// Call this after construction, before moving the kernel into
+    /// an `OpBuilder`.
+    pub fn bind_outer_scope(&mut self, outer: &GkKernel) {
+        for name in outer.program.output_names() {
+            if let Some(inner_idx) = self.program.find_input(name) {
+                if let Some(value) = outer.get_constant(name) {
+                    self.state.set_input(inner_idx, value.clone());
+                }
+            }
+        }
+    }
+
+    /// Extract the scope values that were set via `bind_outer_scope`.
+    /// Returns `[(input_idx, value)]` for inputs that are not at
+    /// their default. Used by `OpBuilder` to inject the same values
+    /// into every fiber's state.
+    pub fn scope_values(&self) -> Vec<(usize, Value)> {
+        let mut values = Vec::new();
+        let input_count = self.program.input_names().len();
+        for i in 0..input_count {
+            let val = self.state.get_input(i);
+            if !matches!(val, Value::None) {
+                // Check if it differs from the default (coordinate inputs
+                // default to U64(0), extern inputs default to None)
+                values.push((i, val.clone()));
+            }
+        }
+        values
     }
 
     /// Extract the program for concurrent use.

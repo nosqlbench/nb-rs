@@ -59,7 +59,9 @@ pub fn compile_gk_to_assembler(source: &str) -> Result<GkAssembler, String> {
     let tokens = super::lexer::lex(source)?;
     let ast = super::parser::parse(tokens)?;
     let mut compiler = Compiler::new(None, false);
-    compiler.build_assembler(&ast)
+    let mut asm = compiler.build_assembler(&ast)?;
+    asm.set_context(source, "(gk source)");
+    Ok(asm)
 }
 
 /// Compile with a source directory for module resolution.
@@ -92,6 +94,7 @@ pub fn compile_gk_with_outputs(
         Some(required_outputs)
     };
     let mut compiler = Compiler::new(source_dir.map(|p| p.to_path_buf()), strict);
+    compiler.source_text = source.to_string();
     compiler.compile_filtered(&ast, filter)
 }
 
@@ -119,6 +122,7 @@ pub fn compile_gk_with_libs(
         gk_lib_paths,
         strict,
     );
+    compiler.source_text = source.to_string();
     compiler.compile_filtered(&ast, filter)
 }
 
@@ -131,7 +135,7 @@ pub fn compile_gk_with_libs(
 pub fn compile_gk_strict(source: &str, source_dir: Option<&Path>, strict: bool) -> Result<GkKernel, String> {
     let tokens = lexer::lex(source)?;
     let ast = parser::parse(tokens)?;
-    compile_ast_strict(&ast, source_dir, strict)
+    compile_ast_strict_with_source(&ast, source_dir, strict, source)
 }
 
 /// Compile with a compile event log for diagnostic inspection.
@@ -139,6 +143,7 @@ pub fn compile_gk_with_log(source: &str, log: &mut super::events::CompileEventLo
     let tokens = lexer::lex(source)?;
     let ast = parser::parse(tokens)?;
     let mut compiler = Compiler::new(None, false);
+    compiler.source_text = source.to_string();
     let asm = compiler.build_assembler(&ast)?;
     asm.compile_with_log(Some(log)).map_err(|e| e.to_string())
 }
@@ -231,6 +236,21 @@ pub fn compile_ast_strict(file: &GkFile, source_dir: Option<&Path>, strict: bool
     compiler.compile(file)
 }
 
+/// Compile a parsed AST with strict mode and source text for diagnostics.
+///
+/// Same as `compile_ast_strict` but attaches the original source text
+/// to the compiled program for diagnostic inspection.
+fn compile_ast_strict_with_source(
+    file: &GkFile,
+    source_dir: Option<&Path>,
+    strict: bool,
+    source: &str,
+) -> Result<GkKernel, String> {
+    let mut compiler = Compiler::new(source_dir.map(|p| p.to_path_buf()), strict);
+    compiler.source_text = source.to_string();
+    compiler.compile(file)
+}
+
 pub(super) struct Compiler {
     pub(super) input_names: Vec<String>,
     /// Track all named outputs so we can expose them.
@@ -248,6 +268,10 @@ pub(super) struct Compiler {
     pub(super) module_cache: std::collections::HashMap<String, ResolvedModule>,
     /// When true, enforce strict validation.
     pub(super) strict: bool,
+    /// Original source text, attached to compiled programs for diagnostics.
+    source_text: String,
+    /// Diagnostic context label.
+    context_label: String,
 }
 
 impl Compiler {
@@ -260,6 +284,8 @@ impl Compiler {
             gk_lib_paths: Vec::new(),
             module_cache: std::collections::HashMap::new(),
             strict,
+            source_text: String::new(),
+            context_label: "(gk)".into(),
         }
     }
 
@@ -272,6 +298,8 @@ impl Compiler {
             gk_lib_paths,
             module_cache: std::collections::HashMap::new(),
             strict,
+            source_text: String::new(),
+            context_label: "(gk)".into(),
         }
     }
 
@@ -340,14 +368,14 @@ impl Compiler {
             match stmt {
                 Statement::Coordinates(_, _) => {} // already handled
                 Statement::InitBinding(b) => {
-                    // For now, init bindings that are function calls become
-                    // nodes with no cycle-time wire inputs. This is a
-                    // simplification — full init-time resolution is future work.
                     self.compile_binding(
                         &mut asm,
                         &[b.name.clone()],
                         &b.value,
                     )?;
+                    if b.modifier != BindingModifier::None {
+                        asm.set_output_modifier(&b.name, b.modifier);
+                    }
                 }
                 Statement::CycleBinding(b) => {
                     self.compile_binding(
@@ -355,6 +383,11 @@ impl Compiler {
                         &b.targets,
                         &b.value,
                     )?;
+                    if b.modifier != BindingModifier::None {
+                        for target in &b.targets {
+                            asm.set_output_modifier(target, b.modifier);
+                        }
+                    }
                 }
                 Statement::ModuleDef(_) => {
                     // Module definitions are not executed — they're
@@ -372,6 +405,11 @@ impl Compiler {
                         _ => crate::node::PortType::Str,
                     };
                     asm.add_input(&port.name, default_value, port_type);
+
+                    // Register the extern name as an input so the
+                    // binding compiler resolves it as WireRef::input
+                    // (enables `hash(offset)` where offset is extern)
+                    self.input_names.push(port.name.clone());
 
                     // Create a passthrough node wired to the input
                     let passthrough = Box::new(
@@ -394,6 +432,8 @@ impl Compiler {
             asm.add_output(name, WireRef::node(name));
         }
 
+        // Attach source and context for diagnostics
+        asm.set_context(&self.source_text, &self.context_label);
         asm.compile_strict(self.strict).map_err(|e| format!("{e}"))
     }
 
@@ -446,9 +486,17 @@ impl Compiler {
             match &stmt {
                 Statement::CycleBinding(binding) => {
                     self.compile_binding(&mut asm, &binding.targets, &binding.value)?;
+                    if binding.modifier != BindingModifier::None {
+                        for target in &binding.targets {
+                            asm.set_output_modifier(target, binding.modifier);
+                        }
+                    }
                 }
                 Statement::InitBinding(binding) => {
                     self.compile_binding(&mut asm, &[binding.name.clone()], &binding.value)?;
+                    if binding.modifier != BindingModifier::None {
+                        asm.set_output_modifier(&binding.name, binding.modifier);
+                    }
                 }
                 Statement::ExternPort(_) => {}
                 Statement::ModuleDef(_) => {}
@@ -460,6 +508,7 @@ impl Compiler {
             asm.add_output(name, WireRef::node(name));
         }
 
+        asm.set_context(&self.source_text, &self.context_label);
         Ok(asm)
     }
 
@@ -540,6 +589,9 @@ impl Compiler {
                         &[b.name.clone()],
                         &b.value,
                     )?;
+                    if b.modifier != BindingModifier::None {
+                        asm.set_output_modifier(&b.name, b.modifier);
+                    }
                 }
                 Statement::CycleBinding(b) => {
                     self.compile_binding(
@@ -547,6 +599,11 @@ impl Compiler {
                         &b.targets,
                         &b.value,
                     )?;
+                    if b.modifier != BindingModifier::None {
+                        for target in &b.targets {
+                            asm.set_output_modifier(target, b.modifier);
+                        }
+                    }
                 }
                 Statement::ModuleDef(_) | Statement::ExternPort(_) => {}
             }
@@ -573,6 +630,7 @@ impl Compiler {
             }
         }
 
+        asm.set_context(&self.source_text, &self.context_label);
         asm.compile_strict(self.strict).map_err(|e| format!("{e}"))
     }
 }
@@ -617,6 +675,114 @@ mod tests {
         kernel.set_inputs(&[42]);
         let v2 = kernel.pull("h").as_u64();
         assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn shared_modifier_tracked() {
+        let src = r#"
+            inputs := (cycle)
+            shared counter := hash(cycle)
+            normal := mod(hash(cycle), 100)
+        "#;
+        let kernel = compile_gk(src).unwrap();
+        assert_eq!(
+            kernel.program().output_modifier("counter"),
+            crate::dsl::ast::BindingModifier::Shared
+        );
+        assert_eq!(
+            kernel.program().output_modifier("normal"),
+            crate::dsl::ast::BindingModifier::None
+        );
+    }
+
+    #[test]
+    fn final_modifier_tracked() {
+        let src = r#"
+            inputs := (cycle)
+            final dim := 128
+        "#;
+        let kernel = compile_gk(src).unwrap();
+        assert_eq!(
+            kernel.program().output_modifier("dim"),
+            crate::dsl::ast::BindingModifier::Final
+        );
+    }
+
+    #[test]
+    fn shared_init_modifier_tracked() {
+        let src = r#"
+            inputs := (cycle)
+            shared init budget = 100
+        "#;
+        let kernel = compile_gk(src).unwrap();
+        assert_eq!(
+            kernel.program().output_modifier("budget"),
+            crate::dsl::ast::BindingModifier::Shared
+        );
+        // Verify it also compiles as an init-time constant
+        assert!(kernel.get_constant("budget").is_some());
+    }
+
+    #[test]
+    fn final_init_modifier_tracked() {
+        let src = r#"
+            inputs := (cycle)
+            final init max_dim = 256
+        "#;
+        let kernel = compile_gk(src).unwrap();
+        assert_eq!(
+            kernel.program().output_modifier("max_dim"),
+            crate::dsl::ast::BindingModifier::Final
+        );
+        assert_eq!(kernel.get_constant("max_dim").unwrap().as_u64(), 256);
+    }
+
+    #[test]
+    fn shared_outputs_query() {
+        let src = r#"
+            inputs := (cycle)
+            shared counter := hash(cycle)
+            shared budget := mod(hash(cycle), 100)
+            normal := hash(cycle)
+        "#;
+        let kernel = compile_gk(src).unwrap();
+        let mut shared = kernel.program().shared_outputs();
+        shared.sort();
+        assert_eq!(shared, vec!["budget", "counter"]);
+        assert!(kernel.program().final_outputs().is_empty());
+    }
+
+    #[test]
+    fn final_outputs_query() {
+        let src = r#"
+            inputs := (cycle)
+            final dim := 128
+            final dataset := "sift1m"
+            normal := hash(cycle)
+        "#;
+        let kernel = compile_gk(src).unwrap();
+        let mut finals = kernel.program().final_outputs();
+        finals.sort();
+        assert_eq!(finals, vec!["dataset", "dim"]);
+        assert!(kernel.program().shared_outputs().is_empty());
+    }
+
+    #[test]
+    fn unmodified_bindings_have_none_modifier() {
+        let src = r#"
+            inputs := (cycle)
+            h := hash(cycle)
+            v := mod(h, 100)
+        "#;
+        let kernel = compile_gk(src).unwrap();
+        assert_eq!(
+            kernel.program().output_modifier("h"),
+            crate::dsl::ast::BindingModifier::None
+        );
+        assert_eq!(
+            kernel.program().output_modifier("v"),
+            crate::dsl::ast::BindingModifier::None
+        );
     }
 
     #[test]

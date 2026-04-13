@@ -462,3 +462,294 @@ For simple linear chains, this is straightforward. For complex
 DAGs with shared intermediates, the trade-off is tracking cost
 vs re-evaluation cost. A memo should explore the specific
 mechanisms and when the optimization pays for itself.
+
+---
+
+## GK Scoping Model
+
+GK programs exist within a scope hierarchy. Each scope level
+can define bindings, and inner scopes inherit from and override
+outer scopes.
+
+### Scope Levels
+
+GK scopes are created at **lifecycle boundaries** — activities
+and phases — not at arbitrary iteration points. A new GK scope
+means a new compiled kernel, new state, new constant folding.
+This is justified only when a long-lived process is launched.
+
+```
+Workload scope (outermost)
+  │
+  │  bindings: |
+  │    inputs := (cycle)
+  │    dim := vector_dim("{dataset}")
+  │    base_count := vector_count("{dataset}")
+  │
+  └── Phase scope (one per phase in the scenario)
+        │
+        │  Each phase is a lifecycle boundary — it launches
+        │  its own Activity with its own fiber pool, cycle
+        │  counter, and metrics. A phase MAY declare its own
+        │  bindings that replace the workload bindings.
+        │
+        │  bindings: |
+        │    id := format_u64(cycle, 10)
+        │    train_vector := vector_at(cycle, "{dataset}")
+        │
+        └── Cycle evaluation (per-fiber, NOT a new GK scope)
+              set_input(0, cycle)
+              pull("train_vector") → [0.12, 0.34, ...]
+```
+
+A `for_each` phase expands into multiple sequential phase
+executions. Each expansion is a full phase lifecycle — its own
+Activity, its own kernel, its own cycle counter. This is not
+"nested" scoping in the closure sense; it is sequential
+instantiation of phase lifecycles with different parameters.
+
+### When GK Scopes Are Created
+
+| Event | New GK scope? | Reason |
+|-------|---------------|--------|
+| Workload start | Yes | Root scope, compiled once |
+| Phase start | Yes, if phase has own `bindings:` | Phase is a lifecycle boundary |
+| Phase start (no own bindings) | No — uses workload kernel | No new lifecycle constants needed |
+| `for_each` iteration | Yes | Each iteration is a separate phase lifecycle with different constants |
+| Cycle within a phase | No | Cycles are evaluations within an existing scope |
+| Stanza within a phase | No | Stanzas are groups of cycles |
+| Op within a stanza | No | Ops share the phase's kernel |
+
+GK scopes are **never** created for:
+- Individual cycle evaluations
+- Per-op dispatch
+- Retry attempts
+- Conditional skips
+
+### Scope Assembly: Auto-Extern Composition
+
+GK scopes use **auto-extern composition** — the inner scope
+is compiled as its own small kernel with `extern` input
+declarations for names inherited from the outer scope. There
+is no source text duplication, no runtime delegation chain.
+
+See **sysref 16** for the complete scope model specification.
+
+This is a critical mechanical distinction:
+
+- **Auto-extern composition** (used): The outer kernel is
+  compiled and constant-folded. The runner extracts its output
+  manifest (names + types + modifiers). When compiling an inner
+  scope, any name referenced but not defined is looked up in the
+  outer manifest. If found, it becomes an `extern` input on the
+  inner kernel. The runner copies folded constant values from
+  the outer state into the inner state's input slots at scope
+  creation time. The inner kernel is small — only its own nodes.
+
+- **Delegation** (NOT used): Would require the inner kernel
+  to hold a reference to the outer kernel and resolve names
+  upward at evaluation time. This breaks constant folding
+  (the inner kernel can't fold what it can't see at compile
+  time) and complicates provenance tracking.
+
+- **Flattening** (NOT used): Would duplicate the outer scope's
+  source text into every inner scope, causing redundant
+  compilation and node instantiation.
+
+The assembly process for each scope level:
+
+```
+Workload scope:
+  source = workload bindings text
+  Compiled once. Outputs form the outer manifest.
+
+Phase scope (with own bindings):
+  source = phase bindings text + auto-generated extern declarations
+  Names from the outer manifest that are referenced but not
+  defined in the phase bindings become extern inputs.
+  The runner copies outer constant values into the inner kernel.
+
+Phase scope (no own bindings):
+  Uses the workload kernel directly — no recompilation.
+
+for_each iteration (structural variable):
+  source = phase bindings (with {var} substituted) + auto externs
+  Each iteration compiles its own kernel from substituted source.
+
+for_each iteration (parametric variable):
+  Variable only in op fields, not in bindings.
+  Reuses outer kernel — no recompilation. Only op field strings
+  are substituted per iteration.
+```
+
+### Inheritance Rules
+
+1. **Workload bindings** are the base. The workload kernel is
+   compiled first. Its outputs form the outer manifest.
+
+2. **Phase bindings** (`bindings:` on a phase) define the
+   inner scope. Names from the outer manifest that are
+   referenced in the phase ops but not defined in the phase
+   bindings become auto-generated `extern` inputs on the
+   inner kernel. The runner wires outer constant values into
+   these inputs at phase start.
+
+3. **Shadowing**: if a phase binding defines a name that
+   exists in the outer manifest, the phase definition wins
+   (the outer name is not auto-externed). Exception: `final`
+   bindings in the outer scope cannot be shadowed — attempting
+   to redefine them is a compile error.
+
+4. **Phases without own bindings** use the workload kernel
+   directly. No recompilation, no overhead.
+
+5. **for_each substitution** happens on the phase's own
+   bindings source (not a flattened copy of the outer source).
+   The iteration variable `{var}` is replaced in:
+   - The phase bindings source text (if structural)
+   - All op field values (`stmt:`, `raw:`, `prepared:`)
+   - The phase's `cycles:` config expression
+
+6. **Per-iteration kernel**: each structural `for_each`
+   iteration compiles its own GK kernel. Parametric iterations
+   reuse the outer kernel. Either way:
+   - Init-time constants resolve per-iteration
+   - The cycle count can vary per iteration
+   - Each iteration is a complete phase lifecycle
+
+### Binding Modifiers
+
+Bindings can carry modifiers that control scope behavior:
+
+```
+shared counter := hash(cycle)    # mutable across iteration boundaries
+final dim := 128                 # immutable; cannot be shadowed
+shared init budget = 100         # combined: shared + init-time
+```
+
+- **`shared`**: the runner propagates the value back to the
+  outer scope after a `for_each` loop completes. Subsequent
+  phases see the updated value.
+
+- **`final`**: inner scopes cannot redefine this name.
+  The runner enforces this at compile time when generating
+  auto-extern declarations.
+
+### Scope Configuration
+
+`for_each` phases support two scope knobs:
+
+```yaml
+phases:
+  rampup:
+    for_each: "pname in ..."
+    loop_scope: clean       # clean (default) | inherit
+    iter_scope: inherit     # inherit (default for for_each) | clean
+```
+
+- **`loop_scope`**: how the loop is seeded from the outer scope.
+  `clean` = original workload snapshot. `inherit` = current
+  outer state (includes shared mutations from prior phases).
+
+- **`iter_scope`**: how each iteration is seeded from the loop
+  scope. `inherit` = iterations see each other's state (default
+  for for_each). `clean` = fully isolated iterations.
+
+See **sysref 16** for the complete scope lifecycle specification.
+
+### for_each Syntax
+
+```yaml
+phases:
+  rampup:
+    for_each: "pname in matching_profiles('{dataset}', '{prefix}')"
+    cycles: "{vector_count('{dataset}:{pname}')}"
+    bindings: |
+      inputs := (cycle)
+      train_vector := vector_at(cycle, "{dataset}:{pname}")
+    ops:
+      insert:
+        prepared: "INSERT INTO t.vec_{pname} VALUES ('{id}', {train_vector})"
+```
+
+The `for_each` expression is evaluated as a GK const expression
+after workload param substitution. It must produce a
+comma-separated string. Each element becomes one iteration.
+
+### Compilation Flow with for_each
+
+```
+1. Parse workload YAML
+2. Compile workload-level GK (Phase 1-3 pipeline)
+   → shared kernel for non-for_each phases
+   → extract outer manifest (names, types, modifiers)
+   → snapshot outer_scope_values (folded constants)
+3. For each phase in scenario:
+   a. If no for_each and no own bindings → use shared kernel
+   b. If own bindings → auto-extern composition, compile phase kernel
+   c. If for_each:
+      i.   Evaluate for_each expression via eval_const_expr
+      ii.  Split result on commas → iteration list
+      iii. Detect structural vs parametric variable
+      iv.  For each iteration value:
+           - If structural: substitute {var} in bindings, generate
+             auto-externs from outer manifest, compile inner kernel
+           - If parametric: substitute {var} in op fields only,
+             reuse outer kernel (no recompilation)
+           - Wire scope values into inner kernel's extern inputs
+           - Resolve per-iteration cycles from kernel constants
+           - Run phase with per-iteration kernel and ops
+      v.   After loop: write-back shared outputs to outer_scope_values
+```
+
+### Phase Lifecycle Isolation
+
+Each phase execution (including each `for_each` iteration) is
+a complete Activity lifecycle:
+
+- **Own GK kernel**: compiled from phase bindings (or workload
+  bindings if no phase-level override)
+- **Own cycle counter**: starts at 0
+- **Own fiber pool**: created fresh
+- **Own metrics**: activity name includes the iteration label
+  (e.g., `rampup (pname=label-1)`)
+- **Own error handler**: errors don't carry between phases
+
+Captures do NOT flow between phases. Each phase is a
+self-contained activity execution. State flows between phases
+only through the database (or other external system), or via
+`shared` variable write-back (see sysref 16).
+
+### Design Rationale
+
+**Why structural variables require per-iteration compilation?**
+
+GK bindings like `vector_at(cycle, "sift1m:label-1")` need the
+dataset source at node construction time — the node opens a file
+handle, loads metadata, and preallocates buffers. This is init-time
+work that can't be deferred to cycle-time. Structural variable
+substitution before compilation ensures the source string is a
+literal that the node constructor can act on.
+
+Different profiles may have different vector counts, dimensions,
+or available facets. A shared kernel would need to handle all
+profiles simultaneously, which breaks the "one cycle = one vector
+ordinal" invariant. Per-iteration compilation keeps the cycle
+semantics clean: cycle 0 is always the first vector in THIS
+profile, not an offset into a global index.
+
+**Why parametric variables skip recompilation?**
+
+When the for_each variable only appears in op field strings
+(e.g., table names in SQL templates), no GK nodes change
+between iterations. The DAG topology is identical. The runner
+detects this automatically and reuses the outer kernel, avoiding
+unnecessary recompilation for simple iteration patterns like
+iterating over table names or keyspaces.
+
+**Why not merge phase bindings with workload bindings?**
+
+Merging creates ambiguity about which definition wins. Replacement
+is explicit — if you need workload bindings in a phase, include
+them. This makes each phase's GK program self-contained and
+readable without tracing inheritance chains.

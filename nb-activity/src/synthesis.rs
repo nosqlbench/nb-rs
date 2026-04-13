@@ -181,12 +181,20 @@ fn resolve_bind_point_with_state(
 /// with private `GkState` — no locks, no contention on the hot path.
 pub struct OpBuilder {
     program: Arc<GkProgram>,
+    /// Values to inject into every new FiberBuilder's state at creation.
+    /// Used for scope composition: outer scope constants are set as
+    /// initial values for inner scope extern inputs.
+    scope_values: Vec<(usize, Value)>, // (input_idx, value)
 }
 
 impl OpBuilder {
+    /// Create an OpBuilder from a kernel.
+    /// If the kernel has scope values (set via `bind_outer_scope`),
+    /// they are automatically propagated to every fiber's state.
     pub fn new(kernel: GkKernel) -> Self {
+        let scope_values = kernel.scope_values();
         let program = kernel.into_program();
-        Self { program }
+        Self { program, scope_values }
     }
 
     /// Access the shared GK program.
@@ -195,9 +203,14 @@ impl OpBuilder {
     }
 
     /// Create a per-fiber builder. No locks, no sharing — the fiber
-    /// owns its state exclusively.
+    /// owns its state exclusively. Scope values (from outer scope
+    /// constants) are injected into the state's extern inputs.
     pub fn create_fiber_builder(&self) -> FiberBuilder {
-        FiberBuilder::new(self.program.clone())
+        let mut fb = FiberBuilder::new(self.program.clone());
+        for (idx, value) in &self.scope_values {
+            fb.state.set_input(*idx, value.clone());
+        }
+        fb
     }
 }
 

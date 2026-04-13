@@ -43,11 +43,25 @@ pub struct ExternPort {
     pub span: Span,
 }
 
+/// Modifier on a binding declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingModifier {
+    /// No modifier — default behavior.
+    None,
+    /// `shared` — mutable across iteration boundaries.
+    /// The runtime propagates the value from iteration N's
+    /// end state into iteration N+1's start state.
+    Shared,
+    /// `final` — immutable; cannot be shadowed by inner scopes.
+    Final,
+}
+
 /// An init-time binding: `init name = expr`
 #[derive(Debug, Clone)]
 pub struct InitBinding {
     pub name: String,
     pub value: Expr,
+    pub modifier: BindingModifier,
     pub span: Span,
 }
 
@@ -56,6 +70,7 @@ pub struct InitBinding {
 pub struct CycleBinding {
     pub targets: Vec<String>,
     pub value: Expr,
+    pub modifier: BindingModifier,
     pub span: Span,
 }
 

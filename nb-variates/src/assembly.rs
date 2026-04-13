@@ -144,6 +144,12 @@ struct ResolvedDag {
     output_map: HashMap<String, (usize, usize)>,
     /// Output names in declaration order.
     output_order: Vec<String>,
+    /// Source text for diagnostics.
+    source: String,
+    /// Diagnostic context.
+    context: String,
+    /// Output binding modifiers.
+    output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
 }
 
 impl ResolvedDag {
@@ -164,6 +170,12 @@ pub struct GkAssembler {
     /// Output declarations in insertion order.
     output_order: Vec<String>,
     outputs: HashMap<String, WireRef>,
+    /// Original source text for diagnostics. Set by the DSL compiler.
+    source: String,
+    /// Diagnostic context (e.g., "workload.yaml bindings").
+    context: String,
+    /// Binding modifiers for named outputs.
+    output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
 }
 
 impl GkAssembler {
@@ -179,7 +191,17 @@ impl GkAssembler {
             nodes: Vec::new(),
             output_order: Vec::new(),
             outputs: HashMap::new(),
+            source: String::new(),
+            context: "(assembler)".into(),
+            output_modifiers: HashMap::new(),
         }
+    }
+
+    /// Set the source text and diagnostic context for this assembler.
+    /// Called by the DSL compiler to attach the original GK source.
+    pub fn set_context(&mut self, source: &str, context: &str) {
+        self.source = source.to_string();
+        self.context = context.to_string();
     }
 
     /// Add a node to the assembler with the given name and input wiring.
@@ -195,6 +217,13 @@ impl GkAssembler {
             inputs,
         });
         self
+    }
+
+    /// Set the binding modifier for a named output.
+    pub fn set_output_modifier(&mut self, name: &str, modifier: crate::dsl::ast::BindingModifier) {
+        if modifier != crate::dsl::ast::BindingModifier::None {
+            self.output_modifiers.insert(name.to_string(), modifier);
+        }
     }
 
     /// Designate a wire as a named output variate.
@@ -259,15 +288,22 @@ impl GkAssembler {
     pub fn compile_with_log(self, mut log: Option<&mut crate::dsl::events::CompileEventLog>) -> Result<GkKernel, AssemblyError> {
         let resolved = self.resolve_with_log(log.as_deref_mut())?;
         let _coord_names = resolved.input_names();
-        Ok(GkKernel::new_with_inputs(
+        let modifiers = resolved.output_modifiers.clone();
+        let mut kernel = GkKernel::new_with_inputs(
             resolved.nodes,
             resolved.wiring,
             resolved.input_defs,
             resolved.coord_count,
             resolved.output_map,
             resolved.output_order,
+            &resolved.source,
+            &resolved.context,
             log,
-        ))
+        );
+        if !modifiers.is_empty() {
+            kernel.set_output_modifiers(&modifiers);
+        }
+        Ok(kernel)
     }
 
     /// Compile with strict mode: config wire violations are errors,
@@ -295,15 +331,22 @@ impl GkAssembler {
             )));
         }
 
-        GkKernel::new_strict_with_inputs(
+        let modifiers = resolved.output_modifiers.clone();
+        let mut kernel = GkKernel::new_strict_with_inputs(
             resolved.nodes,
             resolved.wiring,
             resolved.input_defs,
             resolved.coord_count,
             resolved.output_map,
             resolved.output_order,
+            &resolved.source,
+            &resolved.context,
             None,
-        ).map_err(AssemblyError::Other)
+        ).map_err(AssemblyError::Other)?;
+        if !modifiers.is_empty() {
+            kernel.set_output_modifiers(&modifiers);
+        }
+        Ok(kernel)
     }
 
     /// Validate, resolve, and attempt Phase 2 compilation.
@@ -336,6 +379,8 @@ impl GkAssembler {
                 resolved.wiring,
                 coord_names,
                 resolved.output_map,
+                &resolved.source,
+                &resolved.context,
             ));
         }
 
@@ -393,7 +438,7 @@ impl GkAssembler {
     pub fn try_compile_raw(self) -> Result<CompiledKernelRaw, GkKernel> {
         let resolved = match self.resolve() {
             Ok(r) => r,
-            Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new())),
+            Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)")),
         };
         let coord_names = resolved.input_names();
         let coord_count = coord_names.len();
@@ -417,6 +462,7 @@ impl GkAssembler {
         if !all_compilable {
             return Err(GkKernel::new(
                 resolved.nodes, resolved.wiring, coord_names.clone(), resolved.output_map,
+                &resolved.source, &resolved.context,
             ));
         }
         let mut steps = Vec::with_capacity(resolved.nodes.len());
@@ -441,14 +487,15 @@ impl GkAssembler {
     pub fn try_compile_push(self) -> Result<CompiledKernelPush, GkKernel> {
         let resolved = match self.resolve() {
             Ok(r) => r,
-            Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new())),
+            Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)")),
         };
         let coord_names = resolved.input_names();
         let (coord_count, total_slots, steps, output_map) =
             match Self::build_p2_layout(&resolved) {
                 Some(r) => r,
                 None => return Err(GkKernel::new(
-                    resolved.nodes, resolved.wiring, coord_names, resolved.output_map)),
+                    resolved.nodes, resolved.wiring, coord_names, resolved.output_map,
+                    &resolved.source, &resolved.context)),
             };
         let dependents = GkProgram::compute_dependents(
             &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring),
@@ -461,14 +508,15 @@ impl GkAssembler {
     pub fn try_compile_pull(self) -> Result<CompiledKernelPull, GkKernel> {
         let resolved = match self.resolve() {
             Ok(r) => r,
-            Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new())),
+            Err(_) => return Err(GkKernel::new(vec![], vec![], vec![], HashMap::new(), "", "(fallback)")),
         };
         let coord_names = resolved.input_names();
         let (coord_count, total_slots, steps, output_map) =
             match Self::build_p2_layout(&resolved) {
                 Some(r) => r,
                 None => return Err(GkKernel::new(
-                    resolved.nodes, resolved.wiring, coord_names, resolved.output_map)),
+                    resolved.nodes, resolved.wiring, coord_names, resolved.output_map,
+                    &resolved.source, &resolved.context)),
             };
         let dependents = GkProgram::compute_dependents(
             &GkProgram::compute_provenance(&resolved.nodes, &resolved.wiring),
@@ -1005,6 +1053,9 @@ impl GkAssembler {
             coord_count: self.coord_count,
             output_map: final_output_map,
             output_order: self.output_order,
+            source: self.source,
+            context: self.context,
+            output_modifiers: self.output_modifiers,
         })
     }
 }

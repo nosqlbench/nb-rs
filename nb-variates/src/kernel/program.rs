@@ -4,6 +4,7 @@
 //! GkProgram: the immutable compiled DAG shared across all fibers.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::node::{GkNode, Value};
 use super::{WireSource, InputDef};
@@ -17,6 +18,14 @@ pub struct GkProgram {
     pub(crate) wiring: Vec<Vec<WireSource>>,
     /// All input definitions (coordinates first, then captures).
     input_defs: Vec<InputDef>,
+    /// Original source text that produced this program. Arc-shared
+    /// so multiple references (diagnostics, describe, debugger) don't
+    /// duplicate the string. Empty if constructed programmatically.
+    source: Arc<String>,
+    /// Diagnostic context describing where this program came from
+    /// (e.g., "workload.yaml bindings", "phase rampup (pname=label-1)").
+    /// Required on all construction paths — no silent empty contexts.
+    context: Arc<String>,
     /// How many of the inputs are coordinate inputs (set via set_inputs(&[u64])).
     /// Inputs at indices [0..coord_count) are coordinates.
     /// Inputs at indices [coord_count..) are capture inputs.
@@ -32,6 +41,9 @@ pub struct GkProgram {
     /// Per-input dependent node lists. For each input, the list of
     /// node indices that transitively depend on it.
     input_dependents: Vec<Vec<usize>>,
+    /// Output binding modifiers: `shared` or `final`.
+    /// Only populated for outputs that have a modifier; absent = default.
+    output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
 }
 
 unsafe impl Send for GkProgram {}
@@ -56,6 +68,8 @@ impl GkProgram {
         wiring: Vec<Vec<WireSource>>,
         input_names: Vec<String>,
         output_map: HashMap<String, (usize, usize)>,
+        source: &str,
+        context: &str,
     ) -> Self {
         let coord_count = input_names.len();
         let input_defs: Vec<InputDef> = input_names.into_iter()
@@ -74,6 +88,9 @@ impl GkProgram {
         Self {
             nodes, wiring, input_defs, coord_count, output_map, output_list,
             input_provenance, input_dependents,
+            source: Arc::new(source.to_string()),
+            context: Arc::new(context.to_string()),
+            output_modifiers: HashMap::new(),
         }
     }
 
@@ -86,6 +103,8 @@ impl GkProgram {
         coord_count: usize,
         output_map: HashMap<String, (usize, usize)>,
         output_order: Vec<String>,
+        source: &str,
+        context: &str,
     ) -> Self {
         let input_provenance = Self::compute_provenance(&nodes, &wiring);
         let input_dependents = Self::compute_dependents(&input_provenance, input_defs.len());
@@ -93,8 +112,46 @@ impl GkProgram {
         Self {
             nodes, wiring, input_defs, coord_count, output_map, output_list,
             input_provenance, input_dependents,
+            source: Arc::new(source.to_string()),
+            context: Arc::new(context.to_string()),
+            output_modifiers: HashMap::new(),
         }
     }
+
+    /// Set the binding modifier for a named output.
+    pub(crate) fn set_output_modifier(&mut self, name: &str, modifier: crate::dsl::ast::BindingModifier) {
+        if modifier != crate::dsl::ast::BindingModifier::None {
+            self.output_modifiers.insert(name.to_string(), modifier);
+        }
+    }
+
+    /// Query the binding modifier for a named output.
+    pub fn output_modifier(&self, name: &str) -> crate::dsl::ast::BindingModifier {
+        self.output_modifiers.get(name).copied()
+            .unwrap_or(crate::dsl::ast::BindingModifier::None)
+    }
+
+    /// Return all output names that have the `shared` modifier.
+    pub fn shared_outputs(&self) -> Vec<&str> {
+        self.output_modifiers.iter()
+            .filter(|(_, m)| **m == crate::dsl::ast::BindingModifier::Shared)
+            .map(|(n, _)| n.as_str())
+            .collect()
+    }
+
+    /// Return all output names that have the `final` modifier.
+    pub fn final_outputs(&self) -> Vec<&str> {
+        self.output_modifiers.iter()
+            .filter(|(_, m)| **m == crate::dsl::ast::BindingModifier::Final)
+            .map(|(n, _)| n.as_str())
+            .collect()
+    }
+
+    /// The original source text that produced this program.
+    pub fn source(&self) -> &str { &self.source }
+
+    /// Diagnostic context (e.g., "workload.yaml bindings").
+    pub fn context(&self) -> &str { &self.context }
 
     /// Build ordered output list from declaration order and the output map.
     fn build_output_list(

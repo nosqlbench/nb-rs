@@ -48,8 +48,7 @@ phases:
       info:
         stmt: "=== {dataset}: matching profiles for prefix '{prefix}': {profiles} ==="
 
-  # Create keyspace — the CQL adapter auto-falls back to no-keyspace
-  # connection if the target keyspace doesn't exist yet.
+  # Create keyspace — auto-falls back to no-keyspace connection if needed
   create_keyspace:
     cycles: 1
     concurrency: 1
@@ -61,6 +60,9 @@ phases:
     for_each: "pname in matching_profiles('{dataset}', '{prefix}')"
     cycles: 1
     concurrency: 1
+    bindings: |
+      inputs := (cycle)
+      dim := vector_dim("{dataset}:{pname}")
     ops:
       create_table:
         raw: "CREATE TABLE IF NOT EXISTS {keyspace}.vec_{pname} (key text PRIMARY KEY, value vector<float, {dim}>)"
@@ -71,20 +73,28 @@ phases:
     for_each: "pname in matching_profiles('{dataset}', '{prefix}')"
     cycles: "{vector_count('{dataset}:{pname}')}"
     concurrency: "{concurrency}"
+    bindings: |
+      inputs := (cycle)
+      id := format_u64(cycle, 10)
+      train_vector := vector_at(cycle, "{dataset}:{pname}")
     ops:
       insert:
-        prepared: "INSERT INTO {keyspace}.vec_{pname} (key, value) VALUES ('{format_u64(cycle, 10)}', {vector_at(cycle, '{dataset}:{pname}')})"
+        prepared: "INSERT INTO {keyspace}.vec_{pname} (key, value) VALUES ('{id}', {train_vector})"
 
   search:
     for_each: "pname in matching_profiles('{dataset}', '{prefix}')"
     cycles: 100
     concurrency: "{concurrency}"
+    bindings: |
+      inputs := (cycle)
+      query_vector := query_vector_at(cycle, "{dataset}:{pname}")
+      ground_truth := filtered_neighbor_indices_at(cycle, "{dataset}:{pname}")
     ops:
       select_ann:
-        prepared: "SELECT key FROM {keyspace}.vec_{pname} ORDER BY value ANN OF {query_vector_at(cycle, '{dataset}:{pname}')} LIMIT {k}"
+        prepared: "SELECT key FROM {keyspace}.vec_{pname} ORDER BY value ANN OF {query_vector} LIMIT {k}"
         relevancy:
           actual: key
-          expected: "{filtered_neighbor_indices_at(cycle, '{dataset}:{pname}')}"
+          expected: "{ground_truth}"
           k: 100
           functions:
             - recall
