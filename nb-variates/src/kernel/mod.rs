@@ -107,6 +107,7 @@ mod tests {
             ],
             1, // coord_count
             HashMap::new(),
+            Vec::new(),
         ));
         let mut state = program.create_state();
 
@@ -136,6 +137,7 @@ mod tests {
             ],
             1,
             HashMap::new(),
+            Vec::new(),
         ));
         let mut state = program.create_state();
 
@@ -157,6 +159,7 @@ mod tests {
             ],
             1,
             HashMap::new(),
+            Vec::new(),
         ));
         let mut state = program.create_state();
 

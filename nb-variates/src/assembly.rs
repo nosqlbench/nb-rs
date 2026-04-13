@@ -142,6 +142,8 @@ struct ResolvedDag {
     coord_count: usize,
     /// Output name → (node_index_in_sorted, output_port_index).
     output_map: HashMap<String, (usize, usize)>,
+    /// Output names in declaration order.
+    output_order: Vec<String>,
 }
 
 impl ResolvedDag {
@@ -159,6 +161,8 @@ pub struct GkAssembler {
     /// How many of the inputs are coordinates.
     coord_count: usize,
     nodes: Vec<PendingNode>,
+    /// Output declarations in insertion order.
+    output_order: Vec<String>,
     outputs: HashMap<String, WireRef>,
 }
 
@@ -173,6 +177,7 @@ impl GkAssembler {
             input_defs,
             coord_count,
             nodes: Vec::new(),
+            output_order: Vec::new(),
             outputs: HashMap::new(),
         }
     }
@@ -194,7 +199,11 @@ impl GkAssembler {
 
     /// Designate a wire as a named output variate.
     pub fn add_output(&mut self, name: impl Into<String>, wire: WireRef) -> &mut Self {
-        self.outputs.insert(name.into(), wire);
+        let name = name.into();
+        if !self.outputs.contains_key(&name) {
+            self.output_order.push(name.clone());
+        }
+        self.outputs.insert(name, wire);
         self
     }
 
@@ -256,6 +265,7 @@ impl GkAssembler {
             resolved.input_defs,
             resolved.coord_count,
             resolved.output_map,
+            resolved.output_order,
             log,
         ))
     }
@@ -291,6 +301,7 @@ impl GkAssembler {
             resolved.input_defs,
             resolved.coord_count,
             resolved.output_map,
+            resolved.output_order,
             None,
         ).map_err(AssemblyError::Other)
     }
@@ -993,6 +1004,7 @@ impl GkAssembler {
             input_defs: self.input_defs,
             coord_count: self.coord_count,
             output_map: final_output_map,
+            output_order: self.output_order,
         })
     }
 }

@@ -1,0 +1,30 @@
+#!/usr/bin/env nbrs
+# lissajous.yaml — Lissajous figure generator
+#
+# Plots a parametric Lissajous curve: x = sin(a*t), y = sin(b*t + phase)
+# Classic oscilloscope pattern. Change a, b, and phase for different figures.
+#
+# Plot it:
+#   nbrs plot gk 'inputs := (cycle)
+#     t := to_f64(cycle) * 0.01
+#     x := sin(t * 3.0)
+#     y := sin(t * 2.0)' cycles=2000 --mode=parametric output=x,y
+#
+# Or generate the coordinates:
+#   ./examples/workloads/visual/lissajous.yaml cycles=100
+
+params:
+  a: "3"
+  b: "2"
+  phase: "0"
+  cycles: "200"
+
+bindings: |
+  inputs := (cycle)
+  t := to_f64(cycle) * 0.01
+  x := sin(t * {a})
+  y := sin(t * {b} + to_f64({phase}) * 0.01)
+
+ops:
+  point:
+    stmt: "{x},{y}"

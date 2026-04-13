@@ -594,8 +594,18 @@ pub async fn run_command(args: &[String]) {
                     follow_redirects: true,
                 }))
             }
+            "plotter" | "plot" => {
+                use nb_adapter_plotter::{PlotterAdapter, PlotterConfig};
+                let mode = merged_params.get("mode")
+                    .cloned().unwrap_or_else(|| "plot".into());
+                Arc::new(PlotterAdapter::with_config(PlotterConfig {
+                    mode,
+                    no_color: args.iter().any(|a| a == "--no-color"),
+                    ..Default::default()
+                }))
+            }
             other => {
-                eprintln!("error: unknown driver '{other}' (supported: stdout, model, http)");
+                eprintln!("error: unknown driver '{other}' (supported: stdout, model, http, plotter)");
                 std::process::exit(1);
             }
         }

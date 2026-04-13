@@ -8,6 +8,52 @@ use crate::bench::bench_gk_completion;
 use crate::plot::plot_gk_completion;
 use crate::run::run_completion;
 
+/// Discover YAML workload files for `workload=` completion.
+///
+/// Searches the current directory, `workloads/`, and `examples/`
+/// (recursively) for `.yaml` and `.yml` files.
+fn discover_workload_files(partial: &str, _context: &[&str]) -> Vec<String> {
+    let mut files = Vec::new();
+    let search_dirs = [".", "workloads", "examples"];
+
+    for dir in &search_dirs {
+        let path = std::path::Path::new(dir);
+        if path.is_dir() {
+            collect_yaml_files(path, dir, partial, &mut files);
+        }
+    }
+
+    files.sort();
+    files.dedup();
+    files
+}
+
+fn collect_yaml_files(dir: &std::path::Path, prefix: &str, partial: &str, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let sub_prefix = if prefix == "." {
+                path.file_name().unwrap().to_string_lossy().to_string()
+            } else {
+                format!("{}/{}", prefix, path.file_name().unwrap().to_string_lossy())
+            };
+            collect_yaml_files(&path, &sub_prefix, partial, out);
+        } else if let Some(ext) = path.extension() {
+            if ext == "yaml" || ext == "yml" {
+                let rel = if prefix == "." {
+                    path.file_name().unwrap().to_string_lossy().to_string()
+                } else {
+                    format!("{}/{}", prefix, path.file_name().unwrap().to_string_lossy())
+                };
+                if rel.starts_with(partial) {
+                    out.push(rel);
+                }
+            }
+        }
+    }
+}
+
 /// Discover workload-declared parameters for dynamic completion.
 ///
 /// When `workload=somefile.yaml` is on the command line, parse the
@@ -43,6 +89,7 @@ pub fn cli_tree() -> veks_completion::CommandTree {
 
     veks_completion::CommandTree::new("nbrs")
         .command("run", Node::leaf_with_flags(run_opts, run_flags)
+            .with_value_provider("workload=", discover_workload_files)
             .with_dynamic_options(discover_workload_params))
         .command("describe", Node::group(vec![
             ("gk", Node::group(vec![

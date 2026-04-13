@@ -420,7 +420,11 @@ pub fn plot_command(args: &[String]) {
         .collect();
 
     let selected_outputs: Vec<String> = if let Some(ref filter) = pa.output_filter {
-        all_output_names.into_iter().filter(|n| n == filter).collect()
+        let wanted: Vec<&str> = filter.split(',').map(|s| s.trim()).collect();
+        // Preserve requested order (not declaration order) when filtering
+        wanted.iter()
+            .filter_map(|w| all_output_names.iter().find(|n| n == w).cloned())
+            .collect()
     } else {
         all_output_names
     };

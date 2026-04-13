@@ -1,0 +1,16 @@
+[package]
+name = "nb-adapter-plotter"
+version = "0.1.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "Plotter adapter for nb-rs: renders workload outputs as terminal plots"
+keywords = ["nosqlbench", "workload", "benchmark", "plot"]
+categories = ["command-line-utilities", "visualization"]
+repository = "https://github.com/nosqlbench/nb-rs"
+homepage = "https://github.com/nosqlbench/nb-rs"
+
+[dependencies]
+nb-activity = { path = "../../nb-activity", version = "0.1.1" }
+nb-workload = { path = "../../nb-workload", version = "0.1.1" }
+nb-variates = { path = "../../nb-variates", version = "0.1.1" }
+libc = "0.2"

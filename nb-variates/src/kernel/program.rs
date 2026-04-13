@@ -63,15 +63,21 @@ impl GkProgram {
             .collect();
         let input_provenance = Self::compute_provenance(&nodes, &wiring);
         let input_dependents = Self::compute_dependents(&input_provenance, input_defs.len());
-        let output_list = Self::build_output_list(&output_map);
+        // No declaration order available — fall back to sorted by node index
+        let fallback_order: Vec<String> = {
+            let mut v: Vec<(String, usize, usize)> = output_map.iter()
+                .map(|(n, &(ni, pi))| (n.clone(), ni, pi)).collect();
+            v.sort_by_key(|(_, ni, pi)| (*ni, *pi));
+            v.into_iter().map(|(n, _, _)| n).collect()
+        };
+        let output_list = Self::build_output_list(&fallback_order, &output_map);
         Self {
             nodes, wiring, input_defs, coord_count, output_map, output_list,
             input_provenance, input_dependents,
         }
     }
 
-    /// Create a program with explicit input definitions.
-    /// `coord_count` specifies how many of the inputs are coordinates.
+    /// Create a program with explicit input definitions and output ordering.
     #[allow(dead_code)]
     pub(crate) fn with_inputs(
         nodes: Vec<Box<dyn GkNode>>,
@@ -79,23 +85,35 @@ impl GkProgram {
         input_defs: Vec<InputDef>,
         coord_count: usize,
         output_map: HashMap<String, (usize, usize)>,
+        output_order: Vec<String>,
     ) -> Self {
         let input_provenance = Self::compute_provenance(&nodes, &wiring);
         let input_dependents = Self::compute_dependents(&input_provenance, input_defs.len());
-        let output_list = Self::build_output_list(&output_map);
+        let output_list = Self::build_output_list(&output_order, &output_map);
         Self {
             nodes, wiring, input_defs, coord_count, output_map, output_list,
             input_provenance, input_dependents,
         }
     }
 
-    /// Build ordered output list from the output map.
-    /// Sorted by node index (topological order), then port index.
-    fn build_output_list(output_map: &HashMap<String, (usize, usize)>) -> Vec<(String, usize, usize)> {
-        let mut list: Vec<(String, usize, usize)> = output_map.iter()
-            .map(|(name, &(ni, pi))| (name.clone(), ni, pi))
+    /// Build ordered output list from declaration order and the output map.
+    fn build_output_list(
+        output_order: &[String],
+        output_map: &HashMap<String, (usize, usize)>,
+    ) -> Vec<(String, usize, usize)> {
+        // Use declaration order from the assembler
+        let mut list: Vec<(String, usize, usize)> = output_order.iter()
+            .filter_map(|name| {
+                output_map.get(name).map(|&(ni, pi)| (name.clone(), ni, pi))
+            })
             .collect();
-        list.sort_by_key(|(_, ni, pi)| (*ni, *pi));
+        // Add any outputs not in the declaration order (shouldn't happen,
+        // but defensive against manual assembler use)
+        for (name, &(ni, pi)) in output_map {
+            if !output_order.contains(name) {
+                list.push((name.clone(), ni, pi));
+            }
+        }
         list
     }
 

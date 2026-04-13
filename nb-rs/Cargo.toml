@@ -31,7 +31,8 @@ nb-web = { path = "../nb-web", version = "0.1.1" }
 nb-adapter-stdout = { path = "../adapters/nb-adapter-stdout", version = "0.1.1" }
 nb-adapter-model = { path = "../adapters/nb-adapter-model", version = "0.1.1" }
 nb-adapter-http = { path = "../adapters/nb-adapter-http", version = "0.1.1" }
+nb-adapter-plotter = { path = "../adapters/nb-adapter-plotter", version = "0.1.1" }
 reqwest = { version = "0.12", features = ["blocking"] }
 serde = { version = "1", features = ["derive"] }
 libc = "0.2"
-veks-completion = "0.17"
+veks-completion = { path = "../links/vectordata-rs/veks-completion" }

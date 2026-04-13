@@ -39,7 +39,8 @@ impl GkKernel {
         let input_defs: Vec<InputDef> = input_names.into_iter()
             .map(|name| InputDef { name, default: Value::U64(0), port_type: crate::node::PortType::U64 })
             .collect();
-        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, None, false).unwrap()
+        let order: Vec<String> = output_map.keys().cloned().collect();
+        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, order, None, false).unwrap()
     }
 
     /// Create with explicit input definitions.
@@ -49,9 +50,10 @@ impl GkKernel {
         input_defs: Vec<InputDef>,
         coord_count: usize,
         output_map: HashMap<String, (usize, usize)>,
+        output_order: Vec<String>,
         log: Option<&mut crate::dsl::events::CompileEventLog>,
     ) -> Self {
-        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, log, false).unwrap()
+        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, log, false).unwrap()
     }
 
     /// Construct with strict mode.
@@ -61,9 +63,10 @@ impl GkKernel {
         input_defs: Vec<InputDef>,
         coord_count: usize,
         output_map: HashMap<String, (usize, usize)>,
+        output_order: Vec<String>,
         log: Option<&mut crate::dsl::events::CompileEventLog>,
     ) -> Result<Self, String> {
-        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, log, true)
+        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, log, true)
     }
 
     fn new_impl(
@@ -72,11 +75,12 @@ impl GkKernel {
         input_defs: Vec<InputDef>,
         coord_count: usize,
         output_map: HashMap<String, (usize, usize)>,
+        output_order: Vec<String>,
         log: Option<&mut crate::dsl::events::CompileEventLog>,
         strict: bool,
     ) -> Result<Self, String> {
         let mut program = GkProgram::with_inputs(
-            nodes, wiring, input_defs, coord_count, output_map,
+            nodes, wiring, input_defs, coord_count, output_map, output_order,
         );
         let constants_folded = if strict {
             program.fold_init_constants_strict(log, true)?
