@@ -64,6 +64,22 @@ pub struct OpResult {
     /// Captured values from the result (populated by adapters that
     /// support capture points). Key = capture alias name.
     pub captures: HashMap<String, nb_variates::node::Value>,
+    /// If true, this op was conditionally skipped (via `if:` field).
+    /// The activity loop counts this as a skip, not a success or error.
+    pub skipped: bool,
+}
+
+impl Default for OpResult {
+    fn default() -> Self {
+        Self { body: None, captures: HashMap::new(), skipped: false }
+    }
+}
+
+impl OpResult {
+    /// Create a skipped result (no execution, no captures).
+    pub fn skipped() -> Self {
+        Self { body: None, captures: HashMap::new(), skipped: true }
+    }
 }
 
 impl fmt::Debug for OpResult {
@@ -230,6 +246,21 @@ impl ResolvedFields {
     /// Get a string by index (triggers lazy rendering if needed).
     pub fn str_at(&self, index: usize) -> &str {
         &self.strings()[index]
+    }
+
+    /// Return a copy with the named field removed.
+    /// Used by `ConditionalDispenser` to strip internal fields
+    /// before the adapter sees them.
+    pub fn without(&self, name: &str) -> Self {
+        let mut names = Vec::new();
+        let mut values = Vec::new();
+        for (i, n) in self.names.iter().enumerate() {
+            if n != name {
+                names.push(n.clone());
+                values.push(self.values[i].clone());
+            }
+        }
+        Self::new(names, values)
     }
 
     /// Serialize all fields to JSON for diagnostic/logging use.

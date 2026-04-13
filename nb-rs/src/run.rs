@@ -20,27 +20,86 @@ use nb_workload::tags::TagFilter;
 use crate::daemon;
 use crate::web_push;
 
-/// Completion candidates for `run`, derived from run_command's param parsing.
-/// Returns (value_options, flags).
+/// Single source of truth for all known `key=value` params accepted
+/// by `nbrs run`. Used for completion, param validation, and "did
+/// you mean?" suggestions.
+///
+/// **DO NOT duplicate this list.** If you need to check whether a
+/// param is known, reference `KNOWN_PARAMS`. If you need completion
+/// candidates, call `run_completion()`. Both derive from this array.
+pub const KNOWN_PARAMS: &[&str] = &[
+    // Activity-level
+    "adapter", "driver", "workload", "op", "cycles", "threads",
+    "rate", "stanzarate", "errors", "seq", "tags", "format",
+    "filename", "separator", "header", "color",
+    "stanza_concurrency", "sc", "scenario",
+    // CQL adapter
+    "hosts", "host", "port", "keyspace", "consistency",
+    "username", "password", "request_timeout_ms",
+    // HTTP adapter
+    "base_url", "timeout",
+];
+
+/// Single source of truth for all known flags and prefixed options.
+pub const KNOWN_FLAGS: &[&str] = &[
+    "--strict", "--dry-run", "--tui", "--diagnose", "--color",
+    "--dry-run=emit", "--dry-run=json",
+    "--gk-lib=", "--report-openmetrics-to=",
+];
+
+/// Completion candidates for `run`, derived from the canonical param
+/// lists above. No separate lists to maintain.
 pub fn run_completion() -> (&'static [&'static str], &'static [&'static str]) {
-    (
-        &[
-            "adapter=", "driver=", "workload=", "op=", "cycles=", "threads=",
-            "rate=", "stanzarate=", "errors=", "seq=", "tags=", "format=",
-            "filename=", "stanza_concurrency=", "sc=", "scenario=",
-            // CQL adapter params
-            "hosts=", "host=", "port=", "keyspace=", "consistency=",
-            "username=", "password=", "request_timeout_ms=",
-            // HTTP adapter params
-            "base_url=", "timeout=",
-            // Flags with values
-            "--gk-lib=", "--report-openmetrics-to=",
-        ],
-        &[
-            "--strict", "--dry-run", "--tui", "--diagnose",
-            "--dry-run=emit", "--dry-run=json",
-        ],
-    )
+    static OPTIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+        let mut opts: Vec<&str> = KNOWN_PARAMS.iter()
+            .map(|p| {
+                let s = format!("{p}=");
+                &*s.leak()
+            })
+            .collect();
+        for f in KNOWN_FLAGS {
+            if f.ends_with('=') { opts.push(f); }
+        }
+        opts
+    });
+    static FLAGS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+        KNOWN_FLAGS.iter().filter(|f| !f.ends_with('=')).copied().collect()
+    });
+    (OPTIONS.as_slice(), FLAGS.as_slice())
+}
+
+/// Find the closest match to `input` from `candidates` using
+/// Levenshtein distance. Returns None if the best match is too
+/// distant (more than 40% of the input length).
+fn closest_match<'a>(input: &str, candidates: &[&'a str]) -> Option<&'a str> {
+    let mut best: Option<(&str, usize)> = None;
+    for &candidate in candidates {
+        let d = levenshtein(input, candidate);
+        if best.is_none() || d < best.unwrap().1 {
+            best = Some((candidate, d));
+        }
+    }
+    best.filter(|(_, d)| *d <= (input.len() / 2).max(2))
+        .map(|(s, _)| s)
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (m, n) = (a.len(), b.len());
+    let mut prev = (0..=n).collect::<Vec<_>>();
+    let mut curr = vec![0; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1)
+                .min(curr[j - 1] + 1)
+                .min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
 }
 
 /// Parse `key=value` pairs from command line args.
@@ -129,27 +188,64 @@ pub async fn run_command(args: &[String]) {
         }
     };
 
-    // Extract activity parameters
-    let driver = params.get("adapter")
+    // Merge CLI params over workload params. CLI takes priority.
+    // This lets workloads set defaults for cycles, threads, etc.
+    let mut merged_params = workload.params.clone();
+    for (k, v) in &params {
+        merged_params.insert(k.clone(), v.clone());
+    }
+
+    let driver = merged_params.get("adapter")
+        .or_else(|| merged_params.get("driver"))
         .map(|s| s.as_str())
         .unwrap_or("stdout");
-    let explicit_cycles: Option<u64> = params.get("cycles").and_then(|s| parse_count(s));
-    let threads: usize = params.get("threads").and_then(|s| s.parse().ok()).unwrap_or(1);
-    let cycle_rate: Option<f64> = params.get("rate").and_then(|s| s.parse().ok());
-    let stanza_rate: Option<f64> = params.get("stanzarate").and_then(|s| s.parse().ok());
-    let tag_filter = params.get("tags").map(|s| s.as_str());
-    let seq_type = params.get("seq")
+    let explicit_cycles: Option<u64> = merged_params.get("cycles").and_then(|s| parse_count(s));
+    let threads: usize = merged_params.get("threads").and_then(|s| s.parse().ok()).unwrap_or(1);
+    let cycle_rate: Option<f64> = merged_params.get("rate").and_then(|s| s.parse().ok());
+    let stanza_rate: Option<f64> = merged_params.get("stanzarate").and_then(|s| s.parse().ok());
+    let tag_filter = merged_params.get("tags").map(|s| s.as_str());
+    let seq_type = merged_params.get("seq")
         .map(|s| SequencerType::parse(s).unwrap_or(SequencerType::Bucket))
         .unwrap_or(SequencerType::Bucket);
-    let error_spec = params.get("errors")
+    let error_spec = merged_params.get("errors")
         .cloned()
         .unwrap_or_else(|| ".*:warn,counter".to_string());
-    let format = params.get("format")
+    let format = merged_params.get("format")
         .map(|s| StdoutFormat::parse(s).unwrap_or(StdoutFormat::Assignments))
         .unwrap_or(StdoutFormat::Statement);
-    let filename = params.get("filename")
+    let filename = merged_params.get("filename")
         .cloned()
         .unwrap_or_else(|| "stdout".to_string());
+    let separator = merged_params.get("separator")
+        .cloned()
+        .unwrap_or_else(|| ",".to_string());
+    let header = merged_params.get("header")
+        .map(|s| s == "true" || s == "1" || s == "yes")
+        .unwrap_or(false);
+    let color = merged_params.get("color")
+        .map(|s| s == "true" || s == "1" || s == "yes")
+        .or_else(|| {
+            if args.iter().any(|a| a == "--color") { Some(true) } else { None }
+        })
+        .unwrap_or(false);
+
+    // Warn about unrecognized CLI parameters
+    for key in params.keys() {
+        if !KNOWN_PARAMS.contains(&key.as_str())
+            && !workload.declared_params.contains(key)
+        {
+            let all_known: Vec<&str> = KNOWN_PARAMS.iter().copied()
+                .chain(workload.declared_params.iter().map(|s| s.as_str()))
+                .collect();
+            let suggestion = closest_match(key, &all_known);
+            if let Some(closest) = suggestion {
+                eprintln!("warning: unrecognized parameter '{key}='. Did you mean '{closest}='?");
+            } else {
+                eprintln!("warning: unrecognized parameter '{key}=' — \
+                    not a known activity parameter or workload-declared param");
+            }
+        }
+    }
 
     // Extract workload params and phase definitions before consuming ops
     let workload_params = workload.params;
@@ -246,7 +342,8 @@ pub async fn run_command(args: &[String]) {
         }
 
         // Phase 2: inject param bindings into GK source for params
-        // referenced in op templates but not already defined as GK bindings.
+        // referenced in op templates or phase config but not already
+        // defined as GK bindings.
         let mut op_refs: std::collections::HashSet<String> = std::collections::HashSet::new();
         for op in all_ops_for_compile.iter() {
             for value in op.op.values() {
@@ -255,6 +352,17 @@ pub async fn run_command(args: &[String]) {
                         if workload_params.contains_key(&name) {
                             op_refs.insert(name);
                         }
+                    }
+                }
+            }
+        }
+        // Also scan phase config values (cycles, rate, etc.) for {name} refs
+        for phase in phases.values() {
+            for config_val in [&phase.cycles].into_iter().flatten() {
+                if config_val.starts_with('{') && config_val.ends_with('}') {
+                    let name = &config_val[1..config_val.len()-1];
+                    if workload_params.contains_key(name) {
+                        op_refs.insert(name.to_string());
                     }
                 }
             }
@@ -453,9 +561,11 @@ pub async fn run_command(args: &[String]) {
             "stdout" => {
                 Arc::new(StdoutAdapter::with_config(StdoutConfig {
                     filename: filename.clone(),
-                    newline: true,
                     format,
-                    fields_filter: Vec::new(),
+                    separator: separator.clone(),
+                    header,
+                    color,
+                    ..Default::default()
                 }))
             }
             "model" => {
@@ -464,9 +574,10 @@ pub async fn run_command(args: &[String]) {
                 Arc::new(ModelAdapter::with_config(ModelConfig {
                     stdout: StdoutConfig {
                         filename: filename.clone(),
-                        newline: true,
                         format,
-                        fields_filter: Vec::new(),
+                        separator: separator.clone(),
+                        header,
+                        ..Default::default()
                     },
                     diagnose,
                 }))
@@ -716,20 +827,16 @@ pub async fn run_command(args: &[String]) {
                 "emit" => {
                     let adapter: Arc<dyn nb_activity::adapter::DriverAdapter> =
                         Arc::new(StdoutAdapter::with_config(StdoutConfig {
-                            filename: "stdout".into(),
-                            newline: true,
                             format: StdoutFormat::Statement,
-                    fields_filter: Vec::new(),
+                            ..Default::default()
                         }));
                     activity.run_with_driver(adapter, program).await;
                 }
                 "json" => {
                     let adapter: Arc<dyn nb_activity::adapter::DriverAdapter> =
                         Arc::new(StdoutAdapter::with_config(StdoutConfig {
-                            filename: "stdout".into(),
-                            newline: true,
                             format: StdoutFormat::Json,
-                    fields_filter: Vec::new(),
+                            ..Default::default()
                         }));
                     activity.run_with_driver(adapter, program).await;
                 }
@@ -745,7 +852,7 @@ pub async fn run_command(args: &[String]) {
                             impl OpDispenser for NoopDispenser {
                                 fn execute<'a>(&'a self, _cycle: u64, _fields: &'a ResolvedFields)
                                     -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
-                                    Box::pin(async { Ok(OpResult { body: None, captures: std::collections::HashMap::new() }) })
+                                    Box::pin(async { Ok(OpResult { body: None, captures: std::collections::HashMap::new(), skipped: false }) })
                                 }
                             }
                             Ok(Box::new(NoopDispenser))

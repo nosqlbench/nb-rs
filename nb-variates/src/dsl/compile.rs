@@ -362,19 +362,16 @@ impl Compiler {
                     // referenced from another file/kernel.
                 }
                 Statement::ExternPort(port) => {
-                    // Declare the input on the assembler
-                    let default_value = match port.typ.as_str() {
-                        "u64" => crate::node::Value::U64(0),
-                        "f64" => crate::node::Value::F64(0.0),
-                        "bool" => crate::node::Value::Bool(false),
-                        _ => crate::node::Value::Str(String::new()),
-                    };
+                    // Declare the input on the assembler.
+                    // Default is None (unset) unless the extern
+                    // declaration specifies a default value.
+                    let default_value = crate::node::Value::None;
                     let port_type = match port.typ.as_str() {
                         "u64" => crate::node::PortType::U64,
                         "f64" => crate::node::PortType::F64,
                         _ => crate::node::PortType::Str,
                     };
-                    asm.add_input(&port.name, default_value);
+                    asm.add_input(&port.name, default_value, port_type);
 
                     // Create a passthrough node wired to the input
                     let passthrough = Box::new(
@@ -890,146 +887,6 @@ mod tests {
     }
 
     /// Every function registered in the FuncSig registry must be
-    /// compilable. This test catches drift between registry.rs and
-    /// build_node() — if you register a function, you must also add
-    /// a match arm so the DSL compiler can build it.
-    ///
-    /// Functions that require non-u64 inputs (bytes, json, str) or
-    /// specific parameter formats (spec strings) are tested with
-    /// appropriate upstream nodes to satisfy type requirements.
-    #[test]
-    fn every_registered_function_compiles() {
-        use crate::dsl::registry;
-        use crate::node::SlotType;
-
-        let reg = registry::registry();
-        let mut failures: Vec<String> = Vec::new();
-
-        // Per-function overrides for functions that need special args
-        // or upstream wiring to satisfy type constraints.
-        let overrides: std::collections::HashMap<&str, &str> = [
-            // These need a bytes input, not u64
-            ("to_hex", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nout := to_hex(b)"),
-            ("from_hex", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nh := to_hex(b)\nout := from_hex(h)"),
-            ("sha256", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nout := sha256(b)"),
-            ("md5", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nout := md5(b)"),
-            ("to_base64", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nout := to_base64(b)"),
-            ("from_base64", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\ne := to_base64(b)\nout := from_base64(e)"),
-            // These need json input
-            ("json_to_str", "coordinates := (cycle)\nj := to_json(cycle)\nout := json_to_str(j)"),
-            ("json_merge", "coordinates := (cycle)\na := to_json(cycle)\nb := to_json(cycle)\nout := json_merge(a, b)"),
-            ("escape_json", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := escape_json(s)"),
-            // Distribution builders: 0 wire inputs, just const params
-            ("dist_normal", "coordinates := (cycle)\nlut := dist_normal(0.0, 1.0)\nout := lut_sample(lut)"),
-            ("dist_exponential", "coordinates := (cycle)\nlut := dist_exponential(1.0)\nout := lut_sample(lut)"),
-            ("dist_uniform", "coordinates := (cycle)\nlut := dist_uniform(0.0, 1.0)\nout := lut_sample(lut)"),
-            ("dist_pareto", "coordinates := (cycle)\nlut := dist_pareto(1.0, 1.0)\nout := lut_sample(lut)"),
-            ("dist_zipf", "coordinates := (cycle)\nlut := dist_zipf(100, 1.0)\nout := lut_sample(lut)"),
-            ("histribution", "coordinates := (cycle)\nout := histribution(hash(cycle), \"50 25 13 12\")"),
-            ("dist_empirical", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := dist_empirical(f, \"1.0 3.0 5.0 7.0 9.0\")"),
-            // Weighted functions need valid spec strings
-            ("weighted_strings", "coordinates := (cycle)\nout := weighted_strings(hash(cycle), \"a:0.5;b:0.5\")"),
-            ("weighted_u64", "coordinates := (cycle)\nout := weighted_u64(hash(cycle), \"10:0.5;20:0.5\")"),
-            ("one_of_weighted", "coordinates := (cycle)\nout := one_of_weighted(hash(cycle), \"a:0.5;b:0.5\")"),
-            // String input functions
-            ("html_encode", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := html_encode(s)"),
-            ("html_decode", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := html_decode(s)"),
-            ("url_encode", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := url_encode(s)"),
-            ("url_decode", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := url_decode(s)"),
-            ("regex_replace", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := regex_replace(s, \"[0-9]\", \"x\")"),
-            ("regex_match", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := regex_match(s, \"[0-9]+\")"),
-            // Select needs 3 inputs (cond, if_true, if_false)
-            ("select", "coordinates := (cycle)\nout := select(fair_coin(hash(cycle)), cycle, cycle)"),
-            // Blend needs 2 wire inputs
-            ("blend", "coordinates := (cycle)\nout := blend(hash(cycle), hash(cycle), 0.5)"),
-            // Multi-output: date_components
-            ("date_components", "coordinates := (cycle)\n(y, mo, d, h, mi, s, ms) := date_components(cycle)"),
-            // Context nodes: no inputs
-            ("current_epoch_millis", "coordinates := (cycle)\nout := current_epoch_millis()"),
-            ("counter", "coordinates := (cycle)\nout := counter()"),
-            ("session_start_millis", "coordinates := (cycle)\nout := session_start_millis()"),
-            ("elapsed_millis", "coordinates := (cycle)\nout := elapsed_millis()"),
-            ("thread_id", "coordinates := (cycle)\nout := thread_id()"),
-            // f64 input functions
-            ("clamp_f64", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := clamp_f64(f, 0.0, 0.5)"),
-            ("quantize", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := quantize(f, 0.1)"),
-            ("lerp", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := lerp(f, 0.0, 100.0)"),
-            ("inv_lerp", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := inv_lerp(f, 0.0, 1.0)"),
-            // 2-input noise
-            ("perlin_2d", "coordinates := (cycle)\nout := perlin_2d(cycle, cycle, 42, 0.01)"),
-            ("simplex_2d", "coordinates := (cycle)\nout := simplex_2d(cycle, cycle, 42, 0.01)"),
-            // PCG with 2 wires
-            ("pcg_stream", "coordinates := (cycle)\nout := pcg_stream(cycle, cycle, 42)"),
-            ("format_u64", "coordinates := (cycle)\nout := format_u64(cycle, 16)"),
-            // fft_analyze creates files — skip in this compile-only test
-            ("fft_analyze", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := fft_analyze(f, \"test_fft_compile.jsonl\", 8)"),
-        ].into_iter().collect();
-
-        for sig in &reg {
-            let src = if let Some(override_src) = overrides.get(sig.name) {
-                override_src.to_string()
-            } else {
-                // Auto-generate: all wire params get cycle, consts get defaults
-                let mut args: Vec<String> = Vec::new();
-                for p in sig.params {
-                    match p.slot_type {
-                        SlotType::Wire => args.push("cycle".into()),
-                        SlotType::ConstU64 => args.push("100".into()),
-                        SlotType::ConstF64 => args.push("1.0".into()),
-                        SlotType::ConstStr => args.push("\"test\"".into()),
-                        SlotType::ConstVecU64 => args.push("100".into()),
-                        SlotType::ConstVecF64 => args.push("1.0".into()),
-                    }
-                }
-                if args.is_empty() && sig.is_variadic() {
-                    args.push("cycle".into());
-                }
-                let call = format!("{}({})", sig.name, args.join(", "));
-                format!("coordinates := (cycle)\nout := {call}")
-            };
-
-            // Skip vectordata functions — their constructors perform I/O
-            // (catalog lookup + dataset loading) which requires network
-            // access. They compile correctly with a valid dataset source.
-            let vectordata_fns = [
-                "vector_at", "vector_at_bytes", "query_vector_at", "query_vector_at_bytes",
-                "neighbor_indices_at", "neighbor_distances_at",
-                "filtered_neighbor_indices_at", "filtered_neighbor_distances_at",
-                "dataset_distance_function", "vector_dim", "vector_count",
-                "query_count", "neighbor_count",
-                "metadata_indices_at", "metadata_indices_len_at", "metadata_indices_count",
-                "dataset_facets",
-                // file_line_at requires a real file path — cannot test with a dummy name
-                "file_line_at",
-            ];
-            if vectordata_fns.contains(&sig.name) { continue; }
-
-            let result = std::panic::catch_unwind(|| {
-                compile_gk(&src)
-            });
-
-            match result {
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => {
-                    if !overrides.contains_key(sig.name) {
-                        failures.push(format!("  {}: {e}", sig.name));
-                    }
-                }
-                Err(_) => {
-                    failures.push(format!("  {}: panicked", sig.name));
-                }
-            }
-        }
-
-        if !failures.is_empty() {
-            panic!(
-                "Registered functions that failed to compile:\n\
-                 Add a build_node() arm or an override in this test.\n\n{}\n",
-                failures.join("\n")
-            );
-        }
-    }
-
     // --- Strict mode comprehensive tests ---
 
     #[test]

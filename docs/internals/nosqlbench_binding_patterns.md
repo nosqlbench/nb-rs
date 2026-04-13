@@ -86,15 +86,16 @@ partition := (cycle / 10000) % 100
 
 ## Remaining Gaps
 
-| Gap | Priority | Description |
-|-----|----------|-------------|
-| `char_buf(seed, charset, len)` | Medium | Deterministic string generation from seed |
-| `hashed_uuid(seed)` | High | UUID v4 from deterministic seed |
-| `random_vector(seed, dim, min, max)` | Medium | Generate f32 vector as JSON array |
-| `normalize_vector(json)` | Medium | L2-normalize a vector |
-| `random_list(seed, size, spec)` | Low | Collection builders |
-| `file_line_at(seed, filename)` | Low | Read line from file by hashed index |
-| Template-as-wire | Low | Printf with wire-selected format string |
+| Node | Priority | Status |
+|------|----------|--------|
+| `char_buf(seed, charset, len)` | Medium | **Done** — `nodes/string.rs` |
+| `hashed_uuid(seed)` | High | **Done** — `nodes/string.rs` |
+| `random_vector(seed, dim, min, max)` | Medium | **Done** — `nodes/json.rs` |
+| `normalize_vector(json)` | Medium | **Done** — `nodes/json.rs` |
+| `file_line_at(seed, filename)` | Low | **Done** — `nodes/string.rs` |
+| `random_list(seed, size, spec)` | Low | Not yet |
+| `random_map(seed, size, k, v)` | Low | Not yet |
+| `format_timestamp(ms, pattern)` | Low | Not yet |
 
 ## What GK Eliminates
 

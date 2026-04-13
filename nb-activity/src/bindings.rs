@@ -345,6 +345,15 @@ pub fn compile_bindings_with_libs_excluding(
                     }
                 }
             }
+            // Include condition binding references so DCE preserves them
+            if let Some(ref cond) = op.condition {
+                let name = cond.trim()
+                    .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+                    .unwrap_or(cond.trim());
+                if !name.is_empty() && !required.contains(&name.to_string()) && !exclude.contains(&name.to_string()) {
+                    required.push(name.to_string());
+                }
+            }
         }
         // Include config expression references so DCE preserves them
         for name in extra_required {

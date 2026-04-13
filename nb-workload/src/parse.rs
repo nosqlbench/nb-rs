@@ -86,7 +86,9 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         }
     }
 
-    Ok(Workload { description, scenarios, ops: all_ops, params: resolved_params, phases, phase_order })
+    let declared_params: Vec<String> = yaml_params.keys().cloned().collect();
+
+    Ok(Workload { description, scenarios, ops: all_ops, params: resolved_params, phases, phase_order, declared_params })
 }
 
 /// Parse a YAML source into just the list of normalized ParsedOps.
@@ -411,6 +413,8 @@ fn normalize_op_entry(
                 bindings: bindings.clone(),
                 params: params.clone(),
                 tags: tags.clone(),
+                condition: None,
+                delay: None,
             };
             op.tags.insert("block".to_string(), block_name.to_string());
             op
@@ -445,7 +449,7 @@ fn normalize_op_object(
     op_tags.insert("block".to_string(), block_name.to_string());
 
     // Determine op payload
-    let reserved = ["name", "description", "desc", "bindings", "params", "tags"];
+    let reserved = ["name", "description", "desc", "bindings", "params", "tags", "if", "delay"];
     let op_field_names = ["op", "ops", "operations", "stmt", "statement", "statements"];
     // Activity-level params excised from op fields before the adapter sees them
     let activity_params = ["ratio", "driver", "space", "instrument", "start-timers", "stop-timers",
@@ -488,6 +492,14 @@ fn normalize_op_object(
         }
     }
 
+    let condition = map.get("if")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let delay = map.get("delay")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     ParsedOp {
         name,
         description,
@@ -495,6 +507,8 @@ fn normalize_op_object(
         bindings: op_bindings,
         params: op_params,
         tags: op_tags,
+        condition,
+        delay,
     }
 }
 

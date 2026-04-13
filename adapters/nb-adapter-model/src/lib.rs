@@ -163,7 +163,7 @@ impl OpDispenser for ModelDispenser {
         fields: &'a ResolvedFields,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         Box::pin(async move {
-            let text = self.format.render(fields);
+            let text = self.format.render(fields, ",");
 
             // Write the resolved op (same as stdout)
             {
@@ -217,6 +217,7 @@ impl OpDispenser for ModelDispenser {
             Ok(OpResult {
                 body: Some(Box::new(TextBody(text))),
                 captures: std::collections::HashMap::new(),
+                skipped: false,
             })
         })
     }

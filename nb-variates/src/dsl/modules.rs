@@ -203,20 +203,32 @@ impl Compiler {
             }
         }
 
-        // Wire module outputs to caller's targets.
-        // Use the module's declared output names (from formal signature
-        // or inferred from binding names).
+        // Wire module outputs to caller's targets via identity nodes.
+        // This makes the target name available as both a wire source
+        // (for downstream nodes) and an output.
         for (i, target) in targets.iter().enumerate() {
             let output_name = module_outputs.get(i).cloned()
                 .unwrap_or_else(|| func_name.to_string());
             let prefixed = format!("{prefix}{output_name}");
-            // Register as output directly — don't add to all_names since
-            // the main compile loop would try to add_output(target, node(target))
-            // which would fail (target is an alias, not a node).
-            asm.add_output(target, WireRef::node(&prefixed));
+            // Create a passthrough node named after the target, wired
+            // from the module's prefixed output. This makes `target`
+            // available as a node name for downstream wiring.
+            // Use PortPassthrough which accepts any port type (f64, u64, Str).
+            let out_type = self.output_type_of(asm, &prefixed);
+            asm.add_node(
+                target,
+                Box::new(crate::nodes::identity::PortPassthrough::new(target, out_type)),
+                vec![WireRef::node(&prefixed)],
+            );
+            self.all_names.push(target.clone());
         }
 
         Ok(true)
+    }
+
+    /// Query the output type of a named node in the assembler.
+    fn output_type_of(&self, asm: &GkAssembler, name: &str) -> crate::node::PortType {
+        asm.node_output_type(name)
     }
 
     /// Rewrite an expression from a module, substituting input references

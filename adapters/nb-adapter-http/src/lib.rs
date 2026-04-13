@@ -222,6 +222,7 @@ impl OpDispenser for HttpDispenser {
                 Ok(OpResult {
                     body: Some(Box::new(TextBody(body_text))),
                     captures: std::collections::HashMap::new(),
+                    skipped: false,
                 })
             } else {
                 Err(ExecutionError::Op(AdapterError {

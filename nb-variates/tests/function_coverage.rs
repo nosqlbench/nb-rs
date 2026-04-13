@@ -1821,3 +1821,163 @@ fn const_expr_via_cli_cycles() {
     // 42 + 1: both IntLit → u64_add → u64(43)
     assert_eq!(v.as_u64(), 43, "expected u64(43), got {:?}", v);
 }
+
+// ---------------------------------------------------------------------------
+// Registry completeness: every registered function must compile
+// ---------------------------------------------------------------------------
+
+/// Verifies that every function in the registry can be compiled into a
+/// working GK kernel. Test fixture files are created for I/O nodes.
+/// Vectordata nodes are tested separately (they require dataset downloads).
+#[test]
+fn every_registered_function_compiles() {
+    use nb_variates::dsl::compile::compile_gk;
+    use nb_variates::dsl::registry;
+    use nb_variates::node::SlotType;
+
+    // Create test fixture files
+    let csv_path = std::env::temp_dir().join("_gk_coverage_test.csv");
+    std::fs::write(&csv_path, "name,age\nalice,30\nbob,25\n").unwrap();
+    let csv = csv_path.to_str().unwrap();
+    let jsonl_path = std::env::temp_dir().join("_gk_coverage_test.jsonl");
+    std::fs::write(&jsonl_path, "{\"name\":\"alice\"}\n{\"name\":\"bob\"}\n").unwrap();
+    let jsonl = jsonl_path.to_str().unwrap();
+    let txt_path = std::env::temp_dir().join("_gk_coverage_test.txt");
+    std::fs::write(&txt_path, "hello\nworld\n").unwrap();
+    let txt = txt_path.to_str().unwrap();
+
+    let reg = registry::registry();
+    let mut failures: Vec<String> = Vec::new();
+
+    // Overrides for functions that need specific wiring or file formats.
+    let mut overrides: std::collections::HashMap<&str, String> = [
+        // Bytes input
+        ("to_hex", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nout := to_hex(b)".into()),
+        ("from_hex", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nh := to_hex(b)\nout := from_hex(h)".into()),
+        ("sha256", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nout := sha256(b)".into()),
+        ("md5", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nout := md5(b)".into()),
+        ("to_base64", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\nout := to_base64(b)".into()),
+        ("from_base64", "coordinates := (cycle)\nb := u64_to_bytes(cycle)\ne := to_base64(b)\nout := from_base64(e)".into()),
+        // JSON input
+        ("json_to_str", "coordinates := (cycle)\nj := to_json(cycle)\nout := json_to_str(j)".into()),
+        ("json_merge", "coordinates := (cycle)\na := to_json(cycle)\nb := to_json(cycle)\nout := json_merge(a, b)".into()),
+        ("escape_json", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := escape_json(s)".into()),
+        // Distributions
+        ("dist_normal", "coordinates := (cycle)\nout := dist_normal(hash(cycle), 0.0, 1.0)".into()),
+        ("dist_exponential", "coordinates := (cycle)\nout := dist_exponential(hash(cycle), 1.0)".into()),
+        ("dist_uniform", "coordinates := (cycle)\nout := dist_uniform(hash(cycle), 0.0, 1.0)".into()),
+        ("dist_pareto", "coordinates := (cycle)\nout := dist_pareto(hash(cycle), 1.0, 1.0)".into()),
+        ("dist_zipf", "coordinates := (cycle)\nout := dist_zipf(hash(cycle), 100, 1.0)".into()),
+        ("histribution", "coordinates := (cycle)\nout := histribution(hash(cycle), \"50 25 13 12\")".into()),
+        ("dist_empirical", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := dist_empirical(f, \"1.0 3.0 5.0 7.0 9.0\")".into()),
+        // Weighted
+        ("weighted_strings", "coordinates := (cycle)\nout := weighted_strings(hash(cycle), \"a:0.5;b:0.5\")".into()),
+        ("weighted_u64", "coordinates := (cycle)\nout := weighted_u64(hash(cycle), \"10:0.5;20:0.5\")".into()),
+        ("one_of_weighted", "coordinates := (cycle)\nout := one_of_weighted(hash(cycle), \"a:0.5;b:0.5\")".into()),
+        // String input
+        ("html_encode", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := html_encode(s)".into()),
+        ("html_decode", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := html_decode(s)".into()),
+        ("url_encode", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := url_encode(s)".into()),
+        ("url_decode", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := url_decode(s)".into()),
+        ("regex_replace", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := regex_replace(s, \"[0-9]\", \"x\")".into()),
+        ("regex_match", "coordinates := (cycle)\ns := format_u64(cycle, 10)\nout := regex_match(s, \"[0-9]+\")".into()),
+        // Multi-input
+        ("select", "coordinates := (cycle)\nout := select(fair_coin(hash(cycle)), cycle, cycle)".into()),
+        ("blend", "coordinates := (cycle)\nout := blend(hash(cycle), hash(cycle), 0.5)".into()),
+        ("date_components", "coordinates := (cycle)\n(y, mo, d, h, mi, s, ms) := date_components(cycle)".into()),
+        ("perlin_2d", "coordinates := (cycle)\nout := perlin_2d(cycle, cycle, 42, 0.01)".into()),
+        ("simplex_2d", "coordinates := (cycle)\nout := simplex_2d(cycle, cycle, 42, 0.01)".into()),
+        ("fractal_noise_2d", "coordinates := (cycle)\nout := fractal_noise_2d(cycle, cycle, 42, 0.02)".into()),
+        ("pcg_stream", "coordinates := (cycle)\nout := pcg_stream(cycle, cycle, 42)".into()),
+        ("format_u64", "coordinates := (cycle)\nout := format_u64(cycle, 16)".into()),
+        // Context (no inputs)
+        ("current_epoch_millis", "coordinates := (cycle)\nout := current_epoch_millis()".into()),
+        ("counter", "coordinates := (cycle)\nout := counter()".into()),
+        ("session_start_millis", "coordinates := (cycle)\nout := session_start_millis()".into()),
+        ("elapsed_millis", "coordinates := (cycle)\nout := elapsed_millis()".into()),
+        ("thread_id", "coordinates := (cycle)\nout := thread_id()".into()),
+        // f64 input
+        ("clamp_f64", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := clamp_f64(f, 0.0, 0.5)".into()),
+        ("quantize", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := quantize(f, 0.1)".into()),
+        ("lerp", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := lerp(f, 0.0, 100.0)".into()),
+        ("inv_lerp", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := inv_lerp(f, 0.0, 1.0)".into()),
+        // FFT (creates output file)
+        ("fft_analyze", "coordinates := (cycle)\nf := unit_interval(hash(cycle))\nout := fft_analyze(f, \"/tmp/_gk_fft_test.jsonl\", 8)".into()),
+    ].into_iter().collect();
+
+    // File I/O nodes — use real fixture files
+    overrides.insert("csv_field", format!(
+        "coordinates := (cycle)\nout := csv_field(cycle, \"{csv}\", \"name\")"));
+    overrides.insert("csv_row", format!(
+        "coordinates := (cycle)\nout := csv_row(cycle, \"{csv}\")"));
+    overrides.insert("csv_row_count", format!(
+        "coordinates := (cycle)\nout := csv_row_count(\"{csv}\")"));
+    overrides.insert("jsonl_field", format!(
+        "coordinates := (cycle)\nout := jsonl_field(cycle, \"{jsonl}\", \"name\")"));
+    overrides.insert("jsonl_row", format!(
+        "coordinates := (cycle)\nout := jsonl_row(cycle, \"{jsonl}\")"));
+    overrides.insert("jsonl_row_count", format!(
+        "coordinates := (cycle)\nout := jsonl_row_count(\"{jsonl}\")"));
+    overrides.insert("file_line_at", format!(
+        "coordinates := (cycle)\nout := file_line_at(cycle, \"{txt}\")"));
+
+    // Vectordata nodes require downloaded datasets — tested separately
+    // in vectordata_integration.rs. Skip here to avoid network dependency.
+    let vectordata_category = "vector_at vector_at_bytes query_vector_at query_vector_at_bytes \
+        neighbor_indices_at neighbor_distances_at filtered_neighbor_indices_at \
+        filtered_neighbor_distances_at dataset_distance_function vector_dim vector_count \
+        query_count neighbor_count metadata_indices_at metadata_indices_len_at \
+        metadata_indices_count dataset_facets";
+    let vectordata_fns: std::collections::HashSet<&str> = vectordata_category.split_whitespace().collect();
+
+    for sig in &reg {
+        if vectordata_fns.contains(sig.name) { continue; }
+
+        let src = if let Some(override_src) = overrides.get(sig.name) {
+            override_src.to_string()
+        } else {
+            // Auto-generate from signature
+            let mut args: Vec<String> = Vec::new();
+            for p in sig.params {
+                match p.slot_type {
+                    SlotType::Wire => args.push("cycle".into()),
+                    SlotType::ConstU64 => args.push("100".into()),
+                    SlotType::ConstF64 => args.push("1.0".into()),
+                    SlotType::ConstStr => args.push("\"test\"".into()),
+                    SlotType::ConstVecU64 => args.push("100".into()),
+                    SlotType::ConstVecF64 => args.push("1.0".into()),
+                }
+            }
+            if args.is_empty() && sig.is_variadic() {
+                args.push("cycle".into());
+            }
+            let call = format!("{}({})", sig.name, args.join(", "));
+            format!("coordinates := (cycle)\nout := {call}")
+        };
+
+        let result = std::panic::catch_unwind(|| compile_gk(&src));
+
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                failures.push(format!("  {}: {e}", sig.name));
+            }
+            Err(_) => {
+                failures.push(format!("  {}: panicked", sig.name));
+            }
+        }
+    }
+
+    // Clean up
+    let _ = std::fs::remove_file(&csv_path);
+    let _ = std::fs::remove_file(&jsonl_path);
+    let _ = std::fs::remove_file(&txt_path);
+    let _ = std::fs::remove_file("/tmp/_gk_fft_test.jsonl");
+
+    if !failures.is_empty() {
+        panic!(
+            "Registered functions that failed to compile:\n\n{}\n",
+            failures.join("\n")
+        );
+    }
+}

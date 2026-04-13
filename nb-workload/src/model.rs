@@ -32,6 +32,11 @@ pub struct Workload {
     /// the workload YAML for deterministic default scenario execution.
     #[serde(default)]
     pub phase_order: Vec<String>,
+    /// Param names declared in the workload YAML `params:` section.
+    /// Used to detect unrecognized CLI params. Does not include
+    /// ad-hoc CLI params.
+    #[serde(default)]
+    pub declared_params: Vec<String>,
 }
 
 /// A workload phase: runs as a separate Activity with its own
@@ -152,6 +157,16 @@ pub struct ParsedOp {
     /// Tags for filtering and metadata.
     #[serde(default)]
     pub tags: HashMap<String, String>,
+    /// Optional condition expression (from YAML `if:` field).
+    /// Evaluated per cycle before the op executes. If the result
+    /// is falsy (false, 0, empty string, None), the op is skipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    /// Optional delay binding (from YAML `delay:` field).
+    /// GK binding name producing per-cycle delay: u64 = nanoseconds,
+    /// f64 = milliseconds. Applied before adapter execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay: Option<String>,
 }
 
 impl ParsedOp {
@@ -166,6 +181,8 @@ impl ParsedOp {
             bindings: BindingsDef::default(),
             params: HashMap::new(),
             tags: HashMap::new(),
+            condition: None,
+            delay: None,
         }
     }
 }

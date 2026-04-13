@@ -109,6 +109,8 @@ pub enum FuncCategory {
     Context,
     /// Debugging and introspection.
     Diagnostic,
+    /// File-based data access: CSV, JSONL, text files.
+    Data,
 }
 
 impl FuncCategory {
@@ -137,6 +139,7 @@ impl FuncCategory {
             Self::RealData => "Real Data",
             Self::Context => "Context",
             Self::Diagnostic => "Diagnostic",
+            Self::Data => "Data",
         }
     }
 
@@ -166,6 +169,7 @@ impl FuncCategory {
             "real data" | "realdata" | "realer" => Some(Self::RealData),
             "context" => Some(Self::Context),
             "diagnostic" | "diagnostics" | "debug" => Some(Self::Diagnostic),
+            "data" | "datafile" | "csv" | "jsonl" => Some(Self::Data),
             _ => None,
         }
     }
@@ -179,7 +183,7 @@ impl FuncCategory {
             Self::Weighted, Self::Formatting, Self::String,
             Self::Json, Self::ByteBuffers, Self::Digest, Self::Noise,
             Self::Regex, Self::Permutation, Self::RealData,
-            Self::Context, Self::Diagnostic,
+            Self::Context, Self::Diagnostic, Self::Data,
         ]
     }
 }

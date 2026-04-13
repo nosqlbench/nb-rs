@@ -173,9 +173,74 @@ impl GkState {
         self.core.pull(program, output_name)
     }
 
+    /// Pull an output by index (declaration order). Only evaluates
+    /// the computation cone for this specific output.
+    pub fn pull_by_index(&mut self, program: &GkProgram, output_idx: usize) -> &Value {
+        let (node_idx, port_idx) = program.resolve_output_by_index(output_idx);
+        self.core.eval_node(program, node_idx);
+        &self.core.buffers[node_idx][port_idx]
+    }
+
+    /// Pull all outputs in declaration order.
+    pub fn pull_all<'a>(&'a mut self, program: &GkProgram) -> Vec<&'a Value> {
+        for i in 0..program.output_count() {
+            let (node_idx, _) = program.resolve_output_by_index(i);
+            self.core.eval_node(program, node_idx);
+        }
+        (0..program.output_count())
+            .map(|i| {
+                let (ni, pi) = program.resolve_output_by_index(i);
+                &self.core.buffers[ni][pi]
+            })
+            .collect()
+    }
+
+    /// Create a memoized accessor for a named subset of outputs.
+    /// Resolves names to indices once; subsequent access uses indices only.
+    pub fn accessor(program: &GkProgram, names: &[&str]) -> OutputAccessor {
+        let indices: Vec<usize> = names.iter()
+            .filter_map(|n| program.output_index(n))
+            .collect();
+        OutputAccessor { indices }
+    }
+
     /// Evaluate a node by index (exposed for constant folding in GkProgram).
     pub(crate) fn eval_node_public(&mut self, program: &GkProgram, node_idx: usize) {
         self.core.eval_node(program, node_idx);
+    }
+}
+
+/// Memoized output accessor for a named subset of outputs.
+///
+/// Created once from output names via `GkState::accessor()`.
+/// Subsequent pulls use pre-resolved indices — no name lookups.
+pub struct OutputAccessor {
+    indices: Vec<usize>,
+}
+
+impl OutputAccessor {
+    /// Pull all outputs in this accessor from the given state.
+    pub fn pull_all<'a>(&self, state: &'a mut GkState, program: &GkProgram) -> Vec<&'a Value> {
+        for &idx in &self.indices {
+            let (node_idx, _) = program.resolve_output_by_index(idx);
+            state.core.eval_node(program, node_idx);
+        }
+        self.indices.iter()
+            .map(|&idx| {
+                let (ni, pi) = program.resolve_output_by_index(idx);
+                &state.core.buffers[ni][pi]
+            })
+            .collect()
+    }
+
+    /// Number of outputs in this accessor.
+    pub fn len(&self) -> usize {
+        self.indices.len()
+    }
+
+    /// Whether this accessor has no outputs.
+    pub fn is_empty(&self) -> bool {
+        self.indices.is_empty()
     }
 }
 

@@ -167,7 +167,7 @@ impl GkAssembler {
     pub fn new(input_names: Vec<String>) -> Self {
         let coord_count = input_names.len();
         let input_defs: Vec<crate::kernel::InputDef> = input_names.into_iter()
-            .map(|name| crate::kernel::InputDef { name, default: crate::node::Value::U64(0) })
+            .map(|name| crate::kernel::InputDef { name, default: crate::node::Value::U64(0), port_type: crate::node::PortType::U64 })
             .collect();
         Self {
             input_defs,
@@ -202,10 +202,11 @@ impl GkAssembler {
     ///
     /// Added after coordinate inputs. Nodes wire to it via
     /// `WireRef::input(name)` — same as coordinate inputs.
-    pub fn add_input(&mut self, name: impl Into<String>, default: crate::node::Value) -> &mut Self {
+    pub fn add_input(&mut self, name: impl Into<String>, default: crate::node::Value, port_type: crate::node::PortType) -> &mut Self {
         self.input_defs.push(crate::kernel::InputDef {
             name: name.into(),
             default,
+            port_type,
         });
         self
     }
@@ -213,6 +214,16 @@ impl GkAssembler {
     /// Return the names of all inputs (coordinates + captures).
     pub fn input_names(&self) -> Vec<&str> {
         self.input_defs.iter().map(|d| d.name.as_str()).collect()
+    }
+
+    /// Query the output port type of a named node (first output).
+    /// Returns U64 if the node is not found.
+    pub fn node_output_type(&self, name: &str) -> crate::node::PortType {
+        self.nodes.iter()
+            .find(|n| n.name == name)
+            .and_then(|n| n.node.meta().outs.first())
+            .map(|p| p.typ)
+            .unwrap_or(crate::node::PortType::U64)
     }
 
     /// Return the names of declared outputs.
@@ -730,12 +741,7 @@ impl GkAssembler {
                         let input_idx = input_to_idx
                             .get(name)
                             .ok_or_else(|| AssemblyError::UnknownWire(name.clone()))?;
-                        let source_type = match &self.input_defs[*input_idx].default {
-                            crate::node::Value::U64(_) => PortType::U64,
-                            crate::node::Value::F64(_) => PortType::F64,
-                            crate::node::Value::Str(_) => PortType::Str,
-                            _ => PortType::U64,
-                        };
+                        let source_type = self.input_defs[*input_idx].port_type;
                         (WireSource::Input(*input_idx), source_type)
                     }
                     WireRef::Node(name, out_port) => {

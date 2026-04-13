@@ -1,44 +1,88 @@
 # nbrs
 
-A Rust-based performance testing engine. Part of the [nosqlbench](https://github.com/nosqlbench/nosqlbench) project.
+High-performance workload generation and database testing in Rust.
 
-## First Light
+nbrs generates deterministic, reproducible request streams at scale.
+Every value is derived from a cycle number through a composable DAG
+of functions — same cycle, same output, every time. This makes
+workloads debuggable, cacheable, and exactly reproducible across runs.
 
-Create a workload file `hello.yaml`:
+Part of the [nosqlbench](https://github.com/nosqlbench/nosqlbench) project.
+
+This system was derived from things learned building nosqlbench, and shares many of its concepts. However, some things were kept and some removed. This will be a much leaner and meaner version of what nosqlbench is. It will do some things differently.
+
+## Quick Start
+
+```
+$ nbrs run op='INSERT INTO t (id, name) VALUES ({{mod(hash(cycle), 1000000)}}, "{{number_to_words(cycle)}}")' cycles=5
+
+INSERT INTO t (id, name) VALUES (527897, "zero")
+INSERT INTO t (id, name) VALUES (460078, "one")
+INSERT INTO t (id, name) VALUES (564547, "two")
+INSERT INTO t (id, name) VALUES (960189, "three")
+INSERT INTO t (id, name) VALUES (862456, "four")
+```
+
+Or from a workload file:
 
 ```yaml
-bindings:
-  id: Hash(); Mod(1000000)
-  seq: Identity()
+#!/usr/bin/env nbrs
+# service.yaml
+
+params:
+  keyspace: demo
+  table: users
+  user_count: "100000"
+
+bindings: |
+  inputs := (cycle)
+  user_id := mod(hash(cycle), {user_count})
+  user_name := number_to_words(mod(hash(hash(cycle)), 1000))
+  is_write := mod(cycle, 5)
 
 ops:
-  write:
-    ratio: 3
-    stmt: "INSERT INTO users (id, name) VALUES ({id}, 'user_{seq}');"
-  read:
+  read_user:
+    ratio: 4
+    stmt: "SELECT * FROM {keyspace}.{table} WHERE id={user_id}"
+  write_user:
     ratio: 1
-    stmt: "SELECT * FROM users WHERE id={id};"
+    if: is_write
+    stmt: "INSERT INTO {keyspace}.{table} (id, name) VALUES ({user_id}, '{user_name}')"
 ```
 
-Run it:
-
 ```
-$ nbrs run workload=hello.yaml cycles=8
-
-nbrs: 2 ops selected, 8 cycles, 1 threads, driver=stdout
-nbrs: stanza length=4, sequencer=Bucket
-INSERT INTO users (id, name) VALUES (527897, 'user_0');
-SELECT * FROM users WHERE id=460078;
-INSERT INTO users (id, name) VALUES (564547, 'user_2');
-INSERT INTO users (id, name) VALUES (960189, 'user_3');
-SELECT * FROM users WHERE id=862456;
-INSERT INTO users (id, name) VALUES (96332, 'user_5');
-INSERT INTO users (id, name) VALUES (670075, 'user_6');
-INSERT INTO users (id, name) VALUES (81455, 'user_7');
-nbrs: done
+$ chmod +x service.yaml
+$ ./service.yaml cycles=100 threads=4 rate=1000
 ```
 
-Every `{id}` is a deterministic pseudo-random value derived from the cycle number. Same cycle, same output. The 3:1 write:read ratio is visible in the sequence.
+## Features
+
+**Generation Kernel (GK)** — A DAG-based data generation engine with:
+- Infix operators (`+`, `-`, `*`, `/`, `%`, `**`, `&`, `|`, `^`, `<<`, `>>`)
+- 100+ node functions: hash, distributions, noise, strings, vectors, CSV/JSONL
+- Type-aware dispatch with auto-widening (u64/f64/string)
+- Constant folding, provenance-based invalidation, JIT compilation
+- Module system with composable `.gk` files and stdlib
+
+**Workload Engine** — Flexible execution with:
+- Phased workloads (schema → rampup → steady-state)
+- Conditional ops (`if:` field skips per-cycle)
+- Latency injection (`delay:` field for GK-driven think time)
+- Ratio-weighted op sequencing
+- Capture flow between ops within a stanza
+- GK expressions in config (`cycles="{vector_count("sift1m")}"`)
+
+**Adapters** — Protocol drivers for:
+- stdout (debugging, dry-run, format=json/csv/stmt)
+- HTTP (REST APIs, configurable timeouts)
+- CQL (Cassandra/ScyllaDB via cassnbrs persona)
+- Model (simulated service latency)
+
+**Observability** — Built-in metrics and dashboards:
+- HDR histograms for latency percentiles
+- OpenMetrics push to Prometheus/VictoriaMetrics
+- Live TUI dashboard (`--tui`)
+- Web dashboard (`nbrs web`)
 
 ## Build
 
@@ -46,34 +90,44 @@ Every `{id}` is a deterministic pseudo-random value derived from the cycle numbe
 cargo build --release
 ```
 
-## Usage
+Enable shell completions:
+```
+eval "$(nbrs completions)"
+```
+
+## Commands
 
 ```
-nbrs run workload=<file.yaml> [parameters...]
+nbrs run workload=file.yaml cycles=1M threads=8 rate=10000
+nbrs run op='hello {{hash(cycle)}}' cycles=10
+nbrs bench gk 'hash(cycle)' --compare-modes iters=5
+nbrs plot gk 'sin(to_f64(cycle) * 0.01)' cycles=1000
+nbrs describe gk functions
+nbrs web --daemon
 ```
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `workload=` | required | YAML workload file |
-| `cycles=` | 1 | Cycles to execute (supports K, M, B) |
-| `threads=` | 1 | Concurrency level |
-| `rate=` | unlimited | Ops per second |
-| `tags=` | all | Tag filter (e.g., `block:main`) |
-| `format=` | stmt | Output: stmt, json, csv, assignments |
-| `seq=` | bucket | Sequencer: bucket, interval, concat |
+## Examples
 
-See [Getting Started](docs/guide/getting_started.md) for the full guide.
+See [`examples/`](examples/) for categorized workload examples:
+- `getting_started/` — First workloads, GK bindings, inline ops
+- `gk_language/` — Operators, bitwise, coordinate decomposition
+- `workloads/` — Phases, conditions, delays, scenarios
+- `signals/` — FFT analysis, LFSR, fractal noise
+- `visual/` — Random maze generator
+- `modules/` — GK module system
 
 ## Architecture
 
 ```
-nb-variates     Generation kernel: deterministic data from coordinates
-nb-metrics      HDR histograms, frame-based capture, reporters
-nb-workload     YAML workload parsing and normalization
+nb-variates     GK engine: DAG compilation, node functions, JIT, provenance
+nb-workload     YAML parsing, bind points, inline expressions, phasing
+nb-activity     Async execution engine, dispenser wrappers, capture flow
+nb-metrics      HDR histograms, frame capture, OpenMetrics export
 nb-rate         Async token bucket rate limiter
-nb-errorhandler Modular composable error handling
-nb-activity     Async execution engine
-nb-rs           CLI binary (nbrs)
+nb-errorhandler Composable error routing
+nb-rs           CLI binary (nbrs), bench, plot, web dashboard
+nb-tui          Terminal UI for live monitoring
+nb-web          Web dashboard with Axum + HTMX
 ```
 
 ## License

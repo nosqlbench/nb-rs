@@ -1852,6 +1852,7 @@ dependencies = [
  "nb-activity",
  "nb-variates",
  "nb-workload",
+ "serde_json",
  "tokio",
 ]
 

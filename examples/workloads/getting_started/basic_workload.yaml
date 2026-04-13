@@ -1,9 +1,11 @@
-# basic_workload.yaml — A simple workload for testing nbrs
+# basic_workload.yaml — A simple workload using compatibility-mode bindings
+#
+# This uses the legacy nosqlbench semicolon-chain binding syntax
+# (Hash(); Mod(1000000)) which is automatically translated to GK
+# nodes. For the native GK syntax, see gk_bindings.yaml.
 #
 # Usage:
-#   nbrs run workload=examples/basic_workload.yaml cycles=10
-#   nbrs run workload=examples/basic_workload.yaml cycles=20 format=json
-#   nbrs run workload=examples/basic_workload.yaml tags=block:main cycles=100 threads=4
+#   nbrs run workload=examples/workloads/getting_started/basic_workload.yaml cycles=10
 
 description: |
   A basic workload with schema setup and main read/write operations.

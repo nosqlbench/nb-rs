@@ -24,8 +24,8 @@ support:
 These capabilities are needed for realistic service simulation
 workloads. The design should generalize the stanza contract to
 allow non-uniform execution while preserving the current model as
-the default (simple, deterministic) case. This is a separate
-design discussion — see memos when available.
+the default (simple, deterministic) case. See
+`docs/memos/05_dynamic_stanza_execution.md` for the design.
 
 ---
 
@@ -49,7 +49,7 @@ ops:
 
 ### Stanza Isolation
 
-- Volatile ports reset at stanza boundaries
+- Capture inputs reset at stanza boundaries
 - Captures flow within a stanza (op A's output feeds op B)
 - Captures do NOT leak across stanza boundaries
 - Each fiber processes one stanza at a time
@@ -139,3 +139,116 @@ search) in a single YAML file, selected at runtime.
 Filtered ops retain their original ratios. A 4:1 read:write
 workload filtered to `type:read` produces a sequence of all
 reads with no writes.
+
+---
+
+## Phased Execution
+
+A workload can define multiple **phases** — sequential execution
+stages with independent cycle counts, concurrency, and op sets.
+Phases share a single compiled GK program.
+
+### YAML Structure
+
+```yaml
+params:
+  dataset: sift1m
+
+bindings: |
+  inputs := (cycle)
+  train_count := vector_count("{dataset}")
+  dim := vector_dim("{dataset}")
+
+scenarios:
+  default:
+    - schema
+    - rampup
+    - search
+
+phases:
+  schema:
+    cycles: 1
+    concurrency: 1
+    ops:
+      create_table:
+        raw: "CREATE TABLE IF NOT EXISTS ..."
+
+  rampup:
+    cycles: "{train_count}"
+    concurrency: 100
+    ops:
+      insert:
+        stmt: "INSERT INTO t (id, vec) VALUES ({cycle}, {base_vec})"
+
+  search:
+    cycles: 10000
+    concurrency: 50
+    rate: 5000
+    ops:
+      ann_query:
+        stmt: "SELECT id FROM t ORDER BY vec ANN OF {query_vec} LIMIT 100"
+```
+
+### Scenarios
+
+A scenario is a named ordered list of phase names:
+
+```yaml
+scenarios:
+  default:    [schema, rampup, search]
+  quick:      [schema, rampup_small]
+```
+
+CLI: `nbrs run workload.yaml scenario=quick`. Default is
+`default`. If no `scenarios:` section exists, all phases run
+in YAML definition order.
+
+### Phase Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `cycles` | u64 or `"{gk_const}"` | stanza length | Total stanzas to execute |
+| `concurrency` | usize | 1 | Async fibers |
+| `rate` | f64 | unlimited | Ops/sec rate limit |
+| `adapter` | string | inherited from CLI | Override adapter |
+| `errors` | string | `".*:warn,counter"` | Error routing spec |
+| `tags` | string | — | Tag filter to select from top-level ops |
+| `ops` | map | — | Inline ops for this phase |
+
+Phases can define ops **inline** or select from top-level ops
+via **tag filter**. Inline ops take precedence.
+
+### GK Program Sharing
+
+All phases share one compiled GK program. Benefits:
+- Dataset handles loaded once
+- Constant folding computed once
+- Output namespace unified across phases
+- GK config expressions (`cycles: "{train_count}"`) resolve
+  from the shared program's folded constants
+
+### Execution Model
+
+```
+for phase_name in scenario:
+    phase = phases[phase_name]
+    ops = resolve_ops(phase)        // inline or tag-filtered
+    config = ActivityConfig { cycles, concurrency, rate, ... }
+    activity = Activity::new(config, ops)
+    activity.run_with_driver(adapter, program.clone()).await
+    // blocks until phase completes
+```
+
+Each phase runs to completion before the next starts. Each
+phase gets its own fiber pool, cycle counter, and rate limiter.
+
+### Stanza Isolation Across Phases
+
+Capture inputs reset at stanza boundaries within a phase.
+Between phases, all state resets — each phase starts with
+fresh fiber builders from the shared program.
+
+### Backward Compatibility
+
+Workloads without `phases:` or `scenarios:` run as a single
+implicit phase with all ops — identical to the non-phased model.

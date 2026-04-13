@@ -160,6 +160,134 @@ impl OpDispenser for TraversingDispenser {
     }
 }
 
+/// Wraps an inner OpDispenser with a conditional check.
+///
+/// Evaluates a named field in `ResolvedFields` before executing.
+/// If the field is falsy (0, 0.0, false, empty string, None), the
+/// op is skipped — no inner execution, no adapter call. Returns
+/// `OpResult::skipped()`.
+///
+/// The condition field must be included in the resolved fields
+/// (added via `extra_bindings` during compilation).
+pub struct ConditionalDispenser {
+    inner: Arc<dyn OpDispenser>,
+    /// The name of the resolved field to check.
+    condition_field: String,
+    /// Metrics reference for counting skips.
+    metrics: Arc<super::activity::ActivityMetrics>,
+}
+
+impl ConditionalDispenser {
+    /// Wrap an inner dispenser with a condition check.
+    ///
+    /// `condition_field` is the GK output name that will appear in
+    /// the resolved fields. If the op template has no `if:` field,
+    /// don't wrap — just use the inner dispenser directly.
+    pub fn wrap(
+        inner: Arc<dyn OpDispenser>,
+        condition_field: &str,
+        metrics: Arc<super::activity::ActivityMetrics>,
+    ) -> Arc<dyn OpDispenser> {
+        Arc::new(Self {
+            inner,
+            condition_field: condition_field.to_string(),
+            metrics,
+        })
+    }
+}
+
+/// Test whether a resolved field value is truthy.
+fn is_truthy(value: &nb_variates::node::Value) -> bool {
+    match value {
+        nb_variates::node::Value::None => false,
+        nb_variates::node::Value::U64(v) => *v != 0,
+        nb_variates::node::Value::F64(v) => *v != 0.0,
+        nb_variates::node::Value::Bool(v) => *v,
+        nb_variates::node::Value::Str(s) => !s.is_empty(),
+        _ => true,
+    }
+}
+
+impl OpDispenser for ConditionalDispenser {
+    fn execute<'a>(
+        &'a self,
+        cycle: u64,
+        fields: &'a ResolvedFields,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        Box::pin(async move {
+            // Check condition field in resolved values
+            if let Some(value) = fields.get_value(&self.condition_field) {
+                if !is_truthy(value) {
+                    self.metrics.skips_total.inc();
+                    return Ok(OpResult::skipped());
+                }
+            }
+            // Condition truthy (or field missing) — execute normally.
+            // Strip the condition field from resolved values so the
+            // adapter doesn't see internal fields in its output.
+            let stripped = fields.without(&self.condition_field);
+            self.inner.execute(cycle, &stripped).await
+        })
+    }
+}
+
+/// Wraps an inner OpDispenser with a per-cycle delay.
+///
+/// Reads a named field from `ResolvedFields` as a delay in
+/// nanoseconds (u64) or milliseconds (f64), sleeps for that
+/// duration, then delegates to the inner dispenser. This models
+/// GK-driven latency injection — the delay varies per cycle
+/// based on the GK binding.
+///
+/// The delay field is stripped from resolved values before the
+/// adapter sees them.
+pub struct ThrottleDispenser {
+    inner: Arc<dyn OpDispenser>,
+    /// The name of the resolved field containing the delay.
+    delay_field: String,
+}
+
+impl ThrottleDispenser {
+    /// Wrap an inner dispenser with a per-cycle delay.
+    ///
+    /// `delay_field` is a GK output name that produces the delay.
+    /// - u64 values are interpreted as nanoseconds
+    /// - f64 values are interpreted as milliseconds
+    pub fn wrap(
+        inner: Arc<dyn OpDispenser>,
+        delay_field: &str,
+    ) -> Arc<dyn OpDispenser> {
+        Arc::new(Self {
+            inner,
+            delay_field: delay_field.to_string(),
+        })
+    }
+}
+
+impl OpDispenser for ThrottleDispenser {
+    fn execute<'a>(
+        &'a self,
+        cycle: u64,
+        fields: &'a ResolvedFields,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        Box::pin(async move {
+            // Read delay from resolved fields
+            if let Some(value) = fields.get_value(&self.delay_field) {
+                let nanos = match value {
+                    nb_variates::node::Value::U64(ns) => *ns,
+                    nb_variates::node::Value::F64(ms) => (*ms * 1_000_000.0) as u64,
+                    _ => 0,
+                };
+                if nanos > 0 {
+                    tokio::time::sleep(std::time::Duration::from_nanos(nanos)).await;
+                }
+            }
+            let stripped = fields.without(&self.delay_field);
+            self.inner.execute(cycle, &stripped).await
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

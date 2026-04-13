@@ -37,7 +37,7 @@ impl GkKernel {
     ) -> Self {
         let coord_count = input_names.len();
         let input_defs: Vec<InputDef> = input_names.into_iter()
-            .map(|name| InputDef { name, default: Value::U64(0) })
+            .map(|name| InputDef { name, default: Value::U64(0), port_type: crate::node::PortType::U64 })
             .collect();
         Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, None, false).unwrap()
     }

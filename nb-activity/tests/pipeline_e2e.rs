@@ -112,6 +112,7 @@ impl OpDispenser for RecordingDispenser {
             Ok(OpResult {
                 body: Some(Box::new(body)),
                 captures: HashMap::new(),
+                skipped: false,
             })
         })
     }

@@ -224,9 +224,8 @@ async fn run_command(args: &[String]) {
             };
             Arc::new(StdoutAdapter::with_config(StdoutConfig {
                 filename: params.get("filename").cloned().unwrap_or("stdout".into()),
-                newline: true,
                 format,
-                fields_filter: Vec::new(),
+                ..Default::default()
             }))
         }
         "model" => {
@@ -234,10 +233,8 @@ async fn run_command(args: &[String]) {
             use nb_adapter_stdout::{StdoutConfig, StdoutFormat};
             Arc::new(ModelAdapter::with_config(ModelConfig {
                 stdout: StdoutConfig {
-                    filename: "stdout".into(),
-                    newline: true,
                     format: StdoutFormat::Assignments,
-                fields_filter: Vec::new(),
+                    ..Default::default()
                 },
                 diagnose: args.iter().any(|a| a == "--diagnose"),
             }))

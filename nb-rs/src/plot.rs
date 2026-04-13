@@ -96,8 +96,8 @@ fn parse_plot_args(args: &[String]) -> Result<PlotArgs, String> {
             pa.yscale = Some(v.parse().map_err(|_| format!("invalid yscale: '{v}'"))?);
         } else if let Some(v) = arg.strip_prefix("--mode=") {
             match v {
-                "plot" | "histogram" => pa.mode = v.to_string(),
-                other => return Err(format!("unknown --mode='{other}' (supported: plot, histogram)")),
+                "plot" | "histogram" | "parametric" | "xy" => pa.mode = v.to_string(),
+                other => return Err(format!("unknown --mode='{other}' (supported: plot, histogram, parametric)")),
             }
         } else if arg == "--no-color" {
             pa.no_color = true;
@@ -374,7 +374,7 @@ pub fn plot_command(args: &[String]) {
     if topic != "gk" {
         eprintln!("Usage: nbrs plot gk <expr|file.gk> [cycles=N] [output=name]");
         eprintln!("       [--width=N] [--height=N] [--max-labels=N] [--no-color]");
-        eprintln!("       [--xscale=F] [--yscale=F] [--mode=plot|histogram]");
+        eprintln!("       [--xscale=F] [--yscale=F] [--mode=plot|histogram|parametric]");
         std::process::exit(1);
     }
 
@@ -506,6 +506,82 @@ pub fn plot_command(args: &[String]) {
     // ── ANSI helpers ──────────────────────────────────────────────
     let use_color = is_tty && !pa.no_color;
     let reset = if use_color { "\x1b[0m" } else { "" };
+
+    // ── Parametric (XY) mode ──────────────────────────────────────
+    if pa.mode == "parametric" || pa.mode == "xy" {
+        // Take first two numeric outputs as X and Y
+        let numeric_outputs: Vec<(&str, &[f64])> = output_data.iter()
+            .filter_map(|(name, data)| match data {
+                OutputData::Numeric(vals) => Some((name.as_str(), vals.as_slice())),
+                _ => None,
+            })
+            .collect();
+
+        if numeric_outputs.len() < 2 {
+            eprintln!("error: parametric mode requires at least 2 numeric outputs (got {})", numeric_outputs.len());
+            std::process::exit(1);
+        }
+
+        let (x_name, x_vals) = numeric_outputs[0];
+        let (y_name, y_vals) = numeric_outputs[1];
+        let n = x_vals.len().min(y_vals.len());
+
+        let x_min = x_vals[..n].iter().cloned().fold(f64::MAX, f64::min);
+        let x_max = x_vals[..n].iter().cloned().fold(f64::MIN, f64::max);
+        let y_min = y_vals[..n].iter().cloned().fold(f64::MAX, f64::min);
+        let y_max = y_vals[..n].iter().cloned().fold(f64::MIN, f64::max);
+        let x_range = if (x_max - x_min).abs() < 1e-10 { 1.0 } else { x_max - x_min };
+        let y_range = if (y_max - y_min).abs() < 1e-10 { 1.0 } else { y_max - y_min };
+
+        let chart_w = plot_w;
+        let chart_h = band_h.max(20);
+
+        // Braille scatter: 2 dots wide × 4 dots tall per character cell
+        let dot_w = chart_w * 2;
+        let dot_h = chart_h * 4;
+        let mut grid = vec![vec![false; dot_w]; dot_h];
+
+        for i in 0..n {
+            let dx = ((x_vals[i] - x_min) / x_range * (dot_w - 1) as f64) as usize;
+            let dy = ((y_vals[i] - y_min) / y_range * (dot_h - 1) as f64) as usize;
+            let dx = dx.min(dot_w - 1);
+            let dy = dy.min(dot_h - 1);
+            grid[dot_h - 1 - dy][dx] = true; // flip Y so up is positive
+        }
+
+        // Render braille
+        let color_owned = if use_color { truecolor_fg(0) } else { String::new() };
+        let color = color_owned.as_str();
+
+        let detail = format!("{x_name} vs {y_name}, {n} points");
+        print_header(&format!("{x_name} × {y_name}"), &detail, plot_w, color, reset);
+
+        for row in (0..dot_h).step_by(4) {
+            let mut line = String::new();
+            for col in (0..dot_w).step_by(2) {
+                let mut dots = 0u8;
+                // Braille dot mapping (Unicode offset from 0x2800):
+                // col+0,row+0 = bit 0   col+1,row+0 = bit 3
+                // col+0,row+1 = bit 1   col+1,row+1 = bit 4
+                // col+0,row+2 = bit 2   col+1,row+2 = bit 5
+                // col+0,row+3 = bit 6   col+1,row+3 = bit 7
+                for (dr, bits) in [(0, [0, 3]), (1, [1, 4]), (2, [2, 5]), (3, [6, 7])] {
+                    let r = row + dr;
+                    if r < dot_h {
+                        if col < dot_w && grid[r][col] { dots |= 1 << bits[0]; }
+                        if col + 1 < dot_w && grid[r][col + 1] { dots |= 1 << bits[1]; }
+                    }
+                }
+                line.push(char::from_u32(0x2800 + dots as u32).unwrap_or(' '));
+            }
+            println!("{color}{line}{reset}");
+        }
+
+        // Axis labels
+        println!("{color}  X: [{x_min:.4}, {x_max:.4}]  Y: [{y_min:.4}, {y_max:.4}]{reset}");
+        println!();
+        return;
+    }
 
     // ── Render ────────────────────────────────────────────────────
     let mut color_idx = 0usize;

@@ -446,6 +446,35 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "2D simplex noise: faster than Perlin for 2D+ with fewer directional artifacts.\nOutput is f64 in [-1, 1]. Uses a simplex grid instead of a square grid.\nParameters:\n  x         — u64 x-coordinate wire input\n  y         — u64 y-coordinate wire input\n  seed      — permutation table seed (u64)\n  frequency — spatial frequency (f64)\nExample: simplex_2d(row, col, 99, 0.1)",
         },
+        FuncSig {
+            name: "fractal_noise_1d", category: C::Noise,
+            outputs: 1, description: "1D fractal Brownian motion",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true },
+                ParamSpec { name: "frequency", slot_type: SlotType::ConstF64, required: true },
+                ParamSpec { name: "octaves", slot_type: SlotType::ConstU64, required: false },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "1D fractal Brownian motion: layered Perlin noise with decreasing\namplitude at each octave. Produces rich, natural-looking signals.\nOutput is f64, roughly in [-1, 1].\nParameters:\n  input     — u64 wire input\n  seed      — permutation table seed (u64)\n  frequency — base spatial frequency (f64)\n  octaves   — number of noise layers (u64, default 4)\nExample: fractal_noise_1d(cycle, 42, 0.02, 4)",
+        },
+        FuncSig {
+            name: "fractal_noise_2d", category: C::Noise,
+            outputs: 1, description: "2D fractal Brownian motion",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "x", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "y", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "seed", slot_type: SlotType::ConstU64, required: true },
+                ParamSpec { name: "frequency", slot_type: SlotType::ConstF64, required: true },
+                ParamSpec { name: "octaves", slot_type: SlotType::ConstU64, required: false },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "2D fractal Brownian motion: layered Perlin noise in 2D.\nProduces terrain-like spatial variation.\nParameters:\n  x, y      — u64 coordinate wire inputs\n  seed      — permutation table seed (u64)\n  frequency — base spatial frequency (f64)\n  octaves   — number of noise layers (u64, default 4)\nExample: fractal_noise_2d(row, col, 42, 0.05, 4)",
+        },
     ]
 }
 
@@ -465,6 +494,16 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
         "simplex_2d" => Some(Ok(Box::new(SimplexNoise2D::new(
             consts.first().map(|c| c.as_u64()).unwrap_or(0),
             consts.get(1).map(|c| c.as_f64()).unwrap_or(0.01),
+        )))),
+        "fractal_noise_1d" => Some(Ok(Box::new(FractalNoise1D::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
+            consts.get(1).map(|c| c.as_f64()).unwrap_or(0.02),
+            consts.get(2).map(|c| c.as_u64() as u32).unwrap_or(4),
+        )))),
+        "fractal_noise_2d" => Some(Ok(Box::new(FractalNoise2D::new(
+            consts.first().map(|c| c.as_u64()).unwrap_or(0),
+            consts.get(1).map(|c| c.as_f64()).unwrap_or(0.02),
+            consts.get(2).map(|c| c.as_u64() as u32).unwrap_or(4),
         )))),
         _ => None,
     }

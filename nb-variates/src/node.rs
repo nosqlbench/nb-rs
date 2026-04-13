@@ -2,31 +2,84 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Core types for GK nodes: values, ports, metadata, and the evaluation trait.
+//!
+//! The GK type system has three layers:
+//!
+//! 1. **Runtime values** ([`Value`]) — the enum that flows through
+//!    the DAG at evaluation time. Every buffer slot holds a `Value`.
+//!
+//! 2. **Port types** ([`PortType`]) — compile-time type tags on
+//!    node input/output ports. The assembler validates that wiring
+//!    connects compatible types and auto-inserts adapters when not.
+//!
+//! 3. **Slot types** ([`SlotType`]) — distinguishes wire inputs
+//!    (cycle-time values) from constant parameters (baked at
+//!    construction). The DSL compiler uses these to decide whether
+//!    a literal in a function call is a wire promotion or a const arg.
+//!
+//! The [`GkNode`] trait is what every node function implements.
+//! A node declares its port metadata via [`NodeMeta`] and evaluates
+//! via `eval(&[Value], &mut [Value])`.
 
 use std::fmt;
 
 /// A value flowing through the DAG at runtime.
 ///
-/// Phase 1 uses this enum for dynamic value representation.
-/// The assembly phase guarantees type correctness, so runtime
-/// code can safely unwrap to the expected variant.
+/// This is the universal runtime representation for all GK data.
+/// Every node input and output is a `Value`. The variant determines
+/// the data type:
 ///
-/// The `Ext` variant carries adapter-contributed types via the
-/// `ReflectedValue` trait. Any consumer can display, serialize,
-/// or inspect an Ext value. The producing adapter (or any code
-/// with the concrete type in scope) can downcast via `as_any()`.
+/// | Variant | Rust type | GK DSL type | Usage |
+/// |---------|-----------|-------------|-------|
+/// | `U64` | `u64` | `u64` | Cycle counters, hashes, IDs, bitwise ops |
+/// | `F64` | `f64` | `f64` | Floating point math, distributions, noise |
+/// | `Bool` | `bool` | `bool` | Conditions, flags |
+/// | `Str` | `String` | `String` | Names, formatted output, templates |
+/// | `Bytes` | `Vec<u8>` | `bytes` | Raw binary data, digests |
+/// | `Json` | `serde_json::Value` | `json` | Structured data, vectors |
+/// | `Ext` | `Box<dyn ReflectedValue>` | adapter-specific | CQL UUIDs, timestamps, etc. |
+/// | `None` | — | — | Uninitialized buffer slot (never flows through wiring) |
+///
+/// The assembly phase validates type correctness at compile time.
+/// Runtime code can safely use `as_u64()`, `as_f64()`, etc. — a
+/// type mismatch is a compiler bug, not a user error.
+///
+/// `Ext` enables adapter-contributed types (e.g., `uuid::Uuid` from
+/// the CQL adapter) to flow through the DAG without the kernel
+/// knowing the concrete type. Any consumer can display, serialize,
+/// or inspect an Ext value via [`ReflectedValue`]. The producing
+/// adapter can downcast via `as_any()`.
 #[derive(Debug, Clone)]
 pub enum Value {
+    /// Unsigned 64-bit integer. The workhorse type for deterministic
+    /// data generation: hash outputs, modular arithmetic, bit
+    /// manipulation, cycle counters, primary keys.
     U64(u64),
+    /// IEEE 754 double-precision float. Used for distributions,
+    /// noise functions, trigonometry, interpolation, and any
+    /// computation that needs fractional precision.
     F64(f64),
+    /// Boolean. Used for conditional ops (`if:` field), selection
+    /// nodes, and flag computation.
     Bool(bool),
+    /// Heap-allocated string. Used for formatted output, weighted
+    /// string selection, template interpolation, and any value
+    /// that will appear directly in an op statement.
     Str(String),
+    /// Raw byte buffer. Used for cryptographic digests, binary
+    /// encoding/decoding, and byte-level data generation.
     Bytes(Vec<u8>),
+    /// Structured JSON value. Used for vector representations
+    /// (JSON arrays), complex structured data, and JSON merge ops.
     Json(serde_json::Value),
     /// Adapter-contributed reflected value. Carries type info and
     /// standard access methods (display, JSON, string, bytes).
+    /// Enables protocol-native types (UUIDs, timestamps, inet
+    /// addresses) to flow through GK without boxing to strings.
     Ext(Box<dyn ReflectedValue>),
-    /// Sentinel for uninitialized buffer slots.
+    /// Sentinel for uninitialized buffer slots. Never appears in
+    /// wiring — only in freshly allocated state buffers before
+    /// first evaluation.
     None,
 }
 
@@ -187,20 +240,61 @@ impl Value {
     }
 }
 
-/// The type of a port on a GK node.
+/// Compile-time type tag for a port on a GK node.
+///
+/// **Narrow types and runtime storage:**
+///
+/// `PortType` includes narrow integer and float variants (U32, I32,
+/// I64, F32) that have no corresponding `Value` variant. At runtime,
+/// narrow values are stored inside `Value::U64` (for integers) or
+/// `Value::F64` (for f32), with the assumption that the bits fit:
+///
+/// - `u32` → zero-extended in `Value::U64`
+/// - `i32` → sign-extended or bit-reinterpreted in `Value::U64`
+/// - `i64` → bit-reinterpreted in `Value::U64`
+/// - `f32` → losslessly widened in `Value::F64`
+///
+/// The narrow `PortType` variants exist for compile-time type
+/// checking and auto-adapter insertion (`U32ToU64`, `F32ToF64`).
+/// P2/P3 compiled kernels use flat u64 buffers where this packing
+/// is natural. The `Value` enum stays small — no combinatorial
+/// explosion of narrow variant types.
+///
+/// Every input and output port declares its `PortType`. The assembler
+/// uses these to validate wiring and auto-insert type adapters (e.g.,
+/// `u64 → f64` widening). At runtime, the corresponding [`Value`]
+/// variant is used.
+///
+/// **Widening rules** (auto-inserted by the assembler):
+/// - `U32 → U64`, `I32 → I64`, `F32 → F64` (lossless widening)
+/// - `U64 → F64` (lossless for values < 2^53)
+/// - `Bool → U64` (true=1, false=0)
+/// - Any type → `Str` (via display conversion)
+///
+/// **Narrowing** is never implicit — use explicit cast functions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortType {
+    /// 64-bit unsigned integer. The primary numeric type.
     U64,
+    /// 64-bit IEEE 754 float. Used for math, distributions, noise.
     F64,
+    /// 32-bit unsigned integer. Widens to U64 automatically.
     U32,
+    /// 32-bit signed integer. Widens to I64 automatically.
     I32,
+    /// 64-bit signed integer.
     I64,
+    /// 32-bit IEEE 754 float. Widens to F64 automatically.
     F32,
+    /// Boolean (true/false). Widens to U64 (1/0).
     Bool,
+    /// Heap-allocated string. Any type auto-converts to Str.
     Str,
+    /// Raw byte buffer.
     Bytes,
+    /// Structured JSON value.
     Json,
-    /// Adapter-contributed reflected type.
+    /// Adapter-contributed reflected type (e.g., CQL UUID).
     Ext,
 }
 

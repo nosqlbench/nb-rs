@@ -23,6 +23,9 @@ pub struct GkProgram {
     coord_count: usize,
     /// Map from output variate name to `(node_index, output_port_index)`.
     pub(crate) output_map: HashMap<String, (usize, usize)>,
+    /// Outputs in declaration order: (name, node_index, port_index).
+    /// Stable ordering for positional access.
+    output_list: Vec<(String, usize, usize)>,
     /// Per-node input provenance bitmask. Bit i is set if the node
     /// transitively depends on graph input i.
     pub(crate) input_provenance: Vec<u64>,
@@ -56,12 +59,13 @@ impl GkProgram {
     ) -> Self {
         let coord_count = input_names.len();
         let input_defs: Vec<InputDef> = input_names.into_iter()
-            .map(|name| InputDef { name, default: Value::U64(0) })
+            .map(|name| InputDef { name, default: Value::U64(0), port_type: crate::node::PortType::U64 })
             .collect();
         let input_provenance = Self::compute_provenance(&nodes, &wiring);
         let input_dependents = Self::compute_dependents(&input_provenance, input_defs.len());
+        let output_list = Self::build_output_list(&output_map);
         Self {
-            nodes, wiring, input_defs, coord_count, output_map,
+            nodes, wiring, input_defs, coord_count, output_map, output_list,
             input_provenance, input_dependents,
         }
     }
@@ -78,10 +82,21 @@ impl GkProgram {
     ) -> Self {
         let input_provenance = Self::compute_provenance(&nodes, &wiring);
         let input_dependents = Self::compute_dependents(&input_provenance, input_defs.len());
+        let output_list = Self::build_output_list(&output_map);
         Self {
-            nodes, wiring, input_defs, coord_count, output_map,
+            nodes, wiring, input_defs, coord_count, output_map, output_list,
             input_provenance, input_dependents,
         }
+    }
+
+    /// Build ordered output list from the output map.
+    /// Sorted by node index (topological order), then port index.
+    fn build_output_list(output_map: &HashMap<String, (usize, usize)>) -> Vec<(String, usize, usize)> {
+        let mut list: Vec<(String, usize, usize)> = output_map.iter()
+            .map(|(name, &(ni, pi))| (name.clone(), ni, pi))
+            .collect();
+        list.sort_by_key(|(_, ni, pi)| (*ni, *pi));
+        list
     }
 
     /// Invert provenance into per-input dependent node lists.
@@ -198,14 +213,35 @@ impl GkProgram {
         self.input_defs.iter().position(|d| d.name == name)
     }
 
-    /// Return the names of all available output variates.
+    /// Number of declared outputs.
+    pub fn output_count(&self) -> usize {
+        self.output_list.len()
+    }
+
+    /// Output name at index (declaration order).
+    pub fn output_name(&self, idx: usize) -> &str {
+        &self.output_list[idx].0
+    }
+
+    /// Return all output names in declaration order.
     pub fn output_names(&self) -> Vec<&str> {
-        self.output_map.keys().map(|s| s.as_str()).collect()
+        self.output_list.iter().map(|(n, _, _)| n.as_str()).collect()
     }
 
     /// Resolve an output name to its (node_index, port_index).
     pub fn resolve_output(&self, name: &str) -> Option<(usize, usize)> {
         self.output_map.get(name).copied()
+    }
+
+    /// Resolve an output index to its (node_index, port_index).
+    pub fn resolve_output_by_index(&self, idx: usize) -> (usize, usize) {
+        let (_, ni, pi) = &self.output_list[idx];
+        (*ni, *pi)
+    }
+
+    /// Find the output index for a name (for building memoized getters).
+    pub fn output_index(&self, name: &str) -> Option<usize> {
+        self.output_list.iter().position(|(n, _, _)| n == name)
     }
 
     /// Get the provenance bitmask for a node by index.

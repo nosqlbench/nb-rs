@@ -35,10 +35,15 @@ ParsedOp[]
 Wrappers compose outside-in. The executor calls the outermost:
 
 ```
-ValidatingDispenser  (outermost — runs after inner completes)
-  └── TraversingDispenser  (counts elements/bytes, extracts captures)
-        └── raw OpDispenser  (adapter-specific execution)
+ConditionalDispenser   (outermost — skips if `if:` is falsy)
+  └── ValidatingDispenser  (assertions, relevancy checks)
+        └── TraversingDispenser  (counts elements/bytes, extracts captures)
+              └── raw OpDispenser  (adapter-specific execution)
 ```
+
+`ConditionalDispenser` is only applied when the op template
+declares an `if:` field. Ops without conditions skip this
+wrapper entirely.
 
 Traversal completes before validation sees the result. Captures
 are populated before assertions check them.
@@ -52,17 +57,19 @@ Per cycle within a fiber:
 ```
 1. Rate limit    ── acquire token (if rate= configured)
 2. Select        ── op_sequence.get_with_index(cycle) → (idx, template)
-3. Resolve       ── fiber.set_inputs([cycle])
-                    fiber.resolve_with_extras(template, extras[idx])
-                    → ResolvedFields (from GK outputs, captures, globals)
-4. Execute       ── dispenser.execute(cycle, &fields)
-                    → ValidatingDispenser
-                      → TraversingDispenser
-                        → adapter dispenser (CQL/HTTP/stdout)
+3. Set inputs    ── fiber.set_inputs([cycle])
+4. Resolve       ── fiber.resolve_with_extras(template, extras[idx])
+                    → ResolvedFields (from GK outputs, captures)
+5. Execute       ── dispenser.execute(cycle, &fields)
+                    → ConditionalDispenser (checks `if:`, may skip)
+                      → ValidatingDispenser (assertions, relevancy)
+                        → TraversingDispenser (counts, captures)
+                          → adapter dispenser (CQL/HTTP/stdout)
                     → Result<OpResult, ExecutionError>
-5. Metrics       ── service_time, wait_time, response_time
-6. Captures      ── store result.captures in fiber.capture_context
-7. Error         ── route through ErrorRouter if Err
+6. Metrics       ── service_time, wait_time, response_time
+                    (skipped ops: only cycles_total + skips_total)
+7. Captures      ── store result.captures via fiber.capture()
+8. Error         ── route through ErrorRouter if Err
 ```
 
 **Design note:** `resolve_with_extras` exists because validation
@@ -70,6 +77,48 @@ needs GK outputs not referenced in op fields. When the GK kernel
 becomes the unified state holder (sysref 10), all outputs would
 be available through a single resolution path, eliminating
 the "extras" mechanism.
+
+### Conditional Op Execution
+
+An op template can declare an `if` field that names a GK
+binding. The `ConditionalDispenser` wrapper evaluates the
+condition from the resolved fields and skips the op if falsy.
+
+```yaml
+ops:
+  insert_default:
+    if: should_insert
+    stmt: "INSERT INTO t (id, val) VALUES ({id}, 'default')"
+```
+
+**Implementation:** The condition is resolved as part of normal
+GK evaluation (included in `extra_bindings` for the op). The
+`ConditionalDispenser` checks `fields.get_value(condition_name)`
+and returns `OpResult::skipped()` if falsy. The condition field
+is stripped from resolved fields before the inner dispensers see
+it, so adapters never see internal condition values.
+
+**Truthiness:** A value is truthy unless it is `0` (u64),
+`0.0` (f64), `false` (bool), an empty string, or `None`.
+
+**Metrics:** `cycles_total = success + skipped + errors`.
+Skipped ops increment both `cycles_total` and `skips_total`.
+No timing metrics (service/wait/response) recorded for skips.
+
+**Captures:** A skipped op produces no captures. Downstream ops
+that depend on captures from a skipped op will see the default
+input values (or whatever was captured by earlier ops).
+
+**Zero cost when unused:** Ops without an `if` field don't get
+a `ConditionalDispenser` wrapper — no branch, no overhead.
+
+**Use cases:**
+- Conditional insert: `if: is_empty` (skip if SELECT found rows)
+- Periodic check: `if: is_hundredth` where
+  `is_hundredth := mod(cycle, 100)` (runs every 100 cycles,
+  skips when mod=0)
+- Feature flag: `if: enable_writes` (workload param controls
+  whether writes execute)
 
 ### Dependency Group Processing
 

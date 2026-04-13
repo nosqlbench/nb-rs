@@ -1,0 +1,24 @@
+# Conditional op execution via `if:` field.
+#
+# The `if` field names a GK binding that is evaluated per cycle.
+# If the binding is falsy (0, false, empty string), the op is skipped.
+#
+# Usage:
+#   nbrs run workload=examples/conditional_ops.yaml cycles=10
+
+bindings: |
+  inputs := (cycle)
+  is_even := mod(cycle, 2)
+  is_third := mod(cycle, 3)
+
+ops:
+  always:
+    stmt: "cycle={cycle} (always)"
+
+  even_only:
+    if: is_even
+    stmt: "cycle={cycle} (even: mod!=0)"
+
+  every_third:
+    if: is_third
+    stmt: "cycle={cycle} (third: mod!=0)"

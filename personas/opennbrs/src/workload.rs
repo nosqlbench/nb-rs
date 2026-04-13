@@ -94,6 +94,8 @@ pub fn generate_ops(
             tags: api_op.tags.iter()
                 .map(|t| (t.clone(), "true".into()))
                 .collect(),
+            condition: None,
+            delay: None,
         };
         parsed_ops.push(parsed);
     }

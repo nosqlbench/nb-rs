@@ -57,9 +57,8 @@ ops:
     let path = std::env::temp_dir().join("nb_e2e_test.txt");
     let adapter: Arc<dyn DriverAdapter> = Arc::new(StdoutAdapter::with_config(StdoutConfig {
         filename: path.to_str().unwrap().into(),
-        newline: true,
         format: StdoutFormat::Statement,
-                fields_filter: Vec::new(),
+        ..Default::default()
     }));
 
     activity.run_with_driver(adapter, program).await;
@@ -113,9 +112,8 @@ ops:
     let path = std::env::temp_dir().join("nb_e2e_hash_test.txt");
     let adapter: Arc<dyn DriverAdapter> = Arc::new(StdoutAdapter::with_config(StdoutConfig {
         filename: path.to_str().unwrap().into(),
-        newline: true,
         format: StdoutFormat::Statement,
-                fields_filter: Vec::new(),
+        ..Default::default()
     }));
 
     activity.run_with_driver(adapter, program).await;
@@ -169,9 +167,8 @@ ops:
     let path = std::env::temp_dir().join("nb_e2e_weighted_test.txt");
     let adapter: Arc<dyn DriverAdapter> = Arc::new(StdoutAdapter::with_config(StdoutConfig {
         filename: path.to_str().unwrap().into(),
-        newline: true,
         format: StdoutFormat::Statement,
-                fields_filter: Vec::new(),
+        ..Default::default()
     }));
 
     activity.run_with_driver(adapter, program).await;
@@ -220,9 +217,8 @@ ops:
     let path = std::env::temp_dir().join("nb_e2e_json_test.txt");
     let adapter: Arc<dyn DriverAdapter> = Arc::new(StdoutAdapter::with_config(StdoutConfig {
         filename: path.to_str().unwrap().into(),
-        newline: true,
         format: StdoutFormat::Json,
-                fields_filter: Vec::new(),
+        ..Default::default()
     }));
 
     activity.run_with_driver(adapter, program).await;

@@ -75,15 +75,18 @@ pub enum WireSource {
 /// Definition of a named input to the GK graph.
 ///
 /// All inputs — coordinates and captures — are defined uniformly.
-/// Coordinates default to `Value::U64(0)`, captures to a
-/// user-specified default (typically empty string).
+/// Coordinates default to `Value::U64(0)`, captures default to
+/// `Value::None` (unset until a capture writes to them).
 #[derive(Debug, Clone)]
 pub struct InputDef {
     /// Input name (e.g., "cycle", "username").
     pub name: String,
     /// Default value. Coordinates default to U64(0), captures
-    /// to their declared default.
+    /// to their declared default (or None if unset).
     pub default: Value,
+    /// The declared port type for this input. Used by the assembler
+    /// for type checking when wiring nodes to this input.
+    pub port_type: crate::node::PortType,
 }
 
 #[cfg(test)]
@@ -98,9 +101,9 @@ mod tests {
         let program = Arc::new(GkProgram::with_inputs(
             vec![], vec![],
             vec![
-                InputDef { name: "cycle".into(), default: Value::U64(0) },
-                InputDef { name: "balance".into(), default: Value::F64(0.0) },
-                InputDef { name: "auth_token".into(), default: Value::Str("anonymous".into()) },
+                InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::node::PortType::U64 },
+                InputDef { name: "balance".into(), default: Value::F64(0.0), port_type: crate::node::PortType::F64 },
+                InputDef { name: "auth_token".into(), default: Value::Str("anonymous".into()), port_type: crate::node::PortType::Str },
             ],
             1, // coord_count
             HashMap::new(),
@@ -128,8 +131,8 @@ mod tests {
         let program = Arc::new(GkProgram::with_inputs(
             vec![], vec![],
             vec![
-                InputDef { name: "cycle".into(), default: Value::U64(0) },
-                InputDef { name: "token".into(), default: Value::Str("anon".into()) },
+                InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::node::PortType::U64 },
+                InputDef { name: "token".into(), default: Value::Str("anon".into()), port_type: crate::node::PortType::Str },
             ],
             1,
             HashMap::new(),
@@ -149,8 +152,8 @@ mod tests {
         let program = Arc::new(GkProgram::with_inputs(
             vec![], vec![],
             vec![
-                InputDef { name: "cycle".into(), default: Value::U64(0) },
-                InputDef { name: "token".into(), default: Value::Str("anon".into()) },
+                InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::node::PortType::U64 },
+                InputDef { name: "token".into(), default: Value::Str("anon".into()), port_type: crate::node::PortType::Str },
             ],
             1,
             HashMap::new(),

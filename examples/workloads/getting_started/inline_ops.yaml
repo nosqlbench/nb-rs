@@ -1,0 +1,27 @@
+# inline_ops.yaml — Demonstrates inline op= expressions
+#
+# Inline expressions can use {{expr}} double-brace syntax,
+# {:=expr} explicit const form, or auto-detected {expr} when
+# the expression contains function calls or operators.
+#
+# Usage:
+#   nbrs run op='key={{hash(cycle)}} val={{mod(cycle,100)}}' cycles=5
+#   nbrs run op='3:read {{cycle}};1:write {{mod(hash(cycle),1000)}}' cycles=8
+#   nbrs run op='wave={{sin(to_f64(cycle) * 0.1)}}' cycles=10
+
+# This file documents the syntax — run the commands above directly.
+# The examples below use YAML workload syntax with equivalent features.
+
+bindings: |
+  inputs := (cycle)
+  hashed := hash(cycle)
+  user_id := mod(hashed, 1000000)
+
+ops:
+  # Ratio-weighted ops: 3 reads per 1 write
+  read:
+    ratio: 3
+    stmt: "SELECT * FROM users WHERE id={user_id}"
+  write:
+    ratio: 1
+    stmt: "INSERT INTO users (id, hash) VALUES ({user_id}, {hashed})"

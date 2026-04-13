@@ -69,6 +69,7 @@ pub struct ActivityMetrics {
     /// Distribution shape reveals incremental saturation.
     pub tries_histogram: Histogram,
     pub cycles_total: Counter,
+    pub skips_total: Counter,
     pub errors_total: Counter,
     pub stanzas_total: Counter,
     pub result_elements: Counter,
@@ -88,6 +89,7 @@ impl ActivityMetrics {
             result_success_time: Timer::new(labels.with("name", "result_success")),
             tries_histogram: Histogram::new(labels.with("name", "tries")),
             cycles_total: Counter::new(labels.with("name", "cycles_total")),
+            skips_total: Counter::new(labels.with("name", "skips_total")),
             errors_total: Counter::new(labels.with("name", "errors_total")),
             stanzas_total: Counter::new(labels.with("name", "stanzas_total")),
             result_elements: Counter::new(labels.with("name", "result_elements")),
@@ -154,6 +156,10 @@ impl ActivityMetrics {
                 Sample::Counter {
                     labels: self.cycles_total.labels().clone(),
                     value: self.cycles_total.get(),
+                },
+                Sample::Counter {
+                    labels: self.skips_total.labels().clone(),
+                    value: self.skips_total.get(),
                 },
                 Sample::Counter {
                     labels: self.errors_total.labels().clone(),
@@ -309,15 +315,48 @@ impl Activity {
                     let traversed = crate::wrappers::TraversingDispenser::wrap(
                         raw, template, traversal_stats.clone(),
                     );
-                    // Wrap with validation (outermost) — only if template declares it
-                    let (final_dispenser, vm) = crate::validation::ValidatingDispenser::wrap(
-                        traversed, template, &activity.labels,
+                    // Wrap with delay — only if template has `delay:`
+                    let throttled = if let Some(ref delay_name) = template.delay {
+                        let name = delay_name.trim()
+                            .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+                            .unwrap_or(delay_name.trim());
+                        crate::wrappers::ThrottleDispenser::wrap(traversed, name)
+                    } else {
+                        traversed
+                    };
+                    // Wrap with validation — only if template declares it
+                    let (validated, vm) = crate::validation::ValidatingDispenser::wrap(
+                        throttled, template, &activity.labels,
                     );
                     if let Some(vm) = vm {
                         validation_metrics.push(vm);
                     }
+                    // Wrap with condition check (outermost) — only if template has `if:`
+                    let final_dispenser = if let Some(ref cond) = template.condition {
+                        let cond_name = cond.trim()
+                            .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+                            .unwrap_or(cond.trim());
+                        crate::wrappers::ConditionalDispenser::wrap(
+                            validated, cond_name, activity.metrics.clone(),
+                        )
+                    } else {
+                        validated
+                    };
                     dispensers.push(final_dispenser);
-                    extra_bindings_per_template.push(validation::extra_bindings(template));
+
+                    // Collect extra bindings: validation + condition + delay
+                    let mut extras = validation::extra_bindings(template);
+                    for opt_field in [&template.condition, &template.delay] {
+                        if let Some(field) = opt_field {
+                            let name = field.trim()
+                                .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+                                .unwrap_or(field.trim());
+                            if !extras.contains(&name.to_string()) {
+                                extras.push(name.to_string());
+                            }
+                        }
+                    }
+                    extra_bindings_per_template.push(extras);
                 }
                 Err(e) => {
                     eprintln!("error: adapter.map_op failed for '{}': {e}", template.name);
@@ -542,7 +581,7 @@ async fn executor_task(
                         match dispenser.execute(cycle, fields).await {
                             Ok(result) => {
                                 let service_nanos = service_start.elapsed().as_nanos() as u64;
-                                return (true, service_nanos, tries, result.captures);
+                                return (true, service_nanos, tries, result.captures, result.skipped);
                             }
                             Err(e) => {
                                 let duration_nanos = service_start.elapsed().as_nanos() as u64;
@@ -559,7 +598,7 @@ async fn executor_task(
                                 }
 
                                 let service_nanos = service_start.elapsed().as_nanos() as u64;
-                                return (false, service_nanos, tries, std::collections::HashMap::new());
+                                return (false, service_nanos, tries, std::collections::HashMap::new(), false);
                             }
                         }
                     }
@@ -570,14 +609,19 @@ async fn executor_task(
 
             // Phase 3: Record metrics, store captures, track produced captures
             let mut _group_all_success = true;
-            for (i, (success, service_nanos, tries, captures)) in results.into_iter().enumerate() {
+            for (i, (success, service_nanos, tries, captures, skipped)) in results.into_iter().enumerate() {
+                activity.metrics.cycles_total.inc();
+                if skipped {
+                    // Skipped ops: counted in cycles_total + skips_total,
+                    // but no timing or captures recorded.
+                    continue;
+                }
                 let wait_nanos = window[i].3;
                 activity.metrics.service_time.record(service_nanos);
                 activity.metrics.wait_time.record(wait_nanos);
                 activity.metrics.response_time.record(service_nanos + wait_nanos);
                 activity.metrics.tries_histogram.record(tries as u64);
                 if success {
-                    activity.metrics.cycles_total.inc();
                     activity.metrics.result_success_time.record(service_nanos);
                     for (name, value) in captures {
                         available_captures.insert(name.clone());
@@ -628,7 +672,7 @@ mod tests {
         fn execute<'a>(&'a self, _cycle: u64, _fields: &'a ResolvedFields)
             -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
             self.count.fetch_add(1, Ordering::Relaxed);
-            Box::pin(async { Ok(OpResult { body: None, captures: HashMap::new() }) })
+            Box::pin(async { Ok(OpResult { body: None, captures: HashMap::new(), skipped: false }) })
         }
     }
 
@@ -677,7 +721,7 @@ mod tests {
                         retryable: true,
                     }))
                 } else {
-                    Ok(OpResult { body: None, captures: HashMap::new() })
+                    Ok(OpResult { body: None, captures: HashMap::new(), skipped: false })
                 }
             })
         }

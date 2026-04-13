@@ -559,6 +559,7 @@ mod tests {
         let result = OpResult {
             body: Some(Box::new(JsonBody(serde_json::json!({"name": "alice"})))),
             captures: HashMap::new(),
+            skipped: false,
         };
         let spec = AssertionSpec {
             field: "name".into(),
@@ -578,6 +579,7 @@ mod tests {
         let result = OpResult {
             body: Some(Box::new(JsonBody(serde_json::json!({"status": "ok"})))),
             captures: HashMap::new(),
+            skipped: false,
         };
         let spec = AssertionSpec {
             field: "status".into(),
@@ -597,6 +599,7 @@ mod tests {
         let result = OpResult {
             body: Some(Box::new(JsonBody(serde_json::json!({"balance": 42.5})))),
             captures: HashMap::new(),
+            skipped: false,
         };
         let spec = AssertionSpec {
             field: "balance".into(),
@@ -616,6 +619,7 @@ mod tests {
         let result = OpResult {
             body: None,
             captures: HashMap::new(),
+            skipped: false,
         };
         let spec = AssertionSpec {
             field: "anything".into(),

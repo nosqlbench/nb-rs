@@ -12,7 +12,7 @@
 //! error injection, bimodal distributions), but usable anywhere in a
 //! GK pipeline.
 
-use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, Slot, Value};
+use crate::node::{CompiledU64Op, GkNode, NodeMeta, Port, PortType, Slot, Value};
 use xxhash_rust::xxh3::xxh3_64;
 
 /// Convert a u64 hash to a value in the unit interval [0.0, 1.0).
@@ -578,6 +578,49 @@ impl GkNode for Blend {
     fn jit_constants(&self) -> Vec<u64> { vec![self.mix.to_bits()] }
 }
 
+/// Returns the first input if it is not `None`, otherwise the second.
+///
+/// This is the GK equivalent of SQL's `COALESCE` or Rust's
+/// `Option::unwrap_or`. Use it with `extern` inputs (captures)
+/// that may not have been set yet:
+///
+/// ```gk
+/// extern username: String
+/// greeting := default_or(username, "anonymous")
+/// ```
+///
+/// If `username` has been set by a capture, `greeting` is that value.
+/// If not (still `None`), `greeting` is `"anonymous"`.
+pub struct DefaultOr {
+    meta: NodeMeta,
+}
+
+impl DefaultOr {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "default_or".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![
+                    Slot::Wire(Port::new("value", PortType::Str)),
+                    Slot::Wire(Port::new("fallback", PortType::Str)),
+                ],
+            },
+        }
+    }
+}
+
+impl GkNode for DefaultOr {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = if matches!(inputs[0], Value::None) {
+            inputs[1].clone()
+        } else {
+            inputs[0].clone()
+        };
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Signature declarations for the DSL registry
 // ---------------------------------------------------------------------------
@@ -687,6 +730,18 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Weighted linear blend of two f64 wire inputs.\nResult = a * (1 - mix) + b * mix. At mix=0 you get pure a, at mix=1 pure b.\nParameters:\n  a   — first f64 wire input\n  b   — second f64 wire input\n  mix — blend factor (f64 in [0.0, 1.0])\nExample: blend(fast_latency, slow_latency, 0.3)  // 70% fast, 30% slow",
         },
+        FuncSig {
+            name: "default_or", category: C::Probability,
+            outputs: 1, description: "coalesce: return value if set, fallback if None",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "value", slot_type: SlotType::Wire, required: true },
+                ParamSpec { name: "fallback", slot_type: SlotType::Wire, required: true },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Return the first input if it is not None, otherwise the second.\nUse with extern inputs (captures) that may not have been set yet.\nParameters:\n  value    — primary wire input (may be None if unset)\n  fallback — wire input used when value is None\nExample: default_or(username, \"anonymous\")",
+        },
     ]
 }
 
@@ -717,6 +772,7 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
         "blend" => Some(Ok(Box::new(Blend::new(
             consts.first().map(|c| c.as_f64()).unwrap_or(0.5),
         )))),
+        "default_or" => Some(Ok(Box::new(DefaultOr::new()))),
         _ => None,
     }
 }
@@ -1288,5 +1344,84 @@ mod tests {
     #[should_panic(expected = "blend: mix must be in [0.0, 1.0]")]
     fn blend_rejects_negative_mix() {
         Blend::new(-0.1);
+    }
+
+    // --- DefaultOr ---
+
+    #[test]
+    fn default_or_returns_value_when_not_none() {
+        let node = DefaultOr::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("alice".into()), Value::Str("fallback".into())], &mut out);
+        assert_eq!(out[0].as_str(), "alice");
+    }
+
+    #[test]
+    fn default_or_returns_fallback_when_none() {
+        let node = DefaultOr::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::None, Value::Str("fallback".into())], &mut out);
+        assert_eq!(out[0].as_str(), "fallback");
+    }
+
+    #[test]
+    fn default_or_works_with_u64() {
+        let node = DefaultOr::new();
+        let mut out = [Value::None];
+        // Non-None u64 passes through
+        node.eval(&[Value::U64(42), Value::U64(0)], &mut out);
+        assert!(matches!(out[0], Value::U64(42)));
+        // None falls back
+        node.eval(&[Value::None, Value::U64(99)], &mut out);
+        assert!(matches!(out[0], Value::U64(99)));
+    }
+
+    #[test]
+    fn default_or_with_extern_input() {
+        // Full integration: build a GK program with an extern input,
+        // wire through default_or, verify None→fallback and set→value.
+        use crate::assembly::{GkAssembler, WireRef};
+        use crate::nodes::identity::PortPassthrough;
+        use crate::kernel::InputDef;
+
+        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        // Add an extern input (defaults to None)
+        asm.add_input("captured_name", Value::None, PortType::Str);
+        // Passthrough so the input is a node
+        asm.add_node("__port_captured_name",
+            Box::new(PortPassthrough::new("captured_name", PortType::Str)),
+            vec![WireRef::input("captured_name")]);
+        // Fallback constant
+        asm.add_node("fallback",
+            Box::new(crate::nodes::identity::ConstStr::new("anonymous".to_string())),
+            vec![]);
+        // default_or wired to extern input + fallback
+        asm.add_node("greeting",
+            Box::new(DefaultOr::new()),
+            vec![WireRef::node("__port_captured_name"), WireRef::node("fallback")]);
+        asm.add_output("greeting", WireRef::node("greeting"));
+
+        let kernel = asm.compile().unwrap();
+        let program = kernel.into_program();
+        let mut state = program.create_state();
+
+        // Before any capture: input is None → should get fallback
+        state.set_inputs(&[0]);
+        let val = state.pull(&program, "greeting");
+        assert_eq!(val.to_display_string(), "anonymous",
+            "unset extern should produce fallback, got: {:?}", val);
+
+        // Set the capture input
+        let input_idx = program.find_input("captured_name").unwrap();
+        state.set_input(input_idx, Value::Str("alice".into()));
+        let val = state.pull(&program, "greeting");
+        assert_eq!(val.to_display_string(), "alice",
+            "set extern should produce captured value, got: {:?}", val);
+
+        // Reset captures → back to None → fallback again
+        state.reset_inputs_from(program.coord_count());
+        let val = state.pull(&program, "greeting");
+        assert_eq!(val.to_display_string(), "anonymous",
+            "reset extern should produce fallback again, got: {:?}", val);
     }
 }
