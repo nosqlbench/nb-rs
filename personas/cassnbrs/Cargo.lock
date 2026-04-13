@@ -2566,9 +2566,9 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vectordata"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "187b216cebe02b738041f9200759b6672863899e425687615cf5af83f5a307e4"
+checksum = "e1a05d253f85e9a4f18f38badcb588d3275d3af52c9affca39ffd75243835fb4"
 dependencies = [
  "anyhow",
  "byteorder",

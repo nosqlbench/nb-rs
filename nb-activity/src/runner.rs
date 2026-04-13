@@ -165,14 +165,33 @@ pub async fn run(args: &[String]) -> Result<(), String> {
 
     // === GK Expansion Pipeline ===
 
-    // Phase 1: string substitution inside GK source
+    // Phase 1: string substitution inside GK source AND op template strings
     if !workload_params.is_empty() {
         for op in &mut all_ops_for_compile {
+            // Expand in GK source
             if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
                 for (key, value) in &workload_params {
                     let placeholder = format!("{{{key}}}");
                     if src.contains(&placeholder) {
                         *src = src.replace(&placeholder, value);
+                    }
+                }
+            }
+            // Expand in op template strings (stmt, prepared, etc.)
+            // so that Phase 3 inline expression extraction sees resolved values.
+            for value in op.op.values_mut() {
+                if let Some(s) = value.as_str() {
+                    let mut rewritten = s.to_string();
+                    let mut changed = false;
+                    for (key, param_value) in &workload_params {
+                        let placeholder = format!("{{{key}}}");
+                        if rewritten.contains(&placeholder) {
+                            rewritten = rewritten.replace(&placeholder, param_value);
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        *value = serde_json::Value::String(rewritten);
                     }
                 }
             }
@@ -292,12 +311,29 @@ pub async fn run(args: &[String]) -> Result<(), String> {
 
     let mut config_refs: Vec<String> = params.values()
         .filter(|v| v.starts_with('{') && v.ends_with('}'))
-        .map(|v| v[1..v.len()-1].to_string())
+        .map(|v| {
+            let mut inner = v[1..v.len()-1].to_string();
+            // Expand workload params in config expressions
+            for (key, value) in &workload_params {
+                let placeholder = format!("{{{key}}}");
+                if inner.contains(&placeholder) {
+                    inner = inner.replace(&placeholder, value);
+                }
+            }
+            inner
+        })
         .collect();
     for phase in phases.values() {
         if let Some(ref c) = phase.cycles {
             if c.starts_with('{') && c.ends_with('}') {
-                config_refs.push(c[1..c.len()-1].to_string());
+                let mut inner = c[1..c.len()-1].to_string();
+                for (key, value) in &workload_params {
+                    let placeholder = format!("{{{key}}}");
+                    if inner.contains(&placeholder) {
+                        inner = inner.replace(&placeholder, value);
+                    }
+                }
+                config_refs.push(inner);
             }
         }
     }
@@ -306,37 +342,35 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         &all_ops_for_compile, workload_dir, gk_lib_paths, strict, &[], &config_refs,
     ).map_err(|e| format!("compile bindings: {e}"))?;
 
-    // === GK Config Resolution ===
-
-    let resolve_gk_config = |value: &str| -> Option<u64> {
-        if value.starts_with('{') && value.ends_with('}') {
-            let inner = &value[1..value.len() - 1];
-            if let Some(v) = kernel.get_constant(inner) {
-                return Some(value_to_u64(v));
-            }
-            match nb_variates::dsl::compile::eval_const_expr(inner) {
-                Ok(v) => Some(value_to_u64(&v)),
-                Err(e) => {
-                    eprintln!("error: const expression failed: '{{{inner}}}'");
-                    eprintln!("  {e}");
-                    None
-                }
-            }
-        } else {
-            parse_count(value)
-        }
-    };
+    // === GK Config Resolution (all done before kernel is consumed) ===
 
     let resolved_cli_cycles: Option<u64> = explicit_cycles.or_else(||
-        params.get("cycles").and_then(|s| resolve_gk_config(s))
+        params.get("cycles").and_then(|s| resolve_gk_config(s, &kernel))
     );
     let resolved_cli_threads: Option<u64> = params.get("threads")
-        .and_then(|s| resolve_gk_config(s));
+        .and_then(|s| resolve_gk_config(s, &kernel));
 
+    // Pre-resolve phase cycles (with workload param expansion)
     let mut resolved_phase_cycles: HashMap<String, Option<u64>> = HashMap::new();
     for (name, phase) in &phases {
-        let resolved = phase.cycles.as_ref().and_then(|s| resolve_gk_config(s));
+        let resolved = phase.cycles.as_ref().and_then(|s| {
+            let expanded = expand_workload_params(s, &workload_params);
+            resolve_gk_config(&expanded, &kernel)
+        });
         resolved_phase_cycles.insert(name.clone(), resolved);
+    }
+
+    // Pre-resolve for_each iterations from the kernel
+    let mut phase_iterations: HashMap<String, Vec<HashMap<String, String>>> = HashMap::new();
+    for (name, phase) in &phases {
+        let iterations = resolve_for_each(phase, &workload_params, &kernel)?;
+        phase_iterations.insert(name.clone(), iterations);
+    }
+
+    // Strip workload-level adapter/driver from op params
+    for op in &mut all_ops_for_compile {
+        op.params.remove("adapter");
+        op.params.remove("driver");
     }
 
     let builder = Arc::new(OpBuilder::new(kernel));
@@ -360,61 +394,129 @@ pub async fn run(args: &[String]) -> Result<(), String> {
 
             eprintln!("=== phase: {phase_name} ===");
 
-            let phase_ops = if !phase.ops.is_empty() {
-                let phase_op_names: std::collections::HashSet<String> =
-                    phase.ops.iter().map(|o| o.name.clone()).collect();
-                all_ops_for_compile.iter()
-                    .filter(|o| {
-                        phase_op_names.contains(&o.name)
-                            && o.tags.get("phase").map(|p| p == phase_name).unwrap_or(false)
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>()
-            } else if let Some(ref tag_spec) = phase.tags {
-                TagFilter::filter_ops(&all_ops_for_compile, tag_spec)
-                    .map_err(|e| format!("invalid tag filter in phase '{phase_name}': {e}"))?
-            } else {
-                all_ops_for_compile[..num_top_level_ops].to_vec()
-            };
+            // Get pre-resolved for_each iterations
+            let iterations = phase_iterations.get(phase_name)
+                .cloned()
+                .unwrap_or_else(|| vec![HashMap::new()]);
 
-            if phase_ops.is_empty() {
-                eprintln!("warning: phase '{phase_name}' has no ops, skipping");
-                continue;
+            for (iter_idx, iter_bindings) in iterations.iter().enumerate() {
+                if !iter_bindings.is_empty() {
+                    let label = iter_bindings.values().next().unwrap_or(&String::new()).clone();
+                    eprintln!("  iteration {iter_idx}: {label}");
+                }
+
+                // Clone phase ops and substitute for_each variables
+                let phase_ops = {
+                    let mut ops = if !phase.ops.is_empty() {
+                        let phase_op_names: std::collections::HashSet<String> =
+                            phase.ops.iter().map(|o| o.name.clone()).collect();
+                        all_ops_for_compile.iter()
+                            .filter(|o| {
+                                phase_op_names.contains(&o.name)
+                                    && o.tags.get("phase").map(|p| p == phase_name).unwrap_or(false)
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    } else if let Some(ref tag_spec) = phase.tags {
+                        TagFilter::filter_ops(&all_ops_for_compile, tag_spec)
+                            .map_err(|e| format!("invalid tag filter in phase '{phase_name}': {e}"))?
+                    } else {
+                        all_ops_for_compile[..num_top_level_ops].to_vec()
+                    };
+
+                    // Substitute for_each variables in op templates and GK source
+                    if !iter_bindings.is_empty() {
+                        for op in &mut ops {
+                            for value in op.op.values_mut() {
+                                if let Some(s) = value.as_str() {
+                                    let mut rewritten = s.to_string();
+                                    for (var, val) in iter_bindings {
+                                        let placeholder = format!("{{{var}}}");
+                                        rewritten = rewritten.replace(&placeholder, val);
+                                    }
+                                    *value = serde_json::Value::String(rewritten);
+                                }
+                            }
+                            if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
+                                for (var, val) in iter_bindings {
+                                    let placeholder = format!("{{{var}}}");
+                                    *src = src.replace(&placeholder, val);
+                                }
+                            }
+                        }
+                    }
+                    ops
+                };
+
+                if phase_ops.is_empty() {
+                    eprintln!("warning: phase '{phase_name}' has no ops, skipping");
+                    continue;
+                }
+
+                let op_sequence = OpSequence::from_ops(phase_ops, seq_type);
+                let stanza_len = op_sequence.stanza_length() as u64;
+
+                // Resolve cycles with for_each variable substitution
+                let phase_stanzas = if !iter_bindings.is_empty() {
+                    phase.cycles.as_ref().and_then(|c| {
+                        let mut expanded = c.clone();
+                        for (var, val) in iter_bindings {
+                            let placeholder = format!("{{{var}}}");
+                            expanded = expanded.replace(&placeholder, val);
+                        }
+                        // Also expand workload params
+                        for (key, value) in &workload_params {
+                            let placeholder = format!("{{{key}}}");
+                            expanded = expanded.replace(&placeholder, value);
+                        }
+                        // Kernel is consumed; use eval_const_expr for dynamic resolution
+                        if expanded.starts_with('{') && expanded.ends_with('}') {
+                            let inner = &expanded[1..expanded.len()-1];
+                            nb_variates::dsl::compile::eval_const_expr(inner)
+                                .ok()
+                                .map(|v| value_to_u64(&v))
+                        } else {
+                            parse_count(&expanded)
+                        }
+                    }).unwrap_or(1)
+                } else {
+                    resolved_phase_cycles.get(phase_name)
+                        .copied()
+                        .flatten()
+                        .unwrap_or(1)
+                };
+                let phase_cycles = phase_stanzas * stanza_len;
+                let phase_concurrency = if !iter_bindings.is_empty() {
+                    // Resolve concurrency with for_each substitution
+                    phase.concurrency.unwrap_or(1)
+                } else {
+                    phase.concurrency.unwrap_or(1)
+                };
+                let phase_rate = phase.rate.or(cycle_rate);
+                let phase_error_spec = phase.errors.clone().unwrap_or_else(|| error_spec.clone());
+
+                eprintln!("phase '{phase_name}': {} ops, cycles={phase_cycles}, concurrency={phase_concurrency}",
+                    op_sequence.stanza_length());
+
+                let config = ActivityConfig {
+                    name: phase_name.clone(),
+                    cycles: phase_cycles,
+                    concurrency: phase_concurrency,
+                    cycle_rate: phase_rate,
+                    stanza_rate: None,
+                    sequencer: seq_type,
+                    error_spec: phase_error_spec,
+                    max_retries: 3,
+                    stanza_concurrency: 1,
+                };
+
+                let phase_driver = phase.adapter.as_deref().unwrap_or(&driver);
+                let adapter = create_adapter(phase_driver, &merged_params).await?;
+                let activity = Activity::with_params(
+                    config, &Labels::of("session", "cli"), op_sequence, workload_params.clone(),
+                );
+                activity.run_with_driver(adapter, program.clone()).await;
             }
-
-            let op_sequence = OpSequence::from_ops(phase_ops, seq_type);
-            let stanza_len = op_sequence.stanza_length() as u64;
-
-            let phase_stanzas = resolved_phase_cycles.get(phase_name)
-                .copied()
-                .flatten()
-                .unwrap_or(1);
-            let phase_cycles = phase_stanzas * stanza_len;
-            let phase_concurrency = phase.concurrency.unwrap_or(1);
-            let phase_rate = phase.rate.or(cycle_rate);
-            let phase_error_spec = phase.errors.clone().unwrap_or_else(|| error_spec.clone());
-
-            eprintln!("phase '{phase_name}': {} ops, cycles={phase_cycles}, concurrency={phase_concurrency}",
-                op_sequence.stanza_length());
-
-            let config = ActivityConfig {
-                name: phase_name.clone(),
-                cycles: phase_cycles,
-                concurrency: phase_concurrency,
-                cycle_rate: phase_rate,
-                stanza_rate: None,
-                sequencer: seq_type,
-                error_spec: phase_error_spec,
-                max_retries: 3,
-                stanza_concurrency: 1,
-            };
-
-            let phase_driver = phase.adapter.as_deref().unwrap_or(&driver);
-            let adapter = create_adapter(phase_driver, &merged_params).await?;
-            let activity = Activity::with_params(
-                config, &Labels::of("session", "cli"), op_sequence, workload_params.clone(),
-            );
-            activity.run_with_driver(adapter, program.clone()).await;
 
             eprintln!("phase '{phase_name}' complete");
         }
@@ -484,6 +586,111 @@ async fn create_adapter(
 // =========================================================================
 // Helpers
 // =========================================================================
+
+/// Resolve a phase's `for_each` directive into iteration bindings.
+///
+/// Parses `"varname in expr(...)"`, evaluates the expression as a GK
+/// init-time constant (via the compiled kernel), and splits the
+/// comma-separated result into individual values.
+///
+/// Returns a Vec of binding maps — one per iteration. If no `for_each`
+/// is present, returns a single empty map (one iteration, no bindings).
+fn resolve_for_each(
+    phase: &nb_workload::model::WorkloadPhase,
+    workload_params: &HashMap<String, String>,
+    kernel: &nb_variates::kernel::GkKernel,
+) -> Result<Vec<HashMap<String, String>>, String> {
+    let Some(ref spec) = phase.for_each else {
+        return Ok(vec![HashMap::new()]);
+    };
+
+    // Parse "varname in expression"
+    let parts: Vec<&str> = spec.splitn(2, " in ").collect();
+    if parts.len() != 2 {
+        return Err(format!("invalid for_each syntax: '{spec}'. Expected 'varname in expression'"));
+    }
+    let var_name = parts[0].trim();
+    let mut expr = parts[1].trim().to_string();
+
+    // Expand workload params in the expression
+    for (key, value) in workload_params {
+        let placeholder = format!("{{{key}}}");
+        expr = expr.replace(&placeholder, value);
+    }
+
+    // Try to read the value from the GK kernel as a folded constant.
+    // The expression might be a binding name or an inline const expression.
+    let value_str = if let Some(val) = kernel.get_constant(&expr) {
+        match val {
+            nb_variates::node::Value::Str(s) => s.clone(),
+            other => other.to_display_string(),
+        }
+    } else {
+        // Try evaluating as inline const expression
+        match nb_variates::dsl::compile::eval_const_expr(&expr) {
+            Ok(val) => match val {
+                nb_variates::node::Value::Str(s) => s,
+                other => other.to_display_string(),
+            },
+            Err(e) => return Err(format!("for_each expression failed: '{expr}': {e}")),
+        }
+    };
+
+    // Split comma-separated values into individual iterations
+    let values: Vec<String> = value_str.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if values.is_empty() {
+        eprintln!("warning: for_each '{spec}' produced no values, skipping phase");
+        return Ok(vec![]);
+    }
+
+    eprintln!("for_each: {var_name} in [{values}] ({} iterations)",
+        values.len(),
+        values = values.join(", "));
+
+    Ok(values.into_iter()
+        .map(|v| {
+            let mut bindings = HashMap::new();
+            bindings.insert(var_name.to_string(), v);
+            bindings
+        })
+        .collect())
+}
+
+/// Expand `{key}` workload param placeholders in a string.
+fn expand_workload_params(s: &str, params: &HashMap<String, String>) -> String {
+    let mut result = s.to_string();
+    for (key, value) in params {
+        let placeholder = format!("{{{key}}}");
+        if result.contains(&placeholder) {
+            result = result.replace(&placeholder, value);
+        }
+    }
+    result
+}
+
+/// Resolve a config value to u64 via GK constants or numeric parsing.
+fn resolve_gk_config(value: &str, kernel: &nb_variates::kernel::GkKernel) -> Option<u64> {
+    if value.starts_with('{') && value.ends_with('}') {
+        let inner = &value[1..value.len() - 1];
+        if let Some(v) = kernel.get_constant(inner) {
+            return Some(value_to_u64(v));
+        }
+        match nb_variates::dsl::compile::eval_const_expr(inner) {
+            Ok(v) => Some(value_to_u64(&v)),
+            Err(e) => {
+                eprintln!("error: const expression failed: '{{{inner}}}'");
+                eprintln!("  {e}");
+                None
+            }
+        }
+    } else {
+        parse_count(value)
+    }
+}
 
 /// Convert a GK Value to u64, handling f64→u64 truncation.
 fn value_to_u64(v: &nb_variates::node::Value) -> u64 {

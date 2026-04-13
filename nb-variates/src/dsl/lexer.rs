@@ -299,12 +299,13 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
             _ => {}
         }
 
-        // String literal
-        if c == '"' {
+        // String literal (double-quoted or single-quoted)
+        if c == '"' || c == '\'' {
+            let quote = c;
             pos += 1;
             col += 1;
             let mut s = String::new();
-            while pos < chars.len() && chars[pos] != '"' {
+            while pos < chars.len() && chars[pos] != quote {
                 if chars[pos] == '\\' && pos + 1 < chars.len() {
                     pos += 1;
                     col += 1;
@@ -312,7 +313,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                         'n' => s.push('\n'),
                         't' => s.push('\t'),
                         '\\' => s.push('\\'),
-                        '"' => s.push('"'),
+                        c if c == quote => s.push(c),
                         other => { s.push('\\'); s.push(other); }
                     }
                 } else {

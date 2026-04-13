@@ -491,7 +491,7 @@ pub async fn run_command(args: &[String]) {
     // No exclusions needed — workload params are now injected as GK
     // bindings (Phase 2 above), so they resolve from the GK namespace.
     let kernel = match compile_bindings_with_libs_excluding(
-        &all_ops_for_compile, workload_dir, gk_lib_paths, strict, &[], &config_refs,
+        &all_ops_for_compile, workload_dir, gk_lib_paths.clone(), strict, &[], &config_refs,
     ) {
         Ok(k) => k,
         Err(e) => {
@@ -641,7 +641,45 @@ pub async fn run_command(args: &[String]) {
                 }
             };
 
-            eprintln!("nbrs: === phase: {phase_name} ===");
+            // Expand for_each: "var in expr" — run the phase once per element
+            let for_each_items: Vec<(String, String)> = if let Some(ref for_each) = phase.for_each {
+                let parts: Vec<&str> = for_each.splitn(2, " in ").collect();
+                if parts.len() != 2 {
+                    eprintln!("error: invalid for_each syntax '{for_each}' — expected 'var in expr'");
+                    std::process::exit(1);
+                }
+                let var_name = parts[0].trim().to_string();
+                let expr = parts[1].trim();
+                // Evaluate expression as a GK constant.
+                // Substitute workload params first, then compile and eval.
+                let mut resolved_expr = expr.to_string();
+                for (k, v) in &workload_params {
+                    resolved_expr = resolved_expr.replace(&format!("{{{k}}}"), v);
+                    resolved_expr = resolved_expr.replace(&format!("'{{{k}}}'"), &format!("\"{v}\""));
+                }
+                let list_str = match nb_variates::dsl::compile::eval_const_expr(&resolved_expr) {
+                    Ok(v) => v.to_display_string(),
+                    Err(e) => {
+                        eprintln!("error: for_each expression failed: {e}");
+                        String::new()
+                    }
+                };
+                if list_str.is_empty() {
+                    eprintln!("warning: for_each expression '{expr}' produced no items, skipping phase '{phase_name}'");
+                    continue;
+                }
+                list_str.split(',').map(|s| (var_name.clone(), s.trim().to_string())).collect()
+            } else {
+                vec![("".to_string(), "".to_string())] // single iteration, no var
+            };
+
+            for (for_var, for_value) in &for_each_items {
+            let phase_label = if for_value.is_empty() {
+                phase_name.to_string()
+            } else {
+                format!("{phase_name} ({for_var}={for_value})")
+            };
+            eprintln!("nbrs: === phase: {phase_label} ===");
 
             // Resolve ops for this phase: inline ops, tag-filtered from
             // top-level ops, or all top-level ops.
@@ -674,33 +712,72 @@ pub async fn run_command(args: &[String]) {
             };
 
             if phase_ops.is_empty() {
-                eprintln!("warning: phase '{phase_name}' has no ops, skipping");
+                eprintln!("warning: phase '{phase_label}' has no ops, skipping");
                 continue;
             }
 
+            // For for_each iterations, substitute {var} in op templates
+            // and recompile GK with the substituted bindings so
+            // profile-specific constants resolve correctly.
+            let (iter_ops, iter_program, iter_cycles) = if !for_var.is_empty() {
+                let placeholder = format!("{{{for_var}}}");
+                let mut sub_ops = phase_ops.clone();
+                for op in &mut sub_ops {
+                    // Substitute in op field values
+                    for value in op.op.values_mut() {
+                        if let Some(s) = value.as_str() {
+                            if s.contains(&placeholder) {
+                                *value = serde_json::Value::String(
+                                    s.replace(&placeholder, for_value)
+                                );
+                            }
+                        }
+                    }
+                    // Substitute in bindings source
+                    if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
+                        *src = src.replace(&placeholder, for_value);
+                    }
+                }
+                // Recompile GK for this iteration with substituted bindings
+                let iter_kernel = match compile_bindings_with_libs_excluding(
+                    &sub_ops, workload_dir, gk_lib_paths.clone(), strict, &[], &config_refs,
+                ) {
+                    Ok(k) => k,
+                    Err(e) => {
+                        eprintln!("error: failed to compile bindings for {phase_label}: {e}");
+                        continue;
+                    }
+                };
+                // Resolve cycles from the per-iteration kernel before moving it
+                let iter_cycles = phase.cycles.as_ref().and_then(|c| {
+                    let resolved_c = c.replace(&format!("{{{for_var}}}"), for_value);
+                    resolve_gk_config_with_kernel(&resolved_c, &iter_kernel)
+                });
+                let iter_builder = OpBuilder::new(iter_kernel);
+                let iter_program = iter_builder.program();
+                (sub_ops, iter_program, iter_cycles)
+            } else {
+                (phase_ops, program.clone(), None)
+            };
+
             // Build op sequence for this phase
-            let op_sequence = OpSequence::from_ops(phase_ops, seq_type);
+            let op_sequence = OpSequence::from_ops(iter_ops, seq_type);
             let stanza_len = op_sequence.stanza_length() as u64;
 
-            // Resolve phase config with GK constant support.
-            // Phase cycles specifies number of stanzas to execute.
-            // Multiply by stanza_length to get the raw cycle count that
-            // the activity engine consumes (it claims stanza_length
-            // cycles per stanza from the CycleSource).
-            let phase_stanzas = resolved_phase_cycles.get(phase_name)
-                .copied()
-                .flatten()
+            // Resolve phase cycles — use per-iteration value if available
+            let phase_stanzas = iter_cycles
+                .or_else(|| resolved_phase_cycles.get(phase_name).copied().flatten())
                 .unwrap_or(1);
             let phase_cycles = phase_stanzas * stanza_len;
             let phase_concurrency = phase.concurrency.unwrap_or(1);
             let phase_rate = phase.rate.or(cycle_rate);
             let phase_error_spec = phase.errors.clone().unwrap_or_else(|| error_spec.clone());
 
-            eprintln!("nbrs: phase '{phase_name}': {} ops, cycles={phase_cycles}, concurrency={phase_concurrency}",
+            eprintln!("nbrs: phase '{phase_label}': {} ops, cycles={phase_cycles}, concurrency={phase_concurrency}",
                 op_sequence.stanza_length());
 
             let config = ActivityConfig {
-                name: phase_name.clone(),
+                name: phase_label.clone(),
                 cycles: phase_cycles,
                 concurrency: phase_concurrency,
                 cycle_rate: phase_rate,
@@ -716,9 +793,10 @@ pub async fn run_command(args: &[String]) {
             let activity = Activity::with_params(
                 config, &Labels::of("session", "cli"), op_sequence, workload_params.clone(),
             );
-            activity.run_with_driver(adapter, program.clone()).await;
+            activity.run_with_driver(adapter, iter_program).await;
 
-            eprintln!("nbrs: phase '{phase_name}' complete");
+            eprintln!("nbrs: phase '{phase_label}' complete");
+            } // end for_each_items loop
         }
 
         eprintln!("nbrs: all phases complete");

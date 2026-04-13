@@ -34,7 +34,6 @@
 //! <https://github.com/nosqlbench/vectordata-rs/blob/main/docs/sysref/02-api.md>
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, LazyLock};
 
 use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, Value};
@@ -42,9 +41,6 @@ use vectordata::TestDataGroup;
 use vectordata::io::{VectorReader, VvecReader};
 use vectordata::catalog::sources::CatalogSources;
 use vectordata::catalog::resolver::Catalog;
-use vectordata::dataset::catalog::CatalogEntry;
-use vectordata::dataset::remote::RemoteDatasetView;
-use vectordata::dataset::view::DatasetView;
 
 /// Global cache for loaded dataset groups keyed by source string.
 /// Ensures each dataset is loaded exactly once regardless of how many
@@ -72,37 +68,19 @@ fn parse_source_specifier(source: &str) -> (&str, &str) {
     }
 }
 
-/// Return the default vectordata cache directory.
+/// Load a dataset group by name.
 ///
-/// Resolution order:
-/// 1. `$HOME/.cache/vectordata/` (standard XDG cache location)
-fn default_cache_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".cache").join("vectordata")
-}
-
-/// Load a dataset group from a source specifier.
-///
-/// Resolution order:
-/// 1. In-memory cache hit — return immediately
-/// 2. Direct URL (`https://...`) — pass to TestDataGroup::load
-/// 3. Local path — load from filesystem if path exists
-/// 4. Local cache — check `~/.cache/vectordata/<name>/` for
-///    previously prebuffered data
-/// 5. Catalog lookup — search configured catalogs, load from URL
-///
-/// Catalogs are configured in `~/.config/vectordata/catalogs.yaml`.
-/// Use `veks datasets config add-catalog <url>` to add sources.
+/// Uses the vectordata catalog API: `catalog.open(name)` handles
+/// catalog discovery, cache resolution, and download transparently.
 fn load_dataset_group(source: &str) -> Result<Arc<TestDataGroup>, String> {
     let (dataset_name, _profile) = parse_source_specifier(source);
 
-    // Check in-memory cache first (keyed on the dataset portion)
+    // Check in-memory cache first
     {
         let cache = DATASET_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(group) = cache.get(dataset_name) {
             return Ok(group.clone());
         }
-        // Also check under the full source string for backwards compat
         if dataset_name != source {
             if let Some(group) = cache.get(source) {
                 return Ok(group.clone());
@@ -110,33 +88,10 @@ fn load_dataset_group(source: &str) -> Result<Arc<TestDataGroup>, String> {
         }
     }
 
-    // Direct URL — load directly
-    if dataset_name.starts_with("http://") || dataset_name.starts_with("https://") {
-        return load_and_cache(source, dataset_name, dataset_name);
-    }
-
-    // Local path — load if exists
-    if std::path::Path::new(dataset_name).exists() {
-        return load_and_cache(source, dataset_name, dataset_name);
-    }
-
-    // Check local cache for previously prebuffered data
-    let cache_path = default_cache_dir().join(dataset_name);
-    if cache_path.join("dataset.yaml").exists() {
-        let local_path = cache_path.to_string_lossy().to_string();
-        eprintln!("nbrs: loading dataset '{dataset_name}' from cache → {local_path}");
-        return load_and_cache(source, dataset_name, &local_path);
-    }
-
-    // Catalog lookup
-    let load_url = resolve_from_catalog(dataset_name)?;
-    load_and_cache(source, dataset_name, &load_url)
-}
-
-/// Load a TestDataGroup from a resolved path/URL and cache it.
-fn load_and_cache(source: &str, dataset_name: &str, load_from: &str) -> Result<Arc<TestDataGroup>, String> {
-    let group = TestDataGroup::load(load_from)
-        .map_err(|e| format!("failed to load dataset '{source}' (resolved to '{load_from}'): {e}"))?;
+    // Open via the catalog — handles URLs, local paths, cache, everything.
+    let catalog = Catalog::of(&CatalogSources::new().configure_default());
+    let group = catalog.open(dataset_name)
+        .map_err(|e| format!("failed to load dataset '{dataset_name}': {e}"))?;
     let arc = Arc::new(group);
 
     let mut cache = DATASET_CACHE.lock().unwrap_or_else(|e| e.into_inner());
@@ -148,99 +103,6 @@ fn load_and_cache(source: &str, dataset_name: &str, load_from: &str) -> Result<A
     Ok(arc)
 }
 
-/// Resolve a dataset name via configured vectordata catalogs.
-///
-/// Loads catalog sources from `~/.config/vectordata/catalogs.yaml`,
-/// searches for an exact name match, and returns the full dataset URL.
-fn resolve_from_catalog(name: &str) -> Result<String, String> {
-    let sources = CatalogSources::new().configure_default();
-    let catalog = Catalog::of(&sources);
-
-    if catalog.is_empty() {
-        return Err(format!(
-            "dataset '{name}' not found: no catalogs configured.\n\
-             Configure a catalog with: veks datasets config add-catalog <url>\n\
-             Or provide a direct URL or local path."
-        ));
-    }
-
-    match catalog.find_exact(name) {
-        Some(entry) => {
-            eprintln!("nbrs: resolved dataset '{name}' from catalog → {}", entry.path);
-            Ok(entry.path.clone())
-        }
-        None => {
-            let mut msg = format!("dataset '{name}' not found in any configured catalog.");
-            let matches = catalog.match_glob(&format!("*{}*", name));
-            if !matches.is_empty() {
-                msg.push_str("\n  Similar datasets:");
-                for m in matches.iter().take(5) {
-                    msg.push_str(&format!("\n    - {}", m.name));
-                }
-            }
-            Err(msg)
-        }
-    }
-}
-
-/// Resolve a dataset name to its `CatalogEntry` for prebuffering.
-fn resolve_catalog_entry(name: &str) -> Result<CatalogEntry, String> {
-    let sources = CatalogSources::new().configure_default();
-    let catalog = Catalog::of(&sources);
-    catalog.find_exact(name)
-        .cloned()
-        .ok_or_else(|| format!("dataset '{name}' not found in any configured catalog"))
-}
-
-/// Prebuffer a dataset — eagerly download all facets to the local cache.
-///
-/// After prebuffering, the dataset can be loaded from the cache with
-/// local mmap readers (no HTTP requests during workload execution).
-///
-/// Uses the `RemoteDatasetView` path with `CachedChannel` for
-/// merkle-verified chunk downloads.
-fn prebuffer_dataset(source: &str) -> Result<u64, String> {
-    let (dataset_name, profile) = parse_source_specifier(source);
-
-    // Check if already fully cached
-    let cache_dir = default_cache_dir();
-    let ds_cache = cache_dir.join(dataset_name);
-    if ds_cache.join("dataset.yaml").exists() {
-        // Attempt to load locally — if it works, data is cached
-        if TestDataGroup::load(ds_cache.to_str().unwrap_or("")).is_ok() {
-            eprintln!("nbrs: dataset '{dataset_name}' already cached at {}", ds_cache.display());
-            return Ok(0);
-        }
-    }
-
-    // Resolve via catalog and prebuffer
-    let entry = resolve_catalog_entry(dataset_name)?;
-    eprintln!("nbrs: prebuffering dataset '{dataset_name}' profile '{profile}'...");
-
-    let view = RemoteDatasetView::open(&entry, profile, &cache_dir)
-        .map_err(|e| format!("failed to open remote view for prebuffer: {e}"))?;
-
-    view.prebuffer_all()
-        .map_err(|e| format!("prebuffer failed for '{dataset_name}': {e}"))?;
-
-    // Count prebuffered facets
-    let mut facet_count = 0u64;
-    if view.base_vectors().is_some() { facet_count += 1; }
-    if view.query_vectors().is_some() { facet_count += 1; }
-    if view.neighbor_indices().is_some() { facet_count += 1; }
-    if view.neighbor_distances().is_some() { facet_count += 1; }
-
-    eprintln!("nbrs: prebuffered {facet_count} facets for '{dataset_name}' → {}", ds_cache.display());
-
-    // Evict from in-memory cache so next load picks up local files
-    {
-        let mut cache = DATASET_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        cache.remove(dataset_name);
-        cache.remove(source);
-    }
-
-    Ok(facet_count)
-}
 
 // =================================================================
 // Dataset handles — loaded once at node construction, shared via Arc
@@ -943,6 +805,43 @@ impl GkNode for DatasetProfileNames {
     }
 }
 
+/// Return profile names matching a prefix, comma-separated.
+///
+/// Signature: `matching_profiles(source, prefix) -> (String)`
+///
+/// If prefix is empty, returns all profiles. Used by `for_each:`
+/// phase templates to discover profiles dynamically.
+pub struct MatchingProfiles {
+    meta: NodeMeta,
+    names: String,
+}
+
+impl MatchingProfiles {
+    pub fn from_source(source: &str, prefix: &str) -> Result<Self, String> {
+        let all = load_profile_names(source)?;
+        let matched: Vec<&str> = if prefix.is_empty() {
+            all.iter().map(|s| s.as_str()).collect()
+        } else {
+            all.iter().filter(|s| s.starts_with(prefix)).map(|s| s.as_str()).collect()
+        };
+        Ok(Self {
+            meta: NodeMeta {
+                name: "matching_profiles".into(),
+                outs: vec![Port::str("output")],
+                ins: Vec::new(),
+            },
+            names: matched.join(","),
+        })
+    }
+}
+
+impl GkNode for MatchingProfiles {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::Str(self.names.clone());
+    }
+}
+
 /// Look up a profile name by index from the sorted profile list.
 ///
 /// Signature: `dataset_profile_name_at(index: u64, source: str) -> (String)`
@@ -1078,14 +977,15 @@ pub struct DatasetPrebuffer {
 
 impl DatasetPrebuffer {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let facets = prebuffer_dataset(source)?;
+        // Opening the dataset via the catalog triggers download/caching
+        let _group = load_dataset_group(source)?;
         Ok(Self {
             meta: NodeMeta {
                 name: "dataset_prebuffer".into(),
                 outs: vec![Port::u64("output")],
                 ins: Vec::new(),
             },
-            facets,
+            facets: 0,
         })
     }
 }
@@ -1310,6 +1210,18 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
         },
         FuncSig {
+            name: "matching_profiles", category: C::RealData, outputs: 1,
+            description: "profile names matching a prefix, comma-separated",
+            help: "Returns profiles whose names start with the given prefix.\nIf prefix is empty, returns all profiles.\nUsed by for_each: phase templates to discover profiles dynamically.\nExample: matching_profiles(\"sift1m\", \"label\")",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "prefix", slot_type: SlotType::ConstStr, required: false, example: "\"\"" },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
             name: "dataset_profile_name_at", category: C::RealData, outputs: 1,
             description: "profile name by index from sorted list",
             help: "Returns the profile name at a given index from the dataset's\nsorted profile list. Index wraps modulo profile count.\nExample: dataset_profile_name_at(cycle, \"sift1m\")",
@@ -1441,6 +1353,11 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
             DatasetProfileNames::from_source(src)
                 .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
         ),
+        "matching_profiles" => Some({
+            let prefix = consts.get(1).map(|c| c.as_str()).unwrap_or("");
+            MatchingProfiles::from_source(src, prefix)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        }),
         "dataset_profile_name_at" => Some(
             DatasetProfileNameAt::from_source(src)
                 .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)

@@ -94,19 +94,25 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
                     let raw: String = chars[start..i].iter().collect();
                     let raw = raw.trim();
 
-                    // Check for explicit {:=expr} or {:=expr:=} syntax
-                    if let Some(expr) = raw.strip_prefix(":=") {
+                    if is_literal_content(raw) {
+                        // Content has quotes/commas — literal text, not a bind point.
+                        // Happens when expanded params contain braces (e.g. CQL map literals).
+                        i += 1;
+                    } else if let Some(expr) = raw.strip_prefix(":=") {
+                        // Explicit {:=expr} or {:=expr:=} syntax
                         let expr = expr.strip_suffix(":=").unwrap_or(expr).trim();
                         points.push(BindPoint::InlineDefinition(expr.to_string()));
+                        i += 1;
                     } else if is_expression(raw) {
                         // Content has operators/parens — treat as inline expression
                         points.push(BindPoint::InlineDefinition(raw.to_string()));
+                        i += 1;
                     } else {
                         // Simple identifier — reference bind point
                         let (qualifier, name) = parse_qualified_ref(raw);
                         points.push(BindPoint::Reference { name, qualifier });
+                        i += 1;
                     }
-                    i += 1; // skip }
                 }
             }
         } else {
@@ -139,6 +145,14 @@ fn is_expression(s: &str) -> bool {
     s.starts_with(|c: char| c.is_ascii_digit()) ||
     // Negative literal: starts with - followed by digit
     (s.starts_with('-') && s.len() > 1 && s.as_bytes()[1].is_ascii_digit())
+}
+
+/// Content between `{` and `}` that is clearly literal text — not a
+/// binding name or GK expression. If the content starts with a quote
+/// character, it's a literal value (e.g. CQL map `{'class': ...}`),
+/// never a bind point or expression.
+fn is_literal_content(s: &str) -> bool {
+    s.starts_with('\'') || s.starts_with('"')
 }
 
 /// Parse a qualified reference like "coord:cycle" or just "cycle".

@@ -66,6 +66,14 @@ pub struct WorkloadPhase {
     /// Inline ops for this phase (parsed into `ParsedOp` list).
     #[serde(default)]
     pub ops: Vec<ParsedOp>,
+    /// Phase template iteration: `"var in expr"`.
+    /// The phase is instantiated once per element of the GK expression
+    /// result (which must be a comma-separated string). Each instance
+    /// has `{var}` available as a workload param in its ops and config.
+    ///
+    /// Example: `for_each: "profile in matching_profiles('{dataset}', '{prefix}')"`
+    #[serde(default)]
+    pub for_each: Option<String>,
 }
 
 /// A single step in a scenario.

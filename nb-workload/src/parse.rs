@@ -209,6 +209,11 @@ fn parse_phases(
             }
         }
 
+        let for_each = phase_obj.get("for_each")
+            .or_else(|| phase_obj.get("for"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         phases.insert(phase_name.clone(), WorkloadPhase {
             cycles,
             concurrency,
@@ -217,6 +222,7 @@ fn parse_phases(
             errors,
             tags,
             ops: inline_ops,
+            for_each,
         });
         phase_order.push(phase_name.clone());
     }

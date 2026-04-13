@@ -1,114 +1,82 @@
-# CQL Vector Search Workload for cassnbrs
+#!/usr/bin/env cassnbrs
+# CQL Vector Search — Multi-Profile Discovery
 #
-# Live vector search testing with dataset-backed vectors via vectordata.
-# Adapted from nosqlbench cql_vector2.yaml baseline.
+# Discovers all profiles matching a prefix, then for each profile:
+# creates a table, loads vectors, and runs ANN search with filtered
+# ground truth. Each profile gets its own table and index namespace.
 #
-# Run phases:
-#   nbrs run adapter=cql hosts=localhost workload=cql_vector.yaml tags=phase:schema concurrency=1
-#   nbrs run adapter=cql hosts=localhost workload=cql_vector.yaml tags=phase:rampup cycles=100000
-#   nbrs run adapter=cql hosts=localhost workload=cql_vector.yaml tags=phase:search cycles=1000
+# The for_each: directive iterates profiles dynamically. Each
+# iteration has its own GK scope with profile-specific constants
+# (dimension, vector count, ground truth).
 #
-# Dry-run to stdout:
-#   nbrs run adapter=stdout workload=cql_vector.yaml tags=phase:schema
-#   nbrs run adapter=stdout workload=cql_vector.yaml tags=phase:rampup cycles=5
-#   nbrs run adapter=stdout workload=cql_vector.yaml tags=phase:search cycles=3
-#
-# Parameters:
-#   dataset   — vectordata dataset name (default: glove-25-angular)
-#   keyspace  — target keyspace (default: baselines)
-#   table     — target table (default: vectors)
-#   k         — ANN result limit (default: 100)
-#
-# Statement modes (field name selects execution mode):
-#   raw:      — string interpolation, session.execute(text). For DDL.
-#   simple:   — parameterized, SimpleStatement with typed positional args.
-#   prepared: — prepared statement + typed bind. Default for DML.
-#   stmt:     — alias for prepared (default).
-
-description: |
-  CQL Vector Search: load base vectors, build SAI index, run ANN
-  queries with ground truth neighbors for recall verification.
-  Dimensions are auto-discovered from the dataset.
+# Usage:
+#   cassnbrs cql_vector.yaml dataset=sift1m prefix=label
+#   cassnbrs cql_vector.yaml dataset=sift1m prefix=label adapter=stdout
+#   cassnbrs cql_vector.yaml schema adapter=stdout   # just show DDL
 
 params:
-  dataset: glove-25-angular
+  adapter: cassandra
+  dataset: sift1m
+  prefix: ""
   keyspace: baselines
-  table: vectors
   k: "100"
   concurrency: "100"
-  cycles: "{train_count}"
   replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
 
 bindings: |
-  coordinates := (cycle)
+  inputs := (cycle)
 
-  // Dataset metadata (init-time constants)
+  // Dataset-level constants (from default profile)
   dim := vector_dim("{dataset}")
-  train_count := vector_count("{dataset}")
+  profiles := matching_profiles("{dataset}", "{prefix}")
+  profile_count := dataset_profile_count("{dataset}")
 
-  // Rampup bindings
-  id := format_u64(cycle, 10)
-  train_vector := vector_at(cycle, "{dataset}")
+scenarios:
+  default:
+    - discover
+    - schema
+    - rampup
+    - search
 
-  // Search bindings
-  query_vector := query_vector_at(cycle, "{dataset}")
-  ground_truth := neighbor_indices_at(cycle, "{dataset}")
+phases:
+  discover:
+    cycles: 1
+    concurrency: 1
+    ops:
+      info:
+        stmt: "=== {dataset}: matching profiles for prefix '{prefix}': {profiles} ==="
 
-ops:
+  schema:
+    for_each: "pname in matching_profiles('{dataset}', '{prefix}')"
+    cycles: 1
+    concurrency: 1
+    ops:
+      create_keyspace:
+        raw: "CREATE KEYSPACE IF NOT EXISTS {keyspace} WITH replication = {replication} AND durable_writes = true"
+      create_table:
+        raw: "CREATE TABLE IF NOT EXISTS {keyspace}.vec_{pname} (key text PRIMARY KEY, value vector<float, {dim}>)"
+      create_index:
+        raw: "CREATE CUSTOM INDEX IF NOT EXISTS vec_{pname}_idx ON {keyspace}.vec_{pname} (value) USING 'StorageAttachedIndex'"
 
-  # --- Schema phase ---
-  # Run with: tags=phase:schema concurrency=1
-  # "raw:" → string interpolation, no prepare. Required for DDL.
+  rampup:
+    for_each: "pname in matching_profiles('{dataset}', '{prefix}')"
+    cycles: "{vector_count('{dataset}:{pname}')}"
+    concurrency: "{concurrency}"
+    ops:
+      insert:
+        prepared: "INSERT INTO {keyspace}.vec_{pname} (key, value) VALUES ('{format_u64(cycle, 10)}', {vector_at(cycle, '{dataset}:{pname}')})"
 
-  drop_index:
-    tags:
-      phase: schema
-    raw: "DROP INDEX IF EXISTS {keyspace}.{table}_value_idx"
-
-  drop_table:
-    tags:
-      phase: schema
-    raw: "DROP TABLE IF EXISTS {keyspace}.{table}"
-
-  create_keyspace:
-    tags:
-      phase: schema
-    raw: "CREATE KEYSPACE IF NOT EXISTS {keyspace} WITH replication = {replication} AND durable_writes = true"
-
-  create_table:
-    tags:
-      phase: schema
-    raw: "CREATE TABLE IF NOT EXISTS {keyspace}.{table} (key text PRIMARY KEY, value vector<float, {dim}>)"
-
-  create_index:
-    tags:
-      phase: schema
-    raw: "CREATE CUSTOM INDEX IF NOT EXISTS {table}_value_idx ON {keyspace}.{table} (value) USING 'StorageAttachedIndex'"
-
-  # --- Rampup phase ---
-  # Run with: tags=phase:rampup cycles=<trainsize>
-  # "prepared:" → prepared statement + typed bind.
-
-  insert:
-    tags:
-      phase: rampup
-    prepared: "INSERT INTO {keyspace}.{table} (key, value) VALUES ('{id}', {train_vector})"
-
-  # --- Search phase ---
-  # Run with: tags=phase:search cycles=<testsize>
-  # "prepared:" → prepared statement + typed bind.lets
-
-  select_ann:
-    tags:
-      phase: search
-    prepared: "SELECT key FROM {keyspace}.{table} ORDER BY value ANN OF {query_vector} LIMIT {k}"
-    relevancy:
-      actual: key
-      expected: "{ground_truth}"
-      k: 100
-      functions:
-        - recall
-        - precision
-        - f1
-        - reciprocal_rank
-        - average_precision
+  search:
+    for_each: "pname in matching_profiles('{dataset}', '{prefix}')"
+    cycles: 100
+    concurrency: "{concurrency}"
+    ops:
+      select_ann:
+        prepared: "SELECT key FROM {keyspace}.vec_{pname} ORDER BY value ANN OF {query_vector_at(cycle, '{dataset}:{pname}')} LIMIT {k}"
+        relevancy:
+          actual: key
+          expected: "{filtered_neighbor_indices_at(cycle, '{dataset}:{pname}')}"
+          k: 100
+          functions:
+            - recall
+            - precision

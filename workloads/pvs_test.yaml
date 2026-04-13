@@ -1,29 +1,26 @@
-#!/usr/bin/env cassnbrs
+#!/usr/bin/env nbrs
 # pvs_test.yaml — Predicated Vector Search test workload.
 #
-# Discovers all profiles in a vector dataset and emits metadata
-# about each one, then iterates through the filtered ground-truth
-# neighbors for a chosen query index against the default profile.
-#
-# Profiles are enumerated dynamically via GK constant expressions
-# so the cycle count adapts to whatever the dataset declares.
+# Discovers all profiles in a vector dataset, emits metadata about
+# each one, then iterates filtered ground-truth neighbors for a
+# chosen query index against a specified profile.
 #
 # Usage:
 #   nbrs pvs_test.yaml
 #   nbrs pvs_test.yaml dataset=sift1m
-#   nbrs pvs_test.yaml dataset=sift1m qi=10
+#   nbrs pvs_test.yaml dataset=sift1m profile=label-1 qi=10
+#   nbrs pvs_test.yaml profiles        # just show profiles
+#   nbrs pvs_test.yaml filtered_neighbors  # just show GT
 
 params:
   dataset: sift1m
+  profile: default
   qi: "0"
 
 bindings: |
   inputs := (cycle)
 
-  # Prebuffer — eagerly download all facets before workload runs
-  _prebuffer := dataset_prebuffer("{dataset}")
-
-  # Dataset-level constants (init-time, from default profile)
+  # Dataset-level constants (from default profile)
   dim := vector_dim("{dataset}")
   base_count := vector_count("{dataset}")
   query_count := query_count("{dataset}")
@@ -31,19 +28,23 @@ bindings: |
   dist_fn := dataset_distance_function("{dataset}")
   facets := dataset_facets("{dataset}")
 
-  # Profile enumeration constants
+  # Profile enumeration
   profile_count := dataset_profile_count("{dataset}")
   profile_names := dataset_profile_names("{dataset}")
 
-  # Per-cycle profile inspection (index = cycle)
+  # Per-cycle profile inspection (cycle = profile index)
   pname := dataset_profile_name_at(cycle, "{dataset}")
   pbase := profile_base_count(cycle, "{dataset}")
   pfacets := profile_facets(cycle, "{dataset}")
 
-  # Query-level bindings for filtered neighbor walkthrough
+  # Profile-specific vector access: dataset:profile syntax
+  profile_base_vec := vector_at(cycle, "{dataset}:{profile}")
+  profile_base_count := vector_count("{dataset}:{profile}")
+
+  # Filtered neighbors for the selected profile + query
   query_idx := {qi}
-  fni := filtered_neighbor_indices_at(query_idx, "{dataset}")
-  fnd := filtered_neighbor_distances_at(query_idx, "{dataset}")
+  fni := filtered_neighbor_indices_at(query_idx, "{dataset}:{profile}")
+  fnd := filtered_neighbor_distances_at(query_idx, "{dataset}:{profile}")
 
 scenarios:
   default:
@@ -74,7 +75,7 @@ phases:
         stmt: "  profiles ({profile_count}): {profile_names}"
 
   profiles:
-    cycles: "{dataset_profile_count('{dataset}')}"
+    cycles: "{profile_count}"
     concurrency: 1
     ops:
       profile_detail:
@@ -85,8 +86,10 @@ phases:
     concurrency: 1
     ops:
       fn_header:
-        stmt: "--- Filtered neighbors for query[{qi}] ---"
+        stmt: "--- Profile '{profile}': filtered neighbors for query[{qi}] ---"
       fn_indices:
         stmt: "  indices:   {fni}"
       fn_distances:
         stmt: "  distances: {fnd}"
+      fn_base_count:
+        stmt: "  profile base vectors: {profile_base_count}"
