@@ -1837,6 +1837,7 @@ dependencies = [
 name = "nb-adapter-plotter"
 version = "0.1.1"
 dependencies = [
+ "inventory",
  "libc",
  "nb-activity",
  "nb-variates",

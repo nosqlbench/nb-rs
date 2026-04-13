@@ -428,3 +428,31 @@ fn terminal_height() -> Option<usize> {
 }
 
 fn atty_stdout() -> bool { unsafe { libc::isatty(1) != 0 } }
+
+// =========================================================================
+// Adapter Registration (inventory-based, link-time)
+// =========================================================================
+
+inventory::submit! {
+    nb_activity::adapter::AdapterRegistration {
+        names: || &["plotter", "plot"],
+        known_params: || &["mode", "fade", "lanes"],
+        create: |params| Box::pin(async move {
+            let mode = params.get("mode").cloned().unwrap_or_else(|| "plot".into());
+            let fade = params.get("fade")
+                .and_then(|s| s.parse::<f32>().ok())
+                .unwrap_or(0.0);
+            let lanes = params.get("lanes")
+                .map(|s| s.split(';')
+                    .map(|lane| lane.split(',').map(|f| f.trim().to_string()).collect())
+                    .collect())
+                .unwrap_or_default();
+            Ok(std::sync::Arc::new(PlotterAdapter::with_config(PlotterConfig {
+                mode,
+                fade,
+                lanes,
+                ..Default::default()
+            })) as std::sync::Arc<dyn nb_activity::adapter::DriverAdapter>)
+        }),
+    }
+}

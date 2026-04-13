@@ -158,6 +158,19 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         .collect();
     let strict = args.iter().any(|a| a == "--strict");
 
+    // Dry-run mode: override adapter with stdout or noop
+    let dry_run = args.iter().find_map(|a| {
+        if a == "--dry-run" { Some("silent") }
+        else if let Some(mode) = a.strip_prefix("--dry-run=") { Some(mode) }
+        else { None }
+    });
+
+    // OpenMetrics push URL
+    let openmetrics_url: Option<String> = args.iter()
+        .find_map(|a| a.strip_prefix("--report-openmetrics-to=")
+            .or_else(|| a.strip_prefix("report-openmetrics-to=")))
+        .map(|s| s.to_string());
+
     // Merge all ops for param expansion and GK compilation.
     let num_top_level_ops = ops.len();
     let mut all_ops_for_compile: Vec<nb_workload::model::ParsedOp> = ops;
@@ -511,11 +524,11 @@ pub async fn run(args: &[String]) -> Result<(), String> {
                 };
 
                 let phase_driver = phase.adapter.as_deref().unwrap_or(&driver);
-                let adapter = create_adapter(phase_driver, &merged_params).await?;
+                let adapter = create_adapter(phase_driver, &merged_params, dry_run).await?;
                 let activity = Activity::with_params(
                     config, &Labels::of("session", "cli"), op_sequence, workload_params.clone(),
                 );
-                activity.run_with_driver(adapter, program.clone()).await;
+                run_activity(activity, adapter, program.clone(), openmetrics_url.as_deref()).await;
             }
 
             eprintln!("phase '{phase_name}' complete");
@@ -559,28 +572,117 @@ pub async fn run(args: &[String]) -> Result<(), String> {
             stanza_concurrency,
         };
 
-        let adapter = create_adapter(&driver, &merged_params).await?;
+        let adapter = create_adapter(&driver, &merged_params, dry_run).await?;
         let activity = Activity::with_params(
             config, &Labels::of("session", "cli"), op_sequence, workload_params,
         );
-        activity.run_with_driver(adapter, program).await;
+        run_activity(activity, adapter, program, openmetrics_url.as_deref()).await;
     }
 
-    eprintln!("done.");
+    if dry_run.is_some() {
+        eprintln!("dry-run complete.");
+    } else {
+        eprintln!("done.");
+    }
     Ok(())
 }
 
 /// Create an adapter from inventory registrations.
+/// Create an adapter, respecting dry-run mode.
 async fn create_adapter(
     driver: &str,
     params: &HashMap<String, String>,
+    dry_run: Option<&str>,
 ) -> Result<Arc<dyn crate::adapter::DriverAdapter>, String> {
+    if let Some(mode) = dry_run {
+        return Ok(Arc::new(DryRunAdapter { mode: mode.to_string() }));
+    }
     let reg = find_adapter_registration(driver)
         .ok_or_else(|| {
             let available = registered_driver_names();
             format!("unknown adapter '{driver}' (available: {})", available.join(", "))
         })?;
     (reg.create)(params.clone()).await
+}
+
+/// Run an activity with optional OpenMetrics push reporting.
+async fn run_activity(
+    activity: Activity,
+    adapter: Arc<dyn crate::adapter::DriverAdapter>,
+    program: Arc<nb_variates::kernel::GkProgram>,
+    openmetrics_url: Option<&str>,
+) {
+    if let Some(url) = openmetrics_url {
+        let shared_metrics = activity.shared_metrics();
+        let mut reporter = nb_metrics::reporters::victoriametrics::VictoriaMetricsReporter::new(url);
+        let capture_interval = std::time::Duration::from_secs(1);
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let flag = running.clone();
+        eprintln!("pushing openmetrics to {url}");
+        std::thread::spawn(move || {
+            use nb_metrics::scheduler::Reporter;
+            while flag.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(capture_interval);
+                let frame = shared_metrics.capture(capture_interval);
+                reporter.report(&frame);
+            }
+        });
+        activity.run_with_driver(adapter, program).await;
+        running.store(false, std::sync::atomic::Ordering::Relaxed);
+    } else {
+        activity.run_with_driver(adapter, program).await;
+    }
+}
+
+/// Dry-run adapter: emit ops to stdout or silently discard.
+struct DryRunAdapter {
+    mode: String,
+}
+
+impl crate::adapter::DriverAdapter for DryRunAdapter {
+    fn name(&self) -> &str { "dry-run" }
+
+    fn map_op(&self, _template: &nb_workload::model::ParsedOp)
+        -> Result<Box<dyn crate::adapter::OpDispenser>, String>
+    {
+        let mode = self.mode.clone();
+        Ok(Box::new(DryRunDispenser { mode }))
+    }
+}
+
+struct DryRunDispenser {
+    mode: String,
+}
+
+impl crate::adapter::OpDispenser for DryRunDispenser {
+    fn execute<'a>(&'a self, _cycle: u64, fields: &'a crate::adapter::ResolvedFields)
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::adapter::OpResult, crate::adapter::ExecutionError>> + Send + 'a>>
+    {
+        let mode = &self.mode;
+        Box::pin(async move {
+            match mode.as_str() {
+                "emit" => {
+                    if let Some(stmt) = fields.get_str("stmt")
+                        .or_else(|| fields.get_str("raw"))
+                        .or_else(|| fields.get_str("prepared"))
+                    {
+                        println!("{stmt}");
+                    } else {
+                        println!("{}", fields.strings().join("\n"));
+                    }
+                }
+                "json" => {
+                    println!("{}", fields.to_json());
+                }
+                _ => {} // silent
+            }
+            Ok(crate::adapter::OpResult {
+                body: None,
+                captures: std::collections::HashMap::new(),
+                skipped: false,
+            })
+        })
+    }
 }
 
 // =========================================================================

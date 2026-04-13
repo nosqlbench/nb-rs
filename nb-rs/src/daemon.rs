@@ -154,6 +154,7 @@ pub struct WebAnchor {
 
 impl WebAnchor {
     /// The OpenMetrics push URL for this instance.
+    #[allow(dead_code)]
     pub fn push_url(&self) -> String {
         format!("http://{}:{}/api/v1/import/prometheus", self.host, self.port)
     }
@@ -207,6 +208,7 @@ pub fn read_anchor() -> Option<WebAnchor> {
 ///
 /// Returns `Some(url)` if the anchor exists and the PID is alive.
 /// Cleans up stale anchors automatically.
+#[allow(dead_code)]
 pub fn discover_web_instance() -> Option<String> {
     let path = anchor_path();
     let content = fs::read_to_string(&path).ok()?;

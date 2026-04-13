@@ -14,6 +14,7 @@ mod daemon;
 mod describe;
 mod plot;
 mod run;
+#[allow(dead_code)]
 mod web_push;
 
 fn main() {
