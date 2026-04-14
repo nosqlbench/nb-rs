@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use serde_json::Value as JVal;
-use crate::model::{BindingsDef, ParsedOp, ScenarioStep, Workload, WorkloadPhase};
+use crate::model::{BindingsDef, ParsedOp, ScenarioNode, Workload, WorkloadPhase};
 use crate::template::expand_templates;
 
 /// Parse a YAML workload string into a normalized Workload.
@@ -101,39 +101,47 @@ pub fn parse_ops(yaml_source: &str) -> Result<Vec<ParsedOp>, String> {
 // Scenarios
 // -----------------------------------------------------------------
 
-fn parse_scenarios(val: Option<&JVal>) -> HashMap<String, Vec<ScenarioStep>> {
+fn parse_scenarios(val: Option<&JVal>) -> HashMap<String, Vec<ScenarioNode>> {
     let mut scenarios = HashMap::new();
     let Some(val) = val else { return scenarios; };
     let Some(obj) = val.as_object() else { return scenarios; };
 
     for (scenario_name, steps_val) in obj {
-        let steps = match steps_val {
-            JVal::String(s) => {
-                vec![ScenarioStep { name: "001".into(), command: s.clone() }]
-            }
-            JVal::Object(map) => {
-                map.iter().map(|(name, cmd)| ScenarioStep {
-                    name: name.clone(),
-                    command: cmd.as_str().unwrap_or("").to_string(),
-                }).collect()
-            }
-            JVal::Array(arr) => {
-                // New format: array of phase name strings like ["schema", "rampup", "main"].
-                // Old format: array of command strings.
-                // Both parse the same way — the name is the string value itself.
-                arr.iter().enumerate().map(|(_i, item)| {
-                    let s = item.as_str().unwrap_or("").to_string();
-                    ScenarioStep {
-                        name: s.clone(),
-                        command: s,
-                    }
-                }).collect()
-            }
-            _ => Vec::new(),
-        };
-        scenarios.insert(scenario_name.clone(), steps);
+        let nodes = parse_scenario_nodes(steps_val);
+        scenarios.insert(scenario_name.clone(), nodes);
     }
     scenarios
+}
+
+/// Recursively parse scenario nodes from YAML.
+///
+/// Handles:
+/// - String: phase name
+/// - Object with `for_each` + `phases`: for_each loop (phases parsed recursively)
+/// - Array: list of nodes
+fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
+    match val {
+        JVal::String(s) => vec![ScenarioNode::Phase(s.clone())],
+        JVal::Array(arr) => arr.iter().flat_map(|item| parse_scenario_nodes(item)).collect(),
+        JVal::Object(obj) => {
+            if let Some(spec) = obj.get("for_each").and_then(|v| v.as_str()) {
+                // for_each node: children come from "phases" (parsed recursively)
+                let children = obj.get("phases")
+                    .map(|v| parse_scenario_nodes(v))
+                    .unwrap_or_default();
+                vec![ScenarioNode::ForEach {
+                    spec: spec.to_string(),
+                    children,
+                }]
+            } else {
+                // Legacy command-string format: name → command
+                obj.iter().map(|(name, _cmd)| {
+                    ScenarioNode::Phase(name.clone())
+                }).collect()
+            }
+        }
+        _ => Vec::new(),
+    }
 }
 
 // -----------------------------------------------------------------
@@ -167,8 +175,11 @@ fn parse_phases(
             });
 
         let concurrency = phase_obj.get("concurrency")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize);
+            .map(|v| match v {
+                JVal::Number(n) => n.to_string(),
+                JVal::String(s) => s.clone(),
+                other => other.to_string(),
+            });
 
         let rate = phase_obj.get("rate")
             .and_then(|v| v.as_f64());
@@ -185,6 +196,9 @@ fn parse_phases(
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        // Phase-level bindings override workload bindings for ops in this phase
+        let phase_bindings = merge_bindings(doc_bindings, &extract_bindings(phase_obj.get("bindings")));
+
         // Parse inline ops if present
         let mut inline_ops = Vec::new();
         for key in ["ops", "op", "operations", "statements", "statement"] {
@@ -194,7 +208,7 @@ fn parse_phases(
                     t.insert("phase".to_string(), phase_name.clone());
                     t
                 };
-                let _ = parse_ops_field(ops_val, phase_name, doc_bindings, doc_params, &phase_tags, &mut inline_ops);
+                let _ = parse_ops_field(ops_val, phase_name, &phase_bindings, doc_params, &phase_tags, &mut inline_ops);
                 break;
             }
         }
@@ -468,7 +482,7 @@ fn normalize_op_object(
     let op_field_names = ["op", "ops", "operations", "stmt", "statement", "statements"];
     // Activity-level params excised from op fields before the adapter sees them
     let activity_params = ["ratio", "driver", "space", "instrument", "start-timers", "stop-timers",
-        "verify", "relevancy", "strict"];
+        "verify", "relevancy", "strict", "poll", "poll_interval_ms", "timeout_ms"];
 
     let op_fields = if let Some(explicit_op) = op_field_names.iter()
         .find_map(|k| map.get(*k))
@@ -873,7 +887,7 @@ phases:
         // Schema phase config
         let schema = &workload.phases["schema"];
         assert_eq!(schema.cycles.as_deref(), Some("1"));
-        assert_eq!(schema.concurrency, Some(1));
+        assert_eq!(schema.concurrency.as_deref(), Some("1"));
         assert_eq!(schema.rate, None);
         assert_eq!(schema.ops.len(), 1);
         assert_eq!(schema.ops[0].name, "create_table");
@@ -881,7 +895,7 @@ phases:
         // Main phase config
         let main = &workload.phases["main"];
         assert_eq!(main.cycles.as_deref(), Some("1000"));
-        assert_eq!(main.concurrency, Some(10));
+        assert_eq!(main.concurrency.as_deref(), Some("10"));
         assert_eq!(main.rate, Some(500.0));
         assert_eq!(main.ops.len(), 2);
 

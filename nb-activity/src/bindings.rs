@@ -136,11 +136,11 @@ pub fn probe_compile_level(func_name: &str) -> nb_variates::node::CompileLevel {
 
     let source = format!("coordinates := (cycle)\nout := {func_name}({})", parts.join(", "));
 
-    // Suppress panic output during probing — fallback is Phase1.
-    let prev_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let result = std::panic::catch_unwind(|| nb_variates::dsl::compile_gk(&source));
-    std::panic::set_hook(prev_hook);
+    // Probe compile level via catch_unwind — fallback is Phase1.
+    // Does not replace the global panic hook (not thread-safe).
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || nb_variates::dsl::compile_gk(&source)
+    ));
 
     match result {
         Ok(Ok(kernel)) => kernel.program().last_node_compile_level(),
@@ -331,14 +331,104 @@ pub fn compile_bindings_with_libs_excluding(
 ) -> Result<GkKernel, String> {
     use nb_workload::model::BindingsDef;
 
-    // Check if any op uses GK source mode
-    let gk_source = ops.iter().find_map(|op| {
+    // Collect GK source blocks, deduplicating identical sources
+    // (multiple ops sharing the same phase bindings).
+    let mut base_source: Option<String> = None;
+    let mut extra_sources: Vec<(String, String)> = Vec::new(); // (op_name, unique extra source)
+    for op in ops {
         if let BindingsDef::GkSource(src) = &op.bindings {
-            if !src.trim().is_empty() { Some(src.clone()) } else { None }
-        } else {
-            None
+            if src.trim().is_empty() { continue; }
+            match &base_source {
+                None => { base_source = Some(src.clone()); }
+                Some(base) => {
+                    if src != base {
+                        // This op has different bindings from the base — it's an op-level augmentation
+                        extra_sources.push((op.name.clone(), src.clone()));
+                    }
+                    // If identical to base, skip (ops sharing phase bindings)
+                }
+            }
         }
-    });
+    }
+
+    let gk_source = if let Some(base) = base_source {
+        if !extra_sources.is_empty() {
+            // Check for shadowing: op-level bindings cannot redefine enclosing scope names
+            let base_names = extract_binding_names(&base);
+            let mut seen_extra_names: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            for (op_name, extra_src) in &extra_sources {
+                let extra_names = extract_binding_names(extra_src);
+                for name in &extra_names {
+                    if base_names.contains(name) {
+                        return Err(format!(
+                            "op '{}' binding '{}' shadows a name from the enclosing scope. \
+                             Ops augment the scope DAG but cannot override it. \
+                             Use a separate phase for different bindings.",
+                            op_name, name
+                        ));
+                    }
+                    if let Some(prior_op) = seen_extra_names.get(name) {
+                        return Err(format!(
+                            "op '{}' binding '{}' is already defined by op '{}'. \
+                             Each ride-along binding name must be unique across all ops in the scope.",
+                            op_name, name, prior_op
+                        ));
+                    }
+                    seen_extra_names.insert(name.clone(), op_name.clone());
+                }
+            }
+
+            // Strict mode: detect cross-op binding references
+            if strict {
+                let all_extra_names: std::collections::HashSet<String> = extra_sources.iter()
+                    .flat_map(|(_, src)| extract_binding_names(src))
+                    .collect();
+                for (op_name, extra_src) in &extra_sources {
+                    let own_names = extract_binding_names(extra_src);
+                    if let Some(op) = ops.iter().find(|o| o.name == *op_name) {
+                        for value in op.op.values() {
+                            if let Some(s) = value.as_str() {
+                                for name in nb_workload::bindpoints::referenced_bindings(s) {
+                                    if all_extra_names.contains(&name)
+                                        && !own_names.contains(&name)
+                                        && !base_names.contains(&name)
+                                    {
+                                        return Err(format!(
+                                            "strict: op '{}' references '{{{}}}' which is defined \
+                                             by a sibling op, not by the enclosing scope or its own bindings.",
+                                            op_name, name
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Merge: append op-level bindings (strip duplicate inputs declarations)
+            let mut merged = base;
+            for (_, extra_src) in &extra_sources {
+                merged.push('\n');
+                for line in extra_src.lines() {
+                    let trimmed = line.trim();
+                    if (trimmed.starts_with("inputs") || trimmed.starts_with("coordinates"))
+                        && trimmed.contains(":=")
+                    {
+                        continue;
+                    }
+                    merged.push_str(line);
+                    merged.push('\n');
+                }
+            }
+            Some(merged)
+        } else {
+            Some(base)
+        }
+    } else {
+        None
+    };
 
     if let Some(source) = gk_source {
         let mut required: Vec<String> = Vec::new();
@@ -361,6 +451,8 @@ pub fn compile_bindings_with_libs_excluding(
                     required.push(name.to_string());
                 }
             }
+            // Scan params for bind point references (e.g., relevancy.expected)
+            collect_param_bindings(&op.params, exclude, &mut required);
         }
         // Include config expression references so DCE preserves them
         for name in extra_required {
@@ -641,6 +733,47 @@ fn translate_legacy_func(name: &str, args: &[String]) -> (String, Vec<String>) {
 /// Strip Java long literal suffix (e.g., "1000000000L" → "1000000000")
 fn strip_java_long_suffix(arg: &str) -> &str {
     arg.strip_suffix('L').or_else(|| arg.strip_suffix('l')).unwrap_or(arg)
+}
+
+/// Extract binding names from a GK source string.
+/// Parses `name :=` patterns to find all defined names.
+fn extract_binding_names(source: &str) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some(pos) = trimmed.find(":=") {
+            let lhs = trimmed[..pos].trim();
+            // Skip inputs/coordinates declarations
+            if lhs == "inputs" || lhs == "coordinates" {
+                continue;
+            }
+            // Skip extern declarations
+            if lhs.starts_with("extern") {
+                continue;
+            }
+            // Strip modifiers (shared, final, init)
+            let name = lhs
+                .strip_prefix("shared ").unwrap_or(lhs)
+                .strip_prefix("final ").unwrap_or(lhs)
+                .strip_prefix("init ").unwrap_or(lhs)
+                .trim();
+            // Handle destructuring: (a, b) := ...
+            if name.starts_with('(') && name.ends_with(')') {
+                for part in name[1..name.len()-1].split(',') {
+                    let n = part.trim();
+                    if !n.is_empty() {
+                        names.insert(n.to_string());
+                    }
+                }
+            } else if !name.is_empty() {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    names
 }
 
 #[cfg(test)]

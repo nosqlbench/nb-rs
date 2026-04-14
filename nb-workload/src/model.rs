@@ -48,9 +48,10 @@ pub struct WorkloadPhase {
     /// references like `"{train_count}"`. Default 1 (one stanza).
     #[serde(default)]
     pub cycles: Option<String>,
-    /// Concurrency (async fibers). Default 1.
+    /// Concurrency (async fibers). String type to support GK constant
+    /// or workload param references like `"{concurrency}"`. Default 1.
     #[serde(default)]
-    pub concurrency: Option<usize>,
+    pub concurrency: Option<String>,
     /// Rate limit (ops/sec). Default unlimited.
     #[serde(default)]
     pub rate: Option<f64>,
@@ -92,17 +93,25 @@ pub struct WorkloadPhase {
     pub iter_scope: Option<String>,
 }
 
-/// A single step in a scenario.
+/// A node in a scenario execution tree.
 ///
-/// For the new phased format (`scenarios.default: [schema, rampup, main]`),
-/// `name` is the phase name and `command` is also set to the phase name.
-/// For the legacy command-string format (`scenarios.default.schema: "run ..."`),
-/// `name` is the step key and `command` is the full command string.
+/// Scenarios are trees of phases and for_each loops. The tree is
+/// flattened into a linear execution plan at runtime. Nesting is
+/// supported to arbitrary depth.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScenarioStep {
-    pub name: String,
-    pub command: String,
+pub enum ScenarioNode {
+    /// A single phase to execute.
+    Phase(String),
+    /// A for_each loop: iterate `spec` ("var in expr"), executing
+    /// `children` once per iteration value.
+    ForEach {
+        spec: String,
+        children: Vec<ScenarioNode>,
+    },
 }
+
+/// Legacy alias for backward compatibility with code that references ScenarioStep.
+pub type ScenarioStep = ScenarioNode;
 
 /// How bindings are defined for an op.
 ///

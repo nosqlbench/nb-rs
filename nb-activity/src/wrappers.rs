@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::adapter::{
-    ExecutionError, OpDispenser, OpResult, ResolvedFields,
+    AdapterError, ExecutionError, OpDispenser, OpResult, ResolvedFields,
 };
 use nb_workload::bindpoints;
 
@@ -284,6 +284,135 @@ impl OpDispenser for ThrottleDispenser {
             }
             let stripped = fields.without(&self.delay_field);
             self.inner.execute(cycle, &stripped).await
+        })
+    }
+}
+
+// =========================================================================
+// PollingDispenser: retry until condition met
+// =========================================================================
+
+/// Wraps an inner dispenser and re-executes it until the result
+/// body is empty (zero rows). Used for awaiting conditions like
+/// SAI index compaction completing.
+///
+/// Configured via op params:
+/// - `poll_interval_ms`: delay between polls (default: 1000)
+/// - `timeout_ms`: maximum total wait (default: 300000 = 5 min)
+/// - `poll_condition`: when to stop: "empty" (default) = stop when 0 rows
+pub struct PollingDispenser {
+    inner: Arc<dyn OpDispenser>,
+    poll_interval: std::time::Duration,
+    timeout: std::time::Duration,
+    /// Externally visible metrics for the polling operation.
+    pub metrics: Arc<PollingMetrics>,
+}
+
+/// Metrics surfaced by the polling wrapper.
+pub struct PollingMetrics {
+    /// Total polls executed across all invocations.
+    pub polls_total: std::sync::atomic::AtomicU64,
+    /// Total time spent polling (milliseconds).
+    pub poll_elapsed_ms: std::sync::atomic::AtomicU64,
+    /// Whether the condition has been met (0 = waiting, 1 = done).
+    pub condition_met: std::sync::atomic::AtomicU64,
+    /// The last observed value from the poll condition (e.g., number of
+    /// remaining tasks). This is the metric that determines completion.
+    pub poll_metric: std::sync::atomic::AtomicU64,
+}
+
+impl PollingMetrics {
+    fn new() -> Self {
+        Self {
+            polls_total: std::sync::atomic::AtomicU64::new(0),
+            poll_elapsed_ms: std::sync::atomic::AtomicU64::new(0),
+            condition_met: std::sync::atomic::AtomicU64::new(0),
+            poll_metric: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+
+impl PollingDispenser {
+    /// Wrap an inner dispenser with polling behavior.
+    /// Returns the wrapped dispenser and a handle to the metrics.
+    pub fn wrap(
+        inner: Arc<dyn OpDispenser>,
+        poll_interval_ms: u64,
+        timeout_ms: u64,
+    ) -> (Arc<dyn OpDispenser>, Arc<PollingMetrics>) {
+        let metrics = Arc::new(PollingMetrics::new());
+        let dispenser = Arc::new(Self {
+            inner,
+            poll_interval: std::time::Duration::from_millis(poll_interval_ms),
+            timeout: std::time::Duration::from_millis(timeout_ms),
+            metrics: metrics.clone(),
+        });
+        (dispenser, metrics)
+    }
+}
+
+impl OpDispenser for PollingDispenser {
+    fn execute<'a>(
+        &'a self,
+        cycle: u64,
+        fields: &'a ResolvedFields,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        Box::pin(async move {
+            let start = std::time::Instant::now();
+            let mut polls = 0u64;
+
+            loop {
+                let result = self.inner.execute(cycle, fields).await?;
+                polls += 1;
+
+                // Check condition: empty result body = done
+                let row_count = result.body.as_ref()
+                    .map(|b| b.element_count())
+                    .unwrap_or(0);
+                let is_empty = row_count == 0;
+
+                self.metrics.poll_metric.store(row_count, std::sync::atomic::Ordering::Relaxed);
+
+                if !is_empty {
+                    eprint!("\r\x1b[K  awaiting: {row_count} task(s) remaining ({:.0}s elapsed)",
+                        start.elapsed().as_secs_f64());
+                }
+
+                if is_empty {
+                    let elapsed = start.elapsed();
+                    self.metrics.polls_total.fetch_add(polls, std::sync::atomic::Ordering::Relaxed);
+                    self.metrics.poll_elapsed_ms.store(elapsed.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+                    self.metrics.condition_met.store(1, std::sync::atomic::Ordering::Relaxed);
+                    eprintln!("  poll complete: {} polls in {:.1}s",
+                        polls, elapsed.as_secs_f64());
+                    return Ok(OpResult {
+                        body: None,
+                        captures: {
+                            let mut c = std::collections::HashMap::new();
+                            c.insert("poll_count".into(), nb_variates::node::Value::U64(polls));
+                            c.insert("poll_elapsed_ms".into(),
+                                nb_variates::node::Value::U64(elapsed.as_millis() as u64));
+                            c
+                        },
+                        skipped: false,
+                    });
+                }
+
+                // Check timeout
+                if start.elapsed() > self.timeout {
+                    return Err(ExecutionError::Op(AdapterError {
+                        error_name: "poll_timeout".into(),
+                        message: format!(
+                            "polling timed out after {:.1}s ({} polls). Last result had rows.",
+                            start.elapsed().as_secs_f64(), polls
+                        ),
+                        retryable: false,
+                    }));
+                }
+
+                // Wait before next poll
+                tokio::time::sleep(self.poll_interval).await;
+            }
         })
     }
 }

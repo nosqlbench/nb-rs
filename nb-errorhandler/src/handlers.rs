@@ -10,12 +10,13 @@ use std::sync::Mutex;
 use crate::detail::ErrorDetail;
 use crate::handler::ErrorHandler;
 
-/// Stop execution immediately by panicking.
+/// Signal that execution should stop after this error.
+/// Does NOT print — that's `warn`'s job. Use `warn,stop` to both log and halt.
 pub struct StopHandler;
 
 impl ErrorHandler for StopHandler {
-    fn handle(&self, name: &str, error_msg: &str, cycle: u64, _duration_nanos: u64, _detail: ErrorDetail) -> ErrorDetail {
-        panic!("stopping on error at cycle {cycle}: [{name}] {error_msg}");
+    fn handle(&self, _name: &str, _error_msg: &str, _cycle: u64, _duration_nanos: u64, detail: ErrorDetail) -> ErrorDetail {
+        detail.with_stop()
     }
 }
 
@@ -24,7 +25,7 @@ pub struct WarnHandler;
 
 impl ErrorHandler for WarnHandler {
     fn handle(&self, name: &str, error_msg: &str, cycle: u64, _duration_nanos: u64, detail: ErrorDetail) -> ErrorDetail {
-        log::warn!("error at cycle {cycle}: [{name}] {error_msg}");
+        eprintln!("WARN error at cycle {cycle}: [{name}] {error_msg}");
         detail
     }
 }
@@ -34,7 +35,7 @@ pub struct ErrorLogHandler;
 
 impl ErrorHandler for ErrorLogHandler {
     fn handle(&self, name: &str, error_msg: &str, cycle: u64, _duration_nanos: u64, detail: ErrorDetail) -> ErrorDetail {
-        log::error!("error at cycle {cycle}: [{name}] {error_msg}");
+        eprintln!("ERROR at cycle {cycle}: [{name}] {error_msg}");
         detail
     }
 }
@@ -140,11 +141,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "stopping on error")]
-    fn stop_handler_panics() {
+    fn stop_handler_sets_should_stop() {
         let h = StopHandler;
         let detail = ErrorDetail::non_retryable("test");
-        h.handle("test", "boom", 42, 0, detail);
+        let result = h.handle("test", "boom", 42, 0, detail);
+        assert!(result.should_stop, "stop handler should set should_stop flag");
     }
 
     #[test]

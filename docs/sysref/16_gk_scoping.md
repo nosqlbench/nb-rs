@@ -56,6 +56,17 @@ block. Names referenced in the phase ops that aren't defined
 in the phase bindings are auto-declared as `extern` inputs,
 typed from the outer scope's output manifest.
 
+### What is NOT a scope boundary
+
+Ops, stanzas, and cycles are evaluations within the enclosing
+scope — they do not create new GK contexts. Each op dispenser
+holds a reference to the enclosing scope's `GkProgram`. Op-level
+`bindings:` blocks augment the enclosing scope's DAG at compile
+time. They cannot shadow enclosing names (compile error).
+
+The only exception is standalone const expressions
+(`eval_const_expr`) which have no parent scope.
+
 ---
 
 ## No Flattening, No Duplication

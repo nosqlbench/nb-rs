@@ -20,7 +20,7 @@ regex = "1"
 serde_json = "1"
 petgraph = "0.8"
 layout-rs = "0.1"
-vectordata = { version = "0.19", optional = true }
+vectordata = { version = "0.20", optional = true }
 cranelift-jit = { version = "0.116", optional = true }
 cranelift-module = { version = "0.116", optional = true }
 cranelift-codegen = { version = "0.116", optional = true }
@@ -35,6 +35,7 @@ jit = ["dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-codegen", "de
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [[bench]]
 name = "gk_throughput"

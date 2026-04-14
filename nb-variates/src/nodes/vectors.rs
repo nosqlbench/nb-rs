@@ -38,6 +38,7 @@ use std::sync::{Arc, Mutex, LazyLock};
 
 use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, Value};
 use vectordata::TestDataGroup;
+use vectordata::TestDataView;
 use vectordata::io::{VectorReader, VvecReader};
 use vectordata::catalog::sources::CatalogSources;
 use vectordata::catalog::resolver::Catalog;
@@ -46,6 +47,13 @@ use vectordata::catalog::resolver::Catalog;
 /// Ensures each dataset is loaded exactly once regardless of how many
 /// node functions reference it. Thread-safe via Mutex.
 static DATASET_CACHE: LazyLock<Mutex<HashMap<String, Arc<TestDataGroup>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Type-erased facet cache: (source, profile, facet) → Arc<dyn Any + Send + Sync>.
+/// Ensures each reader (of any element type) is opened exactly once
+/// and shared across all node instances that reference the same data.
+/// The concrete type inside is `Arc<UniformDataset<T>>` or `Arc<Ivvec32Dataset>`.
+static FACET_CACHE: LazyLock<Mutex<HashMap<(String, String, String), Arc<dyn std::any::Any + Send + Sync>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // =================================================================
@@ -108,41 +116,76 @@ fn load_dataset_group(source: &str) -> Result<Arc<TestDataGroup>, String> {
 // Dataset handles — loaded once at node construction, shared via Arc
 // =================================================================
 
-/// Handle to a loaded f32 vector facet (base vectors, query vectors,
-/// neighbor distances). Thread-safe, random-access.
-struct F32Dataset {
-    reader: Arc<dyn VectorReader<f32>>,
+/// Generic handle to a loaded uniform vector facet. Thread-safe, random-access.
+/// Supports any element type provided by the vectordata API (f32, f64,
+/// i32, i16, u8, i8, u16, u32, u64, i64, f16).
+struct UniformDataset<T: Send + Sync + 'static> {
+    reader: Arc<dyn VectorReader<T>>,
     count: usize,
     dim: usize,
 }
 
-impl F32Dataset {
-    fn load(source: &str, profile: &str, facet: &str) -> Result<Arc<Self>, String> {
-        let group = load_dataset_group(source)?;
-        let view = group.profile(profile)
-            .ok_or_else(|| format!("profile '{profile}' not found in '{source}'"))?;
-        let reader: Arc<dyn VectorReader<f32>> = match facet {
-            "base" => view.base_vectors(),
-            "query" => view.query_vectors(),
-            "neighbor_distances" => view.neighbor_distances(),
-            "filtered_neighbor_distances" => view.filtered_neighbor_distances(),
-            other => return Err(format!("unknown f32 facet: '{other}'")),
-        }.map_err(|e| format!("failed to access {facet} from '{source}': {e}"))?;
-        let count = reader.count();
-        let dim = reader.dim();
-        Ok(Arc::new(Self { reader, count, dim }))
-    }
-
-    fn get(&self, index: usize) -> Vec<f32> {
+impl<T: Send + Sync + std::fmt::Display + 'static> UniformDataset<T> {
+    fn get(&self, index: usize) -> Vec<T> where T: Clone {
         if self.count == 0 { return vec![]; }
         self.reader.get(index % self.count).unwrap_or_default()
     }
 
-
-    fn format_str(&self, index: usize) -> String {
+    fn format_str(&self, index: usize) -> String where T: Clone {
         let vec = self.get(index);
         let inner: String = vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
         format!("[{inner}]")
+    }
+}
+
+/// Cache-aware loader for uniform vector facets.
+/// Returns a shared `Arc<UniformDataset<T>>`, creating and caching it
+/// on first access. Subsequent loads for the same (source, profile, facet)
+/// return the cached instance.
+fn load_uniform_facet<T: Send + Sync + 'static>(
+    source: &str,
+    profile: &str,
+    facet: &str,
+    open_fn: impl FnOnce(&dyn TestDataView) -> std::result::Result<Arc<dyn VectorReader<T>>, vectordata::Error>,
+) -> Result<Arc<UniformDataset<T>>, String> {
+    let key = (source.to_string(), profile.to_string(), facet.to_string());
+    {
+        let cache = FACET_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cached) = cache.get(&key) {
+            if let Some(typed) = cached.clone().downcast::<UniformDataset<T>>().ok() {
+                return Ok(typed);
+            }
+        }
+    }
+    let group = load_dataset_group(source)?;
+    let view = group.profile(profile)
+        .ok_or_else(|| format!("profile '{profile}' not found in '{source}'"))?;
+    let reader = open_fn(view.as_ref())
+        .map_err(|e| format!("failed to access {facet} from '{source}': {e}"))?;
+    let count = reader.count();
+    let dim = reader.dim();
+    let arc = Arc::new(UniformDataset { reader, count, dim });
+    FACET_CACHE.lock().unwrap_or_else(|e| e.into_inner())
+        .insert(key, arc.clone() as Arc<dyn std::any::Any + Send + Sync>);
+    Ok(arc)
+}
+
+// Type aliases for backward compatibility
+type F32Dataset = UniformDataset<f32>;
+type I32Dataset = UniformDataset<i32>;
+
+impl F32Dataset {
+    fn load(source: &str, profile: &str, facet: &str) -> Result<Arc<Self>, String> {
+        let facet_name = facet.to_string();
+        load_uniform_facet(source, profile, facet, move |view| {
+            match facet_name.as_str() {
+                "base" => view.base_vectors(),
+                "query" => view.query_vectors(),
+                "neighbor_distances" => view.neighbor_distances(),
+                "filtered_neighbor_distances" => view.filtered_neighbor_distances(),
+                other => Err(vectordata::Error::MissingFacet(format!("unknown f32 facet: '{other}'"))),
+            }
+        })
     }
 
     fn to_bytes(&self, index: usize) -> Vec<u8> {
@@ -150,35 +193,18 @@ impl F32Dataset {
     }
 }
 
-/// Handle to a loaded i32 vector facet (neighbor indices).
-struct I32Dataset {
-    reader: Arc<dyn VectorReader<i32>>,
-    count: usize,
-    #[allow(dead_code)]
-    dim: usize,
-}
-
 impl I32Dataset {
     fn load(source: &str, profile: &str, facet: &str) -> Result<Arc<Self>, String> {
-        let group = load_dataset_group(source)?;
-        let view = group.profile(profile)
-            .ok_or_else(|| format!("profile '{profile}' not found in '{source}'"))?;
-        let reader: Arc<dyn VectorReader<i32>> = match facet {
-            "neighbor_indices" => view.neighbor_indices(),
-            "filtered_neighbor_indices" => view.filtered_neighbor_indices(),
-            other => return Err(format!("unknown i32 facet: '{other}'")),
-        }.map_err(|e| format!("failed to access {facet} from '{source}': {e}"))?;
-        let count = reader.count();
-        let dim = reader.dim();
-        Ok(Arc::new(Self { reader, count, dim }))
+        let facet_name = facet.to_string();
+        load_uniform_facet(source, profile, facet, move |view| {
+            match facet_name.as_str() {
+                "neighbor_indices" => view.neighbor_indices(),
+                "filtered_neighbor_indices" => view.filtered_neighbor_indices(),
+                other => Err(vectordata::Error::MissingFacet(format!("unknown i32 facet: '{other}'"))),
+            }
+        })
     }
 
-    fn format_str(&self, index: usize) -> String {
-        if self.count == 0 { return "[]".into(); }
-        let vec = self.reader.get(index % self.count).unwrap_or_default();
-        let inner: String = vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
-        format!("[{inner}]")
-    }
 }
 
 // =================================================================
@@ -199,7 +225,8 @@ pub struct VectorAt {
 impl VectorAt {
     /// Construct from a dataset source string. Loads the handle now.
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = F32Dataset::load(source, "default", "base")?;
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = F32Dataset::load(source, profile, "base")?;
         Ok(Self {
             meta: NodeMeta {
                 name: "vector_at".into(),
@@ -229,7 +256,8 @@ pub struct VectorAtBytes {
 
 impl VectorAtBytes {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = F32Dataset::load(source, "default", "base")?;
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = F32Dataset::load(source, profile, "base")?;
         Ok(Self {
             meta: NodeMeta {
                 name: "vector_at_bytes".into(),
@@ -260,7 +288,8 @@ pub struct QueryVectorAt {
 
 impl QueryVectorAt {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = F32Dataset::load(source, "default", "query")?;
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = F32Dataset::load(source, profile, "query")?;
         Ok(Self {
             meta: NodeMeta {
                 name: "query_vector_at".into(),
@@ -287,7 +316,8 @@ pub struct QueryVectorAtBytes {
 
 impl QueryVectorAtBytes {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = F32Dataset::load(source, "default", "query")?;
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = F32Dataset::load(source, profile, "query")?;
         Ok(Self {
             meta: NodeMeta {
                 name: "query_vector_at_bytes".into(),
@@ -320,7 +350,8 @@ pub struct NeighborIndicesAt {
 
 impl NeighborIndicesAt {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = I32Dataset::load(source, "default", "neighbor_indices")?;
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = I32Dataset::load(source, profile, "neighbor_indices")?;
         Ok(Self {
             meta: NodeMeta {
                 name: "neighbor_indices_at".into(),
@@ -347,7 +378,8 @@ pub struct NeighborDistancesAt {
 
 impl NeighborDistancesAt {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = F32Dataset::load(source, "default", "neighbor_distances")?;
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = F32Dataset::load(source, profile, "neighbor_distances")?;
         Ok(Self {
             meta: NodeMeta {
                 name: "neighbor_distances_at".into(),
@@ -378,7 +410,8 @@ pub struct FilteredNeighborIndicesAt {
 
 impl FilteredNeighborIndicesAt {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = I32Dataset::load(source, "default", "filtered_neighbor_indices")?;
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = I32Dataset::load(source, profile, "filtered_neighbor_indices")?;
         Ok(Self {
             meta: NodeMeta {
                 name: "filtered_neighbor_indices_at".into(),
@@ -405,7 +438,8 @@ pub struct FilteredNeighborDistancesAt {
 
 impl FilteredNeighborDistancesAt {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = F32Dataset::load(source, "default", "filtered_neighbor_distances")?;
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = F32Dataset::load(source, profile, "filtered_neighbor_distances")?;
         Ok(Self {
             meta: NodeMeta {
                 name: "filtered_neighbor_distances_at".into(),
@@ -436,7 +470,8 @@ pub struct VectorDim {
 
 impl VectorDim {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = F32Dataset::load(source, "default", "base")?;
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = F32Dataset::load(source, profile, "base")?;
         Ok(Self {
             meta: NodeMeta {
                 name: "vector_dim".into(),
@@ -524,7 +559,8 @@ pub struct QueryCount {
 
 impl QueryCount {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = F32Dataset::load(source, "default", "query")?;
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = F32Dataset::load(source, profile, "query")?;
         Ok(Self {
             meta: NodeMeta {
                 name: "query_count".into(),
@@ -551,7 +587,8 @@ pub struct NeighborCount {
 
 impl NeighborCount {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = I32Dataset::load(source, "default", "neighbor_indices")?;
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = I32Dataset::load(source, profile, "neighbor_indices")?;
         Ok(Self {
             meta: NodeMeta {
                 name: "neighbor_count".into(),
@@ -582,13 +619,25 @@ struct Ivvec32Dataset {
 
 impl Ivvec32Dataset {
     fn load(source: &str, profile: &str) -> Result<Arc<Self>, String> {
+        let key = (source.to_string(), profile.to_string(), "metadata_indices".to_string());
+        {
+            let cache = FACET_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(cached) = cache.get(&key) {
+                if let Some(typed) = cached.clone().downcast::<Ivvec32Dataset>().ok() {
+                    return Ok(typed);
+                }
+            }
+        }
         let group = load_dataset_group(source)?;
         let view = group.profile(profile)
             .ok_or_else(|| format!("profile '{profile}' not found in '{source}'"))?;
         let reader = view.metadata_indices()
             .map_err(|e| format!("failed to access metadata_indices from '{source}': {e}"))?;
         let count = reader.count();
-        Ok(Arc::new(Self { reader, count }))
+        let arc = Arc::new(Self { reader, count });
+        FACET_CACHE.lock().unwrap_or_else(|e| e.into_inner())
+            .insert(key, arc.clone() as Arc<dyn std::any::Any + Send + Sync>);
+        Ok(arc)
     }
 
     fn format_str(&self, index: usize) -> String {
@@ -607,7 +656,8 @@ pub struct MetadataIndicesAt {
 
 impl MetadataIndicesAt {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = Ivvec32Dataset::load(source, "default")?;
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = Ivvec32Dataset::load(source, profile)?;
         Ok(Self {
             meta: NodeMeta {
                 name: "metadata_indices_at".into(),
@@ -637,7 +687,8 @@ pub struct MetadataIndicesLenAt {
 
 impl MetadataIndicesLenAt {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = Ivvec32Dataset::load(source, "default")?;
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = Ivvec32Dataset::load(source, profile)?;
         Ok(Self {
             meta: NodeMeta {
                 name: "metadata_indices_len_at".into(),
@@ -667,7 +718,8 @@ pub struct MetadataIndicesCount {
 
 impl MetadataIndicesCount {
     pub fn from_source(source: &str) -> Result<Self, String> {
-        let dataset = Ivvec32Dataset::load(source, "default")?;
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = Ivvec32Dataset::load(source, profile)?;
         Ok(Self {
             meta: NodeMeta {
                 name: "metadata_indices_count".into(),
@@ -694,9 +746,10 @@ pub struct DatasetFacets {
 
 impl DatasetFacets {
     pub fn from_source(source: &str) -> Result<Self, String> {
+        let (_, profile) = parse_source_specifier(source);
         let group = load_dataset_group(source)?;
-        let view = group.profile("default")
-            .ok_or_else(|| format!("profile 'default' not found in '{source}'"))?;
+        let view = group.profile(profile)
+            .ok_or_else(|| format!("profile '{profile}' not found in '{source}'"))?;
         let manifest = view.facet_manifest();
         let mut names: Vec<&String> = manifest.keys().collect();
         names.sort();

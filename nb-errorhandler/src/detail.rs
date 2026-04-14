@@ -22,23 +22,25 @@ pub struct ErrorDetail {
     pub retry: Retry,
     /// Result code for the operation (0 = OK, nonzero = error).
     pub result_code: i32,
+    /// Whether execution should stop after this error.
+    pub should_stop: bool,
 }
 
 impl ErrorDetail {
     pub fn ok() -> Self {
-        Self { name: "OK".into(), retry: Retry::Unset, result_code: 0 }
+        Self { name: "OK".into(), retry: Retry::Unset, result_code: 0, should_stop: false }
     }
 
     pub fn non_retryable(name: impl Into<String>) -> Self {
-        Self { name: name.into(), retry: Retry::DoNotRetry, result_code: 127 }
+        Self { name: name.into(), retry: Retry::DoNotRetry, result_code: 127, should_stop: false }
     }
 
     pub fn retryable(name: impl Into<String>) -> Self {
-        Self { name: name.into(), retry: Retry::DoRetry, result_code: 127 }
+        Self { name: name.into(), retry: Retry::DoRetry, result_code: 127, should_stop: false }
     }
 
     pub fn unknown(name: impl Into<String>) -> Self {
-        Self { name: name.into(), retry: Retry::Unset, result_code: 127 }
+        Self { name: name.into(), retry: Retry::Unset, result_code: 127, should_stop: false }
     }
 
     pub fn is_retryable(&self) -> bool {
@@ -57,6 +59,11 @@ impl ErrorDetail {
 
     pub fn with_result_code(mut self, code: i32) -> Self {
         self.result_code = code;
+        self
+    }
+
+    pub fn with_stop(mut self) -> Self {
+        self.should_stop = true;
         self
     }
 }

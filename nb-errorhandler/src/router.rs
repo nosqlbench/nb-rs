@@ -141,8 +141,13 @@ impl ErrorRouter {
             }
         }
 
-        // No match — return empty chain (error passes through unhandled)
-        Vec::new()
+        // No match — unhandled error type. Default to stop so
+        // unconfigured errors don't silently pass through.
+        eprintln!("error: no handler matched error type '{error_name}' — stopping (add a handler pattern to configure)");
+        let stop_handler = crate::handlers::builtin_handler("stop").unwrap();
+        let handlers = vec![Arc::from(stop_handler) as Arc<dyn ErrorHandler>];
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).insert(error_name.to_string(), handlers.clone());
+        handlers
     }
 }
 
@@ -203,10 +208,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "stopping")]
     fn stop_handler_in_chain() {
         let router = ErrorRouter::parse(".*:warn,stop").unwrap();
-        router.handle_error("Fatal", "kaboom", 42, 0);
+        let detail = router.handle_error("Fatal", "kaboom", 42, 0);
+        assert!(detail.should_stop, "stop handler in chain should set should_stop");
     }
 
     #[test]
@@ -216,11 +221,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_spec() {
+    fn empty_spec_stops_on_unmatched() {
         let router = ErrorRouter::parse("").unwrap();
-        // No rules — handle_error returns default non-retryable
+        // No rules — unmatched errors default to stop
         let detail = router.handle_error("Err", "msg", 0, 0);
-        assert!(!detail.is_retryable());
+        assert!(detail.should_stop, "unmatched errors should stop execution");
     }
 
     #[test]

@@ -313,17 +313,12 @@ impl Compiler {
             }
         }
 
-        // Input declaration check: warn (or error in strict) when missing
-        if !has_explicit_coords {
-            if self.strict {
-                return Err(
-                    "strict mode: no 'inputs' declaration — add 'inputs := (cycle)' \
-                     to declare graph inputs explicitly".into()
-                );
-            }
-            // Non-strict: implicit single-cycle input, but warn
-            eprintln!("warning: no 'inputs' declaration — implying 'inputs := (cycle)'. \
-                       Use explicit declaration to silence this warning.");
+        // Input declaration check: error in strict mode (modules, .gk files)
+        if !has_explicit_coords && self.strict {
+            return Err(
+                "strict mode: no 'inputs' declaration — add 'inputs := (cycle)' \
+                 to declare graph inputs explicitly".into()
+            );
         }
 
         // If no explicit coordinates, infer from unbound references
@@ -355,11 +350,7 @@ impl Compiler {
             self.input_names = inferred;
         }
 
-        // Zero inputs is only valid when explicitly declared as `inputs := ()`.
-        // Without an explicit declaration and nothing inferred, that's an error.
-        if self.input_names.is_empty() && !has_explicit_coords {
-            return Err("no coordinate inputs found — reference at least one unbound name (e.g., 'cycle')".into());
-        }
+        // Zero inferred inputs means all bindings are constants — valid.
 
         let mut asm = GkAssembler::new(self.input_names.clone());
 
@@ -474,11 +465,10 @@ impl Compiler {
                 .filter(|name| !defined.contains(name))
                 .collect();
             inferred.sort();
-            if inferred.is_empty() {
-                inferred.push("cycle".to_string());
-            }
             self.input_names = inferred;
         }
+
+        // Zero inferred inputs means all bindings are constants — valid.
 
         let mut asm = GkAssembler::new(self.input_names.clone());
 
@@ -531,17 +521,12 @@ impl Compiler {
             }
         }
 
-        // Input declaration check: warn (or error in strict) when missing
-        if self.input_names.is_empty() {
-            if self.strict {
-                return Err(
-                    "strict mode: no 'inputs' declaration — add 'inputs := (cycle)' \
-                     to declare graph inputs explicitly".into()
-                );
-            }
-            // Non-strict: implicit single-cycle input, but warn
-            eprintln!("warning: no 'inputs' declaration — implying 'inputs := (cycle)'. \
-                       Use explicit declaration to silence this warning.");
+        // Input declaration check: error in strict mode (modules, .gk files)
+        if self.input_names.is_empty() && self.strict {
+            return Err(
+                "strict mode: no 'inputs' declaration — add 'inputs := (cycle)' \
+                 to declare graph inputs explicitly".into()
+            );
         }
 
         // If no explicit coordinates, infer from unbound references
@@ -573,9 +558,7 @@ impl Compiler {
             self.input_names = inferred;
         }
 
-        if self.input_names.is_empty() {
-            return Err("no coordinate inputs found — reference at least one unbound name (e.g., 'cycle')".into());
-        }
+        // Zero inferred inputs means all bindings are constants — valid.
 
         let mut asm = GkAssembler::new(self.input_names.clone());
 

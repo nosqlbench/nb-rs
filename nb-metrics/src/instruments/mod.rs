@@ -7,3 +7,4 @@ pub mod counter;
 pub mod histogram;
 pub mod timer;
 pub mod gauge;
+pub mod f64stats;

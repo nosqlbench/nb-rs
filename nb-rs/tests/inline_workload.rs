@@ -135,7 +135,7 @@ fn json_format() {
 #[test]
 fn dry_run_emit() {
     let output = nbrs()
-        .args(["run", "op=test {{cycle}}", "cycles=3", "--dry-run=emit"])
+        .args(["run", "op=test {{cycle}}", "cycles=3", "dryrun=emit"])
         .output()
         .expect("failed to execute nbrs");
     assert!(output.status.success(), "nbrs failed");

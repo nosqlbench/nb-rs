@@ -1,25 +1,21 @@
 #!/usr/bin/env cassnbrs
 # CQL Vector Search — Multi-Profile Discovery
 #
-# Discovers all profiles matching a prefix, then for each profile:
-# creates a table, loads vectors, and runs ANN search with filtered
-# ground truth. Each profile gets its own table and index namespace.
-#
-# The for_each: directive iterates profiles dynamically. Each
-# iteration has its own GK scope with profile-specific constants
-# (dimension, vector count, ground truth).
+# Discovers all profiles matching a prefix, then for each profile
+# in order: drops old data, creates schema, loads vectors, waits
+# for indexing, and runs ANN search with ground truth validation.
 #
 # Usage:
-#   cassnbrs cql_vector.yaml dataset=sift1m prefix=label
-#   cassnbrs cql_vector.yaml dataset=sift1m prefix=label adapter=stdout
-#   cassnbrs cql_vector.yaml schema adapter=stdout
+#   cassnbrs cql_vector.yaml dataset=sift1m prefix=label_
+#   cassnbrs cql_vector.yaml dataset=sift1m prefix=label_ adapter=stdout
+#   cassnbrs cql_vector.yaml dataset=sift1m dryrun=phase,gk
 
 params:
-  adapter: cassandra
+  adapter: cql
   dataset: sift1m
   prefix: ""
   keyspace: baselines
-  k: "100"
+  k_values: "10,100"
   concurrency: "100"
   replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
 
@@ -35,67 +31,91 @@ scenarios:
   default:
     - discover
     - create_keyspace
-    - schema
-    - rampup
-    - search
+    - for_each: "profile in matching_profiles('{dataset}', '{prefix}')"
+      phases:
+        - drop_table
+        - create_table
+        - create_index
+        - rampup
+        - await_index
+        - for_each: "k in {k_values}"
+          phases:
+            - search
 
 phases:
   discover:
     adapter: stdout
-    cycles: 1
+    cycles: ===auto
     concurrency: 1
     ops:
       info:
         stmt: "=== {dataset}: matching profiles for prefix '{prefix}': {profiles} ==="
 
-  # Create keyspace — auto-falls back to no-keyspace connection if needed
   create_keyspace:
-    cycles: 1
+    cycles: ===auto
     concurrency: 1
     ops:
       ks:
         raw: "CREATE KEYSPACE IF NOT EXISTS {keyspace} WITH replication = {replication} AND durable_writes = true"
 
-  schema:
-    for_each: "pname in matching_profiles('{dataset}', '{prefix}')"
-    cycles: 1
+  drop_table:
+    cycles: ===auto
+    concurrency: 1
+    ops:
+      drop:
+        raw: "DROP TABLE IF EXISTS {keyspace}.vec_{profile}"
+
+  create_table:
+    cycles: ===auto
     concurrency: 1
     bindings: |
-      inputs := (cycle)
-      dim := vector_dim("{dataset}:{pname}")
+      dim := vector_dim("{dataset}:{profile}")
     ops:
       create_table:
-        raw: "CREATE TABLE IF NOT EXISTS {keyspace}.vec_{pname} (key text PRIMARY KEY, value vector<float, {dim}>)"
+        raw: "CREATE TABLE IF NOT EXISTS {keyspace}.vec_{profile} (key text PRIMARY KEY, value vector<float, {dim}>)"
+
+  create_index:
+    cycles: ===auto
+    concurrency: 1
+    ops:
       create_index:
-        raw: "CREATE CUSTOM INDEX IF NOT EXISTS vec_{pname}_idx ON {keyspace}.vec_{pname} (value) USING 'StorageAttachedIndex'"
+        raw: "CREATE CUSTOM INDEX IF NOT EXISTS vec_{profile}_idx ON {keyspace}.vec_{profile} (value) USING 'StorageAttachedIndex'"
 
   rampup:
-    for_each: "pname in matching_profiles('{dataset}', '{prefix}')"
-    cycles: "{vector_count('{dataset}:{pname}')}"
+    cycles: "{vector_count('{dataset}:{profile}')}"
     concurrency: "{concurrency}"
     bindings: |
-      inputs := (cycle)
+      init prebuffer = dataset_prebuffer("{dataset}:{profile}")
       id := format_u64(cycle, 10)
-      train_vector := vector_at(cycle, "{dataset}:{pname}")
+      train_vector := vector_at(cycle, "{dataset}:{profile}")
     ops:
       insert:
-        prepared: "INSERT INTO {keyspace}.vec_{pname} (key, value) VALUES ('{id}', {train_vector})"
+        prepared: "INSERT INTO {keyspace}.vec_{profile} (key, value) VALUES ('{id}', {train_vector})"
+
+  await_index:
+    cycles: ===auto
+    concurrency: 1
+    ops:
+      wait_for_compaction:
+        raw: "SELECT keyspace_name, table_name, kind, progress FROM system_views.sstable_tasks WHERE keyspace_name = '{keyspace}' AND table_name = 'vec_{profile}'"
+        poll: await_empty
+        poll_interval_ms: 10000
+        timeout_ms: 600000
 
   search:
-    for_each: "pname in matching_profiles('{dataset}', '{prefix}')"
     cycles: 100
     concurrency: "{concurrency}"
     bindings: |
-      inputs := (cycle)
-      query_vector := query_vector_at(cycle, "{dataset}:{pname}")
-      ground_truth := filtered_neighbor_indices_at(cycle, "{dataset}:{pname}")
+      init prebuffer = dataset_prebuffer("{dataset}:{profile}")
+      query_vector := query_vector_at(cycle, "{dataset}:{profile}")
+      ground_truth := neighbor_indices_at(cycle, "{dataset}:{profile}")
     ops:
       select_ann:
-        prepared: "SELECT key FROM {keyspace}.vec_{pname} ORDER BY value ANN OF {query_vector} LIMIT {k}"
+        prepared: "SELECT key FROM {keyspace}.vec_{profile} ORDER BY value ANN OF {query_vector} LIMIT {k}"
         relevancy:
           actual: key
           expected: "{ground_truth}"
-          k: 100
+          k: "{k}"
           functions:
             - recall
             - precision

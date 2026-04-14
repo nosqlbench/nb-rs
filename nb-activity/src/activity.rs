@@ -73,8 +73,10 @@ pub struct ActivityMetrics {
     pub skips_total: Counter,
     pub errors_total: Counter,
     pub stanzas_total: Counter,
-    /// Number of cycles currently in-flight (started but not completed).
-    pub active: std::sync::atomic::AtomicU64,
+    /// Number of ops dispatched to adapters (monotonic).
+    pub ops_started: std::sync::atomic::AtomicU64,
+    /// Number of ops returned from adapters (monotonic).
+    pub ops_finished: std::sync::atomic::AtomicU64,
     pub result_elements: Counter,
     pub result_bytes: Counter,
     /// Per-error-type counters, keyed by error_name.
@@ -96,7 +98,8 @@ impl ActivityMetrics {
             skips_total: Counter::new(labels.with("name", "skips_total")),
             errors_total: Counter::new(labels.with("name", "errors_total")),
             stanzas_total: Counter::new(labels.with("name", "stanzas_total")),
-            active: std::sync::atomic::AtomicU64::new(0),
+            ops_started: std::sync::atomic::AtomicU64::new(0),
+            ops_finished: std::sync::atomic::AtomicU64::new(0),
             result_elements: Counter::new(labels.with("name", "result_elements")),
             result_bytes: Counter::new(labels.with("name", "result_bytes")),
             error_type_counts: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -214,6 +217,12 @@ pub struct Activity {
     cycle_source: CycleSource,
     /// Resolved workload parameters (constant per run).
     pub workload_params: Arc<std::collections::HashMap<String, String>>,
+    /// Shared flag: set to true when a `stop` error handler fires.
+    /// All fibers check this and exit their loop when set.
+    pub stop_flag: Arc<std::sync::atomic::AtomicBool>,
+    /// Final validation metrics frame, populated after all cycles complete.
+    /// Read by the metrics capture thread after the activity finishes.
+    pub validation_frame: Arc<std::sync::Mutex<Option<MetricsFrame>>>,
 }
 
 impl Activity {
@@ -235,8 +244,8 @@ impl Activity {
         let metrics = Arc::new(ActivityMetrics::new(&labels));
         let error_router = ErrorRouter::parse(&config.error_spec)
             .unwrap_or_else(|e| {
-                eprintln!("warning: invalid error spec '{}': {e}; using default (warn,count)", config.error_spec);
-                ErrorRouter::default_warn_count()
+                eprintln!("warning: invalid error spec '{}': {e}; using default (warn,stop)", config.error_spec);
+                ErrorRouter::default_stop()
             });
         let cycle_source = CycleSource::new(0, config.cycles);
 
@@ -248,6 +257,8 @@ impl Activity {
             error_router,
             cycle_source,
             workload_params: Arc::new(params),
+            stop_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            validation_frame: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -261,11 +272,11 @@ impl Activity {
         self,
         adapter: Arc<dyn DriverAdapter>,
         program: Arc<nb_variates::kernel::GkProgram>,
-    ) {
+    ) -> bool {
         let mut adapters = std::collections::HashMap::new();
         let name = adapter.name().to_string();
         adapters.insert(name.clone(), adapter);
-        self.run_with_adapters(adapters, &name, program).await;
+        self.run_with_adapters(adapters, &name, program).await
     }
 
     /// Run the activity with multiple adapters (SRD 38/40).
@@ -275,12 +286,13 @@ impl Activity {
     /// At init time: maps each template to a dispenser from the
     /// appropriate adapter. Per fiber: creates a FiberBuilder. Per
     /// cycle: resolves fields via GK, executes via dispenser.
+    /// Returns true if the activity was stopped by an error handler.
     pub async fn run_with_adapters(
         self,
         adapters: std::collections::HashMap<String, Arc<dyn DriverAdapter>>,
         default_adapter: &str,
         program: Arc<nb_variates::kernel::GkProgram>,
-    ) {
+    ) -> bool {
         let activity = Arc::new(self);
 
         // Init time: map each template to a dispenser from its adapter,
@@ -288,9 +300,10 @@ impl Activity {
         let templates = activity.op_sequence.templates();
 
         // Validate all bind points are resolvable before execution
-        crate::synthesis::validate_bind_points(
-            templates, &program,
-        );
+        if let Err(e) = crate::synthesis::validate_bind_points(templates, &program) {
+            eprintln!("error: {e}");
+            return true;
+        }
 
         let traversal_stats = Arc::new(crate::wrappers::TraversalStats {
             metrics: activity.metrics.clone(),
@@ -307,9 +320,9 @@ impl Activity {
             let adapter = match adapters.get(adapter_name) {
                 Some(a) => a,
                 None => {
-                    eprintln!("error: unknown adapter '{adapter_name}' for op '{}'", template.name);
-                    eprintln!("  available: {}", adapters.keys().cloned().collect::<Vec<_>>().join(", "));
-                    return;
+                    let available = adapters.keys().cloned().collect::<Vec<_>>().join(", ");
+                    eprintln!("error: unknown adapter '{adapter_name}' for op '{}' (available: {available})", template.name);
+                    return true; // signal stop — cannot proceed without the adapter
                 }
             };
 
@@ -331,13 +344,13 @@ impl Activity {
                     };
                     // Wrap with validation — only if template declares it
                     let (validated, vm) = crate::validation::ValidatingDispenser::wrap(
-                        throttled, template, &activity.labels,
+                        throttled, template, &activity.labels, Some(&program),
                     );
                     if let Some(vm) = vm {
                         validation_metrics.push(vm);
                     }
-                    // Wrap with condition check (outermost) — only if template has `if:`
-                    let final_dispenser = if let Some(ref cond) = template.condition {
+                    // Wrap with condition check — only if template has `if:`
+                    let conditional = if let Some(ref cond) = template.condition {
                         let cond_name = cond.trim()
                             .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
                             .unwrap_or(cond.trim());
@@ -346,6 +359,27 @@ impl Activity {
                         )
                     } else {
                         validated
+                    };
+                    // Wrap with polling (outermost) — only if template has `poll: await_empty`
+                    let final_dispenser = if template.params.get("poll")
+                        .and_then(|v| v.as_str()).is_some()
+                    {
+                        let interval = template.params.get("poll_interval_ms")
+                            .and_then(|v| v.as_str().and_then(|s| s.parse().ok())
+                                .or_else(|| v.as_u64()))
+                            .unwrap_or(1000);
+                        let timeout = template.params.get("timeout_ms")
+                            .and_then(|v| v.as_str().and_then(|s| s.parse().ok())
+                                .or_else(|| v.as_u64()))
+                            .unwrap_or(300_000);
+                        let (dispenser, poll_metrics) =
+                            crate::wrappers::PollingDispenser::wrap(conditional, interval, timeout);
+                        eprintln!("  op '{}': polling enabled (interval={}ms, timeout={}ms)",
+                            template.name, interval, timeout);
+                        let _ = poll_metrics; // metrics accessible via Arc if needed
+                        dispenser
+                    } else {
+                        conditional
                     };
                     dispensers.push(final_dispenser);
 
@@ -365,7 +399,7 @@ impl Activity {
                 }
                 Err(e) => {
                     eprintln!("error: adapter.map_op failed for '{}': {e}", template.name);
-                    return;
+                    return true;
                 }
             }
         }
@@ -407,16 +441,21 @@ impl Activity {
         // Suppress progress indicator when the adapter uses raw terminal mode
         let suppress_progress = adapters.values()
             .any(|a| a.name() == "plotter");
+        let start_time = Instant::now();
         if is_stderr_tty && total_cycles > 1000 && !suppress_progress {
             let flag = progress_flag.clone();
             let progress_metrics = activity.metrics.clone();
-            let start_time = Instant::now();
+            let start_time = start_time;
+            let activity_name_progress = activity_name.clone();
             std::thread::spawn(move || {
+                let activity_name = activity_name_progress;
                 while flag.load(Ordering::Relaxed) {
                     std::thread::sleep(Duration::from_millis(500));
                     if !flag.load(Ordering::Relaxed) { break; }
                     let completed = progress_metrics.cycles_completed();
-                    let active = progress_metrics.active.load(Ordering::Relaxed);
+                    let started = progress_metrics.ops_started.load(Ordering::Relaxed);
+                    let finished = progress_metrics.ops_finished.load(Ordering::Relaxed);
+                    let active = started.saturating_sub(finished);
                     let pending = total_cycles.saturating_sub(completed).saturating_sub(active);
                     let pct = if total_cycles > 0 {
                         completed as f64 * 100.0 / total_cycles as f64
@@ -439,26 +478,11 @@ impl Activity {
                         100.0
                     };
                     let errors = progress_metrics.errors_total.get();
-                    // Retry ratio: errors/completed shows retry amplification.
-                    // 0 = no retries. 0.5 = half of completed ops needed at least one retry.
-                    // Only shown when retries are happening.
-                    let retry_str = if errors > 0 && completed > 0 {
-                        let failed_cycles = completed.saturating_sub(successes).saturating_sub(
-                            progress_metrics.skips_total.get());
-                        let retries = errors.saturating_sub(failed_cycles);
-                        if retries > 0 {
-                            format!(" retries:{retries}")
-                        } else {
-                            String::new()
-                        }
-                    } else {
-                        String::new()
-                    };
-                    let ok_str = if ok_pct < 100.0 { format!(" ok:{ok_pct:.1}%") } else { String::new() };
-                    eprint!("\r{activity_name} (pending,active,complete)=({pending},{active},{completed}) {pct:.2}% {rate_str}{ok_str}{retry_str}    ");
+                    let failed_cycles = completed.saturating_sub(successes).saturating_sub(
+                        progress_metrics.skips_total.get());
+                    let retries = errors.saturating_sub(failed_cycles);
+                    eprint!("\r\x1b[K{activity_name} (pending,active,complete)=({pending},{active},{completed}) {pct:.2}% {rate_str} ok:{ok_pct:.1}% errors:{errors} retries:{retries}");
                 }
-                // Clear the progress line when done
-                eprint!("\r                                                        \r");
             });
         }
 
@@ -489,42 +513,97 @@ impl Activity {
                     eprintln!("error: executor fiber failed: {e}");
                 }
                 activity.metrics.errors_total.inc();
+                activity.stop_flag.store(true, Ordering::Relaxed);
             }
         }
 
-        // Signal the progress thread to stop and allow it to clear its line.
+        // Print final completion line
+        if is_stderr_tty && total_cycles > 1000 && !suppress_progress {
+            let completed = activity.metrics.cycles_completed();
+            let successes = activity.metrics.successes_total.get();
+            let errors = activity.metrics.errors_total.get();
+            let ok_pct = if completed > 0 { successes as f64 * 100.0 / completed as f64 } else { 100.0 };
+            let elapsed = start_time.elapsed().as_secs_f64();
+            let rate = if elapsed > 0.0 { completed as f64 / elapsed } else { 0.0 };
+            let rate_str = if rate >= 1_000_000.0 {
+                format!("{:.1}M/s", rate / 1_000_000.0)
+            } else if rate >= 1_000.0 {
+                format!("{:.1}K/s", rate / 1_000.0)
+            } else {
+                format!("{:.0}/s", rate)
+            };
+            let failed_cycles = completed.saturating_sub(successes).saturating_sub(
+                activity.metrics.skips_total.get());
+            let retries = errors.saturating_sub(failed_cycles);
+            eprintln!("\r\x1b[K{activity_name} DONE ({completed} cycles) {rate_str} ok:{ok_pct:.1}% errors:{errors} retries:{retries}");
+        }
+
+        // Signal the progress thread to stop.
         progress_flag.store(false, Ordering::Relaxed);
-        // Brief yield so the progress thread can print the clear sequence
-        // before any subsequent output appears on stderr.
         std::thread::sleep(Duration::from_millis(10));
 
-        // Print validation summary if any validation was active
+        // Print validation summary AND capture to MetricsFrame in one pass.
+        // snapshot() drains the histogram (delta semantics), so we must
+        // use the same snapshot for both printing and SQLite capture.
         if !validation_metrics.is_empty() {
             let mut total_passed = 0u64;
             let mut total_failed = 0u64;
+            let mut final_samples: Vec<Sample> = Vec::new();
+
             for vm in validation_metrics.iter() {
                 total_passed += vm.passed();
                 total_failed += vm.failed();
-                for (name, histo) in &vm.relevancy_histograms {
-                    let snap = histo.snapshot();
-                    if snap.len() > 0 {
-                        let mean = snap.mean() / 10_000.0;
-                        let p50 = snap.value_at_quantile(0.5) as f64 / 10_000.0;
-                        let p99 = snap.value_at_quantile(0.99) as f64 / 10_000.0;
-                        let min = snap.min() as f64 / 10_000.0;
-                        let max = snap.max() as f64 / 10_000.0;
+
+                final_samples.push(Sample::Counter {
+                    labels: activity.labels.with("name", "validations_passed"),
+                    value: vm.passed(),
+                });
+                final_samples.push(Sample::Counter {
+                    labels: activity.labels.with("name", "validations_failed"),
+                    value: vm.failed(),
+                });
+
+                for (name, stats) in &vm.relevancy_stats {
+                    let snap = stats.snapshot();
+                    if !snap.is_empty() {
+                        let mean = snap.mean();
+                        let p50 = snap.p50();
+                        let p99 = snap.p99();
+                        let min = snap.min();
+                        let max = snap.max();
+                        let n = snap.len();
                         eprintln!(
-                            "  {name}: mean={mean:.4} p50={p50:.4} p99={p99:.4} min={min:.4} max={max:.4} (n={})",
-                            snap.len()
+                            "  {name}: mean={mean:.4} p50={p50:.4} p99={p99:.4} min={min:.4} max={max:.4} (n={n})"
                         );
+                        // Store as gauges at exact f64 precision
+                        for (stat, val) in [("mean", mean), ("p50", p50), ("p99", p99), ("min", min), ("max", max)] {
+                            final_samples.push(Sample::Gauge {
+                                labels: activity.labels
+                                    .with("name", &format!("{name}.{stat}"))
+                                    .with("n", &n.to_string()),
+                                value: val,
+                            });
+                        }
                     }
                 }
             }
+
             eprintln!(
                 "validation: {} passed, {} failed",
                 total_passed, total_failed
             );
+
+            if !final_samples.is_empty() {
+                activity.validation_frame.lock().unwrap_or_else(|e| e.into_inner())
+                    .replace(MetricsFrame {
+                        captured_at: Instant::now(),
+                        interval: Duration::from_secs(0),
+                        samples: final_samples,
+                    });
+            }
         }
+
+        activity.stop_flag.load(Ordering::Relaxed)
     }
 }
 
@@ -554,6 +633,9 @@ async fn executor_task(
     let mut fiber = FiberBuilder::new(program);
 
     loop {
+        // Check if a stop handler has fired
+        if activity.stop_flag.load(std::sync::atomic::Ordering::Relaxed) { break; }
+
         let Some(base_cycle) = activity.cycle_source.next_n(stanza_len) else { break };
 
         if let Some(srl) = &stanza_rl {
@@ -619,14 +701,14 @@ async fn executor_task(
                 let max_retries = max_retries;
                 let activity = activity.clone();
                 async move {
-                    activity.metrics.active.fetch_add(1, Ordering::Relaxed);
+                    activity.metrics.ops_started.fetch_add(1, Ordering::Relaxed);
                     let service_start = Instant::now();
                     let mut tries = 1u32;
                     loop {
                         match dispenser.execute(cycle, fields).await {
                             Ok(result) => {
                                 let service_nanos = service_start.elapsed().as_nanos() as u64;
-                                activity.metrics.active.fetch_sub(1, Ordering::Relaxed);
+                                activity.metrics.ops_finished.fetch_add(1, Ordering::Relaxed);
                                 return (true, service_nanos, tries, result.captures, result.skipped);
                             }
                             Err(e) => {
@@ -638,13 +720,17 @@ async fn executor_task(
                                 activity.metrics.errors_total.inc();
                                 activity.metrics.count_error_type(&inner.error_name);
 
+                                if detail.should_stop {
+                                    activity.stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+
                                 if !e.is_adapter_level() && detail.is_retryable() && tries <= max_retries {
                                     tries += 1;
                                     continue;
                                 }
 
                                 let service_nanos = service_start.elapsed().as_nanos() as u64;
-                                activity.metrics.active.fetch_sub(1, Ordering::Relaxed);
+                                activity.metrics.ops_finished.fetch_add(1, Ordering::Relaxed);
                                 return (false, service_nanos, tries, std::collections::HashMap::new(), false);
                             }
                         }

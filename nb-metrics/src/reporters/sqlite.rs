@@ -57,6 +57,14 @@ mod inner {
             Ok(reporter)
         }
 
+        /// Store a session metadata key-value pair.
+        pub fn set_metadata(&mut self, key: &str, value: &str) {
+            self.conn.execute(
+                "INSERT OR REPLACE INTO session_metadata (key, value) VALUES (?1, ?2)",
+                params![key, value],
+            ).unwrap_or_else(|e| { eprintln!("warning: sqlite metadata write: {e}"); 0 });
+        }
+
         fn create_schema(&mut self) -> Result<(), String> {
             self.conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS metric_family (
@@ -88,6 +96,8 @@ mod inner {
                     id INTEGER PRIMARY KEY,
                     family_id INTEGER NOT NULL REFERENCES metric_family(id),
                     label_set_id INTEGER NOT NULL REFERENCES label_set(id),
+                    -- Denormalized spec for easy querying without joins.
+                    spec TEXT,
                     UNIQUE(family_id, label_set_id)
                 );
                 CREATE TABLE IF NOT EXISTS sample_value (
@@ -189,14 +199,24 @@ mod inner {
             set_id
         }
 
-        fn get_or_insert_instance(&mut self, family_id: i64, label_set_id: i64) -> i64 {
+        fn get_or_insert_instance(&mut self, family_id: i64, label_set_id: i64, name: &str, labels: &Labels) -> i64 {
             let key = (family_id, label_set_id);
             if let Some(&id) = self.instance_cache.get(&key) {
                 return id;
             }
+            // Build denormalized spec: name{key="value",key="value"}
+            let label_pairs: Vec<String> = labels.iter()
+                .filter(|(k, _)| *k != "name")
+                .map(|(k, v)| format!("{k}=\"{v}\""))
+                .collect();
+            let spec = if label_pairs.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name}{{{}}}", label_pairs.join(","))
+            };
             self.conn.execute(
-                "INSERT OR IGNORE INTO metric_instance (family_id, label_set_id) VALUES (?1, ?2)",
-                params![family_id, label_set_id],
+                "INSERT OR IGNORE INTO metric_instance (family_id, label_set_id, spec) VALUES (?1, ?2, ?3)",
+                params![family_id, label_set_id, spec],
             ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
             let id: i64 = self.conn.query_row(
                 "SELECT id FROM metric_instance WHERE family_id=?1 AND label_set_id=?2",
@@ -220,7 +240,7 @@ mod inner {
                     let name = labels.get("name").unwrap_or("unknown");
                     let family_id = self.get_or_insert_family(name, "counter");
                     let label_set_id = self.get_or_insert_label_set(labels);
-                    let instance_id = self.get_or_insert_instance(family_id, label_set_id);
+                    let instance_id = self.get_or_insert_instance(family_id, label_set_id, name, labels);
 
                     self.conn.execute(
                         "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count) \
@@ -232,7 +252,7 @@ mod inner {
                     let name = labels.get("name").unwrap_or("unknown");
                     let family_id = self.get_or_insert_family(name, "gauge");
                     let label_set_id = self.get_or_insert_label_set(labels);
-                    let instance_id = self.get_or_insert_instance(family_id, label_set_id);
+                    let instance_id = self.get_or_insert_instance(family_id, label_set_id, name, labels);
 
                     self.conn.execute(
                         "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, mean) \
@@ -244,7 +264,7 @@ mod inner {
                     let name = labels.get("name").unwrap_or("unknown");
                     let family_id = self.get_or_insert_family(name, "summary");
                     let label_set_id = self.get_or_insert_label_set(labels);
-                    let instance_id = self.get_or_insert_instance(family_id, label_set_id);
+                    let instance_id = self.get_or_insert_instance(family_id, label_set_id, name, labels);
 
                     let obs = histogram.len() as i64;
                     let min = histogram.min() as f64;
@@ -273,6 +293,46 @@ mod inner {
                     ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
                 }
             }
+        }
+    }
+
+    impl SqliteReporter {
+        /// Print a markdown summary of relevancy metrics (recall, precision).
+        pub fn print_summary(&self) {
+            let mut stmt = match self.conn.prepare(
+                "SELECT mi.spec, sv.mean
+                 FROM sample_value sv
+                 JOIN metric_instance mi ON sv.instance_id = mi.id
+                 WHERE mi.spec LIKE 'recall%.mean%' OR mi.spec LIKE 'precision%.mean%'
+                 ORDER BY mi.spec"
+            ) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+
+            let rows: Vec<(String, f64)> = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+            }).ok()
+                .map(|r| r.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default();
+
+            if rows.is_empty() { return; }
+
+            println!();
+            println!("## Summary");
+            println!();
+            println!("| Metric | Activity | Score |");
+            println!("|--------|----------|-------|");
+            for (spec, value) in &rows {
+                // Parse spec: "recall@100.mean{activity="search (k=100)",n="100"}"
+                let metric = spec.split('{').next().unwrap_or(spec);
+                let activity = spec.split("activity=\"")
+                    .nth(1)
+                    .and_then(|s| s.split('"').next())
+                    .unwrap_or("");
+                println!("| {metric} | {activity} | {value:.4} |");
+            }
+            println!();
         }
     }
 

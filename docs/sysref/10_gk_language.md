@@ -525,6 +525,36 @@ GK scopes are **never** created for:
 - Per-op dispatch
 - Retry attempts
 - Conditional skips
+- Op-level `bindings:` blocks (see below)
+
+### Op-Level Bindings
+
+Ops may declare their own `bindings:` block as syntactic
+convenience — a way to define bindings close to the op that
+uses them. Op bindings do NOT create a new scope. They are
+merged into the enclosing scope's DAG at compile time.
+
+**Rules:**
+1. Op bindings augment the enclosing scope's kernel. They
+   add nodes to the same DAG that all ops in the scope share.
+2. Op bindings that shadow a name from the enclosing scope
+   are a **compile error**. The enclosing scope owns the DAG;
+   ops contribute to it but cannot override it.
+3. Each op dispenser holds a reference to the enclosing
+   scope's GK context (program + state). There is no
+   per-op kernel.
+4. `shared`/`final` constraints from outer scopes are
+   enforced — an op binding cannot redefine a `final` name.
+
+If different ops need incompatible bindings, they belong in
+different phases. Phases are the scope boundary; ops are not.
+
+**Strict mode** additionally detects cross-op binding
+references: if op A declares a binding and op B uses it in
+its template, that's an error in strict mode. Each op should
+only reference the enclosing scope's bindings or its own.
+Cross-op coupling via bindings is a code smell — promote the
+shared binding to the enclosing scope instead.
 
 ### Scope Assembly: Auto-Extern Composition
 

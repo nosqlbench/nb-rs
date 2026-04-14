@@ -150,10 +150,13 @@ impl Default for CqlConfig {
 }
 
 impl CqlConfig {
-    pub fn from_params(params: &HashMap<String, String>) -> Self {
+    pub fn from_params(params: &HashMap<String, String>) -> Result<Self, String> {
         let mut config = Self::default();
         if let Some(v) = params.get("hosts").or(params.get("host")) { config.hosts = v.clone(); }
-        if let Some(v) = params.get("port") { config.port = v.parse().unwrap_or(9042); }
+        if let Some(v) = params.get("port") {
+            config.port = v.parse()
+                .map_err(|_| format!("invalid port value '{v}' — expected an integer"))?;
+        }
         // connect_keyspace overrides keyspace for the driver connection,
         // leaving {keyspace} in op templates to resolve from workload params.
         // Use connect_keyspace="" to connect without a keyspace (for DDL).
@@ -162,26 +165,37 @@ impl CqlConfig {
         } else if let Some(v) = params.get("keyspace") {
             config.keyspace = v.clone();
         }
-        if let Some(v) = params.get("consistency") { config.consistency = v.clone(); }
+        if let Some(v) = params.get("consistency") {
+            if parse_consistency(v).is_none() {
+                return Err(format!(
+                    "unrecognized consistency level '{v}'. \
+                     Valid: ANY, ONE, TWO, THREE, QUORUM, ALL, LOCAL_QUORUM, EACH_QUORUM, LOCAL_ONE"
+                ));
+            }
+            config.consistency = v.clone();
+        }
         if let Some(v) = params.get("username") { config.username = Some(v.clone()); }
         if let Some(v) = params.get("password") { config.password = Some(v.clone()); }
-        if let Some(v) = params.get("request_timeout_ms") { config.request_timeout_ms = v.parse().unwrap_or(12_000); }
-        config
+        if let Some(v) = params.get("request_timeout_ms") {
+            config.request_timeout_ms = v.parse()
+                .map_err(|_| format!("invalid request_timeout_ms value '{v}' — expected an integer"))?;
+        }
+        Ok(config)
     }
 }
 
-fn parse_consistency(s: &str) -> cass::Consistency {
+fn parse_consistency(s: &str) -> Option<cass::Consistency> {
     match s.to_uppercase().as_str() {
-        "ANY" => cass::Consistency::ANY,
-        "ONE" => cass::Consistency::ONE,
-        "TWO" => cass::Consistency::TWO,
-        "THREE" => cass::Consistency::THREE,
-        "QUORUM" => cass::Consistency::QUORUM,
-        "ALL" => cass::Consistency::ALL,
-        "LOCAL_QUORUM" => cass::Consistency::LOCAL_QUORUM,
-        "EACH_QUORUM" => cass::Consistency::EACH_QUORUM,
-        "LOCAL_ONE" => cass::Consistency::LOCAL_ONE,
-        _ => cass::Consistency::LOCAL_ONE,
+        "ANY" => Some(cass::Consistency::ANY),
+        "ONE" => Some(cass::Consistency::ONE),
+        "TWO" => Some(cass::Consistency::TWO),
+        "THREE" => Some(cass::Consistency::THREE),
+        "QUORUM" => Some(cass::Consistency::QUORUM),
+        "ALL" => Some(cass::Consistency::ALL),
+        "LOCAL_QUORUM" => Some(cass::Consistency::LOCAL_QUORUM),
+        "EACH_QUORUM" => Some(cass::Consistency::EACH_QUORUM),
+        "LOCAL_ONE" => Some(cass::Consistency::LOCAL_ONE),
+        _ => None,
     }
 }
 
@@ -207,6 +221,9 @@ impl CqlAdapter {
         }
         cluster.set_request_timeout(std::time::Duration::from_millis(config.request_timeout_ms));
 
+        let consistency = parse_consistency(&config.consistency)
+            .ok_or_else(|| format!("unrecognized consistency level '{}'", config.consistency))?;
+
         // Try to connect to the specified keyspace. If it doesn't exist,
         // fall back to connecting without a keyspace (needed for DDL phases
         // that create the keyspace).
@@ -215,16 +232,23 @@ impl CqlAdapter {
         } else {
             match cluster.connect_keyspace(&config.keyspace).await {
                 Ok(s) => s,
-                Err(_) => {
-                    eprintln!("cassnbrs: keyspace '{}' not found, connecting without keyspace", config.keyspace);
-                    cluster.connect().await.map_err(|e| format!("connect (no keyspace): {e}"))?
+                Err(e) => {
+                    let msg = e.to_string();
+                    // Only fall back for keyspace-not-found errors.
+                    // Auth failures, network errors, etc. should propagate.
+                    if msg.contains("Keyspace") || msg.contains("keyspace") || msg.contains("not found") {
+                        eprintln!("cassnbrs: keyspace '{}' not found, connecting without keyspace", config.keyspace);
+                        cluster.connect().await.map_err(|e| format!("connect (no keyspace): {e}"))?
+                    } else {
+                        return Err(format!("connect to keyspace '{}': {e}", config.keyspace));
+                    }
                 }
             }
         };
 
         Ok(Self {
             session,
-            consistency: parse_consistency(&config.consistency),
+            consistency,
         })
     }
 }
@@ -247,7 +271,7 @@ impl DriverAdapter for CqlAdapter {
                 let text = v.as_str()?;
                 Some((text.to_string(), *key, key.to_string()))
             })
-            .ok_or_else(|| "CQL op requires a 'raw:', 'simple:', 'prepared:', or 'stmt:' field".to_string())?;
+            .ok_or_else(|| "CQL op requires a 'poll:', 'raw:', 'simple:', 'prepared:', or 'stmt:' field".to_string())?;
 
         // Bind point names: op field keys that aren't the statement field
         let bind_names: Vec<String> = template.op.keys()
@@ -264,7 +288,6 @@ impl DriverAdapter for CqlAdapter {
                 // The dispenser receives the fully-rendered text and executes it.
                 Ok(Box::new(CqlRawDispenser {
                     session,
-                    consistency,
                     field_name,
                 }))
             }
@@ -275,7 +298,6 @@ impl DriverAdapter for CqlAdapter {
                 // The distinction is preserved for future drivers that support it.
                 Ok(Box::new(CqlRawDispenser {
                     session,
-                    consistency,
                     field_name,
                 }))
             }
@@ -285,7 +307,6 @@ impl DriverAdapter for CqlAdapter {
                     // No bind points — execute as raw (DDL, simple queries).
                     Ok(Box::new(CqlRawDispenser {
                         session,
-                        consistency,
                         field_name,
                     }))
                 } else {
@@ -293,7 +314,6 @@ impl DriverAdapter for CqlAdapter {
                         session,
                         consistency,
                         stmt_text,
-                        field_name,
                         bind_names,
                         prepared: std::sync::Mutex::new(None),
                     }))
@@ -329,7 +349,6 @@ impl SessionHandle {
 /// - `prepared:`/`stmt:` mode when there are no bind points (DDL)
 struct CqlRawDispenser {
     session: SessionHandle,
-    consistency: cass::Consistency,
     /// The op field name that carries the statement ("raw", "simple", "prepared", "stmt").
     field_name: String,
 }
@@ -350,11 +369,18 @@ impl OpDispenser for CqlRawDispenser {
                 }))?;
 
             let result = self.session.get().execute(stmt_text).await
-                .map_err(|e| ExecutionError::Op(AdapterError {
-                    error_name: "cql_error".into(),
-                    message: format!("{e}"),
-                    retryable: false,
-                }))?;
+                .map_err(|e| {
+                    let truncated = if stmt_text.len() > 200 {
+                        format!("{}...", &stmt_text[..200])
+                    } else {
+                        stmt_text.to_string()
+                    };
+                    ExecutionError::Op(AdapterError {
+                        error_name: "cql_error".into(),
+                        message: format!("{e}\n  statement: {truncated}"),
+                        retryable: false,
+                    })
+                })?;
 
             let body = if result.row_count() > 0 {
                 Some(Box::new(CqlResultBody::from_cass_result(&result)) as Box<dyn ResultBody>)
@@ -380,8 +406,6 @@ struct CqlPreparedDispenser {
     session: SessionHandle,
     consistency: cass::Consistency,
     stmt_text: String,
-    /// The op field name (for error messages).
-    field_name: String,
     /// Names of bind point fields to extract from ResolvedFields.
     bind_names: Vec<String>,
     /// Lazily prepared statement (first execute prepares it).
@@ -444,11 +468,18 @@ impl OpDispenser for CqlPreparedDispenser {
             }
 
             let result = stmt.execute().await
-                .map_err(|e| ExecutionError::Op(AdapterError {
-                    error_name: "cql_error".into(),
-                    message: format!("{e}"),
-                    retryable: false,
-                }))?;
+                .map_err(|e| {
+                    let truncated = if self.stmt_text.len() > 200 {
+                        format!("{}...", &self.stmt_text[..200])
+                    } else {
+                        self.stmt_text.clone()
+                    };
+                    ExecutionError::Op(AdapterError {
+                        error_name: "cql_error".into(),
+                        message: format!("{e}\n  statement: {truncated}"),
+                        retryable: false,
+                    })
+                })?;
 
             let body = if result.row_count() > 0 {
                 Some(Box::new(CqlResultBody::from_cass_result(&result)) as Box<dyn ResultBody>)
@@ -582,7 +613,8 @@ inventory::submit! {
             "username", "password", "request_timeout_ms",
         ],
         create: |params| Box::pin(async move {
-            let config = CqlConfig::from_params(&params);
+            let config = CqlConfig::from_params(&params)
+                .map_err(|e| format!("CQL config error: {e}"))?;
             eprintln!("cassnbrs: connecting to {} (keyspace: {})",
                 config.hosts,
                 if config.keyspace.is_empty() { "<none>" } else { &config.keyspace });

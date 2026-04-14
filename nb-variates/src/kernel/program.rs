@@ -346,6 +346,12 @@ impl GkProgram {
         self.nodes[idx].meta()
     }
 
+    /// Access the wiring for a node by index.
+    /// Returns the list of `WireSource`s feeding this node's inputs.
+    pub fn node_wiring(&self, idx: usize) -> &[super::WireSource] {
+        &self.wiring[idx]
+    }
+
     /// Probe the compile level of a node by index.
     pub fn node_compile_level(&self, idx: usize) -> crate::node::CompileLevel {
         crate::node::compile_level_of(self.nodes[idx].as_ref())
@@ -543,6 +549,8 @@ impl GkProgram {
                     state.eval_node_public(self, i);
                 }));
                 if result.is_err() {
+                    let node_name = &self.nodes[i].meta().name;
+                    eprintln!("warning: constant folding: node '{node_name}' panicked during init-time eval — skipping fold");
                     is_init[i] = false;
                 }
             }

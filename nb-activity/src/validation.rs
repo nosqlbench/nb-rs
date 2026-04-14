@@ -102,29 +102,26 @@ impl AssertionSpec {
 pub struct ValidationMetrics {
     pub validations_passed: AtomicU64,
     pub validations_failed: AtomicU64,
-    /// Per-function HDR histograms for relevancy scores.
-    /// Scores in [0.0, 1.0] stored as [0, 10_000] (4 decimal places).
-    pub relevancy_histograms: HashMap<String, Histogram>,
+    /// Per-function lossless f64 statistics accumulators for relevancy scores.
+    /// Exact precision — no quantization, no bucket rounding.
+    pub relevancy_stats: HashMap<String, nb_metrics::instruments::f64stats::F64Stats>,
 }
-
-/// Scale factor for storing [0.0, 1.0] scores in integer HDR histograms.
-const SCORE_SCALE: f64 = 10_000.0;
 
 impl ValidationMetrics {
     /// Create metrics for the given relevancy functions and k value.
     pub fn new(labels: &Labels, functions: &[RelevancyFn], k: usize) -> Self {
-        let mut histograms = HashMap::new();
+        let mut stats = HashMap::new();
         for func in functions {
             let metric_name = format!("{}@{}", func.metric_name(), k);
-            histograms.insert(
+            stats.insert(
                 metric_name.clone(),
-                Histogram::new(labels.with("name", &metric_name)),
+                nb_metrics::instruments::f64stats::F64Stats::new(labels.with("name", &metric_name)),
             );
         }
         Self {
             validations_passed: AtomicU64::new(0),
             validations_failed: AtomicU64::new(0),
-            relevancy_histograms: histograms,
+            relevancy_stats: stats,
         }
     }
 
@@ -133,16 +130,14 @@ impl ValidationMetrics {
         Self {
             validations_passed: AtomicU64::new(0),
             validations_failed: AtomicU64::new(0),
-            relevancy_histograms: HashMap::new(),
+            relevancy_stats: HashMap::new(),
         }
     }
 
     /// Record a relevancy score for a named function.
     pub fn record_relevancy(&self, metric_name: &str, score: f64) {
-        if let Some(histo) = self.relevancy_histograms.get(metric_name) {
-            let scaled = (score * SCORE_SCALE).round() as u64;
-            // HDR histogram min is 1; map 0.0 to 1 to avoid undercount
-            histo.record(scaled.max(1));
+        if let Some(stats) = self.relevancy_stats.get(metric_name) {
+            stats.record(score);
         }
     }
 
@@ -182,9 +177,10 @@ impl ValidatingDispenser {
         inner: Arc<dyn OpDispenser>,
         template: &nb_workload::model::ParsedOp,
         labels: &Labels,
+        program: Option<&nb_variates::kernel::GkProgram>,
     ) -> (Arc<dyn OpDispenser>, Option<Arc<ValidationMetrics>>) {
         let assertions = parse_assertions(template);
-        let relevancy = parse_relevancy(template);
+        let relevancy = parse_relevancy(template, program);
         let strict = template.params.get("strict")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
@@ -299,7 +295,7 @@ impl OpDispenser for ValidatingDispenser {
 /// in `ResolvedFields` for each cycle.
 pub fn extra_bindings(template: &nb_workload::model::ParsedOp) -> Vec<String> {
     let mut extras = Vec::new();
-    if let Some(config) = parse_relevancy(template) {
+    if let Some(config) = parse_relevancy(template, None) {
         let name = config.expected_binding.trim_matches(|c| c == '{' || c == '}').to_string();
         if !template.op.contains_key(&name) {
             extras.push(name);
@@ -373,14 +369,40 @@ fn parse_assertions(template: &nb_workload::model::ParsedOp) -> Vec<AssertionSpe
 ///     - precision
 ///     - f1
 /// ```
-fn parse_relevancy(template: &nb_workload::model::ParsedOp) -> Option<RelevancyConfig> {
+fn parse_relevancy(
+    template: &nb_workload::model::ParsedOp,
+    program: Option<&nb_variates::kernel::GkProgram>,
+) -> Option<RelevancyConfig> {
     let rel = template.params.get("relevancy")?;
     let obj = rel.as_object()?;
 
     let actual_field = obj.get("actual")?.as_str()?.to_string();
     let expected_binding = obj.get("expected")?.as_str()?.to_string();
     let k = obj.get("k")
-        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        .and_then(|v| {
+            if let Some(n) = v.as_u64() { return Some(n); }
+            if let Some(s) = v.as_str() {
+                if let Ok(n) = s.parse::<u64>() { return Some(n); }
+                // {name} reference — resolve from GK program constants
+                let bare = s.trim().strip_prefix('{')
+                    .and_then(|s| s.strip_suffix('}'));
+                if let Some(name) = bare {
+                    if let Some(prog) = program {
+                        // Pull the value from a temporary state
+                        let mut state = prog.create_state();
+                        state.set_inputs(&[0]);
+                        let val = state.pull(prog, name);
+                        return match val {
+                            nb_variates::node::Value::U64(n) => Some(*n),
+                            nb_variates::node::Value::Str(s) => s.parse().ok(),
+                            nb_variates::node::Value::F64(f) => Some(*f as u64),
+                            _ => None,
+                        };
+                    }
+                }
+            }
+            None
+        })
         .unwrap_or(10) as usize;
 
     let functions: Vec<RelevancyFn> = obj.get("functions")
@@ -642,13 +664,13 @@ mod tests {
             &[RelevancyFn::Recall, RelevancyFn::Precision],
             10,
         );
-        assert!(metrics.relevancy_histograms.contains_key("recall@10"));
-        assert!(metrics.relevancy_histograms.contains_key("precision@10"));
-        assert!(!metrics.relevancy_histograms.contains_key("f1@10"));
+        assert!(metrics.relevancy_stats.contains_key("recall@10"));
+        assert!(metrics.relevancy_stats.contains_key("precision@10"));
+        assert!(!metrics.relevancy_stats.contains_key("f1@10"));
 
         metrics.record_relevancy("recall@10", 0.85);
         metrics.record_relevancy("recall@10", 0.90);
-        let snap = metrics.relevancy_histograms["recall@10"].snapshot();
+        let snap = metrics.relevancy_stats["recall@10"].snapshot();
         assert_eq!(snap.len(), 2);
     }
 
@@ -681,7 +703,7 @@ mod tests {
             "k": 10,
             "functions": ["recall", "precision", "f1"]
         }));
-        let config = parse_relevancy(&template).unwrap();
+        let config = parse_relevancy(&template, None).unwrap();
         assert_eq!(config.actual_field, "key");
         assert_eq!(config.expected_binding, "{ground_truth}");
         assert_eq!(config.k, 10);
@@ -694,7 +716,7 @@ mod tests {
     #[test]
     fn parse_relevancy_missing() {
         let template = nb_workload::model::ParsedOp::simple("test", "INSERT");
-        assert!(parse_relevancy(&template).is_none());
+        assert!(parse_relevancy(&template, None).is_none());
     }
 
     #[test]

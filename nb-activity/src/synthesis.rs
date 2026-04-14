@@ -234,10 +234,15 @@ pub struct FiberBuilder {
 /// or a known capture declaration from another op. Workload params are
 /// injected into the GK source as constant bindings before compilation,
 /// so they resolve as GK outputs.
+/// Validate that all bind points in op templates can be resolved.
+///
+/// Returns `Err` with a descriptive message if any bind point is
+/// unresolvable. Callers should treat this as a fatal error —
+/// unresolved bind points produce broken ops at runtime.
 pub fn validate_bind_points(
     templates: &[ParsedOp],
     program: &GkProgram,
-) {
+) -> Result<(), String> {
     // Collect all capture declarations across templates
     let mut capture_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for template in templates {
@@ -250,6 +255,8 @@ pub fn validate_bind_points(
             }
         }
     }
+
+    let mut errors: Vec<String> = Vec::new();
 
     for template in templates {
         for (field_name, value) in &template.op {
@@ -268,16 +275,25 @@ pub fn validate_bind_points(
                             }
                         };
                         if !resolvable {
-                            eprintln!(
-                                "warning: unresolved bind point '{{{name}}}' in op '{}' field '{field_name}'. \
+                            errors.push(format!(
+                                "unresolved bind point '{{{name}}}' in op '{}' field '{field_name}'. \
                                  Not found in GK bindings, captures, or inputs.",
                                 template.name
-                            );
+                            ));
                         }
                     }
                 }
             }
         }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        for e in &errors {
+            eprintln!("error: {e}");
+        }
+        Err(format!("{} unresolved bind point(s)", errors.len()))
     }
 }
 
@@ -311,11 +327,15 @@ impl FiberBuilder {
 
     /// Store a captured value directly into GK state.
     ///
-    /// Writes to the named port in GkState. If no port with this
-    /// name is declared in the program, the value is silently dropped.
-    pub fn capture(&mut self, name: &str, value: Value) {
+    /// Writes to the named port in GkState. Returns `true` if the
+    /// port was found and the value stored, `false` if no port with
+    /// this name exists in the program (value is dropped).
+    pub fn capture(&mut self, name: &str, value: Value) -> bool {
         if let Some(idx) = self.program.find_input(name) {
             self.state.set_input(idx, value);
+            true
+        } else {
+            false
         }
     }
 

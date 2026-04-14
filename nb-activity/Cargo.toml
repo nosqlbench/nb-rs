@@ -12,7 +12,7 @@ readme = "README.md"
 
 [dependencies]
 tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
-nb-metrics = { path = "../nb-metrics", version = "0.1.1", features = ["victoriametrics"] }
+nb-metrics = { path = "../nb-metrics", version = "0.1.1", features = ["victoriametrics", "sqlite"] }
 nb-rate = { path = "../nb-rate", version = "0.1.1" }
 nb-errorhandler = { path = "../nb-errorhandler", version = "0.1.1" }
 nb-workload = { path = "../nb-workload", version = "0.1.1" }

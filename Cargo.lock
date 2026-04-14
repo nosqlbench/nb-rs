@@ -1953,6 +1953,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "target-lexicon",
+ "tokio",
  "vectordata",
  "xxhash-rust",
 ]
@@ -3375,9 +3376,9 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vectordata"
-version = "0.19.0"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1a05d253f85e9a4f18f38badcb588d3275d3af52c9affca39ffd75243835fb4"
+checksum = "f139d0f34cc57ce347e9c85ba72792c63a201e5cebbab115c91a5d2297930f7c"
 dependencies = [
  "anyhow",
  "byteorder",

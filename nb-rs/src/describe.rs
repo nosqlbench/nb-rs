@@ -37,6 +37,8 @@ pub fn describe_command(args: &[String]) {
         _ => {
             eprintln!("nbrs describe <topic>");
             eprintln!("  gk           Generation kernel topics");
+            eprintln!();
+            eprintln!("For workload analysis, use: nbrs run workload=file.yaml dryrun=phase,gk");
         }
     }
 }
@@ -264,15 +266,16 @@ fn describe_gk_functions_md(path: &str) {
         }
     }
 
-    match std::fs::File::create(path) {
-        Ok(mut f) => {
-            f.write_all(out.as_bytes()).expect("failed to write markdown");
-            eprintln!("nbrs: wrote {total} functions to {path}");
-        }
-        Err(e) => {
-            eprintln!("nbrs: failed to create {path}: {e}");
-        }
-    }
+    let mut f = std::fs::File::create(path)
+        .unwrap_or_else(|e| {
+            eprintln!("error: failed to create {path}: {e}");
+            std::process::exit(1);
+        });
+    f.write_all(out.as_bytes()).unwrap_or_else(|e| {
+        eprintln!("error: failed to write {path}: {e}");
+        std::process::exit(1);
+    });
+    eprintln!("nbrs: wrote {total} functions to {path}");
 }
 
 /// Display embedded stdlib modules with their typed signatures.
