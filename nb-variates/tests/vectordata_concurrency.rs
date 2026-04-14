@@ -89,7 +89,6 @@ fn concurrent_reads_match_sequential() {
 #[test]
 #[ignore] // requires sift1m dataset
 fn shared_kernel_concurrent_eval() {
-    use std::sync::Arc;
     let source = "sift1m:label_01";
     let src = format!(
         "inputs := (cycle)\nvec := vector_at(cycle, \"{source}\")"

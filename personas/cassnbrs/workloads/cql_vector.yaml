@@ -37,10 +37,13 @@ scenarios:
         - create_table
         - create_index
         - rampup
+        - for_each: "k in {k_values}"
+          phases:
+            - search_pre_compaction
         - await_index
         - for_each: "k in {k_values}"
           phases:
-            - search
+            - search_post_compaction
 
 phases:
   discover:
@@ -96,13 +99,32 @@ phases:
     cycles: ===auto
     concurrency: 1
     ops:
-      wait_for_compaction:
-        raw: "SELECT keyspace_name, table_name, kind, progress FROM system_views.sstable_tasks WHERE keyspace_name = '{keyspace}' AND table_name = 'vec_{profile}'"
+      wait_for_index:
+        raw: "SELECT index_name, is_building FROM system_views.sai_column_indexes WHERE keyspace_name = '{keyspace}' AND index_name = 'vec_{profile}_idx' AND is_building = true ALLOW FILTERING"
         poll: await_empty
-        poll_interval_ms: 10000
+        poll_interval_ms: 5000
         timeout_ms: 600000
+        poll_metric_name: index_build_time_s
 
-  search:
+  search_pre_compaction:
+    cycles: 100
+    concurrency: "{concurrency}"
+    bindings: |
+      init prebuffer = dataset_prebuffer("{dataset}:{profile}")
+      query_vector := query_vector_at(cycle, "{dataset}:{profile}")
+      ground_truth := neighbor_indices_at(cycle, "{dataset}:{profile}")
+    ops:
+      select_ann:
+        prepared: "SELECT key FROM {keyspace}.vec_{profile} ORDER BY value ANN OF {query_vector} LIMIT {k}"
+        relevancy:
+          actual: key
+          expected: "{ground_truth}"
+          k: "{k}"
+          functions:
+            - recall
+            - precision
+
+  search_post_compaction:
     cycles: 100
     concurrency: "{concurrency}"
     bindings: |

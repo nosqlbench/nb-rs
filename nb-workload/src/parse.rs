@@ -124,20 +124,21 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
         JVal::String(s) => vec![ScenarioNode::Phase(s.clone())],
         JVal::Array(arr) => arr.iter().flat_map(|item| parse_scenario_nodes(item)).collect(),
         JVal::Object(obj) => {
+            let children = obj.get("phases")
+                .map(|v| parse_scenario_nodes(v))
+                .unwrap_or_default();
+            let counter = obj.get("counter")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
             if let Some(spec) = obj.get("for_each").and_then(|v| v.as_str()) {
-                // for_each node: children come from "phases" (parsed recursively)
-                let children = obj.get("phases")
-                    .map(|v| parse_scenario_nodes(v))
-                    .unwrap_or_default();
-                vec![ScenarioNode::ForEach {
-                    spec: spec.to_string(),
-                    children,
-                }]
+                vec![ScenarioNode::ForEach { spec: spec.to_string(), children }]
+            } else if let Some(cond) = obj.get("do_while").and_then(|v| v.as_str()) {
+                vec![ScenarioNode::DoWhile { condition: cond.to_string(), counter, children }]
+            } else if let Some(cond) = obj.get("do_until").and_then(|v| v.as_str()) {
+                vec![ScenarioNode::DoUntil { condition: cond.to_string(), counter, children }]
             } else {
-                // Legacy command-string format: name → command
-                obj.iter().map(|(name, _cmd)| {
-                    ScenarioNode::Phase(name.clone())
-                }).collect()
+                obj.iter().map(|(name, _cmd)| ScenarioNode::Phase(name.clone())).collect()
             }
         }
         _ => Vec::new(),
@@ -482,7 +483,7 @@ fn normalize_op_object(
     let op_field_names = ["op", "ops", "operations", "stmt", "statement", "statements"];
     // Activity-level params excised from op fields before the adapter sees them
     let activity_params = ["ratio", "driver", "space", "instrument", "start-timers", "stop-timers",
-        "verify", "relevancy", "strict", "poll", "poll_interval_ms", "timeout_ms"];
+        "verify", "relevancy", "strict", "poll", "poll_interval_ms", "timeout_ms", "poll_metric_name", "emit"];
 
     let op_fields = if let Some(explicit_op) = op_field_names.iter()
         .find_map(|k| map.get(*k))
@@ -782,8 +783,9 @@ ops:
         let workload = parse_workload(yaml, &HashMap::new()).unwrap();
         let default = &workload.scenarios["default"];
         assert_eq!(default.len(), 2);
-        let schema_step = default.iter().find(|s| s.name == "schema").unwrap();
-        assert!(schema_step.command.contains("driver=cql"));
+        // Legacy command-string format: names are preserved as Phase nodes
+        assert!(matches!(&default[0], ScenarioNode::Phase(n) if n == "schema"));
+        assert!(matches!(&default[1], ScenarioNode::Phase(n) if n == "main"));
     }
 
     #[test]
@@ -902,8 +904,8 @@ phases:
         // Scenario parsed as phase name list
         let default = &workload.scenarios["default"];
         assert_eq!(default.len(), 2);
-        assert_eq!(default[0].name, "schema");
-        assert_eq!(default[1].name, "main");
+        assert!(matches!(&default[0], ScenarioNode::Phase(n) if n == "schema"));
+        assert!(matches!(&default[1], ScenarioNode::Phase(n) if n == "main"));
     }
 
     #[test]

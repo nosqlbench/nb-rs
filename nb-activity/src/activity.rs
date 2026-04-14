@@ -240,7 +240,9 @@ impl Activity {
         op_sequence: OpSequence,
         params: std::collections::HashMap<String, String>,
     ) -> Self {
-        let labels = parent_labels.with("activity", &config.name);
+        // Labels come from the component tree (parent_labels).
+        // The activity name is for display only, not a metric dimension.
+        let labels = parent_labels.clone();
         let metrics = Arc::new(ActivityMetrics::new(&labels));
         let error_router = ErrorRouter::parse(&config.error_spec)
             .unwrap_or_else(|e| {
@@ -372,8 +374,11 @@ impl Activity {
                             .and_then(|v| v.as_str().and_then(|s| s.parse().ok())
                                 .or_else(|| v.as_u64()))
                             .unwrap_or(300_000);
+                        let metric_name = template.params.get("poll_metric_name")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
                         let (dispenser, poll_metrics) =
-                            crate::wrappers::PollingDispenser::wrap(conditional, interval, timeout);
+                            crate::wrappers::PollingDispenser::wrap(conditional, interval, timeout, metric_name);
                         eprintln!("  op '{}': polling enabled (interval={}ms, timeout={}ms)",
                             template.name, interval, timeout);
                         let _ = poll_metrics; // metrics accessible via Arc if needed
@@ -381,7 +386,16 @@ impl Activity {
                     } else {
                         conditional
                     };
-                    dispensers.push(final_dispenser);
+                    // Wrap with emit (outermost) — prints result JSON
+                    let emitted = if template.params.get("emit")
+                        .and_then(|v| v.as_bool().or_else(|| v.as_str().map(|s| s == "true")))
+                        .unwrap_or(false)
+                    {
+                        crate::wrappers::EmitDispenser::wrap(final_dispenser, &template.name)
+                    } else {
+                        final_dispenser
+                    };
+                    dispensers.push(emitted);
 
                     // Collect extra bindings: validation + condition + delay
                     let mut extras = validation::extra_bindings(template);

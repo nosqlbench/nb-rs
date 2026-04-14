@@ -12,7 +12,7 @@ mod inner {
 
     use rusqlite::{Connection, params};
 
-    use crate::frame::{MetricsFrame, Sample, QUANTILES};
+    use crate::frame::{MetricsFrame, Sample};
     use crate::labels::Labels;
     use crate::scheduler::Reporter;
 
@@ -227,7 +227,7 @@ mod inner {
         }
 
         fn insert_sample(&mut self, frame: &MetricsFrame, sample: &Sample) {
-            let timestamp_ms = frame.captured_at.elapsed().as_millis() as i64;
+            let _timestamp_ms = frame.captured_at.elapsed().as_millis() as i64;
             // Use wall clock approximation
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -260,7 +260,7 @@ mod inner {
                         params![instance_id, now_ms, interval_ms, *value],
                     ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
                 }
-                Sample::Timer { labels, count, histogram } => {
+                Sample::Timer { labels, count: _, histogram } => {
                     let name = labels.get("name").unwrap_or("unknown");
                     let family_id = self.get_or_insert_family(name, "summary");
                     let label_set_id = self.get_or_insert_label_set(labels);
@@ -297,43 +297,265 @@ mod inner {
     }
 
     impl SqliteReporter {
-        /// Print a markdown summary of relevancy metrics (recall, precision).
-        pub fn print_summary(&self) {
-            let mut stmt = match self.conn.prepare(
-                "SELECT mi.spec, sv.mean
-                 FROM sample_value sv
-                 JOIN metric_instance mi ON sv.instance_id = mi.id
-                 WHERE mi.spec LIKE 'recall%.mean%' OR mi.spec LIKE 'precision%.mean%'
-                 ORDER BY mi.spec"
-            ) {
-                Ok(s) => s,
-                Err(_) => return,
+        /// Print a markdown summary of metrics.
+        ///
+        /// `filter` is a comma-separated list of regex patterns matched
+        /// against the metric spec. Empty or "all" matches everything.
+        /// Default (None) shows the standard summary sections.
+        pub fn print_summary(&self, filter: Option<&str>) {
+            let patterns: Vec<regex::Regex> = match filter {
+                Some(f) if !f.is_empty() && f != "all" => {
+                    f.split(',')
+                        .filter_map(|p| regex::Regex::new(p.trim()).ok())
+                        .collect()
+                }
+                _ => vec![],
             };
 
-            let rows: Vec<(String, f64)> = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
-            }).ok()
-                .map(|r| r.filter_map(|r| r.ok()).collect())
-                .unwrap_or_default();
+            // Check if any section has content before printing header
+            let relevancy = self.query_gauges("recall|precision");
+            let search_perf = self.query_search_performance();
+            let rampup_perf = self.query_rampup_performance();
+            let index_times = self.query_index_build_times();
 
-            if rows.is_empty() { return; }
+            let has_content = !relevancy.is_empty()
+                || !search_perf.is_empty()
+                || !rampup_perf.is_empty()
+                || !index_times.is_empty();
+
+            if !has_content { return; }
 
             println!();
             println!("## Summary");
             println!();
-            println!("| Metric | Activity | Score |");
-            println!("|--------|----------|-------|");
-            for (spec, value) in &rows {
-                // Parse spec: "recall@100.mean{activity="search (k=100)",n="100"}"
-                let metric = spec.split('{').next().unwrap_or(spec);
-                let activity = spec.split("activity=\"")
-                    .nth(1)
-                    .and_then(|s| s.split('"').next())
-                    .unwrap_or("");
-                println!("| {metric} | {activity} | {value:.4} |");
+
+            // Section 1: Relevancy (recall, precision)
+            if !relevancy.is_empty() {
+                println!("### Relevancy");
+                println!();
+                println!("| Metric | Activity | Score |");
+                println!("|--------|----------|-------|");
+                for (spec, value) in &relevancy {
+                    if !patterns.is_empty() && !patterns.iter().any(|p| p.is_match(spec)) {
+                        continue;
+                    }
+                    let metric = spec.split('{').next().unwrap_or(spec);
+                    let activity = extract_labels_display(spec);
+                    println!("| {metric} | {activity} | {value:.4} |");
+                }
+                println!();
             }
-            println!();
+
+            // Section 2: Search throughput and latency
+            if !search_perf.is_empty() {
+                println!("### Search Performance");
+                println!();
+                println!("| Activity | Queries | QPS | Latency p50 | Latency p99 | Latency mean |");
+                println!("|----------|---------|-----|-------------|-------------|--------------|");
+                for row in &search_perf {
+                    if !patterns.is_empty() && !patterns.iter().any(|p| p.is_match(&row.activity)) {
+                        continue;
+                    }
+                    println!("| {} | {} | {:.0} | {:.2}ms | {:.2}ms | {:.2}ms |",
+                        row.activity, row.queries, row.qps,
+                        row.latency_p50_ms, row.latency_p99_ms, row.latency_mean_ms);
+                }
+                println!();
+            }
+
+            // Section 3: Rampup throughput
+            if !rampup_perf.is_empty() {
+                println!("### Rampup Performance");
+                println!();
+                println!("| Activity | Vectors | Rate |");
+                println!("|----------|---------|------|");
+                for (activity, count, rate) in &rampup_perf {
+                    println!("| {activity} | {count} | {rate:.0}/s |");
+                }
+                println!();
+            }
+
+            // Section 4: Index build time (from await_index phases)
+            if !index_times.is_empty() {
+                println!("### Index Build");
+                println!();
+                println!("| Activity | Wait Time |");
+                println!("|----------|-----------|");
+                for (activity, time_ms) in &index_times {
+                    if *time_ms < 1000.0 {
+                        println!("| {activity} | {time_ms:.0}ms |");
+                    } else {
+                        println!("| {activity} | {:.1}s |", time_ms / 1000.0);
+                    }
+                }
+                println!();
+            }
         }
+
+        fn query_gauges(&self, name_pattern: &str) -> Vec<(String, f64)> {
+            let re = regex::Regex::new(name_pattern).unwrap_or_else(|_| regex::Regex::new(".*").unwrap());
+            let mut stmt = match self.conn.prepare(
+                "SELECT mi.spec, sv.mean FROM sample_value sv
+                 JOIN metric_instance mi ON sv.instance_id = mi.id
+                 JOIN metric_family mf ON mi.family_id = mf.id
+                 WHERE mf.type = 'gauge' ORDER BY mi.spec"
+            ) {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+            stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+            }).ok()
+                .map(|r| r.filter_map(|r| r.ok())
+                    .filter(|(spec, _)| re.is_match(spec))
+                    .collect())
+                .unwrap_or_default()
+        }
+
+        fn query_search_performance(&self) -> Vec<PerfRow> {
+            // Get the last (final) sample for each search activity
+            let mut stmt = match self.conn.prepare(
+                "SELECT mi.spec, sv.count, sv.mean, sv.p50, sv.p99,
+                        sv.timestamp_ms
+                 FROM sample_value sv
+                 JOIN metric_instance mi ON sv.instance_id = mi.id
+                 WHERE mi.spec LIKE 'cycles_servicetime%' AND mi.spec LIKE '%search%'
+                 ORDER BY mi.id, sv.timestamp_ms DESC"
+            ) {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+
+            let mut seen = std::collections::HashSet::new();
+            let mut rows = Vec::new();
+            let iter = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, f64>(3)?,
+                    row.get::<_, f64>(4)?,
+                ))
+            });
+            if let Ok(iter) = iter {
+                for r in iter.filter_map(|r| r.ok()) {
+                    let activity = extract_labels_display(&r.0);
+                    if seen.contains(&activity) { continue; }
+                    seen.insert(activity.clone());
+
+                    // Get total cycles for this activity
+                    let total = self.query_final_counter("cycles_total", &activity);
+                    // Get elapsed from timestamp range
+                    let elapsed = self.query_elapsed_ms(&activity);
+                    let qps = if elapsed > 0.0 { total as f64 * 1000.0 / elapsed } else { 0.0 };
+
+                    rows.push(PerfRow {
+                        activity,
+                        queries: total,
+                        qps,
+                        latency_mean_ms: r.2 / 1_000_000.0,
+                        latency_p50_ms: r.3 / 1_000_000.0,
+                        latency_p99_ms: r.4 / 1_000_000.0,
+                    });
+                }
+            }
+            rows
+        }
+
+        fn query_rampup_performance(&self) -> Vec<(String, u64, f64)> {
+            let mut results = Vec::new();
+            let mut stmt = match self.conn.prepare(
+                "SELECT DISTINCT mi.spec FROM metric_instance mi
+                 WHERE mi.spec LIKE 'cycles_total%' AND mi.spec LIKE '%rampup%'"
+            ) {
+                Ok(s) => s,
+                Err(_) => return results,
+            };
+            let specs: Vec<String> = stmt.query_map([], |row| row.get(0))
+                .ok().map(|r| r.filter_map(|r| r.ok()).collect()).unwrap_or_default();
+
+            for spec in &specs {
+                let activity = extract_labels_display(spec);
+                let total = self.query_final_counter("cycles_total", &activity);
+                let elapsed = self.query_elapsed_ms(&activity);
+                let rate = if elapsed > 0.0 { total as f64 * 1000.0 / elapsed } else { 0.0 };
+                if total > 0 {
+                    results.push((activity, total, rate));
+                }
+            }
+            results
+        }
+
+        fn query_index_build_times(&self) -> Vec<(String, f64)> {
+            // await_index response time = total polling wait (includes poll intervals)
+            let mut stmt = match self.conn.prepare(
+                "SELECT mi.spec, MAX(sv.mean)
+                 FROM sample_value sv
+                 JOIN metric_instance mi ON sv.instance_id = mi.id
+                 WHERE mi.spec LIKE 'cycles_responsetime%' AND mi.spec LIKE '%await_index%'
+                 GROUP BY mi.id"
+            ) {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+            stmt.query_map([], |row| {
+                let spec: String = row.get(0)?;
+                let nanos: f64 = row.get(1)?;
+                Ok((extract_labels_display(&spec), nanos / 1_000_000.0))
+            }).ok()
+                .map(|r| r.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default()
+        }
+
+        fn query_final_counter(&self, metric: &str, activity: &str) -> u64 {
+            let pattern = format!("{metric}%{activity}%");
+            self.conn.query_row(
+                "SELECT MAX(sv.count) FROM sample_value sv
+                 JOIN metric_instance mi ON sv.instance_id = mi.id
+                 WHERE mi.spec LIKE ?1",
+                params![pattern],
+                |row| row.get::<_, i64>(0),
+            ).unwrap_or(0) as u64
+        }
+
+        fn query_elapsed_ms(&self, activity: &str) -> f64 {
+            let pattern = format!("%{activity}%");
+            let result: Result<(i64, i64), _> = self.conn.query_row(
+                "SELECT MIN(sv.timestamp_ms), MAX(sv.timestamp_ms)
+                 FROM sample_value sv
+                 JOIN metric_instance mi ON sv.instance_id = mi.id
+                 WHERE mi.spec LIKE ?1",
+                params![pattern],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            );
+            match result {
+                Ok((min, max)) => (max - min) as f64,
+                Err(_) => 0.0,
+            }
+        }
+    }
+
+    struct PerfRow {
+        activity: String,
+        queries: u64,
+        qps: f64,
+        latency_mean_ms: f64,
+        latency_p50_ms: f64,
+        latency_p99_ms: f64,
+    }
+
+    /// Extract all labels from a spec string into a display-friendly format.
+    /// Skips session and n (sample count) — shows the meaningful dimensions.
+    fn extract_labels_display(spec: &str) -> String {
+        let labels_part = spec.split('{').nth(1)
+            .and_then(|s| s.strip_suffix('}'))
+            .unwrap_or("");
+        let parts: Vec<&str> = labels_part.split(',')
+            .filter(|p| !p.trim().starts_with("session=")
+                && !p.trim().starts_with("n=")
+                && !p.trim().starts_with("name="))
+            .collect();
+        parts.join(", ").replace('"', "")
     }
 
     impl Reporter for SqliteReporter {

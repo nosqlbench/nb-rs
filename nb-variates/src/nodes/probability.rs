@@ -1382,7 +1382,6 @@ mod tests {
         // wire through default_or, verify None→fallback and set→value.
         use crate::assembly::{GkAssembler, WireRef};
         use crate::nodes::identity::PortPassthrough;
-        use crate::kernel::InputDef;
 
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
         // Add an extern input (defaults to None)

@@ -95,22 +95,25 @@ pub struct WorkloadPhase {
 
 /// A node in a scenario execution tree.
 ///
-/// Scenarios are trees of phases and for_each loops. The tree is
-/// flattened into a linear execution plan at runtime. Nesting is
-/// supported to arbitrary depth.
+/// Scenarios are trees of phases and control flow constructs.
+/// Nesting is supported to arbitrary depth. All nodes are
+/// evaluated dynamically at runtime — no pre-flattening.
+///
+/// `cycle` is immutable — loop constructs declare their own
+/// counter variables for iteration indices.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ScenarioNode {
     /// A single phase to execute.
     Phase(String),
-    /// A for_each loop: iterate `spec` ("var in expr"), executing
-    /// `children` once per iteration value.
-    ForEach {
-        spec: String,
-        children: Vec<ScenarioNode>,
-    },
+    /// Iterate a pre-resolved list of values.
+    ForEach { spec: String, children: Vec<ScenarioNode> },
+    /// Execute children while condition is true (test after).
+    DoWhile { condition: String, counter: Option<String>, children: Vec<ScenarioNode> },
+    /// Execute children until condition becomes true (test after).
+    DoUntil { condition: String, counter: Option<String>, children: Vec<ScenarioNode> },
 }
 
-/// Legacy alias for backward compatibility with code that references ScenarioStep.
+/// Legacy alias.
 pub type ScenarioStep = ScenarioNode;
 
 /// How bindings are defined for an op.

@@ -16,20 +16,21 @@ use nb_variates::dsl::ast::BindingModifier;
 
 #[test]
 fn empty_source() {
+    // Empty source is a valid zero-binding program (no inputs, no outputs)
     let result = compile_gk("");
-    assert!(result.is_err(), "empty source should fail");
+    assert!(result.is_ok(), "empty source should compile as zero-binding program");
 }
 
 #[test]
 fn whitespace_only() {
     let result = compile_gk("   \n\n  \t  \n  ");
-    assert!(result.is_err(), "whitespace-only source should fail");
+    assert!(result.is_ok(), "whitespace-only source should compile as zero-binding program");
 }
 
 #[test]
 fn comments_only() {
     let result = compile_gk("// just a comment\n# another comment\n/* block */");
-    assert!(result.is_err(), "comments-only source should fail");
+    assert!(result.is_ok(), "comments-only source should compile as zero-binding program");
 }
 
 #[test]
@@ -602,7 +603,7 @@ fn fuzz_random_hash_chains() {
 #[test]
 fn fuzz_arithmetic_expressions() {
     let ops = ["+", "-", "*"];
-    for (i, op) in ops.iter().enumerate() {
+    for (_i, op) in ops.iter().enumerate() {
         for a in [0u64, 1, 42, 100, u64::MAX / 2] {
             let src = format!(
                 "inputs := (cycle)\nresult := cycle {op} {a}"

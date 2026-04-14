@@ -674,7 +674,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn dynamic_weighted_select_strict_rejects_cycle_config() {
         // In strict mode, Config wire from cycle source is a hard error.
         use crate::assembly::{GkAssembler, WireRef};

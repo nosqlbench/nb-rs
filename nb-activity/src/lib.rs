@@ -14,6 +14,7 @@ pub mod adapters;
 pub mod synthesis;
 pub mod bindings;
 pub mod runner;
+pub mod executor;
 pub mod describe;
 pub mod wrappers;
 pub mod relevancy;

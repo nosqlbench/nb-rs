@@ -1927,7 +1927,9 @@ fn every_registered_function_compiles() {
         neighbor_indices_at neighbor_distances_at filtered_neighbor_indices_at \
         filtered_neighbor_distances_at dataset_distance_function vector_dim vector_count \
         query_count neighbor_count metadata_indices_at metadata_indices_len_at \
-        metadata_indices_count dataset_facets";
+        metadata_indices_count dataset_facets dataset_profile_count dataset_profile_names \
+        matching_profiles dataset_profile_name_at profile_base_count profile_facets \
+        dataset_prebuffer";
     let vectordata_fns: std::collections::HashSet<&str> = vectordata_category.split_whitespace().collect();
 
     for sig in &reg {

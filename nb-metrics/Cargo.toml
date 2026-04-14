@@ -13,11 +13,12 @@ readme = "README.md"
 [dependencies]
 hdrhistogram = "7"
 rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+regex = { version = "1", optional = true }
 reqwest = { version = "0.12", features = ["blocking"], optional = true }
 base64 = { version = "0.22", optional = true }
 
 [features]
 default = []
-sqlite = ["dep:rusqlite"]
+sqlite = ["dep:rusqlite", "dep:regex"]
 victoriametrics = ["dep:reqwest"]
 all-reporters = ["sqlite", "victoriametrics", "dep:base64"]

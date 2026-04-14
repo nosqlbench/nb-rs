@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nb_metrics::instruments::histogram::Histogram;
 use nb_metrics::labels::Labels;
 
 use crate::adapter::{

@@ -304,6 +304,8 @@ pub struct PollingDispenser {
     inner: Arc<dyn OpDispenser>,
     poll_interval: std::time::Duration,
     timeout: std::time::Duration,
+    /// Named metric for the poll elapsed time (e.g., "index_build_time").
+    metric_name: Option<String>,
     /// Externally visible metrics for the polling operation.
     pub metrics: Arc<PollingMetrics>,
 }
@@ -335,16 +337,21 @@ impl PollingMetrics {
 impl PollingDispenser {
     /// Wrap an inner dispenser with polling behavior.
     /// Returns the wrapped dispenser and a handle to the metrics.
+    ///
+    /// `metric_name`: if set, the elapsed poll time is captured as a named
+    /// gauge (in seconds) for the summary report.
     pub fn wrap(
         inner: Arc<dyn OpDispenser>,
         poll_interval_ms: u64,
         timeout_ms: u64,
+        metric_name: Option<String>,
     ) -> (Arc<dyn OpDispenser>, Arc<PollingMetrics>) {
         let metrics = Arc::new(PollingMetrics::new());
         let dispenser = Arc::new(Self {
             inner,
             poll_interval: std::time::Duration::from_millis(poll_interval_ms),
             timeout: std::time::Duration::from_millis(timeout_ms),
+            metric_name,
             metrics: metrics.clone(),
         });
         (dispenser, metrics)
@@ -380,20 +387,24 @@ impl OpDispenser for PollingDispenser {
 
                 if is_empty {
                     let elapsed = start.elapsed();
+                    let elapsed_secs = elapsed.as_secs_f64();
                     self.metrics.polls_total.fetch_add(polls, std::sync::atomic::Ordering::Relaxed);
                     self.metrics.poll_elapsed_ms.store(elapsed.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
                     self.metrics.condition_met.store(1, std::sync::atomic::Ordering::Relaxed);
-                    eprintln!("  poll complete: {} polls in {:.1}s",
-                        polls, elapsed.as_secs_f64());
+                    eprintln!("\r\x1b[K  poll complete: {} polls in {:.1}s",
+                        polls, elapsed_secs);
+                    let mut captures = std::collections::HashMap::new();
+                    captures.insert("poll_count".into(), nb_variates::node::Value::U64(polls));
+                    captures.insert("poll_elapsed_ms".into(),
+                        nb_variates::node::Value::U64(elapsed.as_millis() as u64));
+                    // Emit named metric (e.g., "index_build_time") in seconds
+                    if let Some(ref name) = self.metric_name {
+                        captures.insert(name.clone(),
+                            nb_variates::node::Value::F64(elapsed_secs));
+                    }
                     return Ok(OpResult {
                         body: None,
-                        captures: {
-                            let mut c = std::collections::HashMap::new();
-                            c.insert("poll_count".into(), nb_variates::node::Value::U64(polls));
-                            c.insert("poll_elapsed_ms".into(),
-                                nb_variates::node::Value::U64(elapsed.as_millis() as u64));
-                            c
-                        },
+                        captures,
                         skipped: false,
                     });
                 }
@@ -417,14 +428,70 @@ impl OpDispenser for PollingDispenser {
     }
 }
 
+// =========================================================================
+// EmitDispenser: print result body as JSON after execution
+// =========================================================================
+
+/// Wraps any adapter's dispenser and prints the result body to stdout
+/// as JSON after each execution. Adapter-agnostic — works with CQL,
+/// HTTP, stdout, or any adapter that returns a ResultBody.
+///
+/// Enabled by wrapping at init time when `dryrun=emit` is active
+/// or when the op has `emit: true`.
+pub struct EmitDispenser {
+    inner: Arc<dyn OpDispenser>,
+    op_name: String,
+}
+
+impl EmitDispenser {
+    pub fn wrap(inner: Arc<dyn OpDispenser>, op_name: &str) -> Arc<dyn OpDispenser> {
+        Arc::new(Self {
+            inner,
+            op_name: op_name.to_string(),
+        })
+    }
+}
+
+impl OpDispenser for EmitDispenser {
+    fn execute<'a>(
+        &'a self,
+        cycle: u64,
+        fields: &'a ResolvedFields,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        Box::pin(async move {
+            let result = self.inner.execute(cycle, fields).await?;
+
+            // Print result body as JSON
+            if let Some(ref body) = result.body {
+                let json = body.to_json();
+                println!("[{}@{}] {} rows: {}",
+                    self.op_name, cycle,
+                    body.element_count(),
+                    serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string()));
+            } else {
+                println!("[{}@{}] (no result body)", self.op_name, cycle);
+            }
+
+            // Print captures if any
+            if !result.captures.is_empty() {
+                for (name, value) in &result.captures {
+                    println!("  capture {name} = {}", value.to_display_string());
+                }
+            }
+
+            Ok(result)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::{TextBody, ResultBody};
+    use crate::adapter::ResultBody;
 
     #[test]
     fn parse_captures_from_template() {
-        let mut template = nb_workload::model::ParsedOp::simple("test", "SELECT [username], [age as user_age] FROM users");
+        let template = nb_workload::model::ParsedOp::simple("test", "SELECT [username], [age as user_age] FROM users");
         let captures = parse_template_captures(&template);
         assert_eq!(captures.len(), 2);
         assert_eq!(captures[0].source, "username");

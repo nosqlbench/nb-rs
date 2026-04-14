@@ -29,7 +29,7 @@ const KNOWN_PARAMS: &[&str] = &[
     "adapter", "driver", "workload", "op", "cycles", "concurrency",
     "rate", "stanzarate", "errors", "seq", "tags", "format",
     "filename", "separator", "header", "color",
-    "stanza_concurrency", "sc", "scenario", "dryrun",
+    "stanza_concurrency", "sc", "scenario", "dryrun", "summary", "metrics",
 ];
 
 /// Run a workload. Adapters are discovered from link-time inventory
@@ -274,13 +274,15 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
             .or_else(|| a.strip_prefix("report-openmetrics-to=")))
         .map(|s| s.to_string());
 
-    // SQLite metrics capture: create per-session database.
-    // Standard for every session — stores all dimensional metrics.
-    let sqlite_path = format!("nb-metrics-{}.db",
-        chrono_session_id());
+    // SQLite metrics capture — always a unique session-coded filename.
+    // A symlink `metrics.db` always points to the latest session.
+    let session_id = chrono_session_id();
+    let sqlite_path = format!("nb-metrics-{session_id}.db");
+    // Create/update symlink to latest
+    let _ = std::fs::remove_file("metrics.db");
+    let _ = std::os::unix::fs::symlink(&sqlite_path, "metrics.db");
     let sqlite_reporter = nb_metrics::reporters::sqlite::SqliteReporter::new(&sqlite_path)
         .map(|mut r| {
-            // Record session metadata
             r.set_metadata("workload", workload_file.as_deref().unwrap_or("inline"));
             r.set_metadata("start_time", &format!("{}", std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()));
@@ -295,7 +297,7 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
     let sqlite_reporter = std::sync::Arc::new(std::sync::Mutex::new(sqlite_reporter));
 
     // Merge all ops for param expansion and GK compilation.
-    let num_top_level_ops = ops.len();
+    let _num_top_level_ops = ops.len();
     let mut all_ops_for_compile: Vec<nb_workload::model::ParsedOp> = ops;
     all_ops_for_compile.extend(phase_ops_for_compile);
 
@@ -349,14 +351,14 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
     // for scope composition (sysref 16). Must be done before kernel is
     // consumed by OpBuilder.
     let outer_manifest = extract_manifest(kernel.program());
-    let mut outer_scope_values: Vec<(String, nb_variates::node::Value)> = outer_manifest.iter()
+    let outer_scope_values: Vec<(String, nb_variates::node::Value)> = outer_manifest.iter()
         .filter_map(|entry| {
             kernel.get_constant(&entry.name)
                 .map(|v| (entry.name.clone(), v.clone()))
         })
         .collect();
     // Original snapshot for loop_scope: clean (unaffected by shared write-back)
-    let original_scope_values = outer_scope_values.clone();
+    let _original_scope_values = outer_scope_values.clone();
 
     // === GK Config Resolution (all done before kernel is consumed) ===
 
@@ -374,7 +376,9 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
                 nb_workload::model::ScenarioNode::Phase(name) => {
                     if in_group { out.insert(name.clone()); }
                 }
-                nb_workload::model::ScenarioNode::ForEach { children, .. } => {
+                nb_workload::model::ScenarioNode::ForEach { children, .. }
+                | nb_workload::model::ScenarioNode::DoWhile { children, .. }
+                | nb_workload::model::ScenarioNode::DoUntil { children, .. } => {
                     collect_grouped_phases(children, true, out);
                 }
             }
@@ -432,499 +436,46 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
 
         eprintln!("scenario '{scenario_name}': {}", format_scenario_tree(&scenario_nodes));
 
-        // Build flat execution plan from recursive scenario tree.
-        // Each entry is (phase_name, bindings) where bindings accumulate
-        // from all enclosing for_each levels.
-        let execution_plan = flatten_scenario_tree(
-            &scenario_nodes, &phases, &workload_params,
-            &outer_scope_values, &phase_iterations,
-            &HashMap::new(), // no outer bindings at top level
-        )?;
-
-        for (phase_name, iterations) in &execution_plan {
-            let phase = phases.get(phase_name)
-                .ok_or_else(|| format!(
-                    "phase '{phase_name}' referenced in scenario '{scenario_name}' not found in phases section"
-                ))?;
-
-            eprintln!("=== phase: {phase_name} ===");
-
-            // iterations come from the execution plan (pre-resolved for grouped steps,
-            // or from phase.for_each for non-grouped steps)
-            let is_for_each = iterations.len() > 1 || iterations.iter().any(|m| !m.is_empty());
-
-            // Detect if for_each variable is structural (in bindings) or
-            // parametric (only in op fields). Parametric means the GK
-            // kernel can be compiled once and reused across iterations.
-            let for_each_var = phase.for_each.as_ref()
-                .and_then(|spec| spec.splitn(2, " in ").next().map(|s| s.trim().to_string()))
-                .or_else(|| iterations.first()
-                    .and_then(|m| m.keys().next().cloned()));
-            let has_own_bindings = phase_raw_ops.get(phase_name)
-                .map(|ops| ops.iter().any(|op| !op.bindings.is_empty()))
-                .unwrap_or(false);
-            let is_parametric = if let Some(ref var) = for_each_var {
-                // Parametric requires: (1) variable not in bindings, AND
-                // (2) the phase has no own bindings that need a separate kernel.
-                // If the phase has bindings (dim, id, train_vector, etc.),
-                // it needs its own compiled kernel even if the for_each var
-                // is only in op fields.
-                if has_own_bindings {
-                    false
-                } else {
-                    let placeholder = format!("{{{var}}}");
-                    let raw = phase_raw_ops.get(phase_name).cloned().unwrap_or_default();
-                    !raw.iter().any(|op| {
-                        if let nb_workload::model::BindingsDef::GkSource(ref src) = op.bindings {
-                            src.contains(&placeholder)
-                        } else {
-                            false
-                        }
-                    })
-                }
-            } else {
-                false
+        // Execute the scenario tree recursively via the executor module.
+        // All control flow (for_each, do_while, do_until) is evaluated
+        // dynamically at runtime — no pre-flattening.
+        {
+            let dry_run_static: Option<&'static str> = match dry_run {
+                Some("silent") => Some("silent"),
+                Some("emit") => Some("emit"),
+                _ => None,
             };
-
-            if is_for_each && is_parametric {
-                eprintln!("  for_each variable '{}' is parametric (no recompilation needed)",
-                    for_each_var.as_deref().unwrap_or("?"));
-            }
-
-            // Parse scope modes (only meaningful for for_each phases)
-            // Default: loop starts clean from outer, iterations inherit
-            // from each other (shared loop-level state).
-            let loop_scope = phase.loop_scope.as_deref().unwrap_or("clean");
-            let iter_scope = phase.iter_scope.as_deref()
-                .unwrap_or(if is_for_each { "inherit" } else { "clean" });
-            if is_for_each {
-                if !matches!(loop_scope, "clean" | "inherit") {
-                    return Err(format!(
-                        "phase '{phase_name}': invalid loop_scope '{loop_scope}'. \
-                         Expected 'clean' or 'inherit'."
-                    ));
-                }
-                if !matches!(iter_scope, "clean" | "inherit") {
-                    return Err(format!(
-                        "phase '{phase_name}': invalid iter_scope '{iter_scope}'. \
-                         Expected 'clean' or 'inherit'."
-                    ));
-                }
-            }
-
-            // Loop scope: determines which outer values the loop sees.
-            // - clean: original workload snapshot (ignores shared write-back from prior phases)
-            // - inherit: current outer state (includes shared mutations from prior phases)
-            let loop_scope_values: Vec<(String, nb_variates::node::Value)> = match loop_scope {
-                "inherit" => outer_scope_values.clone(),
-                _ => original_scope_values.clone(), // clean: original snapshot
+            let mut exec_ctx = crate::executor::ExecCtx {
+                phases: phases.clone(),
+                workload_params: workload_params.clone(),
+                outer_scope_values: outer_scope_values.clone(),
+                outer_manifest: outer_manifest.clone(),
+                program: program.clone(),
+                gk_lib_paths: gk_lib_paths.clone(),
+                workload_dir: workload_dir.map(|p| p.to_path_buf()),
+                strict,
+                driver: driver.clone(),
+                merged_params: merged_params.clone(),
+                dry_run: dry_run_static,
+                diag: diag.clone(),
+                openmetrics_url: openmetrics_url.clone(),
+                sqlite: sqlite_reporter.clone(),
+                seq_type,
+                concurrency,
+                cycle_rate,
+                error_spec: error_spec.clone(),
+                session_id: session_id.clone(),
+                label_stack: Vec::new(),
             };
-
-            // For iter_scope: inherit, track mutations across iterations
-            // (only effective when `shared` variables exist in the kernel)
-            let mut iter_carried_scope: Vec<(String, nb_variates::node::Value)> =
-                loop_scope_values.clone();
-
-            for (iter_idx, iter_bindings) in iterations.iter().enumerate() {
-                if !iter_bindings.is_empty() {
-                    let label = iter_bindings.values().next().unwrap_or(&String::new()).clone();
-                    eprintln!("  iteration {iter_idx}: {label}");
-                }
-
-                // Select scope values based on iter_scope mode
-                let scope_values = match iter_scope {
-                    "inherit" => &iter_carried_scope,
-                    _ => &loop_scope_values, // clean: each iter gets loop snapshot
-                };
-
-                // For for_each phases: clone raw ops, substitute iteration var,
-                // run full expansion pipeline, compile inner kernel.
-                // For non-for_each phases: use pre-compiled outer kernel ops.
-                let (phase_ops, iter_program, iter_stanzas) = if is_for_each && !is_parametric {
-                    // STRUCTURAL: iteration variable appears in bindings,
-                    // must recompile the GK kernel per iteration.
-                    let mut iter_ops = phase_raw_ops.get(phase_name)
-                        .cloned()
-                        .unwrap_or_default();
-
-                    // Substitute iteration variables in GK bindings source only
-                    // (needed for node construction literals like "sift1m:{profile}").
-                    // Op field resolution pulls values from GK outputs — no text
-                    // substitution in op fields needed.
-                    for op in &mut iter_ops {
-                        for (var, val) in iter_bindings {
-                            let placeholder = format!("{{{var}}}");
-                            if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                                *src = src.replace(&placeholder, val);
-                            }
-                        }
-                    }
-
-                    // Inject iteration variables as init-time GK constants.
-                    // This makes them available as GK outputs so op field resolution,
-                    // relevancy config, cycle expressions, etc. can pull them through
-                    // the normal GK path — no side-channel text substitution needed.
-                    for (var, val) in iter_bindings {
-                        for op in &mut iter_ops {
-                            if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                                // Prepend init binding (after any inputs declaration)
-                                let init_line = format!("init {var} = \"{val}\"\n");
-                                *src = format!("{init_line}{src}");
-                                break; // only inject once (all ops share the same source)
-                            }
-                        }
-                    }
-
-                    // Strip adapter/driver from op params
-                    for op in &mut iter_ops {
-                        op.params.remove("adapter");
-                        op.params.remove("driver");
-                    }
-
-                    // Generate auto-externs from outer manifest (after substitution)
-                    let auto_externs = generate_auto_externs(&iter_ops, &outer_manifest)?;
-                    if !auto_externs.is_empty() {
-                        for op in &mut iter_ops {
-                            if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                                *src = format!("{auto_externs}{src}");
-                            }
-                        }
-                    }
-
-                    // Run full GK expansion pipeline on substituted ops
-                    expand_gk_bindings(&mut iter_ops, &workload_params, &phases);
-
-                    // Compile inner kernel for this iteration
-                    // Include the cycles expression as a config_ref so it survives DCE
-                    let mut iter_config_refs: Vec<String> = Vec::new();
-                    if let Some(ref c) = phase.cycles {
-                        if c.starts_with('{') && c.ends_with('}') {
-                            let mut inner = c[1..c.len()-1].to_string();
-                            for (var, val) in iter_bindings {
-                                inner = inner.replace(&format!("{{{var}}}"), val);
-                            }
-                            inner = expand_workload_params(&inner, &workload_params);
-                            iter_config_refs.push(inner);
-                        }
-                    }
-                    let mut inner_kernel = compile_bindings_with_libs_excluding(
-                        &iter_ops, workload_dir, gk_lib_paths.clone(), strict, &[], &iter_config_refs,
-                    ).map_err(|e| format!("compile bindings for {phase_name} iteration {iter_idx}: {e}"))?;
-
-                    // Resolve cycles from inner kernel BEFORE consuming it
-                    let stanzas = phase.cycles.as_ref().and_then(|c| {
-                        let mut expanded = c.clone();
-                        for (var, val) in iter_bindings {
-                            expanded = expanded.replace(&format!("{{{var}}}"), val);
-                        }
-                        let expanded = expand_workload_params(&expanded, &workload_params);
-                        resolve_gk_config(&expanded, &inner_kernel)
-                    });
-
-                    // Wire scope values into inner kernel's extern inputs
-                    for (name, value) in scope_values {
-                        if let Some(idx) = inner_kernel.program().find_input(name) {
-                            inner_kernel.state().set_input(idx, value.clone());
-                        }
-                    }
-
-                    // For iter_scope: inherit, extract inner kernel's constants
-                    // to carry into the next iteration's scope.
-                    // (Effective when `shared` variables exist — the runtime
-                    // propagates their values across iteration boundaries.)
-                    if iter_scope == "inherit" {
-                        for entry in &outer_manifest {
-                            if let Some(val) = inner_kernel.get_constant(&entry.name) {
-                                if let Some(existing) = iter_carried_scope.iter_mut()
-                                    .find(|(n, _)| n == &entry.name)
-                                {
-                                    existing.1 = val.clone();
-                                } else {
-                                    iter_carried_scope.push((entry.name.clone(), val.clone()));
-                                }
-                            }
-                        }
-                    }
-
-                    let inner_builder = Arc::new(OpBuilder::new(inner_kernel));
-                    let inner_program = inner_builder.program();
-                    (iter_ops, inner_program, stanzas)
-                } else if is_for_each && is_parametric {
-                    // PARAMETRIC: iteration variable only in op fields.
-                    // Compile a kernel with iteration vars as init constants
-                    // so all values are resolved through GK (no side-channel).
-                    let mut iter_ops = phase_raw_ops.get(phase_name)
-                        .cloned()
-                        .unwrap_or_default();
-
-                    // Substitute iteration variables in GK bindings source
-                    for op in &mut iter_ops {
-                        for (var, val) in iter_bindings {
-                            let placeholder = format!("{{{var}}}");
-                            if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                                *src = src.replace(&placeholder, val);
-                            }
-                        }
-                    }
-
-                    // Inject iteration variables as GK init constants
-                    for (var, val) in iter_bindings {
-                        for op in &mut iter_ops {
-                            if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                                let init_line = format!("init {var} = \"{val}\"\n");
-                                *src = format!("{init_line}{src}");
-                                break;
-                            }
-                        }
-                    }
-
-                    // Strip adapter/driver from op params
-                    for op in &mut iter_ops {
-                        op.params.remove("adapter");
-                        op.params.remove("driver");
-                    }
-
-                    // Generate auto-externs + expand
-                    let auto_externs = generate_auto_externs(&iter_ops, &outer_manifest)?;
-                    if !auto_externs.is_empty() {
-                        for op in &mut iter_ops {
-                            if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                                *src = format!("{auto_externs}{src}");
-                            }
-                        }
-                    }
-                    expand_gk_bindings(&mut iter_ops, &workload_params, &phases);
-
-                    // Compile kernel with iteration constants
-                    let mut iter_config_refs: Vec<String> = Vec::new();
-                    if let Some(ref c) = phase.cycles {
-                        if c.starts_with('{') && c.ends_with('}') {
-                            let mut inner = c[1..c.len()-1].to_string();
-                            for (var, val) in iter_bindings {
-                                inner = inner.replace(&format!("{{{var}}}"), val);
-                            }
-                            inner = expand_workload_params(&inner, &workload_params);
-                            iter_config_refs.push(inner);
-                        }
-                    }
-                    let mut inner_kernel = compile_bindings_with_libs_excluding(
-                        &iter_ops, workload_dir, gk_lib_paths.clone(), strict, &[], &iter_config_refs,
-                    ).map_err(|e| format!("compile bindings for {phase_name} iteration {iter_idx}: {e}"))?;
-
-                    let stanzas = phase.cycles.as_ref().and_then(|c| {
-                        let mut expanded = c.clone();
-                        for (var, val) in iter_bindings {
-                            expanded = expanded.replace(&format!("{{{var}}}"), val);
-                        }
-                        let expanded = expand_workload_params(&expanded, &workload_params);
-                        resolve_gk_config(&expanded, &inner_kernel)
-                    });
-
-                    // Wire scope values
-                    for (name, value) in scope_values {
-                        if let Some(idx) = inner_kernel.program().find_input(name) {
-                            inner_kernel.state().set_input(idx, value.clone());
-                        }
-                    }
-
-                    let inner_builder = Arc::new(OpBuilder::new(inner_kernel));
-                    let inner_program = inner_builder.program();
-                    (iter_ops, inner_program, stanzas)
-                } else if phases_needing_own_kernel.contains(phase_name) {
-                    // Phase has own bindings: compose with outer scope
-                    // via auto-extern declarations (sysref 16).
-                    let mut phase_ops = phase_raw_ops.get(phase_name)
-                        .cloned()
-                        .unwrap_or_default();
-
-                    // Generate extern declarations for outer-scope names
-                    // referenced in inner ops but not defined in inner bindings
-                    let auto_externs = generate_auto_externs(&phase_ops, &outer_manifest)?;
-                    if !auto_externs.is_empty() {
-                        for op in &mut phase_ops {
-                            if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                                *src = format!("{auto_externs}{src}");
-                            }
-                        }
-                    }
-
-                    // Run expansion pipeline
-                    expand_gk_bindings(&mut phase_ops, &workload_params, &phases);
-
-                    // Compile phase kernel (contains only inner nodes + extern inputs)
-                    let mut phase_config_refs: Vec<String> = Vec::new();
-                    if let Some(ref c) = phase.cycles {
-                        if c.starts_with('{') && c.ends_with('}') {
-                            let inner = expand_workload_params(&c[1..c.len()-1], &workload_params);
-                            phase_config_refs.push(inner);
-                        }
-                    }
-                    let mut phase_kernel = compile_bindings_with_libs_excluding(
-                        &phase_ops, workload_dir, gk_lib_paths.clone(), strict, &[], &phase_config_refs,
-                    ).map_err(|e| format!("compile bindings for phase '{phase_name}': {e}"))?;
-
-                    let stanzas = phase.cycles.as_ref().and_then(|c| {
-                        let expanded = expand_workload_params(c, &workload_params);
-                        resolve_gk_config(&expanded, &phase_kernel)
-                    });
-
-                    // Wire outer scope constants into phase kernel's extern inputs
-                    for (name, value) in &outer_scope_values {
-                        if let Some(idx) = phase_kernel.program().find_input(name) {
-                            phase_kernel.state().set_input(idx, value.clone());
-                        }
-                    }
-                    let phase_builder = Arc::new(OpBuilder::new(phase_kernel));
-                    let phase_program = phase_builder.program();
-                    (phase_ops, phase_program, stanzas)
-                } else {
-                    // Phase uses workload kernel (no own bindings)
-                    let ops = if !phase.ops.is_empty() {
-                        let phase_op_names: std::collections::HashSet<String> =
-                            phase.ops.iter().map(|o| o.name.clone()).collect();
-                        all_ops_for_compile.iter()
-                            .filter(|o| {
-                                phase_op_names.contains(&o.name)
-                                    && o.tags.get("phase").map(|p| p == phase_name).unwrap_or(false)
-                            })
-                            .cloned()
-                            .collect::<Vec<_>>()
-                    } else if let Some(ref tag_spec) = phase.tags {
-                        TagFilter::filter_ops(&all_ops_for_compile, tag_spec)
-                            .map_err(|e| format!("invalid tag filter in phase '{phase_name}': {e}"))?
-                    } else {
-                        all_ops_for_compile[..num_top_level_ops].to_vec()
-                    };
-                    let stanzas = resolved_phase_cycles.get(phase_name).copied().flatten();
-                    (ops, program.clone(), stanzas)
-                };
-
-                if phase_ops.is_empty() {
-                    eprintln!("warning: phase '{phase_name}' has no ops, skipping");
-                    continue;
-                }
-
-                let op_sequence = OpSequence::from_ops(phase_ops, seq_type);
-                let stanza_len = op_sequence.stanza_length() as u64;
-
-                // Resolve cycle count: ==auto (verbose), ===auto (silent), or explicit
-                let cycles_spec = phase.cycles.as_deref().unwrap_or("");
-                let phase_cycles = if cycles_spec == "==auto" {
-                    eprintln!("  cycles: auto ({stanza_len} ops = {stanza_len} cycles)");
-                    stanza_len
-                } else if cycles_spec == "===auto" || cycles_spec.is_empty() {
-                    stanza_len
-                } else {
-                    iter_stanzas.unwrap_or(1) * stanza_len
-                };
-                let phase_concurrency = match phase.concurrency.as_ref() {
-                    Some(s) => {
-                        let expanded = expand_workload_params(s, &workload_params);
-                        match expanded.parse::<usize>() {
-                            Ok(v) => v,
-                            Err(_) => return Err(format!(
-                                "phase '{phase_name}': concurrency value '{expanded}' is not a valid integer"
-                            )),
-                        }
-                    }
-                    None => concurrency,
-                };
-                let phase_rate = phase.rate.or(cycle_rate);
-                let phase_error_spec = phase.errors.clone().unwrap_or_else(|| error_spec.clone());
-
-                // Diagnostic output: GK explain
-                if diag.explain_gk {
-                    let iter_label = iter_bindings.values().next().cloned().unwrap_or_default();
-                    let iter_note = if !iter_label.is_empty() {
-                        format!(" (iteration: {iter_label})")
-                    } else { String::new() };
-                    crate::describe::print_kernel_analysis(
-                        phase_name, &iter_note, &iter_program,
-                    );
-                }
-                // Execution depth gate: skip cycles if depth is Phase
-                if diag.depth == ExecDepth::Phase {
-                    continue;
-                }
-
-                eprintln!("phase '{phase_name}': {} ops, cycles={phase_cycles}, concurrency={phase_concurrency}",
-                    op_sequence.stanza_length());
-
-                let iter_label = iter_bindings.values().next().cloned().unwrap_or_default();
-                let iter_name = if !iter_label.is_empty() {
-                    let var = iter_bindings.keys().next().unwrap();
-                    format!("{phase_name} ({var}={iter_label})")
-                } else {
-                    phase_name.clone()
-                };
-                let config = ActivityConfig {
-                    name: iter_name,
-                    cycles: phase_cycles,
-                    concurrency: phase_concurrency,
-                    cycle_rate: phase_rate,
-                    stanza_rate: None,
-                    sequencer: seq_type,
-                    error_spec: phase_error_spec,
-                    max_retries: 3,
-                    stanza_concurrency: 1,
-                };
-
-                let phase_driver = phase.adapter.as_deref().unwrap_or(&driver);
-
-                // Build adapter map: phase default + any per-op overrides.
-                let mut adapter_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-                adapter_names.insert(phase_driver.to_string());
-                for t in op_sequence.templates() {
-                    if let Some(a) = t.params.get("adapter").and_then(|v| v.as_str()) {
-                        if a != phase_driver {
-                            adapter_names.insert(a.to_string());
-                        }
-                    }
-                }
-                let mut adapter_map: std::collections::HashMap<String, Arc<dyn crate::adapter::DriverAdapter>> =
-                    std::collections::HashMap::new();
-                for aname in &adapter_names {
-                    let a = create_adapter(aname, &merged_params, dry_run).await?;
-                    adapter_map.insert(a.name().to_string(), a);
-                }
-
-                let activity = Activity::with_params(
-                    config, &Labels::of("session", "cli"), op_sequence, workload_params.clone(),
-                );
-                let stopped = run_activity_with_adapters(
-                    activity, adapter_map, phase_driver, iter_program,
-                    openmetrics_url.as_deref(), sqlite_reporter.clone(),
-                ).await;
-                if stopped {
-                    return Err(format!("phase '{phase_name}' stopped by error handler"));
-                }
-            }
-
-            // Shared write-back: after all iterations, propagate `shared`
-            // outputs from the last iteration back to outer_scope_values
-            // so subsequent phases see the updated values.
-            if is_for_each {
-                for entry in &outer_manifest {
-                    if entry.modifier == nb_variates::dsl::ast::BindingModifier::Shared {
-                        if let Some(carried) = iter_carried_scope.iter()
-                            .find(|(n, _)| n == &entry.name)
-                        {
-                            if let Some(existing) = outer_scope_values.iter_mut()
-                                .find(|(n, _)| n == &entry.name)
-                            {
-                                existing.1 = carried.1.clone();
-                            } else {
-                                outer_scope_values.push((entry.name.clone(), carried.1.clone()));
-                            }
-                        }
-                    }
-                }
-            }
-
-            eprintln!("phase '{phase_name}' complete");
+            crate::executor::execute_tree(
+                &mut exec_ctx,
+                &scenario_nodes,
+                &HashMap::new(),
+            ).await?;
         }
 
         eprintln!("all phases complete");
+
     } else {
         // --- Single-activity execution ---
         let ops = all_ops_for_compile;
@@ -979,9 +530,10 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
     }
 
     // Print summary report from SQLite metrics
+    let summary_filter = params.get("summary").map(|s| s.as_str());
     if let Ok(mut guard) = sqlite_reporter.lock() {
         if let Some(ref mut reporter) = *guard {
-            reporter.print_summary();
+            reporter.print_summary(summary_filter);
         }
     }
 
@@ -990,7 +542,7 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
 
 /// Create an adapter from inventory registrations.
 /// Create an adapter, respecting dry-run mode.
-async fn create_adapter(
+pub async fn create_adapter(
     driver: &str,
     params: &HashMap<String, String>,
     dry_run: Option<&str>,
@@ -1040,10 +592,22 @@ async fn run_activity(
         }
     });
     let validation_frame = activity.validation_frame.clone();
+    let final_metrics = activity.shared_metrics();
+    let activity_start = std::time::Instant::now();
     let stopped = activity.run_with_driver(adapter, program).await;
     running.store(false, std::sync::atomic::Ordering::Relaxed);
     std::thread::sleep(std::time::Duration::from_millis(10));
-    // Capture final validation metrics (recall, precision) to SQLite
+    // Final capture: ensures short activities get at least one sample
+    {
+        use nb_metrics::scheduler::Reporter;
+        let frame = final_metrics.capture(activity_start.elapsed());
+        if let Ok(mut guard) = sqlite.lock() {
+            if let Some(ref mut sq) = *guard {
+                sq.report(&frame);
+            }
+        }
+    }
+    // Capture validation metrics (recall, precision) to SQLite
     if let Some(frame) = validation_frame.lock().unwrap_or_else(|e| e.into_inner()).take() {
         use nb_metrics::scheduler::Reporter;
         if let Ok(mut guard) = sqlite.lock() {
@@ -1057,7 +621,7 @@ async fn run_activity(
 
 /// Run an activity with multiple adapters and metrics capture.
 /// Returns true if the activity was stopped by an error handler.
-async fn run_activity_with_adapters(
+pub async fn run_activity_with_adapters(
     activity: Activity,
     adapters: std::collections::HashMap<String, Arc<dyn crate::adapter::DriverAdapter>>,
     default_adapter: &str,
@@ -1090,10 +654,22 @@ async fn run_activity_with_adapters(
         }
     });
     let validation_frame = activity.validation_frame.clone();
+    let final_metrics = activity.shared_metrics();
+    let activity_start = std::time::Instant::now();
     let stopped = activity.run_with_adapters(adapters, default_adapter, program).await;
     running.store(false, std::sync::atomic::Ordering::Relaxed);
     std::thread::sleep(std::time::Duration::from_millis(10));
-    // Capture final validation metrics (recall, precision) to SQLite
+    // Final capture: ensures short activities get at least one sample
+    {
+        use nb_metrics::scheduler::Reporter;
+        let frame = final_metrics.capture(activity_start.elapsed());
+        if let Ok(mut guard) = sqlite.lock() {
+            if let Some(ref mut sq) = *guard {
+                sq.report(&frame);
+            }
+        }
+    }
+    // Capture validation metrics (recall, precision) to SQLite
     if let Some(frame) = validation_frame.lock().unwrap_or_else(|e| e.into_inner()).take() {
         use nb_metrics::scheduler::Reporter;
         if let Ok(mut guard) = sqlite.lock() {
@@ -1359,7 +935,7 @@ fn resolve_for_each(
                 nb_variates::node::Value::Str(s) => s,
                 other => other.to_display_string(),
             },
-            Err(e) => return Err(format!("for_each expression failed: '{expr}': {e}")),
+            Err(_) => expr.clone(), // literal comma-separated fallback
         }
     };
 
@@ -1389,7 +965,7 @@ fn resolve_for_each(
 }
 
 /// Expand `{key}` workload param placeholders in a string.
-fn expand_workload_params(s: &str, params: &HashMap<String, String>) -> String {
+pub fn expand_workload_params(s: &str, params: &HashMap<String, String>) -> String {
     let mut result = s.to_string();
     for (key, value) in params {
         let placeholder = format!("{{{key}}}");
@@ -1488,6 +1064,10 @@ fn collect_param_references(workload: &nb_workload::model::Workload) -> std::col
                     }
                     scan_scenario_nodes(children, refs);
                 }
+                nb_workload::model::ScenarioNode::DoWhile { children, .. }
+                | nb_workload::model::ScenarioNode::DoUntil { children, .. } => {
+                    scan_scenario_nodes(children, refs);
+                }
             }
         }
     }
@@ -1499,7 +1079,7 @@ fn collect_param_references(workload: &nb_workload::model::Workload) -> std::col
 }
 
 /// Resolve a config value to u64 via GK constants or numeric parsing.
-fn resolve_gk_config(value: &str, kernel: &nb_variates::kernel::GkKernel) -> Option<u64> {
+pub fn resolve_gk_config(value: &str, kernel: &nb_variates::kernel::GkKernel) -> Option<u64> {
     if value.starts_with('{') && value.ends_with('}') {
         let inner = &value[1..value.len() - 1];
         if let Some(v) = kernel.get_constant(inner) {
@@ -1554,121 +1134,20 @@ fn format_scenario_tree(nodes: &[nb_workload::model::ScenarioNode]) -> String {
             let var = spec.splitn(2, " in ").next().unwrap_or("?");
             format!("for_each {var}: [{inner}]")
         }
+        nb_workload::model::ScenarioNode::DoWhile { condition, counter, children } => {
+            let inner = format_scenario_tree(children);
+            let ctr = counter.as_deref().map(|c| format!(" ({c})")).unwrap_or_default();
+            format!("do_while '{condition}'{ctr}: [{inner}]")
+        }
+        nb_workload::model::ScenarioNode::DoUntil { condition, counter, children } => {
+            let inner = format_scenario_tree(children);
+            let ctr = counter.as_deref().map(|c| format!(" ({c})")).unwrap_or_default();
+            format!("do_until '{condition}'{ctr}: [{inner}]")
+        }
     }).collect();
     parts.join(", ")
 }
 
-/// Resolve a for_each expression with workload params and accumulated outer bindings.
-fn resolve_for_each_expr(
-    spec: &str,
-    workload_params: &HashMap<String, String>,
-    outer_bindings: &HashMap<String, String>,
-    outer_scope_values: &[(String, nb_variates::node::Value)],
-) -> Result<(String, Vec<String>), String> {
-    let parts: Vec<&str> = spec.splitn(2, " in ").collect();
-    if parts.len() != 2 {
-        return Err(format!("invalid for_each syntax: '{spec}'. Expected 'var in expr'"));
-    }
-    let var_name = parts[0].trim().to_string();
-    let mut expr = parts[1].trim().to_string();
-
-    // Substitute workload params
-    for (k, v) in workload_params {
-        expr = expr.replace(&format!("{{{k}}}"), v);
-    }
-    // Substitute accumulated outer iteration bindings
-    for (k, v) in outer_bindings {
-        expr = expr.replace(&format!("{{{k}}}"), v);
-    }
-
-    // Resolve: try GK const expr, then kernel constants, then treat as literal
-    let value_str = if let Some(val) = outer_scope_values.iter().find(|(n, _)| n == &expr) {
-        val.1.to_display_string()
-    } else {
-        match nb_variates::dsl::compile::eval_const_expr(&expr) {
-            Ok(val) => val.to_display_string(),
-            Err(_) => expr.clone(), // literal comma-separated fallback
-        }
-    };
-
-    let mut values: Vec<String> = value_str.split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    values.sort();
-
-    Ok((var_name, values))
-}
-
-/// Recursively flatten a scenario tree into a linear execution plan.
-///
-/// Each leaf (Phase) produces one entry with the accumulated bindings
-/// from all enclosing ForEach levels. Phase-level for_each is lifted
-/// into the tree as an additional ForEach wrapping that phase.
-fn flatten_scenario_tree(
-    nodes: &[nb_workload::model::ScenarioNode],
-    phases: &HashMap<String, nb_workload::model::WorkloadPhase>,
-    workload_params: &HashMap<String, String>,
-    outer_scope_values: &[(String, nb_variates::node::Value)],
-    phase_iterations: &HashMap<String, Vec<HashMap<String, String>>>,
-    outer_bindings: &HashMap<String, String>,
-) -> Result<Vec<(String, Vec<HashMap<String, String>>)>, String> {
-    let mut plan = Vec::new();
-
-    for node in nodes {
-        match node {
-            nb_workload::model::ScenarioNode::Phase(name) => {
-                // Check if this phase has its own for_each — lift it
-                let phase = phases.get(name);
-                let phase_for_each = phase.and_then(|p| p.for_each.as_ref());
-
-                if let Some(spec) = phase_for_each {
-                    // Phase has its own for_each: resolve with outer bindings
-                    let (var, values) = resolve_for_each_expr(
-                        spec, workload_params, outer_bindings, outer_scope_values,
-                    )?;
-                    eprintln!("  for_each {var} in [{}] ({} iterations)",
-                        values.join(", "), values.len());
-                    for value in &values {
-                        let mut bindings = outer_bindings.clone();
-                        bindings.insert(var.clone(), value.clone());
-                        plan.push((name.clone(), vec![bindings]));
-                    }
-                } else if !outer_bindings.is_empty() {
-                    // Inside a for_each group: use accumulated bindings
-                    plan.push((name.clone(), vec![outer_bindings.clone()]));
-                } else {
-                    // Standalone phase: use pre-resolved iterations
-                    let iterations = phase_iterations.get(name)
-                        .cloned()
-                        .unwrap_or_else(|| vec![HashMap::new()]);
-                    plan.push((name.clone(), iterations));
-                }
-            }
-            nb_workload::model::ScenarioNode::ForEach { spec, children } => {
-                let (var, values) = resolve_for_each_expr(
-                    spec, workload_params, outer_bindings, outer_scope_values,
-                )?;
-                eprintln!("for_each {var} in [{}] ({} iterations × {} children)",
-                    values.join(", "), values.len(), children.len());
-
-                for value in &values {
-                    let mut inner_bindings = outer_bindings.clone();
-                    inner_bindings.insert(var.clone(), value.clone());
-                    // Recurse into children with accumulated bindings
-                    let child_plan = flatten_scenario_tree(
-                        children, phases, workload_params,
-                        outer_scope_values, phase_iterations,
-                        &inner_bindings,
-                    )?;
-                    plan.extend(child_plan);
-                }
-            }
-        }
-    }
-
-    Ok(plan)
-}
 
 /// Normalize args: detect scenario shorthand where a bare word after
 /// the workload file becomes `scenario=<name>`.
@@ -1764,15 +1243,15 @@ fn levenshtein(a: &str, b: &str) -> usize {
 
 /// Output manifest entry: name + type + modifier for a scope's outputs.
 #[derive(Debug, Clone)]
-struct ManifestEntry {
-    name: String,
-    port_type: nb_variates::node::PortType,
-    modifier: nb_variates::dsl::ast::BindingModifier,
+pub struct ManifestEntry {
+    pub name: String,
+    pub port_type: nb_variates::node::PortType,
+    pub modifier: nb_variates::dsl::ast::BindingModifier,
 }
 
 /// Extract the output manifest from a compiled GK program.
 /// Returns entries for every output in declaration order.
-fn extract_manifest(program: &nb_variates::kernel::GkProgram) -> Vec<ManifestEntry> {
+pub fn extract_manifest(program: &nb_variates::kernel::GkProgram) -> Vec<ManifestEntry> {
     (0..program.output_count())
         .map(|i| {
             let name = program.output_name(i).to_string();
@@ -1787,7 +1266,7 @@ fn extract_manifest(program: &nb_variates::kernel::GkProgram) -> Vec<ManifestEnt
 /// Generate `extern` declarations for names in the outer manifest
 /// that are referenced in the inner ops but not defined in the inner
 /// bindings. Returns the extern source text to prepend.
-fn generate_auto_externs(
+pub fn generate_auto_externs(
     inner_ops: &[nb_workload::model::ParsedOp],
     outer_manifest: &[ManifestEntry],
 ) -> Result<String, String> {
