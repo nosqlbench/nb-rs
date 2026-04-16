@@ -164,6 +164,33 @@ pub trait DriverAdapter: Send + Sync + 'static {
     /// bind-point resolution, validate field names, attach metrics.
     fn map_op(&self, template: &nb_workload::model::ParsedOp)
         -> Result<Box<dyn OpDispenser>, String>;
+
+    /// Default metric names to display on the status line for this adapter.
+    ///
+    /// Each entry is a metric name (matching `adapter_metrics()` labels)
+    /// and a display label. Workloads can override this via a `status:`
+    /// field on phases or ops. Default: empty (no adapter-specific status).
+    fn default_status_metrics(&self) -> Vec<StatusMetric> { Vec::new() }
+}
+
+/// A metric to display on the activity status line.
+pub struct StatusMetric {
+    /// Metric name matching the `name` label in `adapter_metrics()` samples.
+    pub metric_name: String,
+    /// Short display label for the status line (e.g., "rows/s").
+    pub display: String,
+    /// How to render the value: "rate" (count/elapsed), "count", "latency".
+    pub render: StatusRender,
+}
+
+/// How to render a status metric value.
+pub enum StatusRender {
+    /// Show as rate: count / elapsed seconds (e.g., "1.2K/s").
+    Rate,
+    /// Show as raw count.
+    Count,
+    /// Show as latency with auto-scaled units.
+    Latency,
 }
 
 /// A per-template op factory. Created at init time by the adapter's
@@ -181,6 +208,41 @@ pub trait OpDispenser: Send + Sync {
         cycle: u64,
         fields: &'a ResolvedFields,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>>;
+
+    /// Snapshot adapter-specific metrics for inclusion in the capture frame.
+    ///
+    /// Called by the metrics scheduler alongside the standard activity
+    /// metrics. Adapters return additional `Sample`s (timers, counters)
+    /// that represent adapter-internal state (e.g., rows/s for batched CQL).
+    /// These appear in the summary report.
+    /// Default: no additional metrics.
+    fn adapter_metrics(&self) -> Vec<nb_metrics::frame::Sample> {
+        if let Some(inner) = self.inner_dispenser() {
+            inner.adapter_metrics()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Adapter-specific status line entries (cumulative, non-destructive read).
+    ///
+    /// Unlike `adapter_metrics()` which snapshots delta timers, this method
+    /// returns cumulative counters safe to read from the progress thread
+    /// without interfering with the metrics pipeline.
+    /// Returns `(display_name, cumulative_count)` pairs.
+    /// Default: delegates to inner dispenser (for wrapper chains).
+    fn status_counters(&self) -> Vec<(&str, u64)> {
+        if let Some(inner) = self.inner_dispenser() {
+            inner.status_counters()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Returns the inner dispenser if this is a wrapper.
+    /// Used for delegating `adapter_metrics()` and `status_counters()`
+    /// through wrapper chains (TraversingDispenser, etc.).
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { None }
 }
 
 /// Resolved field values for a single cycle. Produced by the GK
@@ -189,6 +251,11 @@ pub trait OpDispenser: Send + Sync {
 /// Fields are indexed by name. Typed values are always available;
 /// string rendering is deferred until first access to avoid wasted
 /// work for adapters that bind typed values natively (e.g., CQL).
+///
+/// For ops with `for_each` batch expansion, `batch_fields` contains
+/// the expanded field sets — one per iteration of the for_each.
+/// The adapter uses these to build a batch statement. The primary
+/// `names`/`values` contain the fields from the base cycle.
 pub struct ResolvedFields {
     /// Field names in op template declaration order.
     pub names: Vec<String>,
@@ -196,6 +263,16 @@ pub struct ResolvedFields {
     pub values: Vec<nb_variates::node::Value>,
     /// Lazily rendered string representations, parallel to `names`.
     strings: OnceLock<Vec<String>>,
+    /// Expanded field sets for batch ops (one per for_each iteration).
+    /// Empty for non-batch ops.
+    pub batch_fields: Vec<ResolvedFieldSet>,
+}
+
+/// A single set of resolved field values (used in batch expansion).
+#[derive(Clone)]
+pub struct ResolvedFieldSet {
+    pub names: Vec<String>,
+    pub values: Vec<nb_variates::node::Value>,
 }
 
 impl fmt::Debug for ResolvedFields {
@@ -213,6 +290,7 @@ impl Clone for ResolvedFields {
             names: self.names.clone(),
             values: self.values.clone(),
             strings: self.strings.clone(),
+            batch_fields: self.batch_fields.clone(),
         }
     }
 }
@@ -220,7 +298,7 @@ impl Clone for ResolvedFields {
 impl ResolvedFields {
     /// Create with names and typed values. Strings are lazily rendered.
     pub fn new(names: Vec<String>, values: Vec<nb_variates::node::Value>) -> Self {
-        Self { names, values, strings: OnceLock::new() }
+        Self { names, values, strings: OnceLock::new(), batch_fields: Vec::new() }
     }
 
     /// Access the lazily-rendered string representations.

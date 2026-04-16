@@ -11,3 +11,4 @@ pub mod csv;
 pub mod sqlite;
 #[cfg(feature = "victoriametrics")]
 pub mod victoriametrics;
+pub mod summary;

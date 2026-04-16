@@ -27,10 +27,13 @@ cranelift-codegen = { version = "0.116", optional = true }
 cranelift-frontend = { version = "0.116", optional = true }
 target-lexicon = { version = "0.13", optional = true }
 inventory = "0.3.24"
+nb-metrics = { path = "../nb-metrics", version = "0.1.1", optional = true }
+hdrhistogram = { version = "7", optional = true }
 
 [features]
-default = ["jit", "vectordata"]
+default = ["jit", "vectordata", "metrics"]
 vectordata = ["dep:vectordata"]
+metrics = ["dep:nb-metrics", "dep:hdrhistogram"]
 jit = ["dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-codegen", "dep:cranelift-frontend", "dep:target-lexicon"]
 
 [dev-dependencies]

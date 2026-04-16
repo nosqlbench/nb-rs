@@ -12,3 +12,5 @@ pub mod instruments;
 pub mod frame;
 pub mod scheduler;
 pub mod reporters;
+pub mod component;
+pub mod store;

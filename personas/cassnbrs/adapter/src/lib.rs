@@ -263,6 +263,16 @@ const STMT_FIELD_NAMES: &[&str] = &["raw", "simple", "prepared", "stmt"];
 impl DriverAdapter for CqlAdapter {
     fn name(&self) -> &str { "cql" }
 
+    fn default_status_metrics(&self) -> Vec<nb_activity::adapter::StatusMetric> {
+        vec![
+            nb_activity::adapter::StatusMetric {
+                metric_name: "rows_inserted".to_string(),
+                display: "rows/s".to_string(),
+                render: nb_activity::adapter::StatusRender::Rate,
+            },
+        ]
+    }
+
     fn map_op(&self, template: &ParsedOp) -> Result<Box<dyn OpDispenser>, String> {
         // Find the statement text and determine execution mode from the field name.
         let (stmt_text, mode, field_name) = STMT_FIELD_NAMES.iter()
@@ -282,29 +292,50 @@ impl DriverAdapter for CqlAdapter {
         let session = SessionHandle(&self.session as *const cass::Session);
         let consistency = self.consistency;
 
+        // Check for batch configuration on this op.
+        // batch: <integer> — batch size (rows per batch), type defaults to unlogged.
+        // batchtype: logged|unlogged|counter — overrides batch type.
+        let has_batch = template.params.contains_key("batch");
+        let batch_type = template.params.get("batchtype")
+            .and_then(|v| v.as_str())
+            .map(|s| match s.to_lowercase().as_str() {
+                "logged" => cass::BatchType::LOGGED,
+                "counter" => cass::BatchType::COUNTER,
+                _ => cass::BatchType::UNLOGGED,
+            })
+            .unwrap_or(cass::BatchType::UNLOGGED);
+
         match mode {
             "raw" => {
-                // Raw: all bind points are string-interpolated by the executor.
-                // The dispenser receives the fully-rendered text and executes it.
                 Ok(Box::new(CqlRawDispenser {
                     session,
                     field_name,
                 }))
             }
             "simple" => {
-                // Simple: parameterized but not prepared.
-                // Note: cassandra-cpp doesn't expose SimpleStatement with positional
-                // params directly. For now, this behaves like raw at the driver level.
-                // The distinction is preserved for future drivers that support it.
                 Ok(Box::new(CqlRawDispenser {
                     session,
                     field_name,
                 }))
             }
             _ => {
-                // Prepared (default): prepare + typed bind.
-                if bind_names.is_empty() {
-                    // No bind points — execute as raw (DDL, simple queries).
+                if has_batch {
+                    eprintln!("[cql] creating batch dispenser: type={batch_type:?}");
+                    Ok(Box::new(CqlBatchDispenser {
+                        session,
+                        consistency,
+                        stmt_text,
+                        stmt_field: "stmt".to_string(),
+                        bind_names,
+                        prepared: std::sync::Mutex::new(None),
+                        batch_type,
+                        rows_timer: nb_metrics::instruments::timer::Timer::new(
+                            nb_metrics::labels::Labels::of("name", "rows_inserted"),
+                        ),
+                        rows_total: std::sync::atomic::AtomicU64::new(0),
+                    }))
+                } else if bind_names.is_empty() {
+                    // No bind points — execute as raw (DDL, simple queries)
                     Ok(Box::new(CqlRawDispenser {
                         session,
                         field_name,
@@ -489,6 +520,190 @@ impl OpDispenser for CqlPreparedDispenser {
             Ok(OpResult {
                 body,
                 captures: std::collections::HashMap::new(),
+                skipped: false,
+            })
+        })
+    }
+}
+
+// =========================================================================
+// CqlBatchDispenser: groups multiple bound statements into one CQL BATCH
+// =========================================================================
+
+/// Wraps a prepared statement template and executes batches of bound
+/// statements as one CQL BATCH call.
+///
+/// The executor calls `execute_batch()` with N resolved field sets
+/// (one per cycle in the batch). Each is bound to the prepared
+/// statement and added to a `cass::Batch`. The batch is executed
+/// once. Per-cycle latency is meaningless — only batch latency matters.
+struct CqlBatchDispenser {
+    session: SessionHandle,
+    consistency: cass::Consistency,
+    stmt_text: String,
+    /// The op field name carrying the statement (for finding it in resolved fields).
+    stmt_field: String,
+    bind_names: Vec<String>,
+    prepared: std::sync::Mutex<Option<Arc<cass::PreparedStatement>>>,
+    batch_type: cass::BatchType,
+    /// Per-row timer: records amortized latency (batch_nanos / row_count)
+    /// for each row in the batch. Enables rows/s throughput in the summary.
+    rows_timer: nb_metrics::instruments::timer::Timer,
+    /// Cumulative row counter for the status line. Not reset on snapshot.
+    rows_total: std::sync::atomic::AtomicU64,
+}
+
+impl CqlBatchDispenser {
+    async fn get_prepared(&self) -> Result<Arc<cass::PreparedStatement>, ExecutionError> {
+        {
+            let guard = self.prepared.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(p) = guard.as_ref() {
+                return Ok(p.clone());
+            }
+        }
+        let prepared = self.session.get().prepare(&self.stmt_text).await
+            .map_err(|e| ExecutionError::Op(AdapterError {
+                error_name: "prepare_error".into(),
+                message: format!("prepare '{}': {e}", self.stmt_text),
+                retryable: false,
+            }))?;
+        let arc = Arc::new(prepared);
+        *self.prepared.lock().unwrap_or_else(|e| e.into_inner()) = Some(arc.clone());
+        Ok(arc)
+    }
+
+    fn bind_fields(
+        prepared: &cass::PreparedStatement,
+        fields: &ResolvedFields,
+        bind_names: &[String],
+        consistency: cass::Consistency,
+    ) -> Result<cass::Statement, ExecutionError> {
+        let mut stmt = prepared.bind();
+        stmt.set_consistency(consistency)
+            .map_err(|e| ExecutionError::Op(AdapterError {
+                error_name: "bind_error".into(),
+                message: format!("set consistency: {e}"),
+                retryable: false,
+            }))?;
+
+        for name in bind_names {
+            if let Some(value) = fields.get_value(name) {
+                let r = match value {
+                    nb_variates::node::Value::U64(v) => stmt.bind_int64_by_name(name, *v as i64),
+                    nb_variates::node::Value::F64(v) => stmt.bind_double_by_name(name, *v),
+                    nb_variates::node::Value::Bool(v) => stmt.bind_bool_by_name(name, *v),
+                    nb_variates::node::Value::Str(v) => stmt.bind_string_by_name(name, v),
+                    nb_variates::node::Value::Bytes(v) => stmt.bind_bytes_by_name(name, v.clone()),
+                    _ => stmt.bind_string_by_name(name, &value.to_display_string()),
+                };
+                r.map_err(|e| ExecutionError::Op(AdapterError {
+                    error_name: "bind_error".into(),
+                    message: format!("bind '{name}': {e}"),
+                    retryable: false,
+                }))?;
+            }
+        }
+        Ok(stmt)
+    }
+}
+
+impl OpDispenser for CqlBatchDispenser {
+    fn status_counters(&self) -> Vec<(&str, u64)> {
+        let total = self.rows_total.load(std::sync::atomic::Ordering::Relaxed);
+        if total == 0 { return Vec::new(); }
+        vec![("rows_inserted", total)]
+    }
+
+    fn adapter_metrics(&self) -> Vec<nb_metrics::frame::Sample> {
+        let snap = self.rows_timer.snapshot();
+        let total = self.rows_total.load(std::sync::atomic::Ordering::Relaxed);
+        let mut samples = Vec::new();
+        if snap.count > 0 {
+            samples.push(nb_metrics::frame::Sample::Timer {
+                labels: self.rows_timer.labels().clone(),
+                count: snap.count,
+                histogram: snap.histogram,
+            });
+        }
+        if total > 0 {
+            samples.push(nb_metrics::frame::Sample::Counter {
+                labels: nb_metrics::labels::Labels::of("name", "rows_inserted_total"),
+                value: total,
+            });
+        }
+        samples
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _cycle: u64,
+        fields: &'a ResolvedFields,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut batch = self.session.get().batch(self.batch_type);
+
+            // Each batch_fields entry has a fully-resolved statement string
+            // (GK bind points already substituted). Use raw statement execution,
+            // not prepared+bind — the statement text IS the final CQL.
+            let row_count;
+            if fields.batch_fields.is_empty() {
+                // No expansion — single statement from the base fields.
+                // Find the "stmt" field in the resolved strings.
+                let idx = fields.names.iter().position(|n| n == "stmt").unwrap_or(0);
+                let stmt_text = &fields.strings()[idx];
+                let stmt = self.session.get().statement(stmt_text);
+                batch.add_statement(stmt)
+                    .map_err(|e| ExecutionError::Op(AdapterError {
+                        error_name: "batch_error".into(),
+                        message: format!("add_statement: {e}"),
+                        retryable: false,
+                    }))?;
+                row_count = 1;
+            } else {
+                // Interior for_each expansion: one raw statement per entry
+                for field_set in &fields.batch_fields {
+                    // The statement field (e.g., "stmt" or "prepared") contains
+                    // the fully-resolved CQL text for this row
+                    let stmt_text = field_set.values.iter()
+                        .zip(field_set.names.iter())
+                        .find(|(_, n)| *n == "stmt" || *n == "prepared" || *n == "raw")
+                        .map(|(v, _)| v.to_display_string())
+                        .unwrap_or_default();
+                    let stmt = self.session.get().statement(&stmt_text);
+                    batch.add_statement(stmt)
+                        .map_err(|e| ExecutionError::Op(AdapterError {
+                            error_name: "batch_error".into(),
+                            message: format!("add_statement: {e}"),
+                            retryable: false,
+                        }))?;
+                }
+                row_count = fields.batch_fields.len();
+            }
+
+            let batch_start = std::time::Instant::now();
+
+            let _result = self.session.get().execute_batch(&batch).await
+                .map_err(|e| ExecutionError::Op(AdapterError {
+                    error_name: "batch_error".into(),
+                    message: format!("execute_batch ({row_count} statements): {e}"),
+                    retryable: false,
+                }))?;
+
+            let batch_nanos = batch_start.elapsed().as_nanos() as u64;
+            let per_row_nanos = batch_nanos / row_count.max(1) as u64;
+            for _ in 0..row_count {
+                self.rows_timer.record(per_row_nanos);
+            }
+            self.rows_total.fetch_add(row_count as u64, std::sync::atomic::Ordering::Relaxed);
+
+            Ok(OpResult {
+                body: None,
+                captures: {
+                    let mut c = std::collections::HashMap::new();
+                    c.insert("rows_inserted".to_string(),
+                        nb_variates::node::Value::U64(row_count as u64));
+                    c
+                },
                 skipped: false,
             })
         })

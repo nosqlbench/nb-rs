@@ -491,7 +491,8 @@ fn normalize_op_object(
     let op_field_names = ["op", "ops", "operations", "stmt", "statement", "statements"];
     // Activity-level params excised from op fields before the adapter sees them
     let activity_params = ["ratio", "driver", "space", "instrument", "start-timers", "stop-timers",
-        "verify", "relevancy", "strict", "poll", "poll_interval_ms", "timeout_ms", "poll_metric_name", "emit"];
+        "verify", "relevancy", "strict", "poll", "poll_interval_ms", "timeout_ms", "poll_metric_name", "emit",
+        "batch", "batchtype"];
 
     let op_fields = if let Some(explicit_op) = op_field_names.iter()
         .find_map(|k| map.get(*k))
@@ -526,6 +527,7 @@ fn normalize_op_object(
     let mut op_params = op_params;
     for ap in &activity_params {
         if let Some(val) = map.get(*ap) {
+            eprintln!("[parse] op '{}': excising activity param '{}' = {}", name, ap, val);
             op_params.insert(ap.to_string(), val.clone());
         }
     }

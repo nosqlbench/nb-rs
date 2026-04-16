@@ -83,6 +83,11 @@ pub struct ActivityMetrics {
     /// Created on demand when a new error type is first seen.
     error_type_counts: std::sync::Mutex<std::collections::HashMap<String, Counter>>,
     labels: Labels,
+    /// Previous counter values for delta computation. Keyed by label identity hash.
+    /// Updated on each `capture_delta()` call.
+    prev_counters: std::sync::Mutex<std::collections::HashMap<u64, u64>>,
+    /// Dispensers for adapter-specific metrics capture. Set after dispenser creation.
+    dispensers: std::sync::Mutex<Option<Arc<Vec<Arc<dyn crate::adapter::OpDispenser>>>>>,
 }
 
 impl ActivityMetrics {
@@ -104,6 +109,8 @@ impl ActivityMetrics {
             result_bytes: Counter::new(labels.with("name", "result_bytes")),
             error_type_counts: std::sync::Mutex::new(std::collections::HashMap::new()),
             labels: labels.clone(),
+            prev_counters: std::sync::Mutex::new(std::collections::HashMap::new()),
+            dispensers: std::sync::Mutex::new(None),
         }
     }
 
@@ -127,9 +134,11 @@ impl ActivityMetrics {
         counter.inc();
     }
 
-    /// Capture a metrics frame from the current instrument state.
+    /// Capture a metrics frame with absolute counter values.
     ///
-    /// This snapshots (delta) all timers and reads all counters.
+    /// This snapshots (delta) all timers and reads absolute counter values.
+    /// Used by the legacy per-activity capture thread.
+    /// For the component tree scheduler, use [`capture_delta`] instead.
     pub fn capture(&self, interval: std::time::Duration) -> MetricsFrame {
         let service_snap = self.service_time.snapshot();
         let wait_snap = self.wait_time.snapshot();
@@ -201,6 +210,110 @@ impl ActivityMetrics {
                 labels: counter.labels().clone(),
                 value: counter.get(),
             });
+        }
+
+        frame
+    }
+
+    /// Register dispensers for adapter-specific metrics capture.
+    pub fn set_dispensers(&self, dispensers: Arc<Vec<Arc<dyn crate::adapter::OpDispenser>>>) {
+        *self.dispensers.lock().unwrap_or_else(|e| e.into_inner()) = Some(dispensers);
+    }
+
+    /// Compute the counter delta: current absolute value minus previous.
+    /// Updates the stored previous value for next call.
+    fn counter_delta(&self, counter: &Counter) -> u64 {
+        let current = counter.get();
+        let hash = counter.labels().identity_hash();
+        let mut prev = self.prev_counters.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = prev.insert(hash, current).unwrap_or(0);
+        current.saturating_sub(previous)
+    }
+}
+
+impl nb_metrics::component::InstrumentSet for ActivityMetrics {
+    /// Capture a delta frame suitable for the component tree scheduler.
+    ///
+    /// Timer histograms are inherently delta (reset on snapshot).
+    /// Counters emit the change since the last `capture_delta()` call.
+    fn capture_delta(&self, interval: Duration) -> MetricsFrame {
+        let service_snap = self.service_time.snapshot();
+        let wait_snap = self.wait_time.snapshot();
+        let response_snap = self.response_time.snapshot();
+        let success_snap = self.result_success_time.snapshot();
+        let tries_snap = self.tries_histogram.snapshot();
+
+        let mut frame = MetricsFrame {
+            captured_at: Instant::now(),
+            interval,
+            samples: vec![
+                Sample::Timer {
+                    labels: self.service_time.labels().clone(),
+                    count: service_snap.count,
+                    histogram: service_snap.histogram,
+                },
+                Sample::Timer {
+                    labels: self.wait_time.labels().clone(),
+                    count: wait_snap.count,
+                    histogram: wait_snap.histogram,
+                },
+                Sample::Timer {
+                    labels: self.response_time.labels().clone(),
+                    count: response_snap.count,
+                    histogram: response_snap.histogram,
+                },
+                Sample::Timer {
+                    labels: self.result_success_time.labels().clone(),
+                    count: success_snap.count,
+                    histogram: success_snap.histogram,
+                },
+                Sample::Counter {
+                    labels: self.cycles_total.labels().clone(),
+                    value: self.counter_delta(&self.cycles_total),
+                },
+                Sample::Counter {
+                    labels: self.skips_total.labels().clone(),
+                    value: self.counter_delta(&self.skips_total),
+                },
+                Sample::Counter {
+                    labels: self.errors_total.labels().clone(),
+                    value: self.counter_delta(&self.errors_total),
+                },
+                Sample::Counter {
+                    labels: self.stanzas_total.labels().clone(),
+                    value: self.counter_delta(&self.stanzas_total),
+                },
+                Sample::Counter {
+                    labels: self.result_elements.labels().clone(),
+                    value: self.counter_delta(&self.result_elements),
+                },
+                Sample::Counter {
+                    labels: self.result_bytes.labels().clone(),
+                    value: self.counter_delta(&self.result_bytes),
+                },
+                Sample::Timer {
+                    labels: self.tries_histogram.labels().clone(),
+                    count: tries_snap.len(),
+                    histogram: tries_snap,
+                },
+            ],
+        };
+
+        // Add per-error-type counter deltas
+        let error_counts = self.error_type_counts.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for counter in error_counts.values() {
+            frame.samples.push(Sample::Counter {
+                labels: counter.labels().clone(),
+                value: self.counter_delta(counter),
+            });
+        }
+
+        // Add adapter-specific metrics (e.g., rows_inserted timer from CQL batch)
+        if let Some(ref disps) = *self.dispensers.lock().unwrap_or_else(|e| e.into_inner()) {
+            for dispenser in disps.iter() {
+                frame.samples.extend(dispenser.adapter_metrics());
+            }
         }
 
         frame
@@ -328,6 +441,9 @@ impl Activity {
                 }
             };
 
+            if template.params.contains_key("batch") {
+                eprintln!("[activity] op '{}' has batch param: {:?}", template.name, template.params.get("batch"));
+            }
             match adapter.map_op(template) {
                 Ok(d) => {
                     let raw = Arc::from(d);
@@ -418,6 +534,8 @@ impl Activity {
             }
         }
         let dispensers = Arc::new(dispensers);
+        // Register dispensers for adapter-specific metrics capture
+        activity.metrics.set_dispensers(dispensers.clone());
         let extra_bindings_per_template = Arc::new(extra_bindings_per_template);
         let validation_metrics = Arc::new(validation_metrics);
 
@@ -495,7 +613,28 @@ impl Activity {
                     let failed_cycles = completed.saturating_sub(successes).saturating_sub(
                         progress_metrics.skips_total.get());
                     let retries = errors.saturating_sub(failed_cycles);
-                    eprint!("\r\x1b[K{activity_name} (pending,active,complete)=({pending},{active},{completed}) {pct:.2}% {rate_str} ok:{ok_pct:.1}% errors:{errors} retries:{retries}");
+                    // Collect adapter-specific status counters (e.g., rows/s).
+                    // Uses status_counters() which reads cumulative atomics
+                    // without draining the delta timer pipeline.
+                    let mut adapter_status = String::new();
+                    if let Some(ref disps) = *progress_metrics.dispensers.lock().unwrap_or_else(|e| e.into_inner()) {
+                        for disp in disps.iter() {
+                            for (name, total) in disp.status_counters() {
+                                let item_rate = if elapsed > 0.0 {
+                                    total as f64 / elapsed
+                                } else { 0.0 };
+                                let rate_str = if item_rate >= 1_000_000.0 {
+                                    format!("{:.1}M", item_rate / 1_000_000.0)
+                                } else if item_rate >= 1_000.0 {
+                                    format!("{:.1}K", item_rate / 1_000.0)
+                                } else {
+                                    format!("{:.0}", item_rate)
+                                };
+                                adapter_status.push_str(&format!(" {name}:{rate_str}/s"));
+                            }
+                        }
+                    }
+                    eprint!("\r\x1b[K{activity_name} (pending,active,complete)=({pending},{active},{completed}) {pct:.2}% {rate_str} ok:{ok_pct:.1}% errors:{errors} retries:{retries}{adapter_status}");
                 }
             });
         }
@@ -646,11 +785,20 @@ async fn executor_task(
     let max_retries = activity.config.max_retries;
     let mut fiber = FiberBuilder::new(program);
 
+    // Compute effective grab size: for batch ops, grab batch_size cycles
+    // per dispatch so that cycles = total rows.
+    let max_batch = activity.op_sequence.templates().iter()
+        .filter_map(|t| t.params.get("batch")
+            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))))
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    let grab_size = stanza_len * max_batch;
+
     loop {
-        // Check if a stop handler has fired
         if activity.stop_flag.load(std::sync::atomic::Ordering::Relaxed) { break; }
 
-        let Some(base_cycle) = activity.cycle_source.next_n(stanza_len) else { break };
+        let Some(base_cycle) = activity.cycle_source.next_n(grab_size) else { break };
 
         if let Some(srl) = &stanza_rl {
             srl.acquire().await;
@@ -659,21 +807,15 @@ async fn executor_task(
         fiber.reset_captures();
 
         // Process stanza ops in dependency groups.
-        // Track which captures have been produced so far. If a group
-        // requires captures that were not produced (due to upstream
-        // failure), the entire group is skipped.
         let mut available_captures: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
         for group in dep_groups.iter() {
-            // Check if this group's required captures are all available
             if !group.required_captures.is_empty() {
                 let missing: Vec<&String> = group.required_captures.iter()
                     .filter(|c| !available_captures.contains(*c))
                     .collect();
                 if !missing.is_empty() {
-                    // Skip this group — upstream captures were not produced
-                    let _skip_count = group.op_indices.len();
                     for &stanza_offset in &group.op_indices {
                         let cycle = base_cycle + stanza_offset as u64;
                         activity.metrics.errors_total.inc();
@@ -686,11 +828,11 @@ async fn executor_task(
                             0,
                         );
                     }
-                    continue; // skip to next group
+                    continue;
                 }
             }
 
-            // Phase 1: Resolve all ops in the group (sequential, uses GK state)
+            // Phase 1: Resolve all ops in the group
             let mut window: Vec<(u64, usize, ResolvedFields, u64)> =
                 Vec::with_capacity(group.op_indices.len());
             for &stanza_offset in &group.op_indices {
@@ -708,7 +850,10 @@ async fn executor_task(
                 window.push((cycle, template_idx, fields, wait_nanos));
             }
 
-            // Phase 2: Execute all ops in the group concurrently
+            // Phase 2: Execute all ops in the group concurrently.
+            // For ops with for_each batch expansion, the dispenser handles
+            // the interior templating — execute() is called once per cycle
+            // and the dispenser builds the full batch internally.
             let futures: Vec<_> = window.iter().map(|(cycle, template_idx, fields, _)| {
                 let dispenser = dispensers[*template_idx].clone();
                 let cycle = *cycle;
@@ -754,13 +899,11 @@ async fn executor_task(
 
             let results = futures::future::join_all(futures).await;
 
-            // Phase 3: Record metrics, store captures, track produced captures
+            // Phase 3: Record metrics, store captures
             let mut _group_all_success = true;
             for (i, (success, service_nanos, tries, captures, skipped)) in results.into_iter().enumerate() {
                 activity.metrics.cycles_total.inc();
                 if skipped {
-                    // Skipped ops: counted in cycles_total + skips_total,
-                    // but no timing or captures recorded.
                     continue;
                 }
                 let wait_nanos = window[i].3;
@@ -777,8 +920,6 @@ async fn executor_task(
                     }
                 } else {
                     _group_all_success = false;
-                    // Failed op's captures are NOT added to available_captures.
-                    // Downstream groups that need them will be skipped.
                 }
             }
         }

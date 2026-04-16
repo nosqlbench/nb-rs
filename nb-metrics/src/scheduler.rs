@@ -3,25 +3,35 @@
 
 //! Metrics snapshot scheduler with hierarchical frame coalescing.
 //!
-//! A dedicated thread captures frames at the base interval. Each
-//! reporter is registered at its own interval (must be an exact
-//! multiple of the base). Schedule nodes accumulate and coalesce
-//! frames for slower reporters. Delivery to reporters is concurrent.
+//! A dedicated thread captures frames at the base interval from the
+//! component tree. Each reporter is registered at its own interval
+//! (must be an exact multiple of the base). Schedule nodes accumulate
+//! and coalesce frames for slower reporters.
+//!
+//! The in-process metrics store is fed at every base tick, maintaining
+//! per-component cumulative and last-window views for GK, summary
+//! report, and other in-process consumers.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use std::thread;
 
 use crate::frame::MetricsFrame;
+use crate::labels::Labels;
+use crate::store::InProcessMetricsStore;
 
-/// Trait for metrics reporters.
+/// Trait for metrics reporters (external consumers: SQLite, CSV, etc.).
 pub trait Reporter: Send + 'static {
     fn report(&mut self, frame: &MetricsFrame);
     fn flush(&mut self) {}
 }
 
-/// A capture function that produces a frame from live instruments.
-pub type CaptureFunc = Box<dyn Fn() -> MetricsFrame + Send>;
+/// Capture function that produces per-component delta frames
+/// from the component tree.
+///
+/// Returns one `(effective_labels, delta_frame)` per RUNNING
+/// component that has instruments with data.
+pub type CaptureFunc = Box<dyn Fn() -> Vec<(Labels, MetricsFrame)> + Send>;
 
 /// A node in the schedule tree that accumulates and coalesces frames.
 struct ScheduleNode {
@@ -43,7 +53,7 @@ impl ScheduleNode {
         }
     }
 
-    /// Ingest a frame from the parent. Accumulate, and when the
+    /// Ingest a combined frame. Accumulate, and when the
     /// interval is satisfied, coalesce and emit.
     fn ingest(&mut self, frame: MetricsFrame) {
         self.accumulated_duration += frame.interval;
@@ -54,12 +64,9 @@ impl ScheduleNode {
             self.accumulated.clear();
             self.accumulated_duration = Duration::ZERO;
 
-            // Deliver to reporters
             for reporter in &mut self.reporters {
                 reporter.report(&coalesced);
             }
-
-            // Cascade to children
             for child in &mut self.children {
                 child.ingest(coalesced.clone());
             }
@@ -82,6 +89,7 @@ impl Default for SchedulerConfig {
 pub struct SchedulerBuilder {
     config: SchedulerConfig,
     reporters: Vec<(Duration, Box<dyn Reporter>)>,
+    store: Option<Arc<RwLock<InProcessMetricsStore>>>,
 }
 
 impl Default for SchedulerBuilder {
@@ -95,6 +103,7 @@ impl SchedulerBuilder {
         Self {
             config: SchedulerConfig::default(),
             reporters: Vec::new(),
+            store: None,
         }
     }
 
@@ -108,24 +117,25 @@ impl SchedulerBuilder {
         self
     }
 
+    /// Set the in-process metrics store. Fed at every base tick.
+    pub fn with_store(mut self, store: Arc<RwLock<InProcessMetricsStore>>) -> Self {
+        self.store = Some(store);
+        self
+    }
+
     /// Build the schedule tree and return a handle.
     ///
     /// The scheduler is not yet running — call `start()` on the handle.
     pub fn build(self, capture: CaptureFunc) -> SchedulerHandle {
-        // Build the tree: root node at base interval, child nodes for
-        // each distinct reporter interval.
         let base = self.config.base_interval;
         let mut root = ScheduleNode::new(base);
 
-        // Group reporters by interval
         let mut by_interval: std::collections::BTreeMap<Duration, Vec<Box<dyn Reporter>>> =
             std::collections::BTreeMap::new();
         for (interval, reporter) in self.reporters {
             by_interval.entry(interval).or_default().push(reporter);
         }
 
-        // Build nodes. Reporters at base interval go on the root.
-        // Others become child nodes.
         for (interval, reporters) in by_interval {
             if interval == base {
                 root.reporters.extend(reporters);
@@ -146,6 +156,9 @@ impl SchedulerBuilder {
             capture,
             base_interval: base,
             running: Arc::new(Mutex::new(false)),
+            store: self.store.unwrap_or_else(|| {
+                Arc::new(RwLock::new(InProcessMetricsStore::new()))
+            }),
         }
     }
 }
@@ -156,17 +169,35 @@ pub struct SchedulerHandle {
     capture: CaptureFunc,
     base_interval: Duration,
     running: Arc<Mutex<bool>>,
+    store: Arc<RwLock<InProcessMetricsStore>>,
 }
 
 impl SchedulerHandle {
+    /// Reference to the in-process metrics store.
+    pub fn store(&self) -> &Arc<RwLock<InProcessMetricsStore>> {
+        &self.store
+    }
+
+    /// Flush a retiring component's final delta into the store.
+    ///
+    /// Called from the executor thread when a phase completes,
+    /// outside the scheduler tick loop.
+    pub fn flush_component(&self, labels: &Labels, final_delta: MetricsFrame) {
+        if let Ok(mut store) = self.store.write() {
+            store.flush_component(labels, final_delta);
+        }
+    }
+
     /// Start the scheduler on a dedicated thread.
     ///
     /// Returns a `StopHandle` that can be used to shut down.
     pub fn start(self) -> StopHandle {
-        let root = self.root;
+        let root = self.root.clone();
+        let root_for_stop = self.root;
         let capture = self.capture;
         let interval = self.base_interval;
         let running = self.running.clone();
+        let store = self.store.clone();
 
         *running.lock().unwrap_or_else(|e| e.into_inner()) = true;
 
@@ -184,25 +215,82 @@ impl SchedulerHandle {
                 }
                 next_tick += interval;
 
-                let frame = (capture)();
+                // Capture per-component deltas from the tree
+                let component_frames = (capture)();
+
+                // Feed each component's delta to the in-process store
+                if let Ok(mut s) = store.write() {
+                    for (labels, frame) in &component_frames {
+                        s.ingest_delta(labels, frame.clone());
+                    }
+                }
+
+                // Merge all component frames into one combined frame
+                // for the cadence tree (external reporters)
+                let all_frames: Vec<MetricsFrame> = component_frames.into_iter()
+                    .map(|(_, frame)| frame)
+                    .collect();
+                let combined = if all_frames.is_empty() {
+                    MetricsFrame {
+                        captured_at: Instant::now(),
+                        interval,
+                        samples: Vec::new(),
+                    }
+                } else {
+                    let mut merged = MetricsFrame::coalesce(&all_frames);
+                    // Ensure the interval reflects the scheduler interval,
+                    // not the sum from coalesce (which sums intervals)
+                    merged.interval = interval;
+                    merged
+                };
+
                 let mut root = root.lock().unwrap_or_else(|e| e.into_inner());
 
-                // Deliver to root reporters
+                // Deliver to root-level reporters
                 for reporter in &mut root.reporters {
-                    reporter.report(&frame);
+                    reporter.report(&combined);
                 }
 
                 // Feed to children for coalescing
                 for child in &mut root.children {
-                    child.ingest(frame.clone());
+                    child.ingest(combined.clone());
                 }
             }
 
-            // Flush all reporters
+            // Final capture before shutdown: ensures short-lived phases
+            // that completed between ticks get their data to reporters.
+            {
+                let component_frames = (capture)();
+                if let Ok(mut s) = store.write() {
+                    for (labels, frame) in &component_frames {
+                        s.ingest_delta(labels, frame.clone());
+                    }
+                }
+                let all_frames: Vec<MetricsFrame> = component_frames.into_iter()
+                    .map(|(_, frame)| frame)
+                    .collect();
+                if !all_frames.is_empty() {
+                    let mut merged = MetricsFrame::coalesce(&all_frames);
+                    merged.interval = interval;
+                    let mut root_node = root.lock().unwrap_or_else(|e| e.into_inner());
+                    for reporter in &mut root_node.reporters {
+                        reporter.report(&merged);
+                    }
+                    for child in &mut root_node.children {
+                        child.ingest(merged.clone());
+                    }
+                }
+            }
+            // Flush all reporters on shutdown
             flush_tree(&mut root.lock().unwrap_or_else(|e| e.into_inner()));
         });
 
-        StopHandle { running: self.running, thread: Some(handle) }
+        StopHandle {
+            running: self.running,
+            store: self.store,
+            root: root_for_stop,
+            thread: Some(handle),
+        }
     }
 }
 
@@ -218,14 +306,39 @@ fn flush_tree(node: &mut ScheduleNode) {
 /// Handle to stop a running scheduler.
 pub struct StopHandle {
     running: Arc<Mutex<bool>>,
+    store: Arc<RwLock<InProcessMetricsStore>>,
+    root: Arc<Mutex<ScheduleNode>>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
 impl StopHandle {
-    pub fn stop(mut self) {
+    /// Stop the scheduler and join the capture thread.
+    pub fn stop(&mut self) {
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = false;
         if let Some(handle) = self.thread.take() {
             let _ = handle.join();
+        }
+    }
+
+    /// Reference to the in-process metrics store.
+    ///
+    /// Remains valid and queryable after the scheduler is stopped.
+    pub fn store(&self) -> &Arc<RwLock<InProcessMetricsStore>> {
+        &self.store
+    }
+
+    /// Deliver a frame directly to all reporters on the root node.
+    ///
+    /// Used for lifecycle flush: the executor captures a final delta
+    /// and needs it delivered to SQLite (and other reporters) outside
+    /// the scheduler tick loop.
+    pub fn report_frame(&self, frame: &MetricsFrame) {
+        let mut root = self.root.lock().unwrap_or_else(|e| e.into_inner());
+        for reporter in &mut root.reporters {
+            reporter.report(frame);
+        }
+        for child in &mut root.children {
+            child.ingest(frame.clone());
         }
     }
 }
@@ -243,6 +356,7 @@ impl Drop for StopHandle {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::frame::Sample;
 
     struct CountingReporter {
         count: Arc<AtomicU64>,
@@ -254,26 +368,70 @@ mod tests {
         }
     }
 
+    fn mock_capture() -> Vec<(Labels, MetricsFrame)> {
+        vec![(
+            Labels::of("phase", "test"),
+            MetricsFrame {
+                captured_at: Instant::now(),
+                interval: Duration::from_millis(100),
+                samples: vec![Sample::Counter {
+                    labels: Labels::of("name", "ops"),
+                    value: 10,
+                }],
+            },
+        )]
+    }
+
     #[test]
-    fn scheduler_builds() {
+    fn scheduler_builds_and_reports() {
         let count = Arc::new(AtomicU64::new(0));
         let c = count.clone();
         let handle = SchedulerBuilder::new()
             .base_interval(Duration::from_millis(100))
             .add_reporter(Duration::from_millis(100), CountingReporter { count: c })
-            .build(Box::new(|| MetricsFrame {
-                captured_at: Instant::now(),
-                interval: Duration::from_millis(100),
-                samples: Vec::new(),
-            }));
+            .build(Box::new(mock_capture));
 
-        let stop = handle.start();
+        let mut stop = handle.start();
         thread::sleep(Duration::from_millis(350));
         stop.stop();
 
-        // Should have received ~3 reports in 350ms at 100ms intervals
         let c = count.load(Ordering::Relaxed);
         assert!(c >= 2 && c <= 5, "expected ~3 reports, got {c}");
+    }
+
+    #[test]
+    fn scheduler_feeds_in_process_store() {
+        let store = Arc::new(RwLock::new(InProcessMetricsStore::new()));
+        let handle = SchedulerBuilder::new()
+            .base_interval(Duration::from_millis(100))
+            .with_store(store.clone())
+            .build(Box::new(mock_capture));
+
+        let mut stop = handle.start();
+        thread::sleep(Duration::from_millis(350));
+        stop.stop();
+
+        let s = store.read().unwrap();
+        assert_eq!(s.component_count(), 1);
+
+        // Cumulative should have merged multiple deltas
+        let cum = s.query_cumulative(|_| true);
+        assert_eq!(cum.len(), 1);
+        match &cum[0].1.samples[0] {
+            Sample::Counter { value, .. } => {
+                // ~3 ticks × 10 per tick = ~30
+                assert!(*value >= 20, "cumulative counter should be ≥20, got {value}");
+            }
+            _ => panic!("expected counter"),
+        }
+
+        // Last window should be exactly one tick's worth
+        let lw = s.query_last_window(|_| true);
+        assert_eq!(lw.len(), 1);
+        match &lw[0].1.samples[0] {
+            Sample::Counter { value, .. } => assert_eq!(*value, 10),
+            _ => panic!("expected counter"),
+        }
     }
 
     #[test]
@@ -287,20 +445,46 @@ mod tests {
             .base_interval(Duration::from_millis(50))
             .add_reporter(Duration::from_millis(50), CountingReporter { count: fc })
             .add_reporter(Duration::from_millis(200), CountingReporter { count: sc })
-            .build(Box::new(|| MetricsFrame {
-                captured_at: Instant::now(),
-                interval: Duration::from_millis(50),
-                samples: Vec::new(),
-            }));
+            .build(Box::new(|| vec![(
+                Labels::of("phase", "test"),
+                MetricsFrame {
+                    captured_at: Instant::now(),
+                    interval: Duration::from_millis(50),
+                    samples: Vec::new(),
+                },
+            )]));
 
-        let stop = handle.start();
+        let mut stop = handle.start();
         thread::sleep(Duration::from_millis(450));
         stop.stop();
 
         let fast = fast_count.load(Ordering::Relaxed);
         let slow = slow_count.load(Ordering::Relaxed);
-        // Fast: ~8-9 reports. Slow: ~2 reports (at 200ms intervals).
         assert!(fast >= 6, "fast should get many reports, got {fast}");
         assert!(slow >= 1 && slow <= 3, "slow should get ~2, got {slow}");
+    }
+
+    #[test]
+    fn flush_component_accessible_from_outside() {
+        let store = Arc::new(RwLock::new(InProcessMetricsStore::new()));
+        let handle = SchedulerBuilder::new()
+            .with_store(store.clone())
+            .build(Box::new(|| Vec::new()));
+
+        // Flush without starting — simulates lifecycle retirement
+        let labels = Labels::of("phase", "done");
+        let frame = MetricsFrame {
+            captured_at: Instant::now(),
+            interval: Duration::from_secs(1),
+            samples: vec![Sample::Counter {
+                labels: Labels::of("name", "final_ops"),
+                value: 42,
+            }],
+        };
+        handle.flush_component(&labels, frame);
+
+        let s = store.read().unwrap();
+        let cum = s.query_cumulative(|_| true);
+        assert_eq!(cum.len(), 1);
     }
 }

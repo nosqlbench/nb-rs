@@ -20,6 +20,7 @@ use crate::bindings::compile_bindings_with_libs_excluding;
 use crate::opseq::{OpSequence, SequencerType};
 use crate::synthesis::OpBuilder;
 use nb_metrics::labels::Labels;
+use nb_metrics::scheduler::Reporter;
 use nb_workload::tags::TagFilter;
 
 /// Known `key=value` params accepted by the shared runner.
@@ -452,9 +453,43 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
 
         eprintln!("scenario '{scenario_name}': {}", format_scenario_tree(&scenario_nodes));
 
+        // Build the centralized metrics scheduler with component tree.
+        let store = std::sync::Arc::new(std::sync::RwLock::new(
+            nb_metrics::store::InProcessMetricsStore::new()
+        ));
+        // Make store accessible to GK metric() / metric_window() nodes.
+        nb_variates::nodes::metrics::set_global_store(store.clone());
+        let session_component = nb_metrics::component::Component::root(
+            nb_metrics::labels::Labels::of("session", &session_id),
+            std::collections::HashMap::new(),
+        );
+
+        let session_for_capture = session_component.clone();
+        let mut sched_builder = nb_metrics::scheduler::SchedulerBuilder::new()
+            .base_interval(std::time::Duration::from_secs(1))
+            .with_store(store.clone());
+
+        // Register SQLite reporter at base cadence
+        if let Ok(guard) = sqlite_reporter.lock() {
+            if guard.is_some() {
+                drop(guard);
+                let sqlite_for_sched = sqlite_reporter.clone();
+                sched_builder = sched_builder.add_reporter(
+                    std::time::Duration::from_secs(1),
+                    MutexReporter(sqlite_for_sched),
+                );
+            }
+        }
+
+        let scheduler = sched_builder.build(Box::new(move || {
+            nb_metrics::component::capture_tree(
+                &session_for_capture,
+                std::time::Duration::from_secs(1),
+            )
+        }));
+        let stop_handle = Arc::new(scheduler.start());
+
         // Execute the scenario tree recursively via the executor module.
-        // All control flow (for_each, do_while, do_until) is evaluated
-        // dynamically at runtime — no pre-flattening.
         {
             let dry_run_static: Option<&'static str> = match dry_run {
                 Some("silent") => Some("silent"),
@@ -475,13 +510,15 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
                 dry_run: dry_run_static,
                 diag: diag.clone(),
                 openmetrics_url: openmetrics_url.clone(),
-                sqlite: sqlite_reporter.clone(),
                 seq_type,
                 concurrency,
                 cycle_rate,
                 error_spec: error_spec.clone(),
                 session_id: session_id.clone(),
                 label_stack: Vec::new(),
+                session_component: session_component.clone(),
+                store: store.clone(),
+                stop_handle: stop_handle.clone(),
             };
             crate::executor::execute_tree(
                 &mut exec_ctx,
@@ -490,6 +527,11 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
             ).await?;
         }
 
+        // Stop the scheduler (flushes all reporters).
+        // ExecCtx is dropped, so this is the last Arc reference.
+        if let Ok(mut sh) = Arc::try_unwrap(stop_handle) {
+            sh.stop();
+        }
         eprintln!("all phases complete");
 
     } else {
@@ -545,7 +587,7 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
         eprintln!("done.");
     }
 
-    // Print summary report from SQLite metrics.
+    // Print summary report.
     // Summary only prints when a config is present (workload-level or CLI override).
     let summary_config = if let Some(cli_summary) = merged_params.get("summary") {
         Some(nb_workload::model::SummaryConfig::parse(cli_summary))
@@ -566,6 +608,9 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
             }).collect(),
             show_details: config.show_details,
         };
+        // Summary report always comes from SQLite — the durable record.
+        // The in-memory store exists for GK access and reactive control,
+        // not for reporting.
         if let Ok(mut guard) = sqlite_reporter.lock() {
             if let Some(ref mut reporter) = *guard {
                 reporter.print_summary(&report_config);
@@ -655,6 +700,20 @@ async fn run_activity(
     stopped
 }
 
+/// Run an activity without its own capture thread.
+///
+/// The centralized scheduler handles all metrics capture. This function
+/// just runs the activity to completion. Lifecycle flush (final delta +
+/// validation metrics) is handled by the caller (executor).
+pub async fn run_activity_simple(
+    activity: Activity,
+    adapters: std::collections::HashMap<String, Arc<dyn crate::adapter::DriverAdapter>>,
+    default_adapter: &str,
+    program: Arc<nb_variates::kernel::GkProgram>,
+) -> bool {
+    activity.run_with_adapters(adapters, default_adapter, program).await
+}
+
 /// Run an activity with multiple adapters and metrics capture.
 /// Returns true if the activity was stopped by an error handler.
 pub async fn run_activity_with_adapters(
@@ -715,6 +774,30 @@ pub async fn run_activity_with_adapters(
         }
     }
     stopped
+}
+
+/// Adapter that delegates to an `Arc<Mutex<Option<SqliteReporter>>>`.
+///
+/// Allows the SQLite reporter to be registered on the scheduler while
+/// also being accessible for summary queries after the scheduler stops.
+struct MutexReporter(std::sync::Arc<std::sync::Mutex<Option<nb_metrics::reporters::sqlite::SqliteReporter>>>);
+
+impl Reporter for MutexReporter {
+    fn report(&mut self, frame: &nb_metrics::frame::MetricsFrame) {
+        if let Ok(mut guard) = self.0.lock() {
+            if let Some(ref mut r) = *guard {
+                Reporter::report(r, frame);
+            }
+        }
+    }
+
+    fn flush(&mut self) {
+        if let Ok(mut guard) = self.0.lock() {
+            if let Some(ref mut r) = *guard {
+                Reporter::flush(r);
+            }
+        }
+    }
 }
 
 /// Generate a session ID from the current timestamp.

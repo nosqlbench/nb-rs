@@ -386,7 +386,59 @@ impl FiberBuilder {
             }
         }
 
-        crate::adapter::ResolvedFields::new(names, values)
+        // Check for batch for_each expansion on this op.
+        // If present, re-evaluate the kernel for each virtual cycle in the range
+        // and collect the expanded field sets.
+        let batch_size = template.params.get("batch")
+            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+            .unwrap_or(0) as usize;
+
+        let mut batch_fields = Vec::new();
+        if batch_size > 0 {
+            // Cycles = rows. The current cycle is the first row in this batch.
+            // Evaluate for base_cycle + 0 through base_cycle + batch_size - 1.
+            // The executor must advance the cycle counter by batch_size per dispatch.
+            let base = self.state.get_input(0).as_u64();
+            for i in 0..batch_size {
+                let row_cycle = base + i as u64;
+                self.state.set_inputs(&[row_cycle]);
+
+                let mut row_names = Vec::new();
+                let mut row_values = Vec::new();
+
+                for (key, value) in &template.op {
+                    row_names.push(key.clone());
+                    if let serde_json::Value::String(s) = value {
+                        let trimmed = s.trim();
+                        if trimmed.starts_with('{') && trimmed.ends_with('}') && !trimmed.starts_with("{{") {
+                            let name = &trimmed[1..trimmed.len()-1];
+                            let bare = if let Some((_, n)) = name.split_once(':') { n } else { name };
+                            if self.program.resolve_output(bare).is_some() {
+                                row_values.push(self.state.pull(&self.program, bare).clone());
+                                continue;
+                            }
+                        }
+                        let resolved = substitute_bind_points_with_state(
+                            s, &self.program, &mut self.state,
+                        );
+                        row_values.push(Value::Str(resolved));
+                    } else {
+                        row_values.push(Value::Str(value.to_string()));
+                    }
+                }
+
+                batch_fields.push(crate::adapter::ResolvedFieldSet {
+                    names: row_names,
+                    values: row_values,
+                });
+            }
+            // Restore the original cycle input
+            self.state.set_inputs(&[base]);
+        }
+
+        let mut result = crate::adapter::ResolvedFields::new(names, values);
+        result.batch_fields = batch_fields;
+        result
     }
 
     /// Resolve op fields only (no extras). Convenience for simple cases.

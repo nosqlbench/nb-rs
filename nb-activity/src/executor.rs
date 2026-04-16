@@ -9,7 +9,7 @@
 //! variable scoping at every nesting level.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::path::PathBuf;
 
 use crate::activity::{Activity, ActivityConfig};
@@ -17,7 +17,9 @@ use crate::adapter::DriverAdapter;
 use crate::bindings::compile_bindings_with_libs_excluding;
 use crate::opseq::{OpSequence, SequencerType};
 use crate::synthesis::OpBuilder;
+use nb_metrics::component::{self, Component, ComponentState};
 use nb_metrics::labels::Labels;
+use nb_metrics::store::InProcessMetricsStore;
 use nb_workload::model::{ScenarioNode, WorkloadPhase};
 
 /// Shared context for the recursive executor.
@@ -35,7 +37,6 @@ pub struct ExecCtx {
     pub dry_run: Option<&'static str>,
     pub diag: crate::runner::DiagnosticConfig,
     pub openmetrics_url: Option<String>,
-    pub sqlite: Arc<std::sync::Mutex<Option<nb_metrics::reporters::sqlite::SqliteReporter>>>,
     pub seq_type: SequencerType,
     pub concurrency: usize,
     pub cycle_rate: Option<f64>,
@@ -46,6 +47,12 @@ pub struct ExecCtx {
     /// for_each pushes (var, value), phase pushes ("phase", name).
     /// do_while/do_until are transparent — they don't contribute labels.
     pub label_stack: Vec<(String, String)>,
+    /// Session root component (owns the component tree).
+    pub session_component: Arc<RwLock<Component>>,
+    /// In-process metrics store for lifecycle flush.
+    pub store: Arc<RwLock<InProcessMetricsStore>>,
+    /// Scheduler stop handle for delivering frames to reporters.
+    pub stop_handle: Arc<nb_metrics::scheduler::StopHandle>,
 }
 
 impl ExecCtx {
@@ -160,8 +167,8 @@ async fn run_phase(
 
     eprintln!("=== phase: {phase_name} ===");
     if is_iter {
-        if let Some(label) = bindings.values().next() {
-            if !label.is_empty() { eprintln!("  iteration: {label}"); }
+        for (var, val) in bindings {
+            if !val.is_empty() { eprintln!("  {var}={val}"); }
         }
     }
 
@@ -270,7 +277,8 @@ async fn run_phase(
     // Diagnostic output
     if ctx.diag.explain_gk {
         let note = if is_iter {
-            bindings.values().next().map(|l| format!(" (iteration: {l})")).unwrap_or_default()
+            let pairs: Vec<String> = bindings.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            format!(" ({})", pairs.join(", "))
         } else { String::new() };
         crate::describe::print_kernel_analysis(phase_name, &note, &iter_program);
     }
@@ -337,13 +345,53 @@ async fn run_phase(
         labels = labels.with("nosummary", "true");
     }
 
+    // Create phase component and attach to session
+    let phase_component = Arc::new(RwLock::new(
+        Component::new(labels.clone(), HashMap::new()),
+    ));
+    component::attach(&ctx.session_component, &phase_component);
+
     let activity = Activity::with_params(
         config, &labels, op_sequence, ctx.workload_params.clone(),
     );
-    let stopped = crate::runner::run_activity_with_adapters(
+
+    // Register instruments on the component and set Running
+    {
+        let mut pc = phase_component.write().unwrap_or_else(|e| e.into_inner());
+        pc.set_instruments(activity.shared_metrics());
+        pc.set_state(ComponentState::Running);
+    }
+
+    let validation_frame = activity.validation_frame.clone();
+    let final_metrics = activity.shared_metrics();
+    let stopped = crate::runner::run_activity_simple(
         activity, adapters, phase_driver, iter_program,
-        ctx.openmetrics_url.as_deref(), ctx.sqlite.clone(),
     ).await;
+
+    // Lifecycle flush: capture final delta, merge into store, deliver to reporters
+    {
+        use nb_metrics::component::InstrumentSet;
+        let final_delta = final_metrics.capture_delta(std::time::Duration::from_secs(1));
+        if let Ok(mut s) = ctx.store.write() {
+            s.flush_component(&labels, final_delta.clone());
+        }
+        ctx.stop_handle.report_frame(&final_delta);
+
+        // Flush validation metrics (recall, precision) as gauges
+        if let Some(vframe) = validation_frame.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            if let Ok(mut s) = ctx.store.write() {
+                s.flush_component(&labels, vframe.clone());
+            }
+            ctx.stop_handle.report_frame(&vframe);
+        }
+    }
+
+    // Transition to Stopped
+    {
+        let mut pc = phase_component.write().unwrap_or_else(|e| e.into_inner());
+        pc.set_state(ComponentState::Stopped);
+    }
+
     if stopped {
         return Err(format!("phase '{phase_name}' stopped by error handler"));
     }

@@ -129,6 +129,7 @@ fn json_to_value(v: &serde_json::Value) -> nb_variates::node::Value {
 }
 
 impl OpDispenser for TraversingDispenser {
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
     fn execute<'a>(
         &'a self,
         cycle: u64,
@@ -209,6 +210,7 @@ fn is_truthy(value: &nb_variates::node::Value) -> bool {
 }
 
 impl OpDispenser for ConditionalDispenser {
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
     fn execute<'a>(
         &'a self,
         cycle: u64,
@@ -265,6 +267,7 @@ impl ThrottleDispenser {
 }
 
 impl OpDispenser for ThrottleDispenser {
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
     fn execute<'a>(
         &'a self,
         cycle: u64,
@@ -359,6 +362,7 @@ impl PollingDispenser {
 }
 
 impl OpDispenser for PollingDispenser {
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
     fn execute<'a>(
         &'a self,
         cycle: u64,
@@ -453,6 +457,7 @@ impl EmitDispenser {
 }
 
 impl OpDispenser for EmitDispenser {
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
     fn execute<'a>(
         &'a self,
         cycle: u64,
