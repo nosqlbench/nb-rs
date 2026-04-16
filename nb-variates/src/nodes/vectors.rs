@@ -1051,6 +1051,147 @@ impl GkNode for DatasetPrebuffer {
     }
 }
 
+// =================================================================
+// Generic facet access — type-aware scalar/vector readers
+// =================================================================
+
+/// A type-erased facet reader that stores values as i64.
+/// Uses `generic_view().open_facet_typed::<i64>()` which handles all
+/// element types (u8, i32, etc.), caching, and local/remote access.
+struct GenericFacetDataset {
+    reader: vectordata::typed_access::TypedReader<i64>,
+    count: usize,
+}
+
+impl GenericFacetDataset {
+    fn load(source: &str, profile: &str, facet: &str) -> Result<Arc<Self>, String> {
+        let key = (source.to_string(), profile.to_string(), facet.to_string());
+        {
+            let cache = FACET_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(cached) = cache.get(&key) {
+                if let Ok(typed) = cached.clone().downcast::<GenericFacetDataset>() {
+                    return Ok(typed);
+                }
+            }
+        }
+        let group = load_dataset_group(source)?;
+        let gv = group.generic_view(profile)
+            .ok_or_else(|| format!("profile '{profile}' not found in '{source}'"))?;
+        let reader = gv.open_facet_typed::<i64>(facet)
+            .map_err(|e| format!("failed to open {facet} from '{source}:{profile}': {e}"))?;
+        let count = reader.count();
+        let arc = Arc::new(Self { reader, count });
+        FACET_CACHE.lock().unwrap_or_else(|e| e.into_inner())
+            .insert(key, arc.clone() as Arc<dyn std::any::Any + Send + Sync>);
+        Ok(arc)
+    }
+
+    fn get_scalar(&self, index: usize) -> i64 {
+        if self.count == 0 { return 0; }
+        self.reader.get_value(index % self.count).unwrap_or(0)
+    }
+
+    fn format_scalar(&self, index: usize) -> String {
+        self.get_scalar(index).to_string()
+    }
+}
+
+/// Access a metadata value per base vector by ordinal.
+///
+/// Signature: `metadata_value_at(index: u64, source: str) -> (String)`
+///
+/// Reads from the `metadata_content` facet. Supports all element types
+/// (u8, i32, etc.). Returns the value as a string.
+pub struct MetadataValueAt {
+    meta: NodeMeta,
+    dataset: Arc<GenericFacetDataset>,
+}
+
+impl MetadataValueAt {
+    pub fn from_source(source: &str) -> Result<Self, String> {
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = GenericFacetDataset::load(source, profile, "metadata_content")?;
+        Ok(Self {
+            meta: NodeMeta {
+                name: "metadata_value_at".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("index"))],
+            },
+            dataset,
+        })
+    }
+}
+
+impl GkNode for MetadataValueAt {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::Str(self.dataset.format_scalar(inputs[0].as_u64() as usize));
+    }
+}
+
+/// Access a predicate value per query by ordinal.
+///
+/// Signature: `predicate_value_at(index: u64, source: str) -> (String)`
+///
+/// Reads from the `metadata_predicates` facet. Supports all element types.
+/// Returns the value as a string.
+pub struct PredicateValueAt {
+    meta: NodeMeta,
+    dataset: Arc<GenericFacetDataset>,
+}
+
+impl PredicateValueAt {
+    pub fn from_source(source: &str) -> Result<Self, String> {
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = GenericFacetDataset::load(source, profile, "metadata_predicates")?;
+        Ok(Self {
+            meta: NodeMeta {
+                name: "predicate_value_at".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::u64("index"))],
+            },
+            dataset,
+        })
+    }
+}
+
+impl GkNode for PredicateValueAt {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::Str(self.dataset.format_scalar(inputs[0].as_u64() as usize));
+    }
+}
+
+/// Count of metadata content records.
+///
+/// Signature: `metadata_content_count(source: str) -> (u64)`
+pub struct MetadataContentCount {
+    meta: NodeMeta,
+    count: u64,
+}
+
+impl MetadataContentCount {
+    pub fn from_source(source: &str) -> Result<Self, String> {
+        let (_, profile) = parse_source_specifier(source);
+        let dataset = GenericFacetDataset::load(source, profile, "metadata_content")?;
+        Ok(Self {
+            meta: NodeMeta {
+                name: "metadata_content_count".into(),
+                outs: vec![Port::u64("output")],
+                ins: Vec::new(),
+            },
+            count: dataset.count as u64,
+        })
+    }
+}
+
+impl GkNode for MetadataContentCount {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::U64(self.count);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Signature declarations for the DSL registry
 // ---------------------------------------------------------------------------
@@ -1320,6 +1461,39 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
+        FuncSig {
+            name: "metadata_value_at", category: C::RealData, outputs: 1,
+            description: "scalar metadata value per base vector",
+            help: "Read a metadata value for a base vector by ordinal.\nFor scalar ordinal data, returns the integer value as a string.\nReads from the metadata_content facet.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "predicate_value_at", category: C::RealData, outputs: 1,
+            description: "scalar predicate value per query",
+            help: "Read a predicate value for a query by ordinal.\nFor scalar ordinal data, returns the integer value as a string.\nReads from the metadata_predicates facet.",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
+        FuncSig {
+            name: "metadata_content_count", category: C::RealData, outputs: 1,
+            description: "number of metadata content records",
+            help: "Returns the number of metadata content records in the dataset.",
+            identity: None, variadic_ctor: None,
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+        },
     ]
 }
 
@@ -1426,6 +1600,18 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
         ),
         "dataset_prebuffer" => Some(
             DatasetPrebuffer::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "metadata_value_at" => Some(
+            MetadataValueAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "predicate_value_at" => Some(
+            PredicateValueAt::from_source(src)
+                .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
+        ),
+        "metadata_content_count" => Some(
+            MetadataContentCount::from_source(src)
                 .map(|n| Box::new(n) as Box<dyn crate::node::GkNode>)
         ),
         _ => None,

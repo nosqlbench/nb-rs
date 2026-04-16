@@ -37,6 +37,149 @@ pub struct Workload {
     /// ad-hoc CLI params.
     #[serde(default)]
     pub declared_params: Vec<String>,
+    /// Summary report configuration from the workload `summary:` section.
+    /// Absent means no summary is printed. Present enables the summary
+    /// and controls columns, row filters, and aggregate expressions.
+    #[serde(default)]
+    pub summary: Option<SummaryConfig>,
+}
+
+/// Parsed summary report configuration.
+///
+/// Controls which columns, rows, and aggregates appear in the
+/// post-run summary table. Parsed from a semicolon-delimited DSL:
+///
+/// ```text
+/// "recall; mean(recall) over profile~label; details=hide"
+/// ```
+///
+/// Directives:
+/// - Bare words (no `=` or `(`): gauge column filter patterns, comma-separated.
+///   `"all"` shows every discovered gauge.
+/// - `filter=<regex>`: row filter on activity labels.
+/// - `<func>(<col>) over <key>~<pat>`: aggregate expression.
+/// - `details=hide`: suppress individual data rows.
+#[derive(Debug, Clone)]
+pub struct SummaryConfig {
+    /// Gauge column filter patterns (e.g., `["recall", "precision"]`).
+    /// Empty means show all discovered gauges.
+    pub columns: Vec<String>,
+    /// Row filter regex patterns on activity labels.
+    pub row_filters: Vec<String>,
+    /// Aggregate expressions to compute after the data rows.
+    pub aggregates: Vec<AggregateExpr>,
+    /// Whether to show individual data rows (default `true`).
+    pub show_details: bool,
+    /// Raw source string for diagnostics and future GK template detection.
+    pub raw: String,
+}
+
+/// An aggregate expression: `mean(recall) over profile~label`.
+#[derive(Debug, Clone)]
+pub struct AggregateExpr {
+    /// Aggregation function.
+    pub function: AggFunction,
+    /// Column name pattern — only gauge columns containing this string
+    /// are aggregated; others show `-` in the aggregate row.
+    pub column_pattern: String,
+    /// Label key to filter rows on (e.g., `"profile"`).
+    pub label_key: String,
+    /// Substring pattern matched against the label value (e.g., `"label"`).
+    pub label_pattern: String,
+}
+
+/// Supported aggregation functions for summary report expressions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggFunction {
+    Mean,
+    Min,
+    Max,
+}
+
+impl std::fmt::Display for AggFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AggFunction::Mean => write!(f, "mean"),
+            AggFunction::Min => write!(f, "min"),
+            AggFunction::Max => write!(f, "max"),
+        }
+    }
+}
+
+impl Serialize for SummaryConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.raw)
+    }
+}
+
+impl<'de> Deserialize<'de> for SummaryConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Ok(SummaryConfig::parse(&raw))
+    }
+}
+
+impl SummaryConfig {
+    /// Parse a short-form summary DSL string.
+    ///
+    /// Semicolon-separated directives:
+    /// - `"recall,precision"` — column filters
+    /// - `"filter=search_post"` — row filter
+    /// - `"mean(recall) over profile~label"` — aggregate expression
+    /// - `"details=hide"` — hide individual data rows
+    pub fn parse(raw: &str) -> Self {
+        let mut columns = Vec::new();
+        let mut row_filters = Vec::new();
+        let mut aggregates = Vec::new();
+        let mut show_details = true;
+
+        for directive in raw.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+            if directive == "details=hide" {
+                show_details = false;
+            } else if let Some(filter) = directive.strip_prefix("filter=") {
+                row_filters.push(filter.trim().to_string());
+            } else if let Some(agg) = Self::parse_aggregate(directive) {
+                aggregates.push(agg);
+            } else {
+                // Column filter: comma-separated names
+                for col in directive.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    if col != "all" {
+                        columns.push(col.to_string());
+                    }
+                    // "all" = empty columns vec = show everything
+                }
+            }
+        }
+
+        SummaryConfig { columns, row_filters, aggregates, show_details, raw: raw.to_string() }
+    }
+
+    /// Try to parse an aggregate directive like `mean(recall) over profile~label`.
+    fn parse_aggregate(s: &str) -> Option<AggregateExpr> {
+        // Pattern: <func>(<col>) over <key>~<pat>
+        let paren_open = s.find('(')?;
+        let paren_close = s.find(')')?;
+        if paren_close <= paren_open { return None; }
+
+        let func_name = s[..paren_open].trim();
+        let function = match func_name {
+            "mean" => AggFunction::Mean,
+            "min" => AggFunction::Min,
+            "max" => AggFunction::Max,
+            _ => return None,
+        };
+
+        let column_pattern = s[paren_open + 1..paren_close].trim().to_string();
+
+        let after_paren = s[paren_close + 1..].trim();
+        let over_rest = after_paren.strip_prefix("over")?.trim();
+        let tilde = over_rest.find('~')?;
+
+        let label_key = over_rest[..tilde].trim().to_string();
+        let label_pattern = over_rest[tilde + 1..].trim().to_string();
+
+        Some(AggregateExpr { function, column_pattern, label_key, label_pattern })
+    }
 }
 
 /// A workload phase: runs as a separate Activity with its own
@@ -91,6 +234,12 @@ pub struct WorkloadPhase {
     /// - `clean`: each iteration starts from the loop scope snapshot (isolated)
     #[serde(default)]
     pub iter_scope: Option<String>,
+    /// Summary report configuration for this phase.
+    /// Absent means the phase does not appear in the summary.
+    /// Present means the phase contributes a row. The value
+    /// configures what is shown (true = all available columns).
+    #[serde(default)]
+    pub summary: Option<serde_json::Value>,
 }
 
 /// A node in a scenario execution tree.

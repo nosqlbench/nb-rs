@@ -109,6 +109,7 @@ pub fn compile_gk_with_libs(
     gk_lib_paths: Vec<PathBuf>,
     required_outputs: &[String],
     strict: bool,
+    context: &str,
 ) -> Result<GkKernel, String> {
     let tokens = lexer::lex(source)?;
     let ast = parser::parse(tokens)?;
@@ -123,6 +124,7 @@ pub fn compile_gk_with_libs(
         strict,
     );
     compiler.source_text = source.to_string();
+    compiler.context_label = context.to_string();
     compiler.compile_filtered(&ast, filter)
 }
 

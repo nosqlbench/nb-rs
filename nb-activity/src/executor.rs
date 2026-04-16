@@ -209,11 +209,19 @@ async fn run_phase(
                 config_refs.push(inner);
             }
         }
-        // Compile
+        // Compile — build a context label that identifies this phase + iteration
+        let gk_context = if bindings.is_empty() {
+            format!("phase '{phase_name}'")
+        } else {
+            let vars: Vec<String> = bindings.iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            format!("phase '{phase_name}' ({})", vars.join(", "))
+        };
         let mut kernel = compile_bindings_with_libs_excluding(
             &ops, ctx.workload_dir.as_deref(), ctx.gk_lib_paths.clone(),
-            ctx.strict, &[], &config_refs,
-        ).map_err(|e| format!("compile {phase_name}: {e}"))?;
+            ctx.strict, &[], &config_refs, &gk_context,
+        ).map_err(|e| format!("{gk_context}: {e}"))?;
         // Wire scope
         for (name, value) in &ctx.outer_scope_values {
             if let Some(idx) = kernel.program().find_input(name) {
@@ -322,8 +330,12 @@ async fn run_phase(
 
     // Build labels from component tree: session + for_each levels + phase
     ctx.push_label("phase", phase_name);
-    let labels = ctx.labels();
+    let mut labels = ctx.labels();
     ctx.pop_label();
+    // Phases without a `summary:` field are excluded from the report
+    if phase.summary.is_none() {
+        labels = labels.with("nosummary", "true");
+    }
 
     let activity = Activity::with_params(
         config, &labels, op_sequence, ctx.workload_params.clone(),

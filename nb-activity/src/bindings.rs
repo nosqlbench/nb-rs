@@ -315,7 +315,7 @@ pub fn compile_bindings_with_libs(
     gk_lib_paths: Vec<std::path::PathBuf>,
     strict: bool,
 ) -> Result<GkKernel, String> {
-    compile_bindings_with_libs_excluding(ops, source_dir, gk_lib_paths, strict, &[], &[])
+    compile_bindings_with_libs_excluding(ops, source_dir, gk_lib_paths, strict, &[], &[], "(gk)")
 }
 
 /// Like `compile_bindings_with_libs` but excludes named bind points from
@@ -328,6 +328,7 @@ pub fn compile_bindings_with_libs_excluding(
     strict: bool,
     exclude: &[String],
     extra_required: &[String],
+    context: &str,
 ) -> Result<GkKernel, String> {
     use nb_workload::model::BindingsDef;
 
@@ -460,7 +461,7 @@ pub fn compile_bindings_with_libs_excluding(
                 required.push(name.clone());
             }
         }
-        return nb_variates::dsl::compile_gk_with_libs(&source, source_dir, gk_lib_paths, &required, strict);
+        return nb_variates::dsl::compile_gk_with_libs(&source, source_dir, gk_lib_paths, &required, strict, context);
     }
 
     // Legacy mode: translate semicolon-chain bindings into GK source
@@ -536,7 +537,7 @@ pub fn compile_bindings_with_libs_excluding(
     }
 
     let gk_source = gk_lines.join("\n");
-    nb_variates::dsl::compile_gk_with_libs(&gk_source, source_dir, gk_lib_paths, &required, strict)
+    nb_variates::dsl::compile_gk_with_libs(&gk_source, source_dir, gk_lib_paths, &required, strict, context)
 }
 
 /// Compile all bindings from a set of ParsedOps into a GK kernel.

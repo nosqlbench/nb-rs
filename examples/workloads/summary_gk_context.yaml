@@ -1,0 +1,67 @@
+#!/usr/bin/env nbrs
+# Summary Report — GK Context and Dimensional Labels
+#
+# Demonstrates how for_each iteration variables automatically become
+# dimensional metric labels in the summary report. Each combination
+# of (algorithm, dataset, k) appears as a separate row with aligned
+# label columns.
+#
+# The GK bindings use the iteration variables to drive different
+# data generation patterns per combination, simulating a parameter
+# sweep over algorithm configurations.
+#
+# Also demonstrates:
+# - Nested for_each producing a cross-product of labels
+# - GK context on compilation errors (try introducing a typo to see
+#   the phase-qualified error message)
+# - Multiple aggregate expressions comparing algorithm families
+#
+# Usage:
+#   nbrs run workload=examples/summary_gk_context.yaml
+#   nbrs run workload=examples/summary_gk_context.yaml \
+#     summary="recall; mean(recall) over algorithm~hnsw; mean(recall) over algorithm~ivf; details=hide"
+
+params:
+  adapter: stdout
+  algorithms: "hnsw_fast,hnsw_precise,ivf_flat,ivf_pq"
+  datasets: "uniform,clustered"
+  k_values: "10,100"
+  probe_count: "500"
+
+# Show recall, compare hnsw vs ivf families
+summary: "recall; mean(recall) over algorithm~hnsw; mean(recall) over algorithm~ivf"
+
+bindings: |
+  inputs := (cycle)
+
+scenarios:
+  default:
+    - for_each: "algorithm in {algorithms}"
+      phases:
+        - for_each: "dataset in {datasets}"
+          phases:
+            - for_each: "k in {k_values}"
+              phases:
+                - probe
+
+phases:
+  probe:
+    summary:
+      - recall
+    cycles: "{probe_count}"
+    concurrency: 1
+    bindings: |
+      inputs := (cycle)
+
+      // Use iteration variables to vary the data generation pattern.
+      // The algorithm and dataset names drive different hash chains,
+      // simulating algorithm-specific recall characteristics.
+      seed := hash(cycle)
+      query_id := zero_pad_u64(mod(seed, 1000), 6)
+
+      // Generate a synthetic "result set" that varies by algorithm
+      result_rank := mod(hash(hash(seed)), 50)
+      result_id := zero_pad_u64(result_rank, 6)
+    ops:
+      search:
+        stmt: "PROBE algorithm={algorithm} dataset={dataset} k={k} query={query_id} rank={result_rank} result={result_id}"

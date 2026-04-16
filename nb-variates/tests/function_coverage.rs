@@ -1921,19 +1921,12 @@ fn every_registered_function_compiles() {
     overrides.insert("file_line_at", format!(
         "coordinates := (cycle)\nout := file_line_at(cycle, \"{txt}\")"));
 
-    // Vectordata nodes require downloaded datasets — tested separately
-    // in vectordata_integration.rs. Skip here to avoid network dependency.
-    let vectordata_category = "vector_at vector_at_bytes query_vector_at query_vector_at_bytes \
-        neighbor_indices_at neighbor_distances_at filtered_neighbor_indices_at \
-        filtered_neighbor_distances_at dataset_distance_function vector_dim vector_count \
-        query_count neighbor_count metadata_indices_at metadata_indices_len_at \
-        metadata_indices_count dataset_facets dataset_profile_count dataset_profile_names \
-        matching_profiles dataset_profile_name_at profile_base_count profile_facets \
-        dataset_prebuffer";
-    let vectordata_fns: std::collections::HashSet<&str> = vectordata_category.split_whitespace().collect();
-
+    // Vectordata nodes (category RealData) require downloaded datasets —
+    // tested separately in vectordata_integration.rs. Skip here to avoid
+    // network dependency. Using category rather than a hand-maintained
+    // name list so new RealData functions are automatically excluded.
     for sig in &reg {
-        if vectordata_fns.contains(sig.name) { continue; }
+        if sig.category == registry::FuncCategory::RealData { continue; }
 
         let src = if let Some(override_src) = overrides.get(sig.name) {
             override_src.to_string()

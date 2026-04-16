@@ -107,13 +107,17 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
         nb_workload::inline::synthesize_inline_workload(op_str)
             .map_err(|e| format!("inline workload: {e}"))?
     } else {
-        let workload_path = params.get("workload")
+        let workload_raw = params.get("workload")
             .cloned()
             .or_else(|| args.iter()
                 .find(|a| a.ends_with(".yaml") || a.ends_with(".yml"))
                 .cloned()
             )
             .ok_or("no workload specified. Use workload=file.yaml or op=\"...\"")?;
+
+        // Resolve bare names: try as-is, then with .yaml/.yml, then under workloads/
+        let workload_path = resolve_workload_file(&workload_raw)
+            .ok_or_else(|| format!("workload not found: '{workload_raw}'"))?;
 
         workload_file = Some(workload_path.clone());
 
@@ -202,6 +206,17 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
     let phases = workload.phases;
     let phase_order = workload.phase_order;
     let scenarios = workload.scenarios;
+    let workload_summary = workload.summary.or_else(|| {
+        // Sidecar: if the workload has no summary: field, look for
+        // summary.yaml in the same directory as the workload file.
+        let wf = workload_file.as_deref()?;
+        let dir = std::path::Path::new(wf).parent()?;
+        let sidecar = dir.join("summary.yaml");
+        let content = std::fs::read_to_string(&sidecar).ok()?;
+        let trimmed = content.trim();
+        if trimmed.is_empty() { return None; }
+        Some(nb_workload::model::SummaryConfig::parse(trimmed))
+    });
 
     // Collect ALL ops: top-level ops + all phase inline ops.
     let mut ops = workload.ops;
@@ -345,7 +360,8 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
 
     let kernel = compile_bindings_with_libs_excluding(
         &all_ops_for_compile, workload_dir, gk_lib_paths.clone(), strict, &[], &config_refs,
-    ).map_err(|e| format!("compile bindings: {e}"))?;
+        "outer workload bindings",
+    ).map_err(|e| format!("outer workload bindings: {e}"))?;
 
     // Extract output manifest and folded constant values from outer kernel
     // for scope composition (sysref 16). Must be done before kernel is
@@ -529,11 +545,31 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
         eprintln!("done.");
     }
 
-    // Print summary report from SQLite metrics
-    let summary_filter = params.get("summary").map(|s| s.as_str());
-    if let Ok(mut guard) = sqlite_reporter.lock() {
-        if let Some(ref mut reporter) = *guard {
-            reporter.print_summary(summary_filter);
+    // Print summary report from SQLite metrics.
+    // Summary only prints when a config is present (workload-level or CLI override).
+    let summary_config = if let Some(cli_summary) = merged_params.get("summary") {
+        Some(nb_workload::model::SummaryConfig::parse(cli_summary))
+    } else {
+        workload_summary
+    };
+    if let Some(ref config) = summary_config {
+        let report_config = nb_metrics::reporters::sqlite::ReportConfig {
+            columns: config.columns.clone(),
+            row_filters: config.row_filters.clone(),
+            aggregates: config.aggregates.iter().map(|a| {
+                nb_metrics::reporters::sqlite::ReportAggregate {
+                    function: a.function.to_string(),
+                    column_pattern: a.column_pattern.clone(),
+                    label_key: a.label_key.clone(),
+                    label_pattern: a.label_pattern.clone(),
+                }
+            }).collect(),
+            show_details: config.show_details,
+        };
+        if let Ok(mut guard) = sqlite_reporter.lock() {
+            if let Some(ref mut reporter) = *guard {
+                reporter.print_summary(&report_config);
+            }
         }
     }
 
@@ -1149,6 +1185,35 @@ fn format_scenario_tree(nodes: &[nb_workload::model::ScenarioNode]) -> String {
 }
 
 
+/// Resolve a workload file path from a bare name.
+/// Tries: as-is, with .yaml/.yml extension, then under workloads/.
+fn resolve_workload_file(name: &str) -> Option<String> {
+    let p = std::path::Path::new(name);
+    if p.exists() { return Some(name.to_string()); }
+
+    // Already has yaml extension — no further search
+    if name.ends_with(".yaml") || name.ends_with(".yml") {
+        // Try under workloads/
+        let under = format!("workloads/{name}");
+        if std::path::Path::new(&under).exists() { return Some(under); }
+        return None;
+    }
+
+    // Try adding extensions
+    for ext in [".yaml", ".yml"] {
+        let with_ext = format!("{name}{ext}");
+        if std::path::Path::new(&with_ext).exists() { return Some(with_ext); }
+    }
+
+    // Try under workloads/
+    for ext in ["", ".yaml", ".yml"] {
+        let under = format!("workloads/{name}{ext}");
+        if std::path::Path::new(&under).exists() { return Some(under); }
+    }
+
+    None
+}
+
 /// Normalize args: detect scenario shorthand where a bare word after
 /// the workload file becomes `scenario=<name>`.
 pub fn normalize_args(args: &[String]) -> Vec<String> {
@@ -1367,4 +1432,46 @@ pub fn generate_auto_externs(
     Ok(externs)
 }
 
+/// Build the gauge column filter from phase-level `summary:` configs.
+///
+/// Returns `None` if any phase uses `summary: true` (show all gauges),
+/// or `Some(patterns)` with the union of all declared gauge name patterns.
+/// An empty Vec means no gauge columns should appear.
+pub fn build_gauge_filter(
+    phases: &HashMap<String, nb_workload::model::WorkloadPhase>,
+) -> Option<Vec<String>> {
+    let mut patterns: Vec<String> = Vec::new();
+    let mut any_open = false;
+    for phase in phases.values() {
+        match &phase.summary {
+            None => {} // excluded from summary
+            Some(v) if v.is_boolean() => {
+                // summary: true — show all gauge columns
+                any_open = true;
+            }
+            Some(v) if v.is_array() => {
+                // summary: ["recall", "precision"] — show only matching
+                if let Some(arr) = v.as_array() {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
+                            if !patterns.contains(&s.to_string()) {
+                                patterns.push(s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            Some(v) if v.is_string() => {
+                // summary: "recall" — single pattern
+                if let Some(s) = v.as_str() {
+                    if !patterns.contains(&s.to_string()) {
+                        patterns.push(s.to_string());
+                    }
+                }
+            }
+            _ => { any_open = true; }
+        }
+    }
+    if any_open { None } else { Some(patterns) }
+}
 

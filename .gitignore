@@ -25,3 +25,4 @@ local/
 .idea/**
 .nbrs**
 **/*.db
+**/*.db-journal

@@ -88,7 +88,13 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
 
     let declared_params: Vec<String> = yaml_params.keys().cloned().collect();
 
-    Ok(Workload { description, scenarios, ops: all_ops, params: resolved_params, phases, phase_order, declared_params })
+    // Summary report configuration: top-level `summary:` key.
+    // Absent = no summary printed. Present = master switch + format config.
+    let summary = obj.get("summary")
+        .and_then(|v| v.as_str())
+        .map(|s| crate::model::SummaryConfig::parse(s));
+
+    Ok(Workload { description, scenarios, ops: all_ops, params: resolved_params, phases, phase_order, declared_params, summary })
 }
 
 /// Parse a YAML source into just the list of normalized ParsedOps.
@@ -235,6 +241,7 @@ fn parse_phases(
         let iter_scope = phase_obj.get("iter_scope")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let summary = phase_obj.get("summary").cloned();
 
         phases.insert(phase_name.clone(), WorkloadPhase {
             cycles,
@@ -247,6 +254,7 @@ fn parse_phases(
             for_each,
             loop_scope,
             iter_scope,
+            summary,
         });
         phase_order.push(phase_name.clone());
     }

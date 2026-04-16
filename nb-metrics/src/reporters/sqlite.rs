@@ -296,230 +296,294 @@ mod inner {
         }
     }
 
+    /// Configuration for the summary report, passed from the runner.
+    ///
+    /// This is the nb-metrics–local mirror of the workload-level
+    /// `SummaryConfig`. The runner converts one to the other so that
+    /// nb-metrics does not depend on nb-workload.
+    pub struct ReportConfig {
+        /// Gauge column filter patterns. Empty = show all.
+        pub columns: Vec<String>,
+        /// Row filter regex patterns on activity labels.
+        pub row_filters: Vec<String>,
+        /// Aggregate expressions.
+        pub aggregates: Vec<ReportAggregate>,
+        /// Whether to show individual data rows.
+        pub show_details: bool,
+    }
+
+    /// An aggregate expression for the summary report.
+    pub struct ReportAggregate {
+        /// Function name: `"mean"`, `"min"`, or `"max"`.
+        pub function: String,
+        /// Column name pattern — only matching gauge columns are aggregated.
+        pub column_pattern: String,
+        /// Label key to filter rows on (e.g., `"profile"`).
+        pub label_key: String,
+        /// Substring pattern for the label value (e.g., `"label"`).
+        pub label_pattern: String,
+    }
+
     impl SqliteReporter {
-        /// Print a markdown summary of metrics.
+        /// Print a data-driven summary of all metrics collected in this session.
         ///
-        /// `filter` is a comma-separated list of regex patterns matched
-        /// against the metric spec. Empty or "all" matches everything.
-        /// Default (None) shows the standard summary sections.
-        pub fn print_summary(&self, filter: Option<&str>) {
-            let patterns: Vec<regex::Regex> = match filter {
-                Some(f) if !f.is_empty() && f != "all" => {
-                    f.split(',')
-                        .filter_map(|p| regex::Regex::new(p.trim()).ok())
-                        .collect()
+        /// One row per distinct label set that has `cycles_total > 0`.
+        /// Columns are discovered from the metrics that exist:
+        /// - cycles and rate are always shown
+        /// - latency columns appear when `cycles_servicetime` data exists
+        /// - gauge columns appear when gauge data exists
+        ///
+        /// The `config` controls column filters, row filters, aggregate
+        /// expressions, and whether detail rows are shown.
+        pub fn print_summary(&self, config: &ReportConfig) {
+            let row_patterns: Vec<regex::Regex> = config.row_filters.iter()
+                .filter_map(|p| regex::Regex::new(p.trim()).ok())
+                .collect();
+
+            let rows = self.query_all_activities();
+            if rows.is_empty() { return; }
+
+            // Discover which optional column groups have data
+            let has_latency = rows.iter().any(|r| r.latency_p50_ns.is_some());
+            let mut gauge_names: Vec<String> = Vec::new();
+            for row in &rows {
+                for (name, _) in &row.gauges {
+                    if !gauge_names.contains(name) {
+                        let include = if config.columns.is_empty() {
+                            true
+                        } else {
+                            config.columns.iter().any(|p| name.contains(p))
+                        };
+                        if include {
+                            gauge_names.push(name.clone());
+                        }
+                    }
                 }
-                _ => vec![],
-            };
+            }
 
-            // Check if any section has content before printing header
-            let relevancy = self.query_gauges("recall|precision");
-            let search_perf = self.query_search_performance();
-            let rampup_perf = self.query_rampup_performance();
-            let index_times = self.query_index_build_times();
+            // Build column headers
+            let mut headers: Vec<String> = vec![
+                "Activity".into(), "Cycles".into(), "Rate".into(),
+            ];
+            if has_latency {
+                headers.extend(["p50".into(), "p99".into(), "mean".into()]);
+            }
+            for name in &gauge_names {
+                headers.push(name.clone());
+            }
 
-            let has_content = !relevancy.is_empty()
-                || !search_perf.is_empty()
-                || !rampup_perf.is_empty()
-                || !index_times.is_empty();
+            // Build cell grid from data rows
+            let mut grid: Vec<Vec<String>> = Vec::new();
+            for row in &rows {
+                if !row_patterns.is_empty()
+                    && !row_patterns.iter().any(|p| p.is_match(&row.activity))
+                {
+                    continue;
+                }
+                let cells = format_data_row(row, has_latency, &gauge_names);
+                grid.push(cells);
+            }
 
-            if !has_content { return; }
+            // Compute aggregate rows
+            let agg_rows = compute_aggregates(
+                &config.aggregates, &rows, has_latency, &gauge_names,
+            );
 
+            // If details=hide, drop data rows and show only aggregates
+            if !config.show_details {
+                grid.clear();
+            }
+
+            if grid.is_empty() && agg_rows.is_empty() { return; }
+
+            // Align label components within the Activity column (data rows only).
+            align_activity_column(&mut grid);
+
+            // Append aggregate rows after a blank separator
+            if !agg_rows.is_empty() && !grid.is_empty() {
+                let blank: Vec<String> = (0..headers.len()).map(|_| String::new()).collect();
+                grid.push(blank);
+            }
+            grid.extend(agg_rows);
+
+            // Compute column widths using char count (not byte length)
+            let ncols = headers.len();
+            let mut widths: Vec<usize> = headers.iter()
+                .map(|h| h.chars().count()).collect();
+            for row in &grid {
+                for (i, cell) in row.iter().enumerate() {
+                    let w = cell.chars().count();
+                    if i < ncols && w > widths[i] {
+                        widths[i] = w;
+                    }
+                }
+            }
+
+            // Print column-aligned markdown table
             println!();
             println!("## Summary");
             println!();
 
-            // Section 1: Relevancy (recall, precision)
-            if !relevancy.is_empty() {
-                println!("### Relevancy");
-                println!();
-                println!("| Metric | Activity | Score |");
-                println!("|--------|----------|-------|");
-                for (spec, value) in &relevancy {
-                    if !patterns.is_empty() && !patterns.iter().any(|p| p.is_match(spec)) {
-                        continue;
-                    }
-                    let metric = spec.split('{').next().unwrap_or(spec);
-                    let activity = extract_labels_display(spec);
-                    println!("| {metric} | {activity} | {value:.4} |");
-                }
-                println!();
+            // Header row
+            let mut line = String::from("|");
+            for (i, h) in headers.iter().enumerate() {
+                line.push_str(&format!(" {:<w$} |", h, w = widths[i]));
             }
+            println!("{line}");
 
-            // Section 2: Search throughput and latency
-            if !search_perf.is_empty() {
-                println!("### Search Performance");
-                println!();
-                println!("| Activity | Queries | QPS | Latency p50 | Latency p99 | Latency mean |");
-                println!("|----------|---------|-----|-------------|-------------|--------------|");
-                for row in &search_perf {
-                    if !patterns.is_empty() && !patterns.iter().any(|p| p.is_match(&row.activity)) {
-                        continue;
-                    }
-                    println!("| {} | {} | {:.0} | {:.2}ms | {:.2}ms | {:.2}ms |",
-                        row.activity, row.queries, row.qps,
-                        row.latency_p50_ms, row.latency_p99_ms, row.latency_mean_ms);
-                }
-                println!();
+            // Separator row
+            let mut sep = String::from("|");
+            for w in &widths {
+                sep.push_str(&format!("-{}-|", "-".repeat(*w)));
             }
+            println!("{sep}");
 
-            // Section 3: Rampup throughput
-            if !rampup_perf.is_empty() {
-                println!("### Rampup Performance");
-                println!();
-                println!("| Activity | Vectors | Rate |");
-                println!("|----------|---------|------|");
-                for (activity, count, rate) in &rampup_perf {
-                    println!("| {activity} | {count} | {rate:.0}/s |");
-                }
-                println!();
-            }
-
-            // Section 4: Index build time (from await_index phases)
-            if !index_times.is_empty() {
-                println!("### Index Build");
-                println!();
-                println!("| Activity | Wait Time |");
-                println!("|----------|-----------|");
-                for (activity, time_ms) in &index_times {
-                    if *time_ms < 1000.0 {
-                        println!("| {activity} | {time_ms:.0}ms |");
-                    } else {
-                        println!("| {activity} | {:.1}s |", time_ms / 1000.0);
+            // Data + aggregate rows
+            for row in &grid {
+                let mut line = String::from("|");
+                for (i, cell) in row.iter().enumerate() {
+                    if i < ncols {
+                        if i == 0 {
+                            line.push_str(&format!(" {:<w$} |", cell, w = widths[i]));
+                        } else {
+                            line.push_str(&format!(" {:>w$} |", cell, w = widths[i]));
+                        }
                     }
                 }
-                println!();
+                println!("{line}");
             }
+            println!();
         }
 
-        fn query_gauges(&self, name_pattern: &str) -> Vec<(String, f64)> {
-            let re = regex::Regex::new(name_pattern).unwrap_or_else(|_| regex::Regex::new(".*").unwrap());
+        /// Query all activities that produced data, returning one row per
+        /// distinct label set. No hardcoded phase name patterns — the
+        /// summary is projected directly from whatever the workload produced.
+        fn query_all_activities(&self) -> Vec<ActivityRow> {
+            // Find every distinct label set that has cycles_total > 0.
+            // Phases tagged nosummary="true" are excluded.
             let mut stmt = match self.conn.prepare(
-                "SELECT mi.spec, sv.mean FROM sample_value sv
-                 JOIN metric_instance mi ON sv.instance_id = mi.id
-                 JOIN metric_family mf ON mi.family_id = mf.id
-                 WHERE mf.type = 'gauge' ORDER BY mi.spec"
-            ) {
-                Ok(s) => s,
-                Err(_) => return Vec::new(),
-            };
-            stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
-            }).ok()
-                .map(|r| r.filter_map(|r| r.ok())
-                    .filter(|(spec, _)| re.is_match(spec))
-                    .collect())
-                .unwrap_or_default()
-        }
-
-        fn query_search_performance(&self) -> Vec<PerfRow> {
-            // Get the last (final) sample for each search activity
-            let mut stmt = match self.conn.prepare(
-                "SELECT mi.spec, sv.count, sv.mean, sv.p50, sv.p99,
-                        sv.timestamp_ms
+                "SELECT mi.spec, MAX(sv.count)
                  FROM sample_value sv
                  JOIN metric_instance mi ON sv.instance_id = mi.id
-                 WHERE mi.spec LIKE 'cycles_servicetime%' AND mi.spec LIKE '%search%'
-                 ORDER BY mi.id, sv.timestamp_ms DESC"
+                 WHERE mi.spec LIKE 'cycles_total%'
+                   AND mi.spec NOT LIKE '%nosummary=%'
+                 GROUP BY mi.id
+                 HAVING MAX(sv.count) > 0
+                 ORDER BY mi.id"
             ) {
                 Ok(s) => s,
                 Err(_) => return Vec::new(),
             };
 
-            let mut seen = std::collections::HashSet::new();
             let mut rows = Vec::new();
             let iter = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, f64>(2)?,
-                    row.get::<_, f64>(3)?,
-                    row.get::<_, f64>(4)?,
-                ))
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
             });
+
             if let Ok(iter) = iter {
                 for r in iter.filter_map(|r| r.ok()) {
-                    let activity = extract_labels_display(&r.0);
-                    if seen.contains(&activity) { continue; }
-                    seen.insert(activity.clone());
+                    let labels = Self::spec_labels(&r.0);
+                    if labels.is_empty() { continue; }
+                    let display = extract_labels_display(&r.0);
+                    let cycles = r.1 as u64;
 
-                    // Get total cycles for this activity
-                    let total = self.query_final_counter("cycles_total", &activity);
-                    // Get elapsed from timestamp range
-                    let elapsed = self.query_elapsed_ms(&activity);
-                    let qps = if elapsed > 0.0 { total as f64 * 1000.0 / elapsed } else { 0.0 };
+                    let elapsed = self.query_elapsed_ms(labels);
+                    let rate = if elapsed > 0.0 { cycles as f64 * 1000.0 / elapsed } else { 0.0 };
 
-                    rows.push(PerfRow {
-                        activity,
-                        queries: total,
-                        qps,
-                        latency_mean_ms: r.2 / 1_000_000.0,
-                        latency_p50_ms: r.3 / 1_000_000.0,
-                        latency_p99_ms: r.4 / 1_000_000.0,
+                    // Latency from cycles_servicetime (if this activity has it)
+                    let latency = self.query_latency(labels);
+
+                    // All gauges for this label set (relevancy, etc.)
+                    let gauges = self.query_gauges_for_labels(labels);
+
+                    rows.push(ActivityRow {
+                        activity: display,
+                        cycles,
+                        rate,
+                        latency_p50_ns: latency.map(|l| l.0),
+                        latency_p99_ns: latency.map(|l| l.1),
+                        latency_mean_ns: latency.map(|l| l.2),
+                        gauges,
                     });
                 }
             }
             rows
         }
 
-        fn query_rampup_performance(&self) -> Vec<(String, u64, f64)> {
-            let mut results = Vec::new();
-            let mut stmt = match self.conn.prepare(
-                "SELECT DISTINCT mi.spec FROM metric_instance mi
-                 WHERE mi.spec LIKE 'cycles_total%' AND mi.spec LIKE '%rampup%'"
-            ) {
-                Ok(s) => s,
-                Err(_) => return results,
-            };
-            let specs: Vec<String> = stmt.query_map([], |row| row.get(0))
-                .ok().map(|r| r.filter_map(|r| r.ok()).collect()).unwrap_or_default();
-
-            for spec in &specs {
-                let activity = extract_labels_display(spec);
-                let total = self.query_final_counter("cycles_total", &activity);
-                let elapsed = self.query_elapsed_ms(&activity);
-                let rate = if elapsed > 0.0 { total as f64 * 1000.0 / elapsed } else { 0.0 };
-                if total > 0 {
-                    results.push((activity, total, rate));
-                }
-            }
-            results
-        }
-
-        fn query_index_build_times(&self) -> Vec<(String, f64)> {
-            // await_index response time = total polling wait (includes poll intervals)
-            let mut stmt = match self.conn.prepare(
-                "SELECT mi.spec, MAX(sv.mean)
+        /// Query latency stats for a label set.
+        ///
+        /// Returns `(p50_ns, p99_ns, mean_ns)` in nanoseconds, or `None`.
+        /// Uses the sample with the most observations (highest `count`)
+        /// rather than the chronologically last one, because delta-histogram
+        /// snapshots can produce empty trailing samples when a phase ends
+        /// between capture intervals.
+        fn query_latency(&self, label_part: &str) -> Option<(f64, f64, f64)> {
+            let spec = format!("cycles_servicetime{{{label_part}}}");
+            self.conn.query_row(
+                "SELECT sv.p50, sv.p99, sv.mean
                  FROM sample_value sv
                  JOIN metric_instance mi ON sv.instance_id = mi.id
-                 WHERE mi.spec LIKE 'cycles_responsetime%' AND mi.spec LIKE '%await_index%'
-                 GROUP BY mi.id"
+                 WHERE mi.spec = ?1
+                 ORDER BY sv.count DESC
+                 LIMIT 1",
+                params![spec],
+                |row| Ok((
+                    row.get::<_, f64>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, f64>(2)?,
+                )),
+            ).ok()
+        }
+
+        /// Query all gauge values matching a label set.
+        /// Returns `(short_name, value)` pairs. Gauge names have the
+        /// `.mean`/`.p50`/etc. suffix stripped — only `.mean` is collected.
+        ///
+        /// Gauge labels may be a superset of the activity labels (e.g.
+        /// they include `n="100"`), so we match both exact and extended.
+        fn query_gauges_for_labels(&self, label_part: &str) -> Vec<(String, f64)> {
+            let exact = format!("%{{{label_part}}}");
+            let extended = format!("%{{{label_part},%");
+            let mut stmt = match self.conn.prepare(
+                "SELECT mi.spec, sv.mean FROM sample_value sv
+                 JOIN metric_instance mi ON sv.instance_id = mi.id
+                 JOIN metric_family mf ON mi.family_id = mf.id
+                 WHERE mf.type = 'gauge'
+                   AND (mi.spec LIKE ?1 OR mi.spec LIKE ?2)
+                 ORDER BY mi.spec"
             ) {
                 Ok(s) => s,
                 Err(_) => return Vec::new(),
             };
-            stmt.query_map([], |row| {
-                let spec: String = row.get(0)?;
-                let nanos: f64 = row.get(1)?;
-                Ok((extract_labels_display(&spec), nanos / 1_000_000.0))
+            let mut seen = std::collections::HashSet::new();
+            stmt.query_map(params![exact, extended], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
             }).ok()
-                .map(|r| r.filter_map(|r| r.ok()).collect())
+                .map(|r| r.filter_map(|r| r.ok())
+                    .filter_map(|(spec, val)| {
+                        let name = spec.split('{').next().unwrap_or(&spec);
+                        // Only collect .mean variants, strip the suffix
+                        if !name.ends_with(".mean") { return None; }
+                        let short = name.strip_suffix(".mean").unwrap_or(name);
+                        if seen.contains(short) { return None; }
+                        seen.insert(short.to_string());
+                        Some((short.to_string(), val))
+                    })
+                    .collect())
                 .unwrap_or_default()
         }
 
-        fn query_final_counter(&self, metric: &str, activity: &str) -> u64 {
-            let pattern = format!("{metric}%{activity}%");
-            self.conn.query_row(
-                "SELECT MAX(sv.count) FROM sample_value sv
-                 JOIN metric_instance mi ON sv.instance_id = mi.id
-                 WHERE mi.spec LIKE ?1",
-                params![pattern],
-                |row| row.get::<_, i64>(0),
-            ).unwrap_or(0) as u64
+        /// Extract the labels portion of a spec (everything inside {}).
+        fn spec_labels(spec: &str) -> &str {
+            spec.split('{').nth(1)
+                .and_then(|s| s.strip_suffix('}'))
+                .unwrap_or("")
         }
 
-        fn query_elapsed_ms(&self, activity: &str) -> f64 {
-            let pattern = format!("%{activity}%");
+        /// Get elapsed wall-clock time for a label set by finding the time
+        /// range across all metrics sharing those labels.
+        fn query_elapsed_ms(&self, label_part: &str) -> f64 {
+            let pattern = format!("%{{{label_part}}}");
             let result: Result<(i64, i64), _> = self.conn.query_row(
                 "SELECT MIN(sv.timestamp_ms), MAX(sv.timestamp_ms)
                  FROM sample_value sv
@@ -535,13 +599,146 @@ mod inner {
         }
     }
 
-    struct PerfRow {
+    /// One row in the summary table — one per distinct label set.
+    struct ActivityRow {
         activity: String,
-        queries: u64,
-        qps: f64,
-        latency_mean_ms: f64,
-        latency_p50_ms: f64,
-        latency_p99_ms: f64,
+        cycles: u64,
+        rate: f64,
+        /// Latency percentiles in nanoseconds (sysref: all internal time = nanos).
+        latency_p50_ns: Option<f64>,
+        latency_p99_ns: Option<f64>,
+        latency_mean_ns: Option<f64>,
+        /// Gauge values keyed by short name (e.g. "recall@10").
+        gauges: Vec<(String, f64)>,
+    }
+
+    /// Auto-select the time unit suffix so the numeric part has significant digits.
+    ///
+    /// Input is nanoseconds (sysref standard). Output always includes a unit suffix.
+    fn format_duration(nanos: f64) -> String {
+        if nanos >= 1_000_000_000.0 {
+            format!("{:.2}s", nanos / 1_000_000_000.0)
+        } else if nanos >= 1_000_000.0 {
+            format!("{:.2}ms", nanos / 1_000_000.0)
+        } else if nanos >= 1_000.0 {
+            format!("{:.2}µs", nanos / 1_000.0)
+        } else {
+            format!("{:.2}ns", nanos)
+        }
+    }
+
+    /// Format a single data row into cell strings.
+    fn format_data_row(
+        row: &ActivityRow,
+        has_latency: bool,
+        gauge_names: &[String],
+    ) -> Vec<String> {
+        let rate_str = if row.rate > 0.0 {
+            format!("{:.0}/s", row.rate)
+        } else {
+            "-".to_string()
+        };
+        let mut cells: Vec<String> = vec![
+            row.activity.clone(),
+            row.cycles.to_string(),
+            rate_str,
+        ];
+        if has_latency {
+            if let (Some(p50), Some(p99), Some(mean)) =
+                (row.latency_p50_ns, row.latency_p99_ns, row.latency_mean_ns)
+            {
+                cells.push(format_duration(p50));
+                cells.push(format_duration(p99));
+                cells.push(format_duration(mean));
+            } else {
+                cells.extend(["-".into(), "-".into(), "-".into()]);
+            }
+        }
+        for name in gauge_names {
+            let val = row.gauges.iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| format!("{v:.4}"))
+                .unwrap_or_else(|| "-".to_string());
+            cells.push(val);
+        }
+        cells
+    }
+
+    /// Compute aggregate rows from the data.
+    ///
+    /// Each `ReportAggregate` produces one row. The activity column shows
+    /// the expression (e.g., `mean(recall) over profile~label`). Gauge
+    /// columns matching `column_pattern` are aggregated; others show `-`.
+    fn compute_aggregates(
+        aggregates: &[ReportAggregate],
+        rows: &[ActivityRow],
+        has_latency: bool,
+        gauge_names: &[String],
+    ) -> Vec<Vec<String>> {
+        let mut agg_rows = Vec::new();
+
+        for agg in aggregates {
+            // Filter rows where the activity contains key=...pattern...
+            let matching: Vec<&ActivityRow> = rows.iter()
+                .filter(|r| {
+                    // Look for key=value in the activity string where value contains pattern
+                    for segment in r.activity.split(", ") {
+                        if let Some((k, v)) = segment.split_once('=') {
+                            if k.trim() == agg.label_key && v.trim().contains(&agg.label_pattern) {
+                                return true;
+                            }
+                        }
+                    }
+                    false
+                })
+                .collect();
+
+            let label = format!(
+                "**{}({}) over {}~{}**",
+                agg.function, agg.column_pattern, agg.label_key, agg.label_pattern,
+            );
+
+            let mut cells: Vec<String> = vec![
+                label,
+                "-".into(),  // Cycles
+                "-".into(),  // Rate
+            ];
+
+            if has_latency {
+                cells.extend(["-".into(), "-".into(), "-".into()]);
+            }
+
+            for gauge_name in gauge_names {
+                if !gauge_name.contains(&agg.column_pattern) {
+                    cells.push("-".into());
+                    continue;
+                }
+                // Collect all values for this gauge across matching rows
+                let values: Vec<f64> = matching.iter()
+                    .filter_map(|r| {
+                        r.gauges.iter()
+                            .find(|(n, _)| n == gauge_name)
+                            .map(|(_, v)| *v)
+                    })
+                    .collect();
+
+                if values.is_empty() {
+                    cells.push("-".into());
+                } else {
+                    let result = match agg.function.as_str() {
+                        "mean" => values.iter().sum::<f64>() / values.len() as f64,
+                        "min" => values.iter().cloned().fold(f64::INFINITY, f64::min),
+                        "max" => values.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+                        _ => 0.0,
+                    };
+                    cells.push(format!("{result:.4}"));
+                }
+            }
+
+            agg_rows.push(cells);
+        }
+
+        agg_rows
     }
 
     /// Extract all labels from a spec string into a display-friendly format.
@@ -553,9 +750,90 @@ mod inner {
         let parts: Vec<&str> = labels_part.split(',')
             .filter(|p| !p.trim().starts_with("session=")
                 && !p.trim().starts_with("n=")
-                && !p.trim().starts_with("name="))
+                && !p.trim().starts_with("name=")
+                && !p.trim().starts_with("nosummary="))
             .collect();
         parts.join(", ").replace('"', "")
+    }
+
+    /// Align label components within the Activity column (column 0).
+    ///
+    /// Each activity string is `"key=val, key=val, ..."`. This function
+    /// discovers all distinct keys, orders them so that keys appearing
+    /// in more rows sort first (ties broken alphabetically), computes
+    /// the max `key=value` width for each key slot, and pads each row
+    /// so that the same key starts at the same character position.
+    fn align_activity_column(grid: &mut [Vec<String>]) {
+        if grid.is_empty() { return; }
+
+        // Parse each activity into (key, "key=value") pairs
+        let parsed: Vec<Vec<(String, String)>> = grid.iter()
+            .map(|row| {
+                row[0].split(", ")
+                    .filter_map(|seg| {
+                        let key = seg.split('=').next().unwrap_or("").to_string();
+                        if key.is_empty() { None }
+                        else { Some((key, seg.to_string())) }
+                    })
+                    .collect()
+            })
+            .collect();
+
+        // Discover all keys in component-tree order. Use the row with
+        // the most segments as the canonical ordering — it has all the
+        // nesting levels. Additional keys from other rows are appended.
+        let mut all_keys: Vec<String> = Vec::new();
+        let longest = parsed.iter().max_by_key(|r| r.len());
+        if let Some(row) = longest {
+            for (key, _) in row {
+                if !all_keys.contains(key) {
+                    all_keys.push(key.clone());
+                }
+            }
+        }
+        for row in &parsed {
+            for (key, _) in row {
+                if !all_keys.contains(key) {
+                    all_keys.push(key.clone());
+                }
+            }
+        }
+
+        // Compute max width per key slot
+        let mut slot_widths: Vec<usize> = vec![0; all_keys.len()];
+        for row in &parsed {
+            for (i, key) in all_keys.iter().enumerate() {
+                if let Some((_, seg)) = row.iter().find(|(k, _)| k == key) {
+                    let w = seg.chars().count();
+                    if w > slot_widths[i] { slot_widths[i] = w; }
+                }
+            }
+        }
+
+        // Rebuild each activity string with aligned slots.
+        // Each slot occupies a fixed width (segment + separator).
+        // Absent keys become blank padding of the same width.
+        let sep = ", ";
+        let sep_len = sep.len();
+        for (row_idx, row) in parsed.iter().enumerate() {
+            let mut buf = String::new();
+            for (i, key) in all_keys.iter().enumerate() {
+                let is_last = i + 1 == all_keys.len();
+                let total_w = slot_widths[i] + if is_last { 0 } else { sep_len };
+                if let Some((_, seg)) = row.iter().find(|(k, _)| k == key) {
+                    if is_last {
+                        buf.push_str(&format!("{:<w$}", seg, w = slot_widths[i]));
+                    } else {
+                        // Pad segment + separator to fixed total width
+                        let with_sep = format!("{}{}", seg, sep);
+                        buf.push_str(&format!("{:<w$}", with_sep, w = total_w));
+                    }
+                } else {
+                    buf.push_str(&" ".repeat(total_w));
+                }
+            }
+            grid[row_idx][0] = buf.trim_end().to_string();
+        }
     }
 
     impl Reporter for SqliteReporter {
@@ -656,8 +934,129 @@ mod inner {
             ).unwrap();
             assert_eq!(instances, 2, "different labels should be different instances");
         }
+
+        /// Visual test: prints a summary table to stderr so you can
+        /// verify column alignment. Run with `--nocapture`.
+        #[test]
+        fn sqlite_summary_alignment() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            let now = Instant::now();
+            let interval = Duration::from_secs(1);
+
+            // Helper: insert a counter + timer for a phase
+            let mut inject = |labels: Labels, cycles: u64, mean_ns: f64| {
+                let mut h = hdrhistogram::Histogram::new_with_bounds(
+                    1, 3_600_000_000_000, 3).unwrap();
+                let _ = h.record(mean_ns as u64);
+                r.report(&MetricsFrame {
+                    captured_at: now,
+                    interval,
+                    samples: vec![
+                        Sample::Counter {
+                            labels: labels.with("name", "cycles_total"),
+                            value: cycles,
+                        },
+                        Sample::Timer {
+                            labels: labels.with("name", "cycles_servicetime"),
+                            count: cycles,
+                            histogram: h,
+                        },
+                    ],
+                });
+            };
+
+            let rampup = Labels::of("session", "test")
+                .with("profile", "label_00").with("phase", "rampup");
+            inject(rampup, 82993, 146_000_000.0);
+
+            let search_k10 = Labels::of("session", "test")
+                .with("profile", "label_00").with("k", "10")
+                .with("phase", "search_pre_compaction");
+            inject(search_k10, 100, 3_740_000.0);
+
+            let search_k100_pre = Labels::of("session", "test")
+                .with("profile", "label_00").with("k", "100")
+                .with("phase", "search_pre_compaction");
+            inject(search_k100_pre, 100, 17_940_000.0);
+
+            let await_idx = Labels::of("session", "test")
+                .with("profile", "label_00").with("phase", "await_index");
+            inject(await_idx, 1, 550_000.0);
+
+            let search_k10_post = Labels::of("session", "test")
+                .with("profile", "label_00").with("k", "10")
+                .with("phase", "search_post_compaction");
+            inject(search_k10_post, 100, 4_550_000.0);
+
+            let search_k100_post = Labels::of("session", "test")
+                .with("profile", "label_00").with("k", "100")
+                .with("phase", "search_post_compaction");
+            inject(search_k100_post, 100, 17_580_000.0);
+
+            // Gauges: recall for all search phases
+            r.report(&MetricsFrame {
+                captured_at: now,
+                interval,
+                samples: vec![
+                    Sample::Gauge {
+                        labels: Labels::of("session", "test")
+                            .with("profile", "label_00").with("k", "10")
+                            .with("phase", "search_pre_compaction")
+                            .with("name", "recall@10.mean").with("n", "100"),
+                        value: 0.8410,
+                    },
+                    Sample::Gauge {
+                        labels: Labels::of("session", "test")
+                            .with("profile", "label_00").with("k", "100")
+                            .with("phase", "search_pre_compaction")
+                            .with("name", "recall@100.mean").with("n", "100"),
+                        value: 0.9837,
+                    },
+                    Sample::Gauge {
+                        labels: Labels::of("session", "test")
+                            .with("profile", "label_00").with("k", "10")
+                            .with("phase", "search_post_compaction")
+                            .with("name", "recall@10.mean").with("n", "100"),
+                        value: 0.8410,
+                    },
+                    Sample::Gauge {
+                        labels: Labels::of("session", "test")
+                            .with("profile", "label_00").with("k", "100")
+                            .with("phase", "search_post_compaction")
+                            .with("name", "recall@100.mean").with("n", "100"),
+                        value: 0.9837,
+                    },
+                ],
+            });
+
+            eprintln!("--- summary output (all columns, no aggregates) ---");
+            let config = ReportConfig {
+                columns: vec![],
+                row_filters: vec![],
+                aggregates: vec![],
+                show_details: true,
+            };
+            r.print_summary(&config);
+
+            eprintln!("--- summary with aggregate ---");
+            let config_agg = ReportConfig {
+                columns: vec!["recall".into()],
+                row_filters: vec![],
+                aggregates: vec![ReportAggregate {
+                    function: "mean".into(),
+                    column_pattern: "recall".into(),
+                    label_key: "profile".into(),
+                    label_pattern: "label".into(),
+                }],
+                show_details: true,
+            };
+            r.print_summary(&config_agg);
+            eprintln!("--- end ---");
+        }
     }
 }
 
 #[cfg(feature = "sqlite")]
 pub use inner::SqliteReporter;
+#[cfg(feature = "sqlite")]
+pub use inner::{ReportConfig, ReportAggregate};
