@@ -35,6 +35,10 @@ pub enum TokenKind {
     Shared,
     /// `final` keyword
     Final,
+    /// `cursor` keyword
+    Cursor,
+    /// `.` (field access: `base.ordinal`)
+    Dot,
     /// Integer literal: `1000`, `0xFF`
     IntLit(u64),
     /// Float literal: `72.0`, `3.14`
@@ -297,6 +301,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                 }
                 // bare `>` is not a valid token currently
             }
+            '.' => { tokens.push(Token { kind: TokenKind::Dot, span }); pos += 1; col += 1; continue; }
             '&' => { tokens.push(Token { kind: TokenKind::Ampersand, span }); pos += 1; col += 1; continue; }
             '|' => { tokens.push(Token { kind: TokenKind::Pipe, span }); pos += 1; col += 1; continue; }
             '!' => { tokens.push(Token { kind: TokenKind::Bang, span }); pos += 1; col += 1; continue; }
@@ -350,6 +355,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                 "extern" => TokenKind::Extern,
                 "shared" => TokenKind::Shared,
                 "final" => TokenKind::Final,
+                "cursor" => TokenKind::Cursor,
                 _ => TokenKind::Ident(word),
             };
             tokens.push(Token { kind, span });

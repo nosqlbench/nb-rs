@@ -10,6 +10,10 @@ repository = "https://github.com/nosqlbench/nb-rs"
 homepage = "https://github.com/nosqlbench/nb-rs"
 readme = "README.md"
 
+[features]
+default = []
+flamegraph = ["pprof"]
+
 [dependencies]
 tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
 nb-metrics = { path = "../nb-metrics", version = "0.1.1", features = ["victoriametrics", "sqlite"] }
@@ -21,6 +25,7 @@ futures = "0.3"
 inventory = "0.3.24"
 serde_json = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 
 [dev-dependencies]
 nb-adapter-stdout = { path = "../adapters/nb-adapter-stdout", version = "0.1.1" }

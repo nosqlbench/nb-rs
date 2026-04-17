@@ -312,6 +312,22 @@ impl FiberBuilder {
         self.state.set_inputs(coords);
     }
 
+    /// Feed a source item into the GK state.
+    ///
+    /// Sets the ordinal as the coordinate input and injects field
+    /// projections into the appropriate state slots (e.g., `base__ordinal`,
+    /// `base__vector`).
+    pub fn set_source_item(&mut self, item: &nb_variates::source::SourceItem) {
+        // Set ordinal as the first coordinate input
+        self.state.set_inputs(&[item.ordinal]);
+        // Inject field projections into named GK inputs
+        for (name, value) in &item.fields {
+            if let Some(idx) = self.program.find_input(name) {
+                self.state.set_input(idx, value.clone());
+            }
+        }
+    }
+
     /// Reset capture inputs to defaults. Called at stanza boundaries
     /// to prevent capture leakage across stanzas. Coordinates are
     /// not reset.

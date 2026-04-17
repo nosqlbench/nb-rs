@@ -84,6 +84,11 @@ fn infer_expr_type(
         Expr::UnaryNeg(_, _) => PortType::F64,
         Expr::UnaryBitNot(_, _) => PortType::U64,
         Expr::ArrayLit(_, _) => PortType::U64,
+        Expr::FieldAccess { source, field, .. } => {
+            // Treat as an identifier reference — check assembler for output type.
+            let wire_name = format!("{source}__{field}");
+            asm.output_type(&wire_name).unwrap_or(PortType::U64)
+        }
     }
 }
 
@@ -238,6 +243,10 @@ impl Compiler {
                             let anon = self.anon_name();
                             self.compile_binding(asm, &[anon.clone()], expr)?;
                             wire_refs.push(WireRef::node(anon));
+                        }
+                        Expr::FieldAccess { source, field, .. } => {
+                            let wire_name = format!("{source}__{field}");
+                            wire_refs.push(WireRef::node(&wire_name));
                         }
                     }
                 }
@@ -464,6 +473,17 @@ impl Compiler {
                 asm.add_node(name, node, wire_refs);
                 self.all_names.push(name.clone());
             }
+            Expr::FieldAccess { source, field, .. } => {
+                // Source projection: wire target to the source__field node.
+                let wire_name = format!("{source}__{field}");
+                let name = &targets[0];
+                // Create an identity passthrough wired to the projection node
+                let identity = Box::new(
+                    crate::nodes::identity::PortPassthrough::new(name, crate::node::PortType::U64)
+                );
+                asm.add_node(name, identity, vec![WireRef::node(&wire_name)]);
+                self.all_names.push(name.clone());
+            }
             _ => {
                 return Err("unsupported expression in binding".to_string());
             }
@@ -489,6 +509,9 @@ impl Compiler {
                 } else {
                     Ok(WireRef::node(id))
                 }
+            }
+            Expr::FieldAccess { source, field, .. } => {
+                Ok(WireRef::node(&format!("{source}__{field}")))
             }
             Expr::IntLit(v, _) => {
                 let anon = self.anon_name();

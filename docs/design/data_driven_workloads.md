@@ -481,3 +481,286 @@ Batch dispenser (budget-driven):
 Phase completion:
   All fibers see source exhausted → join → lifecycle flush
 ```
+
+---
+
+## Cursor Model (Refined)
+
+The earlier sections describe sources as data providers with cursors.
+This section refines the cursor semantics based on design discussion.
+
+### Cursors Are Just Nodes
+
+A cursor is a GK node that has positional state (an ordinal) and can
+advance. There is no special cursor type or trait — any node can be
+promoted to cursor behavior at runtime. The cursor holds a value;
+advancing changes that value and invalidates its cached state.
+
+### Advance Is Separate from Access
+
+- **Advance**: sets the cursor to the next position, invalidates the
+  cursor node's cached value (and transitively, the upstream cone of
+  all downstream dependents via standard GK invalidation). Does NOT
+  trigger recomputation.
+- **Access**: pulling a value from any node triggers lazy evaluation
+  through the invalidated cone — standard GK pull-through semantics.
+
+Within a single dispatch, all projections from the same cursor see
+the same position. No `.next` or `.current` syntax — access is always
+"read the current cursor's data."
+
+### The Ordinal Is Always an Explicit Wire
+
+The cursor's ordinal feeds into accessor functions as an explicit
+parameter — no hidden internal cursors:
+
+```
+cursor ──ordinal──► vector_at(ordinal, "sift1m") ──► vector
+                ├──► format_u64(ordinal, 10) ──► id
+                └──► query_vector_at(ordinal, "sift1m") ──► query
+```
+
+The cursor produces ordinals. Accessor functions consume them. Two
+separate concerns, explicit wiring between them. Nodes that hide
+their cursor position are opaque and can't be composed or zipped.
+
+### Provenance-Driven Cursorss
+
+**Not all cursors advance on every dispatch.** The runtime traces
+backward from the fields the op template actually references, finds
+the root cursor nodes in their provenance, and builds an **cursors**
+that targets only those cursors.
+
+```rust
+// At phase setup (static analysis):
+let cursors = gk.cursors_for(&["id", "base_vector"]);
+// traces: id → format_u64 → data.ordinal → data cursor
+//         base_vector → vector_at → data.ordinal → data cursor
+// cursors targets: {data cursor}
+// query_vector is NOT referenced — its cursor doesn't advance
+
+// At dispatch time:
+loop {
+    if !cursors.advance() { break; }  // only advances relevant cursors
+    let fields = gk.resolve(template);
+    dispenser.execute(fields);
+}
+```
+
+The cursors is computed once at phase setup from the GK provenance
+graph. It's a projection: "which cursor nodes have downstream
+dependents that are actually used in this scope?"
+
+This means:
+- A single GK definition can have cursors for base vectors AND queries
+- The rampup phase's cursors targets only the base cursor
+- The search phase's cursors targets only the query cursor
+- Unused cursors don't advance, don't exhaust, don't cause errors
+
+### Cardinality Is the Accessor's Concern
+
+Cursors are cardinality-agnostic — they just hold an ordinal.
+Accessor functions know their valid range:
+
+- `vector_at(ordinal, spec)` — valid for `ordinal < vector_count(spec)`
+- `query_vector_at(ordinal, spec)` — valid for `ordinal < query_count(spec)`
+
+If the cursor advances beyond an accessor's cardinality:
+- If the accessor is **not referenced** in the current scope → no problem,
+  it's never evaluated
+- If the accessor **is referenced** and the ordinal is out of range →
+  the accessor handles it (wraps, returns None, or errors)
+
+This is safe because the cursors only advances cursors that have
+downstream dependents in the current scope. An out-of-range access
+only happens if the user explicitly wires a cursor to an accessor
+with a smaller cardinality — and that's their contract to manage.
+
+### Phase Completion from Cursors Exhaustion
+
+The phase runs until the cursors reports exhaustion — meaning at
+least one of its targeted cursors has no more data. The cursors
+returns `false` from `advance()` when this happens.
+
+For batch dispensers, the cursors is passed as a handle:
+
+```rust
+fn execute_batch(gk: &mut GkContext, cursors: &Cursors, budget: &BatchBudget) {
+    let mut batch = new_batch();
+    // The cursor already points at unseen data (advanced by executor)
+    loop {
+        let fields = gk.resolve(template);  // lazy eval from current cursor
+        batch.add(render(fields));
+        if batch.bytes() > budget.max_bytes { break; }
+        if !cursors.advance() { break; }  // advance — exhausted = done
+    }
+    execute(batch);
+}
+```
+
+### Cursors API
+
+```rust
+impl GkContext {
+    /// Build an cursors targeting only the cursor nodes in the
+    /// provenance of the named output fields.
+    fn cursors_for(&self, field_names: &[&str]) -> Cursors;
+}
+
+impl Cursors {
+    /// Advance all targeted cursor nodes. Returns false if any
+    /// targeted cursor is exhausted (no more data).
+    fn advance(&mut self) -> bool;
+
+    /// Known extent of the driving cursor (shortest among targeted
+    /// cursors). Used for progress reporting.
+    fn extent(&self) -> Option<u64>;
+
+    /// Total advances performed so far.
+    fn consumed(&self) -> u64;
+}
+```
+
+### Cursor Keyword and Auto-Cursors
+
+Three forms, same semantics — explicit, auto, and implicit:
+
+```yaml
+bindings: |
+  # Explicit cursor: user names it, wires it manually
+  cursor row = Cursor()
+  train_vector := vector_at(row, "sift1m:label_00")
+
+  # Auto cursor via 'auto' keyword in the ordinal position
+  train_vector := vector_at(auto, "sift1m:label_00")
+  # → creates cursor named 'train_vector_cursor' automatically
+
+  # Implicit cursor: omit the ordinal arg entirely
+  train_vector := vector_at("sift1m:label_00")
+  # → same as auto — creates 'train_vector_cursor'
+```
+
+Auto and implicit forms are sugar for the explicit form. The
+compiler detects the missing cursor-eligible parameter and creates
+one. The auto-cursor name is `{binding_name}_cursor`.
+
+Function signatures declare which parameter is cursor-eligible:
+
+```rust
+ParamSpec {
+    name: "ordinal",
+    slot_type: SlotType::Wire,
+    required: false,         // can be omitted
+    cursor_eligible: true,   // omission creates auto-cursor
+}
+```
+
+### Cardinality Discovery from Downstream Consumers
+
+The cursor's extent is NOT declared on the cursor itself. It's
+discovered by walking the cursor's downstream cone and asking each
+consumer for its cardinality:
+
+```
+cursor row = Cursor()
+vector := vector_at(row, "sift1m:label_00")    → 82,993
+meta := metadata_value_at(row, "sift1m:label_00") → 82,993
+```
+
+At init time, GK walks downstream from `row`, finds `vector_at`
+(cardinality 82,993) and `metadata_value_at` (cardinality 82,993).
+They agree → cursor extent = 82,993.
+
+If consumers disagree:
+
+```
+cursor row = Cursor()
+vector := vector_at(row, "sift1m:label_00")         → 82,993
+query := query_vector_at(row, "sift1m:label_00")    → 10,000
+```
+
+Compile error: *"cursor 'row' drives nodes with conflicting
+cardinalities: vector_at expects 82993, query_vector_at expects
+10000. Use separate cursors for different extents."*
+
+This forces correct modeling — different cardinalities require
+separate cursors, which the provenance-driven `Cursors` advances
+independently per phase.
+
+### One GK Definition, Multiple Phases
+
+```yaml
+bindings: |
+  // Explicit cursors for different data extents
+  cursor base_row = Cursor()
+  cursor query_row = Cursor()
+
+  // Base data (82,993 items)
+  id := format_u64(base_row, 10)
+  base_vector := vector_at(base_row, "sift1m:label_00")
+
+  // Query data (10,000 items)
+  query_vector := query_vector_at(query_row, "sift1m:label_00")
+  ground_truth := neighbor_indices_at(query_row, "sift1m:label_00")
+
+phases:
+  rampup:
+    # Cursors traces {id, base_vector} → base_row cursor
+    # Extent: 82,993 (from vector_at)
+    ops:
+      insert:
+        prepared: "INSERT ... VALUES ('{id}', {base_vector})"
+
+  search:
+    # Cursors traces {query_vector, ground_truth} → query_row cursor
+    # Extent: 10,000 (from query_vector_at)
+    ops:
+      select:
+        prepared: "SELECT ... ORDER BY value ANN OF {query_vector} LIMIT {k}"
+```
+
+Same GK graph, different cursor sets per phase. The `Cursors`
+object traces provenance from each phase's template fields to
+discover which cursors to advance.
+
+### Phase Limits
+
+A `limit:` directive on a phase constrains how much of the
+cursor's extent to consume, eliminating the need for separate
+smoke/test phases:
+
+```yaml
+phases:
+  fknn_rampup:
+    limit: 100         # literal: first 100 items
+    ...
+
+  fknn_search:
+    limit: "10%"       # percent of cursor extent
+    ...
+```
+
+Supported forms:
+- Integer: `100` — first N items
+- Fraction: `0.1` — 10% of extent
+- Percent: `"10%"` — same as 0.1
+- Suffixed: `"2K"`, `"1M"` — parsed with K/M/B multipliers
+
+The limit is applied at the cursor level — the source factory
+creates readers with a reduced extent. The cursor node, accessor
+functions, and GK graph are unaffected.
+
+Smoke scenarios become simple limit overrides:
+
+```yaml
+scenarios:
+  filtered_knn_smoke:
+    - ...
+      phases:
+        - fknn_rampup:
+            limit: 100
+        - for_each: "k in {k_values}"
+          phases:
+            - fknn_search:
+                limit: 10
+```

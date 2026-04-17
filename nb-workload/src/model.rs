@@ -260,6 +260,27 @@ pub enum ScenarioNode {
     DoWhile { condition: String, counter: Option<String>, children: Vec<ScenarioNode> },
     /// Execute children until condition becomes true (test after).
     DoUntil { condition: String, counter: Option<String>, children: Vec<ScenarioNode> },
+    /// Cross-product iteration over multiple dimensions.
+    ///
+    /// Each entry is `(variable_name, expression)`. The runtime computes
+    /// the Cartesian product and runs children once per combination.
+    ///
+    /// Three YAML forms normalize to this:
+    /// ```yaml
+    /// # Map form (terse): keys are variables, values are expressions
+    /// - for_combinations:
+    ///     profile: "matching_profiles('{dataset}', '{prefix}')"
+    ///     k: "{k_values}"
+    ///
+    /// # List form (consistent with for_each syntax)
+    /// - for_combinations:
+    ///     - "profile in matching_profiles('{dataset}', '{prefix}')"
+    ///     - "k in {k_values}"
+    ///
+    /// # Inline form (compact)
+    /// - for_combinations: "profile in profiles, k in {k_values}"
+    /// ```
+    ForCombinations { specs: Vec<(String, String)>, children: Vec<ScenarioNode> },
 }
 
 /// Legacy alias.

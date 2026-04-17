@@ -128,6 +128,37 @@ pub fn compile_gk_with_libs(
     compiler.compile_filtered(&ast, filter)
 }
 
+/// Compile with an optional cursor limit applied to all cursor declarations.
+///
+/// When `cursor_limit` is `Some(n)`, the compiler inserts a `limit(cursor, n)`
+/// node after each cursor declaration, clamping its extent.
+pub fn compile_gk_with_libs_and_limit(
+    source: &str,
+    source_dir: Option<&Path>,
+    gk_lib_paths: Vec<PathBuf>,
+    required_outputs: &[String],
+    strict: bool,
+    context: &str,
+    cursor_limit: Option<u64>,
+) -> Result<GkKernel, String> {
+    let tokens = lexer::lex(source)?;
+    let ast = parser::parse(tokens)?;
+    let filter = if required_outputs.is_empty() {
+        None
+    } else {
+        Some(required_outputs)
+    };
+    let mut compiler = Compiler::with_lib_paths(
+        source_dir.map(|p| p.to_path_buf()),
+        gk_lib_paths,
+        strict,
+    );
+    compiler.source_text = source.to_string();
+    compiler.context_label = context.to_string();
+    compiler.cursor_limit = cursor_limit;
+    compiler.compile_filtered(&ast, filter)
+}
+
 /// Compile with a source directory and optional strict mode.
 ///
 /// When `strict` is true, the compiler enforces:
@@ -272,6 +303,10 @@ pub(super) struct Compiler {
     pub(super) strict: bool,
     /// Original source text, attached to compiled programs for diagnostics.
     source_text: String,
+    /// Source schemas collected during compilation.
+    pub(super) cursor_schemas: Vec<crate::source::SourceSchema>,
+    /// Optional limit applied to all cursors (from `limit` activity param).
+    pub(super) cursor_limit: Option<u64>,
     /// Diagnostic context label.
     context_label: String,
 }
@@ -288,6 +323,8 @@ impl Compiler {
             strict,
             source_text: String::new(),
             context_label: "(gk)".into(),
+            cursor_schemas: Vec::new(),
+            cursor_limit: None,
         }
     }
 
@@ -302,7 +339,93 @@ impl Compiler {
             strict,
             source_text: String::new(),
             context_label: "(gk)".into(),
+            cursor_schemas: Vec::new(),
+            cursor_limit: None,
         }
+    }
+
+    /// Process a source declaration: create input ports for projections,
+    /// passthrough nodes, and record the schema.
+    fn process_cursor(&mut self, asm: &mut GkAssembler, decl: &crate::dsl::ast::CursorDecl) {
+        let source_name = &decl.name;
+
+        // All sources get an "ordinal" projection.
+        let projections = vec![
+            ("ordinal".to_string(), crate::node::PortType::U64),
+        ];
+        // TODO: dataset_source constructors add vector/metadata projections
+
+        // Determine extent from constructor args if available.
+        let extent = match &decl.constructor {
+            crate::dsl::ast::Expr::Call(call) if call.func == "range" => {
+                if call.args.len() >= 2 {
+                    let start = match &call.args[0] {
+                        crate::dsl::ast::Arg::Positional(
+                            crate::dsl::ast::Expr::IntLit(v, _)) => Some(*v),
+                        _ => None,
+                    };
+                    let end = match &call.args[1] {
+                        crate::dsl::ast::Arg::Positional(
+                            crate::dsl::ast::Expr::IntLit(v, _)) => Some(*v),
+                        _ => None,
+                    };
+                    match (start, end) {
+                        (Some(s), Some(e)) => Some(e.saturating_sub(s)),
+                        _ => None,
+                    }
+                } else { None }
+            }
+            _ => None,
+        };
+
+        // Create input ports and passthrough nodes for each projection.
+        for (field_name, port_type) in &projections {
+            let input_name = format!("{source_name}__{field_name}");
+            let default_value = match port_type {
+                crate::node::PortType::U64 => crate::node::Value::U64(0),
+                crate::node::PortType::F64 => crate::node::Value::F64(0.0),
+                _ => crate::node::Value::None,
+            };
+
+            asm.add_input(&input_name, default_value, *port_type);
+            self.input_names.push(input_name.clone());
+
+            let passthrough = Box::new(
+                crate::nodes::identity::PortPassthrough::new(&input_name, *port_type)
+            );
+            let node_name = format!("{source_name}__{field_name}");
+            asm.add_node(
+                &node_name,
+                passthrough,
+                vec![WireRef::input(&input_name)],
+            );
+            asm.add_output(&node_name, WireRef::node(&node_name));
+        }
+
+        // If a limit is set, insert a limit() node that shadows the cursor wire.
+        // The limit node is a visible, documented passthrough that clamps extent.
+        let effective_extent = if let Some(limit_val) = self.cursor_limit {
+            let limit_node_name = format!("{source_name}__limit");
+            let ordinal_wire = format!("{source_name}__ordinal");
+            asm.add_node(
+                &limit_node_name,
+                Box::new(crate::nodes::context::CursorLimit::new(limit_val)),
+                vec![WireRef::node(&ordinal_wire)],
+            );
+            // Shadow the ordinal output with the limited version
+            asm.add_output(&ordinal_wire, WireRef::node(&limit_node_name));
+
+            // Clamp extent
+            extent.map(|e| e.min(limit_val)).or(Some(limit_val))
+        } else {
+            extent
+        };
+
+        self.cursor_schemas.push(crate::source::SourceSchema {
+            name: source_name.clone(),
+            projections,
+            extent: effective_extent,
+        });
     }
 
     pub(super) fn compile(&mut self, file: &GkFile) -> Result<GkKernel, String> {
@@ -332,13 +455,14 @@ impl Compiler {
                     Statement::ModuleDef(m) => vec![m.name.clone()],
                     Statement::ExternPort(p) => vec![p.name.clone()],
                     Statement::Coordinates(_, _) => vec![],
+                    Statement::Cursor(_) => vec![],
                 }
             }).collect();
 
             let mut referenced: HashSet<String> = HashSet::new();
             for stmt in &file.statements {
                 let expr = match stmt {
-                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) => continue,
+                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) => continue,
                     Statement::InitBinding(b) => &b.value,
                     Statement::CycleBinding(b) => &b.value,
                 };
@@ -417,6 +541,9 @@ impl Compiler {
                     // Register as output so {name} resolves from GK
                     asm.add_output(&port.name, WireRef::node(&passthrough_name));
                 }
+                Statement::Cursor(decl) => {
+                    self.process_cursor(&mut asm, decl);
+                }
             }
         }
 
@@ -427,7 +554,13 @@ impl Compiler {
 
         // Attach source and context for diagnostics
         asm.set_context(&self.source_text, &self.context_label);
-        asm.compile_strict(self.strict).map_err(|e| format!("{e}"))
+        let mut kernel = asm.compile_strict(self.strict).map_err(|e| format!("{e}"))?;
+
+        // Propagate source schemas to the program for runtime discovery
+        if !self.cursor_schemas.is_empty() {
+            kernel.set_cursor_schemas(self.cursor_schemas.clone());
+        }
+        Ok(kernel)
     }
 
     /// Build an assembler with all nodes and wiring, without compiling.
@@ -450,13 +583,14 @@ impl Compiler {
                     Statement::ModuleDef(m) => vec![m.name.clone()],
                     Statement::ExternPort(p) => vec![p.name.clone()],
                     Statement::Coordinates(_, _) => vec![],
+                    Statement::Cursor(_) => vec![],
                 }
             }).collect();
 
             let mut referenced: HashSet<String> = HashSet::new();
             for stmt in &file.statements {
                 let expr = match stmt {
-                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) => continue,
+                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) => continue,
                     Statement::InitBinding(b) => &b.value,
                     Statement::CycleBinding(b) => &b.value,
                 };
@@ -493,6 +627,9 @@ impl Compiler {
                 Statement::ExternPort(_) => {}
                 Statement::ModuleDef(_) => {}
                 Statement::Coordinates(_, _) => {}
+                Statement::Cursor(decl) => {
+                    self.process_cursor(&mut asm, decl);
+                }
             }
         }
 
@@ -540,13 +677,14 @@ impl Compiler {
                     Statement::ModuleDef(m) => vec![m.name.clone()],
                     Statement::ExternPort(p) => vec![p.name.clone()],
                     Statement::Coordinates(_, _) => vec![],
+                    Statement::Cursor(_) => vec![],
                 }
             }).collect();
 
             let mut referenced: HashSet<String> = HashSet::new();
             for stmt in &file.statements {
                 let expr = match stmt {
-                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) => continue,
+                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) => continue,
                     Statement::InitBinding(b) => &b.value,
                     Statement::CycleBinding(b) => &b.value,
                 };
@@ -591,6 +729,9 @@ impl Compiler {
                     }
                 }
                 Statement::ModuleDef(_) | Statement::ExternPort(_) => {}
+                Statement::Cursor(decl) => {
+                    self.process_cursor(&mut asm, decl);
+                }
             }
         }
 
@@ -616,7 +757,11 @@ impl Compiler {
         }
 
         asm.set_context(&self.source_text, &self.context_label);
-        asm.compile_strict(self.strict).map_err(|e| format!("{e}"))
+        let mut kernel = asm.compile_strict(self.strict).map_err(|e| format!("{e}"))?;
+        if !self.cursor_schemas.is_empty() {
+            kernel.set_cursor_schemas(self.cursor_schemas.clone());
+        }
+        Ok(kernel)
     }
 }
 

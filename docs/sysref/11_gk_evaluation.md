@@ -219,3 +219,84 @@ as normal GK outputs. No globals mechanism needed.
 `resolve_with_extras` iterates the op's field map, substitutes
 `{name}` bind points from GK outputs and captures,
 and pulls any extra bindings needed by validation.
+
+---
+
+## Cursor-Driven Evaluation
+
+When a GK program declares `cursor` bindings, the evaluation
+model extends from counter-driven to cursor-driven iteration.
+A cursor is a GK node whose output is a `u64` ordinal. The
+runtime advances the cursor externally; downstream accessor
+nodes re-evaluate via provenance-based invalidation.
+
+### Advance / Access Separation
+
+The cursor model separates **advance** (moving the position
+forward) from **access** (reading data at the current position):
+
+1. **Advance**: The runtime calls `Cursors::advance()` to move
+   each targeted cursor to its next position. This is a pull
+   from the underlying `DataSource` reader.
+2. **Inject**: `Cursors::inject_into_state()` writes the new
+   ordinal into the GK state's input slot for the cursor.
+3. **Access**: The GK DAG re-evaluates. Accessor functions
+   (e.g., `vector_at(base, ...)`) read the updated cursor
+   ordinal and produce typed values. Provenance-based
+   invalidation ensures only nodes downstream of the changed
+   cursor are re-evaluated.
+
+```
+loop {
+    if !cursors.advance() { break }  // cursor exhausted
+    cursors.inject_into_state(&mut state);
+    let fields = fiber.resolve_with_extras(template, extras);
+    dispenser.execute(cycle, &fields).await;
+}
+```
+
+### Cursors Type
+
+`Cursors` is a provenance-driven advancer that targets only
+the cursor nodes relevant to a specific set of output fields:
+
+```rust
+pub struct Cursors {
+    targets: Vec<CursorTarget>,  // (DataSource reader, GK input index)
+    last_items: Vec<Option<SourceItem>>,
+    advances: u64,
+}
+```
+
+Built at phase setup via `Cursors::for_fields()`, which traces
+GK provenance from the op template's referenced field names
+back to root cursor nodes. Only those cursors advance on each
+iteration — unused cursors are left untouched. This enables
+phases with multiple cursors where different ops consume
+different data sources independently.
+
+### Lazy Evaluation After Cursor Advance
+
+After cursor advance and injection, the GK DAG does not
+eagerly re-evaluate all nodes. Values are pulled lazily when
+`resolve_with_extras` requests specific outputs. Only nodes
+in the provenance chain of the requested output are evaluated.
+Combined with per-node caching, this means accessor functions
+for unrequested fields are never called.
+
+### DataSource API
+
+The underlying data readers implement the `DataSource` trait:
+
+```
+DataSource (per-cursor, stateful)
+  ├── next() → Option<SourceItem>     — pull next item
+  ├── next_chunk(n) → Vec<SourceItem> — pull up to n items
+  ├── extent() → Option<u64>           — known size
+  └── consumed() → u64                 — progress
+```
+
+All source API surface (`DataSource`, `SourceItem`,
+`SourceSchema`, `DataSourceFactory`, `Cursors`) lives in
+`nb-variates::source`. The runtime crates consume these types
+but do not define them.

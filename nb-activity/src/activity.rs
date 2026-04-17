@@ -18,7 +18,7 @@ use nb_metrics::labels::Labels;
 use nb_rate::RateLimiter;
 
 use crate::adapter::{DriverAdapter, OpDispenser};
-use crate::cycle::CycleSource;
+// CycleSource removed — all iteration goes through DataSourceFactory
 use crate::opseq::{OpSequence, SequencerType};
 use crate::validation;
 
@@ -34,10 +34,11 @@ pub struct ActivityConfig {
     pub error_spec: String,
     pub max_retries: u32,
     /// Maximum number of ops within a stanza that execute concurrently.
-    /// Default 1 (sequential): ops execute one at a time with capture
-    /// flow between them. Values > 1 allow concurrent op execution
-    /// within a stanza window — captures only flow between windows.
     pub stanza_concurrency: usize,
+    /// Source factory for data-driven phases. When present, fibers pull
+    /// from this source instead of the cycle counter. Each fiber creates
+    /// its own reader via `create_reader()`.
+    pub source_factory: Option<Arc<dyn nb_variates::source::DataSourceFactory>>,
 }
 
 impl Default for ActivityConfig {
@@ -52,6 +53,7 @@ impl Default for ActivityConfig {
             error_spec: ".*:warn,stop".into(),
             max_retries: 3,
             stanza_concurrency: 1,
+            source_factory: None,
         }
     }
 }
@@ -327,7 +329,9 @@ pub struct Activity {
     pub metrics: Arc<ActivityMetrics>,
     pub op_sequence: OpSequence,
     pub error_router: ErrorRouter,
-    cycle_source: CycleSource,
+    /// Source factory — creates per-fiber readers. All phases go through
+    /// sources. `cycles: N` desugars to `range(0, N)`.
+    source_factory: Arc<dyn nb_variates::source::DataSourceFactory>,
     /// Resolved workload parameters (constant per run).
     pub workload_params: Arc<std::collections::HashMap<String, String>>,
     /// Shared flag: set to true when a `stop` error handler fires.
@@ -362,7 +366,13 @@ impl Activity {
                 eprintln!("warning: invalid error spec '{}': {e}; using default (warn,stop)", config.error_spec);
                 ErrorRouter::default_stop()
             });
-        let cycle_source = CycleSource::new(0, config.cycles);
+        // All phases go through sources. cycles: N desugars to range(0, N).
+        // Named cursors in GK provide their own factory via config.source_factory.
+        let source_factory: Arc<dyn nb_variates::source::DataSourceFactory> = config.source_factory
+            .clone()
+            .unwrap_or_else(|| Arc::new(
+                nb_variates::source::RangeSourceFactory::named("cycles", 0, config.cycles)
+            ));
 
         Self {
             config,
@@ -370,7 +380,7 @@ impl Activity {
             metrics,
             op_sequence,
             error_router,
-            cycle_source,
+            source_factory,
             workload_params: Arc::new(params),
             stop_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             validation_frame: Arc::new(std::sync::Mutex::new(None)),
@@ -539,22 +549,6 @@ impl Activity {
         let extra_bindings_per_template = Arc::new(extra_bindings_per_template);
         let validation_metrics = Arc::new(validation_metrics);
 
-        // Analyze capture dependencies across the stanza sequence to
-        // determine which ops can execute concurrently vs must be
-        // sequenced. Uses the expanded stanza (via LUT), not just
-        // the unique templates, because weighted ops repeat.
-        let stanza_templates: Vec<&nb_workload::model::ParsedOp> =
-            (0..activity.op_sequence.stanza_length())
-            .map(|offset| activity.op_sequence.get(offset as u64))
-            .collect();
-        let stanza_owned: Vec<nb_workload::model::ParsedOp> =
-            stanza_templates.iter().map(|t| (*t).clone()).collect();
-        let dep_groups = Arc::new(crate::linearize::analyze_dependencies(&stanza_owned));
-        if dep_groups.len() > 1 {
-            eprintln!("linearization: {} dependency group(s) in stanza of {} ops",
-                dep_groups.len(), stanza_owned.len());
-        }
-
         let cycle_rl = activity.config.cycle_rate.map(|r| {
             Arc::new(RateLimiter::start(nb_rate::RateSpec::new(r)))
         });
@@ -567,35 +561,45 @@ impl Activity {
         // to be worth reporting. The flag is cleared after all executor
         // fibers finish so the thread terminates and clears its line.
         let progress_flag = Arc::new(AtomicBool::new(true));
-        let total_cycles = activity.config.cycles;
         let activity_name = activity.config.name.clone();
         let is_stderr_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
-        // Suppress progress indicator when the adapter uses raw terminal mode
         let suppress_progress = adapters.values()
             .any(|a| a.name() == "plotter");
         let start_time = Instant::now();
-        if is_stderr_tty && total_cycles > 1000 && !suppress_progress {
+        // Use source extent for progress (data-driven), not cycles
+        let source_for_progress = activity.source_factory.clone();
+        let total_extent = source_for_progress.global_extent().unwrap_or(activity.config.cycles);
+        let cursor_name = {
+            let name = &source_for_progress.schema().name;
+            format!(" cursor={name}")
+        };
+        if is_stderr_tty && total_extent > 1000 && !suppress_progress {
             let flag = progress_flag.clone();
             let progress_metrics = activity.metrics.clone();
             let start_time = start_time;
             let activity_name_progress = activity_name.clone();
+            let cursor_name_progress = cursor_name.clone();
+            let activity_concurrency = activity.config.concurrency;
             std::thread::spawn(move || {
                 let activity_name = activity_name_progress;
+                let cursor_name = cursor_name_progress;
                 while flag.load(Ordering::Relaxed) {
                     std::thread::sleep(Duration::from_millis(500));
                     if !flag.load(Ordering::Relaxed) { break; }
-                    let completed = progress_metrics.cycles_completed();
+                    // Progress counters — all derived from ops_started/ops_finished
+                    // so pending + active + complete = total_extent exactly.
                     let started = progress_metrics.ops_started.load(Ordering::Relaxed);
                     let finished = progress_metrics.ops_finished.load(Ordering::Relaxed);
                     let active = started.saturating_sub(finished);
-                    let pending = total_cycles.saturating_sub(completed).saturating_sub(active);
-                    let pct = if total_cycles > 0 {
-                        completed as f64 * 100.0 / total_cycles as f64
+                    let completed = finished;
+                    let pending = total_extent.saturating_sub(started);
+                    let pct = if total_extent > 0 {
+                        started as f64 * 100.0 / total_extent as f64
                     } else {
                         0.0
                     };
                     let elapsed = start_time.elapsed().as_secs_f64();
-                    let rate = if elapsed > 0.0 { completed as f64 / elapsed } else { 0.0 };
+                    let rate = if elapsed > 0.0 { finished as f64 / elapsed } else { 0.0 };
                     let rate_str = if rate >= 1_000_000.0 {
                         format!("{:.1}M/s", rate / 1_000_000.0)
                     } else if rate >= 1_000.0 {
@@ -603,16 +607,18 @@ impl Activity {
                     } else {
                         format!("{:.0}/s", rate)
                     };
+                    // ok% and errors use op counts (cycles_total), not source items
+                    let ops_completed = progress_metrics.cycles_completed();
                     let successes = progress_metrics.successes_total.get();
-                    let ok_pct = if completed > 0 {
-                        successes as f64 * 100.0 / completed as f64
+                    let ok_pct = if ops_completed > 0 {
+                        successes as f64 * 100.0 / ops_completed as f64
                     } else {
                         100.0
                     };
                     let errors = progress_metrics.errors_total.get();
-                    let failed_cycles = completed.saturating_sub(successes).saturating_sub(
+                    let failed_ops = ops_completed.saturating_sub(successes).saturating_sub(
                         progress_metrics.skips_total.get());
-                    let retries = errors.saturating_sub(failed_cycles);
+                    let retries = errors.saturating_sub(failed_ops);
                     // Collect adapter-specific status counters (e.g., rows/s).
                     // Uses status_counters() which reads cumulative atomics
                     // without draining the delta timer pipeline.
@@ -634,7 +640,23 @@ impl Activity {
                             }
                         }
                     }
-                    eprint!("\r\x1b[K{activity_name} (pending,active,complete)=({pending},{active},{completed}) {pct:.2}% {rate_str} ok:{ok_pct:.1}% errors:{errors} retries:{retries}{adapter_status}");
+                    // Compute avg rows/batch from adapter counters
+                    let stanzas = progress_metrics.stanzas_total.get();
+                    let mut batch_info = String::new();
+                    if stanzas > 0 {
+                        if let Some(ref disps) = *progress_metrics.dispensers.lock().unwrap_or_else(|e| e.into_inner()) {
+                            for disp in disps.iter() {
+                                for (name, total) in disp.status_counters() {
+                                    if name == "rows_inserted" && total > stanzas {
+                                        let avg = total as f64 / stanzas as f64;
+                                        batch_info = format!(" rows/batch:{avg:.1}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let fibers = activity_concurrency;
+                    eprint!("\r\x1b[K{activity_name}{cursor_name} (pending,active,complete)=({pending},{active},{completed}) {pct:.2}% {rate_str} ok:{ok_pct:.1}% errors:{errors} retries:{retries} fibers:{fibers}{adapter_status}{batch_info}");
                 }
             });
         }
@@ -645,14 +667,13 @@ impl Activity {
             let activity = activity.clone();
             let dispensers = dispensers.clone();
             let extra_bindings = extra_bindings_per_template.clone();
-            let dep_groups = dep_groups.clone();
             let program = program.clone();
             let cycle_rl = cycle_rl.clone();
             let stanza_rl = stanza_rl.clone();
 
             handles.push(tokio::spawn(async move {
                 executor_task(
-                    activity, dispensers, extra_bindings, dep_groups,
+                    activity, dispensers, extra_bindings,
                     program, cycle_rl, stanza_rl,
                 ).await;
             }));
@@ -671,13 +692,14 @@ impl Activity {
         }
 
         // Print final completion line
-        if is_stderr_tty && total_cycles > 1000 && !suppress_progress {
-            let completed = activity.metrics.cycles_completed();
+        if is_stderr_tty && total_extent > 1000 && !suppress_progress {
+            let consumed = activity.source_factory.global_consumed();
+            let ops_completed = activity.metrics.cycles_completed();
             let successes = activity.metrics.successes_total.get();
             let errors = activity.metrics.errors_total.get();
-            let ok_pct = if completed > 0 { successes as f64 * 100.0 / completed as f64 } else { 100.0 };
+            let ok_pct = if ops_completed > 0 { successes as f64 * 100.0 / ops_completed as f64 } else { 100.0 };
             let elapsed = start_time.elapsed().as_secs_f64();
-            let rate = if elapsed > 0.0 { completed as f64 / elapsed } else { 0.0 };
+            let rate = if elapsed > 0.0 { consumed as f64 / elapsed } else { 0.0 };
             let rate_str = if rate >= 1_000_000.0 {
                 format!("{:.1}M/s", rate / 1_000_000.0)
             } else if rate >= 1_000.0 {
@@ -685,10 +707,10 @@ impl Activity {
             } else {
                 format!("{:.0}/s", rate)
             };
-            let failed_cycles = completed.saturating_sub(successes).saturating_sub(
+            let failed_ops = ops_completed.saturating_sub(successes).saturating_sub(
                 activity.metrics.skips_total.get());
-            let retries = errors.saturating_sub(failed_cycles);
-            eprintln!("\r\x1b[K{activity_name} DONE ({completed} cycles) {rate_str} ok:{ok_pct:.1}% errors:{errors} retries:{retries}");
+            let retries = errors.saturating_sub(failed_ops);
+            eprintln!("\r\x1b[K{activity_name}{cursor_name} DONE ({consumed} items) {rate_str} ok:{ok_pct:.1}% errors:{errors} retries:{retries}");
         }
 
         // Signal the progress thread to stop.
@@ -773,32 +795,31 @@ async fn executor_task(
     activity: Arc<Activity>,
     dispensers: Arc<Vec<Arc<dyn OpDispenser>>>,
     extra_bindings: Arc<Vec<Vec<String>>>,
-    dep_groups: Arc<Vec<crate::linearize::DepGroup>>,
     program: Arc<nb_variates::kernel::GkProgram>,
     cycle_rl: Option<Arc<RateLimiter>>,
     stanza_rl: Option<Arc<RateLimiter>>,
 ) {
     use crate::synthesis::FiberBuilder;
-    use crate::adapter::ResolvedFields;
 
     let stanza_len = activity.op_sequence.stanza_length() as u64;
     let max_retries = activity.config.max_retries;
-    let mut fiber = FiberBuilder::new(program);
+    let mut fiber = FiberBuilder::new(program.clone());
 
-    // Compute effective grab size: for batch ops, grab batch_size cycles
-    // per dispatch so that cycles = total rows.
-    let max_batch = activity.op_sequence.templates().iter()
-        .filter_map(|t| t.params.get("batch")
-            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))))
-        .max()
-        .unwrap_or(0)
-        .max(1);
-    let grab_size = stanza_len * max_batch;
+    // Create per-fiber source reader (used for all phases).
+    // Source-declared phases will eventually use the advancer model,
+    // but for now all phases go through the source reader.
+    let mut source = activity.source_factory.create_reader();
 
     loop {
         if activity.stop_flag.load(std::sync::atomic::Ordering::Relaxed) { break; }
 
-        let Some(base_cycle) = activity.cycle_source.next_n(grab_size) else { break };
+        // Phase 1: RESERVE — CAS on shared cursor, instantaneous.
+        // Acquires one stanza's worth of ordinals. This is the only
+        // shared-state interaction per stanza.
+        let range = match source.reserve(stanza_len as usize) {
+            Some(r) => r,
+            None => break, // source exhausted
+        };
 
         if let Some(srl) = &stanza_rl {
             srl.acquire().await;
@@ -806,107 +827,67 @@ async fn executor_task(
         activity.metrics.stanzas_total.inc();
         fiber.reset_captures();
 
-        // Process stanza ops in dependency groups.
-        let mut available_captures: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        // Phase 2: RENDER + EXECUTE — fiber-local, no contention.
+        // Each op resolves via this fiber's GK instance, then
+        // dispatches to the adapter. Sequential in declaration order.
+        for ordinal in range.clone() {
+            if activity.stop_flag.load(Ordering::Relaxed) { break; }
 
-        for group in dep_groups.iter() {
-            if !group.required_captures.is_empty() {
-                let missing: Vec<&String> = group.required_captures.iter()
-                    .filter(|c| !available_captures.contains(*c))
-                    .collect();
-                if !missing.is_empty() {
-                    for &stanza_offset in &group.op_indices {
-                        let cycle = base_cycle + stanza_offset as u64;
-                        activity.metrics.errors_total.inc();
-                        activity.metrics.count_error_type("upstream_capture_missing");
-                        activity.error_router.handle_error(
-                            "upstream_capture_missing",
-                            &format!("skipped: required capture(s) {} not produced by upstream ops",
-                                missing.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", ")),
-                            cycle,
-                            0,
+            // Mark op as active from render through result join.
+            // "Active" means this fiber is working on an op — resolving
+            // fields, waiting for the adapter, or recording results.
+            activity.metrics.ops_started.fetch_add(1, Ordering::Relaxed);
+
+            // Render the source item (fiber-local, no shared state)
+            let item = source.render_item(ordinal);
+            let cycle = ordinal;
+
+            let wait_start = Instant::now();
+            if let Some(crl) = &cycle_rl {
+                crl.acquire().await;
+            }
+            let wait_nanos = wait_start.elapsed().as_nanos() as u64;
+
+            let (template_idx, template) = activity.op_sequence.get_with_index(cycle);
+            fiber.set_source_item(&item);
+            let fields = fiber.resolve_with_extras(template, &extra_bindings[template_idx]);
+
+            // Execute — dispatch to adapter and await result
+            let dispenser = &dispensers[template_idx];
+            let service_start = Instant::now();
+            let mut tries = 1u32;
+            let (success, captures, skipped) = loop {
+                match dispenser.execute(cycle, &fields).await {
+                    Ok(result) => {
+                        break (true, result.captures, result.skipped);
+                    }
+                    Err(e) => {
+                        let duration_nanos = service_start.elapsed().as_nanos() as u64;
+                        let inner = e.error();
+                        let detail = activity.error_router.handle_error(
+                            &inner.error_name, &inner.message, cycle, duration_nanos,
                         );
-                    }
-                    continue;
-                }
-            }
+                        activity.metrics.errors_total.inc();
+                        activity.metrics.count_error_type(&inner.error_name);
 
-            // Phase 1: Resolve all ops in the group
-            let mut window: Vec<(u64, usize, ResolvedFields, u64)> =
-                Vec::with_capacity(group.op_indices.len());
-            for &stanza_offset in &group.op_indices {
-                let cycle = base_cycle + stanza_offset as u64;
-
-                let wait_start = Instant::now();
-                if let Some(crl) = &cycle_rl {
-                    crl.acquire().await;
-                }
-                let wait_nanos = wait_start.elapsed().as_nanos() as u64;
-
-                let (template_idx, template) = activity.op_sequence.get_with_index(cycle);
-                fiber.set_inputs(&[cycle]);
-                let fields = fiber.resolve_with_extras(template, &extra_bindings[template_idx]);
-                window.push((cycle, template_idx, fields, wait_nanos));
-            }
-
-            // Phase 2: Execute all ops in the group concurrently.
-            // For ops with for_each batch expansion, the dispenser handles
-            // the interior templating — execute() is called once per cycle
-            // and the dispenser builds the full batch internally.
-            let futures: Vec<_> = window.iter().map(|(cycle, template_idx, fields, _)| {
-                let dispenser = dispensers[*template_idx].clone();
-                let cycle = *cycle;
-                let max_retries = max_retries;
-                let activity = activity.clone();
-                async move {
-                    activity.metrics.ops_started.fetch_add(1, Ordering::Relaxed);
-                    let service_start = Instant::now();
-                    let mut tries = 1u32;
-                    loop {
-                        match dispenser.execute(cycle, fields).await {
-                            Ok(result) => {
-                                let service_nanos = service_start.elapsed().as_nanos() as u64;
-                                activity.metrics.ops_finished.fetch_add(1, Ordering::Relaxed);
-                                return (true, service_nanos, tries, result.captures, result.skipped);
-                            }
-                            Err(e) => {
-                                let duration_nanos = service_start.elapsed().as_nanos() as u64;
-                                let inner = e.error();
-                                let detail = activity.error_router.handle_error(
-                                    &inner.error_name, &inner.message, cycle, duration_nanos,
-                                );
-                                activity.metrics.errors_total.inc();
-                                activity.metrics.count_error_type(&inner.error_name);
-
-                                if detail.should_stop {
-                                    activity.stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                                }
-
-                                if !e.is_adapter_level() && detail.is_retryable() && tries <= max_retries {
-                                    tries += 1;
-                                    continue;
-                                }
-
-                                let service_nanos = service_start.elapsed().as_nanos() as u64;
-                                activity.metrics.ops_finished.fetch_add(1, Ordering::Relaxed);
-                                return (false, service_nanos, tries, std::collections::HashMap::new(), false);
-                            }
+                        if detail.should_stop {
+                            activity.stop_flag.store(true, Ordering::Relaxed);
                         }
+
+                        if !e.is_adapter_level() && detail.is_retryable() && tries <= max_retries {
+                            tries += 1;
+                            continue;
+                        }
+
+                        break (false, std::collections::HashMap::new(), false);
                     }
                 }
-            }).collect();
+            };
+            let service_nanos = service_start.elapsed().as_nanos() as u64;
 
-            let results = futures::future::join_all(futures).await;
-
-            // Phase 3: Record metrics, store captures
-            let mut _group_all_success = true;
-            for (i, (success, service_nanos, tries, captures, skipped)) in results.into_iter().enumerate() {
-                activity.metrics.cycles_total.inc();
-                if skipped {
-                    continue;
-                }
-                let wait_nanos = window[i].3;
+            // Record metrics
+            activity.metrics.cycles_total.inc();
+            if !skipped {
                 activity.metrics.service_time.record(service_nanos);
                 activity.metrics.wait_time.record(wait_nanos);
                 activity.metrics.response_time.record(service_nanos + wait_nanos);
@@ -915,13 +896,13 @@ async fn executor_task(
                     activity.metrics.successes_total.inc();
                     activity.metrics.result_success_time.record(service_nanos);
                     for (name, value) in captures {
-                        available_captures.insert(name.clone());
                         fiber.capture(&name, value);
                     }
-                } else {
-                    _group_all_success = false;
                 }
             }
+
+            // Op fully processed — render, execute, and metrics all done.
+            activity.metrics.ops_finished.fetch_add(1, Ordering::Relaxed);
         }
     }
 }

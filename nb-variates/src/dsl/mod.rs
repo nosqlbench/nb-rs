@@ -22,7 +22,7 @@ pub use factory::ConstArg;
 mod modules;
 mod binding;
 
-pub use compile::{compile_gk, compile_gk_checked, compile_gk_with_path, compile_gk_strict, compile_gk_with_outputs, compile_gk_with_libs, eval_const_expr};
+pub use compile::{compile_gk, compile_gk_checked, compile_gk_with_path, compile_gk_strict, compile_gk_with_outputs, compile_gk_with_libs, compile_gk_with_libs_and_limit, eval_const_expr};
 
 /// Return the embedded standard library module sources.
 ///

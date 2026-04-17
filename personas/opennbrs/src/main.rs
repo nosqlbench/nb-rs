@@ -192,6 +192,7 @@ async fn run_command(args: &[String]) {
         max_retries: 3,
         stanza_concurrency: params.get("stanza_concurrency")
             .and_then(|s| s.parse().ok()).unwrap_or(1),
+        source_factory: None,
     };
 
     let builder = Arc::new(OpBuilder::new(kernel));

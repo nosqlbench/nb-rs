@@ -252,3 +252,62 @@ fresh fiber builders from the shared program.
 
 Workloads without `phases:` or `scenarios:` run as a single
 implicit phase with all ops — identical to the non-phased model.
+
+---
+
+## Cursor-Driven Sequencing
+
+When a phase declares `cursor` bindings in its GK graph, the
+sequencing model shifts from counter-driven to cursor-driven:
+
+- **Phase extent** is determined by cursor exhaustion, not `cycles:`
+- **Cycle counter** is replaced by cursor ordinals
+- **LUT dispatch** is preserved when `ratio:` is present on ops
+- **Stanza scheduling** becomes one of several strategies:
+  - **LUT/Bucket**: classic weighted ratios (when `ratio:` present)
+  - **Sequential**: declaration order (for capture dependency chains)
+  - **Cursor-driven**: one cursor advance per dispatch
+
+The executor infers the scheduler from the op configuration.
+No user configuration needed.
+
+### Cursors Provenance Tracing
+
+At phase setup, the executor builds a `Cursors` instance by
+tracing GK provenance from the op template's referenced fields
+back to root cursor nodes. Each cursor target is a `DataSource`
+reader paired with its GK input index. Only cursors whose
+ordinals transitively feed the requested output fields are
+advanced on each iteration. This means:
+
+- A phase with two cursors (e.g., `base` and `queries`) where
+  an op only uses `base`-derived fields will only advance the
+  `base` cursor per cycle.
+- Phase completion occurs when any targeted cursor is exhausted.
+
+### Batch Budget
+
+Cursor-driven phases support budget-based batching via
+`CqlBatchDispenser`:
+
+```yaml
+ops:
+  insert:
+    batch:
+      max_rows: 100
+      type: unlogged
+    prepared: "INSERT INTO ..."
+```
+
+The executor advances the cursor repeatedly, evaluating the
+GK graph per position, rendering and binding each statement,
+and accumulating rows until the batch budget is reached. The
+batch is then executed as a single CQL BATCH call. Batch size
+is controlled by `max_rows` on the op template. Each batch
+execution records amortized per-row latency for throughput
+reporting.
+
+The `CqlBatchDispenser` uses `ResolvedFields::batch_fields`
+to receive the expanded field sets — one per cursor advance
+within the batch window. The base `ResolvedFields` contains
+the fields from the first cycle in the batch.

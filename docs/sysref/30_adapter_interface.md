@@ -135,6 +135,100 @@ retry semantics.
 
 ---
 
+## Adapter-Specific Metrics and Status
+
+The `OpDispenser` trait includes three optional methods that
+enable adapter-specific metrics and status line integration:
+
+### `adapter_metrics()`
+
+```rust
+fn adapter_metrics(&self) -> Vec<Sample> { ... }
+```
+
+Called by the metrics scheduler alongside standard activity
+metrics. Returns additional `Sample`s (timers, counters) that
+represent adapter-internal state. These appear in the summary
+report and are delivered to all reporters (SQLite, CSV, etc.).
+
+Default: delegates to `inner_dispenser()` if this is a wrapper,
+otherwise returns empty.
+
+### `status_counters()`
+
+```rust
+fn status_counters(&self) -> Vec<(&str, u64)> { ... }
+```
+
+Returns `(display_name, cumulative_count)` pairs for the
+activity status line. Unlike `adapter_metrics()` which snapshots
+delta timers, status counters are cumulative and safe to read
+from the progress thread without interfering with the metrics
+pipeline.
+
+Default: delegates to `inner_dispenser()` if this is a wrapper,
+otherwise returns empty.
+
+### `inner_dispenser()`
+
+```rust
+fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { None }
+```
+
+Returns the wrapped inner dispenser if this is a wrapper.
+Enables delegation chains for `adapter_metrics()` and
+`status_counters()` through wrapper layers
+(`TraversingDispenser`, `ConditionalDispenser`,
+`PollingDispenser`, `EmitDispenser`, etc.). Each wrapper
+implements `inner_dispenser()` to point to its wrapped
+dispenser, so metrics calls propagate to the adapter's
+concrete dispenser at the bottom of the chain.
+
+### `default_status_metrics()` on DriverAdapter
+
+```rust
+fn default_status_metrics(&self) -> Vec<StatusMetric> { Vec::new() }
+```
+
+Declares which adapter-specific metrics should appear on the
+status line by default. Each entry specifies a metric name,
+display label, and render mode (`Rate`, `Count`, or `Latency`).
+Workloads can override this via a `status:` field on phases.
+
+---
+
+## CQL Batch Support
+
+The CQL adapter provides `CqlBatchDispenser` for grouping
+multiple bound statements into a single CQL BATCH call.
+
+```rust
+struct CqlBatchDispenser {
+    session: SessionHandle,
+    stmt_text: String,
+    bind_names: Vec<String>,
+    prepared: Mutex<Option<Arc<PreparedStatement>>>,
+    batch_type: BatchType,          // logged | unlogged | counter
+    rows_timer: Timer,              // amortized per-row latency
+    rows_total: AtomicU64,          // cumulative row counter
+}
+```
+
+**Batch budget model**: The executor advances the cursor
+repeatedly, evaluates the GK graph per position, binds each
+statement, and accumulates rows. The batch is executed as one
+CQL BATCH call. `rows_timer` records amortized latency
+(batch_nanos / row_count) per row for throughput reporting.
+`rows_total` is a cumulative counter surfaced via
+`status_counters()` for the progress line.
+
+`CqlBatchDispenser` implements both `adapter_metrics()`
+(returning the rows timer snapshot and rows_inserted_total
+counter) and `status_counters()` (returning the cumulative
+`rows_inserted` count).
+
+---
+
 ## No Space Concept
 
 Java nosqlbench had `Space` for many-to-many client/server

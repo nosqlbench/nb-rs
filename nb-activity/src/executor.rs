@@ -14,7 +14,6 @@ use std::path::PathBuf;
 
 use crate::activity::{Activity, ActivityConfig};
 use crate::adapter::DriverAdapter;
-use crate::bindings::compile_bindings_with_libs_excluding;
 use crate::opseq::{OpSequence, SequencerType};
 use crate::synthesis::OpBuilder;
 use nb_metrics::component::{self, Component, ComponentState};
@@ -120,6 +119,59 @@ pub fn execute_tree<'a>(
                     ctx.pop_label();
                 }
             }
+            ScenarioNode::ForCombinations { specs, children } => {
+                // Resolve dimensions lazily: later dimensions may reference
+                // earlier variables (e.g., "table in vec_{profile}").
+                // Each dimension is resolved inside the Cartesian recursion
+                // after prior variables are bound.
+                fn cartesian_recurse<'a>(
+                    ctx: &'a mut ExecCtx,
+                    specs: &'a [(String, String)],
+                    dim_idx: usize,
+                    bindings: &'a HashMap<String, String>,
+                    children: &'a [ScenarioNode],
+                    first: bool,
+                ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + 'a>> {
+                    Box::pin(async move {
+                        if dim_idx >= specs.len() {
+                            execute_tree(ctx, children, bindings).await?;
+                            return Ok(());
+                        }
+                        let (var, expr) = &specs[dim_idx];
+                        // Substitute already-bound variables into the expression
+                        let mut resolved_expr = expr.clone();
+                        for (k, v) in bindings {
+                            resolved_expr = resolved_expr.replace(&format!("{{{k}}}"), v);
+                        }
+                        let (_, values) = resolve_expr(
+                            &format!("{var} in {resolved_expr}"),
+                            &ctx.workload_params, bindings, &ctx.outer_scope_values)?;
+
+                        if first {
+                            // Build dimension summary for display
+                            let mut dims: Vec<String> = Vec::new();
+                            dims.push(format!("{var}({} values)", values.len()));
+                            // Peek at remaining specs for display
+                            for (v, _) in &specs[dim_idx + 1..] {
+                                dims.push(v.clone());
+                            }
+                            let total_hint = values.len();
+                            eprintln!("for_combinations [{}] ({total_hint}+ combinations × {} children)",
+                                dims.join(" × "), children.len());
+                        }
+
+                        for value in &values {
+                            let mut inner = bindings.clone();
+                            inner.insert(var.clone(), value.clone());
+                            ctx.push_label(var, value);
+                            cartesian_recurse(ctx, specs, dim_idx + 1, &inner, children, false).await?;
+                            ctx.pop_label();
+                        }
+                        Ok(())
+                    })
+                }
+                cartesian_recurse(ctx, specs, 0, bindings, children, true).await?;
+            }
             ScenarioNode::DoWhile { condition, counter, children } => {
                 // do_while is transparent to labels — no label push
                 eprintln!("=== do_while: {condition} ===");
@@ -172,51 +224,37 @@ async fn run_phase(
         }
     }
 
-    // --- Compile inner kernel if phase has own bindings or iteration vars ---
+    // --- Compile inner kernel via BindingScope ---
     let (iter_program, iter_ops) = if is_iter || has_bindings {
         let mut ops = phase.ops.clone();
-        // Substitute iteration vars in GK source
-        for op in &mut ops {
-            for (var, val) in bindings {
-                let ph = format!("{{{var}}}");
-                if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                    *src = src.replace(&ph, val);
-                }
-            }
-        }
-        // Inject iteration vars as GK init constants
-        for (var, val) in bindings {
-            for op in &mut ops {
-                if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                    *src = format!("init {var} = \"{val}\"\n{src}");
-                    break;
-                }
-            }
-        }
-        // Strip adapter/driver
+
+        // Text substitution: replace {var} placeholders in GK source
+        // and op templates. This must happen before scope ingestion
+        // because GK expressions may embed placeholders like
+        // `vector_at(row, "{spec}")`.
+        crate::scope::substitute_iteration_vars(&mut ops, bindings);
+        crate::scope::substitute_workload_params(&mut ops, &ctx.workload_params);
+
+        // Rewrite inline expressions ({{expr}} → {__expr_N}) in op templates.
+        // This modifies op template strings and returns the expr→name map
+        // so the scope can register the corresponding bindings.
+        crate::scope::rewrite_inline_exprs(&mut ops);
+
+        // Strip adapter/driver (resolved per-phase, not from params)
         for op in &mut ops { op.params.remove("adapter"); op.params.remove("driver"); }
-        // Auto-externs
-        let externs = crate::runner::generate_auto_externs(&ops, &ctx.outer_manifest)?;
-        if !externs.is_empty() {
-            for op in &mut ops {
-                if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                    *src = format!("{externs}{src}");
-                }
-            }
-        }
-        // Expand workload params
-        crate::runner::expand_gk_bindings(&mut ops, &ctx.workload_params, &ctx.phases);
-        // Config refs for DCE
-        let mut config_refs: Vec<String> = Vec::new();
-        if let Some(ref c) = phase.cycles {
-            if c.starts_with('{') && c.ends_with('}') {
-                let mut inner = c[1..c.len()-1].to_string();
-                for (v, val) in bindings { inner = inner.replace(&format!("{{{v}}}"), val); }
-                inner = crate::runner::expand_workload_params(&inner, &ctx.workload_params);
-                config_refs.push(inner);
-            }
-        }
-        // Compile — build a context label that identifies this phase + iteration
+
+        // Build typed scope from structured inputs
+        let scope = crate::scope::build_scope(
+            &ops,
+            bindings,
+            &ctx.outer_manifest,
+            &ctx.workload_params,
+            &ctx.phases,
+            phase.cycles.as_deref(),
+            &[], // exclude
+        )?;
+
+        // Validate scope rules (shadow detection, final checks)
         let gk_context = if bindings.is_empty() {
             format!("phase '{phase_name}'")
         } else {
@@ -225,11 +263,21 @@ async fn run_phase(
                 .collect();
             format!("phase '{phase_name}' ({})", vars.join(", "))
         };
-        let mut kernel = compile_bindings_with_libs_excluding(
-            &ops, ctx.workload_dir.as_deref(), ctx.gk_lib_paths.clone(),
-            ctx.strict, &[], &config_refs, &gk_context,
+        scope.validate().map_err(|e| format!("{gk_context}: {e}"))?;
+
+        // Compile from the validated scope
+        let cursor_limit: Option<u64> = ctx.merged_params.get("limit")
+            .and_then(|s| s.parse().ok());
+        let mut kernel = crate::bindings::compile_from_scope(
+            &scope,
+            ctx.workload_dir.as_deref(),
+            ctx.gk_lib_paths.clone(),
+            ctx.strict,
+            &gk_context,
+            cursor_limit,
         ).map_err(|e| format!("{gk_context}: {e}"))?;
-        // Wire scope
+
+        // Wire outer scope values into the inner kernel's inputs
         for (name, value) in &ctx.outer_scope_values {
             if let Some(idx) = kernel.program().find_input(name) {
                 kernel.state().set_input(idx, value.clone());
@@ -298,7 +346,7 @@ async fn run_phase(
         None => ctx.concurrency,
     };
 
-    eprintln!("phase '{phase_name}': {} ops, cycles={phase_cycles}, concurrency={phase_concurrency}",
+    eprintln!("phase '{phase_name}': {} ops, concurrency={phase_concurrency}",
         op_sequence.stanza_length());
 
     let iter_label = bindings.values().next().cloned().unwrap_or_default();
@@ -307,6 +355,21 @@ async fn run_phase(
         format!("{phase_name} ({var}={iter_label})")
     } else {
         phase_name.to_string()
+    };
+
+    // If the compiled kernel declares cursors, create a source factory
+    // from the first cursor's schema (name + extent). Otherwise the
+    // Activity falls back to a range source named "cycles".
+    let source_factory: Option<Arc<dyn nb_variates::source::DataSourceFactory>> = {
+        let schemas = iter_program.cursor_schemas();
+        if let Some(schema) = schemas.first() {
+            let extent = schema.extent.unwrap_or(phase_cycles);
+            Some(Arc::new(
+                nb_variates::source::RangeSourceFactory::named(&schema.name, 0, extent)
+            ))
+        } else {
+            None
+        }
     };
 
     let config = ActivityConfig {
@@ -319,6 +382,7 @@ async fn run_phase(
         error_spec: phase.errors.clone().unwrap_or_else(|| ctx.error_spec.clone()),
         max_retries: 3,
         stanza_concurrency: 1,
+        source_factory,
     };
 
     let phase_driver_owned = phase.adapter.clone().unwrap_or_else(|| ctx.driver.clone());

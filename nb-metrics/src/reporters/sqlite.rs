@@ -30,6 +30,13 @@ mod inner {
         pub fn new(path: impl AsRef<Path>) -> Result<Self, String> {
             let conn = Connection::open(path)
                 .map_err(|e| format!("failed to open SQLite: {e}"))?;
+            // WAL mode: readers don't block writers, no fsync on every commit.
+            // synchronous=NORMAL: fsync only on WAL checkpoint, not every transaction.
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL;\
+                 PRAGMA synchronous=NORMAL;\
+                 PRAGMA wal_autocheckpoint=1000;"
+            ).map_err(|e| format!("failed to set SQLite pragmas: {e}"))?;
             let mut reporter = Self {
                 conn,
                 family_cache: HashMap::new(),

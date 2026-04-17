@@ -501,10 +501,18 @@ pub struct DatasetDistanceFunction {
 impl DatasetDistanceFunction {
     pub fn from_source(source: &str) -> Result<Self, String> {
         let group = load_dataset_group(source)?;
-        let df = group.attribute("distance_function")
+        let raw = group.attribute("distance_function")
             .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+            .unwrap_or("unknown");
+        // Normalize vectordata's internal names to standard database-facing
+        // similarity function names (used by CQL SAI, pgvector, etc.).
+        let df = match raw.to_uppercase().as_str() {
+            "L2" | "EUCLIDEAN" => "EUCLIDEAN",
+            "L1" | "MANHATTAN" => "MANHATTAN",
+            "COSINE" => "COSINE",
+            "DOT_PRODUCT" | "DOTPRODUCT" | "DOT" | "INNER_PRODUCT" | "IP" => "DOT_PRODUCT",
+            _ => raw,
+        }.to_string();
         Ok(Self {
             meta: NodeMeta {
                 name: "dataset_distance_function".into(),

@@ -24,6 +24,8 @@ pub enum Statement {
     ModuleDef(ModuleDef),
     /// `extern name: type = default`
     ExternPort(ExternPort),
+    /// `cursor name = Cursor()` or `cursor name = constructor_expr`
+    Cursor(CursorDecl),
 }
 
 /// An external input port declaration.
@@ -74,6 +76,19 @@ pub struct CycleBinding {
     pub span: Span,
 }
 
+/// A cursor declaration: `cursor name = Cursor()`
+///
+/// Declares a named positional cursor. The cursor's extent is
+/// discovered at init time by interrogating its downstream consumers
+/// for cardinality. The runtime advances the cursor to drive
+/// phase iteration.
+#[derive(Debug, Clone)]
+pub struct CursorDecl {
+    pub name: String,
+    pub constructor: Expr,
+    pub span: Span,
+}
+
 /// An expression (right-hand side of a binding).
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -98,6 +113,13 @@ pub enum Expr {
     /// Unary bitwise NOT: `!x`.
     /// Desugared to `u64_not(x)`.
     UnaryBitNot(Box<Expr>, Span),
+    /// Source field projection: `base.ordinal`, `base.vector`.
+    /// Resolved by the compiler to a node that reads from the source item.
+    FieldAccess {
+        source: String,
+        field: String,
+        span: Span,
+    },
 }
 
 /// Binary arithmetic operator kind.

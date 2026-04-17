@@ -274,6 +274,15 @@ fn collect_param_bindings(
     }
 }
 
+/// Public wrapper for `collect_param_bindings`, used by `scope.rs`.
+pub fn collect_param_bindings_into(
+    params: &HashMap<String, serde_json::Value>,
+    exclude: &[String],
+    required: &mut Vec<String>,
+) {
+    collect_param_bindings(params, exclude, required);
+}
+
 fn collect_json_bindings(
     value: &serde_json::Value,
     exclude: &[String],
@@ -315,7 +324,27 @@ pub fn compile_bindings_with_libs(
     gk_lib_paths: Vec<std::path::PathBuf>,
     strict: bool,
 ) -> Result<GkKernel, String> {
-    compile_bindings_with_libs_excluding(ops, source_dir, gk_lib_paths, strict, &[], &[], "(gk)")
+    compile_bindings_with_libs_excluding(ops, source_dir, gk_lib_paths, strict, &[], &[], "(gk)", None)
+}
+
+/// Compile a GK kernel from a pre-built `BindingScope`.
+///
+/// The scope has already been validated and carries structured
+/// provenance. This function emits the scope to GK source, collects
+/// required outputs, and compiles via the standard GK compiler.
+pub fn compile_from_scope(
+    scope: &crate::scope::BindingScope,
+    source_dir: Option<&std::path::Path>,
+    gk_lib_paths: Vec<std::path::PathBuf>,
+    strict: bool,
+    context: &str,
+    cursor_limit: Option<u64>,
+) -> Result<GkKernel, String> {
+    let source = scope.emit();
+    let required = scope.required_outputs();
+    nb_variates::dsl::compile_gk_with_libs_and_limit(
+        &source, source_dir, gk_lib_paths, &required, strict, context, cursor_limit,
+    )
 }
 
 /// Like `compile_bindings_with_libs` but excludes named bind points from
@@ -329,139 +358,39 @@ pub fn compile_bindings_with_libs_excluding(
     exclude: &[String],
     extra_required: &[String],
     context: &str,
+    cursor_limit: Option<u64>,
 ) -> Result<GkKernel, String> {
     use nb_workload::model::BindingsDef;
 
-    // Collect GK source blocks, deduplicating identical sources
-    // (multiple ops sharing the same phase bindings).
-    let mut base_source: Option<String> = None;
-    let mut extra_sources: Vec<(String, String)> = Vec::new(); // (op_name, unique extra source)
-    for op in ops {
-        if let BindingsDef::GkSource(src) = &op.bindings {
-            if src.trim().is_empty() { continue; }
-            match &base_source {
-                None => { base_source = Some(src.clone()); }
-                Some(base) => {
-                    if src != base {
-                        // This op has different bindings from the base — it's an op-level augmentation
-                        extra_sources.push((op.name.clone(), src.clone()));
-                    }
-                    // If identical to base, skip (ops sharing phase bindings)
-                }
-            }
-        }
-    }
+    // Check if any op uses GK source mode
+    let has_gk = ops.iter().any(|op| matches!(&op.bindings, BindingsDef::GkSource(s) if !s.trim().is_empty()));
 
-    let gk_source = if let Some(base) = base_source {
-        if !extra_sources.is_empty() {
-            // Check for shadowing: op-level bindings cannot redefine enclosing scope names
-            let base_names = extract_binding_names(&base);
-            let mut seen_extra_names: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
-            for (op_name, extra_src) in &extra_sources {
-                let extra_names = extract_binding_names(extra_src);
-                for name in &extra_names {
-                    if base_names.contains(name) {
-                        return Err(format!(
-                            "op '{}' binding '{}' shadows a name from the enclosing scope. \
-                             Ops augment the scope DAG but cannot override it. \
-                             Use a separate phase for different bindings.",
-                            op_name, name
-                        ));
-                    }
-                    if let Some(prior_op) = seen_extra_names.get(name) {
-                        return Err(format!(
-                            "op '{}' binding '{}' is already defined by op '{}'. \
-                             Each ride-along binding name must be unique across all ops in the scope.",
-                            op_name, name, prior_op
-                        ));
-                    }
-                    seen_extra_names.insert(name.clone(), op_name.clone());
-                }
-            }
+    if has_gk {
+        // Build a BindingScope from the ops — all scope rules (shadow
+        // detection, dedup, merge) are handled by the typed model.
+        let scope = crate::scope::build_scope(
+            ops,
+            &std::collections::HashMap::new(), // no iteration vars at outer level
+            &[],                                // no outer manifest (this IS the outer scope)
+            &std::collections::HashMap::new(), // params already expanded by caller
+            &std::collections::HashMap::new(), // phases not needed here
+            None,                               // no phase cycles
+            exclude,
+        )?;
+        scope.validate().map_err(|e| format!("{context}: {e}"))?;
 
-            // Strict mode: detect cross-op binding references
-            if strict {
-                let all_extra_names: std::collections::HashSet<String> = extra_sources.iter()
-                    .flat_map(|(_, src)| extract_binding_names(src))
-                    .collect();
-                for (op_name, extra_src) in &extra_sources {
-                    let own_names = extract_binding_names(extra_src);
-                    if let Some(op) = ops.iter().find(|o| o.name == *op_name) {
-                        for value in op.op.values() {
-                            if let Some(s) = value.as_str() {
-                                for name in nb_workload::bindpoints::referenced_bindings(s) {
-                                    if all_extra_names.contains(&name)
-                                        && !own_names.contains(&name)
-                                        && !base_names.contains(&name)
-                                    {
-                                        return Err(format!(
-                                            "strict: op '{}' references '{{{}}}' which is defined \
-                                             by a sibling op, not by the enclosing scope or its own bindings.",
-                                            op_name, name
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Merge: append op-level bindings (strip duplicate inputs declarations)
-            let mut merged = base;
-            for (_, extra_src) in &extra_sources {
-                merged.push('\n');
-                for line in extra_src.lines() {
-                    let trimmed = line.trim();
-                    if (trimmed.starts_with("inputs") || trimmed.starts_with("coordinates"))
-                        && trimmed.contains(":=")
-                    {
-                        continue;
-                    }
-                    merged.push_str(line);
-                    merged.push('\n');
-                }
-            }
-            Some(merged)
-        } else {
-            Some(base)
-        }
-    } else {
-        None
-    };
-
-    if let Some(source) = gk_source {
-        let mut required: Vec<String> = Vec::new();
-        for op in ops {
-            for value in op.op.values() {
-                if let Some(s) = value.as_str() {
-                    for name in nb_workload::bindpoints::referenced_bindings(s) {
-                        if !required.contains(&name) && !exclude.contains(&name) {
-                            required.push(name);
-                        }
-                    }
-                }
-            }
-            // Include condition binding references so DCE preserves them
-            if let Some(ref cond) = op.condition {
-                let name = cond.trim()
-                    .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
-                    .unwrap_or(cond.trim());
-                if !name.is_empty() && !required.contains(&name.to_string()) && !exclude.contains(&name.to_string()) {
-                    required.push(name.to_string());
-                }
-            }
-            // Scan params for bind point references (e.g., relevancy.expected)
-            collect_param_bindings(&op.params, exclude, &mut required);
-        }
-        // Include config expression references so DCE preserves them
+        // Add extra required outputs (config refs from caller)
+        let mut scope_required = scope.required_outputs();
         for name in extra_required {
-            if !required.contains(name) {
-                required.push(name.clone());
+            if !scope_required.contains(name) {
+                scope_required.push(name.clone());
             }
         }
-        return nb_variates::dsl::compile_gk_with_libs(&source, source_dir, gk_lib_paths, &required, strict, context);
+
+        let source = scope.emit();
+        return nb_variates::dsl::compile_gk_with_libs_and_limit(
+            &source, source_dir, gk_lib_paths, &scope_required, strict, context, cursor_limit,
+        );
     }
 
     // Legacy mode: translate semicolon-chain bindings into GK source
@@ -537,7 +466,7 @@ pub fn compile_bindings_with_libs_excluding(
     }
 
     let gk_source = gk_lines.join("\n");
-    nb_variates::dsl::compile_gk_with_libs(&gk_source, source_dir, gk_lib_paths, &required, strict, context)
+    nb_variates::dsl::compile_gk_with_libs_and_limit(&gk_source, source_dir, gk_lib_paths, &required, strict, context, cursor_limit)
 }
 
 /// Compile all bindings from a set of ParsedOps into a GK kernel.
@@ -736,46 +665,6 @@ fn strip_java_long_suffix(arg: &str) -> &str {
     arg.strip_suffix('L').or_else(|| arg.strip_suffix('l')).unwrap_or(arg)
 }
 
-/// Extract binding names from a GK source string.
-/// Parses `name :=` patterns to find all defined names.
-fn extract_binding_names(source: &str) -> std::collections::HashSet<String> {
-    let mut names = std::collections::HashSet::new();
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some(pos) = trimmed.find(":=") {
-            let lhs = trimmed[..pos].trim();
-            // Skip inputs/coordinates declarations
-            if lhs == "inputs" || lhs == "coordinates" {
-                continue;
-            }
-            // Skip extern declarations
-            if lhs.starts_with("extern") {
-                continue;
-            }
-            // Strip modifiers (shared, final, init)
-            let name = lhs
-                .strip_prefix("shared ").unwrap_or(lhs)
-                .strip_prefix("final ").unwrap_or(lhs)
-                .strip_prefix("init ").unwrap_or(lhs)
-                .trim();
-            // Handle destructuring: (a, b) := ...
-            if name.starts_with('(') && name.ends_with(')') {
-                for part in name[1..name.len()-1].split(',') {
-                    let n = part.trim();
-                    if !n.is_empty() {
-                        names.insert(n.to_string());
-                    }
-                }
-            } else if !name.is_empty() {
-                names.insert(name.to_string());
-            }
-        }
-    }
-    names
-}
 
 #[cfg(test)]
 mod tests {

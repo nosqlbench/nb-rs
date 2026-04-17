@@ -82,6 +82,16 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
                 }
             } else {
                 // Single brace: {name}, {:=expr}, {:=expr:=}, or {expr}
+                // First, peek ahead to check if this is a CQL map literal
+                // (starts with ' or "). If so, skip just the opening brace
+                // and continue scanning — inner {name} refs are still valid.
+                if i + 1 < chars.len() && is_literal_start(chars[i + 1]) {
+                    // CQL map literal: {'key': '{value}'} — skip the opening {
+                    // but continue scanning so inner bind points are found.
+                    i += 1;
+                    continue;
+                }
+
                 i += 1;
                 let start = i;
                 let mut depth = 1u32;
@@ -95,8 +105,7 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
                     let raw = raw.trim();
 
                     if is_literal_content(raw) {
-                        // Content has quotes/commas — literal text, not a bind point.
-                        // Happens when expanded params contain braces (e.g. CQL map literals).
+                        // Fallback: content has quotes — literal text, not a bind point.
                         i += 1;
                     } else if let Some(expr) = raw.strip_prefix(":=") {
                         // Explicit {:=expr} or {:=expr:=} syntax
@@ -153,6 +162,13 @@ fn is_expression(s: &str) -> bool {
 /// never a bind point or expression.
 fn is_literal_content(s: &str) -> bool {
     s.starts_with('\'') || s.starts_with('"')
+}
+
+/// Check if a character indicates the start of a CQL map/JSON literal
+/// after an opening brace. `{'key': ...}` and `{"key": ...}` are
+/// literal map content, not bind points.
+fn is_literal_start(c: char) -> bool {
+    c == '\'' || c == '"'
 }
 
 /// Parse a qualified reference like "coord:cycle" or just "cycle".

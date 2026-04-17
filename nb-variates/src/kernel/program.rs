@@ -44,6 +44,9 @@ pub struct GkProgram {
     /// Output binding modifiers: `shared` or `final`.
     /// Only populated for outputs that have a modifier; absent = default.
     output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
+    /// Source schemas declared in the GK program. The runtime queries
+    /// these to discover data sources and their extents.
+    cursor_schemas: Vec<crate::source::SourceSchema>,
 }
 
 unsafe impl Send for GkProgram {}
@@ -91,6 +94,7 @@ impl GkProgram {
             source: Arc::new(source.to_string()),
             context: Arc::new(context.to_string()),
             output_modifiers: HashMap::new(),
+            cursor_schemas: Vec::new(),
         }
     }
 
@@ -115,6 +119,7 @@ impl GkProgram {
             source: Arc::new(source.to_string()),
             context: Arc::new(context.to_string()),
             output_modifiers: HashMap::new(),
+            cursor_schemas: Vec::new(),
         }
     }
 
@@ -152,6 +157,17 @@ impl GkProgram {
 
     /// Diagnostic context (e.g., "workload.yaml bindings").
     pub fn context(&self) -> &str { &self.context }
+
+    /// Source schemas declared in this program. The runtime queries
+    /// these to discover data sources, their extents, and projections.
+    pub fn cursor_schemas(&self) -> &[crate::source::SourceSchema] {
+        &self.cursor_schemas
+    }
+
+    /// Set source schemas (called by the compiler after processing source declarations).
+    pub(crate) fn set_cursor_schemas(&mut self, schemas: Vec<crate::source::SourceSchema>) {
+        self.cursor_schemas = schemas;
+    }
 
     /// Build ordered output list from declaration order and the output map.
     fn build_output_list(

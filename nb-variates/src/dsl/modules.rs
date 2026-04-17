@@ -200,6 +200,7 @@ impl Compiler {
                     self.compile_binding(asm, &prefixed_targets, &rewritten)?;
                 }
                 Statement::ModuleDef(_) | Statement::ExternPort(_) => {} // nested module defs not inlined
+                Statement::Cursor(_) => {}
             }
         }
 
@@ -443,7 +444,7 @@ impl Compiler {
 
         for (i, stmt) in ast.statements.iter().enumerate() {
             let (names, expr) = match stmt {
-                Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) => {
+                Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) => {
                     stmt_refs.push(HashSet::new());
                     continue;
                 }
@@ -501,11 +502,12 @@ impl Compiler {
                     for t in &b.targets { defined.insert(t.clone()); }
                 }
                 Statement::ModuleDef(_) | Statement::ExternPort(_) => {}
+                Statement::Cursor(_) => {}
             }
         }
         for stmt in &extracted {
             let expr = match stmt {
-                Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) => continue,
+                Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) => continue,
                 Statement::InitBinding(b) => &b.value,
                 Statement::CycleBinding(b) => &b.value,
             };

@@ -310,8 +310,8 @@ declaration to the inner bindings source.
 
 **Final enforcement**: if an inner scope defines a name that
 is `final` in the outer manifest, the runner emits an error
-and exits. This check happens in `generate_auto_externs()`
-before compilation.
+and exits. This check happens in `BindingScope::validate()`
+(see `scope.rs`) before compilation.
 
 ### Structural vs Parametric Detection
 

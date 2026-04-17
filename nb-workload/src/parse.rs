@@ -137,8 +137,32 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
-            if let Some(spec) = obj.get("for_each").and_then(|v| v.as_str()) {
-                vec![ScenarioNode::ForEach { spec: spec.to_string(), children }]
+            if let Some(for_each_val) = obj.get("for_each") {
+                // for_each supports all three forms:
+                // String with single "var in expr" → ForEach
+                // String with multiple "var in expr, var2 in expr2" → ForCombinations
+                // Map or Array → ForCombinations (same as for_combinations)
+                match for_each_val {
+                    JVal::String(spec) => {
+                        // Check if it's multi-variable (contains multiple "in" clauses)
+                        let clause_count = spec.matches(" in ").count();
+                        if clause_count > 1 {
+                            let specs = parse_combination_specs(for_each_val);
+                            vec![ScenarioNode::ForCombinations { specs, children }]
+                        } else {
+                            vec![ScenarioNode::ForEach { spec: spec.clone(), children }]
+                        }
+                    }
+                    JVal::Object(_) | JVal::Array(_) => {
+                        let specs = parse_combination_specs(for_each_val);
+                        vec![ScenarioNode::ForCombinations { specs, children }]
+                    }
+                    _ => vec![]
+                }
+            } else if let Some(combo_val) = obj.get("for_combinations") {
+                // Explicit for_combinations keyword (alias for multi-var for_each)
+                let specs = parse_combination_specs(combo_val);
+                vec![ScenarioNode::ForCombinations { specs, children }]
             } else if let Some(cond) = obj.get("do_while").and_then(|v| v.as_str()) {
                 vec![ScenarioNode::DoWhile { condition: cond.to_string(), counter, children }]
             } else if let Some(cond) = obj.get("do_until").and_then(|v| v.as_str()) {
@@ -149,6 +173,102 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
         }
         _ => Vec::new(),
     }
+}
+
+/// Parse combination specs from any of three YAML forms:
+///
+/// **Map form** (keys = variables, values = expressions):
+/// ```yaml
+/// for_combinations:
+///   profile: "matching_profiles('{dataset}', '{prefix}')"
+///   k: "{k_values}"
+/// ```
+///
+/// **List form** (reuses for_each "var in expr" syntax):
+/// ```yaml
+/// for_combinations:
+///   - "profile in matching_profiles('{dataset}', '{prefix}')"
+///   - "k in {k_values}"
+/// ```
+///
+/// **Inline form** (compact comma-separated):
+/// ```yaml
+/// for_combinations: "profile in profiles, k in {k_values}"
+/// ```
+fn parse_combination_specs(val: &JVal) -> Vec<(String, String)> {
+    match val {
+        // Map form: { "profile": "expr", "k": "expr" }
+        JVal::Object(map) => {
+            map.iter()
+                .map(|(key, val)| {
+                    let expr = val.as_str().unwrap_or("").to_string();
+                    (key.clone(), expr)
+                })
+                .collect()
+        }
+        // List form: ["profile in expr", "k in expr"]
+        JVal::Array(arr) => {
+            arr.iter()
+                .filter_map(|item| {
+                    let s = item.as_str()?;
+                    let parts: Vec<&str> = s.splitn(2, " in ").collect();
+                    if parts.len() == 2 {
+                        Some((parts[0].trim().to_string(), parts[1].trim().to_string()))
+                    } else {
+                        eprintln!("warning: invalid for_combinations spec: '{s}'");
+                        None
+                    }
+                })
+                .collect()
+        }
+        // Inline form: "profile in expr, k in expr"
+        // Split on commas that are NOT inside parentheses (respects
+        // function calls like `matching_profiles('{dataset}', '{prefix}')`).
+        JVal::String(s) => {
+            split_respecting_parens(s)
+                .iter()
+                .filter_map(|part| {
+                    let parts: Vec<&str> = part.trim().splitn(2, " in ").collect();
+                    if parts.len() == 2 {
+                        Some((parts[0].trim().to_string(), parts[1].trim().to_string()))
+                    } else {
+                        eprintln!("warning: invalid for_combinations spec: '{}'", part.trim());
+                        None
+                    }
+                })
+                .collect()
+        }
+        _ => {
+            eprintln!("warning: for_combinations value must be a map, list, or string");
+            Vec::new()
+        }
+    }
+}
+
+/// Split a string on commas, respecting parenthesized groups.
+///
+/// Commas inside `(...)` are not treated as separators.
+/// This allows function calls like `matching_profiles('{a}', '{b}')`
+/// to survive the multi-variable `for_each` split.
+fn split_respecting_parens(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0u32;
+    for ch in s.chars() {
+        match ch {
+            '(' => { depth += 1; current.push(ch); }
+            ')' => { depth = depth.saturating_sub(1); current.push(ch); }
+            ',' if depth == 0 => {
+                parts.push(current.clone());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current);
+    }
+    parts
 }
 
 // -----------------------------------------------------------------

@@ -23,5 +23,5 @@ nb-adapter-testkit = { path = "../../adapters/nb-adapter-testkit", version = "0.
 nb-adapter-http = { path = "../../adapters/nb-adapter-http", version = "0.1.1" }
 
 # Shared runner (provides the full run pipeline)
-nb-activity = { path = "../../nb-activity", version = "0.1.1" }
+nb-activity = { path = "../../nb-activity", version = "0.1.1", features = ["flamegraph"] }
 tokio = { version = "1", features = ["full"] }

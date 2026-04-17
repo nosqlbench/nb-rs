@@ -129,6 +129,13 @@ impl GkKernel {
         &self.program
     }
 
+    /// Set source schemas on the program (called by the compiler).
+    pub fn set_cursor_schemas(&mut self, schemas: Vec<crate::source::SourceSchema>) {
+        Arc::get_mut(&mut self.program)
+            .expect("set_cursor_schemas must be called before program is shared")
+            .set_cursor_schemas(schemas);
+    }
+
     /// The per-fiber mutable evaluation state.
     pub fn state(&mut self) -> &mut GkState {
         &mut self.state

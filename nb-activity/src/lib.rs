@@ -13,6 +13,8 @@ pub mod activity;
 pub mod adapters;
 pub mod synthesis;
 pub mod bindings;
+pub mod scope;
+pub mod profiler;
 pub mod runner;
 pub mod executor;
 pub mod describe;

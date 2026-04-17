@@ -85,6 +85,7 @@ fn parse_statement(p: &mut Parser) -> Result<Statement, String> {
         TokenKind::Inputs => parse_inputs(p),
         TokenKind::Init => parse_init_binding(p),
         TokenKind::Extern => parse_extern_port(p),
+        TokenKind::Cursor => parse_cursor_decl(p),
         TokenKind::Shared | TokenKind::Final => parse_modified_binding(p),
         TokenKind::LParen => parse_destructuring_binding(p),
         TokenKind::Ident(_) => {
@@ -227,6 +228,16 @@ fn parse_init_binding_with_modifier(p: &mut Parser, modifier: BindingModifier) -
     let value = parse_expr(p)?;
 
     Ok(Statement::InitBinding(InitBinding { name, value, modifier, span }))
+}
+
+/// `cursor name = Cursor()` or `cursor name = expr`
+fn parse_cursor_decl(p: &mut Parser) -> Result<Statement, String> {
+    let span = p.span();
+    p.advance(); // consume 'cursor'
+    let name = p.expect_ident()?;
+    p.expect(&TokenKind::Eq)?;
+    let constructor = parse_expr(p)?;
+    Ok(Statement::Cursor(CursorDecl { name, constructor, span }))
 }
 
 /// `shared name := expr` or `final name := expr`
@@ -385,9 +396,14 @@ fn parse_atom(p: &mut Parser) -> Result<Expr, String> {
         }
         TokenKind::Ident(name) => {
             p.advance();
-            // Is this a function call?
             if matches!(p.peek(), TokenKind::LParen) {
+                // Function call: name(args...)
                 parse_call(p, name, span)
+            } else if matches!(p.peek(), TokenKind::Dot) {
+                // Source field projection: base.ordinal
+                p.advance(); // consume '.'
+                let field = p.expect_ident()?;
+                Ok(Expr::FieldAccess { source: name, field, span })
             } else {
                 Ok(Expr::Ident(name, span))
             }

@@ -107,6 +107,7 @@
 //! - [`viz`]: DAG visualization (DOT, Mermaid)
 
 pub mod node;
+pub mod source;
 pub mod kernel;
 pub mod compiled;
 pub mod assembly;

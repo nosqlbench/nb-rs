@@ -7,7 +7,7 @@
 //! renders the same markdown table as the SQLite reporter. This
 //! eliminates the SQLite round-trip for the summary report.
 
-use crate::frame::{MetricsFrame, Sample};
+use crate::frame::Sample;
 use crate::labels::Labels;
 use crate::store::InProcessMetricsStore;
 

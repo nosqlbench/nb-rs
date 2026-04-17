@@ -30,7 +30,7 @@ const KNOWN_PARAMS: &[&str] = &[
     "adapter", "driver", "workload", "op", "cycles", "concurrency",
     "rate", "stanzarate", "errors", "seq", "tags", "format",
     "filename", "separator", "header", "color",
-    "stanza_concurrency", "sc", "scenario", "dryrun", "summary", "metrics",
+    "stanza_concurrency", "sc", "scenario", "dryrun", "summary", "metrics", "limit", "profiler",
 ];
 
 /// Run a workload. Adapters are discovered from link-time inventory
@@ -54,25 +54,34 @@ pub struct DiagnosticConfig {
     pub depth: ExecDepth,
     /// Emit GK provenance and data flow analysis.
     pub explain_gk: bool,
+    /// Emit dimensional labels for all phases.
+    pub show_labels: bool,
 }
 
 impl DiagnosticConfig {
     /// Normal execution, no diagnostics.
     pub fn normal() -> Self {
-        Self { depth: ExecDepth::Full, explain_gk: false }
+        Self { depth: ExecDepth::Full, explain_gk: false, show_labels: false }
     }
 
     /// Parse from `dryrun=` value (e.g., "phase,gk" or "cycle").
+    /// If no depth flag (phase/cycle/full) is given, defaults to `Phase`.
     pub fn parse(spec: &str) -> Self {
         let mut config = Self::normal();
+        let mut depth_set = false;
         for flag in spec.split(',') {
             match flag.trim() {
-                "phase" => config.depth = ExecDepth::Phase,
-                "cycle" => config.depth = ExecDepth::Cycle,
-                "full" => config.depth = ExecDepth::Full,
+                "phase" => { config.depth = ExecDepth::Phase; depth_set = true; }
+                "cycle" => { config.depth = ExecDepth::Cycle; depth_set = true; }
+                "full" => { config.depth = ExecDepth::Full; depth_set = true; }
                 "gk" => config.explain_gk = true,
+                "labels" => config.show_labels = true,
                 _ => eprintln!("warning: unknown dryrun flag '{flag}'"),
             }
+        }
+        // Default to phase depth if no explicit depth was given
+        if !depth_set {
+            config.depth = ExecDepth::Phase;
         }
         config
     }
@@ -317,8 +326,12 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
     let mut all_ops_for_compile: Vec<nb_workload::model::ParsedOp> = ops;
     all_ops_for_compile.extend(phase_ops_for_compile);
 
-    // === GK Expansion Pipeline (outer kernel ops only) ===
-    expand_gk_bindings(&mut all_ops_for_compile, &workload_params, &phases);
+    // === Text Substitution (before scope ingestion) ===
+    // Replace {param} placeholders in GK source and op templates.
+    // Param injection and inline expr extraction are handled by
+    // BindingScope inside compile_bindings_with_libs_excluding.
+    crate::scope::substitute_workload_params(&mut all_ops_for_compile, &workload_params);
+    crate::scope::rewrite_inline_exprs(&mut all_ops_for_compile);
 
     // === GK Compilation ===
 
@@ -359,9 +372,13 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
         let _ = name; // suppress unused warning
     }
 
+    // Parse limit param for cursor clamping
+    let cursor_limit: Option<u64> = merged_params.get("limit")
+        .and_then(|s| s.parse().ok());
+
     let kernel = compile_bindings_with_libs_excluding(
         &all_ops_for_compile, workload_dir, gk_lib_paths.clone(), strict, &[], &config_refs,
-        "outer workload bindings",
+        "outer workload bindings", cursor_limit,
     ).map_err(|e| format!("outer workload bindings: {e}"))?;
 
     // Extract output manifest and folded constant values from outer kernel
@@ -395,7 +412,8 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
                 }
                 nb_workload::model::ScenarioNode::ForEach { children, .. }
                 | nb_workload::model::ScenarioNode::DoWhile { children, .. }
-                | nb_workload::model::ScenarioNode::DoUntil { children, .. } => {
+                | nb_workload::model::ScenarioNode::DoUntil { children, .. }
+                | nb_workload::model::ScenarioNode::ForCombinations { children, .. } => {
                     collect_grouped_phases(children, true, out);
                 }
             }
@@ -475,7 +493,7 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
                 drop(guard);
                 let sqlite_for_sched = sqlite_reporter.clone();
                 sched_builder = sched_builder.add_reporter(
-                    std::time::Duration::from_secs(1),
+                    std::time::Duration::from_secs(10),
                     MutexReporter(sqlite_for_sched),
                 );
             }
@@ -488,6 +506,9 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
             )
         }));
         let stop_handle = Arc::new(scheduler.start());
+
+        // Start profiler if requested (profile=flamegraph)
+        let _profiler = crate::profiler::ProfileGuard::maybe_start(&merged_params);
 
         // Execute the scenario tree recursively via the executor module.
         {
@@ -525,6 +546,11 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
                 &scenario_nodes,
                 &HashMap::new(),
             ).await?;
+        }
+
+        // Stop profiler and write flamegraph before scheduler flush
+        if let Some(profiler) = _profiler {
+            profiler.finish();
         }
 
         // Stop the scheduler (flushes all reporters).
@@ -569,6 +595,7 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
             error_spec,
             max_retries: 3,
             stanza_concurrency,
+            source_factory: None,
         };
 
         let adapter = create_adapter(&driver, &merged_params, dry_run).await?;
@@ -864,151 +891,6 @@ impl crate::adapter::OpDispenser for DryRunDispenser {
 // Helpers
 // =========================================================================
 
-/// GK expansion pipeline (Phases 1-3): workload param substitution,
-/// param binding injection, and inline expression extraction.
-///
-/// Called once for the outer kernel's ops and once per for_each iteration.
-pub fn expand_gk_bindings(
-    ops: &mut [nb_workload::model::ParsedOp],
-    workload_params: &HashMap<String, String>,
-    phases: &HashMap<String, nb_workload::model::WorkloadPhase>,
-) {
-    // Phase 1: string substitution in GK source AND op template strings
-    if !workload_params.is_empty() {
-        for op in ops.iter_mut() {
-            if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                for (key, value) in workload_params {
-                    let placeholder = format!("{{{key}}}");
-                    if src.contains(&placeholder) {
-                        *src = src.replace(&placeholder, value);
-                    }
-                }
-            }
-            for value in op.op.values_mut() {
-                if let Some(s) = value.as_str() {
-                    let mut rewritten = s.to_string();
-                    let mut changed = false;
-                    for (key, param_value) in workload_params {
-                        let placeholder = format!("{{{key}}}");
-                        if rewritten.contains(&placeholder) {
-                            rewritten = rewritten.replace(&placeholder, param_value);
-                            changed = true;
-                        }
-                    }
-                    if changed {
-                        *value = serde_json::Value::String(rewritten);
-                    }
-                }
-            }
-        }
-
-        // Phase 2: inject param bindings into GK source
-        let mut op_refs: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for op in ops.iter() {
-            for value in op.op.values() {
-                if let Some(s) = value.as_str() {
-                    for name in nb_workload::bindpoints::referenced_bindings(s) {
-                        if workload_params.contains_key(&name) {
-                            op_refs.insert(name);
-                        }
-                    }
-                }
-            }
-        }
-        for phase in phases.values() {
-            for config_val in [&phase.cycles].into_iter().flatten() {
-                if config_val.starts_with('{') && config_val.ends_with('}') {
-                    let name = &config_val[1..config_val.len()-1];
-                    if workload_params.contains_key(name) {
-                        op_refs.insert(name.to_string());
-                    }
-                }
-            }
-        }
-        if !op_refs.is_empty() {
-            for op in ops.iter_mut() {
-                if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                    for name in &op_refs {
-                        let def_pattern = format!("{name} :=");
-                        if src.contains(&def_pattern) {
-                            continue;
-                        }
-                        let value = &workload_params[name];
-                        let binding = if value.parse::<u64>().is_ok() || value.parse::<f64>().is_ok() {
-                            format!("\n{name} := {value}")
-                        } else {
-                            format!("\n{name} := \"{value}\"")
-                        };
-                        src.push_str(&binding);
-                    }
-                }
-            }
-        }
-    }
-
-    // Phase 3: rewrite inline expressions in op templates to GK bindings
-    {
-        let mut inline_idx = 0usize;
-        let mut expr_to_name: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-
-        for op in ops.iter() {
-            for value in op.op.values() {
-                if let Some(s) = value.as_str() {
-                    for bp in nb_workload::bindpoints::extract_bind_points(s) {
-                        if let nb_workload::bindpoints::BindPoint::InlineDefinition(ref expr) = bp {
-                            if !expr_to_name.contains_key(expr) {
-                                let name = format!("__expr_{inline_idx}");
-                                inline_idx += 1;
-                                expr_to_name.insert(expr.clone(), name);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if !expr_to_name.is_empty() {
-            for op in ops.iter_mut() {
-                if let nb_workload::model::BindingsDef::GkSource(ref mut src) = op.bindings {
-                    for (expr, name) in &expr_to_name {
-                        let def_pattern = format!("{name} :=");
-                        if !src.contains(&def_pattern) {
-                            src.push_str(&format!("\n{name} := {expr}"));
-                        }
-                    }
-                }
-            }
-
-            for op in ops.iter_mut() {
-                for value in op.op.values_mut() {
-                    if let Some(s) = value.as_str() {
-                        let mut rewritten = s.to_string();
-                        for (expr, name) in &expr_to_name {
-                            rewritten = rewritten.replace(
-                                &format!("{{{{{expr}}}}}"),
-                                &format!("{{{name}}}"),
-                            );
-                            rewritten = rewritten.replace(
-                                &format!("{{:={expr}:=}}"),
-                                &format!("{{{name}}}"),
-                            );
-                            rewritten = rewritten.replace(
-                                &format!("{{:={expr}}}"),
-                                &format!("{{{name}}}"),
-                            );
-                            rewritten = rewritten.replace(
-                                &format!("{{{expr}}}"),
-                                &format!("{{{name}}}"),
-                            );
-                        }
-                        *value = serde_json::Value::String(rewritten);
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Resolve a phase's `for_each` directive into iteration bindings.
 ///
 /// Parses `"varname in expr(...)"`, evaluates the expression as a GK
@@ -1187,6 +1069,28 @@ fn collect_param_references(workload: &nb_workload::model::Workload) -> std::col
                 | nb_workload::model::ScenarioNode::DoUntil { children, .. } => {
                     scan_scenario_nodes(children, refs);
                 }
+                nb_workload::model::ScenarioNode::ForCombinations { specs, children } => {
+                    // Scan each combination expression for param references
+                    for (_, expr) in specs {
+                        let bytes = expr.as_bytes();
+                        let mut i = 0;
+                        while i < bytes.len() {
+                            if bytes[i] == b'{' {
+                                if let Some(end) = expr[i + 1..].find('}') {
+                                    let name = &expr[i + 1..i + 1 + end];
+                                    if !name.is_empty()
+                                        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                                        && !name.bytes().next().unwrap().is_ascii_digit()
+                                    {
+                                        refs.insert(name.to_string());
+                                    }
+                                    i += end + 2;
+                                } else { break; }
+                            } else { i += 1; }
+                        }
+                    }
+                    scan_scenario_nodes(children, refs);
+                }
             }
         }
     }
@@ -1262,6 +1166,11 @@ fn format_scenario_tree(nodes: &[nb_workload::model::ScenarioNode]) -> String {
             let inner = format_scenario_tree(children);
             let ctr = counter.as_deref().map(|c| format!(" ({c})")).unwrap_or_default();
             format!("do_until '{condition}'{ctr}: [{inner}]")
+        }
+        nb_workload::model::ScenarioNode::ForCombinations { specs, children } => {
+            let inner = format_scenario_tree(children);
+            let vars: Vec<&str> = specs.iter().map(|(v, _)| v.as_str()).collect();
+            format!("for_combinations [{}]: [{inner}]", vars.join(", "))
         }
     }).collect();
     parts.join(", ")
@@ -1409,110 +1318,6 @@ pub fn extract_manifest(program: &nb_variates::kernel::GkProgram) -> Vec<Manifes
             ManifestEntry { name, port_type, modifier }
         })
         .collect()
-}
-
-/// Generate `extern` declarations for names in the outer manifest
-/// that are referenced in the inner ops but not defined in the inner
-/// bindings. Returns the extern source text to prepend.
-pub fn generate_auto_externs(
-    inner_ops: &[nb_workload::model::ParsedOp],
-    outer_manifest: &[ManifestEntry],
-) -> Result<String, String> {
-    // Collect names defined in the inner bindings
-    let mut inner_defined: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for op in inner_ops {
-        if let nb_workload::model::BindingsDef::GkSource(ref src) = op.bindings {
-            for line in src.lines() {
-                let trimmed = line.trim();
-                // Skip comments and blank lines
-                if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") {
-                    continue;
-                }
-                // Extract binding name from "name := ..." or "inputs := ..."
-                if let Some(pos) = trimmed.find(":=") {
-                    let lhs = trimmed[..pos].trim();
-                    // Handle destructuring: (a, b) := ...
-                    if lhs.starts_with('(') && lhs.ends_with(')') {
-                        let inner = &lhs[1..lhs.len()-1];
-                        for part in inner.split(',') {
-                            inner_defined.insert(part.trim().to_string());
-                        }
-                    } else if lhs == "inputs" || lhs == "coordinates" {
-                        // inputs declaration — extract coordinate names
-                        let rhs = trimmed[pos+2..].trim();
-                        if rhs.starts_with('(') {
-                            let names = rhs.trim_start_matches('(').trim_end_matches(')');
-                            for name in names.split(',') {
-                                inner_defined.insert(name.trim().to_string());
-                            }
-                        }
-                    } else if lhs.starts_with("extern") {
-                        // extern declarations — not inner-defined bindings
-                    } else if lhs.starts_with("shared ") || lhs.starts_with("final ") {
-                        // shared/final prefix: extract the actual name
-                        let name = lhs.split_whitespace().nth(1).unwrap_or("");
-                        if !name.is_empty() {
-                            inner_defined.insert(name.to_string());
-                        }
-                    } else if lhs == "init" || lhs.starts_with("init ") {
-                        let name = lhs.split_whitespace().nth(1).unwrap_or("");
-                        if !name.is_empty() {
-                            inner_defined.insert(name.to_string());
-                        }
-                    } else {
-                        inner_defined.insert(lhs.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    // Collect names referenced in op templates
-    let mut referenced: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for op in inner_ops {
-        for value in op.op.values() {
-            if let Some(s) = value.as_str() {
-                for name in nb_workload::bindpoints::referenced_bindings(s) {
-                    referenced.insert(name);
-                }
-            }
-        }
-        // Also check condition and delay fields
-        if let Some(ref cond) = op.condition {
-            let bare = cond.trim().strip_prefix('{').and_then(|s| s.strip_suffix('}')).unwrap_or(cond.trim());
-            referenced.insert(bare.to_string());
-        }
-    }
-
-    // Check for final shadowing violations: inner scope must not
-    // redefine names that are `final` in the outer scope
-    for entry in outer_manifest {
-        if entry.modifier == nb_variates::dsl::ast::BindingModifier::Final
-            && inner_defined.contains(&entry.name)
-        {
-            return Err(format!(
-                "cannot shadow 'final' binding '{}' from outer scope",
-                entry.name
-            ));
-        }
-    }
-
-    // Generate extern declarations for outer names that are
-    // referenced but not defined in the inner scope
-    let mut externs = String::new();
-    for entry in outer_manifest {
-        if referenced.contains(&entry.name) && !inner_defined.contains(&entry.name) {
-            let type_name = match entry.port_type {
-                nb_variates::node::PortType::U64 => "u64",
-                nb_variates::node::PortType::F64 => "f64",
-                nb_variates::node::PortType::Str => "String",
-                nb_variates::node::PortType::Bool => "bool",
-                _ => "String",
-            };
-            externs.push_str(&format!("extern {}: {}\n", entry.name, type_name));
-        }
-    }
-    Ok(externs)
 }
 
 /// Build the gauge column filter from phase-level `summary:` configs.

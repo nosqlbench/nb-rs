@@ -665,6 +665,59 @@ shared init budget = 100         # combined: shared + init-time
   The runner enforces this at compile time when generating
   auto-extern declarations.
 
+### Cursor Declaration
+
+A cursor is a named `u64` position tracker that drives data
+access. The `cursor` keyword declares a cursor and wires it
+to a constructor that determines its data source:
+
+```
+cursor base = dataset_source("sift1m:label_00", "base")
+cursor users = range(0, 1000000)
+```
+
+The cursor itself is just a position value (a `u64` ordinal).
+It does not carry fields or schema — it is a pure position
+tracker. Data access happens through **accessor functions**
+that take the cursor's ordinal as input and return typed values:
+
+```
+cursor base = dataset_source("sift1m:label_00", "base")
+id := format_u64(base, 10)
+train_vector := vector_at(base, "sift1m:label_00")
+```
+
+Here `base` resolves to the cursor's current ordinal value.
+Accessor functions like `vector_at` use that ordinal to look up
+the corresponding data. This separation means the cursor is a
+simple GK node with a `u64` output, and all data access is
+expressed through standard GK function composition.
+
+**Cursor-to-accessor wiring**: the compiler resolves `base`
+in accessor function arguments to the cursor node's output.
+The cursor node is an input to the GK graph — the runtime
+advances it externally, and downstream accessor nodes
+re-evaluate via standard provenance-based invalidation.
+
+**Phase completion** is determined by cursor exhaustion. When
+all cursors in a phase are exhausted (no more positions to
+advance to), the phase completes. This replaces `cycles:` for
+cursor-driven phases.
+
+**Planned: auto-cursors.** When a phase references accessor
+functions that imply a data source but no explicit cursor is
+declared, the compiler will auto-generate a cursor. This
+reduces boilerplate for single-source phases.
+
+**Planned: cardinality discovery.** The cursor's extent
+(total number of positions) is discovered at init time by
+interrogating the constructor's data source. This enables
+automatic cycle count derivation and progress reporting.
+
+**Cursor constructor types:**
+- `range(start, end)` — finite ordinal sequence (replaces `cycles:`)
+- `dataset_source(spec, facet)` — dataset vectors, queries, metadata
+
 ### Scope Configuration
 
 `for_each` phases support two scope knobs:

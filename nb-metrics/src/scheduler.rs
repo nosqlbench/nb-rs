@@ -199,6 +199,8 @@ impl SchedulerHandle {
         let running = self.running.clone();
         let store = self.store.clone();
 
+        let (frame_tx, frame_rx) = std::sync::mpsc::channel::<MetricsFrame>();
+
         *running.lock().unwrap_or_else(|e| e.into_inner()) = true;
 
         let stop_running = running.clone();
@@ -214,6 +216,17 @@ impl SchedulerHandle {
                     thread::sleep(next_tick - now);
                 }
                 next_tick += interval;
+
+                // Drain async frame channel (lifecycle flushes from executor)
+                while let Ok(frame) = frame_rx.try_recv() {
+                    let mut root = root.lock().unwrap_or_else(|e| e.into_inner());
+                    for reporter in &mut root.reporters {
+                        reporter.report(&frame);
+                    }
+                    for child in &mut root.children {
+                        child.ingest(frame.clone());
+                    }
+                }
 
                 // Capture per-component deltas from the tree
                 let component_frames = (capture)();
@@ -281,6 +294,16 @@ impl SchedulerHandle {
                     }
                 }
             }
+            // Drain any remaining async frames before final flush
+            while let Ok(frame) = frame_rx.try_recv() {
+                let mut r = root.lock().unwrap_or_else(|e| e.into_inner());
+                for reporter in &mut r.reporters {
+                    reporter.report(&frame);
+                }
+                for child in &mut r.children {
+                    child.ingest(frame.clone());
+                }
+            }
             // Flush all reporters on shutdown
             flush_tree(&mut root.lock().unwrap_or_else(|e| e.into_inner()));
         });
@@ -290,6 +313,7 @@ impl SchedulerHandle {
             store: self.store,
             root: root_for_stop,
             thread: Some(handle),
+            frame_tx,
         }
     }
 }
@@ -307,8 +331,13 @@ fn flush_tree(node: &mut ScheduleNode) {
 pub struct StopHandle {
     running: Arc<Mutex<bool>>,
     store: Arc<RwLock<InProcessMetricsStore>>,
+    #[allow(dead_code)] // retained for future direct-flush access
     root: Arc<Mutex<ScheduleNode>>,
     thread: Option<thread::JoinHandle<()>>,
+    /// Channel for async frame delivery — the executor sends frames
+    /// here instead of writing to reporters inline. The scheduler
+    /// thread drains this channel on each tick.
+    frame_tx: std::sync::mpsc::Sender<MetricsFrame>,
 }
 
 impl StopHandle {
@@ -327,19 +356,13 @@ impl StopHandle {
         &self.store
     }
 
-    /// Deliver a frame directly to all reporters on the root node.
+    /// Deliver a frame to reporters asynchronously.
     ///
-    /// Used for lifecycle flush: the executor captures a final delta
-    /// and needs it delivered to SQLite (and other reporters) outside
-    /// the scheduler tick loop.
+    /// The frame is enqueued on a channel and processed by the
+    /// scheduler thread on its next tick. This never blocks the
+    /// caller — safe to call from tokio worker threads.
     pub fn report_frame(&self, frame: &MetricsFrame) {
-        let mut root = self.root.lock().unwrap_or_else(|e| e.into_inner());
-        for reporter in &mut root.reporters {
-            reporter.report(frame);
-        }
-        for child in &mut root.children {
-            child.ingest(frame.clone());
-        }
+        let _ = self.frame_tx.send(frame.clone());
     }
 }
 
