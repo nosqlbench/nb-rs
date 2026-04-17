@@ -381,7 +381,7 @@ impl Activity {
         let metrics = Arc::new(ActivityMetrics::new(&labels));
         let error_router = ErrorRouter::parse(&config.error_spec)
             .unwrap_or_else(|e| {
-                eprintln!("warning: invalid error spec '{}': {e}; using default (warn,stop)", config.error_spec);
+                crate::diag!(crate::observer::LogLevel::Warn, "warning: invalid error spec '{}': {e}; using default (warn,stop)", config.error_spec);
                 ErrorRouter::default_stop()
             });
         // All phases go through sources. cycles: N desugars to range(0, N).
@@ -444,7 +444,7 @@ impl Activity {
 
         // Validate all bind points are resolvable before execution
         if let Err(e) = crate::synthesis::validate_bind_points(templates, &program) {
-            eprintln!("error: {e}");
+            crate::diag!(crate::observer::LogLevel::Error, "error: {e}");
             return true;
         }
 
@@ -464,13 +464,13 @@ impl Activity {
                 Some(a) => a,
                 None => {
                     let available = adapters.keys().cloned().collect::<Vec<_>>().join(", ");
-                    eprintln!("error: unknown adapter '{adapter_name}' for op '{}' (available: {available})", template.name);
+                    crate::diag!(crate::observer::LogLevel::Error, "error: unknown adapter '{adapter_name}' for op '{}' (available: {available})", template.name);
                     return true; // signal stop — cannot proceed without the adapter
                 }
             };
 
             if template.params.contains_key("batch") {
-                eprintln!("[activity] op '{}' has batch param: {:?}", template.name, template.params.get("batch"));
+                crate::diag!(crate::observer::LogLevel::Debug, "[activity] op '{}' has batch param: {:?}", template.name, template.params.get("batch"));
             }
             match adapter.map_op(template) {
                 Ok(d) => {
@@ -523,7 +523,8 @@ impl Activity {
                             .map(|s| s.to_string());
                         let (dispenser, poll_metrics) =
                             crate::wrappers::PollingDispenser::wrap(conditional, interval, timeout, metric_name);
-                        eprintln!("  op '{}': polling enabled (interval={}ms, timeout={}ms)",
+                        crate::diag!(crate::observer::LogLevel::Debug,
+                            "  op '{}': polling enabled (interval={}ms, timeout={}ms)",
                             template.name, interval, timeout);
                         let _ = poll_metrics; // metrics accessible via Arc if needed
                         dispenser
@@ -556,7 +557,7 @@ impl Activity {
                     extra_bindings_per_template.push(extras);
                 }
                 Err(e) => {
-                    eprintln!("error: adapter.map_op failed for '{}': {e}", template.name);
+                    crate::diag!(crate::observer::LogLevel::Error, "error: adapter.map_op failed for '{}': {e}", template.name);
                     return true;
                 }
             }
@@ -700,9 +701,9 @@ impl Activity {
         for handle in handles {
             if let Err(e) = handle.await {
                 if e.is_panic() {
-                    eprintln!("error: executor fiber panicked: {e}");
+                    crate::diag!(crate::observer::LogLevel::Error, "error: executor fiber panicked: {e}");
                 } else {
-                    eprintln!("error: executor fiber failed: {e}");
+                    crate::diag!(crate::observer::LogLevel::Error, "error: executor fiber failed: {e}");
                 }
                 activity.metrics.errors_total.inc();
                 activity.stop_flag.store(true, Ordering::Relaxed);

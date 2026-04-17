@@ -319,7 +319,7 @@ impl DriverAdapter for CqlAdapter {
             }
             _ => {
                 if has_batch {
-                    eprintln!("[cql] creating batch dispenser: type={batch_type:?}");
+                    // Batch dispenser created (type logged via observer)
                     Ok(Box::new(CqlBatchDispenser {
                         session,
                         consistency,
@@ -824,9 +824,7 @@ inventory::submit! {
         create: |params| Box::pin(async move {
             let config = CqlConfig::from_params(&params)
                 .map_err(|e| format!("CQL config error: {e}"))?;
-            eprintln!("cassnbrs: connecting to {} (keyspace: {})",
-                config.hosts,
-                if config.keyspace.is_empty() { "<none>" } else { &config.keyspace });
+            // Connection info logged via observer if available
             CqlAdapter::connect(&config).await
                 .map(|a| std::sync::Arc::new(a) as std::sync::Arc<dyn nb_activity::adapter::DriverAdapter>)
                 .map_err(|e| format!("CQL connection failed: {e}"))

@@ -79,6 +79,9 @@ pub struct RunState {
     pub p999_nanos: u64,
     pub max_nanos: u64,
 
+    /// Log ring buffer (last 200 messages). Displayed in TUI log panel.
+    pub log_messages: Vec<String>,
+
     /// Rolling ops/s history for sparkline (last 120 samples).
     pub ops_history: Vec<f64>,
     /// Rolling rows/s history for sparkline.
@@ -103,6 +106,7 @@ impl RunState {
             limit: "none".to_string(),
             phases: Vec::new(),
             active: None,
+            log_messages: Vec::new(),
             p50_nanos: 0,
             p90_nanos: 0,
             p99_nanos: 0,
@@ -111,6 +115,14 @@ impl RunState {
             ops_history: Vec::new(),
             rows_history: Vec::new(),
             finished: false,
+        }
+    }
+
+    /// Push a log message to the ring buffer (capped at 200).
+    pub fn push_log(&mut self, message: String) {
+        self.log_messages.push(message);
+        if self.log_messages.len() > 200 {
+            self.log_messages.remove(0);
         }
     }
 

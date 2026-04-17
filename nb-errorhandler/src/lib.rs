@@ -12,7 +12,7 @@
 mod detail;
 mod handler;
 mod router;
-mod handlers;
+pub mod handlers;
 
 pub use detail::{ErrorDetail, Retry};
 pub use handler::ErrorHandler;

@@ -7,6 +7,19 @@
 //! or fail. The TUI implements this to update its display state.
 //! The default stderr observer prints phase progress lines.
 
+/// Log level for diagnostic messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LogLevel {
+    /// Detailed diagnostics (parse notes, connection info)
+    Debug,
+    /// Normal operational messages (phase info, metrics paths)
+    Info,
+    /// Warnings (CQL driver warnings, recoverable errors)
+    Warn,
+    /// Errors (phase failures, binding errors)
+    Error,
+}
+
 /// Lifecycle events from the executor.
 pub trait RunObserver: Send + Sync {
     /// A phase is about to start executing.
@@ -23,6 +36,11 @@ pub trait RunObserver: Send + Sync {
 
     /// The entire run is complete.
     fn run_finished(&self);
+
+    /// Diagnostic log message. Routed to stderr in CLI mode,
+    /// to a ring buffer in TUI mode. All `eprintln!` in the
+    /// runtime should go through this instead.
+    fn log(&self, level: LogLevel, message: &str);
 
     /// Whether to suppress the inline stderr progress line
     /// (because the TUI is handling display).
@@ -49,6 +67,36 @@ pub struct PhaseProgressUpdate {
     pub rows_per_batch: f64,
 }
 
+/// Global observer for code that can't thread the observer through.
+/// Set once at run start, remains for the process lifetime.
+static GLOBAL_OBSERVER: std::sync::OnceLock<Arc<dyn RunObserver>> = std::sync::OnceLock::new();
+
+/// Set the global observer. Called once by the runner at startup.
+pub fn set_global_observer(observer: Arc<dyn RunObserver>) {
+    let _ = GLOBAL_OBSERVER.set(observer);
+}
+
+/// Log a diagnostic message through the global observer.
+/// Safe to call from anywhere — falls back to stderr if no
+/// observer is set.
+pub fn log(level: LogLevel, message: &str) {
+    if let Some(obs) = GLOBAL_OBSERVER.get() {
+        obs.log(level, message);
+    } else {
+        eprintln!("{message}");
+    }
+}
+
+/// Convenience macros for logging through the global observer.
+#[macro_export]
+macro_rules! diag {
+    ($level:expr, $($arg:tt)*) => {
+        $crate::observer::log($level, &format!($($arg)*))
+    };
+}
+
+use std::sync::Arc;
+
 /// Default observer: prints to stderr (current behavior).
 pub struct StderrObserver;
 
@@ -72,5 +120,9 @@ impl RunObserver for StderrObserver {
 
     fn run_finished(&self) {
         eprintln!("all phases complete");
+    }
+
+    fn log(&self, _level: LogLevel, message: &str) {
+        eprintln!("{message}");
     }
 }

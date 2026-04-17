@@ -25,7 +25,6 @@ params:
 summary: "recall; mean(recall) over profile~label"
 
 bindings: |
-  inputs := (cycle)
   profiles := matching_profiles("{dataset}", "{prefix}")
 
 scenarios:

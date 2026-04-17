@@ -647,7 +647,7 @@ fn normalize_op_object(
     let mut op_params = op_params;
     for ap in &activity_params {
         if let Some(val) = map.get(*ap) {
-            eprintln!("[parse] op '{}': excising activity param '{}' = {}", name, ap, val);
+            // Activity params excised from op fields into params map
             op_params.insert(ap.to_string(), val.clone());
         }
     }

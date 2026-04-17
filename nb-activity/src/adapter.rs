@@ -171,6 +171,26 @@ pub trait DriverAdapter: Send + Sync + 'static {
     /// and a display label. Workloads can override this via a `status:`
     /// field on phases or ops. Default: empty (no adapter-specific status).
     fn default_status_metrics(&self) -> Vec<StatusMetric> { Vec::new() }
+
+    /// Preferred display mode for this adapter.
+    ///
+    /// When multiple adapters are involved in a workload, the runtime
+    /// uses the most restrictive (lowest) mode. Adapters that use
+    /// raw terminal output (plotter) return `Off` to prevent the TUI
+    /// from entering alternate screen.
+    ///
+    /// - `Auto`: adapter is compatible with TUI (default)
+    /// - `Off`: adapter requires raw stderr/stdout, TUI must not activate
+    fn display_preference(&self) -> DisplayPreference { DisplayPreference::Auto }
+}
+
+/// Adapter display preference for TUI activation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DisplayPreference {
+    /// TUI must not activate — adapter uses raw terminal output.
+    Off = 0,
+    /// Adapter is compatible with TUI (default for most adapters).
+    Auto = 1,
 }
 
 /// A metric to display on the activity status line.

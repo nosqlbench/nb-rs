@@ -99,7 +99,7 @@ pub fn execute_tree<'a>(
                     let (var, values) = resolve_expr(
                         &spec, &ctx.workload_params, bindings, &ctx.outer_scope_values)?;
                     if !ctx.quiet() {
-                        eprintln!("  for_each {var} in [{}] ({} iterations)",
+                        crate::diag!(crate::observer::LogLevel::Debug, "  for_each {var} in [{}] ({} iterations)",
                             values.join(", "), values.len());
                     }
                     for value in &values {
@@ -118,7 +118,7 @@ pub fn execute_tree<'a>(
                 let (var, values) = resolve_expr(
                     spec, &ctx.workload_params, bindings, &ctx.outer_scope_values)?;
                 if !ctx.quiet() {
-                    eprintln!("for_each {var} in [{}] ({} iterations × {} children)",
+                    crate::diag!(crate::observer::LogLevel::Debug, "for_each {var} in [{}] ({} iterations × {} children)",
                         values.join(", "), values.len(), children.len());
                 }
                 for value in &values {
@@ -168,7 +168,7 @@ pub fn execute_tree<'a>(
                             }
                             let total_hint = values.len();
                             if !ctx.quiet() {
-                                eprintln!("for_combinations [{}] ({total_hint}+ combinations × {} children)",
+                                crate::diag!(crate::observer::LogLevel::Debug, "for_combinations [{}] ({total_hint}+ combinations × {} children)",
                                     dims.join(" × "), children.len());
                             }
                         }
@@ -187,7 +187,7 @@ pub fn execute_tree<'a>(
             }
             ScenarioNode::DoWhile { condition, counter, children } => {
                 // do_while is transparent to labels — no label push
-                eprintln!("=== do_while: {condition} ===");
+                crate::diag!(crate::observer::LogLevel::Debug, "=== do_while: {condition} ===");
                 let mut i = 0u64;
                 loop {
                     let mut inner = bindings.clone();
@@ -195,12 +195,12 @@ pub fn execute_tree<'a>(
                     execute_tree(ctx, children, &inner).await?;
                     i += 1;
                     // TODO: evaluate condition from last op result / GK expr
-                    eprintln!("  (do_while: executed {i} iteration(s), condition eval pending)");
+                    crate::diag!(crate::observer::LogLevel::Debug, "  (do_while: executed {i} iteration(s), condition eval pending)");
                     break; // stub: one iteration
                 }
             }
             ScenarioNode::DoUntil { condition, counter, children } => {
-                eprintln!("=== do_until: {condition} ===");
+                crate::diag!(crate::observer::LogLevel::Debug, "=== do_until: {condition} ===");
                 let mut i = 0u64;
                 loop {
                     let mut inner = bindings.clone();
@@ -208,7 +208,7 @@ pub fn execute_tree<'a>(
                     execute_tree(ctx, children, &inner).await?;
                     i += 1;
                     // TODO: evaluate condition from last op result / GK expr
-                    eprintln!("  (do_until: executed {i} iteration(s), condition eval pending)");
+                    crate::diag!(crate::observer::LogLevel::Debug, "  (do_until: executed {i} iteration(s), condition eval pending)");
                     break; // stub: one iteration
                 }
             }
@@ -232,10 +232,10 @@ async fn run_phase(
     let is_iter = !bindings.is_empty();
 
     if !ctx.observer.suppresses_stderr() {
-        eprintln!("=== phase: {phase_name} ===");
+        crate::diag!(crate::observer::LogLevel::Info, "=== phase: {phase_name} ===");
         if is_iter {
             for (var, val) in bindings {
-                if !val.is_empty() { eprintln!("  {var}={val}"); }
+                if !val.is_empty() { crate::diag!(crate::observer::LogLevel::Debug, "  {var}={val}"); }
             }
         }
     }
@@ -307,7 +307,7 @@ async fn run_phase(
 
     let op_sequence = OpSequence::from_ops(iter_ops, ctx.seq_type);
     if op_sequence.stanza_length() == 0 {
-        eprintln!("warning: phase '{phase_name}' has no ops, skipping");
+        crate::diag!(crate::observer::LogLevel::Warn, "warning: phase '{phase_name}' has no ops, skipping");
         return Ok(());
     }
 
@@ -315,7 +315,7 @@ async fn run_phase(
     let stanza_len = op_sequence.stanza_length() as u64;
     let spec = phase.cycles.as_deref().unwrap_or("");
     let phase_cycles = if spec == "==auto" {
-        eprintln!("  cycles: auto ({stanza_len} ops = {stanza_len} cycles)");
+        crate::diag!(crate::observer::LogLevel::Debug, "  cycles: auto ({stanza_len} ops = {stanza_len} cycles)");
         stanza_len
     } else if spec == "===auto" || spec.is_empty() {
         stanza_len
@@ -347,7 +347,7 @@ async fn run_phase(
         crate::describe::print_kernel_analysis(phase_name, &note, &iter_program);
     }
     if ctx.diag.depth == crate::runner::ExecDepth::Phase {
-        eprintln!("phase '{phase_name}' complete");
+        crate::diag!(crate::observer::LogLevel::Info, "phase '{phase_name}' complete");
         return Ok(());
     }
 

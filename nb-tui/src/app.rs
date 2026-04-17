@@ -296,7 +296,8 @@ impl App {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let spark_width = inner.width.saturating_sub(12) as usize;
+        // Reserve: 9 chars prefix ("  ops/s  ") + 7 chars suffix (" 1.6K\n")
+        let spark_width = inner.width.saturating_sub(17) as usize;
 
         if inner.height >= 1 {
             let ops_spark = widgets::sparkline_str(&state.ops_history, spark_width);

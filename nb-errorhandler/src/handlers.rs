@@ -3,6 +3,30 @@
 
 //! Built-in error handler implementations.
 
+use std::sync::atomic::AtomicPtr;
+
+/// Global log function pointer. Set by the runtime to route
+/// error handler messages through the observer instead of stderr.
+/// Default: write to stderr.
+static LOG_FN: AtomicPtr<()> = AtomicPtr::new(default_log as *mut ());
+
+type LogFn = fn(&str);
+
+fn default_log(msg: &str) {
+    eprintln!("{msg}");
+}
+
+/// Set the global log function for error handlers.
+pub fn set_log_fn(f: LogFn) {
+    LOG_FN.store(f as *mut (), std::sync::atomic::Ordering::Release);
+}
+
+fn emit(msg: &str) {
+    let ptr = LOG_FN.load(std::sync::atomic::Ordering::Acquire);
+    let f: LogFn = unsafe { std::mem::transmute(ptr) };
+    f(msg);
+}
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -25,7 +49,7 @@ pub struct WarnHandler;
 
 impl ErrorHandler for WarnHandler {
     fn handle(&self, name: &str, error_msg: &str, cycle: u64, _duration_nanos: u64, detail: ErrorDetail) -> ErrorDetail {
-        eprintln!("WARN error at cycle {cycle}: [{name}] {error_msg}");
+        emit(&format!("WARN error at cycle {cycle}: [{name}] {error_msg}"));
         detail
     }
 }
@@ -35,7 +59,7 @@ pub struct ErrorLogHandler;
 
 impl ErrorHandler for ErrorLogHandler {
     fn handle(&self, name: &str, error_msg: &str, cycle: u64, _duration_nanos: u64, detail: ErrorDetail) -> ErrorDetail {
-        eprintln!("ERROR at cycle {cycle}: [{name}] {error_msg}");
+        emit(&format!("ERROR at cycle {cycle}: [{name}] {error_msg}"));
         detail
     }
 }

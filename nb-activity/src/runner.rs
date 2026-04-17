@@ -76,7 +76,7 @@ impl DiagnosticConfig {
                 "full" => { config.depth = ExecDepth::Full; depth_set = true; }
                 "gk" => config.explain_gk = true,
                 "labels" => config.show_labels = true,
-                _ => eprintln!("warning: unknown dryrun flag '{flag}'"),
+                _ => crate::diag!(crate::observer::LogLevel::Warn, "warning: unknown dryrun flag '{flag}'"),
             }
         }
         // Default to phase depth if no explicit depth was given
@@ -112,6 +112,14 @@ pub async fn run_with_observer(
 
 /// Core runner. Diagnostic mode is controlled by `dryrun=` param.
 async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserver>) -> Result<(), String> {
+    // Set global observer so all code can log through it
+    crate::observer::set_global_observer(observer.clone());
+
+    // Wire error handler logging through the observer
+    nb_errorhandler::handlers::set_log_fn(|msg| {
+        crate::observer::log(crate::observer::LogLevel::Warn, msg);
+    });
+
     let mut diag = DiagnosticConfig::normal();
 
     // Detect scenario shorthand: `workload.yaml <scenario_name>` → `scenario=<name>`
@@ -122,7 +130,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     let mut workload_file: Option<String> = None;
     let workload = if let Some(op_str) = params.get("op") {
         if params.contains_key("workload") {
-            eprintln!("warning: op= overrides workload=");
+            crate::diag!(crate::observer::LogLevel::Warn, "warning: op= overrides workload=");
         }
         nb_workload::inline::synthesize_inline_workload(op_str)
             .map_err(|e| format!("inline workload: {e}"))?
@@ -270,14 +278,14 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     }
 
     if phases.is_empty() {
-        eprintln!("{} ops, {} cycles, concurrency={}, adapter={}",
+        crate::diag!(crate::observer::LogLevel::Info, "{} ops, {} cycles, concurrency={}, adapter={}",
             ops.len(),
             explicit_cycles.map(|c| c.to_string()).unwrap_or("auto".into()),
             concurrency,
             driver);
     } else {
         if !observer.suppresses_stderr() {
-            eprintln!("{} phases, {} top-level ops, adapter={}",
+            crate::diag!(crate::observer::LogLevel::Info, "{} phases, {} top-level ops, adapter={}",
                 phases.len(), ops.len(), driver);
         }
     }
@@ -327,11 +335,11 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 r.set_metadata(&format!("param.{k}"), v);
             }
             if !observer.suppresses_stderr() {
-                eprintln!("metrics: {sqlite_path}");
+                crate::diag!(crate::observer::LogLevel::Info, "metrics: {sqlite_path}");
             }
             r
         })
-        .map_err(|e| eprintln!("warning: SQLite metrics disabled: {e}"))
+        .map_err(|e| crate::diag!(crate::observer::LogLevel::Warn, "warning: SQLite metrics disabled: {e}"))
         .ok();
     let sqlite_reporter = std::sync::Arc::new(std::sync::Mutex::new(sqlite_reporter));
 
@@ -484,7 +492,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         let scenario_nodes = resolve_scenario(&scenarios, &phase_order, scenario_name)?;
 
         if !observer.suppresses_stderr() {
-            eprintln!("scenario '{scenario_name}': {}", format_scenario_tree(&scenario_nodes));
+            crate::diag!(crate::observer::LogLevel::Info, "scenario '{scenario_name}': {}", format_scenario_tree(&scenario_nodes));
         }
 
         // Build the centralized metrics scheduler with component tree.
@@ -594,7 +602,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
 
         let cycles = if let Some(c) = resolved_cli_cycles {
             if explicit_cycles.is_none() && params.contains_key("cycles") {
-                eprintln!("cycles={c} (from GK constant)");
+                crate::diag!(crate::observer::LogLevel::Debug, "cycles={c} (from GK constant)");
             }
             c
         } else {
@@ -637,9 +645,9 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     }
 
     if dry_run.is_some() {
-        if !observer.suppresses_stderr() { eprintln!("dry-run complete."); }
+        crate::diag!(crate::observer::LogLevel::Info, "dry-run complete.");
     } else {
-        if !observer.suppresses_stderr() { eprintln!("done."); }
+        crate::diag!(crate::observer::LogLevel::Info, "done.");
     }
 
     // Print summary report.
@@ -987,11 +995,11 @@ fn resolve_for_each(
     values.sort();
 
     if values.is_empty() {
-        eprintln!("warning: for_each '{spec}' produced no values, skipping phase");
+        crate::diag!(crate::observer::LogLevel::Warn, "warning: for_each '{spec}' produced no values, skipping phase");
         return Ok(vec![]);
     }
 
-    eprintln!("for_each: {var_name} in [{values}] ({} iterations)",
+    crate::diag!(crate::observer::LogLevel::Debug, "for_each: {var_name} in [{values}] ({} iterations)",
         values.len(),
         values = values.join(", "));
 
@@ -1150,8 +1158,8 @@ pub fn resolve_gk_config(value: &str, kernel: &nb_variates::kernel::GkKernel) ->
         match nb_variates::dsl::compile::eval_const_expr(inner) {
             Ok(v) => Some(value_to_u64(&v)),
             Err(e) => {
-                eprintln!("error: const expression failed: '{{{inner}}}'");
-                eprintln!("  {e}");
+                crate::diag!(crate::observer::LogLevel::Error, "error: const expression failed: '{{{inner}}}'");
+                crate::diag!(crate::observer::LogLevel::Error, "  {e}");
                 None
             }
         }
@@ -1280,7 +1288,7 @@ pub fn parse_params(args: &[String]) -> HashMap<String, String> {
         } else if arg.ends_with(".yaml") || arg.ends_with(".yml") {
             // Workload file path — handled elsewhere
         } else {
-            eprintln!("error: unrecognized argument '{arg}'. Expected key=value format.");
+            crate::diag!(crate::observer::LogLevel::Error, "error: unrecognized argument '{arg}'. Expected key=value format.");
             std::process::exit(1);
         }
     }

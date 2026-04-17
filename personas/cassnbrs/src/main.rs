@@ -32,8 +32,9 @@ fn main() {
         .collect();
     let params = nb_activity::runner::parse_params(&param_args);
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    let has_dryrun = params.contains_key("dryrun");
     let tui_mode = params.get("tui").map(|s| s.as_str()).unwrap_or(
-        if is_tty { "on" } else { "off" }
+        if is_tty && !has_dryrun { "on" } else { "off" }
     );
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -176,6 +177,12 @@ impl nb_activity::observer::RunObserver for TuiObserver {
     fn run_finished(&self) {
         if let Ok(mut s) = self.state.write() {
             s.finished = true;
+        }
+    }
+
+    fn log(&self, _level: nb_activity::observer::LogLevel, message: &str) {
+        if let Ok(mut s) = self.state.write() {
+            s.push_log(message.to_string());
         }
     }
 

@@ -323,6 +323,9 @@ impl DriverAdapter for PlotterAdapter {
     fn map_op(&self, _t: &ParsedOp) -> Result<Box<dyn OpDispenser>, String> {
         Ok(Box::new(PlotterDispenser { data: self.data.clone() }))
     }
+    fn display_preference(&self) -> nb_activity::adapter::DisplayPreference {
+        nb_activity::adapter::DisplayPreference::Off
+    }
 }
 
 impl Drop for PlotterAdapter {

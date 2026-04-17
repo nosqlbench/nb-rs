@@ -36,21 +36,30 @@ pub mod colors {
 
 /// Render a sparkline from a slice of values into a string of
 /// Unicode block characters: ▁▂▃▄▅▆▇█
+///
+/// Auto-ranges to the local min/max of the visible window so
+/// micro-variations are visible even when throughput is stable.
+/// A perfectly flat line renders as mid-height bars.
 pub fn sparkline_str(values: &[f64], width: usize) -> String {
     let blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     if values.is_empty() {
         return " ".repeat(width);
     }
-    let max = values.iter().cloned().fold(0.0f64, f64::max);
     let start = if values.len() > width { values.len() - width } else { 0 };
     let visible = &values[start..];
 
+    let min = visible.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = visible.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let range = max - min;
+
     let mut s = String::with_capacity(width * 3);
     for &v in visible {
-        if max <= 0.0 {
-            s.push(blocks[0]);
+        if range <= 0.0 {
+            // Flat line — show mid-height
+            s.push(blocks[4]);
         } else {
-            let idx = ((v / max) * 7.0).round() as usize;
+            let normalized = (v - min) / range;
+            let idx = (normalized * 7.0).round() as usize;
             s.push(blocks[idx.min(7)]);
         }
     }
