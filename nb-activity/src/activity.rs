@@ -39,6 +39,8 @@ pub struct ActivityConfig {
     /// from this source instead of the cycle counter. Each fiber creates
     /// its own reader via `create_reader()`.
     pub source_factory: Option<Arc<dyn nb_variates::source::DataSourceFactory>>,
+    /// Suppress the inline stderr progress line (TUI handles display).
+    pub suppress_status_line: bool,
 }
 
 impl Default for ActivityConfig {
@@ -54,6 +56,7 @@ impl Default for ActivityConfig {
             max_retries: 3,
             stanza_concurrency: 1,
             source_factory: None,
+            suppress_status_line: false,
         }
     }
 }
@@ -220,6 +223,21 @@ impl ActivityMetrics {
     /// Register dispensers for adapter-specific metrics capture.
     pub fn set_dispensers(&self, dispensers: Arc<Vec<Arc<dyn crate::adapter::OpDispenser>>>) {
         *self.dispensers.lock().unwrap_or_else(|e| e.into_inner()) = Some(dispensers);
+    }
+
+    /// Collect status counters from all registered dispensers.
+    pub fn collect_status_counters(&self) -> Vec<(String, u64)> {
+        let mut counters = Vec::new();
+        if let Ok(guard) = self.dispensers.lock() {
+            if let Some(ref disps) = *guard {
+                for disp in disps.iter() {
+                    for (name, total) in disp.status_counters() {
+                        counters.push((name.to_string(), total));
+                    }
+                }
+            }
+        }
+        counters
     }
 
     /// Compute the counter delta: current absolute value minus previous.
@@ -573,7 +591,7 @@ impl Activity {
             let name = &source_for_progress.schema().name;
             format!(" cursor={name}")
         };
-        if is_stderr_tty && total_extent > 1000 && !suppress_progress {
+        if is_stderr_tty && total_extent > 1000 && !suppress_progress && !activity.config.suppress_status_line {
             let flag = progress_flag.clone();
             let progress_metrics = activity.metrics.clone();
             let start_time = start_time;
@@ -692,7 +710,7 @@ impl Activity {
         }
 
         // Print final completion line
-        if is_stderr_tty && total_extent > 1000 && !suppress_progress {
+        if is_stderr_tty && total_extent > 1000 && !suppress_progress && !activity.config.suppress_status_line {
             let consumed = activity.source_factory.global_consumed();
             let ops_completed = activity.metrics.cycles_completed();
             let successes = activity.metrics.successes_total.get();

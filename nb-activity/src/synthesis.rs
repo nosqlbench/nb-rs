@@ -297,6 +297,53 @@ pub fn validate_bind_points(
     }
 }
 
+/// Memoized bind point plan for a prepared statement.
+///
+/// Built once per op template at activity init time. Maps each bind
+/// point name to a GK output index so per-row evaluation uses
+/// `pull_by_index` (direct indexed access) instead of name lookup.
+///
+/// The `positions` vector is ordered to match the `?` marker order
+/// in the prepared statement. Each entry is `(bind_name, gk_output_index)`.
+#[derive(Clone, Debug)]
+pub struct BindPlan {
+    positions: Vec<(String, usize)>,
+}
+
+impl BindPlan {
+    /// Build a bind plan from the bind point names (in `?` position order)
+    /// and the GK program that will provide the values.
+    ///
+    /// Returns `None` if any bind point name is not a GK output.
+    pub fn new(bind_names: &[String], program: &GkProgram) -> Option<Self> {
+        let mut positions = Vec::with_capacity(bind_names.len());
+        for name in bind_names {
+            let idx = program.output_index(name)?;
+            positions.push((name.clone(), idx));
+        }
+        Some(Self { positions })
+    }
+
+    /// Number of bind positions.
+    pub fn len(&self) -> usize {
+        self.positions.len()
+    }
+
+    /// The bind point names in position order.
+    pub fn names(&self) -> Vec<String> {
+        self.positions.iter().map(|(n, _)| n.clone()).collect()
+    }
+
+    /// Pull all bind point values from the GK state using memoized
+    /// indices. Returns values in `?` position order. No string
+    /// lookups — each pull is a direct indexed buffer access.
+    pub fn pull_values(&self, state: &mut nb_variates::kernel::GkState, program: &GkProgram) -> Vec<nb_variates::node::Value> {
+        self.positions.iter()
+            .map(|(_, idx)| state.pull_by_index(program, *idx).clone())
+            .collect()
+    }
+}
+
 impl FiberBuilder {
     /// Create a new fiber builder from a shared GK program.
     pub fn new(program: Arc<GkProgram>) -> Self {
@@ -411,50 +458,80 @@ impl FiberBuilder {
 
         let mut batch_fields = Vec::new();
         if batch_size > 0 {
-            // Cycles = rows. The current cycle is the first row in this batch.
-            // Evaluate for base_cycle + 0 through base_cycle + batch_size - 1.
-            // The executor must advance the cycle counter by batch_size per dispatch.
+            // Extract bind point names from the statement template.
+            // These are the GK output names that need typed values per row.
+            let stmt_field = template.op.get("stmt")
+                .or_else(|| template.op.get("prepared"))
+                .or_else(|| template.op.get("raw"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let bind_names = nb_workload::bindpoints::referenced_bindings(stmt_field);
+
+            // Build a memoized bind plan: name → GK output index.
+            // All per-row lookups use indexed access (no string matching).
+            let plan = BindPlan::new(&bind_names, &self.program);
+
             let base = self.state.get_input(0).as_u64();
-            for i in 0..batch_size {
-                let row_cycle = base + i as u64;
-                self.state.set_inputs(&[row_cycle]);
-
-                let mut row_names = Vec::new();
-                let mut row_values = Vec::new();
-
-                for (key, value) in &template.op {
-                    row_names.push(key.clone());
-                    if let serde_json::Value::String(s) = value {
-                        let trimmed = s.trim();
-                        if trimmed.starts_with('{') && trimmed.ends_with('}') && !trimmed.starts_with("{{") {
-                            let name = &trimmed[1..trimmed.len()-1];
-                            let bare = if let Some((_, n)) = name.split_once(':') { n } else { name };
-                            if self.program.resolve_output(bare).is_some() {
-                                row_values.push(self.state.pull(&self.program, bare).clone());
-                                continue;
-                            }
-                        }
-                        let resolved = substitute_bind_points_with_state(
-                            s, &self.program, &mut self.state,
-                        );
-                        row_values.push(Value::Str(resolved));
-                    } else {
-                        row_values.push(Value::Str(value.to_string()));
-                    }
+            if let Some(ref plan) = plan {
+                // Fast path: typed values via indexed GK pull
+                let rows = self.resolve_batch_rows(plan, batch_size);
+                let row_names = plan.names();
+                for row_values in rows {
+                    batch_fields.push(crate::adapter::ResolvedFieldSet {
+                        names: row_names.clone(),
+                        values: row_values,
+                    });
                 }
-
-                batch_fields.push(crate::adapter::ResolvedFieldSet {
-                    names: row_names,
-                    values: row_values,
-                });
+            } else {
+                // Fallback: render full statement text per row
+                for i in 0..batch_size {
+                    self.state.set_inputs(&[base + i as u64]);
+                    let mut row_names = Vec::new();
+                    let mut row_values = Vec::new();
+                    for (key, value) in &template.op {
+                        row_names.push(key.clone());
+                        if let serde_json::Value::String(s) = value {
+                            let resolved = substitute_bind_points_with_state(
+                                s, &self.program, &mut self.state,
+                            );
+                            row_values.push(Value::Str(resolved));
+                        } else {
+                            row_values.push(Value::Str(value.to_string()));
+                        }
+                    }
+                    batch_fields.push(crate::adapter::ResolvedFieldSet {
+                        names: row_names,
+                        values: row_values,
+                    });
+                }
+                self.state.set_inputs(&[base]);
             }
-            // Restore the original cycle input
-            self.state.set_inputs(&[base]);
         }
 
         let mut result = crate::adapter::ResolvedFields::new(names, values);
         result.batch_fields = batch_fields;
         result
+    }
+
+    /// Resolve bind point values for a batch of rows using a memoized
+    /// bind plan. Each row gets its own cycle input, and the plan pulls
+    /// typed values by index — no string rendering, no name lookups.
+    ///
+    /// Returns one `Vec<Value>` per row, in `?` position order.
+    pub fn resolve_batch_rows(
+        &mut self,
+        plan: &BindPlan,
+        batch_size: usize,
+    ) -> Vec<Vec<nb_variates::node::Value>> {
+        let base = self.state.get_input(0).as_u64();
+        let mut rows = Vec::with_capacity(batch_size);
+        for i in 0..batch_size {
+            self.state.set_inputs(&[base + i as u64]);
+            rows.push(plan.pull_values(&mut self.state, &self.program));
+        }
+        // Restore original input
+        self.state.set_inputs(&[base]);
+        rows
     }
 
     /// Resolve op fields only (no extras). Convenience for simple cases.

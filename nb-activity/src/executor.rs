@@ -52,6 +52,8 @@ pub struct ExecCtx {
     pub store: Arc<RwLock<InProcessMetricsStore>>,
     /// Scheduler stop handle for delivering frames to reporters.
     pub stop_handle: Arc<nb_metrics::scheduler::StopHandle>,
+    /// Run observer for phase lifecycle events (TUI or stderr).
+    pub observer: Arc<dyn crate::observer::RunObserver>,
 }
 
 impl ExecCtx {
@@ -73,6 +75,11 @@ impl ExecCtx {
     pub fn pop_label(&mut self) {
         self.label_stack.pop();
     }
+
+    /// Whether stderr diagnostic output is suppressed (TUI handles display).
+    pub fn quiet(&self) -> bool {
+        self.observer.suppresses_stderr()
+    }
 }
 
 /// Execute a scenario tree recursively.
@@ -91,8 +98,10 @@ pub fn execute_tree<'a>(
                 if let Some(spec) = phase_fe {
                     let (var, values) = resolve_expr(
                         &spec, &ctx.workload_params, bindings, &ctx.outer_scope_values)?;
-                    eprintln!("  for_each {var} in [{}] ({} iterations)",
-                        values.join(", "), values.len());
+                    if !ctx.quiet() {
+                        eprintln!("  for_each {var} in [{}] ({} iterations)",
+                            values.join(", "), values.len());
+                    }
                     for value in &values {
                         let mut inner = bindings.clone();
                         inner.insert(var.clone(), value.clone());
@@ -108,8 +117,10 @@ pub fn execute_tree<'a>(
             ScenarioNode::ForEach { spec, children } => {
                 let (var, values) = resolve_expr(
                     spec, &ctx.workload_params, bindings, &ctx.outer_scope_values)?;
-                eprintln!("for_each {var} in [{}] ({} iterations × {} children)",
-                    values.join(", "), values.len(), children.len());
+                if !ctx.quiet() {
+                    eprintln!("for_each {var} in [{}] ({} iterations × {} children)",
+                        values.join(", "), values.len(), children.len());
+                }
                 for value in &values {
                     let mut inner = bindings.clone();
                     inner.insert(var.clone(), value.clone());
@@ -156,8 +167,10 @@ pub fn execute_tree<'a>(
                                 dims.push(v.clone());
                             }
                             let total_hint = values.len();
-                            eprintln!("for_combinations [{}] ({total_hint}+ combinations × {} children)",
-                                dims.join(" × "), children.len());
+                            if !ctx.quiet() {
+                                eprintln!("for_combinations [{}] ({total_hint}+ combinations × {} children)",
+                                    dims.join(" × "), children.len());
+                            }
                         }
 
                         for value in &values {
@@ -211,16 +224,19 @@ async fn run_phase(
     phase_name: &str,
     bindings: &HashMap<String, String>,
 ) -> Result<(), String> {
+    let phase_start = std::time::Instant::now();
     let phase = ctx.phases.get(phase_name)
         .ok_or_else(|| format!("phase '{phase_name}' not found"))?
         .clone();
     let has_bindings = phase.ops.iter().any(|op| !op.bindings.is_empty());
     let is_iter = !bindings.is_empty();
 
-    eprintln!("=== phase: {phase_name} ===");
-    if is_iter {
-        for (var, val) in bindings {
-            if !val.is_empty() { eprintln!("  {var}={val}"); }
+    if !ctx.observer.suppresses_stderr() {
+        eprintln!("=== phase: {phase_name} ===");
+        if is_iter {
+            for (var, val) in bindings {
+                if !val.is_empty() { eprintln!("  {var}={val}"); }
+            }
         }
     }
 
@@ -346,8 +362,13 @@ async fn run_phase(
         None => ctx.concurrency,
     };
 
-    eprintln!("phase '{phase_name}': {} ops, concurrency={phase_concurrency}",
-        op_sequence.stanza_length());
+    let phase_labels = bindings.iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    ctx.observer.phase_starting(phase_name, &phase_labels,
+        op_sequence.stanza_length(), phase_concurrency);
 
     let iter_label = bindings.values().next().cloned().unwrap_or_default();
     let activity_name = if !iter_label.is_empty() {
@@ -372,6 +393,15 @@ async fn run_phase(
         }
     };
 
+    // Capture progress info before source_factory is moved into config
+    let progress_extent = source_factory.as_ref()
+        .and_then(|f| f.global_extent())
+        .unwrap_or(phase_cycles);
+    let progress_cursor_name = source_factory.as_ref()
+        .map(|f| f.schema().name.clone())
+        .unwrap_or_else(|| "cycles".into());
+    let progress_fibers = phase_concurrency;
+
     let config = ActivityConfig {
         name: activity_name,
         cycles: phase_cycles,
@@ -383,6 +413,7 @@ async fn run_phase(
         max_retries: 3,
         stanza_concurrency: 1,
         source_factory,
+        suppress_status_line: ctx.observer.suppresses_stderr(),
     };
 
     let phase_driver_owned = phase.adapter.clone().unwrap_or_else(|| ctx.driver.clone());
@@ -428,9 +459,93 @@ async fn run_phase(
 
     let validation_frame = activity.validation_frame.clone();
     let final_metrics = activity.shared_metrics();
+
+    // Feed the observer with live metrics at 500ms cadence.
+    // This populates the TUI's ActivePhase panel.
+    let observer_for_progress = ctx.observer.clone();
+    let progress_metrics = activity.shared_metrics();
+    let progress_start = std::time::Instant::now();
+    let progress_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let progress_flag = progress_running.clone();
+
+    // Send initial progress to set cursor info on the observer
+    if observer_for_progress.suppresses_stderr() {
+        observer_for_progress.phase_progress(&crate::observer::PhaseProgressUpdate {
+            cursor_name: progress_cursor_name.clone(),
+            cursor_extent: progress_extent,
+            fibers: progress_fibers,
+            ops_started: 0,
+            ops_finished: 0,
+            ops_ok: 0,
+            errors: 0,
+            retries: 0,
+            ops_per_sec: 0.0,
+            adapter_counters: Vec::new(),
+            rows_per_batch: 0.0,
+        });
+    }
+
+    let _progress_thread = if observer_for_progress.suppresses_stderr() {
+        let obs = observer_for_progress.clone();
+        let cursor_name_for_thread = progress_cursor_name.clone();
+        let fibers_for_thread = progress_fibers;
+        Some(std::thread::spawn(move || {
+            let progress_cursor_name = cursor_name_for_thread;
+            let progress_fibers = fibers_for_thread;
+            while progress_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if !progress_flag.load(std::sync::atomic::Ordering::Relaxed) { break; }
+
+                let started = progress_metrics.ops_started.load(std::sync::atomic::Ordering::Relaxed);
+                let finished = progress_metrics.ops_finished.load(std::sync::atomic::Ordering::Relaxed);
+                let successes = progress_metrics.successes_total.get();
+                let errors = progress_metrics.errors_total.get();
+                let elapsed = progress_start.elapsed().as_secs_f64();
+                let ops_per_sec = if elapsed > 0.0 { finished as f64 / elapsed } else { 0.0 };
+
+                let adapter_counters: Vec<(String, u64, f64)> = progress_metrics
+                    .collect_status_counters()
+                    .into_iter()
+                    .map(|(name, total)| {
+                        let rate = if elapsed > 0.0 { total as f64 / elapsed } else { 0.0 };
+                        (name, total, rate)
+                    })
+                    .collect();
+
+                let stanzas = progress_metrics.stanzas_total.get();
+                let rows_total: u64 = adapter_counters.iter()
+                    .find(|(n, _, _)| n == "rows_inserted")
+                    .map(|(_, t, _)| *t)
+                    .unwrap_or(0);
+                let rows_per_batch = if stanzas > 0 && rows_total > stanzas {
+                    rows_total as f64 / stanzas as f64
+                } else { 0.0 };
+
+                obs.phase_progress(&crate::observer::PhaseProgressUpdate {
+                    cursor_name: progress_cursor_name.clone(),
+                    cursor_extent: progress_extent,
+                    fibers: progress_fibers,
+                    ops_started: started,
+                    ops_finished: finished,
+                    ops_ok: successes,
+                    errors,
+                    retries: errors.saturating_sub(finished.saturating_sub(successes)),
+                    ops_per_sec,
+                    adapter_counters,
+                    rows_per_batch,
+                });
+            }
+        }))
+    } else {
+        None
+    };
+
     let stopped = crate::runner::run_activity_simple(
         activity, adapters, phase_driver, iter_program,
     ).await;
+
+    // Stop progress thread
+    progress_running.store(false, std::sync::atomic::Ordering::Relaxed);
 
     // Lifecycle flush: capture final delta, merge into store, deliver to reporters
     {
@@ -456,11 +571,13 @@ async fn run_phase(
         pc.set_state(ComponentState::Stopped);
     }
 
+    let phase_duration = phase_start.elapsed().as_secs_f64();
     if stopped {
+        ctx.observer.phase_failed(phase_name, &phase_labels, "stopped by error handler");
         return Err(format!("phase '{phase_name}' stopped by error handler"));
     }
 
-    eprintln!("phase '{phase_name}' complete");
+    ctx.observer.phase_completed(phase_name, &phase_labels, phase_duration);
     Ok(())
 }
 

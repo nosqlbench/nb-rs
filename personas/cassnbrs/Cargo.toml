@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 # CQL adapter + GK nodes (registers itself via inventory at link time)
 cassnbrs-adapter-cql = { path = "adapter", version = "0.1.1" }
+cassandra-cpp = "3"
 
 # Standard adapters (register themselves via inventory at link time)
 nb-adapter-stdout = { path = "../../adapters/nb-adapter-stdout", version = "0.1.1" }
@@ -24,4 +25,6 @@ nb-adapter-http = { path = "../../adapters/nb-adapter-http", version = "0.1.1" }
 
 # Shared runner (provides the full run pipeline)
 nb-activity = { path = "../../nb-activity", version = "0.1.1", features = ["flamegraph"] }
+nb-tui = { path = "../../nb-tui", version = "0.1.1" }
+nb-metrics = { path = "../../nb-metrics", version = "0.1.1" }
 tokio = { version = "1", features = ["full"] }

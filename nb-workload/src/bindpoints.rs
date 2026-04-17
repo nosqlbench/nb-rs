@@ -198,6 +198,31 @@ pub fn referenced_bindings(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// Replace `{name}` bind point references with `?` markers for
+/// CQL prepared statements. Returns the parameterized statement.
+///
+/// Also strips quotes that immediately surround a bind point:
+/// `'{id}'` → `?` (not `'?'`), because CQL prepared bind markers
+/// must not be inside string literals.
+pub fn replace_bind_points_with_markers(value: &str) -> String {
+    let names = referenced_bindings(value);
+    let mut result = value.to_string();
+    for name in &names {
+        // Try quoted form first: '{name}' → ?
+        let quoted = format!("'{{{name}}}'");
+        if let Some(pos) = result.find(&quoted) {
+            result.replace_range(pos..pos + quoted.len(), "?");
+            continue;
+        }
+        // Bare form: {name} → ?
+        let bare = format!("{{{name}}}");
+        if let Some(pos) = result.find(&bare) {
+            result.replace_range(pos..pos + bare.len(), "?");
+        }
+    }
+    result
+}
+
 // =================================================================
 // Capture points: [name] and [name as alias] in op template strings
 // =================================================================

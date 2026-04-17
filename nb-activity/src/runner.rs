@@ -30,7 +30,7 @@ const KNOWN_PARAMS: &[&str] = &[
     "adapter", "driver", "workload", "op", "cycles", "concurrency",
     "rate", "stanzarate", "errors", "seq", "tags", "format",
     "filename", "separator", "header", "color",
-    "stanza_concurrency", "sc", "scenario", "dryrun", "summary", "metrics", "limit", "profiler",
+    "stanza_concurrency", "sc", "scenario", "dryrun", "summary", "metrics", "limit", "profiler", "tui",
 ];
 
 /// Run a workload. Adapters are discovered from link-time inventory
@@ -89,6 +89,16 @@ impl DiagnosticConfig {
 
 
 pub async fn run(args: &[String]) -> Result<(), String> {
+    run_with_observer(args, Arc::new(crate::observer::StderrObserver)).await
+}
+
+/// Run with a custom observer for phase lifecycle events.
+/// The TUI persona uses this to inject a TuiObserver that updates
+/// the display state instead of printing to stderr.
+pub async fn run_with_observer(
+    args: &[String],
+    observer: Arc<dyn crate::observer::RunObserver>,
+) -> Result<(), String> {
     let args: &[String] = match args.first().map(|s| s.as_str()) {
         Some("run") => &args[1..],
         // Reject unknown subcommands — don't silently fall through to execution
@@ -97,11 +107,11 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         }
         _ => args,
     };
-    run_impl(args).await
+    run_impl(args, observer).await
 }
 
 /// Core runner. Diagnostic mode is controlled by `dryrun=` param.
-async fn run_impl(args: &[String]) -> Result<(), String> {
+async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserver>) -> Result<(), String> {
     let mut diag = DiagnosticConfig::normal();
 
     // Detect scenario shorthand: `workload.yaml <scenario_name>` → `scenario=<name>`
@@ -266,8 +276,10 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
             concurrency,
             driver);
     } else {
-        eprintln!("{} phases, {} top-level ops, adapter={}",
-            phases.len(), ops.len(), driver);
+        if !observer.suppresses_stderr() {
+            eprintln!("{} phases, {} top-level ops, adapter={}",
+                phases.len(), ops.len(), driver);
+        }
     }
 
     // Collect --gk-lib=path flags
@@ -314,7 +326,9 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
             for (k, v) in &merged_params {
                 r.set_metadata(&format!("param.{k}"), v);
             }
-            eprintln!("metrics: {sqlite_path}");
+            if !observer.suppresses_stderr() {
+                eprintln!("metrics: {sqlite_path}");
+            }
             r
         })
         .map_err(|e| eprintln!("warning: SQLite metrics disabled: {e}"))
@@ -469,7 +483,9 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
         let scenario_name = params.get("scenario").map(|s| s.as_str()).unwrap_or("default");
         let scenario_nodes = resolve_scenario(&scenarios, &phase_order, scenario_name)?;
 
-        eprintln!("scenario '{scenario_name}': {}", format_scenario_tree(&scenario_nodes));
+        if !observer.suppresses_stderr() {
+            eprintln!("scenario '{scenario_name}': {}", format_scenario_tree(&scenario_nodes));
+        }
 
         // Build the centralized metrics scheduler with component tree.
         let store = std::sync::Arc::new(std::sync::RwLock::new(
@@ -487,7 +503,7 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
             .base_interval(std::time::Duration::from_secs(1))
             .with_store(store.clone());
 
-        // Register SQLite reporter at base cadence
+        // Register SQLite reporter at 10s cadence
         if let Ok(guard) = sqlite_reporter.lock() {
             if guard.is_some() {
                 drop(guard);
@@ -499,6 +515,14 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
             }
         }
 
+        // Register observer's reporter (e.g., TUI metrics feed)
+        if let Some(obs_reporter) = observer.reporter() {
+            sched_builder = sched_builder.add_reporter(
+                std::time::Duration::from_secs(1),
+                BoxedReporter(obs_reporter),
+            );
+        }
+
         let scheduler = sched_builder.build(Box::new(move || {
             nb_metrics::component::capture_tree(
                 &session_for_capture,
@@ -507,8 +531,10 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
         }));
         let stop_handle = Arc::new(scheduler.start());
 
-        // Start profiler if requested (profile=flamegraph)
+        // Start profiler if requested (profiler=flamegraph or profiler=perf)
         let _profiler = crate::profiler::ProfileGuard::maybe_start(&merged_params);
+
+        // Observer is passed from the caller (default: StderrObserver).
 
         // Execute the scenario tree recursively via the executor module.
         {
@@ -540,6 +566,7 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
                 session_component: session_component.clone(),
                 store: store.clone(),
                 stop_handle: stop_handle.clone(),
+                observer: observer.clone(),
             };
             crate::executor::execute_tree(
                 &mut exec_ctx,
@@ -558,7 +585,7 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
         if let Ok(mut sh) = Arc::try_unwrap(stop_handle) {
             sh.stop();
         }
-        eprintln!("all phases complete");
+        observer.run_finished();
 
     } else {
         // --- Single-activity execution ---
@@ -596,6 +623,7 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
             max_retries: 3,
             stanza_concurrency,
             source_factory: None,
+            suppress_status_line: observer.suppresses_stderr(),
         };
 
         let adapter = create_adapter(&driver, &merged_params, dry_run).await?;
@@ -609,9 +637,9 @@ async fn run_impl(args: &[String]) -> Result<(), String> {
     }
 
     if dry_run.is_some() {
-        eprintln!("dry-run complete.");
+        if !observer.suppresses_stderr() { eprintln!("dry-run complete."); }
     } else {
-        eprintln!("done.");
+        if !observer.suppresses_stderr() { eprintln!("done."); }
     }
 
     // Print summary report.
@@ -824,6 +852,17 @@ impl Reporter for MutexReporter {
                 Reporter::flush(r);
             }
         }
+    }
+}
+
+/// Wrapper to make `Box<dyn Reporter>` usable with `add_reporter(impl Reporter)`.
+struct BoxedReporter(Box<dyn Reporter>);
+impl Reporter for BoxedReporter {
+    fn report(&mut self, frame: &nb_metrics::frame::MetricsFrame) {
+        self.0.report(frame);
+    }
+    fn flush(&mut self) {
+        self.0.flush();
     }
 }
 

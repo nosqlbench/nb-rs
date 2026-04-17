@@ -15,6 +15,7 @@ pub mod synthesis;
 pub mod bindings;
 pub mod scope;
 pub mod profiler;
+pub mod observer;
 pub mod runner;
 pub mod executor;
 pub mod describe;

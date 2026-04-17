@@ -283,11 +283,10 @@ impl DriverAdapter for CqlAdapter {
             })
             .ok_or_else(|| "CQL op requires a 'poll:', 'raw:', 'simple:', 'prepared:', or 'stmt:' field".to_string())?;
 
-        // Bind point names: op field keys that aren't the statement field
-        let bind_names: Vec<String> = template.op.keys()
-            .filter(|k| !STMT_FIELD_NAMES.contains(&k.as_str()))
-            .cloned()
-            .collect();
+        // Extract bind point names from the statement text ({name} patterns)
+        // and build the CQL-parameterized version with ? markers for prepared mode.
+        let bind_names: Vec<String> = nb_workload::bindpoints::referenced_bindings(&stmt_text);
+        let prepared_text = nb_workload::bindpoints::replace_bind_points_with_markers(&stmt_text);
 
         let session = SessionHandle(&self.session as *const cass::Session);
         let consistency = self.consistency;
@@ -324,7 +323,7 @@ impl DriverAdapter for CqlAdapter {
                     Ok(Box::new(CqlBatchDispenser {
                         session,
                         consistency,
-                        stmt_text,
+                        stmt_text: prepared_text.clone(),
                         stmt_field: "stmt".to_string(),
                         bind_names,
                         prepared: std::sync::OnceLock::new(),
@@ -344,7 +343,7 @@ impl DriverAdapter for CqlAdapter {
                     Ok(Box::new(CqlPreparedDispenser {
                         session,
                         consistency,
-                        stmt_text,
+                        stmt_text: prepared_text,
                         bind_names,
                         prepared: std::sync::OnceLock::new(),
                     }))
@@ -476,20 +475,20 @@ impl OpDispenser for CqlPreparedDispenser {
                     retryable: false,
                 }))?;
 
-            // Bind typed values by name
-            for name in &self.bind_names {
+            // Bind typed values by position (GK names don't match CQL column names)
+            for (bind_idx, name) in self.bind_names.iter().enumerate() {
                 if let Some(value) = fields.get_value(name) {
                     let r = match value {
-                        nb_variates::node::Value::U64(v) => stmt.bind_int64_by_name(name, *v as i64),
-                        nb_variates::node::Value::F64(v) => stmt.bind_double_by_name(name, *v),
-                        nb_variates::node::Value::Bool(v) => stmt.bind_bool_by_name(name, *v),
-                        nb_variates::node::Value::Str(v) => stmt.bind_string_by_name(name, v),
-                        nb_variates::node::Value::Bytes(v) => stmt.bind_bytes_by_name(name, v.clone()),
-                        _ => stmt.bind_string_by_name(name, &value.to_display_string()),
+                        nb_variates::node::Value::U64(v) => stmt.bind_int64(bind_idx, *v as i64),
+                        nb_variates::node::Value::F64(v) => stmt.bind_double(bind_idx, *v),
+                        nb_variates::node::Value::Bool(v) => stmt.bind_bool(bind_idx, *v),
+                        nb_variates::node::Value::Str(v) => stmt.bind_string(bind_idx, v),
+                        nb_variates::node::Value::Bytes(v) => stmt.bind_bytes(bind_idx, v.clone()),
+                        _ => stmt.bind_string(bind_idx, &value.to_display_string()),
                     };
                     r.map_err(|e| ExecutionError::Op(AdapterError {
                         error_name: "bind_error".into(),
-                        message: format!("bind '{name}': {e}"),
+                        message: format!("bind position {bind_idx} ('{name}'): {e}"),
                         retryable: false,
                     }))?;
                 }
@@ -541,6 +540,7 @@ struct CqlBatchDispenser {
     /// The op field name carrying the statement (for finding it in resolved fields).
     #[allow(dead_code)]
     stmt_field: String,
+    #[allow(dead_code)] // retained for diagnostics
     bind_names: Vec<String>,
     /// Prepared once on first execute, then lock-free reads thereafter.
     prepared: std::sync::OnceLock<Arc<cass::PreparedStatement>>,
@@ -610,42 +610,49 @@ impl OpDispenser for CqlBatchDispenser {
             let prepared = self.get_prepared().await?;
             let mut batch = self.session.get().batch(self.batch_type);
 
-            // Bind a prepared statement from a set of resolved field values.
-            let bind_row = |field_names: &[String], field_values: &[nb_variates::node::Value]|
+            // Bind typed values positionally to the prepared statement.
+            // batch_fields carries typed GK values per row (from BindPlan),
+            // with names matching the bind point names in `?` position order.
+            // Build per-position binder functions from prepared statement
+            // metadata. Each binder knows the CQL column type and applies
+            // the correct conversion from GK Value. Built once per prepare,
+            // applied per row with zero branching on type.
+            // Build per-position type-aware binders from prepared metadata.
+            // Query the CQL column type for each `?` position via the
+            // FFI and create a conversion function that coerces GK values.
+            let binders: Vec<Box<dyn Fn(&mut cass::Statement, usize, &nb_variates::node::Value)
+                -> Result<(), cass::Error> + Send + Sync>> =
+                (0..self.bind_names.len()).map(|i| {
+                    let dt = prepared.parameter_data_type(i);
+                    let vt = get_const_data_type_value_type(&dt);
+                    make_binder(vt)
+                }).collect();
+
+            let bind_row = |row_values: &[nb_variates::node::Value]|
                 -> Result<cass::Statement, ExecutionError>
             {
                 let mut stmt = prepared.bind();
-                stmt.set_consistency(self.consistency)
+                let _ = stmt.set_consistency(self.consistency)
                     .map_err(|e| ExecutionError::Op(AdapterError {
                         error_name: "bind_error".into(),
                         message: format!("set consistency: {e}"),
                         retryable: false,
                     }))?;
-                for name in &self.bind_names {
-                    if let Some(pos) = field_names.iter().position(|n| n == name) {
-                        let value = &field_values[pos];
-                        let r = match value {
-                            nb_variates::node::Value::U64(v) => stmt.bind_int64_by_name(name, *v as i64),
-                            nb_variates::node::Value::F64(v) => stmt.bind_double_by_name(name, *v),
-                            nb_variates::node::Value::Bool(v) => stmt.bind_bool_by_name(name, *v),
-                            nb_variates::node::Value::Str(v) => stmt.bind_string_by_name(name, v),
-                            nb_variates::node::Value::Bytes(v) => stmt.bind_bytes_by_name(name, v.clone()),
-                            _ => stmt.bind_string_by_name(name, &value.to_display_string()),
-                        };
-                        r.map_err(|e| ExecutionError::Op(AdapterError {
+                for (idx, value) in row_values.iter().enumerate() {
+                    binders[idx](&mut stmt, idx, value)
+                        .map_err(|e| ExecutionError::Op(AdapterError {
                             error_name: "bind_error".into(),
-                            message: format!("bind '{name}': {e}"),
+                            message: format!("bind position {idx}: {e}"),
                             retryable: false,
                         }))?;
-                    }
                 }
                 Ok(stmt)
             };
 
             let row_count;
             if fields.batch_fields.is_empty() {
-                // Single row from base fields
-                let stmt = bind_row(&fields.names, &fields.values)?;
+                // Single row from base fields — bind by position
+                let stmt = bind_row(&fields.values)?;
                 batch.add_statement(stmt)
                     .map_err(|e| ExecutionError::Op(AdapterError {
                         error_name: "batch_error".into(),
@@ -654,9 +661,9 @@ impl OpDispenser for CqlBatchDispenser {
                     }))?;
                 row_count = 1;
             } else {
-                // Multiple rows from batch expansion
+                // Multiple rows — each batch_fields entry has typed values
                 for field_set in &fields.batch_fields {
-                    let stmt = bind_row(&field_set.names, &field_set.values)?;
+                    let stmt = bind_row(&field_set.values)?;
                     batch.add_statement(stmt)
                         .map_err(|e| ExecutionError::Op(AdapterError {
                             error_name: "batch_error".into(),
@@ -824,5 +831,168 @@ inventory::submit! {
                 .map(|a| std::sync::Arc::new(a) as std::sync::Arc<dyn nb_activity::adapter::DriverAdapter>)
                 .map_err(|e| format!("CQL connection failed: {e}"))
         }),
+    }
+}
+
+// =========================================================================
+// Type-aware value binders
+// =========================================================================
+
+/// Extract the CQL ValueType from a ConstDataType.
+///
+/// The safe cassandra-cpp wrapper doesn't expose get_type() on
+/// ConstDataType, so we call the C FFI directly. ConstDataType
+/// is a newtype over `*const CassDataType` (with PhantomData).
+fn get_const_data_type_value_type<T>(dt: &T) -> cass::ValueType {
+    // ConstDataType layout: (*const _CassDataType, PhantomData)
+    // We read the first pointer-sized field.
+    let raw: *const cassandra_cpp_sys::CassDataType_ = unsafe {
+        *(dt as *const _ as *const *const cassandra_cpp_sys::CassDataType_)
+    };
+    let cass_vt = unsafe { cassandra_cpp_sys::cass_data_type_type(raw) };
+    // Map the C enum value to the Rust ValueType.
+    // CassValueType_ values match ValueType variant ordering.
+    cass_value_type_from_raw(cass_vt)
+}
+
+/// Convert a raw CassValueType_ C enum to cass::ValueType.
+fn cass_value_type_from_raw(raw: cassandra_cpp_sys::CassValueType_) -> cass::ValueType {
+    use cassandra_cpp_sys::CassValueType_::*;
+    match raw {
+        CASS_VALUE_TYPE_ASCII => cass::ValueType::ASCII,
+        CASS_VALUE_TYPE_BIGINT => cass::ValueType::BIGINT,
+        CASS_VALUE_TYPE_BLOB => cass::ValueType::BLOB,
+        CASS_VALUE_TYPE_BOOLEAN => cass::ValueType::BOOLEAN,
+        CASS_VALUE_TYPE_COUNTER => cass::ValueType::COUNTER,
+        CASS_VALUE_TYPE_DOUBLE => cass::ValueType::DOUBLE,
+        CASS_VALUE_TYPE_FLOAT => cass::ValueType::FLOAT,
+        CASS_VALUE_TYPE_INT => cass::ValueType::INT,
+        CASS_VALUE_TYPE_TEXT => cass::ValueType::TEXT,
+        CASS_VALUE_TYPE_VARCHAR => cass::ValueType::VARCHAR,
+        CASS_VALUE_TYPE_SMALL_INT => cass::ValueType::SMALL_INT,
+        CASS_VALUE_TYPE_TINY_INT => cass::ValueType::TINY_INT,
+        CASS_VALUE_TYPE_CUSTOM => cass::ValueType::CUSTOM,
+        _ => cass::ValueType::UNKNOWN,
+    }
+}
+
+/// Create a binder function for a given CQL column type.
+///
+/// The returned closure converts a GK `Value` to the correct CQL
+/// type and binds it at the given position. Built once per `?`
+/// position in a prepared statement; applied per row.
+/// Parse a GK vector string `[0.1, 0.2, ...]` into CQL vector
+/// binary encoding (big-endian IEEE 754 floats, concatenated).
+fn parse_vector_to_bytes(s: &str) -> Vec<u8> {
+    let trimmed = s.trim();
+    if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+        return Vec::new();
+    }
+    let inner = &trimmed[1..trimmed.len()-1];
+    let mut bytes = Vec::new();
+    for part in inner.split(',') {
+        let part = part.trim();
+        if let Ok(f) = part.parse::<f32>() {
+            bytes.extend_from_slice(&f.to_be_bytes());
+        } else {
+            return Vec::new(); // not a float vector
+        }
+    }
+    bytes
+}
+
+type BinderFn = Box<dyn Fn(&mut cass::Statement, usize, &nb_variates::node::Value)
+    -> cass::Result<()> + Send + Sync>;
+
+fn make_binder(cql_type: cass::ValueType) -> BinderFn {
+    match cql_type {
+        // String types
+        cass::ValueType::ASCII | cass::ValueType::TEXT | cass::ValueType::VARCHAR => {
+            Box::new(|stmt, idx, value| {
+                stmt.bind_string(idx, &value.to_display_string())?; Ok(())
+            })
+        }
+        // 32-bit integer types
+        cass::ValueType::INT | cass::ValueType::SMALL_INT | cass::ValueType::TINY_INT => {
+            Box::new(|stmt, idx, value| {
+                let n = match value {
+                    nb_variates::node::Value::U64(v) => *v as i32,
+                    nb_variates::node::Value::F64(v) => *v as i32,
+                    nb_variates::node::Value::Str(s) => s.parse::<i32>().unwrap_or(0),
+                    _ => 0,
+                };
+                stmt.bind_int32(idx, n)?; Ok(())
+            })
+        }
+        // 64-bit integer types
+        cass::ValueType::BIGINT | cass::ValueType::COUNTER => {
+            Box::new(|stmt, idx, value| {
+                let n = match value {
+                    nb_variates::node::Value::U64(v) => *v as i64,
+                    nb_variates::node::Value::F64(v) => *v as i64,
+                    nb_variates::node::Value::Str(s) => s.parse::<i64>().unwrap_or(0),
+                    _ => 0,
+                };
+                stmt.bind_int64(idx, n)?; Ok(())
+            })
+        }
+        // Float
+        cass::ValueType::FLOAT => {
+            Box::new(|stmt, idx, value| {
+                let f = match value {
+                    nb_variates::node::Value::F64(v) => *v as f32,
+                    nb_variates::node::Value::U64(v) => *v as f32,
+                    nb_variates::node::Value::Str(s) => s.parse::<f32>().unwrap_or(0.0),
+                    _ => 0.0,
+                };
+                stmt.bind_float(idx, f)?; Ok(())
+            })
+        }
+        // Double
+        cass::ValueType::DOUBLE => {
+            Box::new(|stmt, idx, value| {
+                let f = match value {
+                    nb_variates::node::Value::F64(v) => *v,
+                    nb_variates::node::Value::U64(v) => *v as f64,
+                    nb_variates::node::Value::Str(s) => s.parse::<f64>().unwrap_or(0.0),
+                    _ => 0.0,
+                };
+                stmt.bind_double(idx, f)?; Ok(())
+            })
+        }
+        // Boolean
+        cass::ValueType::BOOLEAN => {
+            Box::new(|stmt, idx, value| {
+                let b = match value {
+                    nb_variates::node::Value::Bool(v) => *v,
+                    nb_variates::node::Value::U64(v) => *v != 0,
+                    nb_variates::node::Value::Str(s) => s == "true" || s == "1",
+                    _ => false,
+                };
+                stmt.bind_bool(idx, b)?; Ok(())
+            })
+        }
+        // CUSTOM type includes vectors. Parse the GK string
+        // representation `[0.1, 0.2, ...]` into raw float bytes
+        // (big-endian IEEE 754, concatenated) for CQL binding.
+        cass::ValueType::CUSTOM => {
+            Box::new(|stmt, idx, value| {
+                let s = value.to_display_string();
+                let bytes = parse_vector_to_bytes(&s);
+                if bytes.is_empty() {
+                    // Not a vector — fall back to string binding
+                    stmt.bind_string(idx, &s)?;
+                } else {
+                    stmt.bind_bytes(idx, bytes)?;
+                }
+                Ok(())
+            })
+        }
+        // Everything else: bind as string
+        _ => {
+            Box::new(|stmt, idx, value| {
+                stmt.bind_string(idx, &value.to_display_string())?; Ok(())
+            })
+        }
     }
 }

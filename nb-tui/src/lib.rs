@@ -4,9 +4,10 @@
 //! # nb-tui
 //!
 //! Terminal UI for nb-rs using ratatui. Provides a live dashboard
-//! showing metrics, progress, op throughput, error rates, and
-//! latency percentiles during a running activity.
+//! showing phase progress, throughput, latency percentiles, scenario
+//! tree, and adapter-specific metrics during workload execution.
 
 pub mod app;
+pub mod state;
 pub mod widgets;
 pub mod reporter;
