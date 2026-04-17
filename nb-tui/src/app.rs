@@ -166,20 +166,39 @@ impl App {
     }
 
     fn draw_header(&self, frame: &mut Frame, area: Rect, state: &RunState) {
-        let elapsed = widgets::format_elapsed(state.elapsed_secs());
+        let elapsed_s = state.elapsed_secs();
+        let elapsed = widgets::format_elapsed(elapsed_s);
+
+        // Phase ETA: based on cursor progress in the active phase
+        let phase_eta = state.active.as_ref().and_then(|a| {
+            if a.ops_finished > 0 && a.cursor_extent > 0 {
+                let phase_elapsed = a.started_at.elapsed().as_secs_f64();
+                let fraction = a.ops_finished as f64 / a.cursor_extent as f64;
+                if fraction > 0.01 {
+                    let total_est = phase_elapsed / fraction;
+                    Some(widgets::format_elapsed(total_est - phase_elapsed))
+                } else { None }
+            } else { None }
+        });
+
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(colors::BORDER))
             .title(Span::styled(" nbrs ", Style::default().fg(colors::EMPHASIS).bold()));
 
-        let line1 = Line::from(vec![
+        let mut spans = vec![
             Span::styled(" workload: ", Style::default().fg(colors::DIM)),
             Span::styled(&state.workload_file, Style::default().fg(colors::TEXT)),
             Span::styled("  scenario: ", Style::default().fg(colors::DIM)),
             Span::styled(&state.scenario_name, Style::default().fg(colors::TEXT)),
             Span::styled("  elapsed: ", Style::default().fg(colors::DIM)),
             Span::styled(elapsed, Style::default().fg(colors::EMPHASIS).bold()),
-        ]);
+        ];
+        if let Some(eta) = phase_eta {
+            spans.push(Span::styled("  phase ETA: ", Style::default().fg(colors::DIM)));
+            spans.push(Span::styled(eta, Style::default().fg(colors::PHASE_ACTIVE)));
+        }
+        let line1 = Line::from(spans);
 
         let para = Paragraph::new(line1).block(block);
         frame.render_widget(para, area);
@@ -206,12 +225,23 @@ impl App {
             let progress_width = inner.width.saturating_sub(50) as usize;
             let progress = widgets::bar_str(pct / 100.0, progress_width.max(10));
 
+            // Phase ETA
+            let phase_elapsed = active.started_at.elapsed().as_secs_f64();
+            let eta_str = if active.ops_finished > 0 && pct > 1.0 {
+                let fraction = active.ops_finished as f64 / active.cursor_extent as f64;
+                let remaining = (phase_elapsed / fraction) - phase_elapsed;
+                format!("  ETA:{}", widgets::format_elapsed(remaining))
+            } else {
+                String::new()
+            };
+
             let line1 = Line::from(vec![
                 Span::styled(" ▶ ", Style::default().fg(colors::PHASE_ACTIVE).bold()),
                 Span::styled(&active.name, Style::default().fg(colors::EMPHASIS).bold()),
                 Span::styled(format!("  cursor:{}", active.cursor_name), Style::default().fg(colors::DIM)),
                 Span::styled(format!(" {}", progress), Style::default().fg(colors::PROGRESS_HIGH)),
                 Span::styled(format!(" {:.1}%", pct), Style::default().fg(colors::TEXT)),
+                Span::styled(&eta_str, Style::default().fg(colors::PHASE_ACTIVE)),
             ]);
 
             // Line 2: fibers, active, rates, batch
