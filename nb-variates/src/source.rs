@@ -15,7 +15,7 @@
 //! ## Source Types
 //!
 //! - **Range**: `range(0, N)` — finite sequence of ordinals. Replaces `cycles: N`.
-//! - **Dataset**: `dataset_source("sift1m:label_00", "base")` — vectors, queries, etc.
+//! - **Dataset**: `dataset_source("example:label_00", "base")` — vectors, queries, etc.
 //! - **Derived**: any GK binding promoted to a source via the `source` keyword.
 //!
 //! ## Crate Sovereignty

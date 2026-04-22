@@ -121,8 +121,8 @@ impl BindingScope {
             }
 
             // Cursor declarations use `=` not `:=`:
-            //   cursor row = range(0, vector_count("sift1m"))
-            //   init prebuffer = dataset_prebuffer("sift1m")
+            //   cursor row = range(0, vector_count("example"))
+            //   init prebuffer = dataset_prebuffer("example")
             // These are GK statements that the compiler handles directly.
             // Pass them through as bindings so they survive emission.
             if trimmed.starts_with("cursor ") || trimmed.starts_with("init ") {
@@ -824,7 +824,7 @@ mod tests {
 
     #[test]
     fn inherited_bindings_dedup_across_ops() {
-        let bindings = "inputs := (cycle)\nprofiles := matching_profiles(\"sift1m\", \"label\")";
+        let bindings = "inputs := (cycle)\nprofiles := matching_profiles(\"example\", \"label\")";
         let ops = vec![
             make_gk_op("op_a", "{profiles}", bindings),
             make_gk_op("op_b", "{profiles}", bindings),
@@ -847,7 +847,7 @@ mod tests {
 
     #[test]
     fn iteration_vars_dont_conflict_with_inherited() {
-        let bindings = "inputs := (cycle)\nprofiles := matching_profiles(\"sift1m\", \"label\")";
+        let bindings = "inputs := (cycle)\nprofiles := matching_profiles(\"example\", \"label\")";
         let ops = vec![
             make_gk_op("op_a", "{profiles} {table}", bindings),
             make_gk_op("op_b", "{profiles} {table}", bindings),
@@ -925,7 +925,7 @@ mod tests {
         // inherited by a phase with for_each iteration vars.
         // Two ops share identical inherited bindings.
         // The init injection used to make them differ, causing false shadow.
-        let bindings = "inputs := (cycle)\nprofiles := matching_profiles(\"sift1m\", \"label\")";
+        let bindings = "inputs := (cycle)\nprofiles := matching_profiles(\"example\", \"label\")";
         let ops = vec![
             make_gk_op("drop_metadata_index", "DROP INDEX {table}_meta_idx", bindings),
             make_gk_op("drop_vector_index", "DROP INDEX {table}_idx", bindings),
@@ -933,7 +933,7 @@ mod tests {
         ];
         let mut iter_vars = HashMap::new();
         iter_vars.insert("table".to_string(), "fknn_default".to_string());
-        iter_vars.insert("spec".to_string(), "sift1m:default".to_string());
+        iter_vars.insert("spec".to_string(), "example:default".to_string());
         iter_vars.insert("optimize_for".to_string(), "RECALL".to_string());
 
         let scope = build_scope(

@@ -1,33 +1,35 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! TUI reporter: receives metrics frames and sends them to the TUI
-//! render thread via a channel.
+//! TUI reporter: receives base-cadence metrics snapshots and forwards
+//! them to the TUI render thread via an mpsc channel. Used for
+//! sparkline feeds, history rings, and the live percentile display.
+//!
+//! For per-window (10s / 1m / …) sample-weighted views the TUI
+//! reads from a shared [`nb_metrics::metrics_query::MetricsQuery`] —
+//! see SRD-42.
 
 use std::sync::mpsc;
 
-use nb_metrics::frame::MetricsFrame;
 use nb_metrics::scheduler::Reporter;
+use nb_metrics::snapshot::MetricSet;
 
-/// A metrics reporter that forwards frames to the TUI via a channel.
+/// A metrics reporter that forwards snapshots to the TUI via a channel.
 pub struct TuiReporter {
-    sender: mpsc::Sender<MetricsFrame>,
+    sender: mpsc::Sender<MetricSet>,
 }
 
 impl TuiReporter {
-    /// Create a reporter and its receiving end.
-    ///
-    /// The sender goes to the metrics scheduler (as a Reporter).
-    /// The receiver goes to the TUI thread (to update MetricsState).
-    pub fn channel() -> (Self, mpsc::Receiver<MetricsFrame>) {
+    /// Create a reporter + its receiving end.
+    pub fn channel() -> (Self, mpsc::Receiver<MetricSet>) {
         let (sender, receiver) = mpsc::channel();
         (Self { sender }, receiver)
     }
 }
 
 impl Reporter for TuiReporter {
-    fn report(&mut self, frame: &MetricsFrame) {
-        // Non-blocking send — if the TUI is slow, drop frames
-        let _ = self.sender.send(frame.clone());
+    fn report(&mut self, snapshot: &MetricSet) {
+        // Non-blocking send — if the TUI is slow, drop snapshots.
+        let _ = self.sender.send(snapshot.clone());
     }
 }

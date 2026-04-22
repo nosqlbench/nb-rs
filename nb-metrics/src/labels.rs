@@ -16,6 +16,12 @@ pub struct Labels {
     pairs: Arc<Vec<(String, String)>>,
 }
 
+impl Default for Labels {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 impl Labels {
     pub fn empty() -> Self {
         Self { pairs: Arc::new(Vec::new()) }

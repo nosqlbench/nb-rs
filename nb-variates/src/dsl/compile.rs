@@ -248,6 +248,15 @@ pub fn eval_const_expr(source: &str) -> Result<crate::node::Value, String> {
         ))
 }
 
+/// Extract an integer literal from a positional argument. Returns None
+/// for named args, non-int-literal positional args, or any other form.
+fn positional_int_lit(arg: &crate::dsl::ast::Arg) -> Option<u64> {
+    match arg {
+        crate::dsl::ast::Arg::Positional(crate::dsl::ast::Expr::IntLit(v, _)) => Some(*v),
+        _ => None,
+    }
+}
+
 /// Compile a parsed AST into a runtime kernel.
 pub fn compile_ast(file: &GkFile) -> Result<GkKernel, String> {
     compile_ast_with_path(file, None)
@@ -305,10 +314,29 @@ pub(super) struct Compiler {
     source_text: String,
     /// Source schemas collected during compilation.
     pub(super) cursor_schemas: Vec<crate::source::SourceSchema>,
+    /// Deferred cursor extent resolutions: each entry maps a cursor
+    /// schema index to the aux output names that, once folded, give
+    /// the range's start and end values. These are resolved after the
+    /// kernel compiles by reading `get_constant()` for each name.
+    pub(super) deferred_extents: Vec<DeferredExtent>,
     /// Optional limit applied to all cursors (from `limit` activity param).
     pub(super) cursor_limit: Option<u64>,
     /// Diagnostic context label.
     context_label: String,
+}
+
+/// Records a cursor whose `range(...)` bounds reference const
+/// expressions (e.g., `vector_count("example:default")`) rather than
+/// integer literals. The expressions are compiled as auxiliary outputs
+/// and the extent is resolved after kernel compilation by querying the
+/// constant values.
+pub(super) struct DeferredExtent {
+    /// Index into `cursor_schemas` whose extent needs resolution.
+    pub schema_idx: usize,
+    /// Name of the aux output that, when folded, gives the start value.
+    pub start_output: String,
+    /// Name of the aux output that, when folded, gives the end value.
+    pub end_output: String,
 }
 
 impl Compiler {
@@ -324,6 +352,7 @@ impl Compiler {
             source_text: String::new(),
             context_label: "(gk)".into(),
             cursor_schemas: Vec::new(),
+            deferred_extents: Vec::new(),
             cursor_limit: None,
         }
     }
@@ -340,13 +369,14 @@ impl Compiler {
             source_text: String::new(),
             context_label: "(gk)".into(),
             cursor_schemas: Vec::new(),
+            deferred_extents: Vec::new(),
             cursor_limit: None,
         }
     }
 
     /// Process a source declaration: create input ports for projections,
     /// passthrough nodes, and record the schema.
-    fn process_cursor(&mut self, asm: &mut GkAssembler, decl: &crate::dsl::ast::CursorDecl) {
+    fn process_cursor(&mut self, asm: &mut GkAssembler, decl: &crate::dsl::ast::CursorDecl) -> Result<(), String> {
         let source_name = &decl.name;
 
         // All sources get an "ordinal" projection.
@@ -355,25 +385,49 @@ impl Compiler {
         ];
         // TODO: dataset_source constructors add vector/metadata projections
 
-        // Determine extent from constructor args if available.
+        // Determine extent from constructor args. Three cases per arg:
+        //   1. Integer literal → use directly
+        //   2. Other const-foldable expression (e.g. `vector_count("...")`)
+        //      → compile as an aux output and resolve after kernel compiles
+        //   3. Arg references runtime state → no extent available
+        //
+        // Immediate-literal cases produce a concrete extent here.
+        // Deferred cases push a DeferredExtent record; the outer compile
+        // routine reads the folded values after compilation and updates
+        // the schema's extent in place.
+        let mut deferred: Option<(Option<u64>, String, Option<u64>, String)> = None;
         let extent = match &decl.constructor {
-            crate::dsl::ast::Expr::Call(call) if call.func == "range" => {
-                if call.args.len() >= 2 {
-                    let start = match &call.args[0] {
-                        crate::dsl::ast::Arg::Positional(
-                            crate::dsl::ast::Expr::IntLit(v, _)) => Some(*v),
-                        _ => None,
-                    };
-                    let end = match &call.args[1] {
-                        crate::dsl::ast::Arg::Positional(
-                            crate::dsl::ast::Expr::IntLit(v, _)) => Some(*v),
-                        _ => None,
-                    };
-                    match (start, end) {
-                        (Some(s), Some(e)) => Some(e.saturating_sub(s)),
-                        _ => None,
+            crate::dsl::ast::Expr::Call(call) if call.func == "range" && call.args.len() >= 2 => {
+                let start_literal = positional_int_lit(&call.args[0]);
+                let end_literal = positional_int_lit(&call.args[1]);
+
+                match (start_literal, end_literal) {
+                    // Both literal — compute directly.
+                    (Some(s), Some(e)) => Some(e.saturating_sub(s)),
+                    // At least one non-literal — compile as aux outputs.
+                    _ => {
+                        let start_name = format!("__cursor_extent_{source_name}_start");
+                        let end_name = format!("__cursor_extent_{source_name}_end");
+                        // Compile each arg as a named auxiliary output. Errors
+                        // are returned so the user sees them — silently
+                        // dropping them would leave extent=None and produce
+                        // a phase that runs zero cycles with no explanation.
+                        if let crate::dsl::ast::Arg::Positional(expr) = &call.args[0] {
+                            self.compile_binding(asm, &[start_name.clone()], expr)
+                                .map_err(|e| format!(
+                                    "cursor '{source_name}': failed to compile range start: {e}"
+                                ))?;
+                        }
+                        if let crate::dsl::ast::Arg::Positional(expr) = &call.args[1] {
+                            self.compile_binding(asm, &[end_name.clone()], expr)
+                                .map_err(|e| format!(
+                                    "cursor '{source_name}': failed to compile range end: {e}"
+                                ))?;
+                        }
+                        deferred = Some((start_literal, start_name, end_literal, end_name));
+                        None
                     }
-                } else { None }
+                }
             }
             _ => None,
         };
@@ -421,11 +475,25 @@ impl Compiler {
             extent
         };
 
+        let schema_idx = self.cursor_schemas.len();
         self.cursor_schemas.push(crate::source::SourceSchema {
             name: source_name.clone(),
             projections,
             extent: effective_extent,
         });
+
+        // Record deferred extent resolution if the range bounds are not
+        // both literals. Post-compile, the outer compile routine will
+        // query the aux outputs' folded constants and update this
+        // schema's extent in place.
+        if let Some((_start_lit, start_output, _end_lit, end_output)) = deferred {
+            self.deferred_extents.push(DeferredExtent {
+                schema_idx,
+                start_output,
+                end_output,
+            });
+        }
+        Ok(())
     }
 
     pub(super) fn compile(&mut self, file: &GkFile) -> Result<GkKernel, String> {
@@ -542,7 +610,7 @@ impl Compiler {
                     asm.add_output(&port.name, WireRef::node(&passthrough_name));
                 }
                 Statement::Cursor(decl) => {
-                    self.process_cursor(&mut asm, decl);
+                    self.process_cursor(&mut asm, decl)?;
                 }
             }
         }
@@ -555,6 +623,25 @@ impl Compiler {
         // Attach source and context for diagnostics
         asm.set_context(&self.source_text, &self.context_label);
         let mut kernel = asm.compile_strict(self.strict).map_err(|e| format!("{e}"))?;
+
+        // Resolve deferred cursor extents. At this point the kernel has
+        // folded any const expressions to constant outputs; we read the
+        // aux outputs compiled by process_cursor and update the schema
+        // extents in place.
+        for deferred in &self.deferred_extents {
+            let start = kernel.get_constant(&deferred.start_output).map(|v| v.as_u64());
+            let end = kernel.get_constant(&deferred.end_output).map(|v| v.as_u64());
+            if let (Some(s), Some(e)) = (start, end) {
+                let resolved_extent = e.saturating_sub(s);
+                // Apply cursor_limit clamping if configured
+                let final_extent = self.cursor_limit
+                    .map(|limit| resolved_extent.min(limit))
+                    .unwrap_or(resolved_extent);
+                if let Some(schema) = self.cursor_schemas.get_mut(deferred.schema_idx) {
+                    schema.extent = Some(final_extent);
+                }
+            }
+        }
 
         // Propagate source schemas to the program for runtime discovery
         if !self.cursor_schemas.is_empty() {
@@ -628,7 +715,7 @@ impl Compiler {
                 Statement::ModuleDef(_) => {}
                 Statement::Coordinates(_, _) => {}
                 Statement::Cursor(decl) => {
-                    self.process_cursor(&mut asm, decl);
+                    self.process_cursor(&mut asm, decl)?;
                 }
             }
         }
@@ -730,7 +817,7 @@ impl Compiler {
                 }
                 Statement::ModuleDef(_) | Statement::ExternPort(_) => {}
                 Statement::Cursor(decl) => {
-                    self.process_cursor(&mut asm, decl);
+                    self.process_cursor(&mut asm, decl)?;
                 }
             }
         }
@@ -740,12 +827,24 @@ impl Compiler {
         // nodes have no downstream consumers. The compiler can't do this reliably
         // because it doesn't track inter-binding wire dependencies.
 
-        // Expose outputs: only the required set, or all if no filter
+        // Expose outputs: only the required set, or all if no filter.
+        // Cursor extent aux outputs (`__cursor_extent_*`) must always be
+        // exposed regardless of the filter — they are queried by the
+        // post-compile deferred extent resolution and would otherwise be
+        // pruned by DCE, leaving the cursor extent unresolved.
         match required_outputs {
             Some(required) => {
                 for name in required {
                     if self.all_names.contains(name) {
                         asm.add_output(name, WireRef::node(name));
+                    }
+                }
+                for deferred in &self.deferred_extents {
+                    if self.all_names.contains(&deferred.start_output) {
+                        asm.add_output(&deferred.start_output, WireRef::node(&deferred.start_output));
+                    }
+                    if self.all_names.contains(&deferred.end_output) {
+                        asm.add_output(&deferred.end_output, WireRef::node(&deferred.end_output));
                     }
                 }
             }
@@ -758,6 +857,22 @@ impl Compiler {
 
         asm.set_context(&self.source_text, &self.context_label);
         let mut kernel = asm.compile_strict(self.strict).map_err(|e| format!("{e}"))?;
+
+        // Resolve deferred cursor extents (same logic as in compile()).
+        for deferred in &self.deferred_extents {
+            let start = kernel.get_constant(&deferred.start_output).map(|v| v.as_u64());
+            let end = kernel.get_constant(&deferred.end_output).map(|v| v.as_u64());
+            if let (Some(s), Some(e)) = (start, end) {
+                let resolved_extent = e.saturating_sub(s);
+                let final_extent = self.cursor_limit
+                    .map(|limit| resolved_extent.min(limit))
+                    .unwrap_or(resolved_extent);
+                if let Some(schema) = self.cursor_schemas.get_mut(deferred.schema_idx) {
+                    schema.extent = Some(final_extent);
+                }
+            }
+        }
+
         if !self.cursor_schemas.is_empty() {
             kernel.set_cursor_schemas(self.cursor_schemas.clone());
         }
@@ -887,7 +1002,7 @@ mod tests {
         let src = r#"
             inputs := (cycle)
             final dim := 128
-            final dataset := "sift1m"
+            final dataset := "example"
             normal := hash(cycle)
         "#;
         let kernel = compile_gk(src).unwrap();

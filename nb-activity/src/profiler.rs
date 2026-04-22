@@ -36,24 +36,28 @@ enum ProfileMode {
 
 impl ProfileGuard {
     /// Start profiling if `profiler=flamegraph` or `profiler=perf` is set.
+    /// Output files go in `session_dir` if provided, otherwise current directory.
     /// Returns `None` if profiling is not requested or not available.
-    pub fn maybe_start(params: &HashMap<String, String>) -> Option<Self> {
+    pub fn maybe_start(params: &HashMap<String, String>, session_dir: Option<&std::path::Path>) -> Option<Self> {
         let mode = params.get("profiler")?;
         match mode.as_str() {
-            "flamegraph" => Self::start_pprof(),
-            "perf" => Self::start_perf(),
+            "flamegraph" => Self::start_pprof(session_dir),
+            "perf" => Self::start_perf(session_dir),
             other => {
-                eprintln!("warning: unknown profiler mode '{other}', expected 'flamegraph' or 'perf'");
+                crate::observer::log(crate::observer::LogLevel::Warn,
+                    &format!("unknown profiler mode '{other}', expected 'flamegraph' or 'perf'"));
                 None
             }
         }
     }
 
-    fn start_pprof() -> Option<Self> {
+    fn start_pprof(session_dir: Option<&std::path::Path>) -> Option<Self> {
         #[cfg(not(feature = "flamegraph"))]
         {
-            eprintln!("warning: profiler=flamegraph requested but the 'flamegraph' feature is not enabled. \
-                        Rebuild with: cargo build --features flamegraph");
+            let _ = session_dir;
+            crate::observer::log(crate::observer::LogLevel::Warn,
+                "profiler=flamegraph requested but the 'flamegraph' feature is not enabled. \
+                 Rebuild with: cargo build --features flamegraph");
             return None;
         }
 
@@ -66,35 +70,51 @@ impl ProfileGuard {
             {
                 Ok(guard) => {
                     let ts = timestamp();
-                    let output_path = format!("flamegraph-{ts}.svg");
-                    eprintln!("profiler: pprof started (997 Hz, Rust frames only), output → {output_path}");
+                    let output_path = match session_dir {
+                        Some(d) => d.join("flamegraph.svg").to_string_lossy().into_owned(),
+                        None => format!("flamegraph-{ts}.svg"),
+                    };
+                    crate::observer::log(crate::observer::LogLevel::Info,
+                        &format!("profiler: pprof started (997 Hz, Rust frames only), output → {output_path}"));
                     Some(Self {
                         mode: ProfileMode::Pprof { guard, output_path },
                     })
                 }
                 Err(e) => {
-                    eprintln!("warning: failed to start pprof profiler: {e}");
-                    eprintln!("  (requires Linux perf_event_open; try: echo 1 > /proc/sys/kernel/perf_event_paranoid)");
+                    crate::observer::log(crate::observer::LogLevel::Warn,
+                        &format!("failed to start pprof profiler: {e}"));
+                    crate::observer::log(crate::observer::LogLevel::Warn,
+                        "  (requires Linux perf_event_open; try: echo 1 > /proc/sys/kernel/perf_event_paranoid)");
                     None
                 }
             }
         }
     }
 
-    fn start_perf() -> Option<Self> {
+    fn start_perf(session_dir: Option<&std::path::Path>) -> Option<Self> {
         // Check that perf is available
         let perf_check = std::process::Command::new("perf")
             .arg("version")
             .output();
         if perf_check.is_err() || !perf_check.as_ref().unwrap().status.success() {
-            eprintln!("warning: profiler=perf requested but `perf` is not available.");
-            eprintln!("  Install with: sudo apt install linux-tools-$(uname -r)");
+            crate::observer::log(crate::observer::LogLevel::Warn,
+                "profiler=perf requested but `perf` is not available.");
+            crate::observer::log(crate::observer::LogLevel::Warn,
+                "  Install with: sudo apt install linux-tools-$(uname -r)");
             return None;
         }
 
         let ts = timestamp();
-        let perf_data = format!("perf-{ts}.data");
-        let output_path = format!("flamegraph-perf-{ts}.svg");
+        let (perf_data, output_path) = match session_dir {
+            Some(d) => (
+                d.join("perf.data").to_string_lossy().into_owned(),
+                d.join("flamegraph-perf.svg").to_string_lossy().into_owned(),
+            ),
+            None => (
+                format!("perf-{ts}.data"),
+                format!("flamegraph-perf-{ts}.svg"),
+            ),
+        };
         let pid = std::process::id();
 
         // Attach perf to our own process
@@ -111,13 +131,15 @@ impl ProfileGuard {
             Ok(_child) => {
                 // Give perf a moment to attach
                 std::thread::sleep(std::time::Duration::from_millis(100));
-                eprintln!("profiler: perf record attached (997 Hz, all frames), output → {output_path}");
+                crate::observer::log(crate::observer::LogLevel::Info,
+                    &format!("profiler: perf record attached (997 Hz, all frames), output → {output_path}"));
                 Some(Self {
                     mode: ProfileMode::Perf { perf_data, output_path },
                 })
             }
             Err(e) => {
-                eprintln!("warning: failed to start perf record: {e}");
+                crate::observer::log(crate::observer::LogLevel::Warn,
+                    &format!("failed to start perf record: {e}"));
                 None
             }
         }
@@ -133,15 +155,19 @@ impl ProfileGuard {
                         match std::fs::File::create(&output_path) {
                             Ok(file) => {
                                 if let Err(e) = report.flamegraph(file) {
-                                    eprintln!("profiler: failed to write flamegraph: {e}");
+                                    crate::observer::log(crate::observer::LogLevel::Warn,
+                                        &format!("profiler: failed to write flamegraph: {e}"));
                                 } else {
-                                    eprintln!("profiler: wrote {output_path}");
+                                    crate::observer::log(crate::observer::LogLevel::Info,
+                                        &format!("profiler: wrote {output_path}"));
                                 }
                             }
-                            Err(e) => eprintln!("profiler: failed to create {output_path}: {e}"),
+                            Err(e) => crate::observer::log(crate::observer::LogLevel::Warn,
+                                &format!("profiler: failed to create {output_path}: {e}")),
                         }
                     }
-                    Err(e) => eprintln!("profiler: failed to build report: {e}"),
+                    Err(e) => crate::observer::log(crate::observer::LogLevel::Warn,
+                        &format!("profiler: failed to build report: {e}")),
                 }
             }
             ProfileMode::Perf { perf_data, output_path } => {
@@ -153,7 +179,8 @@ impl ProfileGuard {
                 std::thread::sleep(std::time::Duration::from_millis(500));
 
                 if !std::path::Path::new(&perf_data).exists() {
-                    eprintln!("profiler: perf.data not found at {perf_data}");
+                    crate::observer::log(crate::observer::LogLevel::Warn,
+                        &format!("profiler: perf.data not found at {perf_data}"));
                     return;
                 }
 
@@ -165,7 +192,8 @@ impl ProfileGuard {
                     .unwrap_or(false);
 
                 if has_inferno {
-                    eprintln!("profiler: post-processing {perf_data} with inferno...");
+                    crate::observer::log(crate::observer::LogLevel::Info,
+                        &format!("profiler: post-processing {perf_data} with inferno..."));
                     let script = std::process::Command::new("perf")
                         .args(["script", "-i", &perf_data])
                         .output();
@@ -193,10 +221,12 @@ impl ProfileGuard {
                                     }
                                     if let Ok(svg_output) = fg_proc.wait_with_output() {
                                         if let Err(e) = std::fs::write(&output_path, &svg_output.stdout) {
-                                            eprintln!("profiler: failed to write {output_path}: {e}");
+                                            crate::observer::log(crate::observer::LogLevel::Warn,
+                                                &format!("profiler: failed to write {output_path}: {e}"));
                                         } else {
                                             let size_kb = svg_output.stdout.len() / 1024;
-                                            eprintln!("profiler: wrote {output_path} ({size_kb} KB)");
+                                            crate::observer::log(crate::observer::LogLevel::Info,
+                                                &format!("profiler: wrote {output_path} ({size_kb} KB)"));
                                         }
                                     }
                                 }
@@ -205,10 +235,14 @@ impl ProfileGuard {
                     }
                 } else {
                     // No inferno — leave perf.data for manual processing
-                    eprintln!("profiler: perf data saved to {perf_data}");
-                    eprintln!("  To generate flamegraph manually:");
-                    eprintln!("    perf script -i {perf_data} | inferno-collapse-perf | inferno-flamegraph > {output_path}");
-                    eprintln!("  Install inferno: cargo install inferno");
+                    crate::observer::log(crate::observer::LogLevel::Info,
+                        &format!("profiler: perf data saved to {perf_data}"));
+                    crate::observer::log(crate::observer::LogLevel::Info,
+                        "  To generate flamegraph manually:");
+                    crate::observer::log(crate::observer::LogLevel::Info,
+                        &format!("    perf script -i {perf_data} | inferno-collapse-perf | inferno-flamegraph > {output_path}"));
+                    crate::observer::log(crate::observer::LogLevel::Info,
+                        "  Install inferno: cargo install inferno");
                 }
 
                 // Clean up perf.data (it can be large)

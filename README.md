@@ -70,7 +70,7 @@ $ ./service.yaml cycles=100 threads=4 rate=1000
 - Latency injection (`delay:` field for GK-driven think time)
 - Ratio-weighted op sequencing
 - Capture flow between ops within a stanza
-- GK expressions in config (`cycles="{vector_count("sift1m")}"`)
+- GK expressions in config (`cycles="{vector_count("example")}"`)
 
 **Adapters** — Protocol drivers for:
 - stdout (debugging, dry-run, format=json/csv/stmt)

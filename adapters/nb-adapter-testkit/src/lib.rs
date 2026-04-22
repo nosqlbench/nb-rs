@@ -345,6 +345,7 @@ inventory::submit! {
     nb_activity::adapter::AdapterRegistration {
         names: || &["testkit"],
         known_params: || &[],
+        display_preference: || nb_activity::adapter::DisplayPreference::Auto,
         create: |params| Box::pin(async move {
             Ok(std::sync::Arc::new(ModelAdapter::with_config(ModelConfig {
                 stdout: StdoutConfig::from_params(&params),

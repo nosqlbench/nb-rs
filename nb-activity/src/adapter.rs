@@ -229,14 +229,20 @@ pub trait OpDispenser: Send + Sync {
         fields: &'a ResolvedFields,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>>;
 
-    /// Snapshot adapter-specific metrics for inclusion in the capture frame.
+    /// Snapshot adapter-specific metrics for inclusion in the capture
+    /// snapshot.
     ///
     /// Called by the metrics scheduler alongside the standard activity
-    /// metrics. Adapters return additional `Sample`s (timers, counters)
-    /// that represent adapter-internal state (e.g., rows/s for batched CQL).
-    /// These appear in the summary report.
+    /// metrics. Adapters return additional `(family_name, labels,
+    /// MetricValue)` triples that represent adapter-internal state
+    /// (e.g., rows/s for batched CQL). These appear in the summary
+    /// report.
+    ///
+    /// The OpenMetrics-shaped runtime model lives under `nb_metrics::snapshot`
+    /// — adapters typically build `MetricValue::Counter` /
+    /// `MetricValue::Histogram` / `MetricValue::Gauge` directly.
     /// Default: no additional metrics.
-    fn adapter_metrics(&self) -> Vec<nb_metrics::frame::Sample> {
+    fn adapter_metrics(&self) -> Vec<(String, nb_metrics::labels::Labels, nb_metrics::snapshot::MetricValue)> {
         if let Some(inner) = self.inner_dispenser() {
             inner.adapter_metrics()
         } else {
@@ -462,6 +468,9 @@ pub struct AdapterRegistration {
     pub names: fn() -> &'static [&'static str],
     /// Extra param names this adapter accepts (for CLI validation).
     pub known_params: fn() -> &'static [&'static str],
+    /// Display preference for TUI activation. Checked at startup before
+    /// any adapter is constructed — no connection overhead.
+    pub display_preference: fn() -> DisplayPreference,
     /// Async factory: given params, create the adapter.
     /// Returns a boxed future so async connect is supported (e.g., CQL).
     pub create: fn(std::collections::HashMap<String, String>)
@@ -487,6 +496,16 @@ pub fn registered_driver_names() -> Vec<&'static str> {
         names.extend_from_slice((reg.names)());
     }
     names
+}
+
+/// Look up the display preference for a driver name without constructing the adapter.
+///
+/// Returns `Auto` if the driver is not registered (unknown adapters are
+/// assumed TUI-compatible; construction will fail later with a clear error).
+pub fn adapter_display_preference(driver: &str) -> DisplayPreference {
+    find_adapter_registration(driver)
+        .map(|reg| (reg.display_preference)())
+        .unwrap_or(DisplayPreference::Auto)
 }
 
 /// Collect all extra known params from registered adapters.

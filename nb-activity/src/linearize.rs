@@ -124,8 +124,8 @@ pub fn analyze_dependencies(templates: &[ParsedOp]) -> Vec<DepGroup> {
         if ready.is_empty() {
             // Cycle in dependency graph — shouldn't happen with
             // well-formed stanzas, but break to avoid infinite loop
-            eprintln!("warning: circular capture dependency detected; \
-                       scheduling remaining ops sequentially");
+            crate::observer::log(crate::observer::LogLevel::Warn,
+                "circular capture dependency detected; scheduling remaining ops sequentially");
             let mut fallback: Vec<usize> = remaining.into_iter().collect();
             fallback.sort();
             for idx in fallback {

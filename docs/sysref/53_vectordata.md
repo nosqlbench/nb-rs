@@ -14,10 +14,10 @@ Source specifiers support three formats:
 
 | Format | Example | Description |
 |--------|---------|-------------|
-| `"dataset"` | `"sift1m"` | Catalog lookup, default profile |
-| `"dataset:profile"` | `"sift1m:label-1"` | Catalog lookup, explicit profile |
+| `"dataset"` | `"example"` | Catalog lookup, default profile |
+| `"dataset:profile"` | `"example:label-1"` | Catalog lookup, explicit profile |
 | `"https://..."` | `"https://host/ds/"` | Direct URL |
-| `"/path/to/dir"` | `"/data/sift1m"` | Local filesystem |
+| `"/path/to/dir"` | `"/data/example"` | Local filesystem |
 
 Resolution order:
 1. In-memory cache hit

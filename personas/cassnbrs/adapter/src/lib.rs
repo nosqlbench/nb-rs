@@ -12,9 +12,15 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use cassandra_cpp as cass;
 use cass::LendingIterator;
+
+/// One-shot guard so the CQL result diagnostic fires exactly once per
+/// process, on the first result that has at least one row. Intended to
+/// aid diagnosis of empty-recall runs without flooding stderr.
+static CQL_RESULT_DIAG_FIRED: AtomicBool = AtomicBool::new(false);
 use nb_activity::adapter::{
     AdapterError, DriverAdapter, ExecutionError, OpDispenser, OpResult, ResolvedFields, ResultBody,
 };
@@ -50,6 +56,26 @@ impl CqlResultBody {
                     .to_string();
                 let value = Self::extract_column_value(&row, col_idx);
                 map.insert(col_name, value);
+            }
+            // Diagnostic: on the very first populated row seen by this
+            // process, log the parsed column names and values. This is a
+            // one-shot probe to narrow down recall=0 cases where the
+            // adapter either loses the column name ("?") or decodes the
+            // value as null. See nb-activity/tests/recall_e2e.rs for the
+            // matching failure-mode pin.
+            if rows.is_empty()
+                && !CQL_RESULT_DIAG_FIRED.swap(true, Ordering::AcqRel)
+            {
+                let names: Vec<&String> = map.keys().collect();
+                let key_value = map.get("key")
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "<no 'key' column>".into());
+                nb_activity::observer::log(
+                    nb_activity::observer::LogLevel::Info,
+                    &format!(
+                        "cql first-row diag: col_count={col_count} names={names:?} key={key_value}"
+                    ),
+                );
             }
             rows.push(map);
         }
@@ -346,6 +372,7 @@ impl DriverAdapter for CqlAdapter {
                         stmt_text: prepared_text,
                         bind_names,
                         prepared: std::sync::OnceLock::new(),
+                        binders: std::sync::OnceLock::new(),
                     }))
                 }
             }
@@ -440,6 +467,8 @@ struct CqlPreparedDispenser {
     bind_names: Vec<String>,
     /// Prepared once on first execute, then lock-free reads thereafter.
     prepared: std::sync::OnceLock<Arc<cass::PreparedStatement>>,
+    /// Type-aware binders built once from prepared statement metadata.
+    binders: std::sync::OnceLock<Vec<BinderFn>>,
 }
 
 impl CqlPreparedDispenser {
@@ -467,30 +496,35 @@ impl OpDispenser for CqlPreparedDispenser {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         Box::pin(async move {
             let prepared = self.get_prepared().await?;
+
+            // Build type-aware binders once from prepared statement metadata.
+            // Cached in OnceLock — lock-free after first execute.
+            let binders = self.binders.get_or_init(|| {
+                (0..self.bind_names.len())
+                    .map(|i| {
+                        let dt = prepared.parameter_data_type(i);
+                        let vt = get_const_data_type_value_type(&dt);
+                        make_binder(vt)
+                    })
+                    .collect()
+            });
+
             let mut stmt = prepared.bind();
-            stmt.set_consistency(self.consistency)
+            let _ = stmt.set_consistency(self.consistency)
                 .map_err(|e| ExecutionError::Op(AdapterError {
                     error_name: "bind_error".into(),
                     message: format!("set consistency: {e}"),
                     retryable: false,
                 }))?;
 
-            // Bind typed values by position (GK names don't match CQL column names)
             for (bind_idx, name) in self.bind_names.iter().enumerate() {
                 if let Some(value) = fields.get_value(name) {
-                    let r = match value {
-                        nb_variates::node::Value::U64(v) => stmt.bind_int64(bind_idx, *v as i64),
-                        nb_variates::node::Value::F64(v) => stmt.bind_double(bind_idx, *v),
-                        nb_variates::node::Value::Bool(v) => stmt.bind_bool(bind_idx, *v),
-                        nb_variates::node::Value::Str(v) => stmt.bind_string(bind_idx, v),
-                        nb_variates::node::Value::Bytes(v) => stmt.bind_bytes(bind_idx, v.clone()),
-                        _ => stmt.bind_string(bind_idx, &value.to_display_string()),
-                    };
-                    r.map_err(|e| ExecutionError::Op(AdapterError {
-                        error_name: "bind_error".into(),
-                        message: format!("bind position {bind_idx} ('{name}'): {e}"),
-                        retryable: false,
-                    }))?;
+                    binders[bind_idx](&mut stmt, bind_idx, value)
+                        .map_err(|e| ExecutionError::Op(AdapterError {
+                            error_name: "bind_error".into(),
+                            message: format!("bind position {bind_idx} ('{name}'): {e}"),
+                            retryable: false,
+                        }))?;
                 }
             }
 
@@ -581,24 +615,27 @@ impl OpDispenser for CqlBatchDispenser {
         vec![("rows_inserted", total)]
     }
 
-    fn adapter_metrics(&self) -> Vec<nb_metrics::frame::Sample> {
+    fn adapter_metrics(&self) -> Vec<(String, nb_metrics::labels::Labels, nb_metrics::snapshot::MetricValue)> {
+        use nb_metrics::snapshot::{CounterValue, HistogramValue, MetricValue, split_name_label};
         let snap = self.rows_timer.snapshot();
         let total = self.rows_total.load(std::sync::atomic::Ordering::Relaxed);
-        let mut samples = Vec::new();
+        let mut out = Vec::new();
         if snap.count > 0 {
-            samples.push(nb_metrics::frame::Sample::Timer {
-                labels: self.rows_timer.labels().clone(),
-                count: snap.count,
-                histogram: snap.histogram,
-            });
+            let (name, labels) = split_name_label(self.rows_timer.labels());
+            out.push((
+                name,
+                labels,
+                MetricValue::Histogram(HistogramValue::from_hdr(snap.histogram)),
+            ));
         }
         if total > 0 {
-            samples.push(nb_metrics::frame::Sample::Counter {
-                labels: nb_metrics::labels::Labels::of("name", "rows_inserted_total"),
-                value: total,
-            });
+            out.push((
+                "rows_inserted_total".to_string(),
+                nb_metrics::labels::Labels::default(),
+                MetricValue::Counter(CounterValue::new(total)),
+            ));
         }
-        samples
+        out
     }
 
     fn execute<'a>(
@@ -821,6 +858,7 @@ inventory::submit! {
             "hosts", "host", "port", "keyspace", "consistency",
             "username", "password", "request_timeout_ms",
         ],
+        display_preference: || nb_activity::adapter::DisplayPreference::Auto,
         create: |params| Box::pin(async move {
             let config = CqlConfig::from_params(&params)
                 .map_err(|e| format!("CQL config error: {e}"))?;
@@ -899,6 +937,23 @@ fn parse_vector_to_bytes(s: &str) -> Vec<u8> {
     bytes
 }
 
+/// Convert LE f32 bytes (GK native) to BE f32 bytes (CQL vector encoding).
+///
+/// Swaps each 4-byte group from little-endian to big-endian in place.
+/// If the length is not a multiple of 4, trailing bytes are passed through.
+fn le_to_be_f32_bytes(le: &[u8]) -> Vec<u8> {
+    let mut be = Vec::with_capacity(le.len());
+    for chunk in le.chunks(4) {
+        if chunk.len() == 4 {
+            // Reinterpret as LE f32, emit as BE f32
+            be.extend_from_slice(&[chunk[3], chunk[2], chunk[1], chunk[0]]);
+        } else {
+            be.extend_from_slice(chunk);
+        }
+    }
+    be
+}
+
 type BinderFn = Box<dyn Fn(&mut cass::Statement, usize, &nb_variates::node::Value)
     -> cass::Result<()> + Send + Sync>;
 
@@ -970,18 +1025,42 @@ fn make_binder(cql_type: cass::ValueType) -> BinderFn {
                 stmt.bind_bool(idx, b)?; Ok(())
             })
         }
-        // CUSTOM type includes vectors. Parse the GK string
-        // representation `[0.1, 0.2, ...]` into raw float bytes
-        // (big-endian IEEE 754, concatenated) for CQL binding.
+        // CUSTOM type includes CQL vectors. Two paths:
+        // 1. Value::Bytes — direct bind (optimal: no string round-trip).
+        //    GK `_bytes` nodes produce LE f32; CQL vectors are BE f32.
+        //    Swap each 4-byte group from LE to BE before binding.
+        // 2. Value::Str — parse `[0.1, 0.2, ...]` into BE f32 bytes.
         cass::ValueType::CUSTOM => {
             Box::new(|stmt, idx, value| {
-                let s = value.to_display_string();
-                let bytes = parse_vector_to_bytes(&s);
-                if bytes.is_empty() {
-                    // Not a vector — fall back to string binding
-                    stmt.bind_string(idx, &s)?;
-                } else {
-                    stmt.bind_bytes(idx, bytes)?;
+                match value {
+                    nb_variates::node::Value::Bytes(le_bytes) => {
+                        // LE f32 from GK → BE f32 for CQL
+                        let be_bytes = le_to_be_f32_bytes(le_bytes);
+                        stmt.bind_bytes(idx, be_bytes)?;
+                    }
+                    _ => {
+                        let s = value.to_display_string();
+                        let bytes = parse_vector_to_bytes(&s);
+                        if bytes.is_empty() {
+                            stmt.bind_string(idx, &s)?;
+                        } else {
+                            stmt.bind_bytes(idx, bytes)?;
+                        }
+                    }
+                }
+                Ok(())
+            })
+        }
+        // BLOB: raw bytes binding
+        cass::ValueType::BLOB => {
+            Box::new(|stmt, idx, value| {
+                match value {
+                    nb_variates::node::Value::Bytes(bytes) => {
+                        stmt.bind_bytes(idx, bytes.clone())?;
+                    }
+                    _ => {
+                        stmt.bind_string(idx, &value.to_display_string())?;
+                    }
                 }
                 Ok(())
             })

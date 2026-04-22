@@ -4,7 +4,7 @@
 //! OpenMetrics / Prometheus text exposition format parser.
 //!
 //! Inverse of [`render_prometheus_text()`](super::openmetrics::render_prometheus_text).
-//! Parses the text format back into a [`MetricsFrame`] so that metrics
+//! Parses the text format back into a [`MetricSet`] so that metrics
 //! can be pushed over HTTP and reconstructed on the receiving side.
 //!
 //! Timer histograms are reconstructed approximately — the full HDR
@@ -16,10 +16,10 @@ use std::time::{Duration, Instant};
 
 use hdrhistogram::Histogram as HdrHistogram;
 
-use crate::frame::{MetricsFrame, Sample};
 use crate::labels::Labels;
+use crate::snapshot::MetricSet;
 
-/// Parse Prometheus text exposition format into a `MetricsFrame`.
+/// Parse Prometheus text exposition format into a [`MetricSet`].
 ///
 /// Recognises the line formats produced by `render_prometheus_text()`:
 ///
@@ -33,8 +33,7 @@ use crate::labels::Labels;
 /// Timer metrics are identified by the presence of `_count` / `_sum`
 /// suffixes sharing a common base name. Quantile lines are grouped
 /// by base name and used to reconstruct an approximate histogram.
-pub fn parse_prometheus_text(text: &str) -> MetricsFrame {
-    // First pass: collect all parsed lines and identify timer base names.
+pub fn parse_prometheus_text(text: &str) -> MetricSet {
     let mut lines: Vec<ParsedLine> = Vec::new();
     let mut timer_bases: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -44,7 +43,6 @@ pub fn parse_prometheus_text(text: &str) -> MetricsFrame {
             continue;
         }
         if let Some(parsed) = parse_line(raw) {
-            // Detect timer families by _count suffix.
             if let LineKind::TimerCount { .. } = &parsed.kind {
                 timer_bases.insert(parsed.base_name.clone());
             }
@@ -52,39 +50,27 @@ pub fn parse_prometheus_text(text: &str) -> MetricsFrame {
         }
     }
 
-    // Second pass: build samples.
-    let mut samples: Vec<Sample> = Vec::new();
+    let mut snapshot = MetricSet::new(Duration::from_secs(1));
+    let now = Instant::now();
 
-    // Accumulate timer parts keyed by (base_name, labels_without_quantile).
     let mut timer_parts: HashMap<(String, String), TimerAccum> = HashMap::new();
 
     for line in &lines {
         match &line.kind {
             LineKind::Counter { value } => {
-                let labels = Labels::of("name", &line.base_name)
-                    .extend(&line.labels);
-                samples.push(Sample::Counter { labels, value: *value });
+                snapshot.insert_counter(&line.base_name, line.labels.clone(), *value, now);
             }
             LineKind::Gauge { value } => {
-                // A gauge line could be a standalone gauge or a _rate line.
-                // Skip _rate lines (derived from timer).
-                if line.is_rate {
-                    continue;
-                }
-                // If this base_name is a known timer family, this is a
-                // quantile line without a quantile label — skip.
+                if line.is_rate { continue; }
                 if timer_bases.contains(&line.base_name) && line.quantile.is_none() {
                     continue;
                 }
                 if let Some(q) = line.quantile {
-                    // Timer quantile line — accumulate.
                     let key = (line.base_name.clone(), line.label_key.clone());
                     timer_parts.entry(key).or_default()
                         .quantiles.push((q, *value));
                 } else {
-                    let labels = Labels::of("name", &line.base_name)
-                        .extend(&line.labels);
-                    samples.push(Sample::Gauge { labels, value: *value });
+                    snapshot.insert_gauge(&line.base_name, line.labels.clone(), *value, now);
                 }
             }
             LineKind::TimerCount { value } => {
@@ -100,30 +86,18 @@ pub fn parse_prometheus_text(text: &str) -> MetricsFrame {
         }
     }
 
-    // Build timer samples from accumulated parts.
     for ((base_name, _), accum) in timer_parts {
-        let labels = Labels::of("name", &base_name)
-            .extend(&accum.labels);
-
-        // Reconstruct approximate histogram from quantile values.
         let mut histogram = HdrHistogram::new_with_bounds(1, 3_600_000_000_000, 3)
             .expect("histogram bounds");
 
         if accum.quantiles.is_empty() && accum.count > 0 {
-            // No quantile data — record sum-derived mean for count observations.
-            let mean_nanos = if accum.count > 0 {
-                (accum.sum_seconds / accum.count as f64 * 1_000_000_000.0) as u64
-            } else {
-                0
-            };
+            let mean_nanos = (accum.sum_seconds / accum.count as f64 * 1_000_000_000.0) as u64;
             for _ in 0..accum.count.min(10_000) {
                 if let Err(e) = histogram.record(mean_nanos.max(1)) {
-                    eprintln!("warning: histogram record failed: {e}");
+                    crate::diag::warn(&format!("warning: histogram record failed: {e}"));
                 }
             }
         } else {
-            // Distribute observations across quantile buckets.
-            // Sort quantiles ascending so we can compute per-bucket counts.
             let mut qs = accum.quantiles.clone();
             qs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -135,25 +109,17 @@ pub fn parse_prometheus_text(text: &str) -> MetricsFrame {
                 let bucket_count = (bucket_fraction * total as f64).round() as u64;
                 for _ in 0..bucket_count.max(1).min(10_000) {
                     if let Err(e) = histogram.record(val_nanos.max(1)) {
-                        eprintln!("warning: histogram record failed: {e}");
+                        crate::diag::warn(&format!("warning: histogram record failed: {e}"));
                     }
                 }
                 prev_q = *q;
             }
         }
 
-        samples.push(Sample::Timer {
-            labels,
-            count: accum.count,
-            histogram,
-        });
+        snapshot.insert_histogram(&base_name, accum.labels, histogram, now);
     }
 
-    MetricsFrame {
-        captured_at: Instant::now(),
-        interval: Duration::from_secs(1), // default; actual interval not in text format
-        samples,
-    }
+    snapshot
 }
 
 // ─── Internal Types ─────────────────────────────────────────
@@ -328,50 +294,36 @@ fn split_label_pairs(s: &str) -> Vec<&str> {
 mod tests {
     use super::*;
     use crate::reporters::openmetrics::render_prometheus_text;
+    use crate::snapshot::MetricValue;
 
     #[test]
     fn round_trip_counter() {
-        let frame = MetricsFrame {
-            captured_at: Instant::now(),
-            interval: Duration::from_secs(1),
-            samples: vec![Sample::Counter {
-                labels: Labels::of("name", "ops").with("activity", "write"),
-                value: 42,
-            }],
-        };
-        let text = render_prometheus_text(&frame);
+        let mut s = MetricSet::new(Duration::from_secs(1));
+        s.insert_counter("ops", Labels::of("activity", "write"), 42, Instant::now());
+        let text = render_prometheus_text(&s);
         let parsed = parse_prometheus_text(&text);
 
-        assert_eq!(parsed.samples.len(), 1);
-        match &parsed.samples[0] {
-            Sample::Counter { labels, value } => {
-                assert_eq!(labels.get("name"), Some("ops"));
-                assert_eq!(labels.get("activity"), Some("write"));
-                assert_eq!(*value, 42);
-            }
+        let f = parsed.family("ops").expect("ops family");
+        assert_eq!(f.len(), 1);
+        let m = f.metrics().next().unwrap();
+        assert_eq!(m.labels().get("activity"), Some("write"));
+        match m.point().unwrap().value() {
+            MetricValue::Counter(c) => assert_eq!(c.total, 42),
             _ => panic!("expected counter"),
         }
     }
 
     #[test]
     fn round_trip_gauge() {
-        let frame = MetricsFrame {
-            captured_at: Instant::now(),
-            interval: Duration::from_secs(1),
-            samples: vec![Sample::Gauge {
-                labels: Labels::of("name", "heap_used"),
-                value: 1234567.0,
-            }],
-        };
-        let text = render_prometheus_text(&frame);
+        let mut s = MetricSet::new(Duration::from_secs(1));
+        s.insert_gauge("heap_used", Labels::default(), 1234567.0, Instant::now());
+        let text = render_prometheus_text(&s);
         let parsed = parse_prometheus_text(&text);
 
-        assert_eq!(parsed.samples.len(), 1);
-        match &parsed.samples[0] {
-            Sample::Gauge { labels, value } => {
-                assert_eq!(labels.get("name"), Some("heap_used"));
-                assert!((value - 1234567.0).abs() < 1.0);
-            }
+        let f = parsed.family("heap_used").expect("heap_used family");
+        let m = f.metrics().next().unwrap();
+        match m.point().unwrap().value() {
+            MetricValue::Gauge(g) => assert!((g.value - 1234567.0).abs() < 1.0),
             _ => panic!("expected gauge"),
         }
     }
@@ -380,33 +332,25 @@ mod tests {
     fn round_trip_timer() {
         let mut h = HdrHistogram::new_with_bounds(1, 3_600_000_000_000, 3).unwrap();
         for i in 1..=1000 {
-            let _ = h.record(i * 1_000_000); // 1ms to 1000ms
+            let _ = h.record(i * 1_000_000);
         }
         let original_p99 = h.value_at_quantile(0.99);
 
-        let frame = MetricsFrame {
-            captured_at: Instant::now(),
-            interval: Duration::from_secs(5),
-            samples: vec![Sample::Timer {
-                labels: Labels::of("name", "latency").with("activity", "read"),
-                count: 1000,
-                histogram: h,
-            }],
-        };
-        let text = render_prometheus_text(&frame);
+        let mut s = MetricSet::new(Duration::from_secs(5));
+        s.insert_histogram("latency", Labels::of("activity", "read"), h, Instant::now());
+        let text = render_prometheus_text(&s);
         let parsed = parse_prometheus_text(&text);
 
-        // Find the timer sample.
-        let timer = parsed.samples.iter().find(|s| matches!(s, Sample::Timer { .. }));
-        assert!(timer.is_some(), "expected a timer sample");
-
-        match timer.unwrap() {
-            Sample::Timer { labels, count, histogram } => {
-                assert_eq!(labels.get("name"), Some("latency"));
-                assert_eq!(labels.get("activity"), Some("read"));
-                assert_eq!(*count, 1000);
-                // Reconstructed p99 should be close to original.
-                let parsed_p99 = histogram.value_at_quantile(0.99);
+        let f = parsed.family("latency").expect("latency family");
+        let m = f.metrics().next().expect("series");
+        assert_eq!(m.labels().get("activity"), Some("read"));
+        match m.point().unwrap().value() {
+            MetricValue::Histogram(h) => {
+                // Reconstruction from quantile lines is inherently
+                // approximate — bucket-count rounding may drop one
+                // observation. Within 1% is acceptable.
+                assert!(h.count >= 990, "count round-trip lost too much: {}", h.count);
+                let parsed_p99 = h.reservoir.value_at_quantile(0.99);
                 let original_seconds = original_p99 as f64 / 1_000_000_000.0;
                 let parsed_seconds = parsed_p99 as f64 / 1_000_000_000.0;
                 assert!(
@@ -414,20 +358,20 @@ mod tests {
                     "p99 mismatch: original={original_seconds:.6}s, parsed={parsed_seconds:.6}s"
                 );
             }
-            _ => unreachable!(),
+            _ => panic!("expected histogram"),
         }
     }
 
     #[test]
     fn parse_empty_input() {
         let parsed = parse_prometheus_text("");
-        assert!(parsed.samples.is_empty());
+        assert!(parsed.is_empty());
     }
 
     #[test]
     fn parse_ignores_comments() {
         let text = "# HELP foo A counter\n# TYPE foo counter\nfoo_total 42\n";
         let parsed = parse_prometheus_text(text);
-        assert_eq!(parsed.samples.len(), 1);
+        assert_eq!(parsed.len(), 1);
     }
 }

@@ -16,9 +16,9 @@ use crate::activity::{Activity, ActivityConfig};
 use crate::adapter::DriverAdapter;
 use crate::opseq::{OpSequence, SequencerType};
 use crate::synthesis::OpBuilder;
+use nb_metrics::cadence_reporter::CadenceReporter;
 use nb_metrics::component::{self, Component, ComponentState};
 use nb_metrics::labels::Labels;
-use nb_metrics::store::InProcessMetricsStore;
 use nb_workload::model::{ScenarioNode, WorkloadPhase};
 
 /// Shared context for the recursive executor.
@@ -48,8 +48,9 @@ pub struct ExecCtx {
     pub label_stack: Vec<(String, String)>,
     /// Session root component (owns the component tree).
     pub session_component: Arc<RwLock<Component>>,
-    /// In-process metrics store for lifecycle flush.
-    pub store: Arc<RwLock<InProcessMetricsStore>>,
+    /// Cadence reporter for lifecycle flush — same reporter the
+    /// scheduler is feeding; end-of-phase final deltas route here.
+    pub cadence_reporter: Arc<CadenceReporter>,
     /// Scheduler stop handle for delivering frames to reporters.
     pub stop_handle: Arc<nb_metrics::scheduler::StopHandle>,
     /// Run observer for phase lifecycle events (TUI or stderr).
@@ -362,11 +363,7 @@ async fn run_phase(
         None => ctx.concurrency,
     };
 
-    let phase_labels = bindings.iter()
-        .filter(|(_, v)| !v.is_empty())
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let phase_labels = format_labels(bindings);
     ctx.observer.phase_starting(phase_name, &phase_labels,
         op_sequence.stanza_length(), phase_concurrency);
 
@@ -457,6 +454,11 @@ async fn run_phase(
         pc.set_state(ComponentState::Running);
     }
 
+    // SRD-42 §"now" reads come through `MetricsQuery::now()` which
+    // walks the live component tree on demand — no per-phase hook
+    // registration needed. The legacy `set_live_source` path is
+    // gone as of Phase 7b.
+
     let validation_frame = activity.validation_frame.clone();
     let final_metrics = activity.shared_metrics();
 
@@ -471,6 +473,8 @@ async fn run_phase(
     // Send initial progress to set cursor info on the observer
     if observer_for_progress.suppresses_stderr() {
         observer_for_progress.phase_progress(&crate::observer::PhaseProgressUpdate {
+            name: phase_name.to_string(),
+            labels: phase_labels.clone(),
             cursor_name: progress_cursor_name.clone(),
             cursor_extent: progress_extent,
             fibers: progress_fibers,
@@ -482,6 +486,7 @@ async fn run_phase(
             ops_per_sec: 0.0,
             adapter_counters: Vec::new(),
             rows_per_batch: 0.0,
+            relevancy: Vec::new(),
         });
     }
 
@@ -489,9 +494,16 @@ async fn run_phase(
         let obs = observer_for_progress.clone();
         let cursor_name_for_thread = progress_cursor_name.clone();
         let fibers_for_thread = progress_fibers;
+        let name_for_thread = phase_name.to_string();
+        let labels_for_thread = phase_labels.clone();
+        // Clone so the post-phase final-progress emission below still
+        // has access — the thread needs to own its own Arc handle.
+        let progress_metrics = progress_metrics.clone();
         Some(std::thread::spawn(move || {
             let progress_cursor_name = cursor_name_for_thread;
             let progress_fibers = fibers_for_thread;
+            let phase_name = name_for_thread;
+            let phase_labels = labels_for_thread;
             while progress_flag.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 if !progress_flag.load(std::sync::atomic::Ordering::Relaxed) { break; }
@@ -521,7 +533,11 @@ async fn run_phase(
                     rows_total as f64 / stanzas as f64
                 } else { 0.0 };
 
+                let relevancy = progress_metrics.collect_relevancy_live();
+
                 obs.phase_progress(&crate::observer::PhaseProgressUpdate {
+                    name: phase_name.clone(),
+                    labels: phase_labels.clone(),
                     cursor_name: progress_cursor_name.clone(),
                     cursor_extent: progress_extent,
                     fibers: progress_fibers,
@@ -533,6 +549,7 @@ async fn run_phase(
                     ops_per_sec,
                     adapter_counters,
                     rows_per_batch,
+                    relevancy,
                 });
             }
         }))
@@ -547,22 +564,80 @@ async fn run_phase(
     // Stop progress thread
     progress_running.store(false, std::sync::atomic::Ordering::Relaxed);
 
-    // Lifecycle flush: capture final delta, merge into store, deliver to reporters
+    // Emit one final phase_progress with fresh numbers before
+    // `phase_completed`. Short phases (e.g. 100ms ann_query) can
+    // finish between progress-thread ticks (every 500ms), so
+    // relevancy / counter snapshots that were being updated live
+    // would otherwise arrive empty at the observer's summary-
+    // capture step. This guarantees the final frame is never stale.
+    if ctx.observer.suppresses_stderr() {
+        let started_total = progress_metrics.ops_started.load(std::sync::atomic::Ordering::Relaxed);
+        let finished_total = progress_metrics.ops_finished.load(std::sync::atomic::Ordering::Relaxed);
+        let successes = progress_metrics.successes_total.get();
+        let errors = progress_metrics.errors_total.get();
+        let elapsed = progress_start.elapsed().as_secs_f64();
+        let ops_per_sec = if elapsed > 0.0 { finished_total as f64 / elapsed } else { 0.0 };
+        let adapter_counters: Vec<(String, u64, f64)> = progress_metrics
+            .collect_status_counters()
+            .into_iter()
+            .map(|(name, total)| {
+                let rate = if elapsed > 0.0 { total as f64 / elapsed } else { 0.0 };
+                (name, total, rate)
+            })
+            .collect();
+        let stanzas = progress_metrics.stanzas_total.get();
+        let rows_total: u64 = adapter_counters.iter()
+            .find(|(n, _, _)| n == "rows_inserted")
+            .map(|(_, t, _)| *t)
+            .unwrap_or(0);
+        let rows_per_batch = if stanzas > 0 && rows_total > stanzas {
+            rows_total as f64 / stanzas as f64
+        } else { 0.0 };
+        let relevancy = progress_metrics.collect_relevancy_live();
+        ctx.observer.phase_progress(&crate::observer::PhaseProgressUpdate {
+            name: phase_name.to_string(),
+            labels: phase_labels.clone(),
+            cursor_name: progress_cursor_name.clone(),
+            cursor_extent: progress_extent,
+            fibers: progress_fibers,
+            ops_started: started_total,
+            ops_finished: finished_total,
+            ops_ok: successes,
+            errors,
+            retries: errors.saturating_sub(finished_total.saturating_sub(successes)),
+            ops_per_sec,
+            adapter_counters,
+            rows_per_batch,
+            relevancy,
+        });
+    }
+
+    // Lifecycle flush: capture final delta, route through the
+    // cadence reporter (single writer of windowed snapshots), and
+    // deliver to the scheduler-tree reporters for external sinks.
+    //
+    // The call to `close_path` at the end is the primary lifecycle
+    // boundary for this phase's metrics. By the time the ingests
+    // above return, no more data for this phase's label set will
+    // ever arrive — the next for_each iteration (or the next phase)
+    // uses a different label combination, so it lands in a different
+    // path. Closing here publishes the phase's windows now instead
+    // of leaving them to idle until the next cadence tick (which
+    // could be 30s away) or session shutdown (which produced a
+    // thundering herd of stale windows).
     {
         use nb_metrics::component::InstrumentSet;
         let final_delta = final_metrics.capture_delta(std::time::Duration::from_secs(1));
-        if let Ok(mut s) = ctx.store.write() {
-            s.flush_component(&labels, final_delta.clone());
-        }
+        ctx.cadence_reporter.ingest(&labels, final_delta.clone());
         ctx.stop_handle.report_frame(&final_delta);
 
         // Flush validation metrics (recall, precision) as gauges
         if let Some(vframe) = validation_frame.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            if let Ok(mut s) = ctx.store.write() {
-                s.flush_component(&labels, vframe.clone());
-            }
+            ctx.cadence_reporter.ingest(&labels, vframe.clone());
             ctx.stop_handle.report_frame(&vframe);
         }
+
+        ctx.cadence_reporter.close_path(&labels);
     }
 
     // Transition to Stopped
@@ -579,6 +654,19 @@ async fn run_phase(
 
     ctx.observer.phase_completed(phase_name, &phase_labels, phase_duration);
     Ok(())
+}
+
+/// Format bindings as a sorted labels string for stable matching.
+///
+/// HashMap iteration order is non-deterministic. Sorting ensures that
+/// pre-map entries match the labels produced at execution time.
+fn format_labels(bindings: &HashMap<String, String>) -> String {
+    let mut pairs: Vec<String> = bindings.iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    pairs.sort();
+    pairs.join(", ")
 }
 
 /// Resolve a for_each expression.
@@ -612,4 +700,215 @@ fn resolve_expr(
         .collect();
     values.sort();
     Ok((var, values))
+}
+
+// =========================================================================
+// Scenario tree pre-mapping (walk without executing)
+// =========================================================================
+
+/// Whether a pre-map entry represents a phase or a scope header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreMapKind {
+    Phase,
+    Scope,
+}
+
+/// Pre-map entry: either an executable phase or a visual scope header
+/// (for_each / for_combinations / do_while / do_until).
+pub struct PreMapEntry {
+    pub kind: PreMapKind,
+    /// For `Phase`: the phase name. For `Scope`: the iterator
+    /// description (e.g., `"profile in [label_00, label_01, ...]"`).
+    pub name: String,
+    /// For `Phase`: sorted dimensional labels. For `Scope`: empty.
+    pub labels: String,
+    /// Nesting depth for tree indentation.
+    pub depth: usize,
+}
+
+/// Walk the scenario tree without executing to enumerate all concrete phases.
+///
+/// Resolves `for_each` / `for_combinations` expressions to determine
+/// iteration values. `do_while` / `do_until` are shown once (iteration
+/// count unknown at pre-map time).
+pub fn pre_map_tree(
+    nodes: &[ScenarioNode],
+    phases: &HashMap<String, WorkloadPhase>,
+    workload_params: &HashMap<String, String>,
+    outer_scope_values: &[(String, nb_variates::node::Value)],
+) -> Result<Vec<PreMapEntry>, String> {
+    let mut entries = Vec::new();
+    let bindings = HashMap::new();
+    pre_map_recursive(nodes, phases, workload_params, outer_scope_values,
+                      &bindings, 0, &mut entries)?;
+    Ok(entries)
+}
+
+fn pre_map_recursive(
+    nodes: &[ScenarioNode],
+    phases: &HashMap<String, WorkloadPhase>,
+    workload_params: &HashMap<String, String>,
+    outer_scope_values: &[(String, nb_variates::node::Value)],
+    bindings: &HashMap<String, String>,
+    depth: usize,
+    out: &mut Vec<PreMapEntry>,
+) -> Result<(), String> {
+    for node in nodes {
+        match node {
+            ScenarioNode::Phase(name) => {
+                // Check for phase-level for_each
+                let phase_fe = phases.get(name.as_str())
+                    .and_then(|p| p.for_each.clone());
+                if let Some(spec) = phase_fe {
+                    match resolve_expr(&spec, workload_params, bindings, outer_scope_values) {
+                        Ok((var, values)) => {
+                            // Emit a scope header above the iterated
+                            // instances so they render as children of
+                            // a named group.
+                            out.push(PreMapEntry {
+                                kind: PreMapKind::Scope,
+                                name: format!("phase.for_each {var} in [{}]", values.join(", ")),
+                                labels: String::new(),
+                                depth,
+                            });
+                            for value in &values {
+                                let mut inner = bindings.clone();
+                                inner.insert(var.clone(), value.clone());
+                                out.push(PreMapEntry {
+                                    kind: PreMapKind::Phase,
+                                    name: name.clone(),
+                                    labels: format_labels(&inner),
+                                    depth: depth + 1,
+                                });
+                            }
+                        }
+                        Err(_) => {
+                            // Can't resolve at pre-map time — show once
+                            out.push(PreMapEntry {
+                                kind: PreMapKind::Phase,
+                                name: name.clone(),
+                                labels: format_labels(bindings),
+                                depth,
+                            });
+                        }
+                    }
+                } else {
+                    out.push(PreMapEntry {
+                        kind: PreMapKind::Phase,
+                        name: name.clone(),
+                        labels: format_labels(bindings),
+                        depth,
+                    });
+                }
+            }
+            ScenarioNode::ForEach { spec, children } => {
+                match resolve_expr(spec, workload_params, bindings, outer_scope_values) {
+                    Ok((var, values)) => {
+                        // One scope header per iteration — so each
+                        // iteration's phases cluster under their own
+                        // concrete binding, not under a single header
+                        // that aggregates all values.
+                        for value in &values {
+                            out.push(PreMapEntry {
+                                kind: PreMapKind::Scope,
+                                name: format!("for_each {var}={value}"),
+                                labels: String::new(),
+                                depth,
+                            });
+                            let mut inner = bindings.clone();
+                            inner.insert(var.clone(), value.clone());
+                            pre_map_recursive(children, phases, workload_params,
+                                outer_scope_values, &inner, depth + 1, out)?;
+                        }
+                    }
+                    Err(_) => {
+                        out.push(PreMapEntry {
+                            kind: PreMapKind::Scope,
+                            name: format!("for_each {spec}"),
+                            labels: String::new(),
+                            depth,
+                        });
+                        pre_map_recursive(children, phases, workload_params,
+                            outer_scope_values, bindings, depth + 1, out)?;
+                    }
+                }
+            }
+            ScenarioNode::ForCombinations { specs, children } => {
+                let summary = specs.iter()
+                    .map(|(v, _)| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push(PreMapEntry {
+                    kind: PreMapKind::Scope,
+                    name: format!("for_combinations [{summary}]"),
+                    labels: String::new(),
+                    depth,
+                });
+                pre_map_combinations(specs, 0, phases, workload_params,
+                    outer_scope_values, bindings, depth + 1, children, out)?;
+            }
+            ScenarioNode::DoWhile { condition, children, .. } => {
+                out.push(PreMapEntry {
+                    kind: PreMapKind::Scope,
+                    name: format!("do_while {condition}"),
+                    labels: String::new(),
+                    depth,
+                });
+                pre_map_recursive(children, phases, workload_params,
+                    outer_scope_values, bindings, depth + 1, out)?;
+            }
+            ScenarioNode::DoUntil { condition, children, .. } => {
+                out.push(PreMapEntry {
+                    kind: PreMapKind::Scope,
+                    name: format!("do_until {condition}"),
+                    labels: String::new(),
+                    depth,
+                });
+                pre_map_recursive(children, phases, workload_params,
+                    outer_scope_values, bindings, depth + 1, out)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn pre_map_combinations(
+    specs: &[(String, String)],
+    dim_idx: usize,
+    phases: &HashMap<String, WorkloadPhase>,
+    workload_params: &HashMap<String, String>,
+    outer_scope_values: &[(String, nb_variates::node::Value)],
+    bindings: &HashMap<String, String>,
+    depth: usize,
+    children: &[ScenarioNode],
+    out: &mut Vec<PreMapEntry>,
+) -> Result<(), String> {
+    if dim_idx >= specs.len() {
+        return pre_map_recursive(children, phases, workload_params,
+            outer_scope_values, bindings, depth, out);
+    }
+    let (var, expr) = &specs[dim_idx];
+    let mut resolved_expr = expr.clone();
+    for (k, v) in bindings {
+        resolved_expr = resolved_expr.replace(&format!("{{{k}}}"), v);
+    }
+    match resolve_expr(
+        &format!("{var} in {resolved_expr}"),
+        workload_params, bindings, outer_scope_values,
+    ) {
+        Ok((_, values)) => {
+            for value in &values {
+                let mut inner = bindings.clone();
+                inner.insert(var.clone(), value.clone());
+                pre_map_combinations(specs, dim_idx + 1, phases, workload_params,
+                    outer_scope_values, &inner, depth, children, out)?;
+            }
+        }
+        Err(_) => {
+            // Can't resolve this dimension — continue with remaining
+            pre_map_combinations(specs, dim_idx + 1, phases, workload_params,
+                outer_scope_values, bindings, depth, children, out)?;
+        }
+    }
+    Ok(())
 }

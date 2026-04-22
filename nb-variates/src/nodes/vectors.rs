@@ -1397,7 +1397,7 @@ pub fn signatures() -> &'static [FuncSig] {
         FuncSig {
             name: "dataset_profile_count", category: C::RealData, outputs: 1,
             description: "total number of profiles in a dataset",
-            help: "Returns the number of profiles defined in the dataset.\nConstant per dataset — evaluated once at init time.\nExample: dataset_profile_count(\"sift1m\")",
+            help: "Returns the number of profiles defined in the dataset.\nConstant per dataset — evaluated once at init time.\nExample: dataset_profile_count(\"example\")",
             identity: None, variadic_ctor: None,
             params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
             arity: Arity::Fixed,
@@ -1406,7 +1406,7 @@ pub fn signatures() -> &'static [FuncSig] {
         FuncSig {
             name: "dataset_profile_names", category: C::RealData, outputs: 1,
             description: "comma-separated list of profile names",
-            help: "Returns a comma-separated list of all profile names in the dataset,\nsorted by base_count (canonical order).\nExample: dataset_profile_names(\"sift1m\")",
+            help: "Returns a comma-separated list of all profile names in the dataset,\nsorted by base_count (canonical order).\nExample: dataset_profile_names(\"example\")",
             identity: None, variadic_ctor: None,
             params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
             arity: Arity::Fixed,
@@ -1415,7 +1415,7 @@ pub fn signatures() -> &'static [FuncSig] {
         FuncSig {
             name: "matching_profiles", category: C::RealData, outputs: 1,
             description: "profile names matching a prefix, comma-separated",
-            help: "Returns profiles whose names start with the given prefix.\nIf prefix is empty, returns all profiles.\nUsed by for_each: phase templates to discover profiles dynamically.\nExample: matching_profiles(\"sift1m\", \"label\")",
+            help: "Returns profiles whose names start with the given prefix.\nIf prefix is empty, returns all profiles.\nUsed by for_each: phase templates to discover profiles dynamically.\nExample: matching_profiles(\"example\", \"label\")",
             identity: None, variadic_ctor: None,
             params: &[
                 ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
@@ -1427,7 +1427,7 @@ pub fn signatures() -> &'static [FuncSig] {
         FuncSig {
             name: "dataset_profile_name_at", category: C::RealData, outputs: 1,
             description: "profile name by index from sorted list",
-            help: "Returns the profile name at a given index from the dataset's\nsorted profile list. Index wraps modulo profile count.\nExample: dataset_profile_name_at(cycle, \"sift1m\")",
+            help: "Returns the profile name at a given index from the dataset's\nsorted profile list. Index wraps modulo profile count.\nExample: dataset_profile_name_at(cycle, \"example\")",
             identity: None, variadic_ctor: None,
             params: &[
                 ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
@@ -1439,7 +1439,7 @@ pub fn signatures() -> &'static [FuncSig] {
         FuncSig {
             name: "profile_base_count", category: C::RealData, outputs: 1,
             description: "base vector count for profile at index",
-            help: "Returns the base vector count for the profile at a given index\nin the dataset's sorted profile list. Index wraps modulo profile count.\nExample: profile_base_count(cycle, \"sift1m\")",
+            help: "Returns the base vector count for the profile at a given index\nin the dataset's sorted profile list. Index wraps modulo profile count.\nExample: profile_base_count(cycle, \"example\")",
             identity: None, variadic_ctor: None,
             params: &[
                 ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
@@ -1451,7 +1451,7 @@ pub fn signatures() -> &'static [FuncSig] {
         FuncSig {
             name: "profile_facets", category: C::RealData, outputs: 1,
             description: "available facets for profile at index",
-            help: "Returns a comma-separated list of facet names for the profile at a\ngiven index in the dataset's sorted profile list.\nExample: profile_facets(cycle, \"sift1m\")",
+            help: "Returns a comma-separated list of facet names for the profile at a\ngiven index in the dataset's sorted profile list.\nExample: profile_facets(cycle, \"example\")",
             identity: None, variadic_ctor: None,
             params: &[
                 ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
@@ -1463,7 +1463,7 @@ pub fn signatures() -> &'static [FuncSig] {
         FuncSig {
             name: "dataset_prebuffer", category: C::RealData, outputs: 1,
             description: "eagerly download dataset facets to local cache",
-            help: "Downloads all facets for a dataset to the local cache before\nworkload execution. Returns the number of facets prebuffered.\nSubsequent loads use fast local mmap access.\nExample: dataset_prebuffer(\"sift1m\")",
+            help: "Downloads all facets for a dataset to the local cache before\nworkload execution. Returns the number of facets prebuffered.\nSubsequent loads use fast local mmap access.\nExample: dataset_prebuffer(\"example\")",
             identity: None, variadic_ctor: None,
             params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
             arity: Arity::Fixed,

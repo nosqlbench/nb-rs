@@ -20,6 +20,21 @@ pub mod colors {
     pub const PHASE_DONE: Color = Color::Rgb(76, 175, 80);
     pub const PHASE_FAILED: Color = Color::Rgb(244, 67, 54);
 
+    // Phase-tint palette for the scenario tree:
+    //   RUNNING_TINT  — currently running (yellow)
+    //   DONE_CLEAN    — completed with no errors (green — reuse PHASE_DONE)
+    //   DONE_WARN     — completed with some errors (orange)
+    //   DONE_BAD      — completed with many errors (red-orange)
+    //
+    // Chosen for colorblind safety: the yellow/orange/red progression
+    // preserves hue separation under protanopia/deuteranopia (the
+    // common red-green forms), and the bundled glyphs (`▶`, `✓`, `✗`)
+    // plus brightness differences reinforce the meaning for users
+    // with tritanopia or monochrome terminals.
+    pub const PHASE_RUNNING_TINT: Color = Color::Rgb(247, 201, 72);
+    pub const PHASE_DONE_WARN: Color = Color::Rgb(255, 140, 0);
+    pub const PHASE_DONE_BAD: Color = Color::Rgb(214, 70, 40);
+
     pub const PROGRESS_LOW: Color = Color::Rgb(45, 90, 39);
     pub const PROGRESS_HIGH: Color = Color::Rgb(122, 193, 66);
 
@@ -32,6 +47,11 @@ pub mod colors {
     pub const LAT_MAX: Color = Color::Rgb(214, 40, 40);
 
     pub const SPARK: Color = Color::Rgb(77, 201, 246);
+
+    pub const LOG_DEBUG: Color = Color::Rgb(96, 96, 96);
+    pub const LOG_INFO: Color = Color::Rgb(77, 201, 246);
+    pub const LOG_WARN: Color = Color::Rgb(247, 201, 72);
+    pub const LOG_ERROR: Color = Color::Rgb(244, 67, 54);
 }
 
 /// Render a sparkline from a slice of values into a string of
@@ -71,6 +91,18 @@ pub fn sparkline_str(values: &[f64], width: usize) -> String {
 }
 
 /// Format nanoseconds into a human-readable duration string.
+/// Short human label for a cadence Duration: `10s`, `1m`, `5m`, `1h`.
+pub fn format_cadence(d: std::time::Duration) -> String {
+    let total = d.as_secs();
+    if total >= 3600 && total % 3600 == 0 {
+        format!("{}h", total / 3600)
+    } else if total >= 60 && total % 60 == 0 {
+        format!("{}m", total / 60)
+    } else {
+        format!("{}s", total)
+    }
+}
+
 pub fn format_nanos(nanos: u64) -> String {
     if nanos == 0 {
         return "—".to_string();
@@ -100,13 +132,15 @@ pub fn format_elapsed(secs: f64) -> String {
 }
 
 /// Format a rate value with auto-scaling (K/M suffix).
+///
+/// Uses a consistent decimal width within each magnitude band so
+/// values that oscillate across a boundary don't flip formats
+/// frame-to-frame (e.g. 0.99 ↔ 1.00, not 0.99 ↔ 1).
 pub fn format_rate(rate: f64) -> String {
     if rate >= 1_000_000.0 {
         format!("{:.1}M", rate / 1_000_000.0)
     } else if rate >= 1_000.0 {
         format!("{:.1}K", rate / 1_000.0)
-    } else if rate >= 1.0 {
-        format!("{:.0}", rate)
     } else {
         format!("{:.2}", rate)
     }

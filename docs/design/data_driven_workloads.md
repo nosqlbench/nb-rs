@@ -13,7 +13,7 @@ A **source** is a named, typed sequence of values with known or unknown extent:
 ```yaml
 bindings: |
   # Declare a source — a live sequence with its own cursor
-  source vectors = dataset_vectors("sift1m:label_00")
+  source vectors = dataset_vectors("example:label_00")
   
   # Pull from the source — advances the cursor
   (id, vector) := vectors.next()
@@ -58,7 +58,7 @@ trait DataSource: Send + Sync {
 Sources are GK nodes with **state**. Unlike pure functions (`hash(cycle)` is stateless), a source has a cursor that advances:
 
 ```
-dataset_vectors("sift1m:label_00")
+dataset_vectors("example:label_00")
   ├─ extent: 82993
   ├─ cursor: 0 → 1 → 2 → ... → 82992 → exhausted
   └─ yields: (u64, Vec<f32>) per pull
@@ -69,7 +69,7 @@ The GK graph exposes sources as **coordinate providers**. Today, `inputs := (cyc
 ```yaml
 bindings: |
   # The source provides the coordinate, not a counter
-  source base = dataset_source("sift1m:label_00", "base")
+  source base = dataset_source("example:label_00", "base")
   
   # These bindings pull from the source's current position
   id := format_u64(base.ordinal, 10)
@@ -162,7 +162,7 @@ Sources aren't just datasets. Any iterable concept is a source:
 ```yaml
 bindings: |
   # Dataset source — finite, known extent
-  source base = dataset_source("sift1m:label_00", "base")
+  source base = dataset_source("example:label_00", "base")
   
   # Range source — finite, synthetic
   source users = range(0, 1000000)
@@ -314,14 +314,14 @@ This is a new GK keyword (alongside `inputs`, `init`, `shared`, `final`). It dec
 ```yaml
 bindings: |
   # Source declaration — creates a sequence with cursor
-  source base = dataset_source("sift1m:label_00", "base")
+  source base = dataset_source("example:label_00", "base")
   
   # Source projections — read from current cursor position
   id := format_u64(base.ordinal, 10)
   vector := base.vector
   
   # Multiple sources can coexist
-  source queries = dataset_source("sift1m:label_00", "queries")
+  source queries = dataset_source("example:label_00", "queries")
   query_vector := queries.vector
 ```
 
@@ -515,9 +515,9 @@ The cursor's ordinal feeds into accessor functions as an explicit
 parameter — no hidden internal cursors:
 
 ```
-cursor ──ordinal──► vector_at(ordinal, "sift1m") ──► vector
+cursor ──ordinal──► vector_at(ordinal, "example") ──► vector
                 ├──► format_u64(ordinal, 10) ──► id
-                └──► query_vector_at(ordinal, "sift1m") ──► query
+                └──► query_vector_at(ordinal, "example") ──► query
 ```
 
 The cursor produces ordinals. Accessor functions consume them. Two
@@ -629,14 +629,14 @@ Three forms, same semantics — explicit, auto, and implicit:
 bindings: |
   # Explicit cursor: user names it, wires it manually
   cursor row = Cursor()
-  train_vector := vector_at(row, "sift1m:label_00")
+  train_vector := vector_at(row, "example:label_00")
 
   # Auto cursor via 'auto' keyword in the ordinal position
-  train_vector := vector_at(auto, "sift1m:label_00")
+  train_vector := vector_at(auto, "example:label_00")
   # → creates cursor named 'train_vector_cursor' automatically
 
   # Implicit cursor: omit the ordinal arg entirely
-  train_vector := vector_at("sift1m:label_00")
+  train_vector := vector_at("example:label_00")
   # → same as auto — creates 'train_vector_cursor'
 ```
 
@@ -663,8 +663,8 @@ consumer for its cardinality:
 
 ```
 cursor row = Cursor()
-vector := vector_at(row, "sift1m:label_00")    → 82,993
-meta := metadata_value_at(row, "sift1m:label_00") → 82,993
+vector := vector_at(row, "example:label_00")    → 82,993
+meta := metadata_value_at(row, "example:label_00") → 82,993
 ```
 
 At init time, GK walks downstream from `row`, finds `vector_at`
@@ -675,8 +675,8 @@ If consumers disagree:
 
 ```
 cursor row = Cursor()
-vector := vector_at(row, "sift1m:label_00")         → 82,993
-query := query_vector_at(row, "sift1m:label_00")    → 10,000
+vector := vector_at(row, "example:label_00")         → 82,993
+query := query_vector_at(row, "example:label_00")    → 10,000
 ```
 
 Compile error: *"cursor 'row' drives nodes with conflicting
@@ -697,11 +697,11 @@ bindings: |
 
   // Base data (82,993 items)
   id := format_u64(base_row, 10)
-  base_vector := vector_at(base_row, "sift1m:label_00")
+  base_vector := vector_at(base_row, "example:label_00")
 
   // Query data (10,000 items)
-  query_vector := query_vector_at(query_row, "sift1m:label_00")
-  ground_truth := neighbor_indices_at(query_row, "sift1m:label_00")
+  query_vector := query_vector_at(query_row, "example:label_00")
+  ground_truth := neighbor_indices_at(query_row, "example:label_00")
 
 phases:
   rampup:

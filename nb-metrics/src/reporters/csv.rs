@@ -8,8 +8,8 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::frame::{MetricsFrame, Sample};
 use crate::scheduler::Reporter;
+use crate::snapshot::{MetricSet, MetricValue};
 
 struct CsvFile {
     file: File,
@@ -38,7 +38,7 @@ impl CsvReporter {
         });
         if !entry.header_written {
             if let Err(e) = writeln!(entry.file, "{header}") {
-                eprintln!("warning: CSV header write failed for {name}: {e}");
+                crate::diag::warn(&format!("warning: CSV header write failed for {name}: {e}"));
             }
             entry.header_written = true;
         }
@@ -47,43 +47,47 @@ impl CsvReporter {
 }
 
 impl Reporter for CsvReporter {
-    fn report(&mut self, frame: &MetricsFrame) {
+    fn report(&mut self, snapshot: &MetricSet) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64;
 
-        for sample in &frame.samples {
-            let name = sample.labels().get("name").unwrap_or("unknown").to_string();
-            match sample {
-                Sample::Counter { value, .. } => {
-                    let file = self.ensure_file(&name, "timestamp_ms,count");
-                    if let Err(e) = writeln!(file, "{now_ms},{value}") {
-                        eprintln!("warning: CSV write failed for {name}: {e}");
+        for family in snapshot.families() {
+            let name = family.name().to_string();
+            for metric in family.metrics() {
+                let Some(point) = metric.point() else { continue };
+                match point.value() {
+                    MetricValue::Counter(c) => {
+                        let file = self.ensure_file(&name, "timestamp_ms,count");
+                        if let Err(e) = writeln!(file, "{now_ms},{}", c.total) {
+                            crate::diag::warn(&format!("warning: CSV write failed for {name}: {e}"));
+                        }
                     }
-                }
-                Sample::Gauge { value, .. } => {
-                    let file = self.ensure_file(&name, "timestamp_ms,value");
-                    if let Err(e) = writeln!(file, "{now_ms},{value}") {
-                        eprintln!("warning: CSV write failed for {name}: {e}");
+                    MetricValue::Gauge(g) => {
+                        let file = self.ensure_file(&name, "timestamp_ms,value");
+                        if let Err(e) = writeln!(file, "{now_ms},{}", g.value) {
+                            crate::diag::warn(&format!("warning: CSV write failed for {name}: {e}"));
+                        }
                     }
-                }
-                Sample::Timer { histogram, .. } => {
-                    let file = self.ensure_file(&name,
-                        "timestamp_ms,count,min,max,mean,stddev,p50,p75,p90,p95,p98,p99,p999");
-                    if let Err(e) = writeln!(file, "{},{},{},{},{},{},{},{},{},{},{},{},{}",
-                        now_ms, histogram.len(),
-                        histogram.min(), histogram.max(),
-                        histogram.mean(), histogram.stdev(),
-                        histogram.value_at_quantile(0.50),
-                        histogram.value_at_quantile(0.75),
-                        histogram.value_at_quantile(0.90),
-                        histogram.value_at_quantile(0.95),
-                        histogram.value_at_quantile(0.98),
-                        histogram.value_at_quantile(0.99),
-                        histogram.value_at_quantile(0.999),
-                    ) {
-                        eprintln!("warning: CSV write failed for {name}: {e}");
+                    MetricValue::Histogram(h) => {
+                        let file = self.ensure_file(&name,
+                            "timestamp_ms,count,min,max,mean,stddev,p50,p75,p90,p95,p98,p99,p999");
+                        let r = &h.reservoir;
+                        if let Err(e) = writeln!(file, "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                            now_ms, r.len(),
+                            r.min(), r.max(),
+                            r.mean(), r.stdev(),
+                            r.value_at_quantile(0.50),
+                            r.value_at_quantile(0.75),
+                            r.value_at_quantile(0.90),
+                            r.value_at_quantile(0.95),
+                            r.value_at_quantile(0.98),
+                            r.value_at_quantile(0.99),
+                            r.value_at_quantile(0.999),
+                        ) {
+                            crate::diag::warn(&format!("warning: CSV write failed for {name}: {e}"));
+                        }
                     }
                 }
             }
@@ -93,7 +97,7 @@ impl Reporter for CsvReporter {
     fn flush(&mut self) {
         for cf in self.files.values_mut() {
             if let Err(e) = cf.file.flush() {
-                eprintln!("warning: CSV flush failed: {e}");
+                crate::diag::warn(&format!("warning: CSV flush failed: {e}"));
             }
         }
     }
@@ -111,21 +115,10 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
 
         let mut reporter = CsvReporter::new(&dir).unwrap();
-        let frame = MetricsFrame {
-            captured_at: Instant::now(),
-            interval: Duration::from_secs(1),
-            samples: vec![
-                Sample::Counter {
-                    labels: Labels::of("name", "ops_total"),
-                    value: 42,
-                },
-                Sample::Gauge {
-                    labels: Labels::of("name", "heap_mb"),
-                    value: 256.5,
-                },
-            ],
-        };
-        reporter.report(&frame);
+        let mut snapshot = MetricSet::new(Duration::from_secs(1));
+        snapshot.insert_counter("ops_total", Labels::default(), 42, Instant::now());
+        snapshot.insert_gauge("heap_mb", Labels::default(), 256.5, Instant::now());
+        reporter.report(&snapshot);
         reporter.flush();
 
         assert!(dir.join("ops_total.csv").exists());

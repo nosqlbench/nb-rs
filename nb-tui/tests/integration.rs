@@ -6,8 +6,8 @@
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use nb_metrics::frame::{MetricsFrame, Sample};
 use nb_metrics::labels::Labels;
+use nb_metrics::snapshot::MetricSet;
 use nb_tui::state::RunState;
 use nb_tui::reporter::TuiReporter;
 
@@ -27,7 +27,7 @@ fn run_state_tracks_phase_lifecycle() {
     }
     {
         let mut s = state.write().unwrap();
-        s.set_phase_completed("schema", "", 1.5);
+        s.set_phase_completed("schema", "", 1.5, nb_tui::state::PhaseSummary::default());
     }
     {
         let s = state.read().unwrap();
@@ -56,22 +56,12 @@ fn reporter_channel_delivers_frames() {
         let _ = h.record(i * 1_000_000);
     }
 
-    let frame = MetricsFrame {
-        captured_at: Instant::now(),
-        interval: Duration::from_secs(1),
-        samples: vec![
-            Sample::Timer {
-                labels: Labels::of("name", "cycles_servicetime"),
-                count: 1000,
-                histogram: h,
-            },
-        ],
-    };
+    let mut snapshot = MetricSet::new(Duration::from_secs(1));
+    snapshot.insert_histogram("cycles_servicetime", Labels::default(), h, Instant::now());
 
     use nb_metrics::scheduler::Reporter;
-    reporter.report(&frame);
+    reporter.report(&snapshot);
 
-    // Verify frame arrives on the channel
     let received = rx.try_recv();
-    assert!(received.is_ok(), "frame should be received on channel");
+    assert!(received.is_ok(), "snapshot should be received on channel");
 }

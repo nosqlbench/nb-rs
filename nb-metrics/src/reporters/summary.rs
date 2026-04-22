@@ -1,15 +1,16 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! In-memory summary report from the InProcessMetricsStore.
+//! In-memory summary report built from [`crate::metrics_query::MetricsQuery`].
 //!
-//! Builds `ActivityRow`s from cumulative MetricsFrame views, then
-//! renders the same markdown table as the SQLite reporter. This
-//! eliminates the SQLite round-trip for the summary report.
+//! Enumerates every component the cadence reporter has seen, runs a
+//! `session_lifetime` query per component, and builds one
+//! [`ActivityRow`] per tracked component. Renders the same markdown
+//! table as the SQLite reporter — eliminates the SQLite round-trip.
 
-use crate::frame::Sample;
 use crate::labels::Labels;
-use crate::store::InProcessMetricsStore;
+use crate::metrics_query::{MetricsQuery, Selection};
+use crate::snapshot::MetricValue;
 
 #[cfg(feature = "sqlite")]
 pub use crate::reporters::sqlite::{ReportConfig, ReportAggregate};
@@ -25,62 +26,75 @@ pub struct ActivityRow {
     pub gauges: Vec<(String, f64)>,
 }
 
-/// Build ActivityRows from the in-process store's cumulative views.
+/// Build [`ActivityRow`]s from the unified [`MetricsQuery`] —
+/// one row per component the cadence reporter has seen.
 ///
 /// Each component with `cycles_total > 0` and without `nosummary=true`
-/// becomes one row. Latency comes from `cycles_servicetime` timer
-/// histograms. Gauges come from gauge samples (`.mean` suffix only).
-pub fn rows_from_store(store: &InProcessMetricsStore) -> Vec<ActivityRow> {
-    let entries = store.query_cumulative(|_| true);
+/// becomes one row. Latency comes from the `cycles_servicetime`
+/// histogram. Gauges come from gauge families whose names end in
+/// `.mean`.
+pub fn rows_from_query(query: &MetricsQuery) -> Vec<ActivityRow> {
     let mut rows = Vec::new();
+    let reporter = query.reporter();
+    let session_age = reporter.started_at().elapsed().as_secs_f64().max(0.001);
 
-    for (labels, frame) in entries {
+    for labels in reporter.component_labels() {
         // Skip nosummary components
         if labels.get("nosummary") == Some("true") { continue; }
 
-        let activity = format_activity_labels(labels);
+        // Build a per-component selection by matching every label
+        // on the component's `Labels` — session-lifetime merges all
+        // tracked components by default, and we want this row's
+        // subset only.
+        let mut sel = Selection::all();
+        for (k, v) in labels.iter() {
+            sel = sel.with_label(k, v);
+        }
+        let snapshot = query.session_lifetime(&sel);
 
-        // Find cycles_total counter
-        let cycles = frame.samples.iter()
-            .filter_map(|s| match s {
-                Sample::Counter { labels: sl, value } if has_name(sl, "cycles_total") => Some(*value),
+        let activity = format_activity_labels(&labels);
+
+        // Find cycles_total counter (family name == "cycles_total")
+        let cycles = snapshot.family("cycles_total")
+            .and_then(|f| f.metrics().next())
+            .and_then(|m| m.point())
+            .and_then(|p| match p.value() {
+                MetricValue::Counter(c) => Some(c.total),
                 _ => None,
             })
-            .next()
             .unwrap_or(0);
 
         if cycles == 0 { continue; }
 
-        // Compute rate from elapsed time
-        let rate = cycles as f64 / frame.interval.as_secs_f64().max(0.001);
+        let rate = cycles as f64 / session_age;
 
-        // Find cycles_servicetime timer for latency
-        let latency = frame.samples.iter()
-            .filter_map(|s| match s {
-                Sample::Timer { labels: sl, histogram, .. } if has_name(sl, "cycles_servicetime") => {
-                    if histogram.len() == 0 { return None; }
-                    Some((
-                        histogram.value_at_quantile(0.50) as f64,
-                        histogram.value_at_quantile(0.99) as f64,
-                        histogram.mean(),
-                    ))
-                }
+        // Find cycles_servicetime histogram for latency
+        let latency = snapshot.family("cycles_servicetime")
+            .and_then(|f| f.metrics().next())
+            .and_then(|m| m.point())
+            .and_then(|p| match p.value() {
+                MetricValue::Histogram(h) if h.count > 0 => Some((
+                    h.reservoir.value_at_quantile(0.50) as f64,
+                    h.reservoir.value_at_quantile(0.99) as f64,
+                    h.reservoir.mean(),
+                )),
                 _ => None,
-            })
-            .next();
+            });
 
-        // Collect gauge values (only .mean variants)
+        // Collect gauge values (only `.mean`-suffixed family names)
         let mut gauges: Vec<(String, f64)> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for sample in &frame.samples {
-            if let Sample::Gauge { labels: sl, value } = sample {
-                if let Some(name) = sl.get("name") {
-                    if name.ends_with(".mean") {
-                        let short = name.strip_suffix(".mean").unwrap_or(name);
-                        if !seen.contains(short) {
-                            seen.insert(short.to_string());
-                            gauges.push((short.to_string(), *value));
-                        }
+        for family in snapshot.families() {
+            let fname = family.name();
+            if !fname.ends_with(".mean") { continue; }
+            let short = fname.strip_suffix(".mean").unwrap_or(fname);
+            if seen.contains(short) { continue; }
+            for metric in family.metrics() {
+                if let Some(point) = metric.point() {
+                    if let MetricValue::Gauge(g) = point.value() {
+                        seen.insert(short.to_string());
+                        gauges.push((short.to_string(), g.value));
+                        break;
                     }
                 }
             }
@@ -114,14 +128,14 @@ pub fn format_duration(nanos: f64) -> String {
     }
 }
 
-/// Print a summary report from the in-process store.
+/// Print a summary report from the unified [`MetricsQuery`].
 #[cfg(feature = "sqlite")]
-pub fn print_summary_from_store(store: &InProcessMetricsStore, config: &ReportConfig) {
+pub fn print_summary_from_query(query: &MetricsQuery, config: &ReportConfig) {
     let row_patterns: Vec<regex::Regex> = config.row_filters.iter()
         .filter_map(|p| regex::Regex::new(p.trim()).ok())
         .collect();
 
-    let rows = rows_from_store(store);
+    let rows = rows_from_query(query);
     if rows.is_empty() { return; }
 
     let has_latency = rows.iter().any(|r| r.latency_p50_ns.is_some());
@@ -305,10 +319,6 @@ fn format_activity_labels(labels: &Labels) -> String {
         .map(|(k, v)| format!("{k}={v}"))
         .collect();
     parts.join(", ")
-}
-
-fn has_name(labels: &Labels, name: &str) -> bool {
-    labels.get("name") == Some(name)
 }
 
 /// Align label components within the Activity column.

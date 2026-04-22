@@ -26,7 +26,7 @@ The binary is at `target/release/cassnbrs`.
 
 ```bash
 # CQL workload against localhost
-cassnbrs cql_vector.yaml dataset=sift1m prefix=label
+cassnbrs cql_vector.yaml dataset=example prefix=label
 
 # Dry-run to stdout
 cassnbrs cql_vector.yaml adapter=stdout
@@ -42,7 +42,7 @@ Workload files with `#!/usr/bin/env cassnbrs` shebangs run directly:
 
 ```bash
 chmod +x workloads/cql_vector.yaml
-./workloads/cql_vector.yaml dataset=sift1m prefix=label
+./workloads/cql_vector.yaml dataset=example prefix=label
 ```
 
 ## Adapters

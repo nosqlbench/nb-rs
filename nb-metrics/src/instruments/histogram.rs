@@ -41,7 +41,7 @@ impl Histogram {
         let mut h = self.current.lock()
             .unwrap_or_else(|e| e.into_inner());
         if let Err(e) = h.record(value) {
-            eprintln!("warning: histogram record failed for value {value}: {e}");
+            crate::diag::warn(&format!("warning: histogram record failed for value {value}: {e}"));
         }
     }
 
@@ -55,6 +55,21 @@ impl Histogram {
         let snapshot = current.clone();
         current.reset();
         snapshot
+    }
+
+    /// Produce a snapshot by CLONING the current histogram rather than
+    /// swapping it out. The instrument keeps accumulating against the
+    /// same state — no reservoir disturbance — so consumers reading
+    /// "now" values between reporter ticks don't steal samples from
+    /// the next delta snapshot.
+    ///
+    /// Cost: one HDR histogram clone (~200 KiB at 3-significant-digit
+    /// precision over a 1-hour range). Acceptable for occasional
+    /// calls — not intended for the per-sample hot path.
+    pub fn peek_snapshot(&self) -> HdrHistogram<u64> {
+        self.current.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn labels(&self) -> &Labels {
@@ -99,6 +114,27 @@ mod tests {
         let h = Histogram::new(Labels::of("name", "empty"));
         let snap = h.snapshot();
         assert_eq!(snap.len(), 0);
+    }
+
+    #[test]
+    fn peek_snapshot_does_not_drain() {
+        let h = Histogram::new(Labels::of("name", "peek"));
+        h.record(1_000_000);
+        h.record(2_000_000);
+        h.record(3_000_000);
+
+        // Peek: full data visible, instrument NOT reset.
+        let peek1 = h.peek_snapshot();
+        assert_eq!(peek1.len(), 3);
+        let peek2 = h.peek_snapshot();
+        assert_eq!(peek2.len(), 3, "peek should be idempotent");
+
+        // After a real snapshot() the instrument IS reset — peek
+        // returns empty, proving peek and snapshot target the same
+        // reservoir.
+        let _drained = h.snapshot();
+        let peek_after = h.peek_snapshot();
+        assert_eq!(peek_after.len(), 0);
     }
 
     #[test]

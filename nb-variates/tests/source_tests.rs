@@ -378,6 +378,34 @@ fn cursor_compiles_and_produces_schema() {
 }
 
 #[test]
+fn cursor_extent_folds_const_function_call() {
+    // `mod(100, 7)` evaluates to 2 at compile time. The cursor extent
+    // should resolve via post-compile folding, not only via literals.
+    let src = r#"
+        cursor r = range(0, mod(100, 7))
+        inputs := (cycle)
+        id := hash(r.ordinal)
+    "#;
+    let kernel = compile_gk(src).unwrap();
+    let schemas = kernel.program().cursor_schemas();
+    assert_eq!(schemas.len(), 1);
+    assert_eq!(schemas[0].extent, Some(2), "extent should fold mod(100, 7) = 2");
+}
+
+#[test]
+fn cursor_extent_folds_arithmetic_expression() {
+    // Non-literal arithmetic should also fold post-compile.
+    let src = r#"
+        cursor r = range(10, 10 + 50)
+        inputs := (cycle)
+        id := hash(r.ordinal)
+    "#;
+    let kernel = compile_gk(src).unwrap();
+    let schemas = kernel.program().cursor_schemas();
+    assert_eq!(schemas[0].extent, Some(50), "extent should fold (10+50) - 10 = 50");
+}
+
+#[test]
 fn cursor_projection_wires_into_downstream_nodes() {
     let src = r#"
         cursor r = range(0, 500)

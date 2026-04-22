@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
-use crate::frame::MetricsFrame;
 use crate::labels::Labels;
+use crate::snapshot::MetricSet;
 
 /// Lifecycle state of a component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,17 +33,40 @@ pub enum ComponentState {
     Stopped,
 }
 
-/// A set of instruments that can produce a delta snapshot.
+/// A set of instruments that can produce snapshots of their
+/// current state.
 ///
 /// Implemented by `ActivityMetrics` in nb-activity. The component
 /// tree does not know about specific instrument types — it only
-/// asks for a frame of delta samples.
+/// asks for a [`MetricSet`].
+///
+/// Two read modes — one draining, one not — because the scheduler's
+/// cascade coalesce needs delta semantics to feed the
+/// [`crate::cadence_reporter::CadenceReporter`] correctly, while
+/// interactive pull readers (TUI, summary, GK metric nodes) need
+/// non-mutating reads that never touch counter accumulators or
+/// drain histogram reservoirs.
 pub trait InstrumentSet: Send + Sync {
     /// Capture a delta snapshot covering the given interval.
     ///
-    /// Resets internal delta accumulators (histograms, F64Stats).
-    /// Counters emit the change since the last call.
-    fn capture_delta(&self, interval: Duration) -> MetricsFrame;
+    /// Resets internal delta accumulators (histograms drain,
+    /// counter baselines advance). Called by the scheduler on every
+    /// tick — the result feeds the cadence reporter's smallest-cadence
+    /// accumulator.
+    fn capture_delta(&self, interval: Duration) -> MetricSet;
+
+    /// Capture a non-mutating snapshot of current state.
+    ///
+    /// - Counters: absolute totals (atomic load).
+    /// - Gauges: current value.
+    /// - Histograms: non-draining clone (`peek_snapshot`).
+    ///
+    /// Never touches internal accumulators — callers may invoke
+    /// this arbitrarily often without perturbing the scheduler's
+    /// per-tick cascade. Used by [`crate::metrics_query::MetricsQuery::now`]
+    /// and the memoized [`crate::metrics_query::MetricHandle`] read
+    /// path.
+    fn capture_current(&self) -> MetricSet;
 }
 
 /// A node in the runtime component tree.
@@ -147,6 +170,30 @@ impl Component {
     pub fn child_count(&self) -> usize {
         self.children.len()
     }
+
+    /// Iterator over this component's direct children.
+    pub fn children(&self) -> impl Iterator<Item = &Arc<RwLock<Component>>> {
+        self.children.iter()
+    }
+
+    /// Count of `Running`-state descendants (this component's
+    /// children, grandchildren, …). Used by callers that want a
+    /// structural "how many phases are in flight?" query against
+    /// the live component tree — e.g. the TUI's Focus-LOD
+    /// placeholder decision (SRD 62 §"Scenario done?").
+    ///
+    /// The component itself is NOT counted — the query is meant
+    /// to traverse from an activity root into its phases.
+    pub fn running_descendant_count(&self) -> usize {
+        let mut count = 0;
+        for child in &self.children {
+            if let Ok(c) = child.read() {
+                if c.state == ComponentState::Running { count += 1; }
+                count += c.running_descendant_count();
+            }
+        }
+        count
+    }
 }
 
 /// Attach a child component to a parent.
@@ -188,11 +235,12 @@ pub fn detach(
 /// Walk the component tree and capture delta snapshots from all
 /// RUNNING components that have instruments.
 ///
-/// Returns one `(effective_labels, frame)` pair per captured component.
+/// Returns one `(effective_labels, snapshot)` pair per captured
+/// component. Draining semantics — used by the scheduler tick.
 pub fn capture_tree(
     root: &Arc<RwLock<Component>>,
     interval: Duration,
-) -> Vec<(Labels, MetricsFrame)> {
+) -> Vec<(Labels, MetricSet)> {
     let mut results = Vec::new();
     capture_recursive(root, interval, &mut results);
     results
@@ -201,7 +249,7 @@ pub fn capture_tree(
 fn capture_recursive(
     node: &Arc<RwLock<Component>>,
     interval: Duration,
-    results: &mut Vec<(Labels, MetricsFrame)>,
+    results: &mut Vec<(Labels, MetricSet)>,
 ) {
     let (state, effective_labels, instruments, children) = {
         let n = node.read().unwrap_or_else(|e| e.into_inner());
@@ -215,9 +263,9 @@ fn capture_recursive(
 
     if state == ComponentState::Running {
         if let Some(ref instr) = instruments {
-            let frame = instr.capture_delta(interval);
-            if !frame.samples.is_empty() {
-                results.push((effective_labels, frame));
+            let snapshot = instr.capture_delta(interval);
+            if !snapshot.is_empty() {
+                results.push((effective_labels, snapshot));
             }
         }
     }
@@ -227,26 +275,106 @@ fn capture_recursive(
     }
 }
 
+/// Non-mutating counterpart of [`capture_tree`]. Walks every RUNNING
+/// component and returns absolute/peeked snapshots via
+/// [`InstrumentSet::capture_current`]. Safe to call arbitrarily
+/// often — doesn't drain histograms or advance counter baselines.
+pub fn capture_tree_current(
+    root: &Arc<RwLock<Component>>,
+) -> Vec<(Labels, MetricSet)> {
+    let mut results = Vec::new();
+    capture_current_recursive(root, &mut results);
+    results
+}
+
+fn capture_current_recursive(
+    node: &Arc<RwLock<Component>>,
+    results: &mut Vec<(Labels, MetricSet)>,
+) {
+    let (state, effective_labels, instruments, children) = {
+        let n = node.read().unwrap_or_else(|e| e.into_inner());
+        (
+            n.state,
+            n.effective_labels.clone(),
+            n.instruments.clone(),
+            n.children.clone(),
+        )
+    };
+
+    if state == ComponentState::Running {
+        if let Some(ref instr) = instruments {
+            let snapshot = instr.capture_current();
+            if !snapshot.is_empty() {
+                results.push((effective_labels, snapshot));
+            }
+        }
+    }
+
+    for child in &children {
+        capture_current_recursive(child, results);
+    }
+}
+
+/// Walk the component tree and collect `(effective_labels, instruments)`
+/// pairs for every RUNNING component. Used by
+/// [`crate::metrics_query::MetricsQuery::resolve`] to memoize the
+/// set of instrument sets a handle pulls from — subsequent reads
+/// skip the tree walk.
+pub fn collect_running_instruments(
+    root: &Arc<RwLock<Component>>,
+) -> Vec<(Labels, Arc<dyn InstrumentSet>)> {
+    let mut out = Vec::new();
+    collect_recursive(root, &mut out);
+    out
+}
+
+fn collect_recursive(
+    node: &Arc<RwLock<Component>>,
+    out: &mut Vec<(Labels, Arc<dyn InstrumentSet>)>,
+) {
+    let (state, effective_labels, instruments, children) = {
+        let n = node.read().unwrap_or_else(|e| e.into_inner());
+        (
+            n.state,
+            n.effective_labels.clone(),
+            n.instruments.clone(),
+            n.children.clone(),
+        )
+    };
+    if state == ComponentState::Running {
+        if let Some(instr) = instruments {
+            out.push((effective_labels, instr));
+        }
+    }
+    for child in &children {
+        collect_recursive(child, out);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::Sample;
 
     struct MockInstruments {
         value: std::sync::atomic::AtomicU64,
     }
 
     impl InstrumentSet for MockInstruments {
-        fn capture_delta(&self, interval: Duration) -> MetricsFrame {
+        fn capture_delta(&self, interval: Duration) -> MetricSet {
             let v = self.value.load(std::sync::atomic::Ordering::Relaxed);
-            MetricsFrame {
-                captured_at: std::time::Instant::now(),
-                interval,
-                samples: vec![Sample::Counter {
-                    labels: Labels::of("name", "test_counter"),
-                    value: v,
-                }],
-            }
+            let mut s = MetricSet::new(interval);
+            s.insert_counter(
+                "test_counter",
+                Labels::default(),
+                v,
+                std::time::Instant::now(),
+            );
+            s
+        }
+        fn capture_current(&self) -> MetricSet {
+            // Tests don't distinguish current vs delta — fine to
+            // reuse. Real impls (ActivityMetrics) differentiate.
+            self.capture_delta(Duration::ZERO)
         }
     }
 

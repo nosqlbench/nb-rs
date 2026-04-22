@@ -203,7 +203,7 @@ fn shared_init_constant_folds() {
 fn final_modifier_survives_compilation_pipeline() {
     let kernel = compile_gk(r#"
         inputs := (cycle)
-        final dataset := "sift1m"
+        final dataset := "example"
         final dim := 128
         mutable_val := hash(cycle)
     "#).unwrap();

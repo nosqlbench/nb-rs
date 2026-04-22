@@ -15,8 +15,8 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use tokio::sync::broadcast;
 
-use nb_metrics::frame::{MetricsFrame, Sample};
 use nb_metrics::scheduler::Reporter;
+use nb_metrics::snapshot::{MetricSet, MetricValue};
 
 /// Number of rate samples to keep for the sparkline.
 const SPARKLINE_HISTORY: usize = 60;
@@ -27,7 +27,7 @@ const SPARKLINE_HISTORY: usize = 60;
 /// `sender.subscribe()`.
 #[derive(Clone)]
 pub struct MetricsBroadcast {
-    sender: broadcast::Sender<MetricsFrame>,
+    sender: broadcast::Sender<MetricSet>,
 }
 
 impl MetricsBroadcast {
@@ -48,8 +48,8 @@ impl MetricsBroadcast {
     ///
     /// Used by the HTTP ingestion endpoint to inject externally
     /// pushed metrics into the broadcast channel.
-    pub fn publish(&self, frame: MetricsFrame) {
-        let _ = self.sender.send(frame);
+    pub fn publish(&self, snapshot: MetricSet) {
+        let _ = self.sender.send(snapshot);
     }
 }
 
@@ -58,13 +58,13 @@ impl MetricsBroadcast {
 /// Register this with the metrics scheduler via
 /// `SchedulerBuilder::add_reporter()`.
 pub struct BroadcastReporter {
-    sender: broadcast::Sender<MetricsFrame>,
+    sender: broadcast::Sender<MetricSet>,
 }
 
 impl Reporter for BroadcastReporter {
-    fn report(&mut self, frame: &MetricsFrame) {
+    fn report(&mut self, snapshot: &MetricSet) {
         // Ignore send errors — means no subscribers are connected.
-        let _ = self.sender.send(frame.clone());
+        let _ = self.sender.send(snapshot.clone());
     }
 }
 
@@ -87,9 +87,9 @@ async fn handle_ws(mut socket: WebSocket, broadcast: MetricsBroadcast) {
         tokio::select! {
             result = rx.recv() => {
                 match result {
-                    Ok(frame) => {
-                        let raw = extract_raw_counters(&frame);
-                        let interval_secs = frame.interval.as_secs_f64().max(0.001);
+                    Ok(snapshot) => {
+                        let raw = extract_raw_counters(&snapshot);
+                        let interval_secs = snapshot.interval().as_secs_f64().max(0.001);
 
                         // Compute deltas from cumulative counters.
                         let delta_ops = raw.cumulative_ops.saturating_sub(prev_ops);
@@ -154,28 +154,31 @@ struct RawCounters {
     p99_display: String,
 }
 
-/// Extract raw cumulative counters and P99 from a frame.
-fn extract_raw_counters(frame: &MetricsFrame) -> RawCounters {
+/// Extract raw cumulative counters and P99 from a snapshot.
+fn extract_raw_counters(snapshot: &MetricSet) -> RawCounters {
     let mut cumulative_ops: u64 = 0;
     let mut cumulative_errors: u64 = 0;
     let mut p99_ns: Option<u64> = None;
 
-    for sample in &frame.samples {
-        match sample {
-            Sample::Counter { labels, value } => {
-                let name = labels.get("name").unwrap_or("");
-                if name.contains("ops") || name.contains("cycles") {
-                    cumulative_ops += value;
+    for family in snapshot.families() {
+        let fname = family.name();
+        for metric in family.metrics() {
+            let Some(point) = metric.point() else { continue };
+            match point.value() {
+                MetricValue::Counter(c) => {
+                    if fname.contains("ops") || fname.contains("cycles") {
+                        cumulative_ops += c.total;
+                    }
+                    if fname.contains("error") {
+                        cumulative_errors += c.total;
+                    }
                 }
-                if name.contains("error") {
-                    cumulative_errors += value;
+                MetricValue::Histogram(h) => {
+                    let p99 = h.reservoir.value_at_quantile(0.99);
+                    p99_ns = Some(p99_ns.map_or(p99, |prev: u64| prev.max(p99)));
                 }
+                _ => {}
             }
-            Sample::Timer { histogram, .. } => {
-                let p99 = histogram.value_at_quantile(0.99);
-                p99_ns = Some(p99_ns.map_or(p99, |prev: u64| prev.max(p99)));
-            }
-            _ => {}
         }
     }
 

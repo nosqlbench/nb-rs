@@ -8,9 +8,9 @@
 //! (`/api/v1/import/prometheus`), VictoriaMetrics, Prometheus
 //! Pushgateway, or any compatible receiver.
 
-use nb_metrics::frame::MetricsFrame;
 use nb_metrics::reporters::openmetrics::render_prometheus_text;
 use nb_metrics::scheduler::Reporter;
+use nb_metrics::snapshot::MetricSet;
 
 /// A `Reporter` that pushes OpenMetrics text to an HTTP endpoint.
 pub struct OpenMetricsPushReporter {
@@ -32,8 +32,8 @@ impl OpenMetricsPushReporter {
 }
 
 impl Reporter for OpenMetricsPushReporter {
-    fn report(&mut self, frame: &MetricsFrame) {
-        let body = render_prometheus_text(frame);
+    fn report(&mut self, snapshot: &MetricSet) {
+        let body = render_prometheus_text(snapshot);
         if body.is_empty() {
             return;
         }

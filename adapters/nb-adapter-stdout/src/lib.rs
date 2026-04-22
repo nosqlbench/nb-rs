@@ -545,6 +545,7 @@ inventory::submit! {
     nb_activity::adapter::AdapterRegistration {
         names: || &["stdout"],
         known_params: || &["filename", "format", "separator", "header", "color", "fields"],
+        display_preference: || nb_activity::adapter::DisplayPreference::Auto,
         create: |params| Box::pin(async move {
             Ok(std::sync::Arc::new(StdoutAdapter::with_config(StdoutConfig::from_params(&params)))
                 as std::sync::Arc<dyn nb_activity::adapter::DriverAdapter>)

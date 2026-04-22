@@ -399,8 +399,8 @@ Combined forms are supported: `shared init name = expr` and
 ### Structural vs Parametric
 
 Some variables affect DAG topology (which nodes exist):
-- `train_vector := vector_at(cycle, "sift1m:label-1")`
-- The source string `"sift1m:label-1"` is a node constructor
+- `train_vector := vector_at(cycle, "example:label-1")`
+- The source string `"example:label-1"` is a node constructor
   argument — changing it changes which node is instantiated.
 
 Other variables only affect values flowing through a fixed DAG:

@@ -12,9 +12,9 @@ mod inner {
 
     use rusqlite::{Connection, params};
 
-    use crate::frame::{MetricsFrame, Sample};
     use crate::labels::Labels;
     use crate::scheduler::Reporter;
+    use crate::snapshot::{Metric, MetricFamily, MetricSet, MetricType, MetricValue};
 
     pub struct SqliteReporter {
         conn: Connection,
@@ -69,7 +69,7 @@ mod inner {
             self.conn.execute(
                 "INSERT OR REPLACE INTO session_metadata (key, value) VALUES (?1, ?2)",
                 params![key, value],
-            ).unwrap_or_else(|e| { eprintln!("warning: sqlite metadata write: {e}"); 0 });
+            ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite metadata write: {e}")); 0 });
         }
 
         fn create_schema(&mut self) -> Result<(), String> {
@@ -136,7 +136,7 @@ mod inner {
             self.conn.execute(
                 "INSERT OR IGNORE INTO metric_family (name, type) VALUES (?1, ?2)",
                 params![name, typ],
-            ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
+            ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
             let id: i64 = self.conn.query_row(
                 "SELECT id FROM metric_family WHERE name=?1 AND type=?2",
                 params![name, typ],
@@ -153,7 +153,7 @@ mod inner {
             self.conn.execute(
                 "INSERT OR IGNORE INTO label_key (key) VALUES (?1)",
                 params![key],
-            ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
+            ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
             let id: i64 = self.conn.query_row(
                 "SELECT id FROM label_key WHERE key=?1",
                 params![key], |row| row.get(0),
@@ -169,7 +169,7 @@ mod inner {
             self.conn.execute(
                 "INSERT OR IGNORE INTO label_value (value) VALUES (?1)",
                 params![value],
-            ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
+            ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
             let id: i64 = self.conn.query_row(
                 "SELECT id FROM label_value WHERE value=?1",
                 params![value], |row| row.get(0),
@@ -186,7 +186,7 @@ mod inner {
             self.conn.execute(
                 "INSERT OR IGNORE INTO label_set (hash) VALUES (?1)",
                 params![hash as i64],
-            ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
+            ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
             let set_id: i64 = self.conn.query_row(
                 "SELECT id FROM label_set WHERE hash=?1",
                 params![hash as i64], |row| row.get(0),
@@ -199,7 +199,7 @@ mod inner {
                 self.conn.execute(
                     "INSERT OR IGNORE INTO label_set_entry (set_id, key_id, value_id) VALUES (?1, ?2, ?3)",
                     params![set_id, key_id, val_id],
-                ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
+                ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
             }
 
             self.label_set_cache.insert(hash, set_id);
@@ -224,7 +224,7 @@ mod inner {
             self.conn.execute(
                 "INSERT OR IGNORE INTO metric_instance (family_id, label_set_id, spec) VALUES (?1, ?2, ?3)",
                 params![family_id, label_set_id, spec],
-            ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
+            ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
             let id: i64 = self.conn.query_row(
                 "SELECT id FROM metric_instance WHERE family_id=?1 AND label_set_id=?2",
                 params![family_id, label_set_id], |row| row.get(0),
@@ -233,18 +233,18 @@ mod inner {
             id
         }
 
-        fn insert_sample(&mut self, frame: &MetricsFrame, sample: &Sample) {
-            let _timestamp_ms = frame.captured_at.elapsed().as_millis() as i64;
-            // Use wall clock approximation
+        fn insert_metric(&mut self, snapshot: &MetricSet, family: &MetricFamily, metric: &Metric) {
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as i64;
-            let interval_ms = frame.interval.as_millis() as i64;
+            let interval_ms = snapshot.interval().as_millis() as i64;
+            let name = family.name();
+            let labels = metric.labels();
+            let Some(point) = metric.point() else { return };
 
-            match sample {
-                Sample::Counter { labels, value } => {
-                    let name = labels.get("name").unwrap_or("unknown");
+            match point.value() {
+                MetricValue::Counter(c) => {
                     let family_id = self.get_or_insert_family(name, "counter");
                     let label_set_id = self.get_or_insert_label_set(labels);
                     let instance_id = self.get_or_insert_instance(family_id, label_set_id, name, labels);
@@ -252,11 +252,10 @@ mod inner {
                     self.conn.execute(
                         "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count) \
                          VALUES (?1, ?2, ?3, ?4)",
-                        params![instance_id, now_ms, interval_ms, *value as i64],
-                    ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
+                        params![instance_id, now_ms, interval_ms, c.total as i64],
+                    ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
                 }
-                Sample::Gauge { labels, value } => {
-                    let name = labels.get("name").unwrap_or("unknown");
+                MetricValue::Gauge(g) => {
                     let family_id = self.get_or_insert_family(name, "gauge");
                     let label_set_id = self.get_or_insert_label_set(labels);
                     let instance_id = self.get_or_insert_instance(family_id, label_set_id, name, labels);
@@ -264,29 +263,29 @@ mod inner {
                     self.conn.execute(
                         "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, mean) \
                          VALUES (?1, ?2, ?3, ?4)",
-                        params![instance_id, now_ms, interval_ms, *value],
-                    ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
+                        params![instance_id, now_ms, interval_ms, g.value],
+                    ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
                 }
-                Sample::Timer { labels, count: _, histogram } => {
-                    let name = labels.get("name").unwrap_or("unknown");
+                MetricValue::Histogram(h) => {
                     let family_id = self.get_or_insert_family(name, "summary");
                     let label_set_id = self.get_or_insert_label_set(labels);
                     let instance_id = self.get_or_insert_instance(family_id, label_set_id, name, labels);
 
-                    let obs = histogram.len() as i64;
-                    let min = histogram.min() as f64;
-                    let max = histogram.max() as f64;
-                    let mean = histogram.mean();
-                    let stddev = histogram.stdev();
-                    let sum = mean * obs as f64;
+                    let r = &h.reservoir;
+                    let obs = h.count as i64;
+                    let min = r.min() as f64;
+                    let max = r.max() as f64;
+                    let mean = r.mean();
+                    let stddev = r.stdev();
+                    let sum = h.sum;
 
-                    let p50 = histogram.value_at_quantile(0.50) as f64;
-                    let p75 = histogram.value_at_quantile(0.75) as f64;
-                    let p90 = histogram.value_at_quantile(0.90) as f64;
-                    let p95 = histogram.value_at_quantile(0.95) as f64;
-                    let p98 = histogram.value_at_quantile(0.98) as f64;
-                    let p99 = histogram.value_at_quantile(0.99) as f64;
-                    let p999 = histogram.value_at_quantile(0.999) as f64;
+                    let p50 = r.value_at_quantile(0.50) as f64;
+                    let p75 = r.value_at_quantile(0.75) as f64;
+                    let p90 = r.value_at_quantile(0.90) as f64;
+                    let p95 = r.value_at_quantile(0.95) as f64;
+                    let p98 = r.value_at_quantile(0.98) as f64;
+                    let p99 = r.value_at_quantile(0.99) as f64;
+                    let p999 = r.value_at_quantile(0.999) as f64;
 
                     self.conn.execute(
                         "INSERT INTO sample_value \
@@ -297,9 +296,10 @@ mod inner {
                             instance_id, now_ms, interval_ms, obs, sum, min, max, mean, stddev,
                             p50, p75, p90, p95, p98, p99, p999
                         ],
-                    ).unwrap_or_else(|e| { eprintln!("warning: sqlite write failed: {e}"); 0 });
+                    ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
                 }
             }
+            let _ = MetricType::Counter; // silence unused-import on the Counter path
         }
     }
 
@@ -334,6 +334,17 @@ mod inner {
     impl SqliteReporter {
         /// Print a data-driven summary of all metrics collected in this session.
         ///
+        /// Thin wrapper around [`format_summary`] that emits to stdout.
+        /// See [`format_summary`] for column-discovery semantics.
+        pub fn print_summary(&self, config: &ReportConfig) {
+            let rendered = self.format_summary(config);
+            if !rendered.is_empty() {
+                print!("{rendered}");
+            }
+        }
+
+        /// Render the data-driven summary as a string.
+        ///
         /// One row per distinct label set that has `cycles_total > 0`.
         /// Columns are discovered from the metrics that exist:
         /// - cycles and rate are always shown
@@ -341,14 +352,16 @@ mod inner {
         /// - gauge columns appear when gauge data exists
         ///
         /// The `config` controls column filters, row filters, aggregate
-        /// expressions, and whether detail rows are shown.
-        pub fn print_summary(&self, config: &ReportConfig) {
+        /// expressions, and whether detail rows are shown. Returns an
+        /// empty string when there is no data to report.
+        pub fn format_summary(&self, config: &ReportConfig) -> String {
+            let mut out = String::new();
             let row_patterns: Vec<regex::Regex> = config.row_filters.iter()
                 .filter_map(|p| regex::Regex::new(p.trim()).ok())
                 .collect();
 
             let rows = self.query_all_activities();
-            if rows.is_empty() { return; }
+            if rows.is_empty() { return out; }
 
             // Discover which optional column groups have data
             let has_latency = rows.iter().any(|r| r.latency_p50_ns.is_some());
@@ -401,7 +414,7 @@ mod inner {
                 grid.clear();
             }
 
-            if grid.is_empty() && agg_rows.is_empty() { return; }
+            if grid.is_empty() && agg_rows.is_empty() { return out; }
 
             // Align label components within the Activity column (data rows only).
             align_activity_column(&mut grid);
@@ -426,24 +439,25 @@ mod inner {
                 }
             }
 
-            // Print column-aligned markdown table
-            println!();
-            println!("## Summary");
-            println!();
+            use std::fmt::Write as _;
+            // Render a column-aligned markdown table.
+            let _ = writeln!(out);
+            let _ = writeln!(out, "## Summary");
+            let _ = writeln!(out);
 
             // Header row
             let mut line = String::from("|");
             for (i, h) in headers.iter().enumerate() {
-                line.push_str(&format!(" {:<w$} |", h, w = widths[i]));
+                let _ = write!(line, " {:<w$} |", h, w = widths[i]);
             }
-            println!("{line}");
+            let _ = writeln!(out, "{line}");
 
             // Separator row
             let mut sep = String::from("|");
             for w in &widths {
-                sep.push_str(&format!("-{}-|", "-".repeat(*w)));
+                let _ = write!(sep, "-{}-|", "-".repeat(*w));
             }
-            println!("{sep}");
+            let _ = writeln!(out, "{sep}");
 
             // Data + aggregate rows
             for row in &grid {
@@ -451,15 +465,16 @@ mod inner {
                 for (i, cell) in row.iter().enumerate() {
                     if i < ncols {
                         if i == 0 {
-                            line.push_str(&format!(" {:<w$} |", cell, w = widths[i]));
+                            let _ = write!(line, " {:<w$} |", cell, w = widths[i]);
                         } else {
-                            line.push_str(&format!(" {:>w$} |", cell, w = widths[i]));
+                            let _ = write!(line, " {:>w$} |", cell, w = widths[i]);
                         }
                     }
                 }
-                println!("{line}");
+                let _ = writeln!(out, "{line}");
             }
-            println!();
+            let _ = writeln!(out);
+            out
         }
 
         /// Query all activities that produced data, returning one row per
@@ -589,20 +604,28 @@ mod inner {
 
         /// Get elapsed wall-clock time for a label set by finding the time
         /// range across all metrics sharing those labels.
+        /// Total activity duration in milliseconds for a given label
+        /// set. Uses the sum of `cycles_total` sample intervals — each
+        /// row is one closed cadence window, so the sum is the total
+        /// time the phase produced data. This is the correct rate
+        /// denominator.
+        ///
+        /// An earlier implementation used `MAX(ts) - MIN(ts)` across
+        /// every family, which conflated write-time spread (~ms) with
+        /// phase duration (seconds to minutes) — a 2-second phase
+        /// would report elapsed ≈ 2ms and blow rates into the hundreds
+        /// of thousands per second.
         fn query_elapsed_ms(&self, label_part: &str) -> f64 {
-            let pattern = format!("%{{{label_part}}}");
-            let result: Result<(i64, i64), _> = self.conn.query_row(
-                "SELECT MIN(sv.timestamp_ms), MAX(sv.timestamp_ms)
+            let spec = format!("cycles_total{{{label_part}}}");
+            let result: Result<i64, _> = self.conn.query_row(
+                "SELECT COALESCE(SUM(sv.interval_ms), 0)
                  FROM sample_value sv
                  JOIN metric_instance mi ON sv.instance_id = mi.id
-                 WHERE mi.spec LIKE ?1",
-                params![pattern],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                 WHERE mi.spec = ?1",
+                params![spec],
+                |row| row.get(0),
             );
-            match result {
-                Ok((min, max)) => (max - min) as f64,
-                Err(_) => 0.0,
-            }
+            result.ok().map(|ms| ms as f64).unwrap_or(0.0)
         }
     }
 
@@ -844,9 +867,11 @@ mod inner {
     }
 
     impl Reporter for SqliteReporter {
-        fn report(&mut self, frame: &MetricsFrame) {
-            for sample in &frame.samples {
-                self.insert_sample(frame, sample);
+        fn report(&mut self, snapshot: &MetricSet) {
+            for family in snapshot.families() {
+                for metric in family.metrics() {
+                    self.insert_metric(snapshot, family, metric);
+                }
             }
         }
 
@@ -873,15 +898,14 @@ mod inner {
         #[test]
         fn sqlite_inserts_counter() {
             let mut reporter = SqliteReporter::in_memory().unwrap();
-            let frame = MetricsFrame {
-                captured_at: Instant::now(),
-                interval: Duration::from_secs(1),
-                samples: vec![Sample::Counter {
-                    labels: Labels::of("name", "ops_total").with("activity", "write"),
-                    value: 42,
-                }],
-            };
-            reporter.report(&frame);
+            let mut snapshot = MetricSet::new(Duration::from_secs(1));
+            snapshot.insert_counter(
+                "ops_total",
+                Labels::of("activity", "write"),
+                42,
+                Instant::now(),
+            );
+            reporter.report(&snapshot);
 
             let count: i64 = reporter.conn.query_row(
                 "SELECT COUNT(*) FROM sample_value", [], |row| row.get(0),
@@ -895,16 +919,14 @@ mod inner {
             let mut h = hdrhistogram::Histogram::new_with_bounds(1, 3_600_000_000_000, 3).unwrap();
             for i in 1..=100 { let _ = h.record(i * 1_000_000); }
 
-            let frame = MetricsFrame {
-                captured_at: Instant::now(),
-                interval: Duration::from_secs(1),
-                samples: vec![Sample::Timer {
-                    labels: Labels::of("name", "latency").with("activity", "read"),
-                    count: 100,
-                    histogram: h,
-                }],
-            };
-            reporter.report(&frame);
+            let mut snapshot = MetricSet::new(Duration::from_secs(1));
+            snapshot.insert_histogram(
+                "latency",
+                Labels::of("activity", "read"),
+                h,
+                Instant::now(),
+            );
+            reporter.report(&snapshot);
 
             let p99: f64 = reporter.conn.query_row(
                 "SELECT p99 FROM sample_value", [], |row| row.get(0),
@@ -915,21 +937,10 @@ mod inner {
         #[test]
         fn sqlite_deduplicates_families() {
             let mut reporter = SqliteReporter::in_memory().unwrap();
-            let frame = MetricsFrame {
-                captured_at: Instant::now(),
-                interval: Duration::from_secs(1),
-                samples: vec![
-                    Sample::Counter {
-                        labels: Labels::of("name", "ops").with("activity", "a"),
-                        value: 1,
-                    },
-                    Sample::Counter {
-                        labels: Labels::of("name", "ops").with("activity", "b"),
-                        value: 2,
-                    },
-                ],
-            };
-            reporter.report(&frame);
+            let mut snapshot = MetricSet::new(Duration::from_secs(1));
+            snapshot.insert_counter("ops", Labels::of("activity", "a"), 1, Instant::now());
+            snapshot.insert_counter("ops", Labels::of("activity", "b"), 2, Instant::now());
+            reporter.report(&snapshot);
 
             let families: i64 = reporter.conn.query_row(
                 "SELECT COUNT(*) FROM metric_family", [], |row| row.get(0),
@@ -955,21 +966,10 @@ mod inner {
                 let mut h = hdrhistogram::Histogram::new_with_bounds(
                     1, 3_600_000_000_000, 3).unwrap();
                 let _ = h.record(mean_ns as u64);
-                r.report(&MetricsFrame {
-                    captured_at: now,
-                    interval,
-                    samples: vec![
-                        Sample::Counter {
-                            labels: labels.with("name", "cycles_total"),
-                            value: cycles,
-                        },
-                        Sample::Timer {
-                            labels: labels.with("name", "cycles_servicetime"),
-                            count: cycles,
-                            histogram: h,
-                        },
-                    ],
-                });
+                let mut snapshot = MetricSet::new(interval);
+                snapshot.insert_counter("cycles_total", labels.clone(), cycles, now);
+                snapshot.insert_histogram("cycles_servicetime", labels.clone(), h, now);
+                r.report(&snapshot);
             };
 
             let rampup = Labels::of("session", "test")
@@ -1001,40 +1001,24 @@ mod inner {
             inject(search_k100_post, 100, 17_580_000.0);
 
             // Gauges: recall for all search phases
-            r.report(&MetricsFrame {
-                captured_at: now,
-                interval,
-                samples: vec![
-                    Sample::Gauge {
-                        labels: Labels::of("session", "test")
-                            .with("profile", "label_00").with("k", "10")
-                            .with("phase", "search_pre_compaction")
-                            .with("name", "recall@10.mean").with("n", "100"),
-                        value: 0.8410,
-                    },
-                    Sample::Gauge {
-                        labels: Labels::of("session", "test")
-                            .with("profile", "label_00").with("k", "100")
-                            .with("phase", "search_pre_compaction")
-                            .with("name", "recall@100.mean").with("n", "100"),
-                        value: 0.9837,
-                    },
-                    Sample::Gauge {
-                        labels: Labels::of("session", "test")
-                            .with("profile", "label_00").with("k", "10")
-                            .with("phase", "search_post_compaction")
-                            .with("name", "recall@10.mean").with("n", "100"),
-                        value: 0.8410,
-                    },
-                    Sample::Gauge {
-                        labels: Labels::of("session", "test")
-                            .with("profile", "label_00").with("k", "100")
-                            .with("phase", "search_post_compaction")
-                            .with("name", "recall@100.mean").with("n", "100"),
-                        value: 0.9837,
-                    },
-                ],
-            });
+            let mut gauges = MetricSet::new(interval);
+            gauges.insert_gauge("recall@10.mean",
+                Labels::of("session", "test").with("profile", "label_00").with("k", "10")
+                    .with("phase", "search_pre_compaction").with("n", "100"),
+                0.8410, now);
+            gauges.insert_gauge("recall@100.mean",
+                Labels::of("session", "test").with("profile", "label_00").with("k", "100")
+                    .with("phase", "search_pre_compaction").with("n", "100"),
+                0.9837, now);
+            gauges.insert_gauge("recall@10.mean",
+                Labels::of("session", "test").with("profile", "label_00").with("k", "10")
+                    .with("phase", "search_post_compaction").with("n", "100"),
+                0.8410, now);
+            gauges.insert_gauge("recall@100.mean",
+                Labels::of("session", "test").with("profile", "label_00").with("k", "100")
+                    .with("phase", "search_post_compaction").with("n", "100"),
+                0.9837, now);
+            r.report(&gauges);
 
             eprintln!("--- summary output (all columns, no aggregates) ---");
             let config = ReportConfig {

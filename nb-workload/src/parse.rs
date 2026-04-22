@@ -612,7 +612,7 @@ fn normalize_op_object(
     // Activity-level params excised from op fields before the adapter sees them
     let activity_params = ["ratio", "driver", "space", "instrument", "start-timers", "stop-timers",
         "verify", "relevancy", "strict", "poll", "poll_interval_ms", "timeout_ms", "poll_metric_name", "emit",
-        "batch", "batchtype"];
+        "batch", "max_batch_size", "batchtype"];
 
     let op_fields = if let Some(explicit_op) = op_field_names.iter()
         .find_map(|k| map.get(*k))

@@ -152,7 +152,7 @@ Phases share a single compiled GK program.
 
 ```yaml
 params:
-  dataset: sift1m
+  dataset: example
 
 bindings: |
   inputs := (cycle)
@@ -285,29 +285,82 @@ advanced on each iteration. This means:
   `base` cursor per cycle.
 - Phase completion occurs when any targeted cursor is exhausted.
 
-### Batch Budget
+### Batching
 
-Cursor-driven phases support budget-based batching via
-`CqlBatchDispenser`:
+Op templates can accumulate multiple rows per execute call,
+submitted as a single CQL BATCH (or equivalent for other
+adapters). Two fill strategies are available, controlled by
+op-template-level params:
+
+| Param | Type | Effect |
+|-------|------|--------|
+| `batch` | integer | Fixed row count per batch |
+| `max_batch_size` | byte string (e.g. `64KB`, `1MB`) | Fill to byte target; falls back to 1000-row cap |
+| `batchtype` | `logged` \| `unlogged` \| `counter` | CQL batch type (defaults to `unlogged`) |
+
+When both `batch` and `max_batch_size` are present, the byte
+target drives fill and `batch` caps the row count.
+
+Examples:
 
 ```yaml
 ops:
+  # Fixed row count — exactly 8 rows per batch.
   insert:
-    batch:
-      max_rows: 100
-      type: unlogged
-    prepared: "INSERT INTO ..."
+    batch: 8
+    batchtype: unlogged
+    prepared: "INSERT INTO t (id, vec) VALUES ({id}, {vec})"
+
+  # Byte target — fill each batch to ~64KB regardless of row size.
+  # Row count varies by vector dimension.
+  insert_variable:
+    max_batch_size: 64KB
+    batchtype: unlogged
+    prepared: "INSERT INTO t (id, vec) VALUES ({id}, {vec})"
+
+  # Combined — byte target, but never more than 200 rows.
+  insert_capped:
+    batch: 200
+    max_batch_size: 128KB
+    prepared: "INSERT INTO t (id, vec) VALUES ({id}, {vec})"
 ```
 
-The executor advances the cursor repeatedly, evaluating the
-GK graph per position, rendering and binding each statement,
-and accumulating rows until the batch budget is reached. The
-batch is then executed as a single CQL BATCH call. Batch size
-is controlled by `max_rows` on the op template. Each batch
-execution records amortized per-row latency for throughput
-reporting.
+#### Budget-fill mechanics
 
-The `CqlBatchDispenser` uses `ResolvedFields::batch_fields`
-to receive the expanded field sets — one per cursor advance
-within the batch window. The base `ResolvedFields` contains
-the fields from the first cycle in the batch.
+`max_batch_size` uses the first row's measured size as a
+predictor for remaining rows. Because all rows in a batch come
+from the same op template with sequential cursor offsets, row
+sizes are consistent — no peek or double-buffering is needed.
+
+```
+1. Resolve row 0 at base cursor offset
+2. Measure first_size = sum of Value wire sizes
+3. rows_to_fill = max(1, target_bytes / first_size)
+4. Cap: total = min(rows_to_fill, max_rows)
+5. Resolve rows 1..total at consecutive offsets
+```
+
+The first row is always committed to the batch, even if it
+alone exceeds `max_batch_size`. This guarantees forward
+progress for oversized rows.
+
+#### Implementation
+
+Per-op-template artifacts are built once at activity setup and
+cached (no per-cycle reconstruction):
+
+- `BindPlan` — memoized name → GK output index map
+- `BatchConfig` — parsed `batch` / `max_batch_size` / `max_rows`
+
+Per-cycle resolution invokes `BindPlan::pull_to_budget(...)`
+or `BindPlan::pull_range(...)` depending on the configured
+strategy. Both methods pull typed `Value` tuples via indexed
+GK access — no string rendering, no name lookups on the hot
+path.
+
+The adapter receives these tuples via
+`ResolvedFields::batch_fields` — one `ResolvedFieldSet` per
+row. `CqlBatchDispenser` iterates `batch_fields`, binds typed
+values per row using prepared-statement metadata, and
+executes the full batch in one driver call. Per-row latency
+is amortized from batch latency for throughput reporting.

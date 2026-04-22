@@ -56,6 +56,7 @@ explains the design intent behind it.
 |---|----------|-------|
 | 40 | [Metrics Framework](40_metrics.md) | Instruments, frames, delta semantics, reporters, scheduling |
 | 41 | [Logging and Diagnostics](41_logging.md) | Conventions, GK compiler events, --explain mode |
+| 42 | [Windowed Metrics Access](42_windowed_metrics.md) | User-specified cadences, auto-intermediate buckets, non-draining `now`, arbitrary past-duration queries |
 
 ### 6. Adapters
 
@@ -72,6 +73,7 @@ explains the design intent behind it.
 |---|----------|-------|
 | 60 | [CLI Structure](60_cli.md) | Command tree, completions, workload discovery, bench command |
 | 61 | [Persona Model](61_personas.md) | cassnbrs, opennbrs, build structure, adapter selection |
+| 62 | [TUI Layout](62_tui_layout.md) | Tree-centric layout, per-phase detail blocks, dynamic Focus LOD, 120-col baseline |
 
 ---
 

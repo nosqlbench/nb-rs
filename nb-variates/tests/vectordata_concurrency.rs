@@ -23,9 +23,9 @@ fn read_vector_single(source: &str, index: u64) -> String {
 
 /// Read vectors from multiple threads and check consistency.
 #[test]
-#[ignore] // requires sift1m dataset
+#[ignore] // requires example dataset
 fn concurrent_reads_match_sequential() {
-    let source = "sift1m:label_01";
+    let source = "example:label_01";
     let test_indices: Vec<u64> = vec![0, 1, 100, 1000, 5000, 7847, 10000, 50000, 83000];
 
     // Phase 1: sequential baseline — read each index once
@@ -87,9 +87,9 @@ fn concurrent_reads_match_sequential() {
 /// This mirrors the actual production path where all fibers share
 /// one Arc<GkProgram> and each has its own GkState.
 #[test]
-#[ignore] // requires sift1m dataset
+#[ignore] // requires example dataset
 fn shared_kernel_concurrent_eval() {
-    let source = "sift1m:label_01";
+    let source = "example:label_01";
     let src = format!(
         "inputs := (cycle)\nvec := vector_at(cycle, \"{source}\")"
     );
@@ -144,9 +144,9 @@ fn compile_shared_program(source: &str) -> Arc<nb_variates::kernel::GkProgram> {
 /// 100 tasks on a thread pool, sharing one program, each with own state.
 /// Uses crossbeam-style scoped threads to avoid Arc overhead on the pool.
 #[test]
-#[ignore] // requires sift1m dataset
+#[ignore] // requires example dataset
 fn threadpool_100_tasks_shared_kernel() {
-    let program = compile_shared_program("sift1m:label_01");
+    let program = compile_shared_program("example:label_01");
 
     let task_count = 100;
     let reads_per_task = 500;
@@ -185,9 +185,9 @@ fn threadpool_100_tasks_shared_kernel() {
 /// Tasks read a vector, sleep briefly (simulating network round trip),
 /// then read the next. This creates maximum interleaving.
 #[test]
-#[ignore] // requires sift1m dataset
+#[ignore] // requires example dataset
 fn interleaved_reads_with_sleep() {
-    let program = compile_shared_program("sift1m:label_01");
+    let program = compile_shared_program("example:label_01");
 
     let task_count = 50;
     let reads_per_task = 200;
@@ -227,9 +227,9 @@ fn interleaved_reads_with_sleep() {
 
 /// Stress test: many threads hitting different indices simultaneously.
 #[test]
-#[ignore] // requires sift1m dataset
+#[ignore] // requires example dataset
 fn high_contention_reads() {
-    let source = "sift1m:label_01";
+    let source = "example:label_01";
     let thread_count = 32;
     let reads_per_thread = 1000;
 

@@ -1,14 +1,19 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! GK node functions for reading live metrics from the in-process store.
+//! GK node functions for reading live metrics from the unified
+//! [`MetricsQuery`] (SRD-42 §"MetricsQuery").
 //!
-//! - `metric(label_pattern, stat)` — reads the **cumulative** view.
-//! - `metric_window(label_pattern, stat)` — reads the **last window** (most recent delta).
+//! - `metric(label_pattern, stat)` — reads
+//!   [`MetricsQuery::session_lifetime`] (canonical session totals;
+//!   subsumes the old cumulative view).
+//! - `metric_window(label_pattern, stat)` — reads the smallest
+//!   declared cadence's most-recently-closed window via
+//!   [`MetricsQuery::cadence_window`].
 //!
-//! Both are non-deterministic context nodes. In strict mode they require
-//! explicit acknowledgment. The store reference is captured at node
-//! construction from a global static set by the runner.
+//! Both are non-deterministic context nodes. In strict mode they
+//! require explicit acknowledgment. The query reference is captured
+//! at node construction from a global static set by the runner.
 //!
 //! ## Stat accessors
 //!
@@ -17,38 +22,51 @@
 //! - `"p50"`, `"p99"`, `"mean"` — latency quantiles from cycles_servicetime (nanos)
 //! - `"errors"` — errors_total counter value
 
-use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::dsl::registry::{FuncSig, FuncCategory as C, ParamSpec, Arity};
 use crate::node::{GkNode, NodeMeta, Port, PortType, SlotType, Value};
-use nb_metrics::frame::{MetricsFrame, Sample};
-use nb_metrics::store::InProcessMetricsStore;
+use nb_metrics::metrics_query::{MetricsQuery, Selection};
+use nb_metrics::snapshot::{MetricSet, MetricValue};
 
-/// Global metrics store reference. Set by the runner at startup.
-/// GK metric nodes capture this at construction time.
-static METRICS_STORE: LazyLock<Mutex<Option<Arc<RwLock<InProcessMetricsStore>>>>> =
+/// Global metrics query reference. Set by the runner once the
+/// cadence reporter is built. GK metric nodes capture this at
+/// construction time.
+static METRICS_QUERY: LazyLock<Mutex<Option<Arc<MetricsQuery>>>> =
     LazyLock::new(|| Mutex::new(None));
 
-/// Set the global metrics store for GK node access.
-///
-/// Called once by the runner after creating the store.
-pub fn set_global_store(store: Arc<RwLock<InProcessMetricsStore>>) {
-    *METRICS_STORE.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
+/// Set the global metrics query for GK node access.
+pub fn set_global_query(query: Arc<MetricsQuery>) {
+    *METRICS_QUERY.lock().unwrap_or_else(|e| e.into_inner()) = Some(query);
 }
 
-/// Get the global metrics store reference.
-fn get_store() -> Option<Arc<RwLock<InProcessMetricsStore>>> {
-    METRICS_STORE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+/// Get the global metrics query reference.
+fn get_query() -> Option<Arc<MetricsQuery>> {
+    METRICS_QUERY.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// Read a stat from the cumulative view.
+/// Build a [`Selection`] from a `"key=value,key~substring"` pattern.
+fn selection_from_pattern(pattern: &str) -> Selection {
+    let mut sel = Selection::all();
+    for part in pattern.split(',').map(str::trim) {
+        if part.is_empty() { continue; }
+        if let Some((key, value)) = part.split_once('=') {
+            sel = sel.with_label(key.trim(), value.trim());
+        } else if let Some((key, substring)) = part.split_once('~') {
+            sel = sel.with_label_containing(key.trim(), substring.trim());
+        }
+    }
+    sel
+}
+
+/// Read a stat from the canonical session-lifetime view.
 ///
 /// Signature: `metric(label_pattern: str, stat: str) -> f64`
 pub struct MetricCumulative {
     meta: NodeMeta,
     label_pattern: String,
     stat: String,
-    store: Option<Arc<RwLock<InProcessMetricsStore>>>,
+    query: Option<Arc<MetricsQuery>>,
 }
 
 impl MetricCumulative {
@@ -61,7 +79,7 @@ impl MetricCumulative {
             },
             label_pattern: label_pattern.to_string(),
             stat: stat.to_string(),
-            store: get_store(),
+            query: get_query(),
         }
     }
 }
@@ -69,27 +87,23 @@ impl MetricCumulative {
 impl GkNode for MetricCumulative {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        let value = self.store.as_ref()
-            .and_then(|s| s.read().ok())
-            .and_then(|store| {
-                let results = store.query_cumulative(|l| {
-                    label_matches(l, &self.label_pattern)
-                });
-                results.first().and_then(|(_, frame)| extract_stat(frame, &self.stat))
-            })
+        let sel = selection_from_pattern(&self.label_pattern);
+        let value = self.query.as_ref()
+            .map(|q| q.session_lifetime(&sel))
+            .and_then(|snap| extract_stat(&snap, &self.stat))
             .unwrap_or(0.0);
         outputs[0] = Value::F64(value);
     }
 }
 
-/// Read a stat from the last window (most recent delta).
+/// Read a stat from the latest closed smallest-cadence window.
 ///
 /// Signature: `metric_window(label_pattern: str, stat: str) -> f64`
 pub struct MetricWindow {
     meta: NodeMeta,
     label_pattern: String,
     stat: String,
-    store: Option<Arc<RwLock<InProcessMetricsStore>>>,
+    query: Option<Arc<MetricsQuery>>,
 }
 
 impl MetricWindow {
@@ -102,7 +116,7 @@ impl MetricWindow {
             },
             label_pattern: label_pattern.to_string(),
             stat: stat.to_string(),
-            store: get_store(),
+            query: get_query(),
         }
     }
 }
@@ -110,80 +124,50 @@ impl MetricWindow {
 impl GkNode for MetricWindow {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        let value = self.store.as_ref()
-            .and_then(|s| s.read().ok())
-            .and_then(|store| {
-                let results = store.query_last_window(|l| {
-                    label_matches(l, &self.label_pattern)
-                });
-                results.first().and_then(|(_, frame)| extract_stat(frame, &self.stat))
+        let sel = selection_from_pattern(&self.label_pattern);
+        let value = self.query.as_ref()
+            .and_then(|q| {
+                let smallest = q.reporter().declared_cadences().smallest();
+                if smallest.is_zero() { return None; }
+                let snap = q.cadence_window(smallest, &sel);
+                extract_stat(&snap, &self.stat)
             })
             .unwrap_or(0.0);
         outputs[0] = Value::F64(value);
     }
 }
 
-/// Check if labels match a simple key=value pattern.
-///
-/// Pattern format: `"key=value"` or `"key~substring"`.
-/// Multiple patterns separated by `,` — all must match.
-fn label_matches(labels: &nb_metrics::labels::Labels, pattern: &str) -> bool {
-    for part in pattern.split(',').map(str::trim) {
-        if let Some((key, value)) = part.split_once('=') {
-            if labels.get(key.trim()) != Some(value.trim()) {
-                return false;
-            }
-        } else if let Some((key, substring)) = part.split_once('~') {
-            match labels.get(key.trim()) {
-                Some(v) if v.contains(substring.trim()) => {}
-                _ => return false,
-            }
+/// Extract a named stat from a [`MetricSet`].
+fn extract_stat(snapshot: &MetricSet, stat: &str) -> Option<f64> {
+    fn counter_total(snapshot: &MetricSet, name: &str) -> Option<u64> {
+        let f = snapshot.family(name)?;
+        let m = f.metrics().next()?;
+        match m.point()?.value() {
+            MetricValue::Counter(c) => Some(c.total),
+            _ => None,
         }
     }
-    true
-}
 
-/// Extract a named stat from a MetricsFrame.
-fn extract_stat(frame: &MetricsFrame, stat: &str) -> Option<f64> {
     match stat {
-        "cycles" => {
-            frame.samples.iter().find_map(|s| match s {
-                Sample::Counter { labels, value } if labels.get("name") == Some("cycles_total") =>
-                    Some(*value as f64),
-                _ => None,
-            })
-        }
-        "errors" => {
-            frame.samples.iter().find_map(|s| match s {
-                Sample::Counter { labels, value } if labels.get("name") == Some("errors_total") =>
-                    Some(*value as f64),
-                _ => None,
-            })
-        }
+        "cycles" => counter_total(snapshot, "cycles_total").map(|v| v as f64),
+        "errors" => counter_total(snapshot, "errors_total").map(|v| v as f64),
         "rate" => {
-            let cycles = frame.samples.iter().find_map(|s| match s {
-                Sample::Counter { labels, value } if labels.get("name") == Some("cycles_total") =>
-                    Some(*value as f64),
-                _ => None,
-            })?;
-            let secs = frame.interval.as_secs_f64().max(0.001);
+            let cycles = counter_total(snapshot, "cycles_total")? as f64;
+            let secs = snapshot.interval().as_secs_f64().max(0.001);
             Some(cycles / secs)
         }
         "p50" | "p99" | "mean" => {
-            frame.samples.iter().find_map(|s| match s {
-                Sample::Timer { labels, histogram, .. }
-                    if labels.get("name") == Some("cycles_servicetime") =>
-                {
-                    if histogram.len() == 0 { return None; }
-                    Some(match stat {
-                        "p50" => histogram.value_at_quantile(0.50) as f64,
-                        "p99" => histogram.value_at_quantile(0.99) as f64,
-                        "mean" => histogram.mean(),
-                        _ => 0.0,
-                    })
-                }
+            let f = snapshot.family("cycles_servicetime")?;
+            let m = f.metrics().next()?;
+            match m.point()?.value() {
+                MetricValue::Histogram(h) if h.count > 0 => Some(match stat {
+                    "p50" => h.reservoir.value_at_quantile(0.50) as f64,
+                    "p99" => h.reservoir.value_at_quantile(0.99) as f64,
+                    "mean" => h.reservoir.mean(),
+                    _ => 0.0,
+                }),
                 _ => None,
-            })
+            }
         }
         _ => None,
     }

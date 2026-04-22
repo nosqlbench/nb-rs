@@ -13,11 +13,11 @@
 #
 # Usage:
 #   cassnbrs workload=cql_compaction_test.yaml
-#   cassnbrs workload=cql_compaction_test.yaml dataset=sift1m profile=label_01
+#   cassnbrs workload=cql_compaction_test.yaml dataset=example profile=label_01
 
 params:
   adapter: cql
-  dataset: sift1m
+  dataset: example
   profile: default
   keyspace: baselines
   table: compaction_test

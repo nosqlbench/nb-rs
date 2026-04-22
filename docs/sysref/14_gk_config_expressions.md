@@ -21,7 +21,7 @@ literal: "this has \{no expressions\}"      # escaped braces
 On the command line:
 
 ```bash
-nbrs run workload.yaml 'cycles={vector_count("sift1m") / 10}'
+nbrs run workload.yaml 'cycles={vector_count("example") / 10}'
 nbrs run workload.yaml 'cycles={4 * 4}'
 nbrs run workload.yaml 'concurrency={min(100, 50 * 2)}'
 ```
@@ -51,7 +51,7 @@ When the resolver encounters `{...}`:
 
 ```
 {train_count}                → named binding lookup
-{vector_count("sift1m")}     → const expression eval
+{vector_count("example")}     → const expression eval
 {bad_func(42)}               → error with full diagnostic
 ```
 
@@ -80,7 +80,7 @@ pub fn eval_const_expr(source: &str) -> Result<Value, String> {
 - Literals: `{42}`, `{3.14}`, `{"hello"}`
 - Arithmetic: `{1000 * 1000}`, `{4 ** 0.5}`
 - Function calls with constant args: `{hash(42)}`, `{mod(hash(42), 100)}`
-- Dataset metadata: `{vector_count("sift1m")}`, `{vector_dim("glove-25")}`
+- Dataset metadata: `{vector_count("example")}`, `{vector_dim("glove-25")}`
 - Nested: `{vector_count("{dataset}") / 10}` (after param substitution)
 
 ### What does NOT work
@@ -112,10 +112,10 @@ This enables:
 
 ```yaml
 params:
-  dataset: sift1m
+  dataset: example
 
 cycles: "{vector_count('{dataset}')}"
-# After param substitution: "{vector_count('sift1m')}"
+# After param substitution: "{vector_count('example')}"
 # After const eval: 1000000
 ```
 
@@ -151,7 +151,7 @@ error: const expression failed: '{hash(cycle)}'
 Named binding references (`{train_count}`) are implemented.
 The runner resolves them from `GkKernel::get_constant(name)`.
 
-Inline const expressions (`{4 * 4}`, `{vector_count("sift1m")}`)
+Inline const expressions (`{4 * 4}`, `{vector_count("example")}`)
 need: `eval_const_expr()` API, parser support for zero-input
 programs, and the fallback-to-const-eval path in the resolver.
 

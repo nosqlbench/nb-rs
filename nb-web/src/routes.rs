@@ -197,9 +197,9 @@ pub async fn ingest_prometheus(
     State(broadcast): State<MetricsBroadcast>,
     body: String,
 ) -> StatusCode {
-    let frame = openmetrics_parse::parse_prometheus_text(&body);
-    if !frame.samples.is_empty() {
-        broadcast.publish(frame);
+    let snapshot = openmetrics_parse::parse_prometheus_text(&body);
+    if !snapshot.is_empty() {
+        broadcast.publish(snapshot);
     }
     StatusCode::NO_CONTENT
 }

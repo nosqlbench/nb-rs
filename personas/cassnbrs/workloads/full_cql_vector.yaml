@@ -1,8 +1,10 @@
 #!/usr/bin/env cassnbrs
 # CQL Vector Search — Multi-Profile Discovery
 #
-# Generic phases parameterized by {table} and {spec} variables.
-# Scenario trees set these via for_each iteration variables.
+# Generic phases parameterized by {table}, {dataset}, and {profile}.
+# Scenario trees set {profile} (and sometimes {table}) via for_each
+# iteration variables. Dataset-facing calls use the canonical
+# "{dataset}:{profile}" composite inline format.
 #
 # Usage:
 #   cassnbrs full_cql_vector.yaml scenario=fulltest
@@ -12,7 +14,7 @@
 
 params:
   adapter: cql
-  dataset: sift1m
+  dataset: example
   prefix: "label"
   keyspace: baselines
   k_values: "10,100"
@@ -34,7 +36,7 @@ scenarios:
     - discover
     - for_each: "profile in matching_profiles('{dataset}', '{prefix}')"
       phases:
-        - for_each: "table in vec_{profile}, spec in {dataset}:{profile}, optimize_for in {optimize_for}"
+        - for_each: "table in vec_{profile}, optimize_for in {optimize_for}"
           phases:
             - teardown
             - schema
@@ -42,29 +44,29 @@ scenarios:
             - for_each: "index_state in building, k in {k_values}"
               phases:
                 - ann_query
-            - build_index
-            - for_each: "index_state in built, k in {k_values}"
-              phases:
-                - ann_query
+#            - build_index
+#            - for_each: "index_state in built, k in {k_values}"
+#              phases:
+#                - ann_query
 
   # Report-only: search existing data
   reportonly:
-    - for_each: "profile in matching_profiles('{dataset}', 'label'), table in vec_{profile}, spec in {dataset}:{profile}, k in {k_values}"
+    - for_each: "profile in matching_profiles('{dataset}', 'label'), table in vec_{profile}, k in {k_values}"
       phases:
         - ann_query
-    - for_each: "table in fknn_{fknn_profile}, spec in {dataset}:{fknn_profile}, k in {k_values}"
+    - for_each: "profile in {fknn_profile}, table in fknn_{profile}, k in {k_values}"
       phases:
         - pvs_query
 
   search_only:
-    - for_each: "profile in matching_profiles('{dataset}', '{prefix}'), table in vec_{profile}, spec in {dataset}:{profile}, k in {k_values}"
+    - for_each: "profile in matching_profiles('{dataset}', '{prefix}'), table in vec_{profile}, k in {k_values}"
       phases:
         - ann_query
 
   # Full unfiltered default profile test with optimize_for sweep.
   # Drops and recreates the index for each optimize_for setting.
   unfiltered:
-    - for_each: "table in vec_default, spec in {dataset}:default, optimize_for in {optimize_for}"
+    - for_each: "profile in default, table in vec_{profile}, optimize_for in {optimize_for}"
       phases:
         - teardown
         - schema
@@ -84,7 +86,7 @@ scenarios:
   # Filtered KNN against default profile
   # For smoke testing: cassnbrs full_cql_vector.yaml filtered_knn limit=100
   filtered_knn:
-    - for_each: "table in fknn_{fknn_profile}, spec in {dataset}:{fknn_profile}, optimize_for in {optimize_for}"
+    - for_each: "profile in {fknn_profile}, table in fknn_{profile}, optimize_for in {optimize_for}"
       phases:
         - teardown
         - schema
@@ -98,7 +100,7 @@ scenarios:
             - pvs_query
 
   fknn_rampup:
-    - for_each: "table in fknn_{fknn_profile}, spec in {dataset}:{fknn_profile}, optimize_for in {optimize_for}"
+    - for_each: "profile in {fknn_profile}, table in fknn_{profile}, optimize_for in {optimize_for}"
       phases:
         - teardown
         - schema
@@ -108,7 +110,7 @@ scenarios:
             - pvs_query
 
 # =====================================================================
-# Generic Phases — parameterized by {table} and {spec}
+# Generic Phases — parameterized by {table}, {dataset}, and {profile}
 # =====================================================================
 
 phases:
@@ -123,7 +125,7 @@ phases:
       info:
         stmt: "=== {dataset}: profiles for '{prefix}': {profiles} ==="
 
-  # ── Schema DDL (parameterized by {table}, {spec}, {optimize_for}) ──
+  # ── Schema DDL (parameterized by {table}, {dataset}:{profile}, {optimize_for}) ──
   # Single unified schema: keyspace → table (with metadata column) → indexes.
   # All IF NOT EXISTS — idempotent and safe to re-run.
   # ANN-only workloads simply leave the metadata column null.
@@ -132,8 +134,8 @@ phases:
     cycles: ===auto
     concurrency: 1
     bindings: |
-      dim := vector_dim("{spec}")
-      similarity_function := dataset_distance_function("{spec}")
+      dim := vector_dim("{dataset}:{profile}")
+      similarity_function := dataset_distance_function("{dataset}:{profile}")
     ops:
       create_keyspace:
         raw: "CREATE KEYSPACE IF NOT EXISTS {keyspace} WITH replication = {replication} AND durable_writes = true"
@@ -172,7 +174,7 @@ phases:
     cycles: ===auto
     concurrency: 1
     bindings: |
-      similarity_function := dataset_distance_function("{spec}")
+      similarity_function := dataset_distance_function("{dataset}:{profile}")
     ops:
       create_index:
         raw: "CREATE CUSTOM INDEX IF NOT EXISTS {table}_idx ON {keyspace}.{table} (value) USING 'StorageAttachedIndex' WITH OPTIONS = {'optimize_for': '{optimize_for}', 'similarity_function': '{similarity_function}'}"
@@ -189,53 +191,50 @@ phases:
         timeout_ms: 600000
         poll_metric_name: index_build_time_s
 
-  # ── Data loading (parameterized by {table}, {spec}) ────────────
+  # ── Data loading (parameterized by {table}, {dataset}:{profile}) ────────────
   # ANN rampup: key + vector only. Used by fulltest, unfiltered.
 
   rampup:
     summary: true
-    cycles: "{vector_count('{spec}')}"
     concurrency: "{concurrency}"
     bindings: |
-      cursor row = range(0, vector_count("{spec}"))
-      init prebuffer = dataset_prebuffer("{spec}")
+      cursor row = range(0, vector_count("{dataset}:{profile}"))
+      init prebuffer = dataset_prebuffer("{dataset}:{profile}")
       id := format_u64(row, 10)
-      train_vector := vector_at(row, "{spec}")
+      train_vector := vector_at_bytes(row, "{dataset}:{profile}")
     ops:
       insert:
-        batch: 8
+        max_batch_size: 64KB
         batchtype: unlogged
         prepared: "INSERT INTO {keyspace}.{table} (key, value) VALUES ('{id}', {train_vector})"
 
   # Filtered-KNN rampup: includes metadata column for predicate filtering
   fknn_rampup_data:
     summary: true
-    cycles: "{vector_count('{spec}')}"
     concurrency: "{concurrency}"
     bindings: |
-      cursor row = range(0, vector_count("{spec}"))
-      init prebuffer = dataset_prebuffer("{spec}")
+      cursor row = range(0, vector_count("{dataset}:{profile}"))
+      init prebuffer = dataset_prebuffer("{dataset}:{profile}")
       id := format_u64(row, 10)
-      train_vector := vector_at(row, "{spec}")
-      meta := metadata_value_at(row, "{spec}")
+      train_vector := vector_at_bytes(row, "{dataset}:{profile}")
+      meta := metadata_value_at(row, "{dataset}:{profile}")
     ops:
       insert:
-        batch: 8
+        max_batch_size: 64KB
         batchtype: unlogged
         prepared: "INSERT INTO {keyspace}.{table} (key, value, metadata) VALUES ('{id}', {train_vector}, {meta})"
 
-  # ── Search (parameterized by {table}, {spec}, {k}) ────────────
+  # ── Search (parameterized by {table}, {dataset}:{profile}, {k}) ────────────
 
   ann_query:
     summary:
       - recall
-    cycles: "{query_count('{spec}')}"
     concurrency: "{concurrency}"
     bindings: |
-      cursor q = range(0, query_count("{spec}"))
-      init prebuffer = dataset_prebuffer("{spec}")
-      query_vector := query_vector_at(q, "{spec}")
-      ground_truth := neighbor_indices_at(q, "{spec}")
+      cursor q = range(0, query_count("{dataset}:{profile}"))
+      init prebuffer = dataset_prebuffer("{dataset}:{profile}")
+      query_vector := query_vector_at_bytes(q, "{dataset}:{profile}")
+      ground_truth := neighbor_indices_at(q, "{dataset}:{profile}")
     ops:
       select_ann:
         prepared: "SELECT key FROM {keyspace}.{table} ORDER BY value ANN OF {query_vector} LIMIT {k}"
@@ -249,14 +248,13 @@ phases:
   pvs_query:
     summary:
       - recall
-    cycles: "{query_count('{spec}')}"
     concurrency: "{concurrency}"
     bindings: |
-      cursor q = range(0, query_count("{spec}"))
-      init prebuffer = dataset_prebuffer("{spec}")
-      query_vector := query_vector_at(q, "{spec}")
-      predicate := predicate_value_at(q, "{spec}")
-      ground_truth := filtered_neighbor_indices_at(q, "{spec}")
+      cursor q = range(0, query_count("{dataset}:{profile}"))
+      init prebuffer = dataset_prebuffer("{dataset}:{profile}")
+      query_vector := query_vector_at_bytes(q, "{dataset}:{profile}")
+      predicate := predicate_value_at(q, "{dataset}:{profile}")
+      ground_truth := filtered_neighbor_indices_at(q, "{dataset}:{profile}")
     ops:
       select_ann:
         prepared: "SELECT key FROM {keyspace}.{table} WHERE metadata = {predicate} ORDER BY value ANN OF {query_vector} LIMIT {k}"

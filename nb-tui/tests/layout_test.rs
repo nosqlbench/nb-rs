@@ -15,6 +15,18 @@ use ratatui::Terminal;
 use nb_tui::app::App;
 use nb_tui::state::{RunState, ActivePhase, PhaseStatus};
 
+fn test_metrics_query() -> Arc<nb_metrics::metrics_query::MetricsQuery> {
+    use nb_metrics::cadence::{Cadences, CadenceTree};
+    use nb_metrics::cadence_reporter::CadenceReporter;
+    use nb_metrics::component::Component;
+    use nb_metrics::labels::Labels;
+
+    let tree = CadenceTree::plan_default(Cadences::defaults());
+    let reporter = Arc::new(CadenceReporter::new(tree));
+    let root = Component::root(Labels::of("session", "test"), std::collections::HashMap::new());
+    Arc::new(nb_metrics::metrics_query::MetricsQuery::new(reporter, root))
+}
+
 fn make_test_state() -> Arc<RwLock<RunState>> {
     let mut state = RunState::new("full_cql_vector.yaml", "fknn_rampup", "cql");
     state.profiler = "off".into();
@@ -22,9 +34,9 @@ fn make_test_state() -> Arc<RwLock<RunState>> {
 
     // Add some completed phases
     state.set_phase_running("teardown", "table=fknn_default", 3);
-    state.set_phase_completed("teardown", "table=fknn_default", 0.2);
+    state.set_phase_completed("teardown", "table=fknn_default", 0.2, nb_tui::state::PhaseSummary::default());
     state.set_phase_running("schema", "table=fknn_default", 4);
-    state.set_phase_completed("schema", "table=fknn_default", 1.1);
+    state.set_phase_completed("schema", "table=fknn_default", 1.1, nb_tui::state::PhaseSummary::default());
 
     // Active phase
     state.set_phase_running("fknn_rampup_data", "optimize_for=RECALL", 1);
@@ -43,6 +55,7 @@ fn make_test_state() -> Arc<RwLock<RunState>> {
         ops_per_sec: 220.0,
         adapter_counters: vec![("rows_inserted".into(), 19500, 1700.0)],
         rows_per_batch: 7.8,
+        relevancy: Vec::new(),
     });
 
     // Pending phases
@@ -69,7 +82,7 @@ fn make_test_state() -> Arc<RwLock<RunState>> {
 fn render_layout_has_all_sections() {
     let state = make_test_state();
     let (_tx, rx) = mpsc::channel();
-    let app = App::new(rx, state.clone());
+    let app = App::new(rx, state.clone(), test_metrics_query());
 
     let backend = TestBackend::new(100, 30);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -94,7 +107,7 @@ fn render_layout_has_all_sections() {
     // Phase panel
     assert!(text.contains("fknn_rampup_data"), "missing active phase name:\n{text}");
     assert!(text.contains("cursor:row"), "missing cursor name:\n{text}");
-    assert!(text.contains("fibers:100"), "missing fiber count:\n{text}");
+    assert!(text.contains("concurrency:100"), "missing concurrency count:\n{text}");
     assert!(text.contains("active:100"), "missing active count:\n{text}");
 
     // Latency section
@@ -124,7 +137,7 @@ fn render_layout_no_active_phase() {
     ));
 
     let (_tx, rx) = mpsc::channel();
-    let app = App::new(rx, state);
+    let app = App::new(rx, state, test_metrics_query());
 
     let backend = TestBackend::new(80, 20);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -149,7 +162,7 @@ fn render_layout_no_active_phase() {
 fn render_layout_narrow_terminal() {
     let state = make_test_state();
     let (_tx, rx) = mpsc::channel();
-    let app = App::new(rx, state);
+    let app = App::new(rx, state, test_metrics_query());
 
     // Narrow terminal — should not panic
     let backend = TestBackend::new(40, 15);
@@ -165,7 +178,7 @@ fn render_layout_narrow_terminal() {
 fn render_prints_full_buffer() {
     let state = make_test_state();
     let (_tx, rx) = mpsc::channel();
-    let app = App::new(rx, state);
+    let app = App::new(rx, state, test_metrics_query());
 
     let backend = TestBackend::new(120, 35);
     let mut terminal = Terminal::new(backend).unwrap();

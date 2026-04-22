@@ -97,30 +97,105 @@ impl AssertionSpec {
 // ValidationMetrics
 // =========================================================================
 
+/// Running aggregate per relevancy metric. Holds both the all-time
+/// running mean and a bounded sliding window so progress views can
+/// show recent trend alongside the cumulative average.
+pub struct RunningAgg {
+    /// Sum of every score ever recorded (for all-time mean).
+    pub total_sum: f64,
+    /// Count of scores recorded (for all-time mean).
+    pub total_count: u64,
+    /// Recent scores, newest at the back. Capped at `window_size`.
+    pub window: std::collections::VecDeque<f64>,
+    /// Upper bound on `window` length.
+    pub window_size: usize,
+}
+
+impl RunningAgg {
+    pub fn new(window_size: usize) -> Self {
+        Self {
+            total_sum: 0.0,
+            total_count: 0,
+            window: std::collections::VecDeque::with_capacity(window_size),
+            window_size,
+        }
+    }
+
+    pub fn record(&mut self, score: f64) {
+        self.total_sum += score;
+        self.total_count += 1;
+        if self.window.len() == self.window_size {
+            self.window.pop_front();
+        }
+        self.window.push_back(score);
+    }
+
+    pub fn window_mean(&self) -> f64 {
+        if self.window.is_empty() {
+            0.0
+        } else {
+            self.window.iter().sum::<f64>() / self.window.len() as f64
+        }
+    }
+
+    pub fn total_mean(&self) -> f64 {
+        if self.total_count == 0 {
+            0.0
+        } else {
+            self.total_sum / self.total_count as f64
+        }
+    }
+}
+
+/// Default size of the moving-average window. Chosen to match the
+/// common recall@10 "last 10" semantic the user's workloads expect.
+pub const DEFAULT_RECALL_WINDOW: usize = 10;
+
+/// Live snapshot of a relevancy metric: window mean, all-time mean,
+/// how many scores have been recorded, and the current window size.
+#[derive(Debug, Clone)]
+pub struct RelevancyLive {
+    pub name: String,
+    pub window_mean: f64,
+    pub total_mean: f64,
+    pub total_count: u64,
+    pub window_len: usize,
+}
+
 /// Metrics for result validation, shared across fibers.
 pub struct ValidationMetrics {
     pub validations_passed: AtomicU64,
     pub validations_failed: AtomicU64,
     /// Per-function lossless f64 statistics accumulators for relevancy scores.
     /// Exact precision — no quantization, no bucket rounding.
-    pub relevancy_stats: HashMap<String, nb_metrics::instruments::f64stats::F64Stats>,
+    pub relevancy_stats: HashMap<String, nb_metrics::summaries::f64stats::F64Stats>,
+    /// Live aggregates (moving-window + all-time) per relevancy metric.
+    /// These read non-destructively, so progress views can sample them
+    /// every frame without disturbing the exact-precision stats above.
+    pub running_aggregates: HashMap<String, std::sync::Mutex<RunningAgg>>,
 }
 
 impl ValidationMetrics {
     /// Create metrics for the given relevancy functions and k value.
     pub fn new(labels: &Labels, functions: &[RelevancyFn], k: usize) -> Self {
         let mut stats = HashMap::new();
+        let mut running = HashMap::new();
         for func in functions {
             let metric_name = format!("{}@{}", func.metric_name(), k);
             stats.insert(
                 metric_name.clone(),
-                nb_metrics::instruments::f64stats::F64Stats::new(labels.with("name", &metric_name)),
+                nb_metrics::summaries::f64stats::F64Stats::new(labels.with("name", &metric_name)),
+            );
+            running.insert(
+                metric_name.clone(),
+                std::sync::Mutex::new(RunningAgg::new(DEFAULT_RECALL_WINDOW)),
             );
         }
         Self {
             validations_passed: AtomicU64::new(0),
             validations_failed: AtomicU64::new(0),
             relevancy_stats: stats,
+            running_aggregates: running,
         }
     }
 
@@ -130,14 +205,38 @@ impl ValidationMetrics {
             validations_passed: AtomicU64::new(0),
             validations_failed: AtomicU64::new(0),
             relevancy_stats: HashMap::new(),
+            running_aggregates: HashMap::new(),
         }
     }
 
-    /// Record a relevancy score for a named function.
+    /// Record a relevancy score for a named function. Updates both the
+    /// lossless stats accumulator and the live running aggregate.
     pub fn record_relevancy(&self, metric_name: &str, score: f64) {
         if let Some(stats) = self.relevancy_stats.get(metric_name) {
             stats.record(score);
         }
+        if let Some(agg) = self.running_aggregates.get(metric_name) {
+            let mut a = agg.lock().unwrap_or_else(|e| e.into_inner());
+            a.record(score);
+        }
+    }
+
+    /// Snapshot all live relevancy aggregates without disturbing the
+    /// accumulators. Safe to call every frame from the progress thread.
+    pub fn live_snapshot(&self) -> Vec<RelevancyLive> {
+        let mut out = Vec::with_capacity(self.running_aggregates.len());
+        for (name, agg) in &self.running_aggregates {
+            let a = agg.lock().unwrap_or_else(|e| e.into_inner());
+            out.push(RelevancyLive {
+                name: name.clone(),
+                window_mean: a.window_mean(),
+                total_mean: a.total_mean(),
+                total_count: a.total_count,
+                window_len: a.window.len(),
+            });
+        }
+        out.sort_by(|x, y| x.name.cmp(&y.name));
+        out
     }
 
     /// Get pass count.
@@ -243,16 +342,63 @@ impl OpDispenser for ValidatingDispenser {
                 if actual_ordered.is_empty() && result.body.is_some() {
                     // Log on first occurrence only
                     if self.metrics.passed() + self.metrics.failed() == 0 {
-                        eprintln!("warning: relevancy: no values extracted for field '{}' from result", config.actual_field);
+                        crate::observer::log(
+                            crate::observer::LogLevel::Warn,
+                            &format!("relevancy: no values extracted for field '{}' from result", config.actual_field),
+                        );
                         if let Some(body) = &result.body {
                             let preview = serde_json::to_string(&body.to_json()).unwrap_or_default();
-                            eprintln!("  result preview: {}", &preview[..preview.len().min(300)]);
+                            crate::observer::log(
+                                crate::observer::LogLevel::Warn,
+                                &format!("  result preview: {}", &preview[..preview.len().min(300)]),
+                            );
                         }
                     }
                 }
 
                 let expected_sorted = relevancy::truncate_and_sort(&expected_raw, config.k);
                 let actual_sorted = relevancy::truncate_and_sort(&actual_ordered, config.k);
+
+                // One-shot diagnostic: log the first cycle's ground-
+                // truth vs actual values so recall=0 runs can be
+                // debugged without instrumenting the CQL adapter.
+                // Fires once per process (shared flag) so the output
+                // stays compact regardless of how many phases run.
+                static RELEVANCY_DIAG_FIRED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !RELEVANCY_DIAG_FIRED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    let fmt = |v: &[i64]| -> String {
+                        let n = v.len().min(10);
+                        let head: Vec<String> = v[..n].iter().map(i64::to_string).collect();
+                        if v.len() > n {
+                            format!("[{}, …] (len={})", head.join(", "), v.len())
+                        } else {
+                            format!("[{}]", head.join(", "))
+                        }
+                    };
+                    crate::observer::log(
+                        crate::observer::LogLevel::Info,
+                        &format!(
+                            "relevancy diag k={} expected={} actual_ordered={} \
+                             expected_sorted={} actual_sorted={}",
+                            config.k,
+                            fmt(&expected_raw),
+                            fmt(&actual_ordered),
+                            fmt(&expected_sorted),
+                            fmt(&actual_sorted),
+                        ),
+                    );
+                    // Compute the intersection count explicitly so the
+                    // log includes the recall computation output.
+                    let overlap = relevancy::intersection_count(&expected_sorted, &actual_sorted);
+                    crate::observer::log(
+                        crate::observer::LogLevel::Info,
+                        &format!(
+                            "relevancy diag intersection_count={overlap} (recall would be {:.4})",
+                            overlap as f64 / config.k as f64,
+                        ),
+                    );
+                }
 
                 for func in &config.functions {
                     let score = func.compute(

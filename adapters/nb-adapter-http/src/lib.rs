@@ -273,6 +273,7 @@ inventory::submit! {
     nb_activity::adapter::AdapterRegistration {
         names: || &["http"],
         known_params: || &["base_url", "host", "timeout"],
+        display_preference: || nb_activity::adapter::DisplayPreference::Auto,
         create: |params| Box::pin(async move {
             Ok(std::sync::Arc::new(HttpAdapter::with_config(HttpConfig::from_params(&params)))
                 as std::sync::Arc<dyn nb_activity::adapter::DriverAdapter>)

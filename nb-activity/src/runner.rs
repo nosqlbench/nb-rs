@@ -25,13 +25,39 @@ use nb_workload::tags::TagFilter;
 
 /// Known `key=value` params accepted by the shared runner.
 /// Adapter-specific params are discovered from inventory registrations.
-const KNOWN_PARAMS: &[&str] = &[
+pub const KNOWN_PARAMS: &[&str] = &[
     // Activity-level
     "adapter", "driver", "workload", "op", "cycles", "concurrency",
     "rate", "stanzarate", "errors", "seq", "tags", "format",
     "filename", "separator", "header", "color",
     "stanza_concurrency", "sc", "scenario", "dryrun", "summary", "metrics", "limit", "profiler", "tui",
+    "latency-cadences", "latency_cadences",
+    "jobname", "instance", "prompush_apikeyfile",
 ];
+
+/// Try to resolve a workload name (bare or with extension) to an
+/// actual file path, searching the current directory and
+/// `./workloads/`. Returns `None` if nothing matches.
+///
+/// Exposed for shell-completion tooling. Application code should
+/// just use [`run_with_observer`] which calls this internally.
+pub fn resolve_workload_file_public(name: &str) -> Option<String> {
+    resolve_workload_file(name)
+}
+
+/// List the scenario names declared at the top level of a workload
+/// YAML file. Used by shell-completion tooling to offer
+/// `scenario=<tab>` suggestions. Returns an empty vector on any
+/// parse error — completion is best-effort, not a hard check.
+pub fn scenarios_in_workload_file(path: &str) -> Vec<String> {
+    let Ok(src) = std::fs::read_to_string(path) else { return Vec::new() };
+    let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&src) else { return Vec::new() };
+    let Some(scenarios) = doc.get("scenarios") else { return Vec::new() };
+    let Some(map) = scenarios.as_mapping() else { return Vec::new() };
+    map.keys()
+        .filter_map(|k| k.as_str().map(String::from))
+        .collect()
+}
 
 /// Run a workload. Adapters are discovered from link-time inventory
 /// registrations — the calling binary just needs to link the adapter
@@ -117,6 +143,13 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
 
     // Wire error handler logging through the observer
     nb_errorhandler::handlers::set_log_fn(|msg| {
+        crate::observer::log(crate::observer::LogLevel::Warn, msg);
+    });
+
+    // Route nb-metrics diagnostic warnings through the observer so
+    // reporter write failures, histogram-record errors, etc. don't
+    // slip past the TUI as raw stderr prints.
+    nb_metrics::diag::set_warn_fn(|msg| {
         crate::observer::log(crate::observer::LogLevel::Warn, msg);
     });
 
@@ -319,27 +352,44 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             .or_else(|| a.strip_prefix("report-openmetrics-to=")))
         .map(|s| s.to_string());
 
-    // SQLite metrics capture — always a unique session-coded filename.
-    // A symlink `metrics.db` always points to the latest session.
-    let session_id = chrono_session_id();
-    let sqlite_path = format!("nb-metrics-{session_id}.db");
-    // Create/update symlink to latest
-    let _ = std::fs::remove_file("metrics.db");
-    let _ = std::os::unix::fs::symlink(&sqlite_path, "metrics.db");
+    // Session: root context for this run. Creates logs/{scenario}_{timestamp}/
+    let scenario_for_session = params.get("scenario").map(|s| s.as_str()).unwrap_or("default");
+    let session = crate::session::Session::new(
+        workload_file.as_deref().unwrap_or("inline"),
+        scenario_for_session,
+    );
+    let session_id = session.id.clone();
+
+    // Direct the diagnostic log sink at <session_dir>/session.log so every
+    // observer::log() call is captured durably, even under the TUI.
+    let session_log_path = session.output_dir.join("session.log");
+    if let Err(e) = crate::observer::set_log_file(&session_log_path) {
+        crate::diag!(crate::observer::LogLevel::Warn,
+            "warning: failed to open session log {}: {e}",
+            session_log_path.display());
+    }
+
+    crate::diag!(crate::observer::LogLevel::Info, "session: {} ({})",
+        session.id, session.output_dir.display());
+
+    // SQLite metrics in session directory
+    let sqlite_path = session.metrics_path();
     let sqlite_reporter = nb_metrics::reporters::sqlite::SqliteReporter::new(&sqlite_path)
         .map(|mut r| {
-            r.set_metadata("workload", workload_file.as_deref().unwrap_or("inline"));
+            r.set_metadata("session", &session.id);
+            r.set_metadata("workload", &session.workload);
+            r.set_metadata("scenario", &session.scenario);
             r.set_metadata("start_time", &format!("{}", std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()));
             for (k, v) in &merged_params {
                 r.set_metadata(&format!("param.{k}"), v);
             }
-            if !observer.suppresses_stderr() {
-                crate::diag!(crate::observer::LogLevel::Info, "metrics: {sqlite_path}");
-            }
+            crate::diag!(crate::observer::LogLevel::Info, "metrics: {}",
+                sqlite_path.display());
             r
         })
-        .map_err(|e| crate::diag!(crate::observer::LogLevel::Warn, "warning: SQLite metrics disabled: {e}"))
+        .map_err(|e| crate::diag!(crate::observer::LogLevel::Warn,
+            "warning: SQLite metrics disabled: {e}"))
         .ok();
     let sqlite_reporter = std::sync::Arc::new(std::sync::Mutex::new(sqlite_reporter));
 
@@ -485,6 +535,153 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     let program = builder.program();
 
     // === Execution ===
+    //
+    // Metrics infrastructure is shared across both the phased and
+    // single-activity paths — both route through the session-level
+    // `CadenceReporter` + `MetricsQuery`. The legacy per-activity
+    // capture thread with inline VM/SQLite reporter calls is gone.
+
+    // Plan the cadence tree from the observer's cadence preferences
+    // (or defaults), validated against the scheduler base interval,
+    // build the CadenceReporter, and wire it through the session +
+    // GK metric nodes as the single query source.
+    let base_interval = std::time::Duration::from_secs(1);
+    let cadences = observer.cadences()
+        .unwrap_or_else(nb_metrics::cadence::Cadences::defaults);
+    let cadence_tree = nb_metrics::cadence::CadenceTree::plan_validated(
+        cadences,
+        nb_metrics::cadence::DEFAULT_MAX_FAN_IN,
+        base_interval,
+    ).map_err(|e| format!("cadence tree: {e}"))?;
+    let cadence_reporter = Arc::new(
+        nb_metrics::cadence_reporter::CadenceReporter::new(cadence_tree.clone()),
+    );
+    let metrics_query = Arc::new(nb_metrics::metrics_query::MetricsQuery::new(
+        cadence_reporter.clone(),
+        session.component.clone(),
+    ));
+    session.set_metrics_query(metrics_query.clone());
+    nb_variates::nodes::metrics::set_global_query(metrics_query.clone());
+    observer.on_metrics_query(metrics_query.clone());
+
+    let session_for_capture = session.component.clone();
+    let mut sched_builder = nb_metrics::scheduler::SchedulerBuilder::new()
+        .base_interval(std::time::Duration::from_secs(1))
+        .with_cadence_reporter(cadence_reporter.clone())
+        .with_cadence_tree(cadence_tree.clone());
+
+    // SRD-42 §"SQLite — near-time persistence": subscribe the
+    // SQLite reporter via the CadenceReporter push path so slow
+    // disk can't stall the cascade. The subscription runs on its
+    // own dispatch thread with a per-subscription timeout.
+    //
+    // Preferred write cadence is 30 s — coarse enough to keep
+    // write volume low for long runs, fine enough for post-run
+    // analysis. Aligns to the nearest declared cadence ≥ 30 s
+    // (default declared set includes 30 s so this resolves exactly).
+    // Journal mode is WAL (set in SqliteReporter::new via
+    // `PRAGMA journal_mode=WAL`), so readers never block writers.
+    //
+    // Always-on: this subscription fires whenever the SQLite
+    // reporter was constructed successfully. Operators don't need
+    // to opt in with any extra param — every run produces a
+    // `metrics.db` in its session directory by default.
+    let sqlite_cadence = cadence_tree.align_to_declared(
+        std::time::Duration::from_secs(30),
+    );
+    if let (Some(cadence), Ok(guard)) = (sqlite_cadence, sqlite_reporter.lock()) {
+        if guard.is_some() {
+            drop(guard);
+            let sqlite_for_sub = sqlite_reporter.clone();
+            match cadence_reporter.subscribe(
+                cadence,
+                Box::new(MutexReporter(sqlite_for_sub)),
+                nb_metrics::cadence_reporter::SubscriptionOpts::default(),
+            ) {
+                Ok(_) => {
+                    crate::diag!(crate::observer::LogLevel::Info,
+                        "metrics: SQLite writes every {:?} (WAL mode)", cadence);
+                }
+                Err(e) => {
+                    crate::diag!(crate::observer::LogLevel::Warn,
+                        "metrics: SQLite subscription failed: {e}");
+                }
+            }
+        }
+    }
+
+    // Same routing for the VictoriaMetrics / Prometheus push reporter
+    // when `--report-to` (or equivalent param) was provided.
+    // `jobname` / `instance` params match the nosqlbench-java
+    // `PromPushReporterComponent` convention; they're substituted
+    // into any `JOBNAME` / `INSTANCE` placeholders in the URL.
+    if let Some(url) = openmetrics_url.as_ref() {
+        if let Some(cadence) = cadence_tree.align_to_declared(
+            std::time::Duration::from_secs(10),
+        ) {
+            let jobname = merged_params.get("jobname").cloned()
+                .unwrap_or_else(|| "default".to_string());
+            let instance = merged_params.get("instance").cloned()
+                .unwrap_or_else(|| "default".to_string());
+            let mut vm = match nb_metrics::reporters::victoriametrics
+                ::VictoriaMetricsReporter::from_spec(url)
+            {
+                Ok(r) => r,
+                Err(_) => nb_metrics::reporters::victoriametrics
+                    ::VictoriaMetricsReporter::new(url),
+            };
+            vm = vm.with_jobname(jobname).with_instance(instance);
+            if let Some(token_path) = merged_params.get("prompush_apikeyfile") {
+                match vm.with_bearer_token_file(token_path) {
+                    Ok(r) => vm = r,
+                    Err(e) => {
+                        crate::diag!(crate::observer::LogLevel::Warn,
+                            "prompush_apikeyfile '{token_path}': {e}");
+                        vm = nb_metrics::reporters::victoriametrics
+                            ::VictoriaMetricsReporter::from_spec(url)
+                            .unwrap_or_else(|_| nb_metrics::reporters::victoriametrics
+                                ::VictoriaMetricsReporter::new(url))
+                            .with_jobname(
+                                merged_params.get("jobname").cloned()
+                                    .unwrap_or_else(|| "default".to_string()),
+                            )
+                            .with_instance(
+                                merged_params.get("instance").cloned()
+                                    .unwrap_or_else(|| "default".to_string()),
+                            );
+                    }
+                }
+            }
+            let _ = cadence_reporter.subscribe(
+                cadence,
+                Box::new(vm),
+                nb_metrics::cadence_reporter::SubscriptionOpts::default(),
+            );
+        }
+    }
+
+    // Register the observer's reporters at their requested cadences
+    // on the scheduler tree (base-interval live-frame forwarding for
+    // sparklines / live histogram).
+    for (interval, reporter) in observer.reporters() {
+        sched_builder = sched_builder.add_reporter(
+            interval,
+            BoxedReporter(reporter),
+        );
+    }
+
+    let scheduler = sched_builder.build(Box::new(move || {
+        nb_metrics::component::capture_tree(
+            &session_for_capture,
+            std::time::Duration::from_secs(1),
+        )
+    }));
+    let stop_handle = Arc::new(scheduler.start());
+
+    // Start profiler if requested (profiler=flamegraph or profiler=perf).
+    // Shared across both phased and single-activity paths.
+    let _profiler = crate::profiler::ProfileGuard::maybe_start(
+        &merged_params, Some(&session.output_dir));
 
     if !phases.is_empty() {
         // --- Phased execution ---
@@ -495,54 +692,24 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             crate::diag!(crate::observer::LogLevel::Info, "scenario '{scenario_name}': {}", format_scenario_tree(&scenario_nodes));
         }
 
-        // Build the centralized metrics scheduler with component tree.
-        let store = std::sync::Arc::new(std::sync::RwLock::new(
-            nb_metrics::store::InProcessMetricsStore::new()
-        ));
-        // Make store accessible to GK metric() / metric_window() nodes.
-        nb_variates::nodes::metrics::set_global_store(store.clone());
-        let session_component = nb_metrics::component::Component::root(
-            nb_metrics::labels::Labels::of("session", &session_id),
-            std::collections::HashMap::new(),
-        );
-
-        let session_for_capture = session_component.clone();
-        let mut sched_builder = nb_metrics::scheduler::SchedulerBuilder::new()
-            .base_interval(std::time::Duration::from_secs(1))
-            .with_store(store.clone());
-
-        // Register SQLite reporter at 10s cadence
-        if let Ok(guard) = sqlite_reporter.lock() {
-            if guard.is_some() {
-                drop(guard);
-                let sqlite_for_sched = sqlite_reporter.clone();
-                sched_builder = sched_builder.add_reporter(
-                    std::time::Duration::from_secs(10),
-                    MutexReporter(sqlite_for_sched),
-                );
-            }
-        }
-
-        // Register observer's reporter (e.g., TUI metrics feed)
-        if let Some(obs_reporter) = observer.reporter() {
-            sched_builder = sched_builder.add_reporter(
-                std::time::Duration::from_secs(1),
-                BoxedReporter(obs_reporter),
-            );
-        }
-
-        let scheduler = sched_builder.build(Box::new(move || {
-            nb_metrics::component::capture_tree(
-                &session_for_capture,
-                std::time::Duration::from_secs(1),
-            )
-        }));
-        let stop_handle = Arc::new(scheduler.start());
-
-        // Start profiler if requested (profiler=flamegraph or profiler=perf)
-        let _profiler = crate::profiler::ProfileGuard::maybe_start(&merged_params);
-
         // Observer is passed from the caller (default: StderrObserver).
+
+        // Pre-map the scenario tree for observer (TUI phase tree population).
+        if let Ok(entries) = crate::executor::pre_map_tree(
+            &scenario_nodes, &phases, &workload_params, &outer_scope_values,
+        ) {
+            let mapped: Vec<(crate::observer::PreMapKind, String, String, usize)> = entries
+                .into_iter()
+                .map(|e| {
+                    let kind = match e.kind {
+                        crate::executor::PreMapKind::Phase => crate::observer::PreMapKind::Phase,
+                        crate::executor::PreMapKind::Scope => crate::observer::PreMapKind::Scope,
+                    };
+                    (kind, e.name, e.labels, e.depth)
+                })
+                .collect();
+            observer.scenario_pre_mapped(&mapped);
+        }
 
         // Execute the scenario tree recursively via the executor module.
         {
@@ -571,8 +738,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 error_spec: error_spec.clone(),
                 session_id: session_id.clone(),
                 label_stack: Vec::new(),
-                session_component: session_component.clone(),
-                store: store.clone(),
+                session_component: session.component.clone(),
+                cadence_reporter: cadence_reporter.clone(),
                 stop_handle: stop_handle.clone(),
                 observer: observer.clone(),
             };
@@ -583,17 +750,15 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             ).await?;
         }
 
-        // Stop profiler and write flamegraph before scheduler flush
-        if let Some(profiler) = _profiler {
-            profiler.finish();
-        }
-
-        // Stop the scheduler (flushes all reporters).
-        // ExecCtx is dropped, so this is the last Arc reference.
-        if let Ok(mut sh) = Arc::try_unwrap(stop_handle) {
-            sh.stop();
-        }
-        observer.run_finished();
+        // Workload-end lifecycle boundary: every phase in the
+        // scenario has completed. Individual phase paths already
+        // closed themselves at phase-end, but any workload-level
+        // ingests (e.g. aggregate metrics the tree code emits at
+        // scope scope rather than phase scope) still need a flush.
+        // In phased mode the workload's label set is the session
+        // root — there's no intermediate `activity=...` label —
+        // so we close at the session root.
+        cadence_reporter.close_path(&Labels::of("session", &session.id));
 
     } else {
         // --- Single-activity execution ---
@@ -635,14 +800,76 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         };
 
         let adapter = create_adapter(&driver, &merged_params, dry_run).await?;
+        let labels = Labels::of("session", &session.id).with("activity", "main");
         let activity = Activity::with_params(
-            config, &Labels::of("session", "cli"), op_sequence, workload_params,
+            config, &labels, op_sequence, workload_params,
         );
-        let stopped = run_activity(activity, adapter, program, openmetrics_url.as_deref(), sqlite_reporter.clone()).await;
+        let shared_metrics = activity.shared_metrics();
+
+        // Attach the single activity as a component of the session
+        // tree so the session-level scheduler captures its metrics
+        // via the same `CadenceReporter` → `MetricsQuery` path used
+        // by the phased execution. No separate per-activity capture
+        // thread needed; no direct Reporter calls.
+        let activity_component = Arc::new(std::sync::RwLock::new(
+            nb_metrics::component::Component::new(labels.clone(), HashMap::new()),
+        ));
+        nb_metrics::component::attach(&session.component, &activity_component);
+        {
+            let mut ac = activity_component.write().unwrap_or_else(|e| e.into_inner());
+            ac.set_instruments(shared_metrics.clone());
+            ac.set_state(nb_metrics::component::ComponentState::Running);
+        }
+
+        let stopped = activity.run_with_driver(adapter, program).await;
+
+        // Workload-end lifecycle boundary for the single-activity
+        // path. Capture the final delta, ingest, then close the
+        // activity's path so the trailing partial is published
+        // immediately rather than idling until session shutdown.
+        {
+            use nb_metrics::component::InstrumentSet;
+            let final_delta = shared_metrics.capture_delta(
+                std::time::Duration::from_secs(1),
+            );
+            cadence_reporter.ingest(&labels, final_delta);
+            cadence_reporter.close_path(&labels);
+        }
+        {
+            let mut ac = activity_component.write().unwrap_or_else(|e| e.into_inner());
+            ac.set_state(nb_metrics::component::ComponentState::Stopped);
+        }
+
         if stopped {
             return Err("activity stopped by error handler".into());
         }
     }
+
+    // Session-end lifecycle boundary. Close the session root path
+    // for any aggregate windows that were ingested at session level
+    // (rare today, but the boundary must be explicit — otherwise
+    // session-level aggregates would only flush during
+    // `shutdown_flush` at the very end, after all the per-subscriber
+    // teardown logic had already started).
+    cadence_reporter.close_path(&Labels::of("session", &session.id));
+
+    // Stop profiler and scheduler now that execution (phased or
+    // single-activity) is done.
+    if let Some(profiler) = _profiler {
+        profiler.finish();
+    }
+    if let Ok(mut sh) = Arc::try_unwrap(stop_handle) {
+        sh.stop();
+    }
+
+    // Shutdown the cadence reporter: flush trailing partials through
+    // every cascade layer AND drain every subscriber's channel. This
+    // MUST happen before reading any sink for the summary — otherwise
+    // short phases (e.g. ann_query under a 30s cadence) contribute no
+    // rows because their data is still sitting in an unclosed window.
+    cadence_reporter.shutdown();
+
+    observer.run_finished();
 
     if dry_run.is_some() {
         crate::diag!(crate::observer::LogLevel::Info, "dry-run complete.");
@@ -676,12 +903,63 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         // not for reporting.
         if let Ok(mut guard) = sqlite_reporter.lock() {
             if let Some(ref mut reporter) = *guard {
-                reporter.print_summary(&report_config);
+                let rendered = reporter.format_summary(&report_config);
+                if !rendered.is_empty() {
+                    // Emit to stdout so an interactive run shows the
+                    // table live (and captures via shell redirect).
+                    print!("{rendered}");
+                    // Also persist under the session log dir so every
+                    // run has a durable summary artifact alongside its
+                    // metrics.db. `summary.md` rather than a
+                    // per-session-named file because the enclosing
+                    // directory already encodes the session id.
+                    let summary_path = session.output_dir.join("summary.md");
+                    if let Err(e) = std::fs::write(&summary_path, &rendered) {
+                        crate::diag!(crate::observer::LogLevel::Warn,
+                            "warning: failed to write summary to {}: {e}",
+                            summary_path.display());
+                    } else {
+                        crate::diag!(crate::observer::LogLevel::Info,
+                            "summary: {}", summary_path.display());
+                    }
+                }
             }
         }
     }
 
+    // Refresh convenience symlinks at the logs/ root so
+    //   logs/metrics.db, logs/summary.md, logs/session.log
+    // always resolve to this session's artifacts. `logs/latest` (a
+    // symlink to the whole session dir) is created by Session::new;
+    // these are per-file counterparts for direct tool access like
+    // `sqlite3 logs/metrics.db` or `tail -f logs/session.log`.
+    refresh_latest_file_links(&session);
+
     Ok(())
+}
+
+/// Point per-file symlinks under `logs/` at the latest session's
+/// artifacts. Silently skips files that don't exist (e.g. summary.md
+/// when no `summary:` was declared). Replaces any existing symlink.
+fn refresh_latest_file_links(session: &crate::session::Session) {
+    let logs_dir = std::path::Path::new("logs");
+    for file in ["metrics.db", "summary.md", "session.log"] {
+        let target = session.output_dir.join(file);
+        if !target.exists() { continue; }
+        let link = logs_dir.join(file);
+        // Remove any existing entry (symlink or regular file) so we can
+        // recreate the link. If this fails because nothing's there,
+        // that's fine.
+        let _ = std::fs::remove_file(&link);
+        // Link targets are relative to logs/ so the symlink survives
+        // directory moves — `{session_id}/{file}` under logs/.
+        let rel_target = std::path::Path::new(&session.id).join(file);
+        if let Err(e) = std::os::unix::fs::symlink(&rel_target, &link) {
+            crate::diag!(crate::observer::LogLevel::Warn,
+                "warning: failed to link {} → {}: {e}",
+                link.display(), rel_target.display());
+        }
+    }
 }
 
 /// Create an adapter from inventory registrations.
@@ -702,71 +980,11 @@ pub async fn create_adapter(
     (reg.create)(params.clone()).await
 }
 
-/// Run an activity with metrics capture (SQLite + optional OpenMetrics push).
-/// Returns true if the activity was stopped by an error handler.
-async fn run_activity(
-    activity: Activity,
-    adapter: Arc<dyn crate::adapter::DriverAdapter>,
-    program: Arc<nb_variates::kernel::GkProgram>,
-    openmetrics_url: Option<&str>,
-    sqlite: Arc<std::sync::Mutex<Option<nb_metrics::reporters::sqlite::SqliteReporter>>>,
-) -> bool {
-    let shared_metrics = activity.shared_metrics();
-    let capture_interval = std::time::Duration::from_secs(1);
-    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let flag = running.clone();
-    let url = openmetrics_url.map(|s| s.to_string());
-    let sqlite_clone = sqlite.clone();
-    std::thread::spawn(move || {
-        use nb_metrics::scheduler::Reporter;
-        let mut vm_reporter = url.map(|u| {
-            nb_metrics::reporters::victoriametrics::VictoriaMetricsReporter::new(&u)
-        });
-        while flag.load(std::sync::atomic::Ordering::Relaxed) {
-            std::thread::sleep(capture_interval);
-            let frame = shared_metrics.capture(capture_interval);
-            if let Some(ref mut vm) = vm_reporter {
-                vm.report(&frame);
-            }
-            if let Ok(mut guard) = sqlite_clone.lock() {
-                if let Some(ref mut sq) = *guard {
-                    sq.report(&frame);
-                }
-            }
-        }
-    });
-    let validation_frame = activity.validation_frame.clone();
-    let final_metrics = activity.shared_metrics();
-    let activity_start = std::time::Instant::now();
-    let stopped = activity.run_with_driver(adapter, program).await;
-    running.store(false, std::sync::atomic::Ordering::Relaxed);
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    // Final capture: ensures short activities get at least one sample
-    {
-        use nb_metrics::scheduler::Reporter;
-        let frame = final_metrics.capture(activity_start.elapsed());
-        if let Ok(mut guard) = sqlite.lock() {
-            if let Some(ref mut sq) = *guard {
-                sq.report(&frame);
-            }
-        }
-    }
-    // Capture validation metrics (recall, precision) to SQLite
-    if let Some(frame) = validation_frame.lock().unwrap_or_else(|e| e.into_inner()).take() {
-        use nb_metrics::scheduler::Reporter;
-        if let Ok(mut guard) = sqlite.lock() {
-            if let Some(ref mut sq) = *guard {
-                sq.report(&frame);
-            }
-        }
-    }
-    stopped
-}
-
 /// Run an activity without its own capture thread.
 ///
-/// The centralized scheduler handles all metrics capture. This function
-/// just runs the activity to completion. Lifecycle flush (final delta +
+/// All metrics flow through the session-level scheduler →
+/// `CadenceReporter` → `MetricsQuery`. This function just runs the
+/// activity to completion; lifecycle flush (final delta +
 /// validation metrics) is handled by the caller (executor).
 pub async fn run_activity_simple(
     activity: Activity,
@@ -777,68 +995,6 @@ pub async fn run_activity_simple(
     activity.run_with_adapters(adapters, default_adapter, program).await
 }
 
-/// Run an activity with multiple adapters and metrics capture.
-/// Returns true if the activity was stopped by an error handler.
-pub async fn run_activity_with_adapters(
-    activity: Activity,
-    adapters: std::collections::HashMap<String, Arc<dyn crate::adapter::DriverAdapter>>,
-    default_adapter: &str,
-    program: Arc<nb_variates::kernel::GkProgram>,
-    openmetrics_url: Option<&str>,
-    sqlite: Arc<std::sync::Mutex<Option<nb_metrics::reporters::sqlite::SqliteReporter>>>,
-) -> bool {
-    let shared_metrics = activity.shared_metrics();
-    let capture_interval = std::time::Duration::from_secs(1);
-    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let flag = running.clone();
-    let url = openmetrics_url.map(|s| s.to_string());
-    let sqlite_clone = sqlite.clone();
-    std::thread::spawn(move || {
-        use nb_metrics::scheduler::Reporter;
-        let mut vm_reporter = url.map(|u| {
-            nb_metrics::reporters::victoriametrics::VictoriaMetricsReporter::new(&u)
-        });
-        while flag.load(std::sync::atomic::Ordering::Relaxed) {
-            std::thread::sleep(capture_interval);
-            let frame = shared_metrics.capture(capture_interval);
-            if let Some(ref mut vm) = vm_reporter {
-                vm.report(&frame);
-            }
-            if let Ok(mut guard) = sqlite_clone.lock() {
-                if let Some(ref mut sq) = *guard {
-                    sq.report(&frame);
-                }
-            }
-        }
-    });
-    let validation_frame = activity.validation_frame.clone();
-    let final_metrics = activity.shared_metrics();
-    let activity_start = std::time::Instant::now();
-    let stopped = activity.run_with_adapters(adapters, default_adapter, program).await;
-    running.store(false, std::sync::atomic::Ordering::Relaxed);
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    // Final capture: ensures short activities get at least one sample
-    {
-        use nb_metrics::scheduler::Reporter;
-        let frame = final_metrics.capture(activity_start.elapsed());
-        if let Ok(mut guard) = sqlite.lock() {
-            if let Some(ref mut sq) = *guard {
-                sq.report(&frame);
-            }
-        }
-    }
-    // Capture validation metrics (recall, precision) to SQLite
-    if let Some(frame) = validation_frame.lock().unwrap_or_else(|e| e.into_inner()).take() {
-        use nb_metrics::scheduler::Reporter;
-        if let Ok(mut guard) = sqlite.lock() {
-            if let Some(ref mut sq) = *guard {
-                sq.report(&frame);
-            }
-        }
-    }
-    stopped
-}
-
 /// Adapter that delegates to an `Arc<Mutex<Option<SqliteReporter>>>`.
 ///
 /// Allows the SQLite reporter to be registered on the scheduler while
@@ -846,10 +1002,10 @@ pub async fn run_activity_with_adapters(
 struct MutexReporter(std::sync::Arc<std::sync::Mutex<Option<nb_metrics::reporters::sqlite::SqliteReporter>>>);
 
 impl Reporter for MutexReporter {
-    fn report(&mut self, frame: &nb_metrics::frame::MetricsFrame) {
+    fn report(&mut self, snapshot: &nb_metrics::snapshot::MetricSet) {
         if let Ok(mut guard) = self.0.lock() {
             if let Some(ref mut r) = *guard {
-                Reporter::report(r, frame);
+                Reporter::report(r, snapshot);
             }
         }
     }
@@ -866,22 +1022,14 @@ impl Reporter for MutexReporter {
 /// Wrapper to make `Box<dyn Reporter>` usable with `add_reporter(impl Reporter)`.
 struct BoxedReporter(Box<dyn Reporter>);
 impl Reporter for BoxedReporter {
-    fn report(&mut self, frame: &nb_metrics::frame::MetricsFrame) {
-        self.0.report(frame);
+    fn report(&mut self, snapshot: &nb_metrics::snapshot::MetricSet) {
+        self.0.report(snapshot);
     }
     fn flush(&mut self) {
         self.0.flush();
     }
 }
 
-/// Generate a session ID from the current timestamp.
-fn chrono_session_id() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    format!("{secs}")
-}
 
 /// Dry-run adapter: emit ops to stdout or silently discard.
 struct DryRunAdapter {

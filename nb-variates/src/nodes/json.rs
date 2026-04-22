@@ -423,7 +423,7 @@ pub fn signatures() -> &'static [FuncSig] {
         FuncSig {
             name: "array_len", category: C::Json, outputs: 1,
             description: "count elements in a bracket-encoded array",
-            help: "Parse [a,b,c,...] and return the element count.\nWorks on JSON arrays and bracket-format vectors.\nReturns 0 for empty or non-array input.\nExample: array_len(metadata_indices_at(cycle, \"sift1m\"))",
+            help: "Parse [a,b,c,...] and return the element count.\nWorks on JSON arrays and bracket-format vectors.\nReturns 0 for empty or non-array input.\nExample: array_len(metadata_indices_at(cycle, \"example\"))",
             identity: None, variadic_ctor: None,
             params: &[ParamSpec { name: "array", slot_type: SlotType::Wire, required: true, example: "cycle" }],
             arity: Arity::Fixed,
@@ -432,7 +432,7 @@ pub fn signatures() -> &'static [FuncSig] {
         FuncSig {
             name: "array_at", category: C::Json, outputs: 1,
             description: "access element at index in bracket-encoded array",
-            help: "Return the element at a given index from [a,b,c,...].\nIndex wraps modulo array length.\nReturns empty string for empty arrays.\nExample: array_at(neighbor_indices_at(0, \"sift1m\"), cycle)",
+            help: "Return the element at a given index from [a,b,c,...].\nIndex wraps modulo array length.\nReturns empty string for empty arrays.\nExample: array_at(neighbor_indices_at(0, \"example\"), cycle)",
             identity: None, variadic_ctor: None,
             params: &[
                 ParamSpec { name: "array", slot_type: SlotType::Wire, required: true, example: "cycle" },

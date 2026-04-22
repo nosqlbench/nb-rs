@@ -13,8 +13,8 @@ use nb_errorhandler::ErrorRouter;
 use nb_metrics::instruments::counter::Counter;
 use nb_metrics::instruments::histogram::Histogram;
 use nb_metrics::instruments::timer::Timer;
-use nb_metrics::frame::{MetricsFrame, Sample};
 use nb_metrics::labels::Labels;
+use nb_metrics::snapshot::MetricSet;
 use nb_rate::RateLimiter;
 
 use crate::adapter::{DriverAdapter, OpDispenser};
@@ -93,6 +93,11 @@ pub struct ActivityMetrics {
     prev_counters: std::sync::Mutex<std::collections::HashMap<u64, u64>>,
     /// Dispensers for adapter-specific metrics capture. Set after dispenser creation.
     dispensers: std::sync::Mutex<Option<Arc<Vec<Arc<dyn crate::adapter::OpDispenser>>>>>,
+    /// Shared handles to the per-template validation metrics. Populated
+    /// after executor setup so the progress thread can read live
+    /// relevancy aggregates (recall-over-last-N, all-time mean) without
+    /// draining the precision accumulators.
+    validation_metrics: std::sync::Mutex<Option<Arc<Vec<Arc<crate::validation::ValidationMetrics>>>>>,
 }
 
 impl ActivityMetrics {
@@ -116,6 +121,7 @@ impl ActivityMetrics {
             labels: labels.clone(),
             prev_counters: std::sync::Mutex::new(std::collections::HashMap::new()),
             dispensers: std::sync::Mutex::new(None),
+            validation_metrics: std::sync::Mutex::new(None),
         }
     }
 
@@ -139,90 +145,82 @@ impl ActivityMetrics {
         counter.inc();
     }
 
-    /// Capture a metrics frame with absolute counter values.
+    /// Capture an absolute snapshot (counters at their current value,
+    /// timer histograms drained as deltas).
     ///
-    /// This snapshots (delta) all timers and reads absolute counter values.
-    /// Used by the legacy per-activity capture thread.
-    /// For the component tree scheduler, use [`capture_delta`] instead.
-    pub fn capture(&self, interval: std::time::Duration) -> MetricsFrame {
+    /// Used by the legacy per-activity capture thread. For the component
+    /// tree scheduler, use [`capture_delta`] instead.
+    pub fn capture(&self, interval: std::time::Duration) -> MetricSet {
+        use nb_metrics::snapshot::split_name_label;
         let service_snap = self.service_time.snapshot();
         let wait_snap = self.wait_time.snapshot();
         let response_snap = self.response_time.snapshot();
         let success_snap = self.result_success_time.snapshot();
         let tries_snap = self.tries_histogram.snapshot();
+        let now = Instant::now();
+        let mut snap = MetricSet::at(now, interval);
 
-        let mut frame = MetricsFrame {
-            captured_at: Instant::now(),
-            interval,
-            samples: vec![
-                Sample::Timer {
-                    labels: self.service_time.labels().clone(),
-                    count: service_snap.count,
-                    histogram: service_snap.histogram,
-                },
-                Sample::Timer {
-                    labels: self.wait_time.labels().clone(),
-                    count: wait_snap.count,
-                    histogram: wait_snap.histogram,
-                },
-                Sample::Timer {
-                    labels: self.response_time.labels().clone(),
-                    count: response_snap.count,
-                    histogram: response_snap.histogram,
-                },
-                Sample::Timer {
-                    labels: self.result_success_time.labels().clone(),
-                    count: success_snap.count,
-                    histogram: success_snap.histogram,
-                },
-                Sample::Counter {
-                    labels: self.cycles_total.labels().clone(),
-                    value: self.cycles_total.get(),
-                },
-                Sample::Counter {
-                    labels: self.skips_total.labels().clone(),
-                    value: self.skips_total.get(),
-                },
-                Sample::Counter {
-                    labels: self.errors_total.labels().clone(),
-                    value: self.errors_total.get(),
-                },
-                Sample::Counter {
-                    labels: self.stanzas_total.labels().clone(),
-                    value: self.stanzas_total.get(),
-                },
-                Sample::Counter {
-                    labels: self.result_elements.labels().clone(),
-                    value: self.result_elements.get(),
-                },
-                Sample::Counter {
-                    labels: self.result_bytes.labels().clone(),
-                    value: self.result_bytes.get(),
-                },
-                Sample::Timer {
-                    labels: self.tries_histogram.labels().clone(),
-                    count: tries_snap.len(),
-                    histogram: tries_snap,
-                },
-            ],
-        };
+        let (n, lbl) = split_name_label(self.service_time.labels());
+        snap.insert_histogram(n, lbl, service_snap.histogram, now);
+        let (n, lbl) = split_name_label(self.wait_time.labels());
+        snap.insert_histogram(n, lbl, wait_snap.histogram, now);
+        let (n, lbl) = split_name_label(self.response_time.labels());
+        snap.insert_histogram(n, lbl, response_snap.histogram, now);
+        let (n, lbl) = split_name_label(self.result_success_time.labels());
+        snap.insert_histogram(n, lbl, success_snap.histogram, now);
 
-        // Add per-error-type counters
+        let (n, lbl) = split_name_label(self.cycles_total.labels());
+        snap.insert_counter(n, lbl, self.cycles_total.get(), now);
+        let (n, lbl) = split_name_label(self.skips_total.labels());
+        snap.insert_counter(n, lbl, self.skips_total.get(), now);
+        let (n, lbl) = split_name_label(self.errors_total.labels());
+        snap.insert_counter(n, lbl, self.errors_total.get(), now);
+        let (n, lbl) = split_name_label(self.stanzas_total.labels());
+        snap.insert_counter(n, lbl, self.stanzas_total.get(), now);
+        let (n, lbl) = split_name_label(self.result_elements.labels());
+        snap.insert_counter(n, lbl, self.result_elements.get(), now);
+        let (n, lbl) = split_name_label(self.result_bytes.labels());
+        snap.insert_counter(n, lbl, self.result_bytes.get(), now);
+        let (n, lbl) = split_name_label(self.tries_histogram.labels());
+        snap.insert_histogram(n, lbl, tries_snap, now);
+
         let error_counts = self.error_type_counts.lock()
             .unwrap_or_else(|e| e.into_inner());
         for counter in error_counts.values() {
-            frame.samples.push(Sample::Counter {
-                labels: counter.labels().clone(),
-                value: counter.get(),
-            });
+            let (n, lbl) = split_name_label(counter.labels());
+            snap.insert_counter(n, lbl, counter.get(), now);
         }
 
-        frame
+        snap
     }
 
     /// Register dispensers for adapter-specific metrics capture.
     pub fn set_dispensers(&self, dispensers: Arc<Vec<Arc<dyn crate::adapter::OpDispenser>>>) {
         *self.dispensers.lock().unwrap_or_else(|e| e.into_inner()) = Some(dispensers);
+    }
+
+    /// Register the per-template validation metrics so the progress
+    /// thread can read live relevancy aggregates.
+    pub fn set_validation_metrics(
+        &self,
+        vms: Arc<Vec<Arc<crate::validation::ValidationMetrics>>>,
+    ) {
+        *self.validation_metrics.lock().unwrap_or_else(|e| e.into_inner()) = Some(vms);
+    }
+
+    /// Snapshot live relevancy aggregates from every registered
+    /// validation-metrics instance (one per op template that declared
+    /// `relevancy:`). Non-destructive — safe to call every frame.
+    pub fn collect_relevancy_live(&self) -> Vec<crate::validation::RelevancyLive> {
+        let mut out = Vec::new();
+        if let Ok(guard) = self.validation_metrics.lock() {
+            if let Some(ref vms) = *guard {
+                for vm in vms.iter() {
+                    out.extend(vm.live_snapshot());
+                }
+            }
+        }
+        out
     }
 
     /// Collect status counters from all registered dispensers.
@@ -252,91 +250,139 @@ impl ActivityMetrics {
 }
 
 impl nb_metrics::component::InstrumentSet for ActivityMetrics {
-    /// Capture a delta frame suitable for the component tree scheduler.
+    /// Capture a delta snapshot suitable for the component tree scheduler.
     ///
     /// Timer histograms are inherently delta (reset on snapshot).
     /// Counters emit the change since the last `capture_delta()` call.
-    fn capture_delta(&self, interval: Duration) -> MetricsFrame {
+    fn capture_delta(&self, interval: Duration) -> MetricSet {
         let service_snap = self.service_time.snapshot();
         let wait_snap = self.wait_time.snapshot();
         let response_snap = self.response_time.snapshot();
         let success_snap = self.result_success_time.snapshot();
         let tries_snap = self.tries_histogram.snapshot();
+        let now = Instant::now();
 
-        let mut frame = MetricsFrame {
-            captured_at: Instant::now(),
-            interval,
-            samples: vec![
-                Sample::Timer {
-                    labels: self.service_time.labels().clone(),
-                    count: service_snap.count,
-                    histogram: service_snap.histogram,
-                },
-                Sample::Timer {
-                    labels: self.wait_time.labels().clone(),
-                    count: wait_snap.count,
-                    histogram: wait_snap.histogram,
-                },
-                Sample::Timer {
-                    labels: self.response_time.labels().clone(),
-                    count: response_snap.count,
-                    histogram: response_snap.histogram,
-                },
-                Sample::Timer {
-                    labels: self.result_success_time.labels().clone(),
-                    count: success_snap.count,
-                    histogram: success_snap.histogram,
-                },
-                Sample::Counter {
-                    labels: self.cycles_total.labels().clone(),
-                    value: self.counter_delta(&self.cycles_total),
-                },
-                Sample::Counter {
-                    labels: self.skips_total.labels().clone(),
-                    value: self.counter_delta(&self.skips_total),
-                },
-                Sample::Counter {
-                    labels: self.errors_total.labels().clone(),
-                    value: self.counter_delta(&self.errors_total),
-                },
-                Sample::Counter {
-                    labels: self.stanzas_total.labels().clone(),
-                    value: self.counter_delta(&self.stanzas_total),
-                },
-                Sample::Counter {
-                    labels: self.result_elements.labels().clone(),
-                    value: self.counter_delta(&self.result_elements),
-                },
-                Sample::Counter {
-                    labels: self.result_bytes.labels().clone(),
-                    value: self.counter_delta(&self.result_bytes),
-                },
-                Sample::Timer {
-                    labels: self.tries_histogram.labels().clone(),
-                    count: tries_snap.len(),
-                    histogram: tries_snap,
-                },
-            ],
-        };
+        let mut snap = MetricSet::at(now, interval);
 
-        // Add per-error-type counter deltas
+        // Helper: take an instrument's `Labels` (which currently embeds
+        // the metric name as a `name=...` pair) and route it into the
+        // snapshot's family-keyed shape.
+        fn split(l: &Labels) -> (String, Labels) {
+            nb_metrics::snapshot::split_name_label(l)
+        }
+
+        // Timers (histograms in OpenMetrics terms).
+        let (n, lbl) = split(self.service_time.labels());
+        snap.insert_histogram(n, lbl, service_snap.histogram, now);
+        let (n, lbl) = split(self.wait_time.labels());
+        snap.insert_histogram(n, lbl, wait_snap.histogram, now);
+        let (n, lbl) = split(self.response_time.labels());
+        snap.insert_histogram(n, lbl, response_snap.histogram, now);
+        let (n, lbl) = split(self.result_success_time.labels());
+        snap.insert_histogram(n, lbl, success_snap.histogram, now);
+
+        // Counters.
+        let (n, lbl) = split(self.cycles_total.labels());
+        snap.insert_counter(n, lbl, self.counter_delta(&self.cycles_total), now);
+        let (n, lbl) = split(self.skips_total.labels());
+        snap.insert_counter(n, lbl, self.counter_delta(&self.skips_total), now);
+        let (n, lbl) = split(self.errors_total.labels());
+        snap.insert_counter(n, lbl, self.counter_delta(&self.errors_total), now);
+        let (n, lbl) = split(self.stanzas_total.labels());
+        snap.insert_counter(n, lbl, self.counter_delta(&self.stanzas_total), now);
+        let (n, lbl) = split(self.result_elements.labels());
+        snap.insert_counter(n, lbl, self.counter_delta(&self.result_elements), now);
+        let (n, lbl) = split(self.result_bytes.labels());
+        snap.insert_counter(n, lbl, self.counter_delta(&self.result_bytes), now);
+
+        // Tries histogram.
+        let (n, lbl) = split(self.tries_histogram.labels());
+        snap.insert_histogram(n, lbl, tries_snap, now);
+
+        // Per-error-type counter deltas.
         let error_counts = self.error_type_counts.lock()
             .unwrap_or_else(|e| e.into_inner());
         for counter in error_counts.values() {
-            frame.samples.push(Sample::Counter {
-                labels: counter.labels().clone(),
-                value: self.counter_delta(counter),
-            });
+            let (n, lbl) = split(counter.labels());
+            snap.insert_counter(n, lbl, self.counter_delta(counter), now);
         }
 
-        // Add adapter-specific metrics (e.g., rows_inserted timer from CQL batch)
+        // Add adapter-specific metrics (e.g., rows_inserted timer from CQL batch).
         if let Some(ref disps) = *self.dispensers.lock().unwrap_or_else(|e| e.into_inner()) {
             for dispenser in disps.iter() {
-                frame.samples.extend(dispenser.adapter_metrics());
+                for (family, metric_labels, value) in dispenser.adapter_metrics() {
+                    use nb_metrics::snapshot::{MetricType, MetricValue};
+                    let mtype = match &value {
+                        MetricValue::Counter(_) => MetricType::Counter,
+                        MetricValue::Gauge(_) => MetricType::Gauge,
+                        MetricValue::Histogram(_) => MetricType::Histogram,
+                    };
+                    snap.insert_metric(family, mtype, metric_labels, value, now);
+                }
             }
         }
 
-        frame
+        snap
+    }
+
+    fn capture_current(&self) -> MetricSet {
+        use nb_metrics::snapshot::split_name_label as split;
+        let now = Instant::now();
+        let mut snap = MetricSet::at(now, Duration::ZERO);
+
+        // Timers / histograms: non-draining peeks so the pull path
+        // never disturbs the scheduler's cascade delta reservoir.
+        let (n, lbl) = split(self.service_time.labels());
+        snap.insert_histogram(n, lbl, self.service_time.peek_snapshot().histogram, now);
+        let (n, lbl) = split(self.wait_time.labels());
+        snap.insert_histogram(n, lbl, self.wait_time.peek_snapshot().histogram, now);
+        let (n, lbl) = split(self.response_time.labels());
+        snap.insert_histogram(n, lbl, self.response_time.peek_snapshot().histogram, now);
+        let (n, lbl) = split(self.result_success_time.labels());
+        snap.insert_histogram(n, lbl, self.result_success_time.peek_snapshot().histogram, now);
+        let (n, lbl) = split(self.tries_histogram.labels());
+        snap.insert_histogram(n, lbl, self.tries_histogram.peek_snapshot(), now);
+
+        // Counters: absolute atomic reads — no baseline advance,
+        // readable arbitrarily often without perturbing deltas.
+        let (n, lbl) = split(self.cycles_total.labels());
+        snap.insert_counter(n, lbl, self.cycles_total.get(), now);
+        let (n, lbl) = split(self.skips_total.labels());
+        snap.insert_counter(n, lbl, self.skips_total.get(), now);
+        let (n, lbl) = split(self.errors_total.labels());
+        snap.insert_counter(n, lbl, self.errors_total.get(), now);
+        let (n, lbl) = split(self.stanzas_total.labels());
+        snap.insert_counter(n, lbl, self.stanzas_total.get(), now);
+        let (n, lbl) = split(self.result_elements.labels());
+        snap.insert_counter(n, lbl, self.result_elements.get(), now);
+        let (n, lbl) = split(self.result_bytes.labels());
+        snap.insert_counter(n, lbl, self.result_bytes.get(), now);
+
+        let error_counts = self.error_type_counts.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for counter in error_counts.values() {
+            let (n, lbl) = split(counter.labels());
+            snap.insert_counter(n, lbl, counter.get(), now);
+        }
+
+        // Adapter-specific metrics are already non-mutating — the
+        // delta path just pulls current values and hands them up.
+        // Same call works for capture_current.
+        if let Some(ref disps) = *self.dispensers.lock().unwrap_or_else(|e| e.into_inner()) {
+            for dispenser in disps.iter() {
+                for (family, metric_labels, value) in dispenser.adapter_metrics() {
+                    use nb_metrics::snapshot::{MetricType, MetricValue};
+                    let mtype = match &value {
+                        MetricValue::Counter(_) => MetricType::Counter,
+                        MetricValue::Gauge(_) => MetricType::Gauge,
+                        MetricValue::Histogram(_) => MetricType::Histogram,
+                    };
+                    snap.insert_metric(family, mtype, metric_labels, value, now);
+                }
+            }
+        }
+
+        snap
     }
 }
 
@@ -357,7 +403,7 @@ pub struct Activity {
     pub stop_flag: Arc<std::sync::atomic::AtomicBool>,
     /// Final validation metrics frame, populated after all cycles complete.
     /// Read by the metrics capture thread after the activity finishes.
-    pub validation_frame: Arc<std::sync::Mutex<Option<MetricsFrame>>>,
+    pub validation_frame: Arc<std::sync::Mutex<Option<MetricSet>>>,
 }
 
 impl Activity {
@@ -454,6 +500,8 @@ impl Activity {
         let mut dispensers: Vec<Arc<dyn OpDispenser>> = Vec::new();
         let mut validation_metrics: Vec<Arc<validation::ValidationMetrics>> = Vec::new();
         let mut extra_bindings_per_template: Vec<Vec<String>> = Vec::new();
+        let mut bind_plans_per_template: Vec<Option<crate::synthesis::BindPlan>> = Vec::new();
+        let mut batch_configs_per_template: Vec<crate::synthesis::BatchConfig> = Vec::new();
         for template in templates {
             // Resolve adapter: per-template override or default
             let adapter_name = template.params.get("adapter")
@@ -542,8 +590,20 @@ impl Activity {
                     };
                     dispensers.push(emitted);
 
-                    // Collect extra bindings: validation + condition + delay
-                    let mut extras = validation::extra_bindings(template);
+                    // Collect extra bindings: statement bind points + validation + condition + delay.
+                    // Bind points must be in extras so resolve_with_extras pulls their
+                    // typed GK values into the ResolvedFields for prepared binding.
+                    let mut extras = Vec::new();
+                    for value in template.op.values() {
+                        if let Some(s) = value.as_str() {
+                            for name in nb_workload::bindpoints::referenced_bindings(s) {
+                                if !extras.contains(&name) {
+                                    extras.push(name);
+                                }
+                            }
+                        }
+                    }
+                    extras.extend(validation::extra_bindings(template));
                     for opt_field in [&template.condition, &template.delay] {
                         if let Some(field) = opt_field {
                             let name = field.trim()
@@ -555,6 +615,20 @@ impl Activity {
                         }
                     }
                     extra_bindings_per_template.push(extras);
+
+                    // Pre-build the bind plan and batch config once per template.
+                    // These were previously built per-cycle inside resolve_with_extras.
+                    let stmt_field = template.op.get("stmt")
+                        .or_else(|| template.op.get("prepared"))
+                        .or_else(|| template.op.get("raw"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let bind_names = nb_workload::bindpoints::referenced_bindings(stmt_field);
+                    let bind_plan = crate::synthesis::BindPlan::new(&bind_names, &program);
+                    bind_plans_per_template.push(bind_plan);
+
+                    let batch_config = crate::synthesis::BatchConfig::from_params(&template.params);
+                    batch_configs_per_template.push(batch_config);
                 }
                 Err(e) => {
                     crate::diag!(crate::observer::LogLevel::Error, "error: adapter.map_op failed for '{}': {e}", template.name);
@@ -566,7 +640,12 @@ impl Activity {
         // Register dispensers for adapter-specific metrics capture
         activity.metrics.set_dispensers(dispensers.clone());
         let extra_bindings_per_template = Arc::new(extra_bindings_per_template);
+        let bind_plans_per_template = Arc::new(bind_plans_per_template);
+        let batch_configs_per_template = Arc::new(batch_configs_per_template);
         let validation_metrics = Arc::new(validation_metrics);
+        // Share the validation-metrics handle with ActivityMetrics so
+        // the progress thread (below) can read live relevancy aggregates.
+        activity.metrics.set_validation_metrics(validation_metrics.clone());
 
         let cycle_rl = activity.config.cycle_rate.map(|r| {
             Arc::new(RateLimiter::start(nb_rate::RateSpec::new(r)))
@@ -674,8 +753,17 @@ impl Activity {
                             }
                         }
                     }
-                    let fibers = activity_concurrency;
-                    eprint!("\r\x1b[K{activity_name}{cursor_name} (pending,active,complete)=({pending},{active},{completed}) {pct:.2}% {rate_str} ok:{ok_pct:.1}% errors:{errors} retries:{retries} fibers:{fibers}{adapter_status}{batch_info}");
+                    let concurrency = activity_concurrency;
+                    // Inline recall aggregates (recall@10 etc.) as a
+                    // key metric when the workload declares relevancy.
+                    let mut relevancy_str = String::new();
+                    for live in progress_metrics.collect_relevancy_live() {
+                        relevancy_str.push_str(&format!(
+                            " {}:{:.3}(last{}:{:.3})",
+                            live.name, live.total_mean, live.window_len, live.window_mean,
+                        ));
+                    }
+                    eprint!("\r\x1b[K{activity_name}{cursor_name} pending:{pending} active:{active} complete:{completed} of {total_extent} {pct:.2}% {rate_str} ok:{ok_pct:.1}% errors:{errors} retries:{retries} concurrency:{concurrency}{adapter_status}{batch_info}{relevancy_str}");
                 }
             });
         }
@@ -686,13 +774,15 @@ impl Activity {
             let activity = activity.clone();
             let dispensers = dispensers.clone();
             let extra_bindings = extra_bindings_per_template.clone();
+            let bind_plans = bind_plans_per_template.clone();
+            let batch_configs = batch_configs_per_template.clone();
             let program = program.clone();
             let cycle_rl = cycle_rl.clone();
             let stanza_rl = stanza_rl.clone();
 
             handles.push(tokio::spawn(async move {
                 executor_task(
-                    activity, dispensers, extra_bindings,
+                    activity, dispensers, extra_bindings, bind_plans, batch_configs,
                     program, cycle_rl, stanza_rl,
                 ).await;
             }));
@@ -742,20 +832,26 @@ impl Activity {
         if !validation_metrics.is_empty() {
             let mut total_passed = 0u64;
             let mut total_failed = 0u64;
-            let mut final_samples: Vec<Sample> = Vec::new();
+            let now = Instant::now();
+            let mut final_snapshot = MetricSet::at(now, Duration::ZERO);
+            let activity_labels = activity.labels.clone();
 
             for vm in validation_metrics.iter() {
                 total_passed += vm.passed();
                 total_failed += vm.failed();
 
-                final_samples.push(Sample::Counter {
-                    labels: activity.labels.with("name", "validations_passed"),
-                    value: vm.passed(),
-                });
-                final_samples.push(Sample::Counter {
-                    labels: activity.labels.with("name", "validations_failed"),
-                    value: vm.failed(),
-                });
+                final_snapshot.insert_counter(
+                    "validations_passed",
+                    activity_labels.clone(),
+                    vm.passed(),
+                    now,
+                );
+                final_snapshot.insert_counter(
+                    "validations_failed",
+                    activity_labels.clone(),
+                    vm.failed(),
+                    now,
+                );
 
                 for (name, stats) in &vm.relevancy_stats {
                     let snap = stats.snapshot();
@@ -766,34 +862,29 @@ impl Activity {
                         let min = snap.min();
                         let max = snap.max();
                         let n = snap.len();
-                        eprintln!(
+                        crate::diag!(crate::observer::LogLevel::Info,
                             "  {name}: mean={mean:.4} p50={p50:.4} p99={p99:.4} min={min:.4} max={max:.4} (n={n})"
                         );
-                        // Store as gauges at exact f64 precision
                         for (stat, val) in [("mean", mean), ("p50", p50), ("p99", p99), ("min", min), ("max", max)] {
-                            final_samples.push(Sample::Gauge {
-                                labels: activity.labels
-                                    .with("name", &format!("{name}.{stat}"))
-                                    .with("n", &n.to_string()),
-                                value: val,
-                            });
+                            final_snapshot.insert_gauge(
+                                format!("{name}.{stat}"),
+                                activity_labels.with("n", &n.to_string()),
+                                val,
+                                now,
+                            );
                         }
                     }
                 }
             }
 
-            eprintln!(
+            crate::diag!(crate::observer::LogLevel::Info,
                 "validation: {} passed, {} failed",
                 total_passed, total_failed
             );
 
-            if !final_samples.is_empty() {
+            if !final_snapshot.is_empty() {
                 activity.validation_frame.lock().unwrap_or_else(|e| e.into_inner())
-                    .replace(MetricsFrame {
-                        captured_at: Instant::now(),
-                        interval: Duration::from_secs(0),
-                        samples: final_samples,
-                    });
+                    .replace(final_snapshot);
             }
         }
 
@@ -814,6 +905,8 @@ async fn executor_task(
     activity: Arc<Activity>,
     dispensers: Arc<Vec<Arc<dyn OpDispenser>>>,
     extra_bindings: Arc<Vec<Vec<String>>>,
+    bind_plans: Arc<Vec<Option<crate::synthesis::BindPlan>>>,
+    batch_configs: Arc<Vec<crate::synthesis::BatchConfig>>,
     program: Arc<nb_variates::kernel::GkProgram>,
     cycle_rl: Option<Arc<RateLimiter>>,
     stanza_rl: Option<Arc<RateLimiter>>,
@@ -869,7 +962,12 @@ async fn executor_task(
 
             let (template_idx, template) = activity.op_sequence.get_with_index(cycle);
             fiber.set_source_item(&item);
-            let fields = fiber.resolve_with_extras(template, &extra_bindings[template_idx]);
+            let fields = fiber.resolve_with_extras_cached(
+                template,
+                &extra_bindings[template_idx],
+                bind_plans[template_idx].as_ref(),
+                &batch_configs[template_idx],
+            );
 
             // Execute — dispatch to adapter and await result
             let dispenser = &dispensers[template_idx];
@@ -1083,7 +1181,7 @@ mod tests {
 
         assert_eq!(shared_metrics.cycles_total.get(), 50);
         let frame = shared_metrics.capture(std::time::Duration::from_secs(1));
-        assert!(!frame.samples.is_empty());
+        assert!(!frame.is_empty());
     }
 
     #[tokio::test]

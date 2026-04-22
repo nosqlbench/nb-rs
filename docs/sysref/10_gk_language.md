@@ -672,7 +672,7 @@ access. The `cursor` keyword declares a cursor and wires it
 to a constructor that determines its data source:
 
 ```
-cursor base = dataset_source("sift1m:label_00", "base")
+cursor base = dataset_source("example:label_00", "base")
 cursor users = range(0, 1000000)
 ```
 
@@ -682,9 +682,9 @@ tracker. Data access happens through **accessor functions**
 that take the cursor's ordinal as input and return typed values:
 
 ```
-cursor base = dataset_source("sift1m:label_00", "base")
+cursor base = dataset_source("example:label_00", "base")
 id := format_u64(base, 10)
-train_vector := vector_at(base, "sift1m:label_00")
+train_vector := vector_at(base, "example:label_00")
 ```
 
 Here `base` resolves to the cursor's current ordinal value.
@@ -807,7 +807,7 @@ only through the database (or other external system), or via
 
 **Why structural variables require per-iteration compilation?**
 
-GK bindings like `vector_at(cycle, "sift1m:label-1")` need the
+GK bindings like `vector_at(cycle, "example:label-1")` need the
 dataset source at node construction time — the node opens a file
 handle, loads metadata, and preallocates buffers. This is init-time
 work that can't be deferred to cycle-time. Structural variable

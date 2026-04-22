@@ -440,6 +440,7 @@ inventory::submit! {
     nb_activity::adapter::AdapterRegistration {
         names: || &["plotter", "plot"],
         known_params: || &["mode", "fade", "lanes"],
+        display_preference: || nb_activity::adapter::DisplayPreference::Off,
         create: |params| Box::pin(async move {
             let mode = params.get("mode").cloned().unwrap_or_else(|| "plot".into());
             let fade = params.get("fade")

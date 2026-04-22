@@ -24,6 +24,7 @@ nb-variates = { path = "../nb-variates", version = "0.1.1" }
 futures = "0.3"
 inventory = "0.3.24"
 serde_json = "1"
+serde_yaml = "0.9"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 

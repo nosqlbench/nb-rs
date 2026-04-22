@@ -5,8 +5,8 @@
 
 use std::io::Write;
 
-use crate::frame::{MetricsFrame, Sample};
 use crate::scheduler::Reporter;
+use crate::snapshot::{MetricSet, MetricValue};
 
 /// Writes human-readable metrics summaries to a `Write` target.
 pub struct ConsoleReporter {
@@ -43,79 +43,82 @@ impl ConsoleReporter {
     /// Write to the output, logging on failure.
     fn emit(&mut self, args: std::fmt::Arguments<'_>) {
         if let Err(e) = self.out.write_fmt(args) {
-            eprintln!("warning: console reporter write failed: {e}");
+            crate::diag::warn(&format!("warning: console reporter write failed: {e}"));
         }
     }
 }
 
 impl Reporter for ConsoleReporter {
-    fn report(&mut self, frame: &MetricsFrame) {
-        let interval_secs = frame.interval.as_secs_f64();
+    fn report(&mut self, snapshot: &MetricSet) {
+        let interval_secs = snapshot.interval().as_secs_f64();
         if interval_secs <= 0.0 { return; }
 
         self.emit(format_args!("\n"));
 
-        // Group samples by activity label
-        let mut by_activity: std::collections::BTreeMap<String, Vec<&Sample>> =
+        // Group (family, metric) pairs by `activity` label.
+        let mut by_activity: std::collections::BTreeMap<String, Vec<(&str, &crate::snapshot::Metric)>> =
             std::collections::BTreeMap::new();
-        for sample in &frame.samples {
-            let activity = sample.labels().get("activity")
-                .unwrap_or("global")
-                .to_string();
-            by_activity.entry(activity).or_default().push(sample);
+        for family in snapshot.families() {
+            for metric in family.metrics() {
+                let activity = metric.labels().get("activity")
+                    .unwrap_or("global")
+                    .to_string();
+                by_activity.entry(activity).or_default().push((family.name(), metric));
+            }
         }
 
-        for (activity, samples) in &by_activity {
+        for (activity, entries) in &by_activity {
             self.emit(format_args!("── {activity} ({:.1}s) ──────────────────\n",
                 interval_secs));
 
-            for sample in samples {
-                let name = sample.labels().get("name").unwrap_or("?");
-                match sample {
-                    Sample::Counter { labels, value } => {
-                        let key = labels.identity_hash();
+            for (name, metric) in entries {
+                let Some(point) = metric.point() else { continue };
+                match point.value() {
+                    MetricValue::Counter(c) => {
+                        let key = metric.labels().identity_hash();
                         let prev = self.prev_counts.get(&key).copied().unwrap_or(0);
-                        let delta = value.saturating_sub(prev);
+                        let delta = c.total.saturating_sub(prev);
                         let rate = delta as f64 / interval_secs;
-                        self.prev_counts.insert(key, *value);
+                        self.prev_counts.insert(key, c.total);
 
-                        if delta > 0 || *value > 0 {
+                        if delta > 0 || c.total > 0 {
                             self.emit(format_args!(
-                                "  {name}  count={value}  delta={delta}  rate={rate:.0}/s\n"));
+                                "  {name}  count={total}  delta={delta}  rate={rate:.0}/s\n",
+                                total = c.total));
                         }
                     }
-                    Sample::Timer { labels: _, count: _, histogram } => {
-                        let obs = histogram.len();
+                    MetricValue::Histogram(h) => {
+                        let obs = h.count;
                         if obs == 0 { continue; }
                         let rate = obs as f64 / interval_secs;
 
                         self.emit(format_args!(
                             "  {name}  count={obs}  rate={rate:.0}/s\n"));
 
-                        let p50 = Self::format_nanos(histogram.value_at_quantile(0.50));
-                        let p90 = Self::format_nanos(histogram.value_at_quantile(0.90));
-                        let p99 = Self::format_nanos(histogram.value_at_quantile(0.99));
-                        let p999 = Self::format_nanos(histogram.value_at_quantile(0.999));
-                        let max = Self::format_nanos(histogram.max());
+                        let p50 = Self::format_nanos(h.reservoir.value_at_quantile(0.50));
+                        let p90 = Self::format_nanos(h.reservoir.value_at_quantile(0.90));
+                        let p99 = Self::format_nanos(h.reservoir.value_at_quantile(0.99));
+                        let p999 = Self::format_nanos(h.reservoir.value_at_quantile(0.999));
+                        let max = Self::format_nanos(h.reservoir.max());
 
                         self.emit(format_args!(
                             "    p50={p50}  p90={p90}  p99={p99}  p999={p999}  max={max}\n"));
                     }
-                    Sample::Gauge { labels: _, value } => {
-                        self.emit(format_args!("  {name}  {value:.2}\n"));
+                    MetricValue::Gauge(g) => {
+                        self.emit(format_args!("  {name}  {value:.2}\n", value = g.value));
                     }
                 }
             }
         }
 
         if let Err(e) = self.out.flush() {
-            eprintln!("warning: console reporter flush failed: {e}");
+            crate::diag::warn(&format!("warning: console reporter flush failed: {e}"));
         }
     }
 
     fn flush(&mut self) {
         if let Err(e) = self.out.flush() {
-            eprintln!("warning: console reporter flush failed: {e}");
+            crate::diag::warn(&format!("warning: console reporter flush failed: {e}"));
         }
     }
 }

@@ -395,8 +395,10 @@ impl OpDispenser for PollingDispenser {
                     self.metrics.polls_total.fetch_add(polls, std::sync::atomic::Ordering::Relaxed);
                     self.metrics.poll_elapsed_ms.store(elapsed.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
                     self.metrics.condition_met.store(1, std::sync::atomic::Ordering::Relaxed);
-                    eprintln!("\r\x1b[K  poll complete: {} polls in {:.1}s",
-                        polls, elapsed_secs);
+                    crate::observer::log(
+                        crate::observer::LogLevel::Info,
+                        &format!("  poll complete: {} polls in {:.1}s", polls, elapsed_secs),
+                    );
                     let mut captures = std::collections::HashMap::new();
                     captures.insert("poll_count".into(), nb_variates::node::Value::U64(polls));
                     captures.insert("poll_elapsed_ms".into(),

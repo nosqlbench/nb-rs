@@ -55,6 +55,49 @@ Used for: relevancy score means, system metrics.
 
 ---
 
+## Summaries
+
+Downstream of the primary instruments above, **summaries**
+(`nb_metrics::summaries::*`) are retained, transforming views
+of instrument data. A summary sits between a source (a primary
+instrument, a scheduler-emitted snapshot, an observer callback)
+and a reader (usually a display), and holds whatever
+representation the reader needs for on-demand lookup.
+
+Key distinctions vs. primary instruments:
+
+- **Off the hot path.** Summaries are fed from outside the
+  op-execution loop. `record`/`update` calls on a summary
+  happen at scheduler-tick granularity or observer-callback
+  rate, not per-op.
+- **Retained across drains.** A primary histogram resets on
+  `capture_delta`; a summary holds whatever representation it
+  has built up (bounded by its capacity or window).
+- **Transforming.** Each summary decides how to compact the
+  stream — pairwise averaging, sliding-window aggregation,
+  lossless sorted accumulation.
+- **Read on demand.** Snapshots are non-mutating clones; a
+  display can poll arbitrarily without perturbing the summary.
+- **Scope-bounded lifetime.** Usually attached to a UI view,
+  a phase, or an analysis window. When the source stops
+  feeding it, the contents freeze naturally.
+
+Current summaries:
+
+| Type                          | Transform                                       | Used for                                         |
+|-------------------------------|-------------------------------------------------|--------------------------------------------------|
+| `BinomialSummary`             | bounded ring + pairwise-averaging on overflow   | per-phase throughput sparkline in the TUI        |
+| `Ewma`                        | time-weighted exponentially-weighted average    | single-scalar "current rate / current value" readouts that shouldn't flicker |
+| `F64Stats`                    | lossless sorted-vec accumulator + percentiles   | relevancy score accumulation (recall, precision) |
+| `HdrSummary`                  | retained (non-draining) HDR histogram           | lossless latency percentiles over a scope (phase, run, report cell) |
+| `LiveWindowHistogram`         | N-slot sliding-window HDR with lazy reset       | TUI 1 s rolling latency peek on `Timer`          |
+| `PeakTracker`                 | monotonic-deque rolling max/min over a window   | 5 s / 10 s peak cross-bar markers on latency rows; any "high-water mark over last N" display |
+
+See SRD 62 §"Design notes → Per-phase sparkline" for the
+architectural position.
+
+---
+
 ## Labels
 
 Dimensional key-value pairs on every instrument:
@@ -98,6 +141,10 @@ Multiple frames merge via `MetricsFrame::coalesce()`:
 - Gauges: weighted average by interval duration
 - Timers: histograms merged via `Histogram::add()` for accurate
   quantiles across the combined interval
+
+For sample-weighted access to these coalesced windows from
+consumers (TUI panels, reports, programmatic queries) see
+[SRD 42 — Windowed Metrics Access](42_windowed_metrics.md).
 
 ### Standard Quantiles
 

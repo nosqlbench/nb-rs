@@ -9,8 +9,12 @@
 
 pub mod labels;
 pub mod instruments;
-pub mod frame;
+pub mod summaries;
 pub mod scheduler;
 pub mod reporters;
 pub mod component;
-pub mod store;
+pub mod diag;
+pub mod snapshot;
+pub mod cadence;
+pub mod cadence_reporter;
+pub mod metrics_query;
