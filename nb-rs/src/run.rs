@@ -22,7 +22,7 @@ extern crate nb_adapter_plotter;
 pub const KNOWN_PARAMS: &[&str] = &[
     // Activity-level
     "adapter", "driver", "workload", "op", "cycles", "threads",
-    "rate", "stanzarate", "errors", "seq", "tags", "format",
+    "rate", "errors", "seq", "tags", "format",
     "filename", "separator", "header", "color", "mode", "fade", "lanes",
     "stanza_concurrency", "sc", "scenario",
     // CQL adapter

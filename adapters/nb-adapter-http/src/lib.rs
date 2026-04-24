@@ -110,6 +110,18 @@ fn classify_reqwest_error(e: &reqwest::Error) -> String {
 impl DriverAdapter for HttpAdapter {
     fn name(&self) -> &str { "http" }
 
+    /// HTTP adapter reads a closed vocabulary of op fields:
+    /// request-shape (`method`, `uri` / `url`), body framing
+    /// (`content_type`, `body`), and header overrides
+    /// (`headers`). Declaring the list opts this adapter into
+    /// SRD 30's unknown-field guard — typos like `bdoy:` or
+    /// misplaced core directives surface at init time rather
+    /// than silently becoming ResolvedFields the adapter never
+    /// looks at.
+    fn known_op_fields(&self) -> Option<&'static [&'static str]> {
+        Some(&["method", "content_type", "uri", "url", "body", "headers"])
+    }
+
     fn map_op(&self, template: &ParsedOp) -> Result<Box<dyn OpDispenser>, String> {
         // Extract static method from template (default GET)
         let method = template.op.get("method")

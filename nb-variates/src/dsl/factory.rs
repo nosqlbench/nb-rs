@@ -65,6 +65,45 @@ impl ConstArg {
 /// 1. Per-module `build_node` functions (one per node module)
 /// 2. Sampling functions not covered by a node module
 /// 3. Registry variadic fallback
+/// Source-binding attribution, set by the compiler before each
+/// `build_node` call and read by factories that want to record
+/// which DSL binding caused the node to exist. The
+/// `control_set` factory is the canonical consumer:
+/// `rate_adj := control_set("rate", target)` calls the factory
+/// with `current_binding()` returning `"rate_adj"`, which the
+/// node stores for runtime attribution in
+/// `ControlOrigin::Gk { binding }`.
+pub mod compile_ctx {
+    use std::cell::RefCell;
+    thread_local! {
+        static BINDING: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    /// Install the current binding name for the duration of a
+    /// single `build_node` call. Returns a guard that clears
+    /// the thread-local on drop so nested compilation can't
+    /// leak attribution across callers.
+    pub fn scoped_binding(name: &str) -> BindingScope {
+        BINDING.with(|b| *b.borrow_mut() = Some(name.to_string()));
+        BindingScope(())
+    }
+
+    /// Read the current binding attribution. Returns `None`
+    /// when called outside a [`scoped_binding`] scope (e.g.
+    /// ad-hoc tests that call [`super::build_node`] directly).
+    pub fn current_binding() -> Option<String> {
+        BINDING.with(|b| b.borrow().clone())
+    }
+
+    /// RAII guard that clears the binding slot on drop.
+    pub struct BindingScope(());
+    impl Drop for BindingScope {
+        fn drop(&mut self) {
+            BINDING.with(|b| *b.borrow_mut() = None);
+        }
+    }
+}
+
 pub(crate) fn build_node(
     func: &str,
     wires: &[WireRef],

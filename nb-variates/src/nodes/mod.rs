@@ -28,6 +28,8 @@ pub mod probability;
 pub mod pcg;
 pub mod math;
 pub mod datafile;
+pub mod param_helpers;
+pub mod runtime_context;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 #[cfg(feature = "vectordata")]

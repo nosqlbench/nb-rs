@@ -251,6 +251,13 @@ impl Compiler {
                     }
                 }
 
+                // SRD 23 §"Mutation entry points → GK": install
+                // the enclosing binding's name as attribution for
+                // any node that records it (e.g. `control_set`).
+                // The scope guard clears on Drop so nested
+                // compilation never leaks an outer attribution.
+                let _binding_scope = targets.first().map(|n|
+                    crate::dsl::factory::compile_ctx::scoped_binding(n));
                 let node = match build_node(&call.func, &wire_refs, &const_args) {
                     Ok(n) => n,
                     Err(e) if e.contains("unknown function") => {

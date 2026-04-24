@@ -96,6 +96,11 @@ impl Session {
             Labels::of("session", &id),
             std::collections::HashMap::new(),
         );
+        // Install the session root as the resolver backing for
+        // GK runtime-context nodes (`control(...)`, `rate()`,
+        // `concurrency()`, etc.). See SRD 12 §"Runtime context
+        // nodes" and nb-variates/src/nodes/runtime_context.rs.
+        nb_variates::nodes::runtime_context::set_session_root(component.clone());
 
         Self {
             id,

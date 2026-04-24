@@ -1,0 +1,78 @@
+#!/usr/bin/env nbrs
+# Dynamic Controls Demo (SRD 23)
+#
+# Demonstrates the dynamic-controls surface end-to-end:
+#
+#   * Block-level `params:` override (SRD 21 §"Parameter Resolution")
+#     sets the DDL phase's concurrency to 1 while the bulk phase
+#     inherits the workload default of 8.
+#
+#   * Each activity's executor automatically declares a
+#     `concurrency` control on its component at
+#     [`Activity::attach_component`] time (SRD 23 §"Fiber
+#     executor"). Operators then see / edit these controls via:
+#       - `nbrs run workload=examples/workloads/dynamic_controls.yaml \
+#          dryrun=controls`   ← lists every declared control
+#       - TUI `e` keybind     ← inline edit prompt (SRD 23 §"TUI surface")
+#       - Web API             ← POST /api/control/concurrency {"value": 16}
+#       - GK `control_set`    ← scripted feedback loop in a binding
+#
+#   * The bulk phase also wires a GK-driven feedback loop: the
+#     `rate_target` binding calls `control_set("rate", ...)` if
+#     the error rate exceeds 5%. The `control(...)` / `rate()` /
+#     `concurrency()` context nodes read the live values back.
+#
+# Validators bracket every param so misconfiguration surfaces at
+# startup instead of in mysterious downstream failures.
+#
+# Usage:
+#   nbrs run workload=examples/workloads/dynamic_controls.yaml dryrun=controls
+#   nbrs run workload=examples/workloads/dynamic_controls.yaml
+#   nbrs run workload=examples/workloads/dynamic_controls.yaml concurrency=16
+
+params:
+  adapter: stdout
+  # is_positive guards reject 0-valued defaults that the CLI
+  # user might mistakenly pass; in_range tightens the rate cap.
+  concurrency: "8"
+  rate: "1000"
+  cycles: "2000"
+
+bindings: |
+  inputs := (cycle)
+  id := mod(hash(cycle), 1_000_000)
+  // Runtime-context reads. `rate()` is sugar for control("rate");
+  // we also read the concurrency control so the generated op
+  // text records what each cycle was running under (diagnostic).
+  effective_rate := rate()
+  effective_conc := concurrency()
+
+blocks:
+  ddl:
+    params:
+      # Block-level override: even if CLI sets concurrency=16,
+      # the DDL phase must serialize. Remove the "final" once the
+      # feature lands to allow operator nudging.
+      concurrency: "1"
+    ops:
+      create_table:
+        stmt: "CREATE TABLE IF NOT EXISTS demo.events (id bigint PRIMARY KEY);"
+
+  bulk:
+    ops:
+      insert:
+        stmt: "INSERT INTO demo.events (id) VALUES ({id});"
+
+  feedback_loop:
+    bindings: |
+      inputs := (cycle)
+      err_rate := metric("errors", "rate")
+      // Halve the rate when errors spike, creep back up
+      // otherwise. `control_set` is non-blocking — the spawn is
+      // attributed to the `rate_adjust` binding in the committed
+      // Versioned<RateSpec>::origin.
+      rate_adjust := control_set("rate",
+                                 to_f64(control_u64("rate")) *
+                                 if(err_rate > 0.05, 0.5, 1.05))
+    ops:
+      tick: "SELECT now();"

@@ -94,6 +94,22 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         .and_then(|v| v.as_str())
         .map(|s| crate::model::SummaryConfig::parse(s));
 
+    // SRD 21 §"Parameter Resolution": CLI overrides are the
+    // outermost layer. Each op has already absorbed the
+    // doc → block → op closest-wins merge for YAML-declared
+    // params; now overlay the CLI map so `cassnbrs run ...
+    // concurrency=200` replaces any inherited block-level
+    // value. Workload-level `resolved_params` was already
+    // CLI-resolved above (line 66–87); this pass extends the
+    // same rule down to per-op params.
+    if !params.is_empty() {
+        for op in &mut all_ops {
+            for (key, value) in params {
+                op.params.insert(key.clone(), serde_json::Value::String(value.clone()));
+            }
+        }
+    }
+
     Ok(Workload { description, scenarios, ops: all_ops, params: resolved_params, phases, phase_order, declared_params, summary })
 }
 
@@ -1122,6 +1138,70 @@ ops:
         assert!(workload.phases.is_empty());
         assert!(workload.phase_order.is_empty());
         assert_eq!(workload.ops.len(), 2);
+    }
+
+    #[test]
+    fn block_level_params_override_workload_default() {
+        // SRD 21 §"Parameter Resolution": closest-wins. The DDL
+        // block declares concurrency=1 and that overrides the
+        // workload-level default of 100 for ops in that block.
+        let yaml = r#"
+params:
+  concurrency: "100"
+blocks:
+  ddl:
+    params:
+      concurrency: "1"
+    ops:
+      schema_create: "CREATE TABLE foo (id int PRIMARY KEY);"
+  bulk:
+    ops:
+      insert: "INSERT INTO foo (id) VALUES (?);"
+"#;
+        let ops = parse_ops(yaml).unwrap();
+        let ddl = ops.iter().find(|o| o.name == "schema_create").unwrap();
+        let bulk = ops.iter().find(|o| o.name == "insert").unwrap();
+        assert_eq!(
+            ddl.params.get("concurrency").and_then(|v| v.as_str()),
+            Some("1"),
+            "block-level override should win for ddl op",
+        );
+        assert_eq!(
+            bulk.params.get("concurrency").and_then(|v| v.as_str()),
+            Some("100"),
+            "non-overriding block inherits workload-level default",
+        );
+    }
+
+    #[test]
+    fn cli_overrides_block_level_params() {
+        // CLI is the outermost layer per SRD 21 — it wins even
+        // over block-level explicit overrides.
+        let yaml = r#"
+params:
+  concurrency: "100"
+blocks:
+  ddl:
+    params:
+      concurrency: "1"
+    ops:
+      schema_create: "CREATE TABLE foo (id int PRIMARY KEY);"
+"#;
+        let mut cli = HashMap::new();
+        cli.insert("concurrency".to_string(), "200".to_string());
+        let workload = parse_workload(yaml, &cli).unwrap();
+        let ddl = workload.ops.iter()
+            .find(|o| o.name == "schema_create").unwrap();
+        assert_eq!(
+            ddl.params.get("concurrency").and_then(|v| v.as_str()),
+            Some("200"),
+            "CLI override should beat block-level",
+        );
+        // Workload-level params likewise reflect CLI.
+        assert_eq!(
+            workload.params.get("concurrency").map(|s| s.as_str()),
+            Some("200"),
+        );
     }
 
     #[test]

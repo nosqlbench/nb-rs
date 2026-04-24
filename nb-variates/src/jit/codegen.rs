@@ -96,6 +96,165 @@ extern "C" fn jit_pow(base_bits: u64, exp_bits: u64) -> u64 {
     f64::from_bits(base_bits).powf(f64::from_bits(exp_bits)).to_bits()
 }
 
+// ── Catchable predicate violations via setjmp/longjmp ─────────
+//
+// Cranelift-JIT emits DWARF unwind info (`unwind_info=true`) but
+// does not call `__register_frame`; teaching the system
+// unwinder about JIT frames needs either an upstream Cranelift
+// change or a personality-routine shim that's a project on its
+// own. We take the self-contained route instead: a setjmp
+// sentinel installed by the Rust eval wrapper, and extern
+// helpers that `longjmp` back to it on violation.
+//
+// The longjmp skips over the JIT frame entirely — no unwind,
+// no personality lookup, no catch-block walk. Control returns
+// to the Rust wrapper which reads the violation message from a
+// thread-local and raises a normal Rust `panic!`. That panic
+// unwinds through the Rust caller's frames (which have proper
+// `rust_eh_personality` FDEs) and `catch_unwind` catches it
+// like any other panic. Fail-path callers no longer lose the
+// entire process to an abort.
+//
+// Safety
+//   - longjmp skips C-level destructors. The JIT code is pure
+//     machine code with no Drop semantics, so nothing leaks.
+//     The extern helpers themselves hold no resources.
+//   - The thread-local buffer is per-thread, so concurrent
+//     kernels on different tokio worker threads don't share
+//     state. Nesting a kernel.eval inside another kernel.eval
+//     on the same thread would clobber the buffer — we don't
+//     do that anywhere today; if it becomes a concern, push a
+//     stack of buffers instead of a single slot.
+
+/// Platform-independent jmp_buf shim. Allocated oversize (512
+/// bytes, 16-aligned) so the biggest real platform buffer
+/// (glibc Linux: ~200 bytes, macOS: ~192) fits with margin.
+/// We link against the C library's `_setjmp` / `_longjmp`
+/// symbols directly — the `setjmp` macro in the glibc header
+/// expands to `__sigsetjmp`, which saves the signal mask; we
+/// don't need that and `_setjmp` is faster.
+#[repr(C, align(16))]
+struct JitJmpBuf([u8; 512]);
+
+unsafe extern "C" {
+    fn _setjmp(env: *mut JitJmpBuf) -> i32;
+    fn _longjmp(env: *mut JitJmpBuf, val: i32) -> !;
+}
+
+use std::cell::{Cell, RefCell};
+thread_local! {
+    /// Set by [`invoke_with_catch`] before entering JIT code;
+    /// cleared on return. The extern longjmp helpers consult
+    /// this slot to find their return target. `None` means "no
+    /// wrapper installed" → fall back to abort so violations
+    /// outside a catching wrapper still terminate cleanly
+    /// rather than triggering undefined behavior.
+    static JIT_JMP_BUF: Cell<Option<*mut JitJmpBuf>> = const { Cell::new(None) };
+    /// Populated by the extern helpers right before the
+    /// longjmp; drained by the wrapper after setjmp returns
+    /// non-zero.
+    static JIT_VIOLATION_MSG: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Store the violation message and longjmp back to the wrapper.
+/// Used by every predicate extern on the fail path. If no
+/// wrapper is installed on the current thread (e.g. someone
+/// calling the JIT code directly without `invoke_with_catch`),
+/// prints the message and aborts — matches the original
+/// behavior for that call pattern.
+fn jit_violation_longjmp(msg: String) -> ! {
+    JIT_VIOLATION_MSG.with(|m| *m.borrow_mut() = Some(msg.clone()));
+    let buf_ptr: Option<*mut JitJmpBuf> = JIT_JMP_BUF.with(|b| b.get());
+    match buf_ptr {
+        Some(ptr) => unsafe { _longjmp(ptr, 1) },
+        None => {
+            let mut err = std::io::stderr().lock();
+            use std::io::Write;
+            let _ = writeln!(err, "{msg}");
+            let _ = err.flush();
+            std::process::abort();
+        }
+    }
+}
+
+/// RAII restore of the enclosing thread-local `JIT_JMP_BUF`
+/// slot. Ensures the wrapper's buffer pointer doesn't outlive
+/// its stack frame — even if the wrapped closure panics for a
+/// reason unrelated to the JIT predicate (a bug in a
+/// non-JIT sub-path, an OOM, etc.) the guard's `Drop`
+/// reinstates the previous slot so the next `invoke_with_catch`
+/// call doesn't see a dangling pointer.
+struct JmpBufGuard {
+    prev: Option<*mut JitJmpBuf>,
+}
+
+impl Drop for JmpBufGuard {
+    fn drop(&mut self) {
+        JIT_JMP_BUF.with(|b| b.set(self.prev));
+    }
+}
+
+/// Wrapper used by every kernel variant's `eval` to set up the
+/// setjmp sentinel, run the closure (which calls into JIT
+/// code), and translate a longjmp return into a Rust panic
+/// carrying the violation message. The panic happens in Rust
+/// land, so `catch_unwind` catches it normally.
+///
+/// Both entry/exit paths flow through the [`JmpBufGuard`] so a
+/// panic from inside `f()` that isn't a JIT violation still
+/// restores the outer slot correctly.
+pub(crate) fn invoke_with_catch<F: FnOnce()>(f: F) {
+    use std::mem::MaybeUninit;
+    let mut buf: MaybeUninit<JitJmpBuf> = MaybeUninit::uninit();
+    let buf_ptr = buf.as_mut_ptr();
+    // Install the jmp_buf for the duration of the call. The
+    // guard restores the previous slot on every exit path
+    // (normal return, longjmp, or non-JIT panic unwinding
+    // through our frame).
+    let prev: Option<*mut JitJmpBuf> = JIT_JMP_BUF.with(|b| b.replace(Some(buf_ptr)));
+    let _guard = JmpBufGuard { prev };
+    let jmpval = unsafe { _setjmp(buf_ptr) };
+    if jmpval == 0 {
+        f();
+    } else {
+        // longjmp return. The guard will restore the outer
+        // slot when this frame exits; drain the violation
+        // message and raise a normal Rust panic so the
+        // caller's `catch_unwind` can see it.
+        let msg = JIT_VIOLATION_MSG.with(|m| m.borrow_mut().take())
+            .unwrap_or_else(|| "JIT predicate violation (no message)".into());
+        panic!("{msg}");
+    }
+}
+
+/// Extern function: longjmp back to the enclosing wrapper with
+/// an `is_positive` violation message. Called from JIT code on
+/// the predicate-fail path.
+extern "C" fn jit_is_positive_fail(value: u64) -> u64 {
+    jit_violation_longjmp(
+        format!("is_positive: value must be > 0, got {value}"),
+    );
+}
+
+/// Extern function: longjmp back to the enclosing wrapper with
+/// an `in_range` violation message.
+extern "C" fn jit_in_range_fail(value: u64, lo: u64, hi: u64) -> u64 {
+    jit_violation_longjmp(
+        format!("in_range: value {value} outside [{lo}, {hi}]"),
+    );
+}
+
+/// Extern function: longjmp back to the enclosing wrapper with
+/// an `is_one_of` violation message. The allow-list isn't
+/// threaded through the call (it would bloat the ABI); the
+/// Phase-1 closure path retains the full list in its message
+/// when callers need maximum detail.
+extern "C" fn jit_is_one_of_fail(value: u64) -> u64 {
+    jit_violation_longjmp(
+        format!("is_one_of: value {value} not in configured allow-list"),
+    );
+}
+
 /// Extern function: weighted pick via alias table (called from JIT code).
 ///
 /// Performs O(1) alias sampling and value lookup. All array pointers
@@ -226,6 +385,19 @@ pub(crate) enum JitOp {
     F64Div,
     /// output = f64(a) % f64(b) (0 if b==0)
     F64Mod,
+
+    /// Parameter predicate: pass input[0] through to output[0];
+    /// if input[0] == 0, call `jit_is_positive_fail` (panics).
+    IsPositiveCheck,
+    /// Parameter predicate: pass input[0] through to output[0];
+    /// if input[0] < lo or input[0] > hi, call
+    /// `jit_in_range_fail` (panics). Stored as (lo, hi).
+    InRangeCheck(u64, u64),
+    /// Parameter predicate: pass input[0] through to output[0];
+    /// if input[0] is not in the allow-list, call
+    /// `jit_is_one_of_fail` (aborts). Allow-list baked as a
+    /// vector of u64 constants.
+    IsOneOfCheck(Vec<u64>),
 
     /// Fallback: call the Phase 2 closure
     Fallback,
@@ -382,6 +554,39 @@ pub(crate) fn classify_node(node: &dyn GkNode) -> JitOp {
                 JitOp::Fallback
             }
         }
+
+        // ── Parameter helpers (SRD 12) ─────────────────────────
+        // `is_positive` / `in_range` are JIT-lowered inline: one
+        // comparison on the happy path, an extern call on the
+        // fail path (which panics). The pass-through is a plain
+        // store, no function call overhead on the typical cycle.
+        "is_positive" => JitOp::IsPositiveCheck,
+        "in_range" => {
+            if consts.len() >= 2 {
+                JitOp::InRangeCheck(consts[0], consts[1])
+            } else {
+                JitOp::Fallback
+            }
+        }
+        "is_one_of" => {
+            if consts.is_empty() {
+                JitOp::Fallback
+            } else {
+                JitOp::IsOneOfCheck(consts)
+            }
+        }
+        // The remaining param helpers stay on the Phase-2
+        // `compiled_u64` closure — by design, not oversight:
+        //   * `required` / `this_or` rely on `Value::None`
+        //     sentinel semantics that don't round-trip through
+        //     the JIT's u64 buffer without tagging.
+        //   * `matches` is regex-backed; the regex object lives
+        //     on the node struct and can't be JIT-inlined.
+        // Runtime-context nodes (`control`, `rate`, `concurrency`,
+        // `phase`, `cycle`) all read from runtime globals /
+        // thread-locals and return f64 or String — values that
+        // don't belong on the JIT happy path. They're correctly
+        // fast at Phase-1/2.
         _ => JitOp::Fallback,
     }
 }
@@ -486,6 +691,13 @@ fn compile_jit_impl(
 ), String> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
+    // Emit DWARF/SEH unwind tables so a panic raised from an
+    // `extern "C-unwind"` helper (e.g. param-helper predicate
+    // failures) can unwind through the JIT frame back to the
+    // Rust caller. Without this Cranelift emits bare frames and
+    // the libstd unwinder aborts on panic.
+    flag_builder.set("unwind_info", "true").unwrap();
+    flag_builder.set("preserve_frame_pointers", "true").unwrap();
     let isa_builder = cranelift_codegen::isa::lookup(target_lexicon::Triple::host())
         .map_err(|e| format!("ISA lookup failed: {e}"))?;
     let isa = isa_builder.finish(settings::Flags::new(flag_builder))
@@ -499,6 +711,12 @@ fn compile_jit_impl(
     jit_builder.symbol("jit_shuffle", jit_shuffle as *const u8);
     jit_builder.symbol("jit_lut_sample", jit_lut_sample as *const u8);
     jit_builder.symbol("jit_weighted_pick", jit_weighted_pick as *const u8);
+    // Parameter-helper predicates (SRD 12 §"Parameter resolution
+    // and validation"): happy path is inline, violation is an
+    // extern call that never returns.
+    jit_builder.symbol("jit_is_positive_fail", jit_is_positive_fail as *const u8);
+    jit_builder.symbol("jit_in_range_fail", jit_in_range_fail as *const u8);
+    jit_builder.symbol("jit_is_one_of_fail", jit_is_one_of_fail as *const u8);
     // Math externs
     jit_builder.symbol("jit_sin", jit_sin as *const u8);
     jit_builder.symbol("jit_cos", jit_cos as *const u8);
@@ -577,6 +795,34 @@ fn compile_jit_impl(
         );
     }
 
+    // Declare param-helper extern: jit_is_positive_fail(u64) -> u64
+    // (never returns, but the ABI requires a return type).
+    let is_positive_fail_id = {
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        module.declare_function("jit_is_positive_fail", Linkage::Import, &sig)
+            .map_err(|e| format!("declare is_positive_fail: {e}"))?
+    };
+
+    // Declare param-helper extern: jit_in_range_fail(u64, u64, u64) -> u64
+    let in_range_fail_id = {
+        let mut sig = module.make_signature();
+        for _ in 0..3 { sig.params.push(AbiParam::new(types::I64)); }
+        sig.returns.push(AbiParam::new(types::I64));
+        module.declare_function("jit_in_range_fail", Linkage::Import, &sig)
+            .map_err(|e| format!("declare in_range_fail: {e}"))?
+    };
+
+    // Declare param-helper extern: jit_is_one_of_fail(u64) -> u64
+    let is_one_of_fail_id = {
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        module.declare_function("jit_is_one_of_fail", Linkage::Import, &sig)
+            .map_err(|e| format!("declare is_one_of_fail: {e}"))?
+    };
+
     // Declare math externs: binary (u64, u64) -> u64
     let math_binary_names = ["jit_atan2", "jit_pow"];
     let mut math_binary_ids = Vec::new();
@@ -624,6 +870,9 @@ fn compile_jit_impl(
         let shuffle_func_ref = module.declare_func_in_func(shuffle_func_id, builder.func);
         let lut_sample_func_ref = module.declare_func_in_func(lut_sample_func_id, builder.func);
         let weighted_pick_func_ref = module.declare_func_in_func(weighted_pick_func_id, builder.func);
+        let is_positive_fail_ref = module.declare_func_in_func(is_positive_fail_id, builder.func);
+        let in_range_fail_ref = module.declare_func_in_func(in_range_fail_id, builder.func);
+        let is_one_of_fail_ref = module.declare_func_in_func(is_one_of_fail_id, builder.func);
         let math_unary_refs: Vec<_> = math_unary_ids.iter()
             .map(|id| module.declare_func_in_func(*id, builder.func))
             .collect();
@@ -999,6 +1248,97 @@ fn compile_jit_impl(
                     let mod_result = builder.ins().fsub(a, product);
                     let result = builder.ins().select(is_zero, zero, mod_result);
                     store_slot_f64(&mut builder, buffer_ptr, output_slots[0], result);
+                }
+
+                JitOp::IsPositiveCheck => {
+                    // if input == 0: call jit_is_positive_fail (panics);
+                    // else: store input → output.
+                    // The branch splits to a fail block for the
+                    // violation path; the merge reads through the
+                    // common path after either branch completes.
+                    let val = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let is_zero = builder.ins().icmp(
+                        ir::condcodes::IntCC::Equal, val, zero,
+                    );
+                    let fail_block = builder.create_block();
+                    let ok_block = builder.create_block();
+                    builder.ins().brif(is_zero, fail_block, &[], ok_block, &[]);
+
+                    builder.switch_to_block(fail_block);
+                    builder.seal_block(fail_block);
+                    let _ = builder.ins().call(is_positive_fail_ref, &[val]);
+                    // Extern panics — this is unreachable. Jump to
+                    // ok_block to keep the IR well-formed; the
+                    // branch never runs in practice.
+                    builder.ins().jump(ok_block, &[]);
+
+                    builder.switch_to_block(ok_block);
+                    builder.seal_block(ok_block);
+                    store_slot(&mut builder, buffer_ptr, output_slots[0], val);
+                }
+
+                JitOp::InRangeCheck(lo, hi) => {
+                    // if input < lo || input > hi: call
+                    // jit_in_range_fail (panics); else store
+                    // input → output.
+                    let val = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let lo_v = builder.ins().iconst(types::I64, *lo as i64);
+                    let hi_v = builder.ins().iconst(types::I64, *hi as i64);
+                    let below = builder.ins().icmp(
+                        ir::condcodes::IntCC::UnsignedLessThan, val, lo_v,
+                    );
+                    let above = builder.ins().icmp(
+                        ir::condcodes::IntCC::UnsignedGreaterThan, val, hi_v,
+                    );
+                    let out_of_range = builder.ins().bor(below, above);
+
+                    let fail_block = builder.create_block();
+                    let ok_block = builder.create_block();
+                    builder.ins().brif(out_of_range, fail_block, &[], ok_block, &[]);
+
+                    builder.switch_to_block(fail_block);
+                    builder.seal_block(fail_block);
+                    let _ = builder.ins().call(
+                        in_range_fail_ref, &[val, lo_v, hi_v],
+                    );
+                    builder.ins().jump(ok_block, &[]);
+
+                    builder.switch_to_block(ok_block);
+                    builder.seal_block(ok_block);
+                    store_slot(&mut builder, buffer_ptr, output_slots[0], val);
+                }
+
+                JitOp::IsOneOfCheck(allowed) => {
+                    // Unroll the allow-list as N inline eq
+                    // comparisons OR'd together. Fast-path is
+                    // 1–8 values (the common case); pathologically
+                    // large allow-lists still JIT but cost N
+                    // comparisons per cycle.
+                    let val = load_slot(&mut builder, buffer_ptr, input_slots[0]);
+                    let mut any_match = builder.ins().iconst(types::I8, 0);
+                    for allow in allowed.iter() {
+                        let c = builder.ins().iconst(types::I64, *allow as i64);
+                        let eq = builder.ins().icmp(
+                            ir::condcodes::IntCC::Equal, val, c,
+                        );
+                        any_match = builder.ins().bor(any_match, eq);
+                    }
+                    let fail_block = builder.create_block();
+                    let ok_block = builder.create_block();
+                    // If any_match == 0 (no equality hit),
+                    // branch to the fail extern. Otherwise
+                    // jump straight to ok_block.
+                    builder.ins().brif(any_match, ok_block, &[], fail_block, &[]);
+
+                    builder.switch_to_block(fail_block);
+                    builder.seal_block(fail_block);
+                    let _ = builder.ins().call(is_one_of_fail_ref, &[val]);
+                    builder.ins().jump(ok_block, &[]);
+
+                    builder.switch_to_block(ok_block);
+                    builder.seal_block(ok_block);
+                    store_slot(&mut builder, buffer_ptr, output_slots[0], val);
                 }
 
                 JitOp::Fallback => {
@@ -1500,5 +1840,235 @@ mod tests {
         kernel.eval(&[5]);
         // (5 + 10) * 3 = 45, 45 % 100 = 45
         assert_eq!(kernel.get("out"), 45);
+    }
+
+    // ── Parameter helper predicates ────────────────────────────
+
+    #[test]
+    fn jit_is_positive_check_passes_positive() {
+        let steps = vec![
+            (JitOp::IsPositiveCheck, vec![0], vec![1]),
+        ];
+        let mut output_map = HashMap::new();
+        output_map.insert("out".into(), 1);
+        let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
+        kernel.eval(&[42]);
+        assert_eq!(kernel.get("out"), 42);
+        // Large values pass through unchanged — happy path is a
+        // bare store, not a clamp.
+        kernel.eval(&[u64::MAX]);
+        assert_eq!(kernel.get("out"), u64::MAX);
+    }
+
+    #[test]
+    fn jit_in_range_check_passes_interior() {
+        let steps = vec![
+            (JitOp::InRangeCheck(10, 100), vec![0], vec![1]),
+        ];
+        let mut output_map = HashMap::new();
+        output_map.insert("out".into(), 1);
+        let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
+        kernel.eval(&[50]);
+        assert_eq!(kernel.get("out"), 50);
+        // Boundaries are inclusive.
+        kernel.eval(&[10]);
+        assert_eq!(kernel.get("out"), 10);
+        kernel.eval(&[100]);
+        assert_eq!(kernel.get("out"), 100);
+    }
+
+    // Violation paths for both predicates abort the process
+    // (see [`jit_is_positive_fail`] for the rationale) and
+    // therefore aren't exercised as in-process unit tests — a
+    // JIT-frame abort tears down the whole test runner rather
+    // than failing a single case. The Phase-1 and Phase-2 paths
+    // in `param_helpers.rs` cover the violation messages via
+    // `#[should_panic]`, which is the right tool for catching
+    // the same logical failure when unwinding is available.
+
+    #[test]
+    fn classify_routes_new_param_helpers() {
+        use crate::nodes::param_helpers::{InRangeU64, IsPositiveU64};
+        // The classify_node entrypoint must see the new
+        // predicate nodes and return the JIT-lowered op variants
+        // rather than falling through to Fallback.
+        let p = IsPositiveU64::new("rate");
+        assert!(matches!(classify_node(&p), JitOp::IsPositiveCheck));
+
+        let r = InRangeU64::new(1, 100);
+        assert!(matches!(classify_node(&r), JitOp::InRangeCheck(1, 100)));
+    }
+
+    #[test]
+    fn classify_leaves_other_param_helpers_on_fallback() {
+        use crate::nodes::param_helpers::{
+            MatchesStr, RequiredU64, ThisOrU64,
+        };
+        // By design: required/this_or/matches stay on Phase-2.
+        // classify_node must pick Fallback so the closure-based
+        // eval runs instead of an uninitialized JIT op.
+        assert!(matches!(classify_node(&RequiredU64::new("x")), JitOp::Fallback));
+        assert!(matches!(classify_node(&ThisOrU64::new()), JitOp::Fallback));
+        assert!(matches!(classify_node(&MatchesStr::new(r"^\d+$")), JitOp::Fallback));
+    }
+
+    #[test]
+    fn classify_routes_is_one_of_with_allow_list() {
+        use crate::nodes::param_helpers::IsOneOfU64;
+        let n = IsOneOfU64::new(vec![1, 3, 5, 7]);
+        match classify_node(&n) {
+            JitOp::IsOneOfCheck(allowed) => {
+                assert_eq!(allowed, vec![1, 3, 5, 7]);
+            }
+            other => panic!("expected IsOneOfCheck, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jit_is_one_of_check_passes_allowed_values() {
+        let steps = vec![
+            (JitOp::IsOneOfCheck(vec![1, 2, 3, 5, 8]), vec![0], vec![1]),
+        ];
+        let mut output_map = HashMap::new();
+        output_map.insert("out".into(), 1);
+        let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
+        // Every allowed value passes straight through.
+        for v in [1u64, 2, 3, 5, 8] {
+            kernel.eval(&[v]);
+            assert_eq!(kernel.get("out"), v);
+        }
+    }
+
+    #[test]
+    fn jit_is_one_of_check_accepts_single_element_allow_list() {
+        // Degenerate case — one-value allow-list reduces to an
+        // equality check with panic on mismatch.
+        let steps = vec![
+            (JitOp::IsOneOfCheck(vec![42]), vec![0], vec![1]),
+        ];
+        let mut output_map = HashMap::new();
+        output_map.insert("out".into(), 1);
+        let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
+        kernel.eval(&[42]);
+        assert_eq!(kernel.get("out"), 42);
+    }
+
+    // ── Catchable panic from JIT predicate fails ──────────────
+    //
+    // The extern fail helpers use `_longjmp` back to the Rust
+    // wrapper, which then raises a Rust `panic!` carrying the
+    // violation message. The panic originates in Rust land
+    // (the JIT frame has already been jumped past), so its
+    // unwind works through Rust-personality FDEs and
+    // `std::panic::catch_unwind` catches it normally.
+
+    fn extract_panic_msg(
+        payload: Box<dyn std::any::Any + Send + 'static>,
+    ) -> String {
+        payload.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_else(|| "(non-string panic)".into())
+    }
+
+    #[test]
+    fn jit_is_positive_violation_is_catchable() {
+        let steps = vec![
+            (JitOp::IsPositiveCheck, vec![0], vec![1]),
+        ];
+        let mut output_map = HashMap::new();
+        output_map.insert("out".into(), 1);
+        let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
+        let err = std::panic::catch_unwind(
+            std::panic::AssertUnwindSafe(|| kernel.eval(&[0])),
+        ).expect_err("JIT violation should panic");
+        assert!(extract_panic_msg(err).contains("must be > 0"));
+    }
+
+    #[test]
+    fn jit_in_range_violation_is_catchable() {
+        let steps = vec![
+            (JitOp::InRangeCheck(10, 100), vec![0], vec![1]),
+        ];
+        let mut output_map = HashMap::new();
+        output_map.insert("out".into(), 1);
+        let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
+
+        let err = std::panic::catch_unwind(
+            std::panic::AssertUnwindSafe(|| kernel.eval(&[5])),
+        ).expect_err("below-range should panic");
+        assert!(extract_panic_msg(err).contains("outside [10, 100]"));
+
+        let err = std::panic::catch_unwind(
+            std::panic::AssertUnwindSafe(|| kernel.eval(&[500])),
+        ).expect_err("above-range should panic");
+        assert!(extract_panic_msg(err).contains("outside [10, 100]"));
+    }
+
+    #[test]
+    fn jit_is_one_of_violation_is_catchable() {
+        let steps = vec![
+            (JitOp::IsOneOfCheck(vec![1, 3, 5]), vec![0], vec![1]),
+        ];
+        let mut output_map = HashMap::new();
+        output_map.insert("out".into(), 1);
+        let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
+        let err = std::panic::catch_unwind(
+            std::panic::AssertUnwindSafe(|| kernel.eval(&[2])),
+        ).expect_err("disallowed value should panic");
+        assert!(extract_panic_msg(err).contains("not in configured allow-list"));
+    }
+
+    #[test]
+    fn invoke_with_catch_restores_slot_after_foreign_panic() {
+        // A non-JIT panic from inside `f()` (simulating a bug
+        // in a hybrid-closure step or any other non-longjmp
+        // path that may run between setjmp and return) must
+        // still leave the thread-local JIT_JMP_BUF slot in a
+        // consistent state. The next `invoke_with_catch` that
+        // actually calls into JIT code should see a clean
+        // sentinel.
+        let caught = std::panic::catch_unwind(|| {
+            invoke_with_catch(|| panic!("foreign panic"));
+        });
+        assert!(caught.is_err(), "foreign panic should propagate out");
+
+        // Subsequent legitimate JIT violation is still caught.
+        let steps = vec![
+            (JitOp::IsPositiveCheck, vec![0], vec![1]),
+        ];
+        let mut output_map = HashMap::new();
+        output_map.insert("out".into(), 1);
+        let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
+        let err = std::panic::catch_unwind(
+            std::panic::AssertUnwindSafe(|| kernel.eval(&[0])),
+        ).expect_err("JIT violation should panic cleanly after foreign panic");
+        assert!(extract_panic_msg(err).contains("must be > 0"));
+
+        // And the happy path too — no stale pointer lingering.
+        kernel.eval(&[42]);
+        assert_eq!(kernel.get("out"), 42);
+    }
+
+    #[test]
+    fn jit_kernel_survives_multiple_violations() {
+        // After a caught violation the kernel remains usable —
+        // the jmp_buf slot is correctly cleared and a
+        // subsequent happy-path eval returns normally.
+        let steps = vec![
+            (JitOp::IsPositiveCheck, vec![0], vec![1]),
+        ];
+        let mut output_map = HashMap::new();
+        output_map.insert("out".into(), 1);
+        let mut kernel = compile_jit_raw(1, 2, steps, output_map, Vec::new()).unwrap();
+
+        for _ in 0..3 {
+            let _ = std::panic::catch_unwind(
+                std::panic::AssertUnwindSafe(|| kernel.eval(&[0])),
+            ).expect_err("violation should still panic");
+        }
+        // Happy path still works.
+        kernel.eval(&[42]);
+        assert_eq!(kernel.get("out"), 42);
     }
 }

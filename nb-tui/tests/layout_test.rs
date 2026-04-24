@@ -7,13 +7,16 @@
 //! key elements appear in the right positions.
 
 use std::sync::{Arc, RwLock, mpsc};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
+use nb_metrics::summaries::binomial_summary::BinomialSummary;
+use nb_metrics::summaries::ewma::Ewma;
+use nb_metrics::summaries::peak_tracker::PeakTracker;
 use nb_tui::app::App;
-use nb_tui::state::{RunState, ActivePhase, PhaseStatus};
+use nb_tui::state::{ActivePhase, RunState};
 
 fn test_metrics_query() -> Arc<nb_metrics::metrics_query::MetricsQuery> {
     use nb_metrics::cadence::{Cadences, CadenceTree};
@@ -40,7 +43,11 @@ fn make_test_state() -> Arc<RwLock<RunState>> {
 
     // Active phase
     state.set_phase_running("fknn_rampup_data", "optimize_for=RECALL", 1);
-    state.active = Some(ActivePhase {
+    let key = (
+        "fknn_rampup_data".to_string(),
+        "optimize_for=RECALL".to_string(),
+    );
+    state.active_phases.insert(key, ActivePhase {
         name: "fknn_rampup_data".into(),
         labels: "optimize_for=RECALL".into(),
         cursor_name: "row".into(),
@@ -56,6 +63,10 @@ fn make_test_state() -> Arc<RwLock<RunState>> {
         adapter_counters: vec![("rows_inserted".into(), 19500, 1700.0)],
         rows_per_batch: 7.8,
         relevancy: Vec::new(),
+        throughput_summary: Arc::new(BinomialSummary::new(60)),
+        rate_ewma: Arc::new(Ewma::new(Duration::from_secs(5))),
+        latency_peak_5s: Arc::new(PeakTracker::max(Duration::from_secs(5))),
+        latency_peak_10s: Arc::new(PeakTracker::max(Duration::from_secs(10))),
     });
 
     // Pending phases
@@ -82,9 +93,17 @@ fn make_test_state() -> Arc<RwLock<RunState>> {
 fn render_layout_has_all_sections() {
     let state = make_test_state();
     let (_tx, rx) = mpsc::channel();
-    let app = App::new(rx, state.clone(), test_metrics_query());
+    let mut app = App::new(rx, state.clone(), test_metrics_query());
+    // Maximal LOD expands the detail block (cursor, concurrency,
+    // latency, sparklines) under every phase; this test asserts on
+    // those sections specifically, so force the LOD rather than
+    // running against Default which hides them.
+    app.set_tree_lod_label("max");
 
-    let backend = TestBackend::new(100, 30);
+    // Height needs to fit all phase detail blocks + pending phases
+    // below them; 60 rows comfortably covers every section the test
+    // asserts on.
+    let backend = TestBackend::new(120, 60);
     let mut terminal = Terminal::new(backend).unwrap();
 
     terminal.draw(|frame| app.draw(frame)).unwrap();
@@ -106,18 +125,18 @@ fn render_layout_has_all_sections() {
 
     // Phase panel
     assert!(text.contains("fknn_rampup_data"), "missing active phase name:\n{text}");
-    assert!(text.contains("cursor:row"), "missing cursor name:\n{text}");
-    assert!(text.contains("concurrency:100"), "missing concurrency count:\n{text}");
-    assert!(text.contains("active:100"), "missing active count:\n{text}");
+    assert!(text.contains("cursor row"), "missing cursor name:\n{text}");
+    assert!(text.contains("concurrency: 100"), "missing concurrency count:\n{text}");
+    assert!(text.contains("active: 100"), "missing active count:\n{text}");
 
     // Latency section
     assert!(text.contains("p50"), "missing p50 label:\n{text}");
-    assert!(text.contains("p99"), "missing p99 label:\n{text}");
-    assert!(text.contains("1.2"), "missing p50 value (1.2ms):\n{text}");
+    assert!(text.contains("p90"), "missing p90 label:\n{text}");
+    assert!(text.contains("1.20ms"), "missing p50 value (1.20ms):\n{text}");
 
-    // Sparkline section
-    assert!(text.contains("ops/s"), "missing ops/s sparkline:\n{text}");
-    assert!(text.contains("rows/s"), "missing rows/s sparkline:\n{text}");
+    // Sparkline / rate section — rendered as "rows/s" in the
+    // detail block.
+    assert!(text.contains("rows/s"), "missing rows/s label:\n{text}");
 
     // Scenario tree
     assert!(text.contains("✓"), "missing completed phase marker:\n{text}");
@@ -132,12 +151,17 @@ fn render_layout_has_all_sections() {
 
 #[test]
 fn render_layout_no_active_phase() {
-    let state = Arc::new(RwLock::new(
-        RunState::new("test.yaml", "smoke", "stdout")
-    ));
+    // At least one pending phase must exist for the tree to have
+    // a "nothing running yet" state (rather than "scenario
+    // complete"). The placeholder surfaces in Focus LOD when
+    // phases exist but none are Running.
+    let mut rs = RunState::new("test.yaml", "smoke", "stdout");
+    rs.add_phase("init", "", 0);
+    let state = Arc::new(RwLock::new(rs));
 
     let (_tx, rx) = mpsc::channel();
-    let app = App::new(rx, state, test_metrics_query());
+    let mut app = App::new(rx, state, test_metrics_query());
+    app.set_tree_lod_label("focus");
 
     let backend = TestBackend::new(80, 20);
     let mut terminal = Terminal::new(backend).unwrap();

@@ -10,6 +10,8 @@
 pub mod labels;
 pub mod instruments;
 pub mod summaries;
+pub mod selector;
+pub mod controls;
 pub mod scheduler;
 pub mod reporters;
 pub mod component;

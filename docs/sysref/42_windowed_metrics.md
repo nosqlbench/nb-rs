@@ -765,36 +765,35 @@ the cadences they register.
 
 ---
 
-## Open Questions
+## Design decisions
 
-- **Histogram retention for `past()` queries. ✓ Resolved (phase 4).**
-  Each cadence keeps a fixed ring of `HISTORY_RING_CAP=32`
-  coalesced histograms — bounded memory regardless of run length
+- **Histogram retention for `past()` queries.** Each cadence
+  keeps a fixed ring of `HISTORY_RING_CAP=32` coalesced
+  histograms — bounded memory regardless of run length
   (`cadences × 32 × ~200 KiB`). `past(span)` walks the smallest
   cadence whose ring fully covers `span`, falling through to
   larger cadences when finer rings haven't accumulated enough.
-- **Cross-component queries. ✓ Resolved (architecture).** The
-  cadence reporter's snapshot capture walks the component tree at
-  every smallest-cadence tick, so cross-component visibility is
-  intrinsic — there is no separate per-component windowed handle
-  to compose. A session-level query is just a `MetricsQuery` call
-  with the session's component as the subtree root.
-- **Default max fan-in.** Reframed (no longer a profiling
-  question). With streaming coalesce, `K` barely affects per-tick
-  cost or steady-state memory — what it actually controls is
-  (a) in-flight data loss on crash (one prebuffer per layer,
-  worst-case `K × layers × base_interval` of unmaterialized
-  snapshots — ≈2 min at K=20 / 6 layers / 1s base), and
-  (b) `recent_window` / `past(span)` granularity (lower K inserts
-  more hidden layers, giving these queries finer tiles to
-  combine). The default of 20 stays. Operators tuning it should
-  ask "how granular do I want my windowed-history queries?", not
-  "how fast do I want coalesce to run?" — the latter is invariant
-  in K.
-- **Lifetime as a cadence. ✓ Resolved (mechanism).** Falls out of
-  the streaming cascade: a cadence whose interval ≥ session
-  duration never promotes mid-session, so its prebuffer simply
-  accumulates every smaller-cadence close indefinitely.
+- **Cross-component queries.** The cadence reporter's snapshot
+  capture walks the component tree at every smallest-cadence
+  tick, so cross-component visibility is intrinsic — there is
+  no separate per-component windowed handle to compose. A
+  session-level query is just a `MetricsQuery` call with the
+  session's component as the subtree root.
+- **Default max fan-in (`K=20`).** With streaming coalesce, `K`
+  barely affects per-tick cost or steady-state memory — what it
+  actually controls is (a) in-flight data loss on crash (one
+  prebuffer per layer, worst-case `K × layers × base_interval`
+  of unmaterialized snapshots — ≈2 min at K=20 / 6 layers / 1s
+  base), and (b) `recent_window` / `past(span)` granularity
+  (lower K inserts more hidden layers, giving these queries
+  finer tiles to combine). Operators tuning it should ask "how
+  granular do I want my windowed-history queries?", not "how
+  fast do I want coalesce to run?" — the latter is invariant in
+  K.
+- **Lifetime as a cadence.** Falls out of the streaming
+  cascade: a cadence whose interval ≥ session duration never
+  promotes mid-session, so its prebuffer simply accumulates
+  every smaller-cadence close indefinitely.
   `cadence_window(LIFETIME)` peeks that prebuffer rather than
   waiting for a promotion. No separate accumulator API needed —
   see §"Streaming coalesce semantics → Why this matters →

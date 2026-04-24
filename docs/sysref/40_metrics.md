@@ -14,10 +14,6 @@ HDR histogram recording nanosecond-precision durations.
 Delta semantics: each `snapshot()` returns data since the
 last snapshot and resets the accumulator.
 
->> If the significant digits can be configured, this should be exposed as a component level option.
->> In nosqlbench, it was stored on the component tree as a property so any component in the runtime could trace back towards the trunck to find its hdr digits, even if it was already at the end of a branch in the op template.
->> We need a good way to achieve a similar result here, and the component tree might be it.
-
 ```rust
 pub struct Timer {
     labels: Labels,
@@ -26,6 +22,44 @@ pub struct Timer {
 ```
 
 Used for: `service_time`, `wait_time`, `response_time`.
+
+#### HDR significant digits — subtree-scoped setting
+
+The precision of an HDR histogram is fixed at construction
+time (bucket layout depends on `sigdigs`). Rather than
+hard-coding the value or repeating it at every instrument
+declaration, `sigdigs` is a **subtree-scoped setting**
+resolved through the component tree:
+
+1. **Session-root typed property.** At session bootstrap,
+   the runner sets `hdr.sigdigs` as a typed
+   `Component::property` on the session root, before any
+   instrument is constructed. CLI / workload configuration
+   feeds the initial value; absent override, the runner
+   picks the project default.
+2. **Walk-up resolution at instrument construction.** Every
+   `Timer` / histogram resolves `hdr.sigdigs` by walking up
+   the component tree from its own node until it finds the
+   declared property — matching the nosqlbench pattern. No
+   duplicate declarations needed down the tree.
+3. **Branch-scoped control after bootstrap.** The same name
+   is also declared as a branch-scoped control (SRD 23
+   §"Branch-scoped and final controls") rooted at the
+   session. A runtime write updates the committed value so
+   **newly instantiated reservoirs** pick up the change;
+   existing reservoirs keep their fixed bucket layout.
+4. **No live reservoir swap.** Reconfiguring `hdr.sigdigs`
+   mid-run does not reconstruct in-flight histograms. That
+   would either lose accumulated data or force a lossy
+   re-bucket. The contract is "future reservoirs see the
+   new value" — operators who need the new precision
+   applied to already-running instruments restart the
+   owning component.
+
+This resolves the tension between "I want to configure HDR
+precision once at the session level" (property walk-up) and
+"I want to adjust it during a long run" (branch-scoped
+control) without inventing a separate mechanism for either.
 
 ### Counter
 

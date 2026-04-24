@@ -92,6 +92,11 @@ pub struct Component {
     /// Instruments owned by this component. None for structural-only
     /// nodes (session, scenario) that don't directly record metrics.
     instruments: Option<Arc<dyn InstrumentSet>>,
+    /// Dynamic-controls declared on this component (SRD 23).
+    /// Empty unless the code that instantiates the component
+    /// explicitly declares a control via
+    /// `component.controls().declare(...)`.
+    controls: crate::controls::ControlRegistry,
 }
 
 impl Component {
@@ -108,6 +113,7 @@ impl Component {
             children: Vec::new(),
             state: ComponentState::Starting,
             instruments: None,
+            controls: crate::controls::ControlRegistry::new(),
         }
     }
 
@@ -176,6 +182,103 @@ impl Component {
         self.children.iter()
     }
 
+    /// Borrow this component's dynamic-controls registry. Every
+    /// component carries one; empty until something declares a
+    /// control on it. See SRD 23.
+    pub fn controls(&self) -> &crate::controls::ControlRegistry {
+        &self.controls
+    }
+
+    /// Resolve a typed control by name, walking up the parent
+    /// chain. This component's registry is checked first; then
+    /// each ancestor in order. An ancestor declaration is only
+    /// honored if its [`BranchScope`] is `Subtree` —
+    /// [`BranchScope::Local`] declarations do not propagate to
+    /// descendants. Returns `None` if no in-scope declaration
+    /// matches the `<name, T>` pair.
+    ///
+    /// Mirrors [`Self::get_prop`] but for typed controls (SRD 23
+    /// §"Branch-scoped and final controls").
+    pub fn find_control_up<T>(&self, name: &str)
+        -> Option<crate::controls::Control<T>>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        if let Some(c) = self.controls.get::<T>(name) {
+            return Some(c);
+        }
+        if let Some(ref parent_weak) = self.parent {
+            if let Some(parent_arc) = parent_weak.upgrade() {
+                if let Ok(parent) = parent_arc.read() {
+                    return parent.find_control_up_subtree::<T>(name);
+                }
+            }
+        }
+        None
+    }
+
+    /// Ancestor-side recursion. Honors [`BranchScope::Subtree`]
+    /// on an ancestor's declaration; otherwise keeps walking.
+    fn find_control_up_subtree<T>(&self, name: &str)
+        -> Option<crate::controls::Control<T>>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        if let Some(erased) = self.controls.get_erased(name) {
+            if erased.branch_scope() == crate::controls::BranchScope::Subtree {
+                if let Some(c) = self.controls.get::<T>(name) {
+                    return Some(c);
+                }
+            }
+        }
+        if let Some(ref parent_weak) = self.parent {
+            if let Some(parent_arc) = parent_weak.upgrade() {
+                if let Ok(parent) = parent_arc.read() {
+                    return parent.find_control_up_subtree::<T>(name);
+                }
+            }
+        }
+        None
+    }
+
+    /// Erased variant of [`Self::find_control_up`] — returns
+    /// just the enumeration handle, useful for diagnostics
+    /// (`dryrun=controls`, TUI surfaces) that don't need the
+    /// typed value.
+    pub fn find_control_erased_up(&self, name: &str)
+        -> Option<std::sync::Arc<dyn crate::controls::ErasedControl>>
+    {
+        if let Some(erased) = self.controls.get_erased(name) {
+            return Some(erased);
+        }
+        if let Some(ref parent_weak) = self.parent {
+            if let Some(parent_arc) = parent_weak.upgrade() {
+                if let Ok(parent) = parent_arc.read() {
+                    return parent.find_control_erased_up_subtree(name);
+                }
+            }
+        }
+        None
+    }
+
+    fn find_control_erased_up_subtree(&self, name: &str)
+        -> Option<std::sync::Arc<dyn crate::controls::ErasedControl>>
+    {
+        if let Some(erased) = self.controls.get_erased(name) {
+            if erased.branch_scope() == crate::controls::BranchScope::Subtree {
+                return Some(erased);
+            }
+        }
+        if let Some(ref parent_weak) = self.parent {
+            if let Some(parent_arc) = parent_weak.upgrade() {
+                if let Ok(parent) = parent_arc.read() {
+                    return parent.find_control_erased_up_subtree(name);
+                }
+            }
+        }
+        None
+    }
+
     /// Count of `Running`-state descendants (this component's
     /// children, grandchildren, …). Used by callers that want a
     /// structural "how many phases are in flight?" query against
@@ -193,6 +296,141 @@ impl Component {
             }
         }
         count
+    }
+}
+
+// =========================================================================
+// Selector-based lookup (SRD 24)
+// =========================================================================
+
+/// Collect every component in a subtree whose `effective_labels`
+/// match the selector. Order is pre-order DFS: root first, then
+/// each child's subtree in insertion order.
+///
+/// Selector-based lookup takes an `Arc<RwLock<Component>>` root
+/// (rather than `&Component`) because the results must also be
+/// `Arc<RwLock<Component>>` — `find`'s Vec is a list of live
+/// handles callers can then mutate, not a snapshot. Scoping a
+/// query to a subtree is expressed by passing that subtree's
+/// `Arc` as the root.
+///
+/// The query is read-only against every visited component: a
+/// failed `read()` (e.g. poisoned lock) is treated as "this
+/// subtree is opaque for this query" and silently skipped.
+/// Collection order is stable across calls as long as no
+/// components are attached or detached mid-traversal.
+pub fn find(
+    root: &Arc<RwLock<Component>>,
+    sel: &crate::selector::Selector,
+) -> Vec<Arc<RwLock<Component>>> {
+    let mut out = Vec::new();
+    find_into(root, sel, &mut out);
+    out
+}
+
+fn find_into(
+    root: &Arc<RwLock<Component>>,
+    sel: &crate::selector::Selector,
+    out: &mut Vec<Arc<RwLock<Component>>>,
+) {
+    let Ok(guard) = root.read() else { return };
+    if sel.matches(&guard.effective_labels) {
+        out.push(root.clone());
+    }
+    let children = guard.children.clone();
+    drop(guard);
+    for child in &children {
+        find_into(child, sel, out);
+    }
+}
+
+/// Expect exactly one match. Returns
+/// [`crate::selector::LookupError::NotFound`] or
+/// [`crate::selector::LookupError::Ambiguous`] otherwise.
+///
+/// Short-circuits on the second hit — the Vec-returning [`find`]
+/// is preferable when all matches are wanted.
+pub fn find_one(
+    root: &Arc<RwLock<Component>>,
+    sel: &crate::selector::Selector,
+) -> Result<Arc<RwLock<Component>>, crate::selector::LookupError> {
+    let mut first: Option<Arc<RwLock<Component>>> = None;
+    let mut count = 0usize;
+    find_one_walk(root, sel, &mut first, &mut count);
+    match first {
+        None => Err(crate::selector::LookupError::NotFound),
+        Some(c) if count == 1 => Ok(c),
+        Some(_) => Err(crate::selector::LookupError::Ambiguous { count }),
+    }
+}
+
+fn find_one_walk(
+    root: &Arc<RwLock<Component>>,
+    sel: &crate::selector::Selector,
+    first: &mut Option<Arc<RwLock<Component>>>,
+    count: &mut usize,
+) {
+    let Ok(guard) = root.read() else { return };
+    if sel.matches(&guard.effective_labels) {
+        *count += 1;
+        if first.is_none() {
+            *first = Some(root.clone());
+        }
+        // Keep walking so `count` reflects the total — callers
+        // rely on the Ambiguous count.
+    }
+    let children = guard.children.clone();
+    drop(guard);
+    for child in &children {
+        find_one_walk(child, sel, first, count);
+    }
+}
+
+/// True if any component in the subtree matches. Short-circuits
+/// on the first hit.
+pub fn any(
+    root: &Arc<RwLock<Component>>,
+    sel: &crate::selector::Selector,
+) -> bool {
+    any_walk(root, sel)
+}
+
+fn any_walk(
+    root: &Arc<RwLock<Component>>,
+    sel: &crate::selector::Selector,
+) -> bool {
+    let Ok(guard) = root.read() else { return false };
+    if sel.matches(&guard.effective_labels) {
+        return true;
+    }
+    let children = guard.children.clone();
+    drop(guard);
+    children.iter().any(|c| any_walk(c, sel))
+}
+
+/// Count every matching component in the subtree.
+pub fn count(
+    root: &Arc<RwLock<Component>>,
+    sel: &crate::selector::Selector,
+) -> usize {
+    let mut n = 0usize;
+    count_walk(root, sel, &mut n);
+    n
+}
+
+fn count_walk(
+    root: &Arc<RwLock<Component>>,
+    sel: &crate::selector::Selector,
+    n: &mut usize,
+) {
+    let Ok(guard) = root.read() else { return };
+    if sel.matches(&guard.effective_labels) {
+        *n += 1;
+    }
+    let children = guard.children.clone();
+    drop(guard);
+    for child in &children {
+        count_walk(child, sel, n);
     }
 }
 
@@ -251,22 +489,38 @@ fn capture_recursive(
     interval: Duration,
     results: &mut Vec<(Labels, MetricSet)>,
 ) {
-    let (state, effective_labels, instruments, children) = {
-        let n = node.read().unwrap_or_else(|e| e.into_inner());
-        (
-            n.state,
-            n.effective_labels.clone(),
-            n.instruments.clone(),
-            n.children.clone(),
-        )
+    // Take a read guard, snapshot the values we need, drop the
+    // guard before recursing so child locks don't nest on ours.
+    let guard = node.read().ok();
+    let (state, effective_labels, instruments, children, control_gauges) = match guard {
+        Some(n) => {
+            let controls_snap = n.controls.snapshot_gauges(
+                &n.effective_labels,
+                std::time::Instant::now(),
+            );
+            (
+                n.state,
+                n.effective_labels.clone(),
+                n.instruments.clone(),
+                n.children.clone(),
+                controls_snap,
+            )
+        }
+        None => return,
     };
 
     if state == ComponentState::Running {
         if let Some(ref instr) = instruments {
             let snapshot = instr.capture_delta(interval);
             if !snapshot.is_empty() {
-                results.push((effective_labels, snapshot));
+                results.push((effective_labels.clone(), snapshot));
             }
+        }
+        // Reified control gauges — one per declared control that
+        // has a numeric projection. Published at every tick so
+        // they flow through the same sinks as regular metrics.
+        if !control_gauges.is_empty() {
+            results.push((effective_labels, control_gauges));
         }
     }
 
@@ -291,22 +545,33 @@ fn capture_current_recursive(
     node: &Arc<RwLock<Component>>,
     results: &mut Vec<(Labels, MetricSet)>,
 ) {
-    let (state, effective_labels, instruments, children) = {
-        let n = node.read().unwrap_or_else(|e| e.into_inner());
-        (
-            n.state,
-            n.effective_labels.clone(),
-            n.instruments.clone(),
-            n.children.clone(),
-        )
+    let guard = node.read().ok();
+    let (state, effective_labels, instruments, children, control_gauges) = match guard {
+        Some(n) => {
+            let controls_snap = n.controls.snapshot_gauges(
+                &n.effective_labels,
+                std::time::Instant::now(),
+            );
+            (
+                n.state,
+                n.effective_labels.clone(),
+                n.instruments.clone(),
+                n.children.clone(),
+                controls_snap,
+            )
+        }
+        None => return,
     };
 
     if state == ComponentState::Running {
         if let Some(ref instr) = instruments {
             let snapshot = instr.capture_current();
             if !snapshot.is_empty() {
-                results.push((effective_labels, snapshot));
+                results.push((effective_labels.clone(), snapshot));
             }
+        }
+        if !control_gauges.is_empty() {
+            results.push((effective_labels, control_gauges));
         }
     }
 
@@ -504,5 +769,433 @@ mod tests {
         assert_eq!(eff.get("session"), Some("s1"));
         assert_eq!(eff.get("scenario"), Some("default"));
         assert_eq!(eff.get("phase"), Some("search"));
+    }
+
+    // =====================================================================
+    // Selector-based lookup (SRD 24)
+    // =====================================================================
+
+    /// Fixture: a small session tree with two activity subtrees,
+    /// each holding a handful of phases with distinct label shapes.
+    /// Returns the session root + quick accessors to named nodes
+    /// so individual tests don't rebuild.
+    fn sample_tree() -> Arc<RwLock<Component>> {
+        let root = Component::root(
+            Labels::empty()
+                .with("type", "session")
+                .with("session", "test-session"),
+            HashMap::new(),
+        );
+        // Activity A: rampup + two ann_query phases at different k.
+        let activity_a = Arc::new(RwLock::new(Component::new(
+            Labels::empty().with("type", "activity").with("name", "a"),
+            HashMap::new(),
+        )));
+        attach(&root, &activity_a);
+        let rampup = Arc::new(RwLock::new(Component::new(
+            Labels::empty().with("type", "phase").with("name", "rampup")
+                .with("profile", "label_00"),
+            HashMap::new(),
+        )));
+        attach(&activity_a, &rampup);
+        for k in ["10", "100"] {
+            let aq = Arc::new(RwLock::new(Component::new(
+                Labels::empty().with("type", "phase").with("name", "ann_query")
+                    .with("profile", "label_00").with("k", k),
+                HashMap::new(),
+            )));
+            attach(&activity_a, &aq);
+        }
+        // Activity B: one phase with a different profile shape.
+        let activity_b = Arc::new(RwLock::new(Component::new(
+            Labels::empty().with("type", "activity").with("name", "b"),
+            HashMap::new(),
+        )));
+        attach(&root, &activity_b);
+        let teardown = Arc::new(RwLock::new(Component::new(
+            Labels::empty().with("type", "phase").with("name", "teardown")
+                .with("profile", "label_99"),
+            HashMap::new(),
+        )));
+        attach(&activity_b, &teardown);
+        root
+    }
+
+    #[test]
+    fn find_returns_every_match_in_preorder() {
+        let root = sample_tree();
+        // Every component with type=phase — expect 4 across both activities.
+        let sel = crate::selector::Selector::new().eq("type", "phase");
+        let hits = find(&root, &sel);
+        assert_eq!(hits.len(), 4);
+        // Pre-order DFS: activity_a's rampup + ann_queries first,
+        // then activity_b's teardown. Verify by reading names.
+        let names: Vec<String> = hits.iter()
+            .filter_map(|c| c.read().ok().and_then(|g|
+                g.effective_labels().get("name").map(|s| s.to_string())
+            ))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["rampup", "ann_query", "ann_query", "teardown"],
+        );
+    }
+
+    #[test]
+    fn find_with_empty_selector_returns_everything() {
+        let root = sample_tree();
+        let all = find(&root, &crate::selector::Selector::new());
+        // session root + 2 activities + (rampup + 2 ann_query + teardown) = 7
+        assert_eq!(all.len(), 7);
+    }
+
+    #[test]
+    fn find_with_glob_and_eq_conjunction() {
+        let root = sample_tree();
+        let sel = crate::selector::Selector::new()
+            .eq("type", "phase")
+            .glob("name", "ann_*");
+        let hits = find(&root, &sel);
+        assert_eq!(hits.len(), 2);
+        for h in &hits {
+            let g = h.read().unwrap();
+            assert_eq!(g.effective_labels().get("name"), Some("ann_query"));
+        }
+    }
+
+    #[test]
+    fn find_with_present_and_absent_clauses() {
+        let root = sample_tree();
+        // Phases that carry a `k` label (only ann_queries do).
+        let with_k = find(&root, &crate::selector::Selector::new()
+            .eq("type", "phase").present("k"));
+        assert_eq!(with_k.len(), 2);
+
+        // Phases that do NOT carry a `k` label.
+        let without_k = find(&root, &crate::selector::Selector::new()
+            .eq("type", "phase").absent("k"));
+        assert_eq!(without_k.len(), 2); // rampup + teardown
+    }
+
+    #[test]
+    fn find_one_exact_match() {
+        let root = sample_tree();
+        let sel = crate::selector::Selector::new()
+            .eq("type", "phase").eq("name", "rampup");
+        let c = find_one(&root, &sel).unwrap();
+        assert_eq!(
+            c.read().unwrap().effective_labels().get("name"),
+            Some("rampup"),
+        );
+    }
+
+    #[test]
+    fn find_one_not_found() {
+        let root = sample_tree();
+        let sel = crate::selector::Selector::new().eq("name", "nowhere");
+        // `Component` doesn't implement Debug / PartialEq, so we
+        // can't `assert_eq!(find_one(...), Err(...))` directly
+        // — inspect the `Err` arm with a match instead.
+        match find_one(&root, &sel) {
+            Err(crate::selector::LookupError::NotFound) => {}
+            Err(other) => panic!("expected NotFound, got {other:?}"),
+            Ok(_) => panic!("expected NotFound, got a match"),
+        }
+    }
+
+    #[test]
+    fn find_one_ambiguous_reports_count() {
+        let root = sample_tree();
+        // Two ann_query phases share these labels.
+        let sel = crate::selector::Selector::new()
+            .eq("type", "phase").eq("name", "ann_query");
+        match find_one(&root, &sel) {
+            Err(crate::selector::LookupError::Ambiguous { count }) => {
+                assert_eq!(count, 2);
+            }
+            Err(other) => panic!("expected Ambiguous, got {other:?}"),
+            Ok(_) => panic!("expected Ambiguous, got a single match"),
+        }
+    }
+
+    #[test]
+    fn any_short_circuits_on_first_hit() {
+        let root = sample_tree();
+        assert!(any(&root, &crate::selector::Selector::new().eq("name", "rampup")));
+        assert!(!any(&root, &crate::selector::Selector::new().eq("name", "zzz")));
+    }
+
+    #[test]
+    fn count_matches_len_of_find() {
+        let root = sample_tree();
+        let sel = crate::selector::Selector::new().eq("type", "phase");
+        assert_eq!(count(&root, &sel), find(&root, &sel).len());
+    }
+
+    #[test]
+    fn query_from_subtree_is_scoped() {
+        let root = sample_tree();
+        // Start the lookup from activity_a; activity_b's teardown
+        // must NOT appear.
+        let activity_a = root.read().unwrap().children.first().unwrap().clone();
+        let hits = find(&activity_a,
+            &crate::selector::Selector::new().eq("type", "phase"));
+        assert_eq!(hits.len(), 3); // rampup + 2 ann_queries, no teardown
+    }
+
+    #[test]
+    fn effective_labels_include_inherited_session_label() {
+        // Selectors compose with parent-inherited labels because
+        // they match on `effective_labels`, which is the merged
+        // set.
+        let root = sample_tree();
+        // Filter by a label defined on the session root — every
+        // descendant inherits it.
+        let sel = crate::selector::Selector::new()
+            .eq("session", "test-session")
+            .eq("type", "phase");
+        assert_eq!(count(&root, &sel), 4);
+    }
+
+    #[test]
+    fn selector_macro_drives_find() {
+        // End-to-end use of the `selector!` macro against the
+        // tree, for the exact call-site ergonomics SRD 24 shows.
+        let root = sample_tree();
+        let hits = find(&root, &crate::selector!(type = "phase", name = "teardown"));
+        assert_eq!(hits.len(), 1);
+    }
+
+    // =====================================================================
+    // Controls on components (SRD 23)
+    // =====================================================================
+
+    /// Controls declared on a component are reachable via
+    /// `component.controls()` — proving the registry is wired
+    /// through the Component API, not just present as a field.
+    #[tokio::test]
+    async fn controls_declare_and_lookup_through_component() {
+        let root = Component::root(Labels::of("session", "s"), HashMap::new());
+        {
+            let guard = root.read().unwrap();
+            guard.controls().declare(
+                crate::controls::ControlBuilder::new("concurrency", 16u32).build(),
+            );
+        }
+        // Look up and mutate.
+        let c: crate::controls::Control<u32> = {
+            let guard = root.read().unwrap();
+            guard.controls().get::<u32>("concurrency").unwrap()
+        };
+        c.set(32, crate::controls::ControlOrigin::Test).await.unwrap();
+        // Re-reading from the component's registry yields the
+        // same Arc-shared state.
+        let reread: crate::controls::Control<u32> = {
+            let guard = root.read().unwrap();
+            guard.controls().get::<u32>("concurrency").unwrap()
+        };
+        assert_eq!(reread.value(), 32);
+    }
+
+    #[tokio::test]
+    async fn reified_control_gauges_flow_through_capture_tree() {
+        // Full integration: declare a reified control on a
+        // running component → capture_tree → the captured
+        // MetricSets include the control's gauge.
+        let root = Component::root(
+            Labels::empty().with("type", "session").with("session", "s1"),
+            HashMap::new(),
+        );
+        let phase = Arc::new(RwLock::new(Component::new(
+            Labels::empty().with("type", "phase").with("name", "rampup"),
+            HashMap::new(),
+        )));
+        attach(&root, &phase);
+        {
+            let p = phase.write().unwrap();
+            p.controls().declare(
+                crate::controls::ControlBuilder::new("concurrency", 8u32)
+                    .reify_as_gauge(|v| Some(*v as f64))
+                    .build(),
+            );
+            // Mark the phase Running so capture walks it.
+        }
+        phase.write().unwrap().set_state(ComponentState::Running);
+
+        // Mutate the control after the tree is set up.
+        let c: crate::controls::Control<u32> = phase.read().unwrap()
+            .controls().get::<u32>("concurrency").unwrap();
+        c.set(64, crate::controls::ControlOrigin::Test).await.unwrap();
+
+        // `capture_tree` should now surface a `control.concurrency`
+        // gauge with the updated value and the phase's labels.
+        let captured = capture_tree(&root, Duration::from_secs(1));
+        let mut found_value: Option<f64> = None;
+        for (labels, set) in &captured {
+            if labels.get("name") != Some("rampup") { continue; }
+            if let Some(fam) = set.family("control.concurrency") {
+                if let Some(m) = fam.metrics().next() {
+                    if let Some(p) = m.point() {
+                        if let crate::snapshot::MetricValue::Gauge(g) = p.value() {
+                            found_value = Some(g.value);
+                        }
+                    }
+                    // The family's metric should carry both the
+                    // inherited phase labels AND the `control=...`
+                    // dimension the registry adds.
+                    assert_eq!(m.labels().get("name"), Some("rampup"));
+                    assert_eq!(m.labels().get("control"), Some("concurrency"));
+                }
+            }
+        }
+        assert_eq!(found_value, Some(64.0));
+
+        // `capture_tree_current` (non-draining) must also surface it.
+        let current = capture_tree_current(&root);
+        let mut saw_via_current = false;
+        for (_, set) in &current {
+            if set.family("control.concurrency").is_some() {
+                saw_via_current = true;
+            }
+        }
+        assert!(saw_via_current);
+    }
+
+    /// `dryrun=controls`-style enumeration — walk the tree,
+    /// ask each component for its declared controls, and render
+    /// the set. Validates that the selector + lookup + controls
+    /// combination covers the discovery UX SRD 23 calls out.
+    #[test]
+    fn dryrun_controls_enumeration_over_tree() {
+        let root = sample_tree();
+        // Declare a control on each phase — different value types
+        // per phase so the erased rendering has to cope.
+        let phase_hits = find(&root,
+            &crate::selector::Selector::new().eq("type", "phase"));
+        for (idx, phase) in phase_hits.iter().enumerate() {
+            let guard = phase.read().unwrap();
+            guard.controls().declare(
+                crate::controls::ControlBuilder::new(
+                    "concurrency",
+                    (10 * (idx + 1)) as u32,
+                ).build(),
+            );
+        }
+
+        // Enumerate: walk every component, list its controls.
+        let mut entries: Vec<(String, String)> = Vec::new();
+        for c in find(&root, &crate::selector::Selector::new()) {
+            let guard = c.read().unwrap();
+            let labels = guard.effective_labels().clone();
+            for ctl in guard.controls().list() {
+                entries.push((
+                    format!(
+                        "{}/{}",
+                        labels.get("name").unwrap_or("-"),
+                        ctl.name(),
+                    ),
+                    ctl.value_string(),
+                ));
+            }
+        }
+
+        // Every declared control is reachable through the walk.
+        assert_eq!(entries.len(), phase_hits.len());
+        // Values round-trip through the erased render.
+        for (key, value) in &entries {
+            assert!(key.ends_with("/concurrency"), "key = {key}");
+            assert!(value.parse::<u32>().is_ok(), "value = {value}");
+        }
+    }
+
+    // ---- Branch-scoped control walk-up (SRD 23) ------------------
+
+    #[test]
+    fn branch_scope_subtree_resolves_from_descendant() {
+        use crate::controls::{BranchScope, ControlBuilder};
+
+        // session has a Subtree-scoped hdr_sigdigs; phase does
+        // not declare it. A descendant read walks up and finds
+        // the session's declaration.
+        let root = Component::root(
+            Labels::empty().with("type", "session").with("session", "s1"),
+            HashMap::new(),
+        );
+        let phase = Arc::new(RwLock::new(Component::new(
+            Labels::empty().with("type", "phase").with("name", "rampup"),
+            HashMap::new(),
+        )));
+        attach(&root, &phase);
+
+        root.read().unwrap().controls().declare(
+            ControlBuilder::new("hdr_sigdigs", 3u32)
+                .branch_scope(BranchScope::Subtree)
+                .build(),
+        );
+
+        let resolved = phase.read().unwrap()
+            .find_control_up::<u32>("hdr_sigdigs");
+        assert!(resolved.is_some(), "Subtree-scoped control should be visible to descendant");
+        assert_eq!(resolved.unwrap().value(), 3u32);
+    }
+
+    #[test]
+    fn branch_scope_local_does_not_leak_to_descendants() {
+        use crate::controls::{BranchScope, ControlBuilder};
+
+        let root = Component::root(
+            Labels::empty().with("type", "session").with("session", "s1"),
+            HashMap::new(),
+        );
+        let phase = Arc::new(RwLock::new(Component::new(
+            Labels::empty().with("type", "phase").with("name", "rampup"),
+            HashMap::new(),
+        )));
+        attach(&root, &phase);
+
+        // Default BranchScope::Local — phase should NOT see it.
+        root.read().unwrap().controls().declare(
+            ControlBuilder::new("private", 99u32)
+                .branch_scope(BranchScope::Local)
+                .build(),
+        );
+
+        let leaked = phase.read().unwrap()
+            .find_control_up::<u32>("private");
+        assert!(leaked.is_none(),
+            "Local-scoped control must not be visible to descendants");
+    }
+
+    #[test]
+    fn nearest_declaration_wins_during_walk_up() {
+        use crate::controls::{BranchScope, ControlBuilder};
+
+        // Session declares hdr_sigdigs=3 Subtree; phase
+        // re-declares it Local=5. The descendant read should
+        // return the phase's value (nearest wins).
+        let root = Component::root(
+            Labels::empty().with("type", "session").with("session", "s1"),
+            HashMap::new(),
+        );
+        let phase = Arc::new(RwLock::new(Component::new(
+            Labels::empty().with("type", "phase").with("name", "rampup"),
+            HashMap::new(),
+        )));
+        attach(&root, &phase);
+
+        root.read().unwrap().controls().declare(
+            ControlBuilder::new("hdr_sigdigs", 3u32)
+                .branch_scope(BranchScope::Subtree)
+                .build(),
+        );
+        phase.read().unwrap().controls().declare(
+            ControlBuilder::new("hdr_sigdigs", 5u32).build(),
+        );
+
+        let v = phase.read().unwrap()
+            .find_control_up::<u32>("hdr_sigdigs")
+            .unwrap()
+            .value();
+        assert_eq!(v, 5u32, "phase override should win over session default");
     }
 }

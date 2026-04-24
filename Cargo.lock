@@ -2012,16 +2012,20 @@ version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "criterion",
+ "futures",
  "hdrhistogram",
  "regex",
  "reqwest 0.12.28",
  "rusqlite",
+ "tokio",
 ]
 
 [[package]]
 name = "nb-rate"
 version = "0.1.1"
 dependencies = [
+ "futures",
+ "nb-metrics",
  "tokio",
 ]
 
@@ -2058,8 +2062,10 @@ version = "0.1.1"
 dependencies = [
  "crossterm",
  "hdrhistogram",
+ "libc",
  "nb-activity",
  "nb-metrics",
+ "nb-variates",
  "ratatui",
  "throbber-widgets-tui",
  "tokio",
@@ -2098,6 +2104,7 @@ dependencies = [
  "askama 0.15.6",
  "askama-derive-axum",
  "axum",
+ "http-body-util",
  "nb-activity",
  "nb-metrics",
  "nb-variates",
@@ -2105,6 +2112,7 @@ dependencies = [
  "serde_json",
  "socket2 0.5.10",
  "tokio",
+ "tower",
  "tower-http",
 ]
 

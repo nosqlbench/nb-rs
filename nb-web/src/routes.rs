@@ -204,6 +204,172 @@ pub async fn ingest_prometheus(
     StatusCode::NO_CONTENT
 }
 
+// ─── Dynamic Controls (SRD 23) ──────────────────────────────
+
+/// JSON view of a dynamic control for the API listing.
+#[derive(serde::Serialize, Debug, Clone)]
+pub struct ControlView {
+    pub component: String,
+    pub name: String,
+    pub value_type: String,
+    pub value: String,
+    pub value_f64: Option<f64>,
+    pub rev: u64,
+    pub origin: String,
+    pub scope: &'static str,
+    pub final_scope: Option<String>,
+    pub applier_count: usize,
+    pub accepts_f64_writes: bool,
+}
+
+/// List every dynamic control declared in the running session's
+/// component tree. Returns an empty list when no session is
+/// active (e.g. standalone `nbrs web` without a running run).
+///
+/// Endpoint: `GET /api/controls`
+pub async fn list_controls() -> axum::Json<Vec<ControlView>> {
+    use nb_metrics::component::find;
+    use nb_metrics::selector::Selector;
+
+    let mut views = Vec::new();
+    let Some(root) = nb_variates::nodes::runtime_context::session_root_handle() else {
+        return axum::Json(views);
+    };
+    for comp in find(&root, &Selector::new()) {
+        let Ok(guard) = comp.read() else { continue; };
+        let path = guard.effective_labels()
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        for ctl in guard.controls().list() {
+            views.push(ControlView {
+                component: if path.is_empty() { "<root>".into() } else { path.clone() },
+                name: ctl.name().to_string(),
+                value_type: ctl.value_type_name().to_string(),
+                value: ctl.value_string(),
+                value_f64: ctl.gauge_f64(),
+                rev: ctl.rev(),
+                origin: format!("{:?}", ctl.origin()),
+                scope: match ctl.branch_scope() {
+                    nb_metrics::controls::BranchScope::Local => "local",
+                    nb_metrics::controls::BranchScope::Subtree => "subtree",
+                },
+                final_scope: ctl.final_scope(),
+                applier_count: ctl.applier_count(),
+                accepts_f64_writes: ctl.accepts_f64_writes(),
+            });
+        }
+    }
+    views.sort_by(|a, b| a.component.cmp(&b.component)
+        .then_with(|| a.name.cmp(&b.name)));
+    axum::Json(views)
+}
+
+/// Request body for a control write.
+#[derive(serde::Deserialize, Debug)]
+pub struct SetControlBody {
+    pub value: f64,
+    /// Caller identification for attribution in the control's
+    /// committed-origin metadata. Any non-empty value is accepted;
+    /// real deployments should pass a stable label (user id, bot
+    /// name, automation handle). Defaults to `"api"` when absent.
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// Response body for a successful write dispatch.
+#[derive(serde::Serialize, Debug)]
+pub struct SetControlResponse {
+    pub name: String,
+    pub submitted_value: f64,
+    pub committed_rev: u64,
+}
+
+/// Error body for write failures — parse / validation / final /
+/// apply errors all funnel through this with a stable shape so
+/// scripted callers can distinguish categories via `code`.
+#[derive(serde::Serialize, Debug)]
+pub struct SetControlError {
+    pub name: String,
+    pub code: &'static str,
+    pub message: String,
+}
+
+/// Write a named dynamic control through the session root's
+/// walk-up. Non-blocking: the write is awaited on the handler's
+/// tokio task (not the event loop), so the applier runs to
+/// completion before the response returns. Errors from the
+/// control layer (validation, final-scope violation, apply
+/// failure) surface as `400 Bad Request` with a structured
+/// body; absent session root is `503 Service Unavailable`;
+/// missing control name is `404 Not Found`.
+///
+/// Endpoint: `POST /api/control/{name}` with JSON body
+/// `{"value": 42, "source": "operator"}`.
+pub async fn set_control(
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<SetControlBody>,
+) -> Result<axum::Json<SetControlResponse>, (StatusCode, axum::Json<SetControlError>)> {
+    let Some(root) = nb_variates::nodes::runtime_context::session_root_handle() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(SetControlError {
+                name, code: "no_session",
+                message: "no active session; cannot resolve controls".into(),
+            }),
+        ));
+    };
+    let erased = {
+        let Ok(guard) = root.read() else {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(SetControlError {
+                    name, code: "session_poisoned",
+                    message: "session root RwLock is poisoned".into(),
+                }),
+            ));
+        };
+        match guard.find_control_erased_up(&name) {
+            Some(e) => e,
+            None => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    axum::Json(SetControlError {
+                        name: name.clone(), code: "not_found",
+                        message: format!("no control named '{name}' via walk-up"),
+                    }),
+                ));
+            }
+        }
+    };
+    let source = body.source.clone().unwrap_or_else(|| "api".to_string());
+    let origin = nb_metrics::controls::ControlOrigin::Api { source };
+    match erased.set_f64(body.value, origin).await {
+        Ok(rev) => Ok(axum::Json(SetControlResponse {
+            name, submitted_value: body.value, committed_rev: rev,
+        })),
+        Err(e) => {
+            use nb_metrics::controls::SetError;
+            let (code, msg) = match &e {
+                SetError::ValidationFailed(m) => ("validation_failed", m.clone()),
+                SetError::ApplyFailed(fs) => (
+                    "apply_failed",
+                    fs.iter().map(|f| format!("#{}: {}", f.applier_index, f.message))
+                        .collect::<Vec<_>>().join("; "),
+                ),
+                SetError::FinalViolation { scope } => (
+                    "final_violation",
+                    format!("control is final at scope '{scope}'"),
+                ),
+            };
+            Err((StatusCode::BAD_REQUEST, axum::Json(SetControlError {
+                name, code, message: msg,
+            })))
+        }
+    }
+}
+
 // ─── Data Building ──────────────────────────────────────────
 
 fn build_function_groups(filter: Option<&str>) -> Vec<(String, Vec<FunctionView>)> {

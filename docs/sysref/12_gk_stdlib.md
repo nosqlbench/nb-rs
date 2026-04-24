@@ -163,6 +163,74 @@ replacement for wrapping arithmetic when correctness matters.
 |------|-----------|-------------|
 | `fft_analyze` | `JSON → JSON` | FFT frequency analysis of a float array |
 
+### Runtime context nodes
+
+The reification principle (SRD 10 §"GK as the unified access
+surface") makes GK the default way for a workload to read any
+runtime value. The nodes in this category are how reified
+runtime state is named in the DSL. Each one projects a single,
+well-defined runtime surface into a GK wire — no side channels,
+no templating hooks, no ad-hoc reader APIs.
+
+| Node | Signature | Description |
+|------|-----------|-------------|
+| `control` | `String → f64` | Current committed value of a [dynamic control](23_dynamic_controls.md) addressed by name, projected through its reified gauge. Resolves by walking up the component tree from the session root, honoring branch scope. Missing controls, non-reified controls, or non-numeric projections return `0.0`. |
+| `control_u64` | `String → u64` | As `control`, cast to `u64` (negative values clamp to `0`). Sugar over `f64_to_u64(control(name))`. |
+| `control_bool` | `String → bool` | As `control`, projected to `true` iff the gauge value is non-zero. Missing controls return `false`. |
+| `control_str` | `String → String` | As `control`, rendered via the control's erased `value_string()`. Useful for enum-valued or string-valued controls. |
+| `control_set` | `String, f64 → u64` | Non-blocking write into a named control. Spawns an async task that calls the erased `set_f64` path; the control's `from_f64` converter maps to its native type. Return value is `1` if dispatched, `0` if no session root is installed. The committed `Versioned<T>::origin` carries the enclosing DSL binding name as attribution. |
+| `metric` | `String → f64` | Latest reading of a named metric series, scoped to the nearest ancestor component that publishes the series. Pairs with `metric_window(name, duration)` for aggregated views (SRD 42). |
+| `phase` | `→ String` | Name of the currently-executing phase. Reads pin against the enclosing executor — never resolves to "some other phase's name". Backed by a `tokio::task_local!` scope so tokio work-stealing can't leak phase identity across fibers. |
+| `cycle` | `→ u64` | Current cycle ordinal for the running fiber. Sugar for reaching the cycle value without declaring it as an explicit input. |
+| `concurrency` | `→ f64` | Alias for `control("concurrency")` — reads the activity's live fiber count through the reified gauge. |
+| `rate` | `→ f64` | Alias for `control("rate")` — reads the live rate-limiter target in ops/sec. |
+
+Writes to runtime state go through the control-write nodes
+(`control_set(name, value)` — SRD 23). Read-side context
+nodes are side-effect-free and fold / JIT like any other
+deterministic projection, subject to the same caveat as
+live metric reads: their output changes between cycles by
+definition, so constant-folding them is illegal. The engine
+registers them as `volatile` so the folder leaves them in
+place.
+
+When a new piece of mutable runtime state is added (a new
+wrapper knob, a per-adapter tuning dial, an internal counter),
+the authoring checklist is:
+
+1. Attach it to the component whose behavior it governs.
+2. Decide whether it's a read-only projection (context node)
+   or a writable value (control). Both are fine; neither is a
+   template / env-var / global.
+3. Register the node or control so DSL authors see it by name
+   in `--explain` and `dryrun=controls`.
+
+### Parameter resolution and validation
+
+These nodes let a workload compose layered defaults and assert
+preconditions on any value flowing through a binding. They
+operate on the same GK wires everything else does — a
+`required(...)` on a workload param is the same mechanism as
+`required(...)` on a capture or a runtime control.
+
+| Node | Signature | Description |
+|------|-----------|-------------|
+| `this_or` | `T?, T → T` | Returns the first argument if it resolves to a defined value, otherwise the second. Lets a workload explicitly say "use this or fall back to that" across scopes. Arguments are ordinary wires; `default` can be a literal, a param lookup, a capture, or another `this_or`. |
+| `required` | `T? → T` | Compile/init-time assertion that the input resolves to a defined, non-empty value. Passes the value through on success; raises an error with the parameter name on failure. Use to catch missing-parameter bugs before cycles run. |
+| `is_positive` | `N → N` | Predicate: pass through if value > 0, error otherwise (numeric types). |
+| `in_range` | `N, N, N → N` | Predicate: pass through if `lo ≤ value ≤ hi`, error with a range-mismatch diagnostic otherwise. |
+| `matches` | `String, String → String` | Predicate: pass through if value matches the regex, error otherwise. |
+| `is_one_of` | `T, [T] → T` | Predicate: pass through if value is in the allowed set, error otherwise. (Distinct from the probabilistic `one_of` selector.) |
+
+Predicates stack — the same value can carry several — and are
+evaluated at the earliest time the input is known (compile
+time for const-folded values, init time for workload params,
+cycle time for live reads). Violations at cycle time surface as
+`panic!` regardless of compilation level (P1 interpreter, P2
+closure, P3 JIT); the JIT path reaches that same observable
+behavior through a setjmp/longjmp shim documented in
+[SRD 16b GK JIT Wiring](16_gk_jit.md).
+
 ### Vectordata Integration (feature-gated)
 
 | Node | Signature | Description |

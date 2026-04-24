@@ -10,8 +10,8 @@
 //! - Burst recovery moves tokens from waiting → active proportionally
 //! - Wait time tracking for coordinated omission metrics
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use tokio::sync::Semaphore;
@@ -33,11 +33,38 @@ struct SharedState {
     last_refill_nanos: AtomicU64,
     start_time: Instant,
     blocks: AtomicU64,
-    ticks_per_op: u32,
+    /// Read on every [`RateLimiter::acquire`]. Updated atomically
+    /// by [`RateLimiter::reconfigure`]; the next acquire picks up
+    /// the new cost immediately.
+    ticks_per_op: AtomicU32,
+    /// Burst/unit parameters. Updated only by reconfigure and
+    /// read by the refill loop — RwLock is fine under that
+    /// contention profile (write ≪ read, both low-frequency).
+    refill_cfg: RwLock<RefillCfg>,
+    /// Current spec, kept for `rate()` and diagnostics. Always
+    /// in sync with `ticks_per_op` and `refill_cfg`.
+    spec: RwLock<RateSpec>,
+}
+
+#[derive(Clone, Copy)]
+struct RefillCfg {
     max_active: u32,
     max_over_active: u32,
     burst_pool_size: u32,
-    spec: RateSpec,
+    unit: crate::spec::TimeUnit,
+}
+
+impl RefillCfg {
+    fn from_spec(spec: &RateSpec) -> Self {
+        let max_over_active = (MAX_ACTIVE_POOL as f64 * spec.burst_ratio) as u32;
+        let burst_pool_size = max_over_active.saturating_sub(MAX_ACTIVE_POOL);
+        Self {
+            max_active: MAX_ACTIVE_POOL,
+            max_over_active,
+            burst_pool_size,
+            unit: spec.unit,
+        }
+    }
 }
 
 /// An async-ready rate limiter.
@@ -55,8 +82,7 @@ impl RateLimiter {
     /// Create and start a rate limiter from a spec.
     pub fn start(spec: RateSpec) -> Self {
         let ticks_per_op = spec.ticks_per_op();
-        let max_over_active = (MAX_ACTIVE_POOL as f64 * spec.burst_ratio) as u32;
-        let burst_pool_size = max_over_active - MAX_ACTIVE_POOL;
+        let refill_cfg = RefillCfg::from_spec(&spec);
 
         let state = Arc::new(SharedState {
             active_pool: Semaphore::new(ticks_per_op as usize), // prime with one op
@@ -65,11 +91,9 @@ impl RateLimiter {
             last_refill_nanos: AtomicU64::new(0),
             start_time: Instant::now(),
             blocks: AtomicU64::new(0),
-            ticks_per_op,
-            max_active: MAX_ACTIVE_POOL,
-            max_over_active,
-            burst_pool_size,
-            spec,
+            ticks_per_op: AtomicU32::new(ticks_per_op),
+            refill_cfg: RwLock::new(refill_cfg),
+            spec: RwLock::new(spec),
         });
 
         // Record start time
@@ -92,9 +116,12 @@ impl RateLimiter {
     /// Acquire one operation permit. Blocks (async) if rate-limited.
     ///
     /// Returns the current backlog in ticks (waiting pool value).
+    ///
+    /// Reads `ticks_per_op` atomically, so a concurrent
+    /// [`Self::reconfigure`] takes effect on the next call.
     pub async fn acquire(&self) -> i64 {
         self.state.blocks.fetch_add(1, Ordering::Relaxed);
-        let permits = self.state.ticks_per_op;
+        let permits = self.state.ticks_per_op.load(Ordering::Relaxed);
 
         // Acquire permits from the semaphore — this is the blocking point.
         // forget() the permit so tokens are permanently consumed (not
@@ -113,7 +140,10 @@ impl RateLimiter {
     pub fn wait_time_nanos(&self) -> u64 {
         let ticks = self.state.waiting_pool.load(Ordering::Relaxed);
         if ticks <= 0 { return 0; }
-        self.state.spec.unit.ticks_to_nanos(ticks as u32)
+        let unit = self.state.refill_cfg.read()
+            .unwrap_or_else(|e| e.into_inner())
+            .unit;
+        unit.ticks_to_nanos(ticks as u32)
     }
 
     /// Total number of acquire calls.
@@ -123,7 +153,60 @@ impl RateLimiter {
 
     /// Current ops/sec target.
     pub fn rate(&self) -> f64 {
-        self.state.spec.ops_per_sec
+        self.state.spec.read()
+            .unwrap_or_else(|e| e.into_inner())
+            .ops_per_sec
+    }
+
+    /// Current full spec snapshot.
+    pub fn spec(&self) -> RateSpec {
+        self.state.spec.read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Live reconfigure. Atomically swaps the target rate / burst
+    /// ratio / unit without stopping the refill task. The next
+    /// [`Self::acquire`] call reads the new `ticks_per_op`; the
+    /// next refill cycle reads the new burst config.
+    ///
+    /// In-flight backlog (`waiting_pool`) and already-issued
+    /// active-pool permits are preserved. If the new rate is much
+    /// higher than the old one the active pool will fill up over
+    /// the next few refill ticks; if much lower, already-granted
+    /// permits still drain before pressure builds.
+    ///
+    /// Validation of the new spec is the caller's responsibility —
+    /// a negative or zero `ops_per_sec` will panic in
+    /// `ticks_per_op`. Callers that wire this up through a
+    /// `Control<RateSpec>` should install a validator on the
+    /// control to reject bad values before this method is called.
+    pub fn reconfigure(&self, spec: RateSpec) -> Result<(), String> {
+        if spec.ops_per_sec <= 0.0 {
+            return Err(format!(
+                "rate must be > 0, got {}", spec.ops_per_sec,
+            ));
+        }
+        if spec.burst_ratio < 1.0 {
+            return Err(format!(
+                "burst_ratio must be >= 1.0, got {}", spec.burst_ratio,
+            ));
+        }
+        let new_ticks_per_op = spec.ticks_per_op();
+        let new_cfg = RefillCfg::from_spec(&spec);
+
+        // Update the refill config first so the next refill tick
+        // sees the new pool sizes. Then update ticks_per_op so the
+        // next acquire pulls the new cost. Finally update the spec
+        // cache. Writers are serialized by `reconfigure` being the
+        // only one that writes these fields, so ordering between
+        // the three is loose.
+        *self.state.refill_cfg.write()
+            .unwrap_or_else(|e| e.into_inner()) = new_cfg;
+        self.state.ticks_per_op.store(new_ticks_per_op, Ordering::Relaxed);
+        *self.state.spec.write()
+            .unwrap_or_else(|e| e.into_inner()) = spec;
+        Ok(())
     }
 
     /// Stop the rate limiter and its refill task.
@@ -160,15 +243,21 @@ fn refill(state: &SharedState) {
 
     if elapsed_nanos == 0 { return; }
 
+    // Snapshot the current refill config. A concurrent
+    // reconfigure only flips the lock between ticks, so reading
+    // once at the top keeps this cycle internally consistent.
+    let cfg = *state.refill_cfg.read()
+        .unwrap_or_else(|e| e.into_inner());
+
     // Convert elapsed time to ticks
-    let new_ticks = state.spec.unit.nanos_to_ticks(elapsed_nanos);
+    let new_ticks = cfg.unit.nanos_to_ticks(elapsed_nanos);
     if new_ticks == 0 { return; }
 
     // Current available permits in the semaphore
     let available = state.active_pool.available_permits() as u32;
 
     // Step 1: Fill active pool up to max
-    let room = state.max_active.saturating_sub(available);
+    let room = cfg.max_active.saturating_sub(available);
     let to_active = new_ticks.min(room);
     if to_active > 0 {
         state.active_pool.add_permits(to_active as usize);
@@ -182,9 +271,9 @@ fn refill(state: &SharedState) {
 
     // Step 3: Burst recovery — move tokens from waiting → active
     let available_after = state.active_pool.available_permits() as u32;
-    let refill_factor = (new_ticks as f64 / state.max_active as f64).min(1.0);
-    let burst_allowed = (refill_factor * state.burst_pool_size as f64) as u32;
-    let burst_room = state.max_over_active.saturating_sub(available_after);
+    let refill_factor = (new_ticks as f64 / cfg.max_active as f64).min(1.0);
+    let burst_allowed = (refill_factor * cfg.burst_pool_size as f64) as u32;
+    let burst_room = cfg.max_over_active.saturating_sub(available_after);
     let burst_from_waiting = burst_allowed
         .min(burst_room)
         .min(state.waiting_pool.load(Ordering::Relaxed).max(0) as u32);
@@ -293,6 +382,85 @@ mod tests {
         let spec = RateSpec::parse("500, 1.5, start").unwrap();
         let limiter = RateLimiter::start(spec);
         assert_eq!(limiter.rate(), 500.0);
+        limiter.stop().await;
+    }
+
+    // ---- Reconfigure -----------------------------------------
+
+    #[tokio::test]
+    async fn reconfigure_updates_rate_and_spec() {
+        let limiter = RateLimiter::start(RateSpec::new(1_000.0));
+        assert_eq!(limiter.rate(), 1_000.0);
+
+        limiter.reconfigure(RateSpec::new(5_000.0)).unwrap();
+        assert_eq!(limiter.rate(), 5_000.0);
+        assert_eq!(limiter.spec().ops_per_sec, 5_000.0);
+
+        limiter.stop().await;
+    }
+
+    #[tokio::test]
+    async fn reconfigure_rejects_nonpositive_rate() {
+        let limiter = RateLimiter::start(RateSpec::new(1_000.0));
+        let bad = RateSpec { ops_per_sec: 0.0, ..RateSpec::new(1_000.0) };
+        assert!(limiter.reconfigure(bad).is_err());
+        assert_eq!(limiter.rate(), 1_000.0);
+        limiter.stop().await;
+    }
+
+    #[tokio::test]
+    async fn reconfigure_rejects_subunit_burst_ratio() {
+        let limiter = RateLimiter::start(RateSpec::new(1_000.0));
+        let bad = RateSpec { burst_ratio: 0.5, ..RateSpec::new(1_000.0) };
+        assert!(limiter.reconfigure(bad).is_err());
+        limiter.stop().await;
+    }
+
+    #[tokio::test]
+    async fn reconfigure_preserves_total_blocks_and_keeps_running() {
+        // Across a reconfigure, the acquire counter and the
+        // refill task keep going — the only state that changes
+        // is the rate cost per op and the burst pool sizes.
+        let limiter = RateLimiter::start(RateSpec::new(10_000.0));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        for _ in 0..5 { limiter.acquire().await; }
+        let blocks_before = limiter.total_blocks();
+        assert!(blocks_before >= 5);
+
+        limiter.reconfigure(RateSpec::new(50_000.0)).unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        for _ in 0..5 { limiter.acquire().await; }
+        let blocks_after = limiter.total_blocks();
+        assert!(blocks_after >= blocks_before + 5,
+            "acquire counter should continue across reconfigure");
+
+        limiter.stop().await;
+    }
+
+    #[tokio::test]
+    async fn reconfigure_changes_observed_throughput() {
+        // Slow then fast: the second batch should take less time
+        // than the first batch of the same size.
+        let limiter = RateLimiter::start(RateSpec::new(200.0));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        let t0 = Instant::now();
+        for _ in 0..8 { limiter.acquire().await; }
+        let slow = t0.elapsed();
+
+        limiter.reconfigure(RateSpec::new(100_000.0)).unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        let t1 = Instant::now();
+        for _ in 0..8 { limiter.acquire().await; }
+        let fast = t1.elapsed();
+
+        assert!(
+            fast < slow,
+            "expected faster after reconfigure: slow={slow:?} fast={fast:?}",
+        );
         limiter.stop().await;
     }
 }

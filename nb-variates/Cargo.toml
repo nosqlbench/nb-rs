@@ -29,6 +29,9 @@ target-lexicon = { version = "0.13", optional = true }
 inventory = "0.3.24"
 nb-metrics = { path = "../nb-metrics", version = "0.1.1", optional = true }
 hdrhistogram = { version = "7", optional = true }
+# Needed for runtime-context nodes' task-local FiberContext —
+# tokio::task_local! lives in the `rt` feature.
+tokio = { version = "1", features = ["rt", "macros"] }
 
 [features]
 default = ["jit", "vectordata", "metrics"]

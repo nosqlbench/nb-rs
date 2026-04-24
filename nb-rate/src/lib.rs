@@ -10,6 +10,8 @@
 
 mod spec;
 mod limiter;
+mod applier;
 
 pub use spec::{RateSpec, TimeUnit, Verb};
 pub use limiter::RateLimiter;
+pub use applier::RateLimiterApplier;

@@ -85,11 +85,22 @@ pub struct JitKernelRaw {
 
 impl JitKernelRaw {
     /// Evaluate the kernel with the given coordinate values.
+    ///
+    /// Predicate violations (`is_positive`, `in_range`,
+    /// `is_one_of`) from JIT-lowered code surface as normal
+    /// Rust panics carrying the violation message. The
+    /// longjmp wrapper in [`super::codegen::invoke_with_catch`]
+    /// handles the transition back to Rust land.
     #[inline]
     pub fn eval(&mut self, coords: &[u64]) {
         self.core.buffer[..self.core.coord_count.min(coords.len())]
             .copy_from_slice(&coords[..self.core.coord_count.min(coords.len())]);
-        unsafe { (self.code_fn)(self.core.buffer.as_ptr(), self.core.buffer.as_mut_ptr()); }
+        let code_fn = self.code_fn;
+        let buf_ptr_const = self.core.buffer.as_ptr();
+        let buf_ptr_mut = self.core.buffer.as_mut_ptr();
+        super::codegen::invoke_with_catch(move || {
+            unsafe { (code_fn)(buf_ptr_const, buf_ptr_mut); }
+        });
     }
 
     /// Evaluate and return the value at the given buffer slot index.
@@ -136,13 +147,13 @@ impl JitKernelPush {
     #[inline]
     pub fn eval(&mut self, coords: &[u64]) {
         self.set_inputs(coords);
-        unsafe {
-            (self.code_fn_prov)(
-                self.core.buffer.as_ptr(),
-                self.core.buffer.as_mut_ptr(),
-                self.node_clean.as_mut_ptr(),
-            );
-        }
+        let code_fn = self.code_fn_prov;
+        let buf_const = self.core.buffer.as_ptr();
+        let buf_mut = self.core.buffer.as_mut_ptr();
+        let clean_mut = self.node_clean.as_mut_ptr();
+        super::codegen::invoke_with_catch(move || {
+            unsafe { (code_fn)(buf_const, buf_mut, clean_mut); }
+        });
     }
 
     /// Evaluate and return the value at the given buffer slot index.
@@ -182,7 +193,12 @@ impl JitKernelPull {
     #[inline]
     pub fn eval(&mut self, coords: &[u64]) {
         self.set_inputs(coords);
-        unsafe { (self.code_fn)(self.core.buffer.as_ptr(), self.core.buffer.as_mut_ptr()); }
+        let code_fn = self.code_fn;
+        let buf_const = self.core.buffer.as_ptr();
+        let buf_mut = self.core.buffer.as_mut_ptr();
+        super::codegen::invoke_with_catch(move || {
+            unsafe { (code_fn)(buf_const, buf_mut); }
+        });
     }
 
     /// Evaluate and return the value at the given buffer slot index,
@@ -194,7 +210,12 @@ impl JitKernelPull {
             && self.slot_provenance[slot] & self.changed_mask == 0 {
             return self.core.buffer[slot];
         }
-        unsafe { (self.code_fn)(self.core.buffer.as_ptr(), self.core.buffer.as_mut_ptr()); }
+        let code_fn = self.code_fn;
+        let buf_const = self.core.buffer.as_ptr();
+        let buf_mut = self.core.buffer.as_mut_ptr();
+        super::codegen::invoke_with_catch(move || {
+            unsafe { (code_fn)(buf_const, buf_mut); }
+        });
         self.core.buffer[slot]
     }
 
@@ -234,13 +255,13 @@ impl JitKernelPushPull {
     #[inline]
     pub fn eval(&mut self, coords: &[u64]) {
         self.set_inputs(coords);
-        unsafe {
-            (self.code_fn_prov)(
-                self.core.buffer.as_ptr(),
-                self.core.buffer.as_mut_ptr(),
-                self.node_clean.as_mut_ptr(),
-            );
-        }
+        let code_fn = self.code_fn_prov;
+        let buf_const = self.core.buffer.as_ptr();
+        let buf_mut = self.core.buffer.as_mut_ptr();
+        let clean_mut = self.node_clean.as_mut_ptr();
+        super::codegen::invoke_with_catch(move || {
+            unsafe { (code_fn)(buf_const, buf_mut, clean_mut); }
+        });
     }
 
     /// Evaluate and return the value at the given buffer slot index,
@@ -252,13 +273,13 @@ impl JitKernelPushPull {
             && self.slot_provenance[slot] & self.changed_mask == 0 {
             return self.core.buffer[slot];
         }
-        unsafe {
-            (self.code_fn_prov)(
-                self.core.buffer.as_ptr(),
-                self.core.buffer.as_mut_ptr(),
-                self.node_clean.as_mut_ptr(),
-            );
-        }
+        let code_fn = self.code_fn_prov;
+        let buf_const = self.core.buffer.as_ptr();
+        let buf_mut = self.core.buffer.as_mut_ptr();
+        let clean_mut = self.node_clean.as_mut_ptr();
+        super::codegen::invoke_with_catch(move || {
+            unsafe { (code_fn)(buf_const, buf_mut, clean_mut); }
+        });
         self.core.buffer[slot]
     }
 

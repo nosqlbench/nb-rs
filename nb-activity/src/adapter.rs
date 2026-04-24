@@ -182,6 +182,23 @@ pub trait DriverAdapter: Send + Sync + 'static {
     /// - `Auto`: adapter is compatible with TUI (default)
     /// - `Off`: adapter requires raw stderr/stdout, TUI must not activate
     fn display_preference(&self) -> DisplayPreference { DisplayPreference::Auto }
+
+    /// Declare the set of op-field names this adapter knows how to
+    /// interpret. SRD 30 §"Core-first field processing" requires
+    /// that after the core runtime strips its own fields, every
+    /// remaining key in `ParsedOp.op` must be in this list — an
+    /// unknown field is a hard error, not a silent pass-through.
+    ///
+    /// Return `None` (the default) to opt out of strict validation
+    /// during the transition; existing adapters that haven't been
+    /// audited remain permissive. Adapters that return `Some(...)`
+    /// get the "unknown field" guard automatically — core rejects
+    /// templates with fields the adapter doesn't claim.
+    ///
+    /// Returning an empty slice `Some(&[])` is a valid declaration
+    /// for an adapter that consumes no op fields (e.g. `stdout`
+    /// rendering the raw bindings only).
+    fn known_op_fields(&self) -> Option<&'static [&'static str]> { None }
 }
 
 /// Adapter display preference for TUI activation.

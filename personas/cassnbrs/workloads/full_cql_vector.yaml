@@ -238,12 +238,13 @@ phases:
     ops:
       select_ann:
         prepared: "SELECT key FROM {keyspace}.{table} ORDER BY value ANN OF {query_vector} LIMIT {k}"
-        relevancy:
-          actual: key
-          expected: "{ground_truth}"
-          k: "{k}"
-          functions:
-            - recall
+        evaluations:
+          relevancy:
+            actual: key
+            expected: "{ground_truth}"
+            k: "{k}"
+            functions:
+              - recall
 
   pvs_query:
     summary:

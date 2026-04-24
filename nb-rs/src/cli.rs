@@ -137,8 +137,7 @@ pub fn print_usage() {
     eprintln!("  adapter=<name>         Adapter type (default: stdout)");
     eprintln!("  cycles=<n>             Number of cycles to execute");
     eprintln!("  threads=<n>            Concurrency level (default: 1)");
-    eprintln!("  rate=<n>               Per-cycle rate limit (ops/sec)");
-    eprintln!("  stanzarate=<n>         Per-stanza rate limit (stanzas/sec)");
+    eprintln!("  rate=<n>               Rate limit (ops/sec)");
     eprintln!("  tags=<filter>          Tag filter for op selection");
     eprintln!("  seq=<type>             Sequencer: bucket|interval|concat");
     eprintln!("  format=<type>          Output format: assignments|json|csv|stmt");

@@ -3,28 +3,111 @@
 Parameters configure workloads without editing YAML. Bind points
 connect parameters and GK bindings to op templates.
 
+> **Parameters vs runtime reads.** This document covers *launch-
+> time* parameter resolution (CLI → workload → env) and the bind-
+> point syntax that names parameter and GK values in op fields.
+> *Runtime-mutable* values — anything a workload reads that can
+> change mid-run — are accessed as GK bindings too, not as a
+> parallel mechanism. See SRD 10 §"GK as the unified access
+> surface" for the general principle and SRD 12 §"Runtime context
+> nodes" for the node catalog (`control`, `metric`, `rate`,
+> `concurrency`, `phase`).
+
 ---
 
 ## Parameter Resolution
 
-Resolution order (highest priority wins):
+Resolution is **closest-scope-wins**, layered from innermost
+(per-op) outward to outermost (CLI):
 
-1. **CLI**: `key=value` on the command line
-2. **Workload params**: `params:` section defaults
-3. **Environment**: `env:VAR_NAME` syntax in defaults
+1. **Op-local `params:`** on an individual op template.
+2. **Block-local `params:`** on the containing phase / stanza
+   block.
+3. **Workload `params:`** at the top-level of the YAML.
+4. **Environment** via the `env:VAR_NAME` shorthand in any
+   of the above.
+5. **CLI** `key=value` overrides.
+
+The closest definition wins, so block-level and op-local
+`params:` are the canonical way to say "this phase needs a
+different value from the rest of the workload". CLI overrides
+take the outermost layer: they ride on top and replace values
+for the keys they name, which is the right scoping for the
+"operator nudged it from the command line" use case.
 
 ```yaml
 params:
-  keyspace: baselines              # default value
-  dataset: env:NB_DATASET          # from environment
-  concurrency: "100"               # overridable from CLI
+  keyspace: baselines              # workload default
+  concurrency: "100"               # workload default
+
+blocks:
+  - name: ddl
+    params:
+      concurrency: "1"             # block override for schema phase
+    ops:
+      create_table:
+        prepared: "CREATE TABLE ..."
+  - name: rampup
+    ops:
+      insert:
+        prepared: "INSERT INTO ..."
 ```
 
-CLI override: `cassnbrs run ... keyspace=production`
+CLI override: `cassnbrs run ... concurrency=200` replaces the
+effective concurrency for every block that hasn't overridden
+it locally.
 
-Parameters are string-typed. Numeric parsing happens at the
-consumer (runner parses `cycles`, `concurrency`; adapters parse
-`port`, `timeout`).
+### Explicit layering with GK helpers
+
+Closest-wins covers the common case, but workloads sometimes
+need to say "use this value if it's defined, otherwise fall
+back to *that* one" — across scopes, with explicit ordering.
+The GK layer exposes three helpers for that:
+
+- **`this_or(primary, default)`** — returns `primary` if it
+  resolves to a defined value, otherwise `default`. Use when
+  a block's value should override the workload default only
+  when explicitly set. Both arguments are ordinary GK wires,
+  so `default` can itself be another `this_or`, a literal, a
+  capture from a prior op, or another param lookup.
+- **`required(name)`** — asserts that `name` resolves to a
+  defined, non-empty value at compile time; fails with a
+  clear error if not. Use to catch missing-parameter bugs
+  before any cycle runs. Equivalent to a compile-time
+  precondition on the workload.
+- **Value predicates** — a family of assertion nodes that
+  constrain a resolved value: `is_positive`, `in_range(lo,
+  hi)`, `matches(regex)`, `is_one_of(a, b, c)`, etc. Each
+  returns the value unchanged on pass and raises a compile
+  (or init) error on fail. Predicates stack — the same value
+  can carry several — and are evaluated at the earliest time
+  the input is known.
+
+```yaml
+params:
+  concurrency: "{this_or({param:concurrency}, 100)}"
+  rate: "{required(rate)}"
+  timeout_ms: "{in_range({param:timeout_ms}, 10, 60_000)}"
+```
+
+These helpers live in the GK stdlib (SRD 12); workload param
+values go through the same reification path as every other
+runtime value (SRD 10), so predicates and layering compose
+with bind points, capture references, and runtime context
+nodes uniformly.
+
+Parameters are string-typed at the YAML layer. Numeric
+parsing happens at the consumer (runner parses `cycles`,
+`concurrency`; adapters parse `port`, `timeout`).
+
+### Interaction with dynamic controls
+
+Every param that is also declared as a [dynamic control](23_dynamic_controls.md)
+uses the layered resolution above as its initial value
+(seeded with `ControlOrigin::Launch`). Runtime writers may
+advance the control past that seed unless the declaring scope
+marks it `final` — see SRD 23 §"Branch-scoped and final
+controls" for the override-rejection semantics.
 
 ---
 

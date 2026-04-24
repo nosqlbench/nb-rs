@@ -24,13 +24,14 @@ explains the design intent behind it.
 
 | # | Document | Scope |
 |---|----------|-------|
-| 10 | [GK Language and Compilation](10_gk_language.md) | DSL syntax, compiler pipeline, node wiring, type system |
+| 10 | [GK Language and Compilation](10_gk_language.md) | DSL syntax, compiler pipeline, node wiring, type system, **GK as the unified access surface for runtime state** |
 | 11 | [GK Evaluation Model](11_gk_evaluation.md) | Kernel/state split, input spaces, init vs cycle, constant folding |
-| 12 | [GK Standard Library](12_gk_stdlib.md) | Node catalog, type signatures, P3 JIT eligibility |
+| 12 | [GK Standard Library](12_gk_stdlib.md) | Node catalog, type signatures, P3 JIT eligibility, runtime context nodes |
 | 13 | [GK Modules and Composition](13_gk_modules.md) | Module imports, kernel composition, diagnostic event stream |
 | 14 | [GK Config Expressions](14_gk_config_expressions.md) | Init-time constants flowing into activity config |
 | 15 | [Strict Mode](15_strict_mode.md) | Compile-time enforcement: config wire promotion, explicit declarations, no silent coercions |
 | 16 | [GK Engines](16_gk_engines.md) | Compilation levels, provenance push/pull, engine variants, auto-selection heuristic |
+| 16b | [GK JIT Wiring](16_gk_jit.md) | Cranelift ↔ Rust call boundary, setjmp/longjmp for catchable predicate violations, hybrid-kernel wrapping, `invoke_with_catch` contract |
 
 ### 3. Workload Specification (nb-workload)
 
@@ -39,6 +40,8 @@ explains the design intent behind it.
 | 20 | [Workload Model](20_workload_model.md) | YAML structure, ParsedOp, blocks, tags, normalization |
 | 21 | [Parameters and Bind Points](21_parameters.md) | Param resolution, bind point syntax, workload/CLI/env scoping |
 | 22 | [Op Sequencing](22_op_sequencing.md) | Stanza model, sequencer types, weighted ratios, cycle mapping |
+| 23 | [Dynamic Controls](23_dynamic_controls.md) | Runtime-mutable per-component parameters (concurrency, rates, log level), confirmed-apply writes, enumerable declaration, reification as gauges |
+| 24 | [Component Lookup](24_component_lookup.md) | Finding components by dimensional-label predicates — the selector grammar and lookup API used by dynamic controls, metrics selection, and scripted orchestration |
 
 ### 4. Execution Engine (nb-activity)
 
@@ -106,45 +109,24 @@ explains the design intent behind it.
 | 60 CLI | 23, 32, 35 |
 | 61 Personas | 37 |
 
-## Known Tensions to Resolve
+## Known Tensions — resolved
 
-These are design tensions identified across the v1 SRDs that the
-v2 documents should address explicitly:
+The v1 SRDs flagged seven cross-cutting tensions that v2 had
+to answer. All seven have now been folded into the relevant
+SRD sections. The pointers below exist so anyone arriving
+from a v1 reference can jump to the current authoritative
+home of each decision.
 
-1. **Binding visibility scope** — Op fields vs params vs validation
-   needs. Who declares which GK outputs get compiled? Currently:
-   binding compiler scans both op fields and params. The v2 should
-   define a clear principle for what triggers GK output inclusion.
+| # | v1 tension | Current home |
+|---|------------|--------------|
+| 1 | Binding visibility scope | SRD 10 §"GK as the unified access surface" (GK owns all runtime-value resolution; no separate "extras" pathway). |
+| 2 | `{gk:name}` qualifier for GK constants | SRD 10 §"GK as the unified access surface" (subsumed: every name resolves through the GK graph, no separate qualifier needed). |
+| 3 | Per-phase config override | SRD 21 §"Parameter Resolution" (block-level `params:`, closest-wins; GK helpers `this_or` / `required` / predicates for explicit layering). |
+| 4 | `cycles=train_count` resolution | SRD 10 §"GK as the unified access surface" + SRD 21 §"Explicit layering with GK helpers". `cycles` is not special; cursors are arbitrary names; `train_count` is a GK-folded constant reified into the local or workload scope. |
+| 5 | Adapter vs core op-field boundary | SRD 30 §"Core-first field processing" (core consumes its fields first; adapters see only their own fields; unknown fields are errors). |
+| 6 | `inputs := (cycle)` boilerplate | SRD 10 §"Input Declaration" (inputs inferred when the declaration is omitted; `cycle` is not a magic identifier). |
+| 7 | Result extraction model | SRD 33 §"Result Extraction" (universal JSON access + typed accessors / traversers as an opt-in hot-path optimization). |
 
-2. **Activity config from GK constants** — SRD 48 proposes `{name}`
-   syntax in params for GK constant references. Open question:
-   should there be a qualifier (`{gk:name}`) to disambiguate from
-   workload params? The v2 should commit to one resolution model.
-
-3. **Per-phase concurrency** — Workload-level `concurrency: "100"`
-   applies to all phases. Schema DDL needs `concurrency=1`. Current
-   workaround: CLI override. The v2 should define block-level
-   activity config override semantics.
-
-4. **Default cycles from data** — Vector workloads want
-   `cycles=train_count` but this requires GK constant → config
-   flow (SRD 48, not yet implemented). The v2 should specify the
-   resolution chain clearly.
-
-5. **Statement mode dispatch** — CQL adapter uses op field names
-   (`raw:`, `prepared:`, `stmt:`) for dispatch. This is
-   adapter-specific, not in core. But the workload parser's
-   `activity_params` list must know about `relevancy:`, `verify:`,
-   `strict:` to route them to params instead of op fields. The
-   boundary between "adapter concern" and "core concern" for op
-   field routing needs a clear principle.
-
-6. **Input declaration redundancy** — `inputs := (cycle)`
-   in every GK source vs implicit single-input default. The
-   v2 should decide: always explicit, or default to `(cycle)`.
-
-7. **Result extraction model** — SRD 47 uses JSON fallback for
-   all adapters. Native downcast via `as_any()` is available but
-   not used in the validation path (JSON with `json_field_as_i64`
-   coercion suffices). Should the v2 commit to JSON-only extraction,
-   or define when native downcast is warranted?
+For outstanding unresolved items, see
+[`99_open_tensions_memo.md`](99_open_tensions_memo.md) (kept
+for historical reference; empty as of its resolution).

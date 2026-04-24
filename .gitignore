@@ -27,3 +27,4 @@ local/
 **/*.db
 **/*.db-journal
 **/logs
+**/tmp

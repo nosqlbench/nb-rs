@@ -6,6 +6,55 @@ init-time template analysis from cycle-time execution.
 
 ---
 
+## Core-first field processing
+
+Op templates carry two kinds of fields in one YAML map: fields
+the core runtime interprets (wrapper directives, validation
+specs, rate-limit overrides, capture declarations) and fields
+the adapter interprets (`prepared:`, `raw:`, `method:`, `url:`,
+etc.). The boundary is strict and one-directional:
+
+1. **Core consumes its own fields first.** The parsed op
+   template passes through the core pipeline — wrapper
+   resolution, validation-spec extraction, capture-point
+   registration, rate-limit configuration, diagnostic-mode
+   checks — and core **removes** every field it recognizes
+   from the template before passing the remainder to the
+   adapter's `map_op`.
+2. **The adapter sees only its own fields.** When
+   `DriverAdapter::map_op(template)` runs, the template
+   contains exclusively adapter-specific fields. The adapter
+   has no need — and no permission — to understand anything
+   else.
+3. **Unknown fields are errors.** If `map_op` encounters a
+   field name it doesn't recognize, that is a hard error,
+   not a warning or a silent pass-through. The diagnostic
+   names the field and the adapter so the user can tell
+   whether they misspelled an adapter field or misplaced a
+   core-level directive.
+
+The motivation is separation of concerns. Core concerns
+(op wrappers, result validation, capture declarations) are
+orthogonal to adapter concerns (how to dispatch a CQL
+prepared statement vs. a raw query). Mixing them in the
+adapter layer couples every adapter to every wrapper; layering
+them here keeps each layer's vocabulary small and auditable.
+
+The principle extends to `params:` routing: fields that look
+like adapter fields but are actually activity params
+(`relevancy:`, `verify:`, `strict:`) are core concerns.
+They're consumed by the core parser into `params` and never
+appear in the template the adapter sees. Adapters that need
+their own param-like fields (e.g. an `http_timeout:`) register
+them via the adapter-level field inventory, documented in
+each adapter's SRD.
+
+This is the rule that keeps the adapter surface narrow: an
+adapter is a **field mapper plus a runtime driver**, not a
+workload-schema participant.
+
+---
+
 ## Two Phases
 
 ```

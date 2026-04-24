@@ -38,7 +38,7 @@ pub struct ExecCtx {
     pub openmetrics_url: Option<String>,
     pub seq_type: SequencerType,
     pub concurrency: usize,
-    pub cycle_rate: Option<f64>,
+    pub rate: Option<f64>,
     pub error_spec: String,
     /// Session identifier for metric labeling.
     pub session_id: String,
@@ -403,8 +403,7 @@ async fn run_phase(
         name: activity_name,
         cycles: phase_cycles,
         concurrency: phase_concurrency,
-        cycle_rate: phase.rate.or(ctx.cycle_rate),
-        stanza_rate: None,
+        rate: phase.rate.or(ctx.rate),
         sequencer: ctx.seq_type,
         error_spec: phase.errors.clone().unwrap_or_else(|| ctx.error_spec.clone()),
         max_retries: 3,
@@ -443,9 +442,19 @@ async fn run_phase(
     ));
     component::attach(&ctx.session_component, &phase_component);
 
-    let activity = Activity::with_params(
-        config, &labels, op_sequence, ctx.workload_params.clone(),
+    // SRD 40: resolve hdr.sigdigs via walk-up from the phase's
+    // ancestor chain before constructing the activity so the
+    // histograms start at the configured precision.
+    let sigdigs = nb_metrics::instruments::histogram::resolve_hdr_sigdigs(
+        &phase_component.read().unwrap_or_else(|e| e.into_inner()),
     );
+    let mut activity = Activity::with_params_and_sigdigs(
+        config, &labels, op_sequence, ctx.workload_params.clone(), sigdigs,
+    );
+    // Wire the phase component back onto the activity so the
+    // fiber pool can declare its `concurrency` control here
+    // (SRD 23 §"Fiber executor").
+    activity.attach_component(phase_component.clone());
 
     // Register instruments on the component and set Running
     {

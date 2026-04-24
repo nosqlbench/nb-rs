@@ -80,7 +80,28 @@ binding exists in the GK program.
 
 ## Result Extraction
 
-Actual result indices are extracted from `ResultBody.to_json()`:
+The engine provides two access modes for reading an op's
+result (and, by the same rules, an op template, an op
+dispenser, or any product an op produces). Both modes are
+always valid; the rules below decide which to prefer.
+
+### Universal JSON access
+
+Every `ResultBody` renders as JSON via `to_json()`. The JSON
+projection is the **default access mode** for validation,
+diagnostics, and any consumer that doesn't have a
+performance-critical hot path:
+
+- Validation assertions read via JSON paths
+  (`json_field_as_i64` / `json_field_as_str`).
+- Diagnostics (`--explain`, stdout adapter, test harnesses)
+  consume the same JSON.
+- Captures whose consumers don't know the adapter-specific
+  type go through JSON too.
+
+JSON access is uniform across adapters — no adapter-specific
+branches in validation code — and its cost is negligible for
+the cold path where it's used.
 
 ```rust
 fn extract_indices_from_json(json: &Value, field: &str) -> Vec<i64> {
@@ -92,6 +113,51 @@ fn extract_indices_from_json(json: &Value, field: &str) -> Vec<i64> {
 The `json_field_as_i64` coercion handles text columns containing
 numeric keys (e.g., CQL `text` key `"544844"` → `i64 544844`).
 Without this, string keys would silently produce empty vectors.
+
+### Typed accessors / traversers for hot paths
+
+Some readers operate on the per-cycle hot path and can't
+afford a round-trip through JSON. The canonical example is a
+stateful cursor over CQL rows: the row iterator is already
+live, each row exposes columns by native type, and
+re-serializing to JSON per row would dominate the op's cost.
+For these cases, `ResultBody` exposes **typed accessors** or
+**traversers** the consumer may use instead of `to_json()`:
+
+- Downcast fast path (`as_any().downcast_ref::<CqlResultBody>()`)
+  for consumers that know the concrete adapter type and want
+  zero-copy column access.
+- Adapter-provided traverser protocols (e.g. row-by-row
+  iterators with typed column readers) when the result is
+  streamed and a whole-structure JSON view would be
+  materializing data the consumer never needs.
+
+Typed access is an **optimization**, not a semantics change.
+Anything the typed path can read, the JSON path can also
+read; the hot-path consumer picks the faster route.
+
+### When to use which
+
+- **Validation, assertions, predicates, cold paths.** Use
+  JSON. No adapter-specific code in validation means a new
+  adapter is trivially validatable the day it ships.
+- **Captures with a known static target type.** If the
+  capture's destination is typed (e.g. feeding a CQL prepared
+  statement's typed parameter on the next cycle), use a typed
+  accessor; it's both faster and more precise.
+- **Captures whose destination is a GK wire.** The wire's
+  declared type decides: `String → String` captures go
+  through the typed accessor if the adapter exposes one,
+  otherwise through `to_json()` and a string render.
+- **Streaming traversal over large results.** Use the
+  adapter's traverser. Materializing the whole structure to
+  JSON defeats the purpose of streaming.
+
+The rule of thumb: **JSON is the universal language;
+typed access is the fast path you opt into when the cost of
+the universal path shows up in a profile.** Every reader
+that needs the fast path explicitly asks for it; readers
+that don't know or don't care get JSON and it works.
 
 ---
 

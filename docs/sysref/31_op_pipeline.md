@@ -142,31 +142,6 @@ capture names. This prevents executing ops with known-missing
 inputs.
 
 ---
-ø
-## Extra Bindings
-
->> This section needs to be updated or removed depending on our recent consolidation work with GK
-
-Validation and other non-adapter consumers may need GK outputs
-that aren't referenced in op fields. The pipeline handles this:
-
-1. **Init time**: `validation::extra_bindings(template)` returns
-   binding names needed (e.g., `["ground_truth"]` from
-   `relevancy.expected: "{ground_truth}"`)
-2. **Compile time**: Binding compiler scans both `op` fields AND
-   `params` for `{name}` references, ensuring all needed bindings
-   are compiled into the GK program
-3. **Cycle time**: `resolve_with_extras(template, extras)` pulls
-   extra GK outputs into `ResolvedFields` alongside op fields
-4. **Execution**: Validation wrapper reads from `ResolvedFields`
-   by name — adapter never sees the extra fields
-
-**Design note:** The extra bindings mechanism is interim. The
-GK-as-unified-state-holder design (sysref 10) would make all
-GK outputs available through the standard resolution path,
-eliminating the need for a separate "extras" list.
-
----
 
 ## Activity Metrics
 

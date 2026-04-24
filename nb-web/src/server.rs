@@ -39,6 +39,12 @@ pub fn build_router(broadcast: MetricsBroadcast) -> Router {
         .route("/api/graph/plot", post(routes::graph_plot))
         // Metrics ingestion (push from running sessions)
         .route("/api/v1/import/prometheus", post(routes::ingest_prometheus))
+        // Dynamic controls (SRD 23). Read-side lists every
+        // declared control in the running session's tree;
+        // write-side dispatches a non-blocking f64 write
+        // tagged with `ControlOrigin::Api { source }`.
+        .route("/api/controls", get(routes::list_controls))
+        .route("/api/control/{name}", post(routes::set_control))
         // WebSocket metric stream
         .route("/ws/metrics", get(ws::metrics_ws))
         // Shared state & middleware

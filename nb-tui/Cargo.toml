@@ -13,9 +13,15 @@ readme = "README.md"
 [dependencies]
 ratatui = "0.29"
 crossterm = "0.28"
+libc = "0.2"
 nb-metrics = { path = "../nb-metrics", version = "0.1.1" }
 nb-activity = { path = "../nb-activity", version = "0.1.1" }
-tokio = { version = "1", features = ["sync", "time"] }
+# Needed for SRD 23 §"TUI surface" — session-root lookup and
+# runtime-context globals that back the control-edit affordance.
+nb-variates = { path = "../nb-variates", version = "0.1.1" }
+# tokio::spawn needed for non-blocking control writes from the
+# event loop; `rt` feature supplies the handle.
+tokio = { version = "1", features = ["sync", "time", "rt"] }
 throbber-widgets-tui = "0.8"
 
 [dev-dependencies]

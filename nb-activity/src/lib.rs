@@ -25,3 +25,4 @@ pub mod wrappers;
 pub mod relevancy;
 pub mod validation;
 pub mod linearize;
+pub mod fiber_pool;

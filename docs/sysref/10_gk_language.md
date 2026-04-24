@@ -7,6 +7,78 @@ node functions.
 
 ---
 
+## GK as the unified access surface
+
+GK is not only the data-generation engine — it is also the
+**assumed interface for reading any runtime value a workload
+might want to reference**. If a value is visible at cycle time
+(a parameter, a metric reading, the current value of a
+[dynamic control](23_dynamic_controls.md), a phase name, a
+captured result from a prior op), the way to get at it from a
+workload is a GK binding, not an ad-hoc side channel.
+
+This gives workloads one resolution model, one type system,
+one compile-time name check, one set of diagnostics, and one
+set of folding / JIT passes across everything they read. The
+bind-point syntax (SRD 21) — `{bind:name}`, `{capture:name}`,
+`{input:name}`, `{param:name}` — and the unqualified shorthand
+`{name}` all resolve to the same underlying GK graph; the only
+difference is which *source* a binding attaches to.
+
+### Reification: runtime state → GK wire
+
+When the engine has a runtime value that workloads might want
+to read, it **reifies** that value as a GK-visible binding or
+node output. Three patterns, all interchangeable from the
+workload's side:
+
+- **Input**. An external value the runner pushes on every
+  cycle (e.g. `cycle`). Declared via `inputs := (...)` and
+  wired via `{input:name}`.
+- **Binding output**. A named GK expression compiled into the
+  kernel (e.g. `dim := vector_dim("glove-25-angular")`). Read
+  via `{bind:name}` or `{name}`.
+- **Context node**. A stdlib node that reaches into a stable
+  runtime surface and returns its current reading — `metric(...)`
+  for a live metric, `control(...)` for a dynamic control
+  (SRD 23), and similar nodes for fiber-pool state, phase
+  identity, etc. See SRD 12 §"Runtime context nodes".
+
+The three share one implication: **a workload never has a
+"second" way to read a value**. If a new runtime quantity is
+worth exposing, it is exposed as a reification the DSL can
+reference by name — not as a special-case templating hook, an
+ad-hoc environment variable, or a global lookup function
+wired into the adapter layer.
+
+### Why this is the default
+
+- **One name-resolution story.** `strict` mode (SRD 15) can
+  enforce that every reference in every op field is resolvable
+  against a GK source. There is no "but some parameters are
+  read through a different path" exception to audit.
+- **Natural composition.** Reified values compose with every
+  other GK node — a feedback loop that reads `metric("errors/s")`
+  and writes `control("rate")` is just a binding, not a plugin.
+- **Uniform observability.** The `--explain` / compile-event
+  stream (SRD 41) describes every input a workload reads in
+  one place. Values that weren't reified would be invisible
+  to this accounting.
+- **Uniform testing.** `strict` and `dryrun=controls`
+  (SRD 23 §"Enumeration: controls are structural") can both
+  walk the tree of what a workload will read before anything
+  runs, because everything-it-can-read is in the GK graph.
+
+Subsystems that introduce new mutable state (a fiber pool's
+concurrency, a rate limiter's target, a metric cadence's
+current bucket duration) **are expected to reify their
+relevant fields as a GK-addressable name** — through a
+control, a context node, or both. "I need to observe this
+from a workload" is the designer's cue to reify, not to build
+a bespoke reader.
+
+---
+
 ## DSL Syntax
 
 GK programs are written in `.gk` files or inline in workload
@@ -19,9 +91,27 @@ inputs := (cycle)
 inputs := (cycle, partition, cluster)
 ```
 
-Inputs are the external values that drive the DAG. Most workloads
-use a single `cycle` input. Multi-dimensional inputs enable nested
-iteration patterns via mixed-radix decomposition.
+Inputs are the external values that drive the DAG. A workload
+declares any cursor names it wants as inputs; the compiler
+treats them as unbound wires that the host must supply at
+runtime.
+
+**Inputs are inferred when the declaration is omitted.** A
+binding block that references `cycle` (or any other unbound
+name) implicitly declares those names as its input set —
+the compiler's closure inference already identifies unbound
+wires on both the input and output sides, so requiring an
+explicit `inputs := (...)` line in every block was redundant.
+Strict checking still applies: the host closure feeding the
+kernel must provide every inferred input, and the compiler
+reports a mismatch if it doesn't.
+
+**`cycle` is not a magic identifier.** It's a conventional
+name for the primary cursor — common in examples because it
+matches the default cursor the runner supplies — but inputs
+can be named anything and any cursor shape (single, nested,
+decomposed via `mixed_radix`) is fine. The engine treats
+`cycle` identically to any other user-named input.
 
 > **Note:** The current Rust implementation still uses `coordinates`
 > in some code paths (`coordinates := (cycle)`, `set_coordinates`,

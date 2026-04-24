@@ -291,6 +291,15 @@ impl DriverAdapter for StdoutAdapter {
             color: self.color,
         }))
     }
+
+    // stdout is intentionally permissive: it renders whatever
+    // op fields the workload supplies (stmt, method, url, etc.)
+    // as data rather than dispatching on them. Returning `None`
+    // opts out of SRD 30's strict unknown-field check, which
+    // only makes sense for adapters that have a closed
+    // vocabulary of known fields (CQL, HTTP when they're
+    // refactored to declare their own). See SRD 30 §"Core-first
+    // field processing" for the intended progression.
 }
 
 /// Op dispenser for the stdout adapter.

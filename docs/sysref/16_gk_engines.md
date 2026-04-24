@@ -7,6 +7,12 @@ produces a **monomorphic kernel** — a distinct type with the
 selected optimizations baked into the eval path, no runtime
 branching for strategy selection.
 
+The *which level gets picked and why* is this document. The
+*how a Phase-3 kernel plugs into the runtime* — specifically
+the Cranelift ↔ Rust call boundary and the setjmp/longjmp shim
+that lets predicate violations surface as catchable panics —
+lives in [SRD 16b GK JIT Wiring](16_gk_jit.md).
+
 ---
 
 ## Compilation Levels

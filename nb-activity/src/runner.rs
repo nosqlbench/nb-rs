@@ -28,7 +28,7 @@ use nb_workload::tags::TagFilter;
 pub const KNOWN_PARAMS: &[&str] = &[
     // Activity-level
     "adapter", "driver", "workload", "op", "cycles", "concurrency",
-    "rate", "stanzarate", "errors", "seq", "tags", "format",
+    "rate", "errors", "seq", "tags", "format",
     "filename", "separator", "header", "color",
     "stanza_concurrency", "sc", "scenario", "dryrun", "summary", "metrics", "limit", "profiler", "tui",
     "latency-cadences", "latency_cadences",
@@ -63,7 +63,7 @@ pub fn scenarios_in_workload_file(path: &str) -> Vec<String> {
 /// registrations — the calling binary just needs to link the adapter
 /// crates it wants available.
 /// Execution depth: how far through the pipeline to go.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecDepth {
     /// Compile scopes, stop before cycles. No adapters created.
     Phase,
@@ -82,12 +82,21 @@ pub struct DiagnosticConfig {
     pub explain_gk: bool,
     /// Emit dimensional labels for all phases.
     pub show_labels: bool,
+    /// Walk the post-construction component tree, render every
+    /// declared dynamic control, and exit. SRD 23 §"Enumeration:
+    /// controls are structural".
+    pub list_controls: bool,
 }
 
 impl DiagnosticConfig {
     /// Normal execution, no diagnostics.
     pub fn normal() -> Self {
-        Self { depth: ExecDepth::Full, explain_gk: false, show_labels: false }
+        Self {
+            depth: ExecDepth::Full,
+            explain_gk: false,
+            show_labels: false,
+            list_controls: false,
+        }
     }
 
     /// Parse from `dryrun=` value (e.g., "phase,gk" or "cycle").
@@ -102,6 +111,14 @@ impl DiagnosticConfig {
                 "full" => { config.depth = ExecDepth::Full; depth_set = true; }
                 "gk" => config.explain_gk = true,
                 "labels" => config.show_labels = true,
+                "controls" => {
+                    // Implies an early exit before any phase
+                    // runs — `controls` is a discovery dump, not
+                    // an execution mode.
+                    config.list_controls = true;
+                    config.depth = ExecDepth::Phase;
+                    depth_set = true;
+                }
                 _ => crate::diag!(crate::observer::LogLevel::Warn, "warning: unknown dryrun flag '{flag}'"),
             }
         }
@@ -111,6 +128,63 @@ impl DiagnosticConfig {
         }
         config
     }
+}
+
+/// Walk a component subtree and print every declared control
+/// (name, type, current value, scope, final flag, applier
+/// count) in a stable order. Used by `dryrun=controls` and any
+/// other discovery-style call site.
+pub fn render_controls_tree(
+    root: &std::sync::Arc<std::sync::RwLock<nb_metrics::component::Component>>,
+    out: &mut dyn std::io::Write,
+) -> std::io::Result<()> {
+    use nb_metrics::component::find;
+    use nb_metrics::selector::Selector;
+
+    writeln!(out, "Declared dynamic controls (SRD 23):")?;
+    let all = find(root, &Selector::new());
+    let mut entries: Vec<(String, String, String, String, String, String)> = Vec::new();
+    for comp in all {
+        let guard = match comp.read() {
+            Ok(g) => g,
+            Err(_) => continue,
+        };
+        let path = guard.effective_labels()
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        for ctl in guard.controls().list() {
+            let scope = match ctl.branch_scope() {
+                nb_metrics::controls::BranchScope::Local => "local",
+                nb_metrics::controls::BranchScope::Subtree => "subtree",
+            };
+            let final_marker = match ctl.final_scope() {
+                Some(s) => format!("final@{s}"),
+                None => "-".to_string(),
+            };
+            entries.push((
+                if path.is_empty() { "<root>".into() } else { path.clone() },
+                ctl.name().to_string(),
+                ctl.value_type_name().to_string(),
+                ctl.value_string(),
+                format!("scope={scope}, {final_marker}, appliers={}", ctl.applier_count()),
+                if ctl.accepts_f64_writes() { "f64-writable".into() } else { "no-f64".into() },
+            ));
+        }
+    }
+    if entries.is_empty() {
+        writeln!(out, "  (no controls declared)")?;
+        return Ok(());
+    }
+    entries.sort();
+    for (path, name, ty, value, meta, write) in entries {
+        writeln!(
+            out,
+            "  {path}\n    {name}: {value}  [{ty}]  {meta}  {write}",
+        )?;
+    }
+    Ok(())
 }
 
 
@@ -204,12 +278,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         Some(s) => s.parse().map_err(|_| format!("concurrency value '{s}' is not a valid integer"))?,
         None => 1,
     };
-    let cycle_rate: Option<f64> = match merged_params.get("rate") {
+    let rate: Option<f64> = match merged_params.get("rate") {
         Some(s) => Some(s.parse().map_err(|_| format!("rate value '{s}' is not a valid number"))?),
-        None => None,
-    };
-    let stanza_rate: Option<f64> = match merged_params.get("stanzarate") {
-        Some(s) => Some(s.parse().map_err(|_| format!("stanzarate value '{s}' is not a valid number"))?),
         None => None,
     };
     let tag_filter = merged_params.get("tags").cloned();
@@ -359,6 +429,14 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         scenario_for_session,
     );
     let session_id = session.id.clone();
+
+    // dryrun=controls: defer the tree walk until after phase
+    // construction. `list_controls` implies depth=Phase, which
+    // means every phase compiles and attaches its component —
+    // that's when activity-scoped controls get declared — but
+    // no cycles run. Walking here would only see session-root
+    // controls. The renderer fires at the very end of the run,
+    // just before the session returns.
 
     // Direct the diagnostic log sink at <session_dir>/session.log so every
     // observer::log() call is captured durably, even under the TUI.
@@ -734,7 +812,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 openmetrics_url: openmetrics_url.clone(),
                 seq_type,
                 concurrency,
-                cycle_rate,
+                rate,
                 error_spec: error_spec.clone(),
                 session_id: session_id.clone(),
                 label_stack: Vec::new(),
@@ -789,8 +867,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             name: "main".into(),
             cycles,
             concurrency: resolved_concurrency,
-            cycle_rate,
-            stanza_rate,
+            rate,
             sequencer: seq_type,
             error_spec,
             max_retries: 3,
@@ -801,8 +878,15 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
 
         let adapter = create_adapter(&driver, &merged_params, dry_run).await?;
         let labels = Labels::of("session", &session.id).with("activity", "main");
-        let activity = Activity::with_params(
-            config, &labels, op_sequence, workload_params,
+        // SRD 40: resolve hdr.sigdigs from the session root
+        // (walk-up) so this activity's timers/histograms use the
+        // configured precision. Falls back to the project default
+        // if no ancestor declares the property.
+        let sigdigs = nb_metrics::instruments::histogram::resolve_hdr_sigdigs(
+            &session.component.read().unwrap_or_else(|e| e.into_inner()),
+        );
+        let mut activity = Activity::with_params_and_sigdigs(
+            config, &labels, op_sequence, workload_params, sigdigs,
         );
         let shared_metrics = activity.shared_metrics();
 
@@ -820,6 +904,11 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             ac.set_instruments(shared_metrics.clone());
             ac.set_state(nb_metrics::component::ComponentState::Running);
         }
+
+        // Wire the activity component back onto the Activity so
+        // `run_with_adapters` can declare the `concurrency`
+        // control on it (SRD 23 §"Fiber executor").
+        activity.attach_component(activity_component.clone());
 
         let stopped = activity.run_with_driver(adapter, program).await;
 
@@ -934,6 +1023,18 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // these are per-file counterparts for direct tool access like
     // `sqlite3 logs/metrics.db` or `tail -f logs/session.log`.
     refresh_latest_file_links(&session);
+
+    // dryrun=controls: every phase has now been constructed (at
+    // depth=Phase the executor stops before cycles but still
+    // attaches components and declares controls). Walk the
+    // session tree and dump the catalog.
+    if diag.list_controls {
+        let mut out = std::io::stdout();
+        if let Err(e) = render_controls_tree(&session.component, &mut out) {
+            crate::diag!(crate::observer::LogLevel::Warn,
+                "warning: rendering controls: {e}");
+        }
+    }
 
     Ok(())
 }
@@ -1556,5 +1657,69 @@ pub fn build_gauge_filter(
         }
     }
     if any_open { None } else { Some(patterns) }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_dryrun_controls_sets_list_flag() {
+        let cfg = DiagnosticConfig::parse("controls");
+        assert!(cfg.list_controls);
+        // Implies phase depth so the runner exits before any
+        // cycle-time work.
+        assert_eq!(cfg.depth, ExecDepth::Phase);
+    }
+
+    #[test]
+    fn parse_dryrun_controls_combines_with_other_flags() {
+        let cfg = DiagnosticConfig::parse("controls,labels");
+        assert!(cfg.list_controls);
+        assert!(cfg.show_labels);
+    }
+
+    #[test]
+    fn parse_dryrun_unknown_flag_does_not_set_controls() {
+        let cfg = DiagnosticConfig::parse("phase,bogus");
+        assert!(!cfg.list_controls);
+    }
+
+    #[test]
+    fn render_controls_tree_empty_session_writes_placeholder() {
+        let root = nb_metrics::component::Component::root(
+            nb_metrics::labels::Labels::of("session", "t"),
+            std::collections::HashMap::new(),
+        );
+        let mut buf: Vec<u8> = Vec::new();
+        render_controls_tree(&root, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("no controls declared"), "got: {s}");
+    }
+
+    #[test]
+    fn render_controls_tree_lists_session_root_controls() {
+        let root = nb_metrics::component::Component::root(
+            nb_metrics::labels::Labels::of("session", "t"),
+            std::collections::HashMap::new(),
+        );
+        root.read().unwrap().controls().declare(
+            nb_metrics::controls::ControlBuilder::new("log_level", 1u32)
+                .reify_as_gauge(|v| Some(*v as f64))
+                .branch_scope(nb_metrics::controls::BranchScope::Subtree)
+                .from_f64(|v| Ok(v as u32))
+                .final_at_scope("session_root")
+                .build(),
+        );
+
+        let mut buf: Vec<u8> = Vec::new();
+        render_controls_tree(&root, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("log_level"), "missing name: {s}");
+        assert!(s.contains("scope=subtree"), "missing scope: {s}");
+        assert!(s.contains("final@session_root"), "missing final marker: {s}");
+        assert!(s.contains("f64-writable"), "missing write surface: {s}");
+    }
 }
 

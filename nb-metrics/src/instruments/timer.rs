@@ -32,12 +32,33 @@ pub struct TimerSnapshot {
 
 impl Timer {
     pub fn new(labels: Labels) -> Self {
+        Self::with_sigdigs(labels, crate::instruments::histogram::DEFAULT_HDR_SIGDIGS)
+    }
+
+    /// Construct a Timer with explicit HDR significant-digits
+    /// precision. Use this from a call site that already knows
+    /// the desired precision.
+    pub fn with_sigdigs(labels: Labels, sigdigs: u8) -> Self {
         Self {
             labels: labels.clone(),
-            histogram: Histogram::new(labels),
+            histogram: crate::instruments::histogram::Histogram::with_sigdigs(labels, sigdigs),
             count: AtomicU64::new(0),
             live_window: OnceLock::new(),
         }
+    }
+
+    /// Construct a Timer whose underlying histogram uses the
+    /// HDR significant-digits precision configured on the
+    /// nearest ancestor of `component` that declares
+    /// [`crate::instruments::histogram::HDR_SIGDIGS_PROP`].
+    /// Falls back to the default if no ancestor declares it.
+    /// SRD 40 §"HDR significant digits — subtree-scoped setting".
+    pub fn with_sigdigs_from(
+        labels: Labels,
+        component: &crate::component::Component,
+    ) -> Self {
+        let sigdigs = crate::instruments::histogram::resolve_hdr_sigdigs(component);
+        Self::with_sigdigs(labels, sigdigs)
     }
 
     /// Record a duration in nanoseconds. If the live-window ring

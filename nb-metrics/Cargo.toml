@@ -12,6 +12,8 @@ readme = "README.md"
 
 [dependencies]
 hdrhistogram = "7"
+tokio = { version = "1", features = ["sync", "time"] }
+futures = "0.3"
 rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 regex = { version = "1", optional = true }
 reqwest = { version = "0.12", features = ["blocking"], optional = true }
@@ -19,6 +21,7 @@ base64 = { version = "0.22", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
 
 [features]
 default = []

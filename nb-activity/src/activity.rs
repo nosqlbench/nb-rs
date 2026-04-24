@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use tokio::task::JoinHandle;
 
 use nb_errorhandler::ErrorRouter;
 use nb_metrics::instruments::counter::Counter;
@@ -28,8 +27,11 @@ pub struct ActivityConfig {
     pub cycles: u64,
     /// Number of fibers (tokio tasks) executing stanzas concurrently.
     pub concurrency: usize,
-    pub cycle_rate: Option<f64>,
-    pub stanza_rate: Option<f64>,
+    /// Target ops/sec for the single activity-level rate
+    /// limiter. `None` disables rate limiting. There is one
+    /// rate limiter per activity — no separate stanza-rate
+    /// mechanism.
+    pub rate: Option<f64>,
     pub sequencer: SequencerType,
     pub error_spec: String,
     pub max_retries: u32,
@@ -49,8 +51,7 @@ impl Default for ActivityConfig {
             name: "default".into(),
             cycles: 1,
             concurrency: 1,
-            cycle_rate: None,
-            stanza_rate: None,
+            rate: None,
             sequencer: SequencerType::Bucket,
             error_spec: ".*:warn,stop".into(),
             max_retries: 3,
@@ -102,12 +103,23 @@ pub struct ActivityMetrics {
 
 impl ActivityMetrics {
     pub fn new(labels: &Labels) -> Self {
+        Self::with_sigdigs(labels, nb_metrics::instruments::histogram::DEFAULT_HDR_SIGDIGS)
+    }
+
+    /// Construct activity metrics using an explicit HDR
+    /// significant-digits precision for every histogram and
+    /// timer below. The runner resolves `hdr.sigdigs` from the
+    /// session root via
+    /// [`nb_metrics::instruments::histogram::resolve_hdr_sigdigs`]
+    /// once per activity and threads it here (SRD 40 §"HDR
+    /// significant digits — subtree-scoped setting").
+    pub fn with_sigdigs(labels: &Labels, sigdigs: u8) -> Self {
         Self {
-            service_time: Timer::new(labels.with("name", "cycles_servicetime")),
-            wait_time: Timer::new(labels.with("name", "cycles_waittime")),
-            response_time: Timer::new(labels.with("name", "cycles_responsetime")),
-            result_success_time: Timer::new(labels.with("name", "result_success")),
-            tries_histogram: Histogram::new(labels.with("name", "tries")),
+            service_time: Timer::with_sigdigs(labels.with("name", "cycles_servicetime"), sigdigs),
+            wait_time: Timer::with_sigdigs(labels.with("name", "cycles_waittime"), sigdigs),
+            response_time: Timer::with_sigdigs(labels.with("name", "cycles_responsetime"), sigdigs),
+            result_success_time: Timer::with_sigdigs(labels.with("name", "result_success"), sigdigs),
+            tries_histogram: nb_metrics::instruments::histogram::Histogram::with_sigdigs(labels.with("name", "tries"), sigdigs),
             cycles_total: Counter::new(labels.with("name", "cycles_total")),
             successes_total: Counter::new(labels.with("name", "successes_total")),
             skips_total: Counter::new(labels.with("name", "skips_total")),
@@ -404,6 +416,13 @@ pub struct Activity {
     /// Final validation metrics frame, populated after all cycles complete.
     /// Read by the metrics capture thread after the activity finishes.
     pub validation_frame: Arc<std::sync::Mutex<Option<MetricSet>>>,
+    /// Optional handle to this activity's component in the session tree.
+    /// Set by the runner via [`Self::attach_component`] before
+    /// execution; when present, the executor declares the
+    /// `concurrency` control on it (SRD 23) and wires the
+    /// [`crate::fiber_pool::ConcurrencyApplier`] so runtime writes
+    /// resize the fiber pool.
+    pub component: Option<Arc<std::sync::RwLock<nb_metrics::component::Component>>>,
 }
 
 impl Activity {
@@ -421,10 +440,28 @@ impl Activity {
         op_sequence: OpSequence,
         params: std::collections::HashMap<String, String>,
     ) -> Self {
-        // Labels come from the component tree (parent_labels).
-        // The activity name is for display only, not a metric dimension.
+        Self::with_params_and_sigdigs(
+            config, parent_labels, op_sequence, params,
+            nb_metrics::instruments::histogram::DEFAULT_HDR_SIGDIGS,
+        )
+    }
+
+    /// Build an activity with explicit HDR significant-digits
+    /// precision. Used by the runner after it resolves
+    /// `hdr.sigdigs` from the session root (SRD 40); every
+    /// histogram the activity owns is constructed at this
+    /// precision. Callers that don't resolve from a tree can
+    /// use [`Self::with_params`] which defaults to
+    /// [`nb_metrics::instruments::histogram::DEFAULT_HDR_SIGDIGS`].
+    pub fn with_params_and_sigdigs(
+        config: ActivityConfig,
+        parent_labels: &Labels,
+        op_sequence: OpSequence,
+        params: std::collections::HashMap<String, String>,
+        sigdigs: u8,
+    ) -> Self {
         let labels = parent_labels.clone();
-        let metrics = Arc::new(ActivityMetrics::new(&labels));
+        let metrics = Arc::new(ActivityMetrics::with_sigdigs(&labels, sigdigs));
         let error_router = ErrorRouter::parse(&config.error_spec)
             .unwrap_or_else(|e| {
                 crate::diag!(crate::observer::LogLevel::Warn, "warning: invalid error spec '{}': {e}; using default (warn,stop)", config.error_spec);
@@ -448,7 +485,66 @@ impl Activity {
             workload_params: Arc::new(params),
             stop_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             validation_frame: Arc::new(std::sync::Mutex::new(None)),
+            component: None,
         }
+    }
+
+    /// Attach this activity to its component in the session tree.
+    /// The runner creates the component and installs it here so
+    /// `run_with_*` can register appliers on the activity's
+    /// declared controls.
+    ///
+    /// Structural control declarations happen here — not at run
+    /// time — so `dryrun=controls` (and every other pre-execution
+    /// discovery path) sees the activity's controls without
+    /// needing to start any cycles. Appliers that depend on
+    /// run-time state (the fiber pool, the rate limiter) are
+    /// registered later in `run_with_adapters`.
+    pub fn attach_component(
+        &mut self,
+        component: Arc<std::sync::RwLock<nb_metrics::component::Component>>,
+    ) {
+        use nb_metrics::controls::{BranchScope, ControlBuilder};
+        let initial = self.config.concurrency as u32;
+        let concurrency_control: nb_metrics::controls::Control<u32> =
+            ControlBuilder::new("concurrency", initial)
+                .reify_as_gauge(|v| Some(*v as f64))
+                .from_f64(|v| {
+                    if v < 1.0 || v > 100_000.0 {
+                        Err(format!("concurrency out of range: {v}"))
+                    } else {
+                        Ok(v as u32)
+                    }
+                })
+                .branch_scope(BranchScope::Local)
+                .build();
+        component.read().unwrap_or_else(|e| e.into_inner())
+            .controls().declare(concurrency_control);
+
+        // Declare a `rate` control whenever the activity config
+        // has a rate set. The control's reified gauge projects
+        // ops/sec so metric sinks and the f64-writable surface
+        // (TUI `e` prompt, web POST, GK `control_set`) all read
+        // and write in the same unit. The [`RateLimiterApplier`]
+        // gets registered at run time once the limiter exists
+        // (see `run_with_adapters`).
+        if let Some(rate) = self.config.rate {
+            let rate_control: nb_metrics::controls::Control<nb_rate::RateSpec> =
+                ControlBuilder::new("rate", nb_rate::RateSpec::new(rate))
+                    .reify_as_gauge(|spec: &nb_rate::RateSpec| Some(spec.ops_per_sec))
+                    .from_f64(|v| {
+                        if v <= 0.0 {
+                            Err(format!("rate must be > 0, got {v}"))
+                        } else {
+                            Ok(nb_rate::RateSpec::new(v))
+                        }
+                    })
+                    .branch_scope(BranchScope::Local)
+                    .build();
+            component.read().unwrap_or_else(|e| e.into_inner())
+                .controls().declare(rate_control);
+        }
+        self.component = Some(component);
     }
 
     /// Get a shared reference to the metrics for external capture.
@@ -519,6 +615,32 @@ impl Activity {
 
             if template.params.contains_key("batch") {
                 crate::diag!(crate::observer::LogLevel::Debug, "[activity] op '{}' has batch param: {:?}", template.name, template.params.get("batch"));
+            }
+            // SRD 30 §"Core-first field processing": if the adapter
+            // declares its known op fields, every key in
+            // `template.op` must be one of them. Core has already
+            // stripped its own fields during parse (activity_params
+            // in nb-workload), so anything left is an adapter
+            // concern. Unknown fields are a typo or a misplaced
+            // core directive — fail loudly rather than silently
+            // dropping the field.
+            if let Some(known) = adapter.known_op_fields() {
+                let unknown: Vec<&String> = template.op.keys()
+                    .filter(|k| !known.contains(&k.as_str()))
+                    .collect();
+                if !unknown.is_empty() {
+                    let list = unknown.iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    crate::diag!(crate::observer::LogLevel::Error,
+                        "error: adapter '{}' does not recognize op fields [{list}] on op '{}'; known fields: [{}]",
+                        adapter.name(),
+                        template.name,
+                        known.join(", "),
+                    );
+                    return true; // stop — misconfiguration
+                }
             }
             match adapter.map_op(template) {
                 Ok(d) => {
@@ -647,12 +769,32 @@ impl Activity {
         // the progress thread (below) can read live relevancy aggregates.
         activity.metrics.set_validation_metrics(validation_metrics.clone());
 
-        let cycle_rl = activity.config.cycle_rate.map(|r| {
+        // Single activity-level rate limiter. One ops-per-sec
+        // ceiling gates every fiber; there is no separate
+        // stanza-rate mechanism. Activities with no `rate`
+        // configured skip construction cleanly.
+        let rate_limiter = activity.config.rate.map(|r| {
             Arc::new(RateLimiter::start(nb_rate::RateSpec::new(r)))
         });
-        let stanza_rl = activity.config.stanza_rate.map(|r| {
-            Arc::new(RateLimiter::start(nb_rate::RateSpec::new(r)))
-        });
+
+        // Register the [`RateLimiterApplier`] against the
+        // already-declared `rate` control if both the control
+        // and the limiter exist. The declaration happens in
+        // [`Self::attach_component`] — this step only wires the
+        // applier so a runtime write actually reconfigures the
+        // running limiter.
+        if let (Some(ref ac), Some(ref rl)) = (
+            activity.component.as_ref(), rate_limiter.as_ref(),
+        ) {
+            let existing: Option<nb_metrics::controls::Control<nb_rate::RateSpec>> =
+                ac.read().unwrap_or_else(|e| e.into_inner())
+                    .controls().get("rate");
+            if let Some(ctl) = existing {
+                ctl.register_applier(
+                    nb_rate::RateLimiterApplier::new(Arc::clone(rl)),
+                );
+            }
+        }
 
         // Spawn a progress reporter thread that prints cycle count to stderr
         // every 500 ms when stderr is a TTY and cycle count is large enough
@@ -768,36 +910,78 @@ impl Activity {
             });
         }
 
-        let mut handles: Vec<JoinHandle<()>> = Vec::new();
+        // One Arc<str> shared by every fiber in this phase. The
+        // GK runtime-context `phase()` node clones this per read
+        // instead of per fiber, keeping the per-cycle cost O(1).
+        let phase_name_arc: Arc<str> = Arc::from(activity_name.as_str());
 
-        for _task_id in 0..activity.config.concurrency {
+        // SRD 23 §"Fiber executor": fiber lifecycle goes through
+        // a [`FiberPool`] that the `ConcurrencyApplier` can
+        // resize via the activity's `concurrency` control. Each
+        // fiber receives its own stop-flag and exits
+        // cooperatively at the next cycle boundary when flagged.
+        let pool_spawner: crate::fiber_pool::FiberSpawner = {
             let activity = activity.clone();
-            let dispensers = dispensers.clone();
-            let extra_bindings = extra_bindings_per_template.clone();
-            let bind_plans = bind_plans_per_template.clone();
-            let batch_configs = batch_configs_per_template.clone();
-            let program = program.clone();
-            let cycle_rl = cycle_rl.clone();
-            let stanza_rl = stanza_rl.clone();
+            let dispensers_outer = dispensers.clone();
+            let extra_bindings_outer = extra_bindings_per_template.clone();
+            let bind_plans_outer = bind_plans_per_template.clone();
+            let batch_configs_outer = batch_configs_per_template.clone();
+            let program_outer = program.clone();
+            let rate_limiter_outer = rate_limiter.clone();
+            let phase_arc_outer = phase_name_arc.clone();
+            Box::new(move |stop: crate::fiber_pool::StopFlag| {
+                let activity = activity.clone();
+                let dispensers = dispensers_outer.clone();
+                let extra_bindings = extra_bindings_outer.clone();
+                let bind_plans = bind_plans_outer.clone();
+                let batch_configs = batch_configs_outer.clone();
+                let program = program_outer.clone();
+                let rate_limiter = rate_limiter_outer.clone();
+                let phase_arc = phase_arc_outer.clone();
+                tokio::spawn(async move {
+                    nb_variates::nodes::runtime_context::with_fiber_context(
+                        phase_arc,
+                        async move {
+                            executor_task(
+                                activity, dispensers, extra_bindings,
+                                bind_plans, batch_configs, program,
+                                rate_limiter, stop,
+                            ).await;
+                        },
+                    ).await;
+                })
+            })
+        };
+        let fiber_pool = Arc::new(crate::fiber_pool::FiberPool::new(pool_spawner));
 
-            handles.push(tokio::spawn(async move {
-                executor_task(
-                    activity, dispensers, extra_bindings, bind_plans, batch_configs,
-                    program, cycle_rl, stanza_rl,
-                ).await;
-            }));
+        // Register the pool's applier against the already-declared
+        // `concurrency` control (see [`Self::attach_component`]).
+        // At run time the applier is what turns a control write
+        // into an actual fiber-pool resize. Without a component
+        // attached (library-level tests that call `Activity::new`
+        // directly) we skip registration — the pool still
+        // operates, just without the runtime control surface.
+        if let Some(ac) = activity.component.as_ref() {
+            let existing: Option<nb_metrics::controls::Control<u32>> =
+                ac.read().unwrap_or_else(|e| e.into_inner())
+                    .controls().get("concurrency");
+            if let Some(ctl) = existing {
+                ctl.register_applier(
+                    crate::fiber_pool::ConcurrencyApplier::new(fiber_pool.clone()),
+                );
+            }
         }
 
-        for handle in handles {
-            if let Err(e) = handle.await {
-                if e.is_panic() {
-                    crate::diag!(crate::observer::LogLevel::Error, "error: executor fiber panicked: {e}");
-                } else {
-                    crate::diag!(crate::observer::LogLevel::Error, "error: executor fiber failed: {e}");
-                }
-                activity.metrics.errors_total.inc();
-                activity.stop_flag.store(true, Ordering::Relaxed);
-            }
+        fiber_pool.spawn_initial(activity.config.concurrency);
+        // Wait for fibers to exit by natural exhaustion (source
+        // drained) or `stop_flag` set by the error router.
+        // Runtime resize-down flags some of them earlier; those
+        // exit at the next cycle boundary and the remainder
+        // drain when the source is done.
+        loop {
+            fiber_pool.reap_finished();
+            if fiber_pool.tracked_count() == 0 { break; }
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
 
         // Print final completion line
@@ -908,8 +1092,14 @@ async fn executor_task(
     bind_plans: Arc<Vec<Option<crate::synthesis::BindPlan>>>,
     batch_configs: Arc<Vec<crate::synthesis::BatchConfig>>,
     program: Arc<nb_variates::kernel::GkProgram>,
-    cycle_rl: Option<Arc<RateLimiter>>,
-    stanza_rl: Option<Arc<RateLimiter>>,
+    // Optional activity-level rate limiter. `acquire` fires
+    // once per cycle before adapter dispatch. There is no
+    // separate stanza-rate limiter.
+    rate_limiter: Option<Arc<RateLimiter>>,
+    // Per-fiber cooperative-exit flag owned by the activity's
+    // [`crate::fiber_pool::FiberPool`]. Set to `true` by
+    // `ConcurrencyApplier` when the pool scales down.
+    fiber_stop: crate::fiber_pool::StopFlag,
 ) {
     use crate::synthesis::FiberBuilder;
 
@@ -924,6 +1114,7 @@ async fn executor_task(
 
     loop {
         if activity.stop_flag.load(std::sync::atomic::Ordering::Relaxed) { break; }
+        if fiber_stop.load(std::sync::atomic::Ordering::Acquire) { break; }
 
         // Phase 1: RESERVE — CAS on shared cursor, instantaneous.
         // Acquires one stanza's worth of ordinals. This is the only
@@ -933,9 +1124,6 @@ async fn executor_task(
             None => break, // source exhausted
         };
 
-        if let Some(srl) = &stanza_rl {
-            srl.acquire().await;
-        }
         activity.metrics.stanzas_total.inc();
         fiber.reset_captures();
 
@@ -953,10 +1141,15 @@ async fn executor_task(
             // Render the source item (fiber-local, no shared state)
             let item = source.render_item(ordinal);
             let cycle = ordinal;
+            // Publish the cycle to the enclosing fiber-context
+            // scope so any GK node reading `cycle()` or implicitly
+            // `cycle` inside the DAG sees the same ordinal as
+            // adapter execution. No-op outside a fiber scope.
+            nb_variates::nodes::runtime_context::set_task_cycle(cycle);
 
             let wait_start = Instant::now();
-            if let Some(crl) = &cycle_rl {
-                crl.acquire().await;
+            if let Some(ref rl) = rate_limiter {
+                rl.acquire().await;
             }
             let wait_nanos = wait_start.elapsed().as_nanos() as u64;
 
@@ -1185,12 +1378,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn activity_with_cycle_rate() {
+    async fn activity_with_rate() {
         let config = ActivityConfig {
             name: "ratetest".into(),
             cycles: 10,
             concurrency: 2,
-            cycle_rate: Some(10000.0),
+            rate: Some(10000.0),
             ..Default::default()
         };
         let ops = vec![nb_workload::model::ParsedOp::simple("op1", "test")];
@@ -1222,5 +1415,172 @@ mod tests {
         activity.run_with_driver(Arc::new(adapter), test_program()).await;
 
         assert_eq!(count.load(Ordering::Relaxed), 12);
+    }
+
+    #[tokio::test]
+    async fn rate_control_is_declared_when_rate_configured() {
+        use nb_metrics::component::Component;
+        use nb_metrics::labels::Labels as L;
+        use std::sync::RwLock;
+
+        let config = ActivityConfig {
+            name: "rate_decl".into(),
+            cycles: 5,
+            concurrency: 1,
+            rate: Some(2500.0),
+            ..Default::default()
+        };
+        let ops = vec![nb_workload::model::ParsedOp::simple("op1", "test")];
+        let seq = OpSequence::uniform(ops);
+        let mut activity = Activity::new(
+            config, &L::of("session", "s_rate"), seq,
+        );
+        let component = Arc::new(RwLock::new(Component::new(
+            L::of("session", "s_rate"), std::collections::HashMap::new(),
+        )));
+        activity.attach_component(component.clone());
+
+        let (adapter, _count) = CountingDriverAdapter::new();
+        activity.run_with_driver(Arc::new(adapter), test_program()).await;
+
+        // After the activity runs, the rate control is on the
+        // component and reports the configured target via its
+        // reified gauge.
+        let guard = component.read().unwrap();
+        let erased = guard.controls().get_erased("rate")
+            .expect("rate control should be declared when rate is set");
+        assert!(erased.accepts_f64_writes());
+        assert_eq!(erased.gauge_f64(), Some(2500.0));
+    }
+
+    #[tokio::test]
+    async fn rate_control_is_absent_when_no_rate() {
+        use nb_metrics::component::Component;
+        use nb_metrics::labels::Labels as L;
+        use std::sync::RwLock;
+
+        let config = ActivityConfig {
+            name: "no_rate".into(),
+            cycles: 3,
+            concurrency: 1,
+            rate: None,
+            ..Default::default()
+        };
+        let ops = vec![nb_workload::model::ParsedOp::simple("op1", "test")];
+        let seq = OpSequence::uniform(ops);
+        let mut activity = Activity::new(
+            config, &L::of("session", "s_nr"), seq,
+        );
+        let component = Arc::new(RwLock::new(Component::new(
+            L::of("session", "s_nr"), std::collections::HashMap::new(),
+        )));
+        activity.attach_component(component.clone());
+
+        let (adapter, _count) = CountingDriverAdapter::new();
+        activity.run_with_driver(Arc::new(adapter), test_program()).await;
+
+        let guard = component.read().unwrap();
+        assert!(
+            guard.controls().get_erased("rate").is_none(),
+            "no rate control should exist without rate configured",
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_control_write_retargets_the_running_limiter() {
+        use nb_metrics::component::Component;
+        use nb_metrics::controls::ControlOrigin;
+        use nb_metrics::labels::Labels as L;
+        use std::sync::RwLock;
+
+        // 200 cycles with a low rate + a concurrent writer that
+        // bumps the rate mid-flight. The committed value on the
+        // control reflects the write; the limiter carries the
+        // same target after reconfigure.
+        let config = ActivityConfig {
+            name: "rate_live".into(),
+            cycles: 200,
+            concurrency: 2,
+            rate: Some(50.0),
+            ..Default::default()
+        };
+        let ops = vec![nb_workload::model::ParsedOp::simple("op1", "test")];
+        let seq = OpSequence::uniform(ops);
+        let mut activity = Activity::new(
+            config, &L::of("session", "s_live"), seq,
+        );
+        let component = Arc::new(RwLock::new(Component::new(
+            L::of("session", "s_live"), std::collections::HashMap::new(),
+        )));
+        activity.attach_component(component.clone());
+
+        // Spawn the activity, wait for the applier to be wired,
+        // issue a typed write, assert the control value advanced.
+        let component_for_writer = component.clone();
+        let writer = tokio::spawn(async move {
+            for _ in 0..50 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                let ctl: Option<nb_metrics::controls::Control<nb_rate::RateSpec>> =
+                    component_for_writer.read().unwrap()
+                        .controls().get("rate");
+                if let Some(c) = ctl {
+                    // Only attempt once the applier is registered.
+                    if c.applier_count() > 0 {
+                        c.set(nb_rate::RateSpec::new(10_000.0),
+                              ControlOrigin::Test).await.ok();
+                        return;
+                    }
+                }
+            }
+        });
+
+        let (adapter, _count) = CountingDriverAdapter::new();
+        activity.run_with_driver(Arc::new(adapter), test_program()).await;
+        let _ = writer.await;
+
+        let guard = component.read().unwrap();
+        let ctl: nb_metrics::controls::Control<nb_rate::RateSpec> =
+            guard.controls().get("rate").unwrap();
+        assert_eq!(ctl.value().ops_per_sec, 10_000.0);
+    }
+
+    #[tokio::test]
+    async fn concurrency_control_is_declared_on_attached_component() {
+        // SRD 23 integration: the activity declares its
+        // `concurrency` control on the attached component during
+        // startup; the control's reified gauge reads the
+        // configured value.
+        use nb_metrics::component::Component;
+        use nb_metrics::labels::Labels as L;
+        use std::sync::RwLock;
+
+        let config = ActivityConfig {
+            name: "ctrl_decl".into(),
+            cycles: 10,
+            concurrency: 3,
+            ..Default::default()
+        };
+        let ops = vec![nb_workload::model::ParsedOp::simple("op1", "test")];
+        let seq = OpSequence::uniform(ops);
+        let mut activity = Activity::new(
+            config, &L::of("session", "s_decl"), seq,
+        );
+        let component = Arc::new(RwLock::new(Component::new(
+            L::of("session", "s_decl"), std::collections::HashMap::new(),
+        )));
+        activity.attach_component(component.clone());
+
+        let (adapter, _count) = CountingDriverAdapter::new();
+        activity.run_with_driver(Arc::new(adapter), test_program()).await;
+
+        // After run completes the control is still on the
+        // component (structural declaration survives execution).
+        let guard = component.read().unwrap();
+        let erased = guard.controls().get_erased("concurrency")
+            .expect("concurrency control should be declared on attached component");
+        assert_eq!(erased.value_string(), "3");
+        assert!(erased.accepts_f64_writes());
+        // Gauge projection reads as f64.
+        assert_eq!(erased.gauge_f64(), Some(3.0));
     }
 }

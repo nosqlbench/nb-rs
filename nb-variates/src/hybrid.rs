@@ -68,9 +68,18 @@ fn eval_all_hybrid_steps(core: &mut HybridCore) {
     for step in &core.steps {
         match step {
             #[cfg(feature = "jit")]
-            HybridStep::Jit(seg) => unsafe {
-                (seg.code_fn)(core.buffer.as_ptr(), core.buffer.as_mut_ptr());
-            },
+            HybridStep::Jit(seg) => {
+                // Funnel through the setjmp wrapper so JIT
+                // predicate violations surface as catchable
+                // panics instead of aborting. Matches the path
+                // every stand-alone JIT kernel variant uses.
+                let code_fn = seg.code_fn;
+                let buf_const = core.buffer.as_ptr();
+                let buf_mut = core.buffer.as_mut_ptr();
+                crate::jit::invoke_with_catch(move || {
+                    unsafe { (code_fn)(buf_const, buf_mut); }
+                });
+            }
             HybridStep::Closure(cs) => {
                 for (i, &slot) in cs.input_slots.iter().enumerate() {
                     core.gather_buf[i] = core.buffer[slot];
@@ -302,9 +311,14 @@ impl HybridKernelPushPull {
             if self.step_clean[step_idx] { continue; }
             match step {
                 #[cfg(feature = "jit")]
-                HybridStep::Jit(seg) => unsafe {
-                    (seg.code_fn)(self.core.buffer.as_ptr(), self.core.buffer.as_mut_ptr());
-                },
+                HybridStep::Jit(seg) => {
+                    let code_fn = seg.code_fn;
+                    let buf_const = self.core.buffer.as_ptr();
+                    let buf_mut = self.core.buffer.as_mut_ptr();
+                    crate::jit::invoke_with_catch(move || {
+                        unsafe { (code_fn)(buf_const, buf_mut); }
+                    });
+                }
                 HybridStep::Closure(cs) => {
                     for (i, &slot) in cs.input_slots.iter().enumerate() {
                         self.core.gather_buf[i] = self.core.buffer[slot];
@@ -335,9 +349,14 @@ impl HybridKernelPushPull {
             if self.step_clean[step_idx] { continue; }
             match step {
                 #[cfg(feature = "jit")]
-                HybridStep::Jit(seg) => unsafe {
-                    (seg.code_fn)(self.core.buffer.as_ptr(), self.core.buffer.as_mut_ptr());
-                },
+                HybridStep::Jit(seg) => {
+                    let code_fn = seg.code_fn;
+                    let buf_const = self.core.buffer.as_ptr();
+                    let buf_mut = self.core.buffer.as_mut_ptr();
+                    crate::jit::invoke_with_catch(move || {
+                        unsafe { (code_fn)(buf_const, buf_mut); }
+                    });
+                }
                 HybridStep::Closure(cs) => {
                     for (i, &slot) in cs.input_slots.iter().enumerate() {
                         self.core.gather_buf[i] = self.core.buffer[slot];

@@ -22,3 +22,9 @@ nb-metrics = { path = "../nb-metrics", version = "0.1.1" }
 nb-variates = { path = "../nb-variates", version = "0.1.1" }
 nb-activity = { path = "../nb-activity", version = "0.1.1" }
 socket2 = "0.5"
+
+[dev-dependencies]
+# Tower `ServiceExt::oneshot` lets integration tests drive the
+# Axum router without binding a real socket.
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

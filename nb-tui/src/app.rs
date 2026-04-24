@@ -21,8 +21,8 @@ use crossterm::ExecutableCommand;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use nb_metrics::metrics_query::{MetricsQuery, Selection};
-use nb_metrics::snapshot::{MetricSet, MetricValue};
+use nb_metrics::metrics_query::MetricsQuery;
+use nb_metrics::snapshot::MetricSet;
 use crate::state::{RunState, PhaseStatus};
 use crate::widgets::{self, colors};
 
@@ -36,10 +36,22 @@ enum FocusedPane {
 /// left/right arrow keys.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum TreeLod {
-    /// Nothing — tree pane renders empty. Left-arrow below Minimal
-    /// reaches this state, letting the operator reclaim the screen
-    /// area when they don't want a tree at all.
+    /// Nothing — tree pane renders empty. Left-arrow below
+    /// ActivePhase reaches this state, letting the operator
+    /// reclaim the screen area when they don't want a tree at all.
     Hidden,
+    /// Chromeless single-phase dashboard. The scenario-tree
+    /// frame/title disappears; the panel renders the currently
+    /// running phase's detail block directly, with the panel's
+    /// own title naming the phase. No tree rows, no scope
+    /// headers, no indent markers, no per-phase expansion chrome.
+    /// When multiple phases are running their detail blocks stack
+    /// vertically in the same panel (same as Focus, minus the
+    /// tree decorations).
+    ///
+    /// Positioned between `Hidden` and `Minimal` in the cycle —
+    /// the most compact view that still shows live data.
+    ActivePhase,
     /// Phase lines only — no scope/closure headers, no detail blocks.
     /// Useful for a compact skim of what ran in what order.
     Minimal,
@@ -67,7 +79,8 @@ impl TreeLod {
     /// Next step toward Maximal, clamped at the top.
     fn next(self) -> Self {
         match self {
-            Self::Hidden => Self::Minimal,
+            Self::Hidden => Self::ActivePhase,
+            Self::ActivePhase => Self::Minimal,
             Self::Minimal => Self::Focus,
             Self::Focus => Self::Default,
             Self::Default => Self::Maximal,
@@ -81,7 +94,8 @@ impl TreeLod {
             Self::Maximal => Self::Default,
             Self::Default => Self::Focus,
             Self::Focus => Self::Minimal,
-            Self::Minimal => Self::Hidden,
+            Self::Minimal => Self::ActivePhase,
+            Self::ActivePhase => Self::Hidden,
             Self::Hidden => Self::Hidden,
         }
     }
@@ -89,6 +103,7 @@ impl TreeLod {
     fn label(self) -> &'static str {
         match self {
             Self::Hidden => "off",
+            Self::ActivePhase => "phase",
             Self::Minimal => "min",
             Self::Focus => "focus",
             Self::Default => "def",
@@ -103,6 +118,11 @@ pub struct App {
     /// If true, the entire nbrs process should exit after the TUI
     /// cleans up its terminal state. Set by triple-tapping `q`.
     pub should_exit_process: bool,
+    /// True when the user pressed Ctrl+C. The event loop stops on
+    /// the next iteration; `run()` re-raises SIGINT after the
+    /// terminal has been restored so the process sees a real
+    /// interrupt signal with standard exit semantics.
+    ctrl_c_received: bool,
     pub tick_rate: Duration,
     /// Whether the log panel is visible (toggled with `l` key).
     pub show_log: bool,
@@ -159,9 +179,6 @@ pub struct App {
     /// current press continues an existing tap streak or starts a
     /// fresh one.
     q_tap_last: Option<Instant>,
-    /// Which latency view is rendered. Cycled with Shift+L. See
-    /// [`LatencyView`] for the three styles.
-    latency_view: LatencyView,
     /// When true, the TUI freezes its metrics / anim state so the
     /// user can read values without them shifting. The screen keeps
     /// redrawing (so a PAUSED banner renders and keys stay live), but
@@ -181,88 +198,82 @@ pub struct App {
     /// front buffer — `current_buffer_mut` returns the back buffer
     /// (reset to empty after each draw).
     dump_requested: bool,
-    /// User-pinned "past span" for the latency bar chart overlay
-    /// (SRD-42 phase 9). `Some(d)` adds a `past <d>` row to each
-    /// percentile group rendered via
-    /// `MetricsQuery::recent_window(d)`.
-    past_span: Option<Duration>,
-    /// Currently-editing past-span input, if any. `/` opens it;
-    /// Enter commits; Esc cancels.
-    past_input: Option<PastInputState>,
-    /// Shared `MetricsQuery` access layer (SRD-42). The barchart
-    /// view reads per-cadence percentile snapshots out of this —
-    /// no TaggedFrame channels, no per-component windowed state.
+    /// Shared `MetricsQuery` access layer (SRD-42). Tree-detail
+    /// renderers reach through here for per-cadence percentile
+    /// snapshots when a phase wants a retrospective window.
     metrics_query: Arc<MetricsQuery>,
+    /// Control-edit prompt state. `None` when no prompt is
+    /// visible; `Some(...)` when the user has pressed `e` to
+    /// enter edit mode. The prompt accepts `name=value` entries
+    /// and submits them via [`Self::submit_control_edit`].
+    /// See SRD 23 §"TUI surface (sketch)".
+    edit_prompt: Option<ControlEditPrompt>,
 }
 
-/// A compact per-percentile snapshot extracted from a [`MetricSet`]'s
-/// `cycles_servicetime` histogram family.
-#[derive(Clone, Debug, Default)]
-struct LatencySnapshot {
-    sample_count: u64,
-    min: u64,
-    p50: u64,
-    p90: u64,
-    p99: u64,
-    p999: u64,
-    max: u64,
+/// Inline control-edit prompt state. Populated when the user
+/// presses `e`; dismissed on `Esc` or `Enter`. While present the
+/// event loop routes character / backspace / enter / escape
+/// keys to the prompt rather than the scenario-tree navigation.
+#[derive(Clone, Debug)]
+pub struct ControlEditPrompt {
+    /// Accumulated text the user is typing. The intended form
+    /// is `name=value` (e.g. `rate=500` or `concurrency=64`).
+    pub buffer: String,
+    /// Latest submit outcome. Shown inline under the prompt.
+    /// `Ok("applied")` on success; `Err(msg)` on parse /
+    /// validation / final-scope rejection.
+    pub last_result: Option<Result<String, String>>,
 }
 
-/// Inline input buffer for the latency panel's `past <span>` overlay.
-#[derive(Clone, Debug, Default)]
-struct PastInputState {
-    /// The duration string being typed (e.g., `5m`, `1h30m`).
-    buf: String,
-    /// Most recent parse error from the last Enter attempt, if any.
-    /// Cleared when the user types.
-    error: Option<String>,
+impl ControlEditPrompt {
+    fn new() -> Self {
+        Self { buffer: String::new(), last_result: None }
+    }
 }
 
-impl LatencySnapshot {
-    /// Extract percentiles from the first series in the
-    /// `cycles_servicetime` family. Selection filtering at the
-    /// `MetricsQuery` layer is expected to have already scoped the
-    /// returned `MetricSet` to a single phase's labels — rendering
-    /// is per-phase by requirement, not cross-phase-merged.
-    fn from_metric_set(snap: &MetricSet) -> Self {
-        let Some(family) = snap.family("cycles_servicetime") else {
-            return Self::default();
+/// Dispatch a control write from the TUI event loop.
+///
+/// Walks up the runner-installed session root for a control
+/// matching `name`, then spawns a tokio task that calls
+/// `set_f64` on the erased control with
+/// [`nb_metrics::controls::ControlOrigin::Tui`]. Returns
+/// `Ok(())` if the write was dispatched (not necessarily
+/// committed — the applier runs in the background). Returns
+/// `Err(msg)` if the session root is not installed or no
+/// control by that name exists via walk-up.
+///
+/// This is the TUI-side counterpart to the GK `control_set`
+/// node (SRD 23 §"Mutation entry points → TUI").
+pub fn write_control_f64_from_tui(
+    name: String,
+    value: f64,
+) -> Result<(), String> {
+    let root = nb_variates::nodes::runtime_context::session_root_handle()
+        .ok_or_else(|| "no session root installed — TUI cannot resolve controls".to_string())?;
+    let erased = {
+        let Ok(guard) = root.read() else {
+            return Err("session root is poisoned".into());
         };
-        let Some(metric) = family.metrics().next() else { return Self::default(); };
-        let Some(point) = metric.point() else { return Self::default(); };
-        let MetricValue::Histogram(h) = point.value() else { return Self::default(); };
-        let r = &h.reservoir;
-        Self {
-            sample_count: h.count,
-            min:  if h.count == 0 { 0 } else { r.min() },
-            p50:  r.value_at_quantile(0.50),
-            p90:  r.value_at_quantile(0.90),
-            p99:  r.value_at_quantile(0.99),
-            p999: r.value_at_quantile(0.999),
-            max:  if h.count == 0 { 0 } else { r.max() },
-        }
+        guard.find_control_erased_up(&name)
+            .ok_or_else(|| format!("no control named '{name}' via walk-up"))?
+    };
+    if !erased.accepts_f64_writes() {
+        return Err(format!(
+            "control '{name}' was not declared f64-writable \
+             (add ControlBuilder::from_f64 to its declaration)",
+        ));
     }
-}
-
-/// Build a [`Selection`] scoped to the currently-active phase's
-/// dimensional labels. Returns `None` if no phase is active — in
-/// which case the bar chart renders empty, consistent with "there's
-/// no phase-specific latency data to show".
-fn active_phase_selection(state: &RunState, family: &str) -> Option<Selection> {
-    let active = state.first_active()?;
-    let mut sel = Selection::family(family);
-    // `phase=<name>` is always present as a component label.
-    sel = sel.with_label("phase", &active.name);
-    // Additional dimensional labels come from the for_each bindings
-    // in the phase_labels string: "key=value, key2=value2".
-    for part in active.labels.split(',') {
-        let part = part.trim();
-        if part.is_empty() { continue; }
-        if let Some((k, v)) = part.split_once('=') {
-            sel = sel.with_label(k.trim(), v.trim());
+    // The write is async; spawn onto the current tokio runtime.
+    // Errors from the applier path surface in the session log,
+    // not inline — the TUI is intentionally non-blocking here
+    // so a slow applier doesn't freeze the UI.
+    tokio::spawn(async move {
+        let origin = nb_metrics::controls::ControlOrigin::Tui;
+        if let Err(e) = erased.set_f64(value, origin).await {
+            eprintln!("control write from TUI: {name}={value} failed: {e}");
         }
-    }
-    Some(sel)
+    });
+    Ok(())
 }
 
 /// Build the per-phase latency rows for the tree's expanded detail
@@ -447,40 +458,6 @@ fn phase_health_color(phase: &crate::state::PhaseEntry) -> ratatui::style::Color
     }
 }
 
-/// Three alternate visualizations of the latency panel. Cycled with
-/// Shift+L so the user can pick the framing most useful for the
-/// current question.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum LatencyView {
-    /// Custom per-percentile bars plus a range row with cross-bar
-    /// peak markers (the original view).
-    Percentiles,
-    /// Ratatui [`BarChart`] of the p50 / p90 / p99 / p999 / max
-    /// values as categorical bars.
-    BarChart,
-    /// Ratatui [`Chart`] plotting p50 / p99 / max over time as
-    /// scrolling line graphs.
-    Timeseries,
-}
-
-impl LatencyView {
-    fn next(self) -> Self {
-        match self {
-            Self::Percentiles => Self::BarChart,
-            Self::BarChart    => Self::Timeseries,
-            Self::Timeseries  => Self::Percentiles,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Percentiles => "percentiles",
-            Self::BarChart    => "barchart",
-            Self::Timeseries  => "timeseries",
-        }
-    }
-}
-
 impl App {
     /// Create with a metrics channel and shared run state.
     pub fn new(
@@ -491,6 +468,7 @@ impl App {
         Self {
             should_quit: false,
             should_exit_process: false,
+            ctrl_c_received: false,
             tick_rate: Duration::from_millis(250),
             show_log: false,
             frame_rx,
@@ -508,13 +486,121 @@ impl App {
             show_help: false,
             q_tap_count: 0,
             q_tap_last: None,
-            latency_view: LatencyView::Percentiles,
             paused: false,
             frozen_state: None,
             dump_requested: false,
-            past_span: None,
-            past_input: None,
             metrics_query,
+            edit_prompt: None,
+        }
+    }
+
+    /// Borrow the current control-edit prompt (if visible).
+    /// Widgets use this to render the inline prompt bar.
+    pub fn edit_prompt(&self) -> Option<&ControlEditPrompt> {
+        self.edit_prompt.as_ref()
+    }
+
+    /// Whether the TUI is currently in edit mode. Event loops
+    /// in edit mode route character input to the prompt buffer
+    /// instead of navigation.
+    pub fn is_editing(&self) -> bool {
+        self.edit_prompt.is_some()
+    }
+
+    /// Open the inline control-edit prompt. The prompt accepts
+    /// `name=value` text; submit via [`Self::submit_control_edit`].
+    pub fn open_control_edit_prompt(&mut self) {
+        self.edit_prompt = Some(ControlEditPrompt::new());
+    }
+
+    /// Close the prompt without submitting.
+    pub fn close_control_edit_prompt(&mut self) {
+        self.edit_prompt = None;
+    }
+
+    /// Append a character to the edit buffer. No-op when not
+    /// in edit mode.
+    pub fn edit_push_char(&mut self, c: char) {
+        if let Some(p) = self.edit_prompt.as_mut() {
+            p.buffer.push(c);
+        }
+    }
+
+    /// Remove the last character from the edit buffer.
+    pub fn edit_pop_char(&mut self) {
+        if let Some(p) = self.edit_prompt.as_mut() {
+            p.buffer.pop();
+        }
+    }
+
+    /// Submit the current edit buffer. Parses `name=value`,
+    /// dispatches a non-blocking `set_f64` against the named
+    /// control through the session-root globals installed by
+    /// the runner. Records the outcome on the prompt for
+    /// inline display.
+    ///
+    /// Returns the parsed `(name, value)` on successful
+    /// dispatch so tests can assert.
+    pub fn submit_control_edit(&mut self) -> Option<(String, f64)> {
+        let Some(p) = self.edit_prompt.as_mut() else { return None; };
+        let buf = p.buffer.trim().to_string();
+        // Parse name=value.
+        let (name, value_str) = match buf.split_once('=') {
+            Some((n, v)) => (n.trim().to_string(), v.trim().to_string()),
+            None => {
+                p.last_result = Some(Err(
+                    "expected 'name=value' (e.g. rate=500)".into(),
+                ));
+                return None;
+            }
+        };
+        if name.is_empty() {
+            p.last_result = Some(Err("missing control name".into()));
+            return None;
+        }
+        let value: f64 = match value_str.parse() {
+            Ok(v) => v,
+            Err(e) => {
+                p.last_result = Some(Err(format!("parse error: {e}")));
+                return None;
+            }
+        };
+        match write_control_f64_from_tui(name.clone(), value) {
+            Ok(()) => {
+                p.last_result = Some(Ok(format!("submitted {name}={value}")));
+                // Clear the buffer so subsequent edits start
+                // fresh; the prompt stays open so the user can
+                // keep adjusting.
+                p.buffer.clear();
+                Some((name, value))
+            }
+            Err(e) => {
+                p.last_result = Some(Err(e));
+                None
+            }
+        }
+    }
+
+    /// Set the tree LOD directly. Production code changes LOD
+    /// through left/right arrow keybinds via [`Self::adjust_tree_lod`];
+    /// tests use this helper to render a specific view without
+    /// routing a synthetic key event.
+    ///
+    /// Accepted labels match [`TreeLod::label`]: `"off"`,
+    /// `"phase"`, `"min"`, `"focus"`, `"def"`, `"max"`. Unknown
+    /// labels leave the current LOD unchanged.
+    pub fn set_tree_lod_label(&mut self, label: &str) {
+        let next = match label {
+            "off" | "hidden" => Some(TreeLod::Hidden),
+            "phase" | "active" => Some(TreeLod::ActivePhase),
+            "min" | "minimal" => Some(TreeLod::Minimal),
+            "focus" => Some(TreeLod::Focus),
+            "def" | "default" => Some(TreeLod::Default),
+            "max" | "maximal" => Some(TreeLod::Maximal),
+            _ => None,
+        };
+        if let Some(lod) = next {
+            self.tree_lod = lod;
         }
     }
 
@@ -544,24 +630,51 @@ impl App {
     const Q_TAP_EXIT_COUNT: u32 = 3;
 
     /// Run the TUI event loop. Blocks until quit or run completes.
+    ///
+    /// Terminal cleanup is guaranteed across every exit path —
+    /// normal return, propagated `?` error, and panic — via a
+    /// [`TerminalGuard`] (Drop-based) and a panic hook installed
+    /// for the duration of the run. Either mechanism restores raw
+    /// mode, leaves the alternate screen, and disables mouse
+    /// capture before control returns to the shell.
+    ///
+    /// The event loop also intercepts `Ctrl+C` as a distinct
+    /// signal from `q`. Ctrl+C tears the TUI down and then raises
+    /// SIGINT to the current process so the signal propagates
+    /// through any runtime handlers the rest of the process has
+    /// installed (tokio `ctrl_c`, shell-level exit codes, etc.)
+    /// with standard interrupt semantics.
     pub fn run(&mut self) -> io::Result<()> {
-        terminal::enable_raw_mode()?;
-        io::stderr().execute(EnterAlternateScreen)?;
-        io::stderr().execute(EnableMouseCapture)?;
+        install_tui_panic_hook();
+        let _guard = TerminalGuard::enter()?;
         let backend = CrosstermBackend::new(io::stderr());
         let mut terminal = Terminal::new(backend)?;
 
         let result = self.event_loop(&mut terminal);
 
-        let _ = io::stderr().execute(DisableMouseCapture);
-        terminal::disable_raw_mode()?;
-        io::stderr().execute(LeaveAlternateScreen)?;
+        // Drop `_guard` here explicitly so the terminal is
+        // restored BEFORE any post-run action (process exit,
+        // SIGINT re-raise) fires.
+        drop(_guard);
 
-        // Triple-tap q requests a full process exit. Do it here, after
-        // the terminal has been restored, so the shell doesn't inherit
-        // raw mode or an alternate-screen buffer.
+        // Triple-tap q requests a full process exit. Do it here,
+        // after the terminal has been restored, so the shell
+        // doesn't inherit raw mode or an alternate-screen buffer.
         if self.should_exit_process {
             std::process::exit(130);
+        }
+
+        // Ctrl+C: re-raise SIGINT now that the terminal is clean.
+        // Raise, not exit — so higher-level signal handlers (e.g.
+        // tokio::signal::ctrl_c futures the runner may have
+        // registered) see a real signal, not a clean early return.
+        if self.ctrl_c_received {
+            // SAFETY: `raise` is async-signal-safe and standard
+            // C library. SIGINT's default disposition terminates
+            // the process with exit code 130 if no handler is
+            // installed, matching what a Ctrl+C outside the TUI
+            // would have done.
+            unsafe { libc::raise(libc::SIGINT); }
         }
 
         result
@@ -577,10 +690,26 @@ impl App {
             let tree_rect = self.tree_rect(Rect::new(0, 0, size.width, size.height));
             self.last_tree_rect = tree_rect;
             let visible = tree_rect.height.saturating_sub(2) as usize;
-            let total = self.run_state.read()
-                .map(|s| s.phases.len())
-                .unwrap_or(0);
+            // Tail = max scroll position. Must be based on the
+            // actual rendered-line count (phase headers + every
+            // detail row of every expanded phase), NOT the raw
+            // phase-entry count — expanded phases contribute many
+            // lines each. Using the raw count here would cap the
+            // scroll target too low, leaving the selection marker
+            // stuck below the visible area.
+            let total = self.total_rendered_lines();
             let tail = total.saturating_sub(visible);
+            // Re-sync the viewport with the selection each frame.
+            // Line counts can drift between when a key handler
+            // called `scroll_selection_into_view` and when this
+            // frame renders (latency bars / relevancy rows /
+            // throughput sparkline can all appear or disappear as
+            // state updates). Re-evaluating here is idempotent
+            // when the selection is already on-screen and cheap
+            // when it isn't.
+            if !self.paused {
+                self.scroll_selection_into_view();
+            }
             let target = self.tree_scroll.unwrap_or(tail).min(tail) as f32;
             // Pause freezes the state the user is looking at — skip
             // the anim tick and auto-tracking refresh so nothing
@@ -647,6 +776,20 @@ impl App {
             if event::poll(timeout)? {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        // Ctrl+C: raw-mode terminals don't get a
+                        // real SIGINT, so the app has to catch the
+                        // key event itself. Flag the state, break
+                        // out of the event loop, and let `run()`
+                        // raise SIGINT after terminal teardown so
+                        // the signal propagates with standard
+                        // interrupt semantics.
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
+                        {
+                            self.ctrl_c_received = true;
+                            self.should_quit = true;
+                            break;
+                        }
                         // Ctrl+L follows the long-standing terminal
                         // convention of "refresh screen", handled as a
                         // dedicated branch so it doesn't collapse into
@@ -657,21 +800,29 @@ impl App {
                             let _ = terminal.clear();
                             continue;
                         }
-                        // Past-span input mode consumes all key events
-                        // until the user presses Enter or Esc.
-                        if self.past_input.is_some() {
-                            self.handle_past_input_key(key.code);
+                        // Edit mode captures input first so the
+                        // user can type `name=value` into the
+                        // prompt without navigation keybinds
+                        // eating the characters. Esc / Enter
+                        // close or submit respectively.
+                        if self.is_editing() {
+                            match key.code {
+                                KeyCode::Esc => self.close_control_edit_prompt(),
+                                KeyCode::Enter => { let _ = self.submit_control_edit(); }
+                                KeyCode::Backspace => self.edit_pop_char(),
+                                KeyCode::Char(c) => self.edit_push_char(c),
+                                _ => {}
+                            }
                             continue;
                         }
                         match key.code {
                             KeyCode::Char('q') => self.handle_q_tap(),
                             KeyCode::Esc => self.handle_escape(),
                             KeyCode::Char('l') => self.show_log = !self.show_log,
-                            KeyCode::Char('L') => self.latency_view = self.latency_view.next(),
                             KeyCode::Char('p') => self.toggle_pause(),
                             KeyCode::Char('P') => self.dump_requested = true,
                             KeyCode::Char('?') => self.show_help = !self.show_help,
-                            KeyCode::Char('/') => self.open_past_input(),
+                            KeyCode::Char('e') => self.open_control_edit_prompt(),
                             KeyCode::Up => self.move_tree_selection(-1),
                             KeyCode::Down => self.move_tree_selection(1),
                             KeyCode::Left => self.adjust_tree_lod(-1),
@@ -953,55 +1104,6 @@ impl App {
         }
     }
 
-    /// Open the latency panel's `past span` input. Pre-fills the
-    /// buffer with the currently-pinned span (if any) so the user
-    /// can edit it rather than retype.
-    fn open_past_input(&mut self) {
-        let buf = self.past_span
-            .map(format_span_short)
-            .unwrap_or_default();
-        self.past_input = Some(PastInputState { buf, error: None });
-    }
-
-    /// Handle one keystroke while the past-span input is open.
-    fn handle_past_input_key(&mut self, code: KeyCode) {
-        let Some(state) = self.past_input.as_mut() else { return; };
-        match code {
-            KeyCode::Esc => { self.past_input = None; }
-            KeyCode::Enter => {
-                let input = state.buf.trim().to_string();
-                if input.is_empty() {
-                    self.past_span = None;
-                    self.past_input = None;
-                    return;
-                }
-                match parse_span_short(&input) {
-                    Ok(d) => {
-                        self.past_span = Some(d);
-                        self.past_input = None;
-                    }
-                    Err(msg) => {
-                        state.error = Some(msg);
-                    }
-                }
-            }
-            KeyCode::Backspace => {
-                state.buf.pop();
-                state.error = None;
-            }
-            KeyCode::Char(c) => {
-                // Only accept chars that could be part of a duration
-                // (digits + unit letters). Keeps stray keys from
-                // polluting the buffer.
-                if c.is_ascii_digit() || matches!(c, 's' | 'm' | 'h' | 'd') {
-                    state.buf.push(c);
-                    state.error = None;
-                }
-            }
-            _ => {}
-        }
-    }
-
     /// Move the tree selection by `delta` phase entries, skipping scope
     /// headers. Grabs tree focus if it wasn't already held, and seeds
     /// the selection with the most-recently-active phase on first use.
@@ -1160,6 +1262,13 @@ impl App {
     ///     detail, regardless of LOD.
     ///   * Otherwise → 1 row.
     fn rendered_lines_for(&self, entry_idx: usize, phase: &crate::state::PhaseEntry) -> usize {
+        // Hidden and ActivePhase LODs don't render any tree rows.
+        // Return 0 so total_rendered_lines / entry_to_line_index
+        // behave as "no scrollable tree content" and the event
+        // loop's tail calc disables scroll animation in those LODs.
+        if matches!(self.tree_lod, TreeLod::Hidden | TreeLod::ActivePhase) {
+            return 0;
+        }
         if matches!(self.tree_lod, TreeLod::Minimal | TreeLod::Focus)
             && phase.kind == crate::state::EntryKind::Scope
         {
@@ -1211,6 +1320,9 @@ impl App {
         if self.tree_expanded == Some(entry_idx) { return true; }
         match self.tree_lod {
             TreeLod::Hidden => false,
+            // ActivePhase uses the dedicated panel renderer — the
+            // tree-detail path isn't exercised under this LOD.
+            TreeLod::ActivePhase => false,
             TreeLod::Minimal => false,
             TreeLod::Default => false,
             TreeLod::Focus => matches!(phase.status, crate::state::PhaseStatus::Running),
@@ -1765,6 +1877,47 @@ impl App {
             }
         }
 
+        // Control-edit prompt renders above the footer as a
+        // 2-line overlay (input line + result line). We clear
+        // the region first so the footer text doesn't bleed
+        // through. See SRD 23 §"TUI surface (sketch)".
+        if let Some(ref prompt) = self.edit_prompt {
+            let h = 2u16;
+            if area.height > h + 1 {
+                let r = Rect {
+                    x: area.x,
+                    y: area.y + area.height - h - 1,
+                    width: area.width,
+                    height: h,
+                };
+                frame.render_widget(Clear, r);
+                let input_line = format!("  edit control › {}_", prompt.buffer);
+                let result_line = match &prompt.last_result {
+                    None => "     (name=value, Enter submits, Esc cancels)".to_string(),
+                    Some(Ok(msg)) => format!("     ✓ {msg}"),
+                    Some(Err(msg)) => format!("     ✗ {msg}"),
+                };
+                let rows = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Length(1)])
+                    .split(r);
+                frame.render_widget(
+                    Paragraph::new(Span::styled(input_line,
+                        Style::default().bold())),
+                    rows[0],
+                );
+                let result_style = match &prompt.last_result {
+                    Some(Err(_)) => Style::default().fg(colors::PHASE_FAILED),
+                    Some(Ok(_)) => Style::default().fg(colors::PHASE_DONE),
+                    None => Style::default(),
+                };
+                frame.render_widget(
+                    Paragraph::new(Span::styled(result_line, result_style)),
+                    rows[1],
+                );
+            }
+        }
+
         // Help overlay is rendered last so it sits above everything.
         if self.show_help {
             self.draw_help(frame, area);
@@ -1776,6 +1929,7 @@ impl App {
     fn draw_help(&self, frame: &mut Frame, area: Rect) {
         let entries: &[(&str, &str)] = &[
             ("q",     "dismiss TUI (single tap); triple-tap to exit nbrs"),
+            ("C-c",   "interrupt: restores the terminal and sends SIGINT"),
             ("?",     "toggle this help panel"),
             ("␣",     "focus tree, snap LOD=Default, track active phase"),
             ("↑ / ↓", "move tree selection"),
@@ -1783,11 +1937,9 @@ impl App {
             ("⏎",     "expand / collapse selected phase"),
             ("esc",   "close help, then collapse, then unfocus, then quit"),
             ("l",     "toggle log panel"),
-            ("L",     "cycle latency views (percentiles / barchart / timeseries)"),
             ("C-l",   "force a full screen redraw"),
             ("p",     "pause / resume the display"),
             ("P",     "dump the current screen to logs/<session>/tui_<ts>.dump"),
-            ("/",     "edit the latency 'past <span>' overlay (5m, 1h30m, …)"),
             ("click", "focus tree at the clicked phase"),
             ("wheel", "scroll tree (tweened); snaps back to tail at bottom"),
             ("╪",     "latency range: peak over the last 5s"),
@@ -1871,576 +2023,17 @@ impl App {
         frame.render_widget(para, area);
     }
 
-    #[allow(dead_code)]
-    fn draw_phase(&self, frame: &mut Frame, area: Rect, state: &RunState) {
-        // Retired — Phase panel content lives in the per-phase tree
-        // detail block now (SRD 62). Kept temporarily for reference;
-        // will be removed once the tree-detail layout is locked in.
-        let mut title_spans: Vec<Span> = vec![
-            Span::styled(" Phase ", Style::default().fg(colors::PHASE_ACTIVE)),
-        ];
-        if let Some(active) = state.first_active() {
-            title_spans.push(Span::styled(
-                active.name.clone(),
-                Style::default().fg(colors::EMPHASIS).bold(),
-            ));
-            if !active.labels.is_empty() {
-                title_spans.push(Span::styled(
-                    format!(" [{}]", active.labels),
-                    Style::default().fg(colors::DIM),
-                ));
-            }
-            title_spans.push(Span::raw(" "));
-        }
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(colors::BORDER))
-            .title(Line::from(title_spans));
-
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        if let Some(active) = state.first_active() {
-            let active_count = active.ops_started.saturating_sub(active.ops_finished);
-            let pending = active.cursor_extent.saturating_sub(active.ops_started);
-            let complete = active.ops_finished;
-
-            // Line 1: phase name, cursor, progress
-            let pct = if active.cursor_extent > 0 {
-                active.ops_started as f64 * 100.0 / active.cursor_extent as f64
-            } else { 0.0 };
-            let progress_width = inner.width.saturating_sub(50) as usize;
-            let progress = widgets::bar_str(pct / 100.0, progress_width.max(10));
-
-            // Phase ETA
-            let phase_elapsed = active.started_at.elapsed().as_secs_f64();
-            let eta_str = if active.ops_finished > 0 && pct > 1.0 {
-                let fraction = active.ops_finished as f64 / active.cursor_extent as f64;
-                let remaining = (phase_elapsed / fraction) - phase_elapsed;
-                format!("  ETA:{}", widgets::format_elapsed(remaining))
-            } else {
-                String::new()
-            };
-
-            let line1 = Line::from(vec![
-                Span::styled(" ▶ ", Style::default().fg(colors::PHASE_ACTIVE).bold()),
-                Span::styled(&active.name, Style::default().fg(colors::EMPHASIS).bold()),
-                Span::styled(format!("  cursor:{}", active.cursor_name), Style::default().fg(colors::DIM)),
-                Span::styled(format!(" {}", progress), Style::default().fg(colors::PROGRESS_HIGH)),
-                Span::styled(format!(" {:.1}%", pct), Style::default().fg(colors::TEXT)),
-                Span::styled(&eta_str, Style::default().fg(colors::PHASE_ACTIVE)),
-            ]);
-
-            // Line 2: concurrency + labeled pending/active/complete +
-            // rates + batch. Labels come first so a glance tells the
-            // reader what each number represents.
-            let mut line2_spans = vec![
-                Span::styled(format!("   concurrency:{}", active.fibers), Style::default().fg(colors::DIM)),
-                Span::styled(format!("  active:{}", widgets::format_count(active_count)), Style::default().fg(
-                    if active_count > 0 { colors::PHASE_ACTIVE } else { colors::DIM }
-                )),
-                Span::styled(format!("  pending:{}", widgets::format_count(pending)), Style::default().fg(colors::DIM)),
-                Span::styled(format!("  done:{}", widgets::format_count(complete)), Style::default().fg(colors::PHASE_DONE)),
-                Span::styled(format!("  of:{}", widgets::format_count(active.cursor_extent)), Style::default().fg(colors::DIM)),
-                Span::styled(format!("  ops/s:{}", widgets::format_rate(active.ops_per_sec)), Style::default().fg(colors::TEXT)),
-            ];
-            // Adapter-specific counters: render one `{name}/s:{rate}`
-            // span per counter the dispenser actually reports.
-            // Counter-agnostic — the TUI doesn't hardcode "rows/s" or
-            // any other name, so driver-specific counters appear
-            // automatically when present and stay out of the way
-            // when the active dispenser doesn't produce them.
-            for (name, _total, rate) in &active.adapter_counters {
-                line2_spans.push(Span::styled(
-                    format!("  {name}/s:{}", widgets::format_rate(*rate)),
-                    Style::default().fg(colors::TEXT),
-                ));
-            }
-            if active.rows_per_batch > 1.0 {
-                line2_spans.push(Span::styled(format!("  rows/batch:{:.1}", active.rows_per_batch), Style::default().fg(colors::DIM)));
-            }
-            // Relevancy aggregates (e.g. recall@10) inline next to the
-            // throughput data — key metric for ANN workloads.
-            for (name, window_mean, total_mean, _, window_len) in &active.relevancy {
-                line2_spans.push(Span::styled(
-                    format!("  {name}: {:.3} (last {window_len}: {:.3})",
-                        total_mean, window_mean),
-                    Style::default().fg(colors::EMPHASIS),
-                ));
-            }
-            let line2 = Line::from(line2_spans);
-
-            if inner.height >= 2 {
-                frame.render_widget(Paragraph::new(line1), Rect { y: inner.y, height: 1, ..inner });
-                frame.render_widget(Paragraph::new(line2), Rect { y: inner.y + 1, height: 1, ..inner });
-            } else {
-                frame.render_widget(Paragraph::new(line1), inner);
-            }
-        } else {
-            let msg = Paragraph::new(Span::styled(
-                " waiting for phase...",
-                Style::default().fg(colors::DIM),
-            ));
-            frame.render_widget(msg, inner);
-        }
-    }
-
-    fn draw_latency_percentiles(&self, frame: &mut Frame, area: Rect, state: &RunState) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(colors::BORDER))
-            .title(Line::from(self.latency_title_spans()));
-
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        // Normalize against the largest thing we'll plot: current max,
-        // p999, and the historical peaks so markers past the current
-        // max don't land off the right edge.
-        let history_peak = state.max_history.iter().copied().max().unwrap_or(0);
-        let max_val = state.max_nanos
-            .max(state.p999_nanos)
-            .max(history_peak)
-            .max(1);
-        // Reserved space: 2 (pad) + 5 (label) + 1 (sep) + 14 (value) +
-        // 2 (sep) + bar + 3 (right margin) = inner.width.
-        // The 14-char value slot fits a "min..max" label on the range
-        // row (e.g. "58.98ms..2.92s") without pushing the bar out of
-        // alignment with the percentile rows.
-        let bar_width = inner.width.saturating_sub(27) as usize;
-
-        // Top row: distribution "range bar" made of colored segments,
-        // each spanning from one percentile to the next. Visualizes
-        // error/spread at a glance — thick bands = long tails.
-        // Overlaid with cross-bar tick marks at the peak-max values
-        // seen over the last 5s and last 10s windows (`╪` / `╫`).
-        if inner.height >= 1 {
-            let bar_w = bar_width.max(5);
-            let pos = |nanos: u64| -> usize {
-                if max_val == 0 { return 0; }
-                ((nanos as f64 / max_val as f64) * bar_w as f64).round() as usize
-            };
-
-            // Build the base spread bar as a character buffer so we can
-            // overlay the cross-bar tick marks on top.
-            let mut cells: Vec<(char, Color)> =
-                vec![('╌', colors::BORDER); bar_w];
-            let points = [
-                (0u64, colors::LAT_P50),
-                (state.p50_nanos, colors::LAT_P50),
-                (state.p90_nanos, colors::LAT_P90),
-                (state.p99_nanos, colors::LAT_P99),
-                (state.p999_nanos, colors::LAT_MAX),
-                (state.max_nanos, colors::LAT_MAX),
-            ];
-            for w in points.windows(2) {
-                let start = pos(w[0].0).min(bar_w);
-                let end = pos(w[1].0).min(bar_w);
-                for c in cells.iter_mut().take(end).skip(start) {
-                    c.0 = '━';
-                    c.1 = w[1].1;
-                }
-            }
-
-            // Peak markers. History rings hold one sample per metrics
-            // frame (~1 Hz), so 5 samples ≈ 5s, 10 ≈ 10s.
-            //   ╪  5s peak
-            //   ╫  10s peak
-            //   ╬  both peaks (same cell) — collapsed marker
-            let peak_over = |n: usize| -> u64 {
-                let h = &state.max_history;
-                let start = h.len().saturating_sub(n);
-                h[start..].iter().copied().max().unwrap_or(0)
-            };
-            let peak_5s = peak_over(5);
-            let peak_10s = peak_over(10);
-            let pos_or_none = |nanos: u64| -> Option<usize> {
-                if nanos == 0 || bar_w == 0 { None }
-                else { Some(pos(nanos).min(bar_w.saturating_sub(1))) }
-            };
-            let mark = |cells: &mut [(char, Color)], idx: usize, ch: char, col: Color| {
-                cells[idx].0 = ch;
-                cells[idx].1 = col;
-            };
-            let p5 = pos_or_none(peak_5s);
-            let p10 = pos_or_none(peak_10s);
-            match (p5, p10) {
-                (Some(a), Some(b)) if a == b => {
-                    // Both peaks share a cell — render a distinct
-                    // combined glyph so neither gets overwritten.
-                    mark(&mut cells, a, '╬', colors::EMPHASIS);
-                }
-                _ => {
-                    // Draw the longer window first so if there's any
-                    // z-order collision (adjacent cells overlapping
-                    // visually in the terminal) the shorter window
-                    // still reads on top.
-                    if let Some(p) = p10 { mark(&mut cells, p, '╫', colors::LAT_MAX); }
-                    if let Some(p) = p5  { mark(&mut cells, p, '╪', colors::EMPHASIS); }
-                }
-            }
-
-            // Emit as one span per color run. Prefix layout matches
-            // the percentile rows below — label (6) + value (15) +
-            // "  " (2) = 23 chars before the bar. The range row's
-            // "value" is the axis endpoints: `min..max`. The bar's
-            // colored segments then show where each percentile falls
-            // within that interval, so the reader can cross-reference
-            // the range label and the bar without ambiguity.
-            let range_label = if state.min_nanos > 0 {
-                format!(
-                    "{}..{}",
-                    widgets::format_nanos(state.min_nanos),
-                    widgets::format_nanos(max_val),
-                )
-            } else {
-                format!("0..{}", widgets::format_nanos(max_val))
-            };
-            let mut spans: Vec<Span> = vec![
-                Span::styled("  range", Style::default().fg(colors::DIM)),
-                Span::styled(
-                    format!(" {:>14}", range_label),
-                    Style::default().fg(colors::DIM),
-                ),
-                Span::raw("  "),
-            ];
-            let mut i = 0;
-            while i < cells.len() {
-                let col = cells[i].1;
-                let mut j = i;
-                let mut run = String::new();
-                while j < cells.len() && cells[j].1 == col {
-                    run.push(cells[j].0);
-                    j += 1;
-                }
-                spans.push(Span::styled(run, Style::default().fg(col)));
-                i = j;
-            }
-            frame.render_widget(
-                Paragraph::new(Line::from(spans)),
-                Rect { y: inner.y, height: 1, ..inner },
-            );
-        }
-
-        let percentiles = [
-            ("min ", state.min_nanos,  colors::LAT_P50),
-            ("p50 ", state.p50_nanos,  colors::LAT_P50),
-            ("p90 ", state.p90_nanos,  colors::LAT_P90),
-            ("p99 ", state.p99_nanos,  colors::LAT_P99),
-            ("p999", state.p999_nanos, colors::LAT_MAX),
-            ("max ", state.max_nanos,  colors::LAT_MAX),
-        ];
-
-        for (i, (label, nanos, color)) in percentiles.iter().enumerate() {
-            let row = i as u16 + 1; // row 0 is the range bar
-            if row >= inner.height { break; }
-            let frac = if max_val > 0 { *nanos as f64 / max_val as f64 } else { 0.0 };
-            let bar = widgets::bar_str(frac.min(1.0), bar_width.max(5));
-            // Value slot matches the range row's 14-char field so the
-            // bar starts at the same column on every row.
-            let line = Line::from(vec![
-                Span::styled(format!("  {label}"), Style::default().fg(colors::DIM)),
-                Span::styled(format!(" {:>14}", widgets::format_nanos(*nanos)), Style::default().fg(*color).bold()),
-                Span::styled(format!("  {bar}"), Style::default().fg(*color)),
-            ]);
-            frame.render_widget(
-                Paragraph::new(line),
-                Rect { y: inner.y + row, height: 1, ..inner },
-            );
-        }
-    }
-
-    /// Latency as a ratatui [`BarChart`]. Each percentile
-    /// (min/p50/p90/p99/p999/max) gets four adjacent bars showing
-    /// different time horizons: current, 5s max, 15s max, and the
-    /// all-time mean (`avg-total`). Groups are visually separated by
-    /// an extra gap so the reader can scan per-percentile columns
-    /// easily.
-    /// Build the common latency-panel title, including the (optional)
-    /// past-span input prompt or pinned-past tag. Shared across all
-    /// three latency views so the prompt appears regardless of which
-    /// one is active when the user hits `/`.
-    fn latency_title_spans(&self) -> Vec<Span<'_>> {
-        let mut out: Vec<Span> = vec![
-            Span::styled(" Latency (service time) ", Style::default().fg(colors::LAT_P50)),
-            Span::styled(format!("[{}] ", self.latency_view.label()),
-                Style::default().fg(colors::DIM)),
-        ];
-        if let Some(ref state) = self.past_input {
-            out.push(Span::styled(
-                format!("past: {}\u{2581} ", state.buf),
-                Style::default().fg(colors::LAT_P99),
-            ));
-            if let Some(ref e) = state.error {
-                out.push(Span::styled(
-                    format!("({e}) "),
-                    Style::default().fg(colors::LAT_MAX),
-                ));
-            }
-        } else if let Some(span) = self.past_span {
-            out.push(Span::styled(
-                format!("past={} ", format_span_short(span)),
-                Style::default().fg(colors::DIM),
-            ));
-        }
-        out
-    }
-
-    fn draw_latency_barchart(&self, frame: &mut Frame, area: Rect, state: &RunState) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(colors::BORDER))
-            .title(Line::from(self.latency_title_spans()));
-
-        // Pick a percentile value out of a windowed snapshot. Falls
-        // back to the live `current` when that window hasn't filled
-        // yet (count == 0), so the bar never collapses to zero just
-        // because the 1-minute window hasn't closed in the first
-        // 60 s of a run.
-        type Getter = fn(&LatencySnapshot) -> u64;
-        let picker = |w: &LatencySnapshot, which: Getter, current: u64| {
-            if w.sample_count == 0 { current } else { which(w) }
-        };
-
-        // Scope every read to the active phase's dimensional label
-        // set so the barchart is never cross-phase-aggregated. Without
-        // an active phase, the chart renders empty — deliberately, so
-        // no stale Stopped-phase data leaks into what's supposed to
-        // be a live view.
-        let Some(sel) = active_phase_selection(state, "cycles_servicetime") else {
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(colors::BORDER))
-                .title(Line::from(self.latency_title_spans()));
-            frame.render_widget(block, area);
-            return;
-        };
-        let now_snap = LatencySnapshot::from_metric_set(&self.metrics_query.now(&sel));
-        let lifetime_snap = LatencySnapshot::from_metric_set(
-            &self.metrics_query.session_lifetime(&sel),
-        );
-        // User-pinned `past <span>` overlay (SRD-42 phase 9), if any.
-        let past_snap: Option<(String, LatencySnapshot)> = self.past_span.map(|d| (
-            format!("past·{}", format_span_short(d)),
-            LatencySnapshot::from_metric_set(&self.metrics_query.recent_window(d, &sel)),
-        ));
-
-        // Per-percentile: label, getter, live-instrument nanos, and color.
-        struct P {
-            label: &'static str,
-            get: Getter,
-            current: u64,
-            col: Color,
-        }
-        let percs: [P; 6] = [
-            P { label: "min",  get: |w| w.min,  current: now_snap.min,  col: colors::LAT_P50 },
-            P { label: "p50",  get: |w| w.p50,  current: now_snap.p50,  col: colors::LAT_P50 },
-            P { label: "p90",  get: |w| w.p90,  current: now_snap.p90,  col: colors::LAT_P90 },
-            P { label: "p99",  get: |w| w.p99,  current: now_snap.p99,  col: colors::LAT_P99 },
-            P { label: "p999", get: |w| w.p999, current: now_snap.p999, col: colors::LAT_MAX },
-            P { label: "max",  get: |w| w.max,  current: now_snap.max,  col: colors::LAT_MAX },
-        ];
-
-        // Canonical cadence set (SRD-42): user-declared, in order.
-        // Each percentile gets one "now" bar + one per cadence +
-        // "avg-tot". For a user-configured `10s,1m,5m` that's 5 bars
-        // per percentile → 30 total.
-        let cadences: Vec<std::time::Duration> =
-            self.metrics_query.reporter().declared_cadences().iter().collect();
-        // Pre-compute each cadence's LatencySnapshot once (not per
-        // percentile) — cheaper than six queries per cadence.
-        let per_cadence_snaps: Vec<(String, LatencySnapshot)> = cadences.iter()
-            .map(|d| (
-                widgets::format_cadence(*d),
-                LatencySnapshot::from_metric_set(&self.metrics_query.cadence_window(*d, &sel)),
-            ))
-            .collect();
-        // 1 now + N cadences + (optional) 1 past overlay + 1 avg-tot.
-        let per_perc = 1 + cadences.len() + usize::from(past_snap.is_some()) + 1;
-        let mut bars: Vec<Bar> = Vec::with_capacity(percs.len() * per_perc);
-        for p in &percs {
-            // Pre-build the cadence windows once per percentile.
-            let window_vals: Vec<(String, u64)> = per_cadence_snaps.iter()
-                .map(|(label, snap)| (label.clone(), picker(snap, p.get, p.current)))
-                .collect();
-
-            let mut variants: Vec<(String, u64)> =
-                Vec::with_capacity(per_perc);
-            variants.push(("now".into(), p.current));
-            variants.extend(window_vals);
-            // User-pinned past-span overlay — sits between the
-            // cadence columns and avg-tot so it reads as "slightly
-            // longer horizon than the smallest cadence, shorter
-            // than lifetime".
-            if let Some((ref label, ref snap)) = past_snap {
-                variants.push((label.clone(), picker(snap, p.get, p.current)));
-            }
-            // Session-lifetime percentile from the same MetricsQuery.
-            // Falls back to live when lifetime has no data yet (first
-            // seconds of a run).
-            let lifetime_val = if lifetime_snap.sample_count == 0 {
-                p.current
-            } else {
-                (p.get)(&lifetime_snap)
-            };
-            variants.push(("avg-tot".into(), lifetime_val));
-            for (i, (vlabel, nanos)) in variants.iter().enumerate() {
-                let bar_label = if i == 0 {
-                    format!("{}·{}", p.label, vlabel)
-                } else {
-                    vlabel.to_string()
-                };
-                bars.push(
-                    Bar::default()
-                        .value(*nanos)
-                        .text_value(widgets::format_nanos(*nanos))
-                        .label(Line::from(Span::styled(
-                            bar_label,
-                            Style::default().fg(p.col),
-                        )))
-                        .style(Style::default().fg(p.col))
-                );
-            }
-        }
-
-        let n_bars = bars.len() as u16;
-        let inner_w = block.inner(area).width;
-        let gap: u16 = 1;
-        let gaps_total = gap * n_bars.saturating_sub(1);
-        // Want the bar wide enough for the value text (e.g., "1.2ms",
-        // "232µs") — roughly 7 chars is a safe floor.
-        let bar_w = (inner_w.saturating_sub(gaps_total) / n_bars.max(1))
-            .max(7);
-
-        let chart = BarChart::default()
-            .block(block)
-            .bar_width(bar_w)
-            .bar_gap(gap)
-            .data(BarGroup::default().bars(&bars));
-        frame.render_widget(chart, area);
-    }
-
-    /// Latency as a ratatui [`Chart`] time-series — p50, p99, and max
-    /// plotted over the last ~30 s of samples.
-    fn draw_latency_timeseries(&self, frame: &mut Frame, area: Rect, state: &RunState) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(colors::BORDER))
-            .title(Line::from(self.latency_title_spans()));
-
-        // Convert history series to (x, y) points where x is the
-        // sample index (seconds-ago ≈ index / 4) and y is milliseconds
-        // — milliseconds are more readable than nanos on the axis.
-        let to_points = |hist: &[u64]| -> Vec<(f64, f64)> {
-            hist.iter().enumerate()
-                .map(|(i, &n)| (i as f64, n as f64 / 1_000_000.0))
-                .collect()
-        };
-        let min_pts = to_points(&state.min_history);
-        let p50_pts = to_points(&state.p50_history);
-        let p99_pts = to_points(&state.p99_history);
-        let max_pts = to_points(&state.max_history);
-
-        let y_max: f64 = state.max_history.iter()
-            .chain(state.p99_history.iter())
-            .copied()
-            .max()
-            .unwrap_or(1)
-            as f64 / 1_000_000.0;
-        let y_max = if y_max <= 0.0 { 1.0 } else { y_max * 1.1 };
-        let x_max = (state.max_history.len().max(1)) as f64;
-
-        let datasets = vec![
-            Dataset::default()
-                .name("min")
-                .marker(ratatui::symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(colors::PHASE_DONE))
-                .data(&min_pts),
-            Dataset::default()
-                .name("p50")
-                .marker(ratatui::symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(colors::LAT_P50))
-                .data(&p50_pts),
-            Dataset::default()
-                .name("p99")
-                .marker(ratatui::symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(colors::LAT_P99))
-                .data(&p99_pts),
-            Dataset::default()
-                .name("max")
-                .marker(ratatui::symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(colors::LAT_MAX))
-                .data(&max_pts),
-        ];
-
-        let chart = Chart::new(datasets)
-            .block(block)
-            .x_axis(
-                Axis::default()
-                    .style(Style::default().fg(colors::DIM))
-                    .bounds([0.0, x_max])
-            )
-            .y_axis(
-                Axis::default()
-                    .style(Style::default().fg(colors::DIM))
-                    .bounds([0.0, y_max])
-                    .labels::<Vec<Span>>(vec![
-                        Span::raw("0"),
-                        Span::raw(format!("{:.1}ms", y_max / 2.0)),
-                        Span::raw(format!("{:.1}ms", y_max)),
-                    ])
-            );
-        frame.render_widget(chart, area);
-    }
-
-    fn draw_sparklines(&self, frame: &mut Frame, area: Rect, state: &RunState) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(colors::BORDER))
-            .title(Span::styled(" Throughput ", Style::default().fg(colors::SPARK)));
-
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        // Reserve: 9 chars prefix ("  ops/s  ") + 7 chars suffix (" 1.6K\n")
-        let spark_width = inner.width.saturating_sub(17) as usize;
-
-        if inner.height >= 1 {
-            let ops_spark = widgets::sparkline_str(&state.ops_history, spark_width);
-            let ops_label = state.ops_history.last().map(|v| widgets::format_rate(*v)).unwrap_or_default();
-            let line = Line::from(vec![
-                Span::styled("  ops/s  ", Style::default().fg(colors::DIM)),
-                Span::styled(ops_spark, Style::default().fg(colors::SPARK)),
-                Span::styled(format!(" {ops_label}"), Style::default().fg(colors::TEXT)),
-            ]);
-            frame.render_widget(Paragraph::new(line), Rect { y: inner.y, height: 1, ..inner });
-        }
-
-        if inner.height >= 2 && !state.rows_history.is_empty() {
-            let rows_spark = widgets::sparkline_str(&state.rows_history, spark_width);
-            let rows_value = state.rows_history.last().map(|v| widgets::format_rate(*v)).unwrap_or_default();
-            let label_text = state.rows_sparkline_label
-                .as_deref()
-                .map(|n| format!("  {n}/s "))
-                .unwrap_or_else(|| "  ???/s ".to_string());
-            let line = Line::from(vec![
-                Span::styled(label_text, Style::default().fg(colors::DIM)),
-                Span::styled(rows_spark, Style::default().fg(colors::PHASE_ACTIVE)),
-                Span::styled(format!(" {rows_value}"), Style::default().fg(colors::TEXT)),
-            ]);
-            frame.render_widget(
-                Paragraph::new(line),
-                Rect { y: inner.y + 1, height: 1, ..inner },
-            );
-        }
-    }
-
     fn draw_tree(&self, frame: &mut Frame, area: Rect, state: &RunState) {
+        // ActivePhase LOD renders as a chromeless single-phase
+        // dashboard — no tree rows, no scope headers, title
+        // repurposed to name the active phase(s). Delegates
+        // entirely to a dedicated renderer so the tree path below
+        // stays focused on the tree-shaped LODs.
+        if self.tree_lod == TreeLod::ActivePhase {
+            self.draw_active_phase_panel(frame, area, state);
+            return;
+        }
+
         let has_focus = self.focused == Some(FocusedPane::Tree);
         let title_style = if has_focus {
             Style::default().fg(colors::EMPHASIS).bold()
@@ -2776,6 +2369,108 @@ impl App {
         }
     }
 
+    /// ActivePhase LOD renderer — a chromeless dashboard showing
+    /// only the currently running phase(s)'s detail block(s).
+    /// Replaces the scenario-tree panel for this LOD.
+    ///
+    /// Title is repurposed:
+    ///   - one running phase  → " Phase: <name> (<labels>) "
+    ///   - N running phases   → " Phases: <N> running "
+    ///   - zero running       → placeholder banner inside the panel
+    ///
+    /// Detail rows come from the same `format_phase_detail_with_live`
+    /// used by every other LOD, so the shape and contents match —
+    /// just stripped of phase-header rows and tree-indent pipes.
+    fn draw_active_phase_panel(&self, frame: &mut Frame, area: Rect, state: &RunState) {
+        // Collect running phase entries in declaration order so the
+        // panel reads top-to-bottom matching the tree in other LODs.
+        let running: Vec<&crate::state::PhaseEntry> = state.phases.iter()
+            .filter(|p| p.kind == crate::state::EntryKind::Phase
+                && matches!(p.status, crate::state::PhaseStatus::Running))
+            .collect();
+
+        let has_focus = self.focused == Some(FocusedPane::Tree);
+        let title_style = if has_focus {
+            Style::default().fg(colors::EMPHASIS).bold()
+        } else {
+            Style::default().fg(colors::TEXT)
+        };
+        let lod_tag = format!(" [LOD:{}] ", self.tree_lod.label());
+        let title_text = match running.len() {
+            0 => " Phase ".to_string(),
+            1 => {
+                let p = running[0];
+                if p.labels.is_empty() {
+                    format!(" Phase: {} ", p.name)
+                } else {
+                    format!(" Phase: {} ({}) ", p.name, p.labels)
+                }
+            }
+            n => format!(" Phases: {n} running "),
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(
+                if has_focus { colors::EMPHASIS } else { colors::BORDER }
+            ))
+            .title(Line::from(vec![
+                Span::styled(title_text, title_style),
+                Span::styled(lod_tag, Style::default().fg(colors::DIM)),
+            ]));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        // Build the content as a flat list of Lines. Each running
+        // phase contributes its full detail block. Separator lines
+        // appear between multiple phases; with one phase the detail
+        // flows straight from the top of the panel.
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        if running.is_empty() {
+            // Empty state — same live/waiting/done logic as Focus.
+            let live_count = self.metrics_query.running_phase_count();
+            let any_pending = state.phases.iter()
+                .any(|p| p.kind == crate::state::EntryKind::Phase
+                    && matches!(p.status, crate::state::PhaseStatus::Pending));
+            let (glyph, msg, color) = if live_count > 0 || any_pending {
+                ("○", "waiting for phase…", colors::PHASE_PENDING)
+            } else {
+                ("✓", "scenario complete", colors::PHASE_DONE)
+            };
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format!("{glyph} "), Style::default().fg(color)),
+                Span::styled(msg, Style::default().fg(colors::DIM).italic()),
+            ]));
+        } else {
+            for (i, phase) in running.iter().enumerate() {
+                // Multi-phase: separator + header between detail blocks.
+                if i > 0 {
+                    lines.push(Line::from(""));
+                    let sep_text = if phase.labels.is_empty() {
+                        format!("── {} ──", phase.name)
+                    } else {
+                        format!("── {} ({}) ──", phase.name, phase.labels)
+                    };
+                    lines.push(Line::from(Span::styled(
+                        sep_text, Style::default().fg(colors::DIM).italic(),
+                    )));
+                }
+                let live = state.active_phase(&phase.name, &phase.labels);
+                for detail_line in self.format_phase_detail_with_live(phase, live) {
+                    lines.push(detail_line);
+                }
+            }
+        }
+
+        // Clip to the visible rows. No scroll tween in this LOD —
+        // detail blocks are sized to fit typical phases at 120
+        // cols, and a single phase rarely overflows the available
+        // space. Wider scroll behavior is a Focus-LOD concern.
+        let visible = inner.height as usize;
+        let clipped: Vec<Line> = lines.into_iter().take(visible).collect();
+        frame.render_widget(Paragraph::new(clipped), inner);
+    }
+
     fn draw_log(&self, frame: &mut Frame, area: Rect, state: &RunState) {
         // When the tree is hidden (LOD:off), the log panel is solo:
         // add a hint to the title so the user knows how to bring the
@@ -2844,8 +2539,6 @@ impl App {
             Span::styled(": collapse/unfocus  ", Style::default().fg(colors::DIM)),
             Span::styled("l", Style::default().fg(colors::EMPHASIS).bold()),
             Span::styled(": log  ", Style::default().fg(colors::DIM)),
-            Span::styled("L", Style::default().fg(colors::EMPHASIS).bold()),
-            Span::styled(": latency view  ", Style::default().fg(colors::DIM)),
             Span::styled("p", Style::default().fg(colors::EMPHASIS).bold()),
             Span::styled(": pause  ", Style::default().fg(colors::DIM)),
             Span::styled("P", Style::default().fg(colors::EMPHASIS).bold()),
@@ -2868,59 +2561,6 @@ struct LiveLatency {
     max: u64,
 }
 
-/// Parse a short duration string like `5m`, `1h30m`, `45s`, `2h` into
-/// a `Duration`. Accepts combinations of `d` (days), `h`, `m`, `s` —
-/// each unit may appear at most once, in any order. Returns a user-
-/// facing error string on failure (rendered in the input prompt).
-fn parse_span_short(s: &str) -> Result<Duration, String> {
-    if s.is_empty() { return Err("empty span".into()); }
-    let mut total = Duration::ZERO;
-    let mut num = String::new();
-    for c in s.chars() {
-        if c.is_ascii_digit() {
-            num.push(c);
-            continue;
-        }
-        if num.is_empty() {
-            return Err(format!("expected digits before '{c}'"));
-        }
-        let n: u64 = num.parse().map_err(|_| format!("bad number '{num}'"))?;
-        let mult = match c {
-            's' => 1,
-            'm' => 60,
-            'h' => 3600,
-            'd' => 86_400,
-            other => return Err(format!("unknown unit '{other}'")),
-        };
-        total += Duration::from_secs(n.saturating_mul(mult));
-        num.clear();
-    }
-    if !num.is_empty() {
-        // Trailing digits without a unit — default to seconds.
-        let n: u64 = num.parse().map_err(|_| format!("bad number '{num}'"))?;
-        total += Duration::from_secs(n);
-    }
-    if total.is_zero() { return Err("zero span".into()); }
-    Ok(total)
-}
-
-/// Format a `Duration` in the same short form `parse_span_short`
-/// accepts (`5m`, `1h30m`, …).
-fn format_span_short(d: Duration) -> String {
-    let mut total = d.as_secs();
-    if total == 0 { return "0s".into(); }
-    let days  = total / 86_400; total %= 86_400;
-    let hours = total / 3600;   total %= 3600;
-    let mins  = total / 60;     total %= 60;
-    let secs  = total;
-    let mut out = String::new();
-    if days  > 0 { out.push_str(&format!("{days}d")); }
-    if hours > 0 { out.push_str(&format!("{hours}h")); }
-    if mins  > 0 { out.push_str(&format!("{mins}m")); }
-    if secs  > 0 { out.push_str(&format!("{secs}s")); }
-    out
-}
-
 fn extract_latency_from_frame(snapshot: &MetricSet) -> Option<LiveLatency> {
     use nb_metrics::snapshot::MetricValue;
     let family = snapshot.family("cycles_servicetime")?;
@@ -2940,4 +2580,64 @@ fn extract_latency_from_frame(snapshot: &MetricSet) -> Option<LiveLatency> {
         }
     }
     None
+}
+
+// =========================================================================
+// Terminal teardown failsafe
+// =========================================================================
+
+/// RAII guard for the TUI's terminal mode changes. Enabling raw
+/// mode, entering the alternate screen, and turning on mouse
+/// capture happen in [`Self::enter`]; reversing all three happens
+/// in `Drop`. This gives every `?` error path, explicit `break`,
+/// and panic a guaranteed cleanup opportunity — without it, a
+/// failure mid-run would leave the user's shell in raw mode with
+/// the alternate screen buffer still active.
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn enter() -> io::Result<Self> {
+        terminal::enable_raw_mode()?;
+        io::stderr().execute(EnterAlternateScreen)?;
+        io::stderr().execute(EnableMouseCapture)?;
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        // Best-effort — Drop can't return Result. Order matters:
+        // mouse capture off first (it piggybacks on raw mode),
+        // then leave the alternate screen, then raw mode off.
+        let _ = io::stderr().execute(DisableMouseCapture);
+        let _ = io::stderr().execute(LeaveAlternateScreen);
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
+/// Install a process-global panic hook that restores the terminal
+/// before the default panic message prints. The previous hook is
+/// preserved and re-invoked, so crash backtraces (from
+/// `RUST_BACKTRACE=1` or similar) still render — just onto a
+/// clean tty instead of on top of the alternate-screen buffer.
+///
+/// Idempotent via an atomic flag: the TUI may be started multiple
+/// times in a single process (e.g. dev reloads), but only the
+/// first call wraps the panic hook.
+fn install_tui_panic_hook() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+    if INSTALLED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // Same best-effort cleanup sequence as TerminalGuard::drop.
+        // Called before the previous hook so stack traces render
+        // on a normal terminal, not over the alternate screen.
+        let _ = io::stderr().execute(DisableMouseCapture);
+        let _ = io::stderr().execute(LeaveAlternateScreen);
+        let _ = terminal::disable_raw_mode();
+        prev(info);
+    }));
 }
