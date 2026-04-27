@@ -73,6 +73,25 @@ impl Compiler {
         let module_is_formal = module.is_formal;
         let module_stmts = module.statements.clone();
 
+        // Module inlining is the *flatten* combinator (SRD 13b
+        // §"Inline"): the module's `Statement`s splice into this
+        // host's DAG and the boundary disappears. Pragmas declared
+        // inside the module body therefore become *additive*
+        // contributions to the *same* `PragmaSet` — they're not a
+        // separate scope. The outer-wins / conflict-detection
+        // semantics from SRD 15 §"Pragma Scope" fire at *scope
+        // composition* boundaries (workload → phase → for_each),
+        // which live in `nb-activity`, not here.
+        for stmt in &module_stmts {
+            if let crate::dsl::ast::Statement::Pragma { name, span } = stmt {
+                self.pragmas.entries.push(super::pragmas::Pragma {
+                    name: name.clone(),
+                    args: Vec::new(),
+                    line: span.line,
+                });
+            }
+        }
+
         // Strict mode: require all module arguments to be named
         if self.strict {
             for arg in caller_args {
@@ -201,6 +220,7 @@ impl Compiler {
                 }
                 Statement::ModuleDef(_) | Statement::ExternPort(_) => {} // nested module defs not inlined
                 Statement::Cursor(_) => {}
+                Statement::Pragma { .. } => {} // pragmas don't inline; they're module-scoped
             }
         }
 
@@ -444,7 +464,7 @@ impl Compiler {
 
         for (i, stmt) in ast.statements.iter().enumerate() {
             let (names, expr) = match stmt {
-                Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) => {
+                Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => {
                     stmt_refs.push(HashSet::new());
                     continue;
                 }
@@ -503,11 +523,12 @@ impl Compiler {
                 }
                 Statement::ModuleDef(_) | Statement::ExternPort(_) => {}
                 Statement::Cursor(_) => {}
+                Statement::Pragma { .. } => {}
             }
         }
         for stmt in &extracted {
             let expr = match stmt {
-                Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) => continue,
+                Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
                 Statement::InitBinding(b) => &b.value,
                 Statement::CycleBinding(b) => &b.value,
             };

@@ -633,7 +633,7 @@ fn normalize_op_object(
     let op_fields = if let Some(explicit_op) = op_field_names.iter()
         .find_map(|k| map.get(*k))
     {
-        let m = match explicit_op {
+        let mut m: HashMap<String, JVal> = match explicit_op {
             JVal::String(s) => {
                 let mut m = HashMap::new();
                 m.insert("stmt".to_string(), JVal::String(s.clone()));
@@ -648,6 +648,27 @@ fn normalize_op_object(
                 m
             }
         };
+        // Preserve sibling op-level fields so adapter-specific
+        // extras (e.g. testkit's `result-latency`, `result-capacity`)
+        // aren't silently dropped when the user writes shorthand:
+        //
+        //     insert:
+        //       stmt: "INSERT ..."
+        //       result-latency: "5ms"
+        //
+        // Without this loop the whole object would collapse to just
+        // `stmt` and the sibling fields would never reach the adapter.
+        // Keys already present in the explicit op payload win, so an
+        // `op:` sub-object still has final say over its own shape.
+        for (k, v) in map.iter() {
+            if reserved.contains(&k.as_str())
+                || op_field_names.contains(&k.as_str())
+                || activity_params.contains(&k.as_str())
+            {
+                continue;
+            }
+            m.entry(k.clone()).or_insert_with(|| v.clone());
+        }
         m
     } else {
         // All non-reserved, non-activity-param fields become op fields

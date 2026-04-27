@@ -345,8 +345,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Fails at the earliest evaluation if the input resolves to\nValue::None (undefined). Useful on workload parameters that must\nbe supplied at launch — a missing param surfaces as a clear error.\nParameters:\n  input — wire whose value must be defined\n  name  — identifier used in the error message\nExample: required({param:dataset}, \"dataset\")",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"dataset\"" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"dataset\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -357,8 +357,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Returns the primary input if it is defined (i.e. not Value::None),\notherwise returns the default. Use to layer a value explicitly:\n  concurrency := this_or({param:concurrency}, 100)\nParameters:\n  primary — preferred value; may be undefined\n  default — fallback value",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "primary", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "default", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "primary", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "default", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -369,8 +369,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Predicate that fails if the input is zero. Use on workload\nparams like concurrency or rate where 0 is nonsensical.\nParameters:\n  input — u64 wire\n  name  — identifier used in the error message",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -381,9 +381,9 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Predicate that fails if the input is outside [lo, hi].\nUse for bounds on tunable parameters (timeouts, concurrency caps).\nParameters:\n  input — u64 wire\n  lo    — lower bound (inclusive)\n  hi    — upper bound (inclusive)",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "lo", slot_type: SlotType::ConstU64, required: true, example: "1" },
-                ParamSpec { name: "hi", slot_type: SlotType::ConstU64, required: true, example: "100" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "lo", slot_type: SlotType::ConstU64, required: true, example: "1", constraint: None },
+                ParamSpec { name: "hi", slot_type: SlotType::ConstU64, required: true, example: "100", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -394,8 +394,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Predicate that fails if the input is not one of the allowed\nvalues. Variadic over the allow-list constants.\nParameters:\n  input      — u64 wire\n  allowed... — one or more u64 constants",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "allowed", slot_type: SlotType::ConstU64, required: true, example: "1" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "allowed", slot_type: SlotType::ConstU64, required: true, example: "1", constraint: None },
             ],
             arity: Arity::VariadicConsts { min_consts: 1 },
             commutativity: crate::node::Commutativity::Positional,
@@ -406,8 +406,9 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Predicate that fails if the input string does not match the\nregex pattern. Compiled once at construction; failed compile\n(invalid regex) is a hard error at node construction.\nParameters:\n  input   — string wire\n  pattern — regex pattern (compiled at init)",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true, example: "\"^[a-z]+$\"" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true, example: "\"^[a-z]+$\"",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::StrParser(validate_regex_pattern)) },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -450,7 +451,40 @@ pub(crate) fn build_node(
     }
 }
 
-crate::register_nodes!(signatures, build_node);
+/// Assembly-time constant validation for parameter-helper nodes.
+/// See SRD 15 §"Const Constraint Metadata".
+///
+/// `matches.pattern` rides on `StrParser` in its `ParamSpec`; the
+/// remaining rules — `in_range` (relational `lo ≤ hi`) and
+/// `is_one_of` (variadic emptiness) — can't be expressed per-param.
+pub(crate) fn validate_node(
+    name: &str,
+    consts: &[crate::dsl::factory::ConstArg],
+) -> Result<(), String> {
+    match name {
+        "in_range" => {
+            let lo = consts.first().map(|c| c.as_u64()).unwrap_or(0);
+            let hi = consts.get(1).map(|c| c.as_u64()).unwrap_or(u64::MAX);
+            if lo > hi {
+                Err(format!("lo ({lo}) must be <= hi ({hi})"))
+            } else { Ok(()) }
+        }
+        "is_one_of" => {
+            if consts.is_empty() {
+                Err("at least one allowed value required".into())
+            } else { Ok(()) }
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_regex_pattern(pattern: &str) -> Result<(), String> {
+    regex::Regex::new(pattern)
+        .map(|_| ())
+        .map_err(|e| format!("invalid regex '{pattern}': {e}"))
+}
+
+crate::register_nodes!(signatures, build_node, validate_node);
 
 #[cfg(test)]
 mod tests {

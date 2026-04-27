@@ -766,27 +766,50 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         let scenario_name = params.get("scenario").map(|s| s.as_str()).unwrap_or("default");
         let scenario_nodes = resolve_scenario(&scenarios, &phase_order, scenario_name)?;
 
+        // Build the canonical scope tree (SRD 18b §"Canonical
+        // traversal"). Mirrors the scenario tree 1:1 with parent
+        // pointers, depth, and pragma slots. Today consumed by
+        // observer pre-mapping and diagnostic display; future
+        // steps drive execution from this tree directly.
+        let scope_tree = {
+            let mut t = crate::scope_tree::ScopeTree::build(scenario_name, &scenario_nodes);
+            // Populate phase-leaf pragmas from each phase's GK
+            // source and chain each scope's `PragmaSet` to its
+            // parent's. SRD 18b §"Pragma chain along the scope
+            // tree"; SRD 15 §"Pragma Scope".
+            let conflicts = t.populate_pragmas(&phases);
+            for c in &conflicts {
+                let path = t.ancestors(c.scope_idx)
+                    .map(|(_, n)| n.kind.label())
+                    .collect::<Vec<_>>()
+                    .join(" ← ");
+                let msg = format!(
+                    "pragma '{}' conflict at {path}: outer (line {}) overrides inner (line {})",
+                    c.name, c.outer_line, c.inner_line,
+                );
+                if strict {
+                    return Err(msg);
+                } else {
+                    crate::diag!(crate::observer::LogLevel::Warn, "{msg}");
+                }
+            }
+            std::sync::Arc::new(t)
+        };
+
         if !observer.suppresses_stderr() {
             crate::diag!(crate::observer::LogLevel::Info, "scenario '{scenario_name}': {}", format_scenario_tree(&scenario_nodes));
         }
 
         // Observer is passed from the caller (default: StderrObserver).
 
-        // Pre-map the scenario tree for observer (TUI phase tree population).
-        if let Ok(entries) = crate::executor::pre_map_tree(
+        // Pre-map the scenario tree for observer (TUI phase tree population)
+        // and publish to the global accessor so out-of-band consumers
+        // (web API, post-run scripting) can snapshot the structure.
+        if let Ok(scene_tree) = crate::executor::pre_map_tree(
             &scenario_nodes, &phases, &workload_params, &outer_scope_values,
         ) {
-            let mapped: Vec<(crate::observer::PreMapKind, String, String, usize)> = entries
-                .into_iter()
-                .map(|e| {
-                    let kind = match e.kind {
-                        crate::executor::PreMapKind::Phase => crate::observer::PreMapKind::Phase,
-                        crate::executor::PreMapKind::Scope => crate::observer::PreMapKind::Scope,
-                    };
-                    (kind, e.name, e.labels, e.depth)
-                })
-                .collect();
-            observer.scenario_pre_mapped(&mapped);
+            observer.scenario_pre_mapped(&scene_tree);
+            crate::scene_tree::install_global(scene_tree);
         }
 
         // Execute the scenario tree recursively via the executor module.
@@ -796,6 +819,18 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 Some("emit") => Some("emit"),
                 _ => None,
             };
+            // Pluggable scheduler (SRD 18b §"Scheduler
+            // abstraction"). The `schedule=` workload param
+            // controls per-level concurrency: `1` (default,
+            // serial), `*` (unlimited), `N`, or a slash-list
+            // like `1/4/*` per depth. Non-serial specs dispatch
+            // `ConcurrentScheduler`, which forks per-task ExecCtx
+            // clones under a Semaphore for bounded levels.
+            let schedule_spec = std::sync::Arc::new(match params.get("schedule") {
+                Some(s) => crate::scheduler::ScheduleSpec::parse(s)
+                    .map_err(|e| format!("schedule= param: {e}"))?,
+                None => crate::scheduler::ScheduleSpec::default_serial(),
+            });
             let mut exec_ctx = crate::executor::ExecCtx {
                 phases: phases.clone(),
                 workload_params: workload_params.clone(),
@@ -820,8 +855,11 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 cadence_reporter: cadence_reporter.clone(),
                 stop_handle: stop_handle.clone(),
                 observer: observer.clone(),
+                scope_tree: scope_tree.clone(),
+                schedule_spec: schedule_spec.clone(),
             };
-            crate::executor::execute_tree(
+            let scheduler = crate::scheduler::build(&schedule_spec);
+            scheduler.run(
                 &mut exec_ctx,
                 &scenario_nodes,
                 &HashMap::new(),

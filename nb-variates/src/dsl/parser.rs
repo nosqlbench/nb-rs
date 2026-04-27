@@ -82,6 +82,7 @@ pub fn parse(tokens: Vec<Token>) -> Result<GkFile, String> {
 
 fn parse_statement(p: &mut Parser) -> Result<Statement, String> {
     match p.peek() {
+        TokenKind::Pragma => parse_pragma(p),
         TokenKind::Inputs => parse_inputs(p),
         TokenKind::Init => parse_init_binding(p),
         TokenKind::Extern => parse_extern_port(p),
@@ -103,6 +104,17 @@ fn parse_statement(p: &mut Parser) -> Result<Statement, String> {
             p.peek(), p.span().line, p.span().col
         )),
     }
+}
+
+/// `pragma <name>` — first-class module directive. The pragma name
+/// is a bare identifier; arguments are not currently supported (the
+/// recognised set in SRD 15 has none, and adding them later is
+/// non-breaking). See SRD 15 §"Module-Level Pragmas".
+fn parse_pragma(p: &mut Parser) -> Result<Statement, String> {
+    let span = p.span();
+    p.expect(&TokenKind::Pragma)?;
+    let name = p.expect_ident()?;
+    Ok(Statement::Pragma { name, span })
 }
 
 /// Lookahead: is this a module def? Pattern: ident ( ident : ident ...
@@ -315,30 +327,43 @@ fn parse_expr(p: &mut Parser) -> Result<Expr, String> {
 /// Pratt parser core: parse expression with minimum binding power.
 ///
 /// Precedence levels (lowest to highest):
-///   Level 1: `|`  (BitOr)        — bp (1, 2)
-///   Level 2: `^`  (BitXor)       — bp (3, 4)
-///   Level 3: `&`  (BitAnd)       — bp (5, 6)
-///   Level 4: `<<` `>>` (Shl/Shr) — bp (7, 8)
-///   Level 5: `+` `-` (Add/Sub)   — bp (9, 10)
-///   Level 6: `*` `/` `%`         — bp (11, 12)
-///   Level 7: `**` (Pow, right)   — bp (14, 13)
-///   Level 8: `-` `!` (unary, in parse_atom)
+///   Level 1: `==` `!=`               — bp (1, 2)
+///   Level 2: `<` `>` `<=` `>=`       — bp (3, 4)
+///   Level 3: `|`  (BitOr)            — bp (5, 6)
+///   Level 4: `^`  (BitXor)           — bp (7, 8)
+///   Level 5: `&`  (BitAnd)           — bp (9, 10)
+///   Level 6: `<<` `>>` (Shl/Shr)     — bp (11, 12)
+///   Level 7: `+` `-` (Add/Sub)       — bp (13, 14)
+///   Level 8: `*` `/` `%`             — bp (15, 16)
+///   Level 9: `**` (Pow, right)       — bp (18, 17)
+///   Level 10: `-` `!` (unary, in parse_atom)
+///
+/// Comparison ops sit below all arithmetic/bitwise so
+/// `a + b < c * d` parses as `(a + b) < (c * d)`. Equality is
+/// below relational so `a < b == c` parses as `(a < b) == c`,
+/// matching C/Rust convention.
 fn parse_expr_bp(p: &mut Parser, min_bp: u8) -> Result<Expr, String> {
     let mut lhs = parse_atom(p)?;
 
     loop {
         let op = match p.peek() {
-            TokenKind::Pipe      => Some((BinOpKind::BitOr,  1,  2)),
-            TokenKind::Caret     => Some((BinOpKind::BitXor, 3,  4)),
-            TokenKind::Ampersand => Some((BinOpKind::BitAnd, 5,  6)),
-            TokenKind::ShiftLeft => Some((BinOpKind::Shl,    7,  8)),
-            TokenKind::ShiftRight=> Some((BinOpKind::Shr,    7,  8)),
-            TokenKind::Plus      => Some((BinOpKind::Add,    9, 10)),
-            TokenKind::Minus     => Some((BinOpKind::Sub,    9, 10)),
-            TokenKind::Star      => Some((BinOpKind::Mul,   11, 12)),
-            TokenKind::Slash     => Some((BinOpKind::Div,   11, 12)),
-            TokenKind::Percent   => Some((BinOpKind::Mod,   11, 12)),
-            TokenKind::StarStar  => Some((BinOpKind::Pow,   14, 13)), // right-associative
+            TokenKind::EqEq      => Some((BinOpKind::Eq,    1,  2)),
+            TokenKind::BangEq    => Some((BinOpKind::Ne,    1,  2)),
+            TokenKind::Lt        => Some((BinOpKind::Lt,    3,  4)),
+            TokenKind::Gt        => Some((BinOpKind::Gt,    3,  4)),
+            TokenKind::LtEq      => Some((BinOpKind::Le,    3,  4)),
+            TokenKind::GtEq      => Some((BinOpKind::Ge,    3,  4)),
+            TokenKind::Pipe      => Some((BinOpKind::BitOr,  5,  6)),
+            TokenKind::Caret     => Some((BinOpKind::BitXor, 7,  8)),
+            TokenKind::Ampersand => Some((BinOpKind::BitAnd, 9, 10)),
+            TokenKind::ShiftLeft => Some((BinOpKind::Shl,   11, 12)),
+            TokenKind::ShiftRight=> Some((BinOpKind::Shr,   11, 12)),
+            TokenKind::Plus      => Some((BinOpKind::Add,   13, 14)),
+            TokenKind::Minus     => Some((BinOpKind::Sub,   13, 14)),
+            TokenKind::Star      => Some((BinOpKind::Mul,   15, 16)),
+            TokenKind::Slash     => Some((BinOpKind::Div,   15, 16)),
+            TokenKind::Percent   => Some((BinOpKind::Mod,   15, 16)),
+            TokenKind::StarStar  => Some((BinOpKind::Pow,   18, 17)), // right-associative
             _ => None,
         };
 

@@ -370,6 +370,32 @@ pub async fn set_control(
     }
 }
 
+// ─── Scope Tree (SRD 18b) ───────────────────────────────────
+
+/// Snapshot of the running session's scenario / scope tree.
+///
+/// Returns an empty `nodes` list (with `installed: false`) when no
+/// session has published a scene tree yet — e.g. standalone
+/// `nbrs web` without a running run, or before pre-map completes.
+/// During an active run the tree reflects the current pending /
+/// running / completed / failed status of every concrete phase
+/// and scope header; renderers can compute scope-level aggregate
+/// status by walking children.
+///
+/// Endpoint: `GET /api/scope-tree`
+pub async fn scope_tree() -> axum::Json<ScopeTreeResponse> {
+    match nb_activity::scene_tree::current() {
+        Some(tree) => axum::Json(ScopeTreeResponse { installed: true, tree: Some(tree) }),
+        None => axum::Json(ScopeTreeResponse { installed: false, tree: None }),
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct ScopeTreeResponse {
+    pub installed: bool,
+    pub tree: Option<nb_activity::scene_tree::SceneTree>,
+}
+
 // ─── Data Building ──────────────────────────────────────────
 
 fn build_function_groups(filter: Option<&str>) -> Vec<(String, Vec<FunctionView>)> {

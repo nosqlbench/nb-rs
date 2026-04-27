@@ -140,22 +140,33 @@ impl GkNode for Inspect {
 /// samples have been collected in the current window).
 ///
 /// Not deterministic: uses interior mutability and file I/O.
+/// Wraps the lazily-opened output file plus the path it was
+/// configured with. Construction stores the path; the file is
+/// opened on the first window emit so probes / dryruns that
+/// never feed samples don't leave empty artifacts behind.
+struct FftOutput {
+    path: String,
+    writer: Option<std::io::BufWriter<std::fs::File>>,
+    open_attempted: bool,
+}
+
 pub struct FftAnalyzer {
     meta: NodeMeta,
     window_size: usize,
     buffer: std::sync::Mutex<Vec<f64>>,
-    file: std::sync::Mutex<Option<std::io::BufWriter<std::fs::File>>>,
+    output: std::sync::Mutex<FftOutput>,
 }
 
 impl FftAnalyzer {
     /// Create a new FFT analyzer node.
     ///
-    /// - `filename`: path to the JSONL output file (created/truncated on construction)
+    /// - `filename`: path to the JSONL output file (lazy-opened
+    ///   on the first window emit so describe/probe/dryrun paths
+    ///   that construct the node without ever feeding samples
+    ///   leave nothing behind).
     /// - `window_size`: number of samples per DFT window (minimum 2)
     pub fn new(filename: &str, window_size: usize) -> Self {
         let window_size = window_size.max(2);
-        let file = std::fs::File::create(filename).ok()
-            .map(std::io::BufWriter::new);
         Self {
             meta: NodeMeta {
                 name: "fft_analyze".into(),
@@ -164,7 +175,11 @@ impl FftAnalyzer {
             },
             window_size,
             buffer: std::sync::Mutex::new(Vec::with_capacity(window_size)),
-            file: std::sync::Mutex::new(file),
+            output: std::sync::Mutex::new(FftOutput {
+                path: filename.to_string(),
+                writer: None,
+                open_attempted: false,
+            }),
         }
     }
 }
@@ -199,9 +214,17 @@ impl GkNode for FftAnalyzer {
                 phases.push(im.atan2(re));
             }
 
-            // Write JSONL line
-            if let Ok(mut file_guard) = self.file.lock() {
-                if let Some(ref mut writer) = *file_guard {
+            // Write JSONL line. The output file is lazy-opened
+            // here on first use; a previous open failure (bad
+            // path, permissions) is sticky for the lifetime of
+            // the node so we don't retry on every window.
+            if let Ok(mut out) = self.output.lock() {
+                if !out.open_attempted {
+                    out.open_attempted = true;
+                    out.writer = std::fs::File::create(&out.path).ok()
+                        .map(std::io::BufWriter::new);
+                }
+                if let Some(ref mut writer) = out.writer {
                     use std::io::Write;
                     let json = serde_json::json!({
                         "window_size": n,
@@ -236,7 +259,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "emit type name as string",
             help: "Returns the runtime type name of the input value as a String.\nOutputs: \"U64\", \"F64\", \"Str\", \"Bool\", \"Bytes\", \"Json\", etc.\nUseful for debugging type mismatches in complex graphs.\nParameters:\n  input — any wire value",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" }],
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -245,7 +268,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "emit Debug representation as string",
             help: "Returns the Rust Debug representation of the input value as a String.\nShows internal structure: U64(42), Str(\"hello\"), Bytes([0x01, ...]).\nMore detailed than type_of — use for inspecting actual values.\nParameters:\n  input — any wire value",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" }],
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -254,7 +277,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "passthrough with stderr logging",
             help: "Passes the input value through unchanged while logging it to stderr.\nThe value is printed with its type and Debug repr on every evaluation.\nUse for live debugging during graph development — remove before production.\nParameters:\n  input — any wire value (passed through unmodified)",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" }],
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -264,9 +287,9 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Collect N samples of an f64 signal, compute DFT magnitudes\nand phases, write to a JSONL file. Each line is one window.\nMore windows = higher confidence in frequency content.\nParams: filename (ConstStr), window_size (ConstU64, default 256)",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "signal", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "filename", slot_type: SlotType::ConstStr, required: true, example: "\"test.csv\"" },
-                ParamSpec { name: "window_size", slot_type: SlotType::ConstU64, required: false, example: "1000" },
+                ParamSpec { name: "signal", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "filename", slot_type: SlotType::ConstStr, required: true, example: "\"test.csv\"", constraint: None },
+                ParamSpec { name: "window_size", slot_type: SlotType::ConstU64, required: false, example: "1000", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,

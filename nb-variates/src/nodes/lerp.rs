@@ -309,9 +309,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "linear interpolation with fixed endpoints",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "a", slot_type: SlotType::ConstF64, required: true, example: "0.0" },
-                ParamSpec { name: "b", slot_type: SlotType::ConstF64, required: true, example: "1.0" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "a", slot_type: SlotType::ConstF64, required: true, example: "0.0", constraint: None },
+                ParamSpec { name: "b", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -322,9 +322,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "map u64 to f64 range",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "min", slot_type: SlotType::ConstF64, required: true, example: "0.0" },
-                ParamSpec { name: "max", slot_type: SlotType::ConstF64, required: true, example: "1.0" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "min", slot_type: SlotType::ConstF64, required: true, example: "0.0", constraint: None },
+                ParamSpec { name: "max", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -335,8 +335,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "round to nearest multiple of step",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "step", slot_type: SlotType::ConstF64, required: true, example: "0.1" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "step", slot_type: SlotType::ConstF64, required: true, example: "0.1",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::PositiveFiniteF64) },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -366,7 +367,23 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
 }
 
 
-crate::register_nodes!(signatures, build_node);
+/// Assembly-time constant validation. See SRD 15 §"Const Constraint Metadata".
+///
+/// `quantize.step` rides on a `PositiveFiniteF64` `ParamSpec`
+/// constraint enforced by Pass 1. `inv_lerp` and `remap` exist as
+/// struct types but aren't yet wired into the factory via FuncSig,
+/// so no validator entries are needed for them — when they're
+/// registered, their `a ≠ b` rule will live here as a relational
+/// check (`FiniteF64` constraints can cover the per-param finite
+/// requirement on the `ParamSpec`s themselves).
+pub(crate) fn validate_node(
+    _name: &str,
+    _consts: &[crate::dsl::factory::ConstArg],
+) -> Result<(), String> {
+    Ok(())
+}
+
+crate::register_nodes!(signatures, build_node, validate_node);
 #[cfg(test)]
 mod tests {
     use super::*;

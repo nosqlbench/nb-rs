@@ -41,6 +41,23 @@ show them all for diagnostic purposes.
 The `fields_filter` parameter restricts output to named fields
 when specified.
 
+### Output paths and parent directories
+
+When `filename` is anything other than `"stdout"`, the adapter
+treats it as a filesystem path and:
+
+- Creates parent directories on demand. `output=path/to/new/file.txt`
+  works without a manual `mkdir -p` — equivalent to `mkdir -p
+  path/to/new/` followed by `File::create("path/to/new/file.txt")`.
+- Truncates an existing file at the path.
+- Panics with the OS error if directory creation or file open
+  still fails (e.g., permission denied, path collides with an
+  existing non-directory). The diagnostic always includes both
+  the path and the underlying `std::io::Error`.
+
+Bare filenames in the cwd skip the directory step (they have no
+parent component).
+
 ---
 
 ## Model Adapter

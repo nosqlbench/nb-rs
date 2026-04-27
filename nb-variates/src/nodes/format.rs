@@ -296,7 +296,7 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "printf-style formatting: printf(fmt, a, b, ...) -> String",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "format", slot_type: SlotType::ConstStr, required: true, example: "\"%d\"" },
+                ParamSpec { name: "format", slot_type: SlotType::ConstStr, required: true, example: "\"%d\"", constraint: None },
             ],
             arity: Arity::VariadicWires { min_wires: 0 },
             commutativity: crate::node::Commutativity::Positional,
@@ -314,6 +314,21 @@ pub(crate) fn build_node(name: &str, wires: &[crate::assembly::WireRef], consts:
             let fmt = consts.first()
                 .map(|c| c.as_str())
                 .unwrap_or("{}");
+            // Reject format/wire-count mismatches at assembly time
+            // so `Printf::new`'s placeholder/types assertion can't
+            // fire from a DSL call. The user-facing diagnostic is
+            // clearer than the constructor panic and the node stays
+            // infallible (SRD 15 §"Input Validity Model").
+            let placeholder_count = parse_format(fmt)
+                .iter()
+                .filter(|s| matches!(s, Segment::Placeholder(_)))
+                .count();
+            if placeholder_count != wires.len() {
+                return Some(Err(format!(
+                    "printf: format has {placeholder_count} placeholders but {} wire inputs supplied",
+                    wires.len(),
+                )));
+            }
             // Infer input types: all wire inputs default to u64.
             // The Printf node handles any Value type at eval time,
             // so u64 ports work as the default — the actual value

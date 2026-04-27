@@ -23,6 +23,7 @@ nb-workload = { path = "../nb-workload", version = "0.1.1" }
 nb-variates = { path = "../nb-variates", version = "0.1.1" }
 futures = "0.3"
 inventory = "0.3.24"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }

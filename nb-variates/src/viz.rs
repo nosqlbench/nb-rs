@@ -225,6 +225,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
             }
             Statement::ModuleDef(_) | Statement::ExternPort(_) => {}
             Statement::Cursor(_) => {}
+            Statement::Pragma { .. } => {}
         }
     }
 
@@ -233,7 +234,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
         let mut refs: HashSet<String> = HashSet::new();
         for stmt in &ast.statements {
             let expr = match stmt {
-                Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) => continue,
+                Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
                 Statement::InitBinding(b) => &b.value,
                 Statement::CycleBinding(b) => &b.value,
             };
@@ -249,7 +250,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
     let mut consumed: HashSet<String> = HashSet::new();
     for stmt in &ast.statements {
         let expr = match stmt {
-            Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) => continue,
+            Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
             Statement::InitBinding(b) => &b.value,
             Statement::CycleBinding(b) => &b.value,
         };
@@ -284,7 +285,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
     // ─── Function nodes (middle) ────────────────────────
     for stmt in &ast.statements {
         match stmt {
-            Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) => continue,
+            Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
             Statement::InitBinding(b) => {
                 let id = format!("n{node_counter}");
                 node_counter += 1;

@@ -977,7 +977,7 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Convert a u64 to an f64 in [0.0, 1.0) by dividing by 2^64.\nBridges the integer hash domain into the probability domain.\nFeed the result to lerp, distribution samplers, or coin flips.\nParameters:\n  input — u64 wire input (typically hashed)\nExample: unit_interval(hash(cycle)) -> lerp(0.0, 100.0)",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -987,9 +987,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "clamp f64 to [min, max]",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "min", slot_type: SlotType::ConstF64, required: true, example: "0.0" },
-                ParamSpec { name: "max", slot_type: SlotType::ConstF64, required: true, example: "1.0" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "min", slot_type: SlotType::ConstF64, required: true, example: "0.0", constraint: None },
+                ParamSpec { name: "max", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1000,7 +1000,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "convert u64 integer to f64",
             help: "Numeric conversion: 42u64 becomes 42.0f64.\nNot a bit reinterpret. Values above 2^53 lose precision.",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" }],
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1009,7 +1009,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "truncate f64 to u64 (lossy)",
             help: "Truncate an f64 to u64 by dropping the fractional part toward zero.\nNegative values and NaN produce 0. Values above u64::MAX saturate.\nUse when you need a raw integer from a float without rounding.\nParameters:\n  input — f64 wire input",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" }],
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1018,7 +1018,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "round f64 to nearest u64",
             help: "Round an f64 to the nearest u64 (half-to-even / banker's rounding).\nPreferred over truncation when you want the closest integer.\nNegative values and NaN produce 0.\nParameters:\n  input — f64 wire input",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" }],
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1027,7 +1027,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "floor f64 to u64",
             help: "Floor an f64 to the next lower u64 (round toward negative infinity).\nFor positive values, equivalent to truncation. Negative values yield 0.\nUse when you want consistent downward rounding.\nParameters:\n  input — f64 wire input",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" }],
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1036,7 +1036,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "ceil f64 to u64",
             help: "Ceiling of an f64 to u64 (round toward positive infinity).\nAlways rounds up: 2.1 becomes 3. Negative values yield 0.\nUse when you need the next integer above a continuous value.\nParameters:\n  input — f64 wire input",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" }],
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1045,9 +1045,11 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "bin f64 into N equal-width buckets",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "range", slot_type: SlotType::ConstU64, required: true, example: "100" },
-                ParamSpec { name: "buckets", slot_type: SlotType::ConstU64, required: true, example: "10" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "range", slot_type: SlotType::ConstU64, required: true, example: "100",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::NonZeroU64) },
+                ParamSpec { name: "buckets", slot_type: SlotType::ConstU64, required: true, example: "10",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::NonZeroU64) },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1058,8 +1060,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "format u64 as string (decimal/hex/octal/binary)",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "radix", slot_type: SlotType::ConstU64, required: false, example: "10" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "radix", slot_type: SlotType::ConstU64, required: false, example: "10",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::AllowedU64(&[2, 8, 10, 16])) },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1070,8 +1073,8 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "format f64 with decimal precision",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "precision", slot_type: SlotType::ConstU64, required: true, example: "6" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "precision", slot_type: SlotType::ConstU64, required: true, example: "6", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1082,8 +1085,8 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "zero-pad u64 to fixed width string",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "width", slot_type: SlotType::ConstU64, required: true, example: "8" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "width", slot_type: SlotType::ConstU64, required: true, example: "8", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1159,7 +1162,20 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
 }
 
 
-crate::register_nodes!(signatures, build_node);
+/// Assembly-time constant validation. See SRD 15 §"Const Constraint Metadata".
+///
+/// `format_u64.radix` (`AllowedU64{2,8,10,16}`) and
+/// `discretize.range` / `.buckets` (`NonZeroU64`) ride on
+/// `ParamSpec.constraint`; Pass 1 enforces them and there's
+/// nothing relational left for this validator to do.
+pub(crate) fn validate_node(
+    _name: &str,
+    _consts: &[crate::dsl::factory::ConstArg],
+) -> Result<(), String> {
+    Ok(())
+}
+
+crate::register_nodes!(signatures, build_node, validate_node);
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -32,6 +32,15 @@ pub struct NodeRegistration {
     /// Returns `None` if the name is not handled by this module,
     /// or `Some(Ok(node))` / `Some(Err(msg))` if it is.
     pub build: fn(&str, &[WireRef], &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>>,
+    /// Optional assembly-time validator for this module's constants.
+    ///
+    /// The factory calls this **before** `build` whenever the name
+    /// matches one of this module's functions. Returning `Err` makes
+    /// the compile fail with a structured `bad constant` error, so
+    /// the node itself never sees a malformed literal and can keep
+    /// its constructor and `eval()` branch-free. See SRD 15 §"Const
+    /// Constraint Metadata" for the contract.
+    pub validate: Option<crate::dsl::const_constraints::NodeValidator>,
 }
 
 inventory::collect!(NodeRegistration);
@@ -42,10 +51,17 @@ inventory::collect!(NodeRegistration);
 /// arranges for the registration to run before `main` so that `registry()`
 /// and `build_node()` see all entries.
 ///
-/// Usage (in each node module):
-/// ```ignore
-/// crate::register_nodes!(signatures, build_node);
-/// ```
+/// Two forms:
+///
+/// - `register_nodes!(signatures, build_node)` — no assembly-time
+///   validation. The builder is responsible for handling any bad
+///   input itself (usually by trusting the caller or panicking).
+/// - `register_nodes!(signatures, build_node, validate_node)` — the
+///   factory calls `validate_node(name, consts)` before `build_node`.
+///   Use this to declare [`ConstConstraint`]-style checks so
+///   constructors can stay infallible.
+///
+/// [`ConstConstraint`]: crate::dsl::const_constraints::ConstConstraint
 #[macro_export]
 macro_rules! register_nodes {
     ($sigs:expr, $builder:expr) => {
@@ -53,6 +69,16 @@ macro_rules! register_nodes {
             $crate::dsl::registry::NodeRegistration {
                 signatures: $sigs,
                 build: $builder,
+                validate: None,
+            }
+        }
+    };
+    ($sigs:expr, $builder:expr, $validator:expr) => {
+        inventory::submit! {
+            $crate::dsl::registry::NodeRegistration {
+                signatures: $sigs,
+                build: $builder,
+                validate: Some($validator),
             }
         }
     };
@@ -69,6 +95,10 @@ pub enum FuncCategory {
     Hashing,
     /// Integer arithmetic with constant parameters.
     Arithmetic,
+    /// Comparison and selection: ==, !=, <, >, <=, >=, if(...).
+    /// Comparison nodes return u64 truth values (0 or 1); select
+    /// nodes pick between two operand values based on a u64 cond.
+    Comparison,
     /// Variadic N-ary operations (sum, product, min, max).
     Variadic,
     /// Type conversions between u64, f64, String, etc.
@@ -119,6 +149,7 @@ impl FuncCategory {
         match self {
             Self::Hashing => "Hashing",
             Self::Arithmetic => "Arithmetic",
+            Self::Comparison => "Comparison",
             Self::Variadic => "Variadic",
             Self::Conversions => "Conversions",
             Self::Distributions => "Distributions",
@@ -149,6 +180,7 @@ impl FuncCategory {
         match s.trim().to_lowercase().as_str() {
             "hashing" => Some(Self::Hashing),
             "arithmetic" => Some(Self::Arithmetic),
+            "comparison" | "compare" => Some(Self::Comparison),
             "variadic" => Some(Self::Variadic),
             "conversions" | "conversion" => Some(Self::Conversions),
             "distributions" | "distribution" => Some(Self::Distributions),
@@ -177,7 +209,7 @@ impl FuncCategory {
     /// Canonical ordering for display (same order as the enum definition).
     pub fn display_order() -> &'static [Self] {
         &[
-            Self::Hashing, Self::Arithmetic, Self::Variadic,
+            Self::Hashing, Self::Arithmetic, Self::Comparison, Self::Variadic,
             Self::Conversions, Self::Distributions, Self::Datetime,
             Self::Encoding, Self::Interpolation, Self::Math, Self::Probability,
             Self::Weighted, Self::Formatting, Self::String,
@@ -211,6 +243,21 @@ pub struct ParamSpec {
     /// level and for documentation. Wire params use `"cycle"`,
     /// const params use a representative value that passes validation.
     pub example: &'static str,
+    /// Optional assembly-time validation rule (SRD 15 §"Const
+    /// Constraint Metadata"). The factory enforces this before
+    /// `build_node` so node constructors can stay infallible and
+    /// branch-free at runtime. `None` = no constraint declared
+    /// (default for wires and unconstrained constants).
+    pub constraint: Option<crate::dsl::const_constraints::ConstConstraint>,
+}
+
+impl ParamSpec {
+    /// Convenience: chainable on a literal to attach a constraint.
+    /// Used by node modules that want to keep the literal compact.
+    pub const fn with_constraint(mut self, c: crate::dsl::const_constraints::ConstConstraint) -> Self {
+        self.constraint = Some(c);
+        self
+    }
 }
 
 /// Arity specification for a function signature.

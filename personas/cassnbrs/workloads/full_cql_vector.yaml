@@ -119,7 +119,6 @@ phases:
 
   discover:
     adapter: stdout
-    cycles: ===auto
     concurrency: 1
     ops:
       info:
@@ -131,7 +130,6 @@ phases:
   # ANN-only workloads simply leave the metadata column null.
 
   schema:
-    cycles: ===auto
     concurrency: 1
     bindings: |
       dim := vector_dim("{dataset}:{profile}")
@@ -149,7 +147,6 @@ phases:
   # Anti-DDL: tear down in reverse order (indexes → table).
   # Keyspace left intact (shared across tests).
   teardown:
-    cycles: ===auto
     concurrency: 1
     ops:
       drop_metadata_index:
@@ -161,7 +158,6 @@ phases:
 
   # Drop indexes only (for optimize_for sweep — recreate with different settings)
   drop_indexes:
-    cycles: ===auto
     concurrency: 1
     ops:
       drop_metadata_index:
@@ -171,7 +167,6 @@ phases:
 
   # Recreate just the vector index (after drop_indexes in optimize_for sweep)
   create_index:
-    cycles: ===auto
     concurrency: 1
     bindings: |
       similarity_function := dataset_distance_function("{dataset}:{profile}")
@@ -181,7 +176,6 @@ phases:
 
   build_index:
     summary: true
-    cycles: ===auto
     concurrency: 1
     ops:
       wait_for_index:

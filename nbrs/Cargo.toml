@@ -1,5 +1,5 @@
 [package]
-name = "nb-rs"
+name = "nbrs"
 version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
@@ -35,4 +35,3 @@ nb-adapter-plotter = { path = "../adapters/nb-adapter-plotter", version = "0.1.1
 reqwest = { version = "0.12", features = ["blocking"] }
 serde = { version = "1", features = ["derive"] }
 libc = "0.2"
-veks-completion = { path = "../links/vectordata-rs/veks-completion" }

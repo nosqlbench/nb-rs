@@ -1,7 +1,10 @@
 #!/usr/bin/env nbrs
 # Dynamic Controls Demo (SRD 23)
 #
-# Demonstrates the dynamic-controls surface end-to-end:
+# Demonstrates the dynamic-controls surface end-to-end, driving
+# against a testkit adapter configured to behave like a
+# capacity-limited backend so the feedback loop has real pressure
+# to respond to:
 #
 #   * Block-level `params:` override (SRD 21 §"Parameter Resolution")
 #     sets the DDL phase's concurrency to 1 while the bulk phase
@@ -17,35 +20,40 @@
 #       - Web API             ← POST /api/control/concurrency {"value": 16}
 #       - GK `control_set`    ← scripted feedback loop in a binding
 #
-#   * The bulk phase also wires a GK-driven feedback loop: the
-#     `rate_target` binding calls `control_set("rate", ...)` if
-#     the error rate exceeds 5%. The `control(...)` / `rate()` /
-#     `concurrency()` context nodes read the live values back.
+#   * The bulk phase's `insert` op uses testkit's saturation knobs
+#     (`result-capacity`, `result-overload`) to model a backend
+#     that serves a small number of ops in parallel and returns
+#     `Overload` errors past a bounded queue. That gives the
+#     `rate_adjust` feedback binding something to see: at
+#     `concurrency=8` everything fits, at `concurrency=24` the
+#     queue tips past the overload threshold and the error rate
+#     jumps — which trips the `if(err_rate > 0.05, 0.5, 1.05)`
+#     branch and halves the live `rate` control until it recovers.
 #
 # Validators bracket every param so misconfiguration surfaces at
 # startup instead of in mysterious downstream failures.
 #
 # Usage:
 #   nbrs run workload=examples/workloads/dynamic_controls.yaml dryrun=controls
-#   nbrs run workload=examples/workloads/dynamic_controls.yaml
-#   nbrs run workload=examples/workloads/dynamic_controls.yaml concurrency=16
+#   nbrs run workload=examples/workloads/dynamic_controls.yaml           # fits under threshold
+#   nbrs run workload=examples/workloads/dynamic_controls.yaml \
+#       concurrency=32 rate=100000                                        # pushes past overload
 
 params:
-  adapter: stdout
+  adapter: testkit
   # is_positive guards reject 0-valued defaults that the CLI
   # user might mistakenly pass; in_range tightens the rate cap.
   concurrency: "8"
   rate: "1000"
   cycles: "2000"
+  # Overload errors are load feedback, not run failures — keep
+  # going so the feedback_loop binding can respond to them and
+  # the operator can watch the rate settle.
+  errors: "warn"
 
 bindings: |
   inputs := (cycle)
-  id := mod(hash(cycle), 1_000_000)
-  // Runtime-context reads. `rate()` is sugar for control("rate");
-  // we also read the concurrency control so the generated op
-  // text records what each cycle was running under (diagnostic).
-  effective_rate := rate()
-  effective_conc := concurrency()
+  id := mod(hash(cycle), 1000000)
 
 blocks:
   ddl:
@@ -62,17 +70,26 @@ blocks:
     ops:
       insert:
         stmt: "INSERT INTO demo.events (id) VALUES ({id});"
+        # Simulated backend: 4 servers, 5 ms each, queue depth 16.
+        # Throughput tops out near 800 ops/s; anything beyond
+        # in_flight=16 rejects with Overload so the feedback loop
+        # can see it in the errors metric.
+        result-latency: "5ms"
+        result-capacity: 4
+        result-overload: 16
 
   feedback_loop:
     bindings: |
       inputs := (cycle)
       err_rate := metric("errors", "rate")
-      // Halve the rate when errors spike, creep back up
-      // otherwise. `control_set` is non-blocking — the spawn is
+      // Step throttle: above a 5%-error threshold the multiplier
+      // drops to 0.5 (rate halves); below it sits at 1.05 (rate
+      // ramps up). `control_set` is non-blocking — the spawn is
       // attributed to the `rate_adjust` binding in the committed
       // Versioned<RateSpec>::origin.
+      throttle_factor := if(err_rate > 0.05, 0.5, 1.05)
       rate_adjust := control_set("rate",
                                  to_f64(control_u64("rate")) *
-                                 if(err_rate > 0.05, 0.5, 1.05))
+                                 throttle_factor)
     ops:
       tick: "SELECT now();"

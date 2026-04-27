@@ -119,9 +119,10 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "regex substitution",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true, example: "\"[a-z]+\"" },
-                ParamSpec { name: "replacement", slot_type: SlotType::ConstStr, required: true, example: "\"X\"" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true, example: "\"[a-z]+\"",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::StrParser(validate_regex_pattern)) },
+                ParamSpec { name: "replacement", slot_type: SlotType::ConstStr, required: true, example: "\"X\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -132,8 +133,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "test if string matches regex",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true, example: "\"[a-z]+\"" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "pattern", slot_type: SlotType::ConstStr, required: true, example: "\"[a-z]+\"",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::StrParser(validate_regex_pattern)) },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -158,6 +160,12 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
     }
 }
 
+
+fn validate_regex_pattern(pattern: &str) -> Result<(), String> {
+    regex::Regex::new(pattern)
+        .map(|_| ())
+        .map_err(|e| format!("invalid regex '{pattern}': {e}"))
+}
 
 crate::register_nodes!(signatures, build_node);
 #[cfg(test)]

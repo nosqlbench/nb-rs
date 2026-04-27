@@ -30,6 +30,8 @@ pub mod math;
 pub mod datafile;
 pub mod param_helpers;
 pub mod runtime_context;
+pub mod assertions;
+pub mod compare;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 #[cfg(feature = "vectordata")]

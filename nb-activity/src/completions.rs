@@ -256,39 +256,46 @@ fn filter_prefix<S: AsRef<str>>(opts: &[S], cur: &str) -> Vec<String> {
 
 /// Discover workload candidates for `workload=` tab-completion.
 ///
-/// Returns a mix of:
-/// - yaml files directly in `./`, `./workloads/`, or `./examples/`;
-/// - subdirectories of `./` (or `./workloads/`, `./examples/`) that
-///   contain at least one yaml file, emitted with a trailing `/` so
-///   the bash script knows to suppress the trailing space and keep
-///   tab-completion live.
-///
-/// Results are filtered by the user's current partial input so tab
-/// keeps narrowing the list as the user types.
+/// When the user has typed a path-with-slash, descend into the
+/// deepest real directory covered by that prefix and list its
+/// immediate children (yaml files + yaml-bearing subdirs). When the
+/// user has typed only a bare prefix (no slash), seed from three
+/// conventional roots — `./`, `workloads/`, `examples/` — so
+/// `workload=<TAB>` works without forcing them to type a directory
+/// name first.
 fn workload_file_candidates(cur: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    // Search roots and the prefix to prepend to names found under them.
-    // `.` uses no prefix (bare filenames are the canonical form);
-    // `workloads/` and `examples/` prepend that path so the result
-    // matches how the runner actually resolves paths.
-    let roots: &[(&str, &str)] = &[
-        (".", ""),
-        ("workloads", "workloads/"),
-        ("examples", "examples/"),
-    ];
-    for (dir, prefix) in roots {
-        collect_yaml_entries(Path::new(dir), prefix, cur, &mut out);
+    if cur.contains('/') {
+        // Descend: `examples/workloads/dy` → dir `examples/workloads`,
+        // name-prefix `dy`, emit-prefix `examples/workloads/`.
+        let split = cur.rfind('/').unwrap();
+        let dir_prefix = &cur[..=split]; // includes trailing `/`
+        let name_prefix = &cur[split + 1..];
+        collect_yaml_entries(Path::new(dir_prefix.trim_end_matches('/')),
+            dir_prefix, name_prefix, &mut out);
+    } else {
+        // Seed roots: the user's still at the top level, so show yaml
+        // files and yaml-bearing dirs from each search root.
+        let roots: &[(&str, &str)] = &[
+            (".", ""),
+            ("workloads", "workloads/"),
+            ("examples", "examples/"),
+        ];
+        for (dir, prefix) in roots {
+            collect_yaml_entries(Path::new(dir), prefix, cur, &mut out);
+        }
     }
     out.sort();
     out.dedup();
     out
 }
 
-/// Walk one directory, emitting yaml files directly in it and
-/// subdirectories that (recursively, one level down) contain yaml.
-/// Never descends beyond one additional level — completion UX should
-/// show the user where to go next, not every leaf at once.
-fn collect_yaml_entries(dir: &Path, prefix: &str, partial: &str, out: &mut Vec<String>) {
+/// List one directory's immediate children, emitting yaml files
+/// directly and yaml-bearing subdirectories with a trailing `/`.
+/// Each emitted candidate is prepended with `emit_prefix` so the
+/// reader sees a full path relative to the shell's cwd. Entries are
+/// filtered by `name_prefix` (the partial filename under the cursor).
+fn collect_yaml_entries(dir: &Path, emit_prefix: &str, name_prefix: &str, out: &mut Vec<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let Some(name_os) = entry.path().file_name().map(|n| n.to_owned()) else { continue };
@@ -296,25 +303,20 @@ fn collect_yaml_entries(dir: &Path, prefix: &str, partial: &str, out: &mut Vec<S
         // Hide dotfiles — the user can still type `.` explicitly to
         // see them if they really need to.
         if name.starts_with('.') { continue; }
+        if !name.starts_with(name_prefix) { continue; }
         let path = entry.path();
         if path.is_dir() {
             // Skip noisy build/output dirs that definitely don't hold
             // workload files.
             if matches!(name.as_str(), "target" | "node_modules" | "logs") { continue; }
             if directory_contains_yaml(&path) {
-                let candidate = format!("{prefix}{name}/");
-                if candidate.starts_with(partial) {
-                    out.push(candidate);
-                }
+                out.push(format!("{emit_prefix}{name}/"));
             }
             continue;
         }
         if let Some(ext) = path.extension()
             && (ext == "yaml" || ext == "yml") {
-            let candidate = format!("{prefix}{name}");
-            if candidate.starts_with(partial) {
-                out.push(candidate);
-            }
+            out.push(format!("{emit_prefix}{name}"));
         }
     }
 }

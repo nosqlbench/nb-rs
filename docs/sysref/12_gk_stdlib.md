@@ -246,6 +246,14 @@ behavior through a setjmp/longjmp shim documented in
 Dataset resolution: bare name → `vectordata` catalog → URL → download + cache.
 Datasets loaded once globally via `DATASET_CACHE`.
 
+For workloads, the vectordata module also registers
+**cursor-construction sugar** so `cursor row = vectordata_base("ds",
+"profile")` collapses the verbose `range` + `dataset_prebuffer` +
+`vector_at_bytes` boilerplate into one line and auto-publishes the
+`row.vector` projection. See SRD 10 §"Cursor-Constructor Sugar"
+for the full surface and how to add a new sugar family for a
+different source kind (CSV, streaming, etc.).
+
 ---
 
 ## Registration

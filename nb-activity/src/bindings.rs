@@ -332,6 +332,15 @@ pub fn compile_bindings_with_libs(
 /// The scope has already been validated and carries structured
 /// provenance. This function emits the scope to GK source, collects
 /// required outputs, and compiles via the standard GK compiler.
+///
+/// `pragmas` carries the chain-walked effective pragma state for
+/// the scope (typically obtained from
+/// `ScopeTree::nodes[idx].pragmas`). Pragma directives matching
+/// the effective state are prepended to the emitted source so
+/// the GK compiler's existing AST-pragma extraction (SRD 15
+/// §"Module-Level Pragmas") drives the assembler's strict-wire
+/// flags. Pass `&PragmaSet::default()` to disable pragma effects
+/// for legacy callers.
 pub fn compile_from_scope(
     scope: &crate::scope::BindingScope,
     source_dir: Option<&std::path::Path>,
@@ -339,12 +348,43 @@ pub fn compile_from_scope(
     strict: bool,
     context: &str,
     cursor_limit: Option<u64>,
+    pragmas: &nb_variates::dsl::pragmas::PragmaSet,
 ) -> Result<GkKernel, String> {
-    let source = scope.emit();
+    let body = scope.emit();
     let required = scope.required_outputs();
+    let source = prepend_effective_pragmas(pragmas, &body);
     nb_variates::dsl::compile_gk_with_libs_and_limit(
         &source, source_dir, gk_lib_paths, &required, strict, context, cursor_limit,
     )
+}
+
+/// Prepend pragma directives matching the chain's effective
+/// state. The resulting GK source is functionally equivalent to
+/// having the pragmas declared locally — the compiler's AST walk
+/// picks them up the same way regardless of whether they came
+/// from the original source or were synthesised here.
+///
+/// Provenance (which scope originally declared the pragma) is
+/// flattened by this textualization. That's acceptable for the
+/// runtime-effect path; diagnostic uses query the scope tree
+/// directly via `ScopeTree::ancestors` for path labels.
+pub(crate) fn prepend_effective_pragmas(
+    pragmas: &nb_variates::dsl::pragmas::PragmaSet,
+    body: &str,
+) -> String {
+    let mut out = String::new();
+    if pragmas.strict_types() && pragmas.strict_values() {
+        out.push_str("pragma strict\n");
+    } else if pragmas.strict_types() {
+        out.push_str("pragma strict_types\n");
+    } else if pragmas.strict_values() {
+        out.push_str("pragma strict_values\n");
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(body);
+    out
 }
 
 /// Like `compile_bindings_with_libs` but excludes named bind points from
@@ -669,6 +709,71 @@ fn strip_java_long_suffix(arg: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use nb_variates::dsl::pragmas::{Pragma, PragmaSet};
+
+    #[test]
+    fn prepend_pragmas_strict_alias() {
+        let pragmas = PragmaSet {
+            entries: vec![Pragma {
+                name: "strict".into(),
+                args: vec![],
+                line: 1,
+            }],
+            parent: None,
+        };
+        let body = "id := cycle\n";
+        let out = prepend_effective_pragmas(&pragmas, body);
+        // `strict` activates both — emit single combined directive.
+        assert!(out.starts_with("pragma strict\n"));
+        assert!(out.contains("id := cycle"));
+    }
+
+    #[test]
+    fn prepend_pragmas_individual_modes() {
+        let pragmas = PragmaSet {
+            entries: vec![Pragma {
+                name: "strict_values".into(),
+                args: vec![],
+                line: 1,
+            }],
+            parent: None,
+        };
+        let out = prepend_effective_pragmas(&pragmas, "x := cycle");
+        assert!(out.starts_with("pragma strict_values\n"));
+        assert!(!out.contains("strict_types"));
+    }
+
+    #[test]
+    fn prepend_pragmas_no_op_when_empty() {
+        let pragmas = PragmaSet::default();
+        let out = prepend_effective_pragmas(&pragmas, "x := cycle");
+        assert_eq!(out, "x := cycle");
+    }
+
+    #[test]
+    fn prepend_pragmas_walks_parent_chain() {
+        // Parent declares strict_values. Child declares nothing.
+        // The child's effective state (via chain walk) still
+        // produces the prepended directive — that's the
+        // load-bearing behavior for SRD 18b cross-scope
+        // propagation.
+        let parent = std::sync::Arc::new(PragmaSet {
+            entries: vec![Pragma {
+                name: "strict_values".into(),
+                args: vec![],
+                line: 1,
+            }],
+            parent: None,
+        });
+        let child = PragmaSet {
+            entries: vec![],
+            parent: Some(parent),
+        };
+        let out = prepend_effective_pragmas(&child, "x := cycle");
+        assert!(out.starts_with("pragma strict_values\n"),
+            "expected pragma to flow from parent chain, got:\n{out}");
+    }
 
     #[test]
     fn parse_simple_chain() {

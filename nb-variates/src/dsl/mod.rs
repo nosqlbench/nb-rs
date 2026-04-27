@@ -10,6 +10,9 @@ pub mod compile;
 pub mod error;
 pub mod registry;
 pub mod events;
+pub mod const_constraints;
+pub mod pragmas;
+pub mod cursor_sugar;
 pub(crate) mod factory;
 pub(crate) mod validate;
 

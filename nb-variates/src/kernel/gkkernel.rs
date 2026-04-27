@@ -124,6 +124,36 @@ impl GkKernel {
         }
     }
 
+    /// Construct a fresh kernel from a previously-compiled
+    /// `Arc<GkProgram>`. The state is freshly created and seeded
+    /// the same way the standard new-kernel path does, so callers
+    /// can immediately `set_input(...)` for externs and execute.
+    ///
+    /// Used by the cache-and-rebind path in nb-activity (SRD 18b
+    /// §"Cache-and-rebind contract"): a phase scope compiles once,
+    /// caches its program, and instantiates a fresh kernel per
+    /// `run_phase` call against the cached program.
+    pub fn from_program(program: Arc<GkProgram>) -> Self {
+        let mut state = program.create_state();
+        // Populate buffers for folded constants so get_constant()
+        // works on the new kernel — mirrors the seeding done in
+        // `new_impl` after fold.
+        let dummy = vec![0u64; program.coord_count()];
+        state.set_inputs(&dummy);
+        for name in program.output_names() {
+            if let Some(&(node_idx, _)) = program.output_map.get(name)
+                && program.wiring[node_idx].is_empty()
+            {
+                state.pull(&program, name);
+            }
+        }
+        Self {
+            program,
+            state,
+            constants_folded: 0, // already folded; see program contents
+        }
+    }
+
     /// The shared immutable program.
     pub fn program(&self) -> &Arc<GkProgram> {
         &self.program

@@ -186,8 +186,8 @@ pub fn signatures() -> &'static [FuncSig] {
                    Non-deterministic: value changes as metrics accumulate.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "label_pattern", slot_type: SlotType::ConstStr, required: true, example: "\"phase=rampup\"" },
-                ParamSpec { name: "stat", slot_type: SlotType::ConstStr, required: true, example: "\"p99\"" },
+                ParamSpec { name: "label_pattern", slot_type: SlotType::ConstStr, required: true, example: "\"phase=rampup\"", constraint: None },
+                ParamSpec { name: "stat", slot_type: SlotType::ConstStr, required: true, example: "\"p99\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -202,8 +202,8 @@ pub fn signatures() -> &'static [FuncSig] {
                    Non-deterministic: value changes each capture interval.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "label_pattern", slot_type: SlotType::ConstStr, required: true, example: "\"phase=search\"" },
-                ParamSpec { name: "stat", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"" },
+                ParamSpec { name: "label_pattern", slot_type: SlotType::ConstStr, required: true, example: "\"phase=search\"", constraint: None },
+                ParamSpec { name: "stat", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,

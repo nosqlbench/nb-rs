@@ -24,6 +24,26 @@ use crate::nodes::identity::*;
 use crate::nodes::format::*;
 
 use super::compile::Compiler;
+use crate::dsl::lexer::Span;
+
+/// Wrap an expression in a `to_f64(expr)` call. Used by the
+/// `if(cond, a, b)` desugar to widen a u64 branch when the other
+/// branch is f64.
+fn wrap_to_f64(inner: Expr) -> Expr {
+    let span = match &inner {
+        Expr::IntLit(_, s) | Expr::FloatLit(_, s) | Expr::StringLit(_, s)
+            | Expr::Ident(_, s) | Expr::UnaryNeg(_, s) | Expr::UnaryBitNot(_, s)
+            | Expr::ArrayLit(_, s) => *s,
+        Expr::Call(c) => c.span,
+        Expr::FieldAccess { span, .. } => *span,
+        Expr::BinOp(..) => Span { line: 0, col: 0 },
+    };
+    Expr::Call(crate::dsl::ast::CallExpr {
+        func: "to_f64".into(),
+        args: vec![Arg::Positional(inner)],
+        span,
+    })
+}
 
 /// Infer the output `PortType` of an expression without compiling it.
 ///
@@ -70,6 +90,13 @@ fn infer_expr_type(
                 BinOpKind::BitAnd | BinOpKind::BitOr | BinOpKind::BitXor |
                 BinOpKind::Shl | BinOpKind::Shr => PortType::U64,
                 BinOpKind::Pow => PortType::F64,
+                // Comparison operators always produce a u64 truth
+                // value (0 or 1) regardless of operand types — the
+                // type-aware desugar in compile_binding picks the
+                // right input variant.
+                BinOpKind::Eq | BinOpKind::Ne |
+                BinOpKind::Lt | BinOpKind::Gt |
+                BinOpKind::Le | BinOpKind::Ge => PortType::U64,
                 _ => {
                     let lt = infer_expr_type(lhs, asm, input_names);
                     let rt = infer_expr_type(rhs, asm, input_names);
@@ -107,6 +134,51 @@ impl Compiler {
     ) -> Result<(), String> {
         match value {
             Expr::Call(call) => {
+                // `if(cond, a, b)` is a compiler intrinsic — desugar
+                // to `select_u64(cond, a, b)` or `select_f64(cond, a, b)`
+                // based on the inferred types of the two branches.
+                // Mismatched branch types are widened: any u64 branch
+                // is wrapped in `to_f64(...)` when the other branch is
+                // f64. Both branches always evaluate (no short-circuit);
+                // see SRD 10 §"Conditional selection" for the rationale.
+                if call.func == "if" {
+                    if call.args.len() != 3 {
+                        return Err(format!(
+                            "if({}): expected 3 arguments (cond, a, b), got {}",
+                            targets[0], call.args.len()
+                        ));
+                    }
+                    let cond_arg = call.args[0].clone();
+                    let a_expr = match &call.args[1] {
+                        Arg::Positional(e) => e.clone(),
+                        Arg::Named(_, e) => e.clone(),
+                    };
+                    let b_expr = match &call.args[2] {
+                        Arg::Positional(e) => e.clone(),
+                        Arg::Named(_, e) => e.clone(),
+                    };
+                    let a_type = infer_expr_type(&a_expr, asm, &self.input_names);
+                    let b_type = infer_expr_type(&b_expr, asm, &self.input_names);
+                    let f64_path = a_type == PortType::F64 || b_type == PortType::F64;
+                    let widened_a = if f64_path && a_type == PortType::U64 {
+                        wrap_to_f64(a_expr.clone())
+                    } else { a_expr };
+                    let widened_b = if f64_path && b_type == PortType::U64 {
+                        wrap_to_f64(b_expr.clone())
+                    } else { b_expr };
+                    let func_name = if f64_path { "select_f64" } else { "select_u64" };
+                    let new_call = crate::dsl::ast::CallExpr {
+                        func: func_name.into(),
+                        args: vec![
+                            cond_arg,
+                            Arg::Positional(widened_a),
+                            Arg::Positional(widened_b),
+                        ],
+                        span: call.span,
+                    };
+                    return self.compile_binding(asm, targets, &Expr::Call(new_call));
+                }
+
                 let node_name = if targets.len() == 1 {
                     targets[0].clone()
                 } else {
@@ -417,6 +489,37 @@ impl Compiler {
                     BinOpKind::BitXor => ("u64_xor", false, false),
                     BinOpKind::Shl    => ("u64_shl", false, false),
                     BinOpKind::Shr    => ("u64_shr", false, false),
+                    // Comparison: pick u64 or f64 input variant. If
+                    // either operand is f64 we widen the u64 side via
+                    // ToF64 so both inputs share a type and the
+                    // f64-suffixed comparison node fires.
+                    BinOpKind::Eq | BinOpKind::Ne |
+                    BinOpKind::Lt | BinOpKind::Gt |
+                    BinOpKind::Le | BinOpKind::Ge => {
+                        let f64_path = lhs_type == PortType::F64 || rhs_type == PortType::F64;
+                        let prefix = if f64_path { "f64" } else { "u64" };
+                        let suffix = match op {
+                            BinOpKind::Eq => "eq",
+                            BinOpKind::Ne => "ne",
+                            BinOpKind::Lt => "lt",
+                            BinOpKind::Gt => "gt",
+                            BinOpKind::Le => "le",
+                            BinOpKind::Ge => "ge",
+                            _ => unreachable!(),
+                        };
+                        let name: &'static str = match (prefix, suffix) {
+                            ("u64", "eq") => "u64_eq", ("u64", "ne") => "u64_ne",
+                            ("u64", "lt") => "u64_lt", ("u64", "gt") => "u64_gt",
+                            ("u64", "le") => "u64_le", ("u64", "ge") => "u64_ge",
+                            ("f64", "eq") => "f64_eq", ("f64", "ne") => "f64_ne",
+                            ("f64", "lt") => "f64_lt", ("f64", "gt") => "f64_gt",
+                            ("f64", "le") => "f64_le", ("f64", "ge") => "f64_ge",
+                            _ => unreachable!(),
+                        };
+                        let widen_lhs = f64_path && lhs_type == PortType::U64;
+                        let widen_rhs = f64_path && rhs_type == PortType::U64;
+                        (name, widen_lhs, widen_rhs)
+                    }
                 };
 
                 // Compile each operand. Simple identifiers and literals

@@ -120,6 +120,461 @@ conversion function in its error message.
 
 ---
 
+## Input Validity Model: Unsafe-by-Default + Opt-in Guards
+
+GK runs with a two-layer contract for what a node assumes about
+its inputs, so the hot path stays branch-free:
+
+| Layer | Who trusts what | Cost |
+|-------|----------------|------|
+| Unsafe fast path *(default)* | `::new` trusts its constants; `eval` trusts its wires | Zero runtime checks |
+| Guarded path *(opt-in)* | Compiler composes an assertion in front of a panic-prone input; the original node still trusts its inputs | Only the assertion runs; the guarded node does no extra work |
+
+This is the same pattern Rust uses for `arr[i]` vs. `arr.get(i)`:
+the "strict" variant is not a separate node, it is the original
+node *assembled* with an assertion in front of it. The original
+node function stays untouched and fast.
+
+Two things enable this split:
+
+1. **Const Constraint Metadata.** Every `ParamSpec` can carry an
+   optional constraint the compiler checks *at assembly time*
+   before the node is constructed. If the literal violates the
+   constraint, the compile fails with a structured
+   `AssemblyError::BadConstant { node, param, reason }`. The
+   constructor itself never sees bad input and does not need to
+   check.
+
+2. **Assertion Functions (type + value).** For wire inputs, a
+   family of pass-through nodes performs the runtime check that
+   the original node assumes. These come in two flavours, both
+   registered like any other node:
+
+   - **Type assertion** — one per supported `PortType`. Asserts
+     the runtime value's variant matches the expected type. Used
+     when provenance can't prove the wire already carries the
+     right type (e.g. a dynamic `Json` navigation that is
+     *supposed* to yield a u64 but can't be proven to at compile
+     time).
+   - **Value assertion** — type-specific, parameterised by a
+     constraint (range, non-zero, non-empty, allowed set, spec
+     parse). Used where the downstream node's contract is
+     narrower than its declared wire type. Example: a `divide`
+     node requires a non-zero divisor; the value assertion is
+     `assert_u64_nonzero(x)` which panics on zero and otherwise
+     passes through.
+
+Both assertion families are ordinary GK nodes — they participate
+in the same graph, the same JIT lowering, the same diagnostics.
+They're distinguished only by being *auto-wired* by the compiler
+when strict wire mode is enabled.
+
+---
+
+## Const Constraint Metadata
+
+The vocabulary for constant-argument constraints is declarative:
+
+```rust
+pub enum ConstConstraint {
+    RangeU64 { min: u64, max: u64 },
+    RangeF64 { min: f64, max: f64 },
+    AllowedU64(&'static [u64]),
+    NonZeroU64,
+    NonEmptyStr,
+    StrParser(fn(&str) -> Result<(), String>),
+    PositiveFiniteF64,
+    FiniteF64,
+}
+```
+
+| Kind | Use for | Example node |
+|------|--------|--------------|
+| `RangeU64 { min, max }` | Integer bounded parameter | `discretize(range, buckets)` |
+| `RangeF64 { min, max }` | Probability, unit-interval, etc. | `unfair_coin(p)` — p ∈ [0, 1] |
+| `AllowedU64(&[u64])` | Enum-like integer choice | `format_u64(radix)` — radix ∈ {2, 8, 10, 16} |
+| `NonZeroU64` | Divisors, moduli, ranges | `mod(modulus)`, `div(divisor)`, `cycle_walk(range)`, `shuffle(size)` |
+| `NonEmptyStr` | String inputs that must be populated | `one_of_weighted(spec)` |
+| `StrParser(fn(&str) -> Result<(), String>)` | Structured spec strings | `weighted_u64("10:5;20:3")`, `histribution("50 25 13 12")`, `regex_match(pattern)` |
+| `PositiveFiniteF64` | Strictly-positive finite floats — distinct from `RangeF64` because the natural upper bound is `+∞` and `RangeF64` requires a finite max | `quantize(step)` |
+| `FiniteF64` | Floats where ±∞ / NaN would silently produce nonsense outputs | endpoint constants (`inv_lerp.a`, `remap.in_min`) once those nodes are FuncSig-registered |
+
+### Where the constraint lives today
+
+Constraints attach directly to `ParamSpec`:
+
+```rust
+ParamSpec {
+    name: "radix",
+    slot_type: SlotType::ConstU64,
+    required: false,
+    example: "10",
+    constraint: Some(ConstConstraint::AllowedU64(&[2, 8, 10, 16])),
+}
+```
+
+The factory walks each owning `FuncSig`'s `params` slice and
+applies every declared constraint to the corresponding positional
+const argument *before* `build_node` is called. On failure the
+compile fails with a structured `bad constant <func>: <reason>`
+message and the node is never constructed. Most call sites still
+have `constraint: None` — adding constraints is gradual; the
+fuzz test surfaces missing entries by triggering a constructor
+panic on a literal that should have been rejected.
+
+### Cross-param relational rules
+
+Some constraints span multiple constants (e.g. `n_of` requires
+`n ≤ m`, `in_range` requires `lo ≤ hi`). These can't be
+expressed by a per-`ParamSpec` constraint and live on the
+optional third argument to `register_nodes!`:
+
+```rust
+register_nodes!(signatures, build_node, validate_node);
+
+fn validate_node(name: &str, consts: &[ConstArg]) -> Result<(), String> {
+    match name {
+        "n_of" => {
+            let n = consts.first().map(|c| c.as_u64()).unwrap_or(1);
+            let m = consts.get(1).map(|c| c.as_u64()).unwrap_or(2);
+            if m == 0 { return Err("m must be > 0".into()); }
+            if n > m  { return Err(format!("n ({n}) must be <= m ({m})")); }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+```
+
+The factory runs the per-`ParamSpec` constraint pass first, then
+the per-module validator. Per-param checks declared in
+`ParamSpec.constraint` are the preferred form; the per-module
+hook is for cases that genuinely need access to multiple
+arguments at once.
+
+Modules that need neither pass use the two-argument
+`register_nodes!(signatures, build_node)` form and the factory
+skips the check.
+
+### Ownership rule
+
+Constructors stay infallible. The validator is the
+authoritative check; a node that forgets to declare a constraint
+is the bug surface, and the
+[fuzz test](../../nb-variates/tests/fuzz_type_adapters.rs) exists
+to find those gaps. When a random DAG triggers a constructor
+panic, the fix is adding the missing check, not making the
+constructor fallible.
+
+---
+
+## Type and Value Assertion Nodes
+
+Assertion nodes are pass-through guards the compiler can splice
+between a source and a sink. Each is an ordinary GK node. Naming
+convention: `assert_<type>[_<constraint>]`.
+
+### Type assertions (one per `PortType`)
+
+| Node | Signature | Purpose |
+|------|-----------|---------|
+| `assert_u64` | `u64 → u64` | Confirms the runtime `Value` variant is `U64` |
+| `assert_f64` | `f64 → f64` | Confirms `F64` |
+| `assert_bool` | `bool → bool` | Confirms `Bool` |
+| `assert_str` | `String → String` | Confirms `Str` |
+| `assert_bytes` | `Bytes → Bytes` | Confirms `Bytes` |
+| `assert_json` | `Json → Json` | Confirms `Json` |
+
+These are only meaningful where runtime typing can actually
+diverge from the static port type (JSON navigation, `Ext` unwraps,
+cross-adapter values). Where the source's output `PortType` is
+already known to equal the sink's input `PortType`, the compiler
+**skips the assertion** — zero cost, no node inserted.
+
+### Value assertions (type-specific, constraint-parameterised)
+
+One family per `PortType`, with a constraint constructor:
+
+| Node | Use |
+|------|-----|
+| `assert_u64_range(lo, hi)` | Downstream assumes value in `[lo, hi]` |
+| `assert_u64_nonzero` | Divisor / modulus / unsigned range |
+| `assert_u64_allowed(&[..])` | Enum-style value |
+| `assert_f64_range(lo, hi)` | Probability, unit interval |
+| `assert_f64_finite` | Rejects NaN / ±∞ before it poisons an accumulator |
+| `assert_str_non_empty` | Charsets, spec strings |
+| `assert_str_parses(fn)` | Downstream expects a particular string format |
+| … | One constraint variant per `ConstConstraint` shape |
+
+A node that would panic on a bad wire input declares the
+constraint on its *input port*, same vocabulary as
+`ConstConstraint`. In non-strict mode the constraint is
+documentation. In strict mode the compiler uses it to decide
+whether an assertion is needed.
+
+---
+
+## Module-Level Pragmas
+
+A module author can opt the whole `.gk` file into compile-time
+graph transforms with first-class `pragma` directives at the head
+of the source:
+
+```gk
+pragma strict_values
+pragma strict_types
+
+id := mod(hash(cycle), 1000)
+```
+
+| Pragma | Effect |
+|--------|--------|
+| `strict_types` | Auto-insert type assertion nodes on wires whose source can't be statically proven to deliver the right `PortType`. *Design target.* |
+| `strict_values` | Auto-insert value assertion nodes on wires whose downstream node declares a value constraint the source can't satisfy at compile time. |
+| `strict` | Convenience alias for both `strict_types` + `strict_values`. |
+
+### Syntax
+
+`pragma` is a reserved keyword in the GK grammar. The directive
+form is:
+
+```
+pragma <name>
+```
+
+Pragmas are first-class statements (`Statement::Pragma` in the
+AST), not comments. They participate in the same parser pass as
+binding declarations, so a pragma misnamed as a comment (`//
+pragma strict`) is just a comment with no effect — and the parser
+will reject `pragma <weird-token>` instead of silently ignoring
+it.
+
+Pragmas have no positional restriction in the grammar, but
+convention places them at the head of the file for readability
+and for the same reason Rust puts `#![attribute]` at the crate
+root. A pragma buried inside a binding block is still recognised;
+its effect is module-wide either way.
+
+### Forward compatibility
+
+Unrecognised pragmas don't block compilation. A newer module that
+declares `pragma some_future_feature` compiles cleanly on an
+older binary — the binary records a
+`CompileEvent::UnknownPragma` warning and continues. Recognised
+pragmas emit `CompileEvent::PragmaAcknowledged` (advisory) so
+`--diagnose` can report which transforms a module asked for.
+
+### Pragmas vs. CLI strict mode
+
+The `--strict` CLI flag (and `compile_gk_strict(...)`) and the
+existing checks above (config wire, input declaration, named
+arguments…) are session-level: every module compiled in that
+session sees them. Pragmas are module-level: a library module
+declares its own contract and gets the transforms regardless of
+how it's invoked. A module without pragmas compiled under
+`--strict` gets the session defaults; a module with
+`pragma strict` compiled without the CLI flag still gets its
+declared transforms. Both can be active at once — the union
+applies.
+
+---
+
+## Pragma Scope
+
+### What a "scope" is
+
+Pragmas attach to a GK **scope composition** boundary, not to
+inline boundaries. Module inlining (SRD 13b §"Inline") flattens
+the inner module's pragmas into the host's `PragmaSet` — they are
+additive contributions to the same scope, not a child scope.
+Scope composition (SRD 13b §"Scope composition") creates a real
+parent/child relationship: workload → phase → `for_each`
+iteration. Each compose step is its own [`PragmaSet`], its own
+`GkProgram`, its own state.
+
+[`PragmaSet`]: ../../nb-variates/src/dsl/pragmas.rs
+
+If you're confused about which combinator is at play, SRD 13b is
+the reference. Pragma scope rules apply only to the scope-
+composition mode — inlined pragmas don't trigger conflict
+detection because there is no inner/outer relationship after
+inlining.
+
+### Inheritance
+
+Each scope has its own `PragmaSet`, optionally chained to a
+parent. Lookups walk the chain: an inner `strict_values()` query
+returns true if *this* scope or any *enclosing* scope set it.
+`Arc<PragmaSet>` shares the parent cheaply across many child
+scopes (e.g. one workload scope feeding a fan-out of phase
+scopes).
+
+```text
+Workload scope          (PragmaSet { strict, parent: None })
+  │
+  ├─ Phase A scope      (PragmaSet { (none), parent: → workload })
+  │    └─ for_each      (PragmaSet { (none), parent: → phase A })
+  │
+  └─ Phase B scope      (PragmaSet { strict_types, parent: → workload })
+```
+
+Phase A inherits `strict` from the workload. Phase B inherits
+`strict` *and* adds its own `strict_types` (no conflict: same
+direction). Both `for_each` iterations compiled under Phase A
+inherit the chain.
+
+### Conflict resolution
+
+Two scopes "conflict" when they declare the same pragma name with
+different effective values (currently: different positional
+arguments; today's pragmas are presence-only so conflicts are
+degenerate). On conflict, the **outer scope wins** — the inner
+scope's value is overridden. The conflict surfaces as a
+diagnostic, not a resolution choice:
+
+| Compile mode | Conflict |
+|--------------|----------|
+| Non-strict | Warning event, outer's value applies, compile continues. |
+| `--strict` | Hard error: `pragma '<name>' conflict: outer (line N) overrides inner (line M)`. Modules under strict compilation must be internally consistent across the scope chain. |
+
+The reasoning: a phase that declares `pragma assert_for(beta)`
+when the workload already declared `pragma assert_for(alpha)` is
+either an oversight or an explicit attempt to override an
+authoritative outer policy. Either is a structural smell that
+the module author should address — silently picking one is the
+wrong default.
+
+### API
+
+The Rust-side surface is [`PragmaSet`]:
+
+```rust
+pub struct PragmaSet {
+    pub entries: Vec<Pragma>,
+    pub parent: Option<Arc<PragmaSet>>,
+}
+
+impl PragmaSet {
+    pub fn contains(&self, name: &str) -> bool;          // walks parent chain
+    pub fn strict_types(&self) -> bool;                  // walks parent chain
+    pub fn strict_values(&self) -> bool;                 // walks parent chain
+    pub fn unknown(&self) -> impl Iterator<Item = &Pragma>;  // local only
+    pub fn attach_to(self, outer: Arc<PragmaSet>)
+        -> (PragmaSet, Vec<PragmaConflict>);
+}
+```
+
+Callers at scope boundaries (`nb-activity` for workload → phase →
+iteration) build the inner `PragmaSet`, call `attach_to(outer)`,
+log/raise on the returned conflicts, and feed the attached
+result into the inner kernel's compile.
+
+### Status
+
+- **Today:** pragma scope and conflict-detection API in place
+  (`PragmaSet { parent }` + `attach_to`). Single-scope use is
+  fully wired: the lib reads pragmas from each kernel's source
+  AST, applies strict-wire flags, walks the chain at lookup.
+- **Pending:** `nb-activity` adoption — the workload runner does
+  not yet call `attach_to` at phase / iteration boundaries. Until
+  it does, every kernel sees only its own pragmas. The conflict-
+  detection path is unit-tested but not yet exercised end-to-end
+  across an `nb-activity` scope chain.
+
+---
+
+## Strict Wire Mode
+
+> **Status:** *design target.* The const-constraint half of the
+> contract above is implemented today; the wire-assertion half
+> below ships behind the same `ConstConstraint` vocabulary once a
+> workload first needs a value guard on a wire input. The
+> machinery isn't built speculatively — see SRD 15
+> §"Implementation Status" and the [validation-scope memory
+> note](../../docs/internals) for the deliberately-narrow scope.
+> The `// @pragma: strict_values` / `strict_types` / `strict`
+> declarations below are how a module *requests* this mode — they
+> are recognised today and recorded in the compile event log; the
+> actual auto-insertion of assertion nodes lands with M2.
+
+Strict wire mode extends strict compilation to *wire* inputs that
+declare value constraints. When the compiler cannot prove the
+source will always satisfy the sink's constraint, it auto-wires
+the corresponding assertion node between them.
+
+| Mode | Wire → constrained input |
+|------|--------------------------|
+| Non-strict | No assertion. The sink's `eval` will panic on bad input. |
+| Strict wires | Assertion node auto-inserted in front of the sink. Bad input produces a structured runtime error, not a panic. |
+
+The compiler *skips* inserting an assertion in any of these cases
+— each is a compile-time proof that the check is redundant:
+
+1. **Static type match.** The source's declared output `PortType`
+   already equals the sink's declared input `PortType`. This
+   covers the majority of wires. Type assertions exist for the
+   minority where the runtime value's variant could diverge from
+   the declared type (dynamic JSON navigation, `Ext` unwraps,
+   cross-adapter handoffs). When the type system already proves
+   alignment, no `assert_<type>` is inserted — both in strict and
+   non-strict mode, at zero runtime cost. The same applies *after*
+   an auto-inserted type adapter: once `__u64_to_f64` has run, the
+   downstream wire is statically `F64`, and no `assert_f64` is
+   needed on top of it.
+2. **Constant source.** Source is a `ConstNode` whose literal
+   value has already been validated against the sink's constraint
+   at assembly time (so the value is known-good at compile time).
+3. **Upstream assertion.** Source is itself an assertion node of
+   the same or stronger constraint on the same type.
+4. **Fusion-inherited proof.** The fusion layer collapses chains
+   where an earlier node's output range is provably a subset of
+   the sink's constraint (e.g. `mod(x, 1000)` into a consumer
+   that wants u64 ∈ [0, 10000)).
+
+Skip decisions are recorded as advisory events too
+(`CompileEvent::AssertionSkipped { from_node, to_node, reason }`)
+so module authors can verify the compiler actually proved what
+they think it proved, and so regressions in type-inference show
+up as unexpected assertion insertions rather than silent slow-downs.
+
+Every assertion the compiler *does* insert is emitted as a
+`CompileEvent::AssertionInserted { from_node, to_node, kind }`
+advisory, symmetrically with `TypeAdapterInserted`. Tooling
+(`--diagnose`, TUI, web API) can surface the list so module
+authors can see where their contract was weaker than strict mode
+expected.
+
+---
+
+## Fuzz Test Invariants (SRD ties)
+
+The type-adapter-transform fuzz test
+(`nb-variates/tests/fuzz_type_adapters.rs`) is the backstop for
+this whole model. Its invariants formalise the contract:
+
+1. **No compiler panics.** For any random DAG, the compiler
+   returns `Ok` or a structured `AssemblyError`. A panic means
+   const constraint metadata is missing for some node.
+2. **Recognised adapters only.** Every `TypeAdapterInserted` event
+   names a `(from, to)` pair that exists in the auto-adapter
+   table. A new unknown label means the adapter table and the
+   test's mirror drifted.
+3. **Const violations fail at assembly.** When the generator
+   produces a literal outside a declared `ConstConstraint`, the
+   compile result is `AssemblyError::BadConstant`, not a panic
+   and not silent success.
+4. **Strict wires are panic-free.** When the fuzzer enables
+   strict wire mode, no random DAG can trigger a runtime panic —
+   every value-constraint breach surfaces as a handled runtime
+   error from the auto-inserted assertion.
+
+Failing invariant 1 or 3 points at missing `ConstConstraint`
+metadata. Failing 2 points at the adapter table. Failing 4 points
+at either a missing wire-input constraint declaration or a missing
+assertion variant.
+
+---
+
 ## Unqualified Bind Points (design target)
 
 In op templates, `{name}` tries multiple resolution sources in
@@ -197,3 +652,14 @@ the meaning of each parameter.
 | Unqualified bind points | Design target | Requires nb-activity changes |
 | Undeclared string refs | Design target | Requires string template resolution changes |
 | Named function arguments | Implemented | Already enforced in module calls |
+| Const constraint metadata | Implemented | `ConstConstraint` field on `ParamSpec`; factory walks each owning `FuncSig.params` and rejects with `bad constant <func>: <reason>`. Cross-param relational rules use the per-module `validate_node` hook on `register_nodes!`. |
+| Module-level pragmas (grammar) | Implemented | `pragma <name>` is a first-class GK statement (`Statement::Pragma`). Replaces the earlier `// @pragma:` comment-scrape form. |
+| Pragma `PragmaAcknowledged` / `UnknownPragma` events | Implemented | Recognised pragmas emit advisory events; unknown pragmas emit warnings, never blocking compile. |
+| Type assertion nodes | Implemented | `AssertType` (one per `PortType`) in `nodes::assertions`. Pass-through with runtime variant check; panic on mismatch. |
+| Value assertion nodes | Implemented | `AssertValue` parameterised by `ConstConstraint`. Reuses the const-constraint vocabulary on a `Port`'s wire-input contract. |
+| Strict wire mode (single-scope) | Implemented | `GkAssembler::set_strict_wires(types, values)`. Pragma-driven via `pragma strict_values` / `strict_types` / `strict`. Compiler auto-inserts `AssertValue` for wires whose sink declares a `Port::with_constraint(...)` and whose source isn't a constant or upstream assertion. |
+| Skip-rules: const source, upstream assertion | Implemented | The compiler skips the assertion when the source is a no-wire-input constant node or an existing assertion. Static type match is handled by the existing adapter pass. |
+| `AssertionInserted` / `AssertionSkipped` events | Implemented | Symmetric advisories alongside `TypeAdapterInserted`; reason field names which skip rule applied. |
+| Pragma scope stack + `PragmaSet { parent }` | Implemented | Lookups walk the chain; `attach_to(outer)` returns conflicts. Single-scope today; `nb-activity` adoption at phase / iteration boundaries is pending. |
+| Skip-rule: fusion-derived bound | Design target | The fusion pass doesn't yet expose its inferred output ranges, so `mod(x, 1000)` feeding a constraint of u64 ∈ [0, 10000) still gets an assertion under strict_values. Wiring this is a follow-up. |
+| First wire-typed dynamic divisor (`mod_wire` / `div_wire`) | Implemented | Nodes in `nodes::arithmetic` declare a `NonZeroU64` constraint on the divisor wire. End-to-end fuzz test confirms strict_values inserts the assertion when the source isn't a const. |

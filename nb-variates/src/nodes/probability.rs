@@ -637,7 +637,7 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "50/50 binary outcome (0 or 1)",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -648,8 +648,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "biased coin: 1 with probability p, else 0",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "p", slot_type: SlotType::ConstF64, required: true, example: "0.5" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "p", slot_type: SlotType::ConstF64, required: true, example: "0.5",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::RangeF64 { min: 0.0, max: 1.0 }) },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -660,9 +661,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "binary conditional: if_true when cond != 0, else if_false",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "cond", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "if_true", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "if_false", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "cond", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "if_true", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "if_false", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -673,8 +674,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "like unfair_coin but returns f64 (0.0 or 1.0)",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "p", slot_type: SlotType::ConstF64, required: true, example: "0.5" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "p", slot_type: SlotType::ConstF64, required: true, example: "0.5",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::RangeF64 { min: 0.0, max: 1.0 }) },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -685,9 +687,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "exactly n of every m inputs return 1",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "n", slot_type: SlotType::ConstU64, required: true, example: "100" },
-                ParamSpec { name: "m", slot_type: SlotType::ConstU64, required: true, example: "10" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "n", slot_type: SlotType::ConstU64, required: true, example: "100", constraint: None },
+                ParamSpec { name: "m", slot_type: SlotType::ConstU64, required: true, example: "10", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -698,8 +700,8 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "uniform selection from N constant values",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "values", slot_type: SlotType::ConstStr, required: true, example: "\"a,b,c\"" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "values", slot_type: SlotType::ConstStr, required: true, example: "\"a,b,c\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -710,8 +712,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "weighted selection from 'val:weight,...' spec",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true, example: "\"1:10,2:20,3:30\"" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true, example: "\"1:10,2:20,3:30\"",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::StrParser(validate_one_of_weighted_spec)) },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -722,9 +725,10 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "weighted mix: a*(1-mix) + b*mix",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "mix", slot_type: SlotType::ConstF64, required: true, example: "0.5" },
+                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "mix", slot_type: SlotType::ConstF64, required: true, example: "0.5",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::RangeF64 { min: 0.0, max: 1.0 }) },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -735,8 +739,8 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "coalesce: return value if set, fallback if None",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "value", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "fallback", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "value", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "fallback", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -778,7 +782,78 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
 }
 
 
-crate::register_nodes!(signatures, build_node);
+/// Assembly-time constant validation for this module's nodes.
+///
+/// Each arm declares the constraints that let the corresponding
+/// `::new` stay infallible and branch-free (SRD 15 §"Const
+/// Constraint Metadata"). The factory calls this before `build_node`.
+pub(crate) fn validate_node(
+    name: &str,
+    consts: &[crate::dsl::factory::ConstArg],
+) -> Result<(), String> {
+    match name {
+        // n ≤ m and m > 0 — relational, not per-param. Stays
+        // imperative because no `ConstConstraint` can express a
+        // cross-arg comparison.
+        "n_of" => {
+            let n = consts.first().map(|c| c.as_u64()).unwrap_or(1);
+            let m = consts.get(1).map(|c| c.as_u64()).unwrap_or(2);
+            if m == 0 {
+                Err("m must be > 0".into())
+            } else if n > m {
+                Err(format!("n ({n}) must be <= m ({m})"))
+            } else {
+                Ok(())
+            }
+        }
+        // `one_of` requires at least one constant value but is
+        // declared with a single-arg `ParamSpec` that only covers
+        // the first one — variadic emptiness can't ride on a
+        // per-param constraint.
+        "one_of" => {
+            if consts.is_empty() {
+                Err("values must be non-empty".into())
+            } else {
+                Ok(())
+            }
+        }
+        // `unfair_coin`, `chance`, `blend` use `RangeF64` on their
+        // p / mix `ParamSpec`. `one_of_weighted` uses `StrParser`.
+        // Pass 1 enforces those — no need to re-check here.
+        _ => Ok(()),
+    }
+}
+
+/// Shared spec-format check for `one_of_weighted` — validates
+/// `"value:weight[;value:weight...]"` with positive real weights.
+fn validate_one_of_weighted_spec(spec: &str) -> Result<(), String> {
+    let mut saw_any = false;
+    let mut total = 0.0f64;
+    for elem in spec.split([';', ',']) {
+        let elem = elem.trim();
+        if elem.is_empty() { continue; }
+        let parts: Vec<&str> = elem.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            return Err(format!("expected 'value:weight', got '{elem}'"));
+        }
+        let w: f64 = parts[1].parse()
+            .map_err(|_| format!("invalid weight '{}'", parts[1]))?;
+        if w <= 0.0 {
+            return Err(format!("weight must be positive, got {w}"));
+        }
+        saw_any = true;
+        total += w;
+    }
+    if !saw_any {
+        return Err("spec must be non-empty".into());
+    }
+    if total <= 0.0 {
+        return Err(format!("total weight must be > 0, got {total}"));
+    }
+    Ok(())
+}
+
+crate::register_nodes!(signatures, build_node, validate_node);
 #[cfg(test)]
 mod tests {
     use super::*;

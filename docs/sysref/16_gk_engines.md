@@ -190,6 +190,18 @@ The assembler auto-inserts widening adapters when types mismatch
 (e.g., U32→U64, I32→F64, F32→F64). Narrowing requires explicit
 cast functions — no implicit precision loss.
 
+Adapters are the *type-coercion* half of the assembler's
+input-validity model. The *value-validity* half is handled by
+opt-in assertion nodes under strict wire mode — the assembler
+skips every assertion whose redundancy it can prove statically
+(matched types after adapter insertion, constant sources
+validated at assembly time, fusion-derived value bounds). See
+[SRD 15 §"Input Validity Model" and §"Strict Wire Mode"](15_strict_mode.md#input-validity-model-unsafe-by-default--opt-in-guards)
+for the assertion family, the const constraint metadata on
+`ParamSpec`, and the `AssertionInserted` / `AssertionSkipped`
+diagnostic events the assembler emits alongside
+`TypeAdapterInserted`.
+
 ---
 
 ## Benchmarking

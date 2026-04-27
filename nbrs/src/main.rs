@@ -18,13 +18,22 @@ mod run;
 mod web_push;
 
 fn main() {
-    // Handle shell completion callbacks before anything else.
-    let tree = cli::cli_tree();
-    if veks_completion::handle_complete_env("nbrs", &tree) {
-        std::process::exit(0);
-    }
-
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // Shell completion: share the same harness cassnbrs uses so
+    // `workload=<TAB>`, `scenario=<TAB>`, `adapter=<TAB>`, and
+    // param-name completion behave identically across personas.
+    // Handles `completions` (preamble / --shell bash) and the hidden
+    // `__complete` callback. Must run before any other work so tab
+    // presses never touch adapters, files, or stderr.
+    let completion_spec = nb_activity::completions::CompletionSpec {
+        binary_name: "nbrs",
+        subcommands: &["run", "describe", "bench", "plot", "web", "completions"],
+        run_params: nb_activity::runner::KNOWN_PARAMS,
+    };
+    if nb_activity::completions::handle_if_match(&completion_spec, &args) {
+        return;
+    }
 
     if args.is_empty() {
         cli::print_usage();
@@ -42,9 +51,6 @@ fn main() {
         }
         "plot" => {
             plot::plot_command(&args[1..]);
-        }
-        "completions" => {
-            completions_command(&args);
         }
         "web" => {
             daemon::web_command(&args);
@@ -81,16 +87,3 @@ fn main() {
     }
 }
 
-fn completions_command(args: &[String]) {
-    let shell = args.iter().find_map(|a| a.strip_prefix("--shell="))
-        .or_else(|| args.iter().skip_while(|a| *a != "--shell").nth(1).map(|s| s.as_str()))
-        .or_else(|| args.get(1).map(|s| s.as_str()))
-        .unwrap_or("bash");
-    match shell {
-        "bash" => veks_completion::print_bash_script("nbrs"),
-        other => {
-            eprintln!("Shell '{other}' is not yet supported.");
-            eprintln!("For bash: eval \"$(nbrs completions)\"");
-        }
-    }
-}

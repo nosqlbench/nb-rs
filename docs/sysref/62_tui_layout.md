@@ -236,6 +236,44 @@ structure, so the same summary can drive Shift+P captures,
 report artifacts, or an offline replay without the TUI being
 in the loop.
 
+### Phase status glyphs and the running spinner
+
+Every phase row in the scenario tree carries a single-character
+status glyph — the redundant-encoding partner to its name's
+health color. The glyph is read first by colorblind users and
+last (as a confirming signal) by everyone else.
+
+| Status | Glyph | Color rule |
+|--------|-------|-----------|
+| Pending | `○` | dim |
+| Running | animated Braille spinner (see below) | health tint |
+| Completed | `✓` | health tint (green / orange / red by error rate) |
+| Failed   | `✗` | hard red |
+
+The Running glyph is an animated rotation drawn from
+`throbber_widgets_tui::symbols::throbber::BRAILLE_SIX` rather
+than a static `▶`. Two properties matter:
+
+- **4 Hz cadence, wall-clock-driven.** The rendered frame is
+  `((SystemTime::now() / 250 ms) as usize) % N` — derived from
+  the wall clock, not from a per-renderer counter. This means
+  a frame change always appears at every tick (the TUI redraws
+  at 4 Hz), not on a quarter of them.
+- **Lockstep across concurrent phases.** Because the index is
+  derived from the same global clock, every Running phase
+  shows the *same* spinner frame on every render. The eye
+  reads the rotation as a single unified "the system is
+  working" cue rather than several phases stuttering against
+  each other on different cycles.
+
+`BRAILLE_SIX` was chosen for its dense rotation feel and its
+graceful degradation: on partial-glyph fonts it still renders
+as recognizable dots rather than a missing-character box.
+
+A helper `spinner_frame() -> &'static str` in `nb-tui::app`
+encapsulates this — there is no spinner state on `App` or
+`RunState`; the function is pure over `SystemTime::now()`.
+
 ### "Scenario done?" is a component-tree query
 
 The waiting-vs-done distinction under Focus LOD is not a

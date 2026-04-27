@@ -552,7 +552,7 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Projects a [dynamic control](SRD 23) into the GK graph. Walks\nup the component tree from the session root, honors branch\nscope, and returns the control's reified gauge projection\n(f64). Missing controls and un-projected values return 0.0.\nParameters:\n  name — control name to resolve",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"" },
+                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -563,7 +563,7 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Sugar for casting control(name) from f64 to u64. Negative\ngauge values saturate at 0; missing controls return 0.\nPrefer over `f64_to_u64(control(name))` for clarity.\nParameters:\n  name — control name to resolve",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"concurrency\"" },
+                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"concurrency\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -574,7 +574,7 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Reads the control's reified-gauge projection and returns\ntrue iff the value is non-zero. Missing controls / unreified\ncontrols return false.\nParameters:\n  name — control name to resolve",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"enabled\"" },
+                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"enabled\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -585,7 +585,7 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Reads the erased-control value_string() rendering. Useful\nfor enum-valued or string-valued controls (error policy,\nlog level). Missing controls return \"\".\nParameters:\n  name — control name to resolve",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"log_level\"" },
+                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"log_level\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -596,8 +596,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Submits an f64 write against a named dynamic control. The\nwrite dispatches on a background tokio task; the fiber does\nnot block. The target control must declare a from_f64\nconverter (see ControlBuilder::from_f64) or the write is\nrejected with a ValidationFailed message in the log.\nReturns 1 if dispatched, 0 if no session root is installed.\nParameters:\n  name  — control name to resolve (walk-up from session root)\n  value — f64 wire; the control's converter maps this to its\n          native type (e.g. f64 → u32 for concurrency)",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"" },
-                ParamSpec { name: "value", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"", constraint: None },
+                ParamSpec { name: "value", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,

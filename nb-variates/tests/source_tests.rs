@@ -83,6 +83,70 @@ fn nested_dot_in_function_arg() {
 }
 
 // =========================================================================
+// vectordata_* cursor sugar
+// =========================================================================
+
+#[test]
+fn vectordata_source_rejects_unknown_facet() {
+    // Non-"base" / non-"query" facet should produce a structured
+    // error before compilation hits any vectordata I/O.
+    let src = r#"cursor row = vectordata_source("example", "label_00", "bogus")
+id := row.ordinal"#;
+    let err = compile_gk(src).unwrap_err();
+    assert!(
+        err.contains("facet must be") && err.contains("bogus"),
+        "expected facet validation error, got: {err}",
+    );
+}
+
+#[test]
+fn vectordata_source_rejects_non_string_args() {
+    let src = r#"cursor row = vectordata_source(42, "label_00", "base")
+id := row.ordinal"#;
+    let err = compile_gk(src).unwrap_err();
+    assert!(
+        err.contains("string literal"),
+        "expected string-literal error, got: {err}",
+    );
+}
+
+#[test]
+fn vectordata_source_requires_three_args() {
+    // Third arg (facet) missing — validation should reject with a
+    // string-literal error rather than panic on out-of-bounds args.
+    let src = r#"cursor row = vectordata_source("example", "label_00")
+id := row.ordinal"#;
+    let err = compile_gk(src).unwrap_err();
+    assert!(
+        err.contains("string literal") || err.contains("facet"),
+        "expected validation error, got: {err}",
+    );
+}
+
+#[test]
+fn vectordata_base_rejects_non_string_args() {
+    // Facet-baked shortcut: only dataset + profile required.
+    let src = r#"cursor row = vectordata_base("example", 7)
+id := row.ordinal"#;
+    let err = compile_gk(src).unwrap_err();
+    assert!(
+        err.contains("string literal"),
+        "expected string-literal error, got: {err}",
+    );
+}
+
+#[test]
+fn vectordata_query_requires_two_args() {
+    let src = r#"cursor q = vectordata_query("example")
+id := q.ordinal"#;
+    let err = compile_gk(src).unwrap_err();
+    assert!(
+        err.contains("string literal"),
+        "expected string-literal error, got: {err}",
+    );
+}
+
+// =========================================================================
 // Adversarial parsing: edge cases
 // =========================================================================
 

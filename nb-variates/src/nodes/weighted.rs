@@ -348,8 +348,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "weighted string selection from inline spec",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true, example: "\"1:10,2:20,3:30\"" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true, example: "\"1:10,2:20,3:30\"",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::StrParser(validate_weighted_str_spec)) },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -360,8 +361,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "weighted u64 selection from inline spec",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true, example: "\"1:10,2:20,3:30\"" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "spec", slot_type: SlotType::ConstStr, required: true, example: "\"1:10,2:20,3:30\"",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::StrParser(validate_weighted_u64_spec)) },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -372,9 +374,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "weighted u64 selection from inline weight/value pairs",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "weight", slot_type: SlotType::ConstF64, required: true, example: "1.0" },
-                ParamSpec { name: "value", slot_type: SlotType::ConstU64, required: true, example: "100" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "weight", slot_type: SlotType::ConstF64, required: true, example: "1.0", constraint: None },
+                ParamSpec { name: "value", slot_type: SlotType::ConstU64, required: true, example: "100", constraint: None },
             ],
             arity: Arity::VariadicGroup {
                 group: &[SlotType::ConstF64, SlotType::ConstU64],
@@ -388,8 +390,8 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "weighted string selection with dynamic weight spec (Config wire)",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "selector", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "weights_spec", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "selector", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "weights_spec", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -431,7 +433,92 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
 }
 
 
-crate::register_nodes!(signatures, build_node);
+/// Assembly-time constant validation for weighted-selection nodes.
+///
+/// The spec parsers in this module assert on malformed input. The
+/// validator runs those assertions up front so bad constants are
+/// rejected *before* `::new` is called (SRD 15 §"Const Constraint
+/// Metadata").
+pub(crate) fn validate_node(
+    name: &str,
+    consts: &[crate::dsl::factory::ConstArg],
+) -> Result<(), String> {
+    match name {
+        // `weighted_pick` is variadic positional pairs — Pass 1
+        // sees a single ParamSpec, so its emptiness / parity /
+        // per-pair finite-positive-weight checks have to live here.
+        "weighted_pick" => {
+            if consts.is_empty() {
+                return Err("weighted_pick requires at least one (weight, value) pair".into());
+            }
+            if !consts.len().is_multiple_of(2) {
+                return Err(format!(
+                    "weighted_pick needs an even number of constants (weight/value pairs), got {}",
+                    consts.len(),
+                ));
+            }
+            for (i, chunk) in consts.chunks(2).enumerate() {
+                let w = chunk[0].as_f64();
+                if !(w.is_finite()) || w <= 0.0 {
+                    return Err(format!("pair {i}: weight must be a positive finite f64, got {w}"));
+                }
+            }
+            Ok(())
+        }
+        // `weighted_strings` and `weighted_u64` declare their
+        // spec parsers as `StrParser` constraints on the `spec`
+        // ParamSpec; Pass 1 enforces them.
+        _ => Ok(()),
+    }
+}
+
+fn validate_weighted_str_spec(spec: &str) -> Result<(), String> {
+    let mut any = false;
+    for elem in spec.split([';', ',']) {
+        let elem = elem.trim();
+        if elem.is_empty() { continue; }
+        let parts: Vec<&str> = elem.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            return Err(format!("expected 'value:weight', got '{elem}'"));
+        }
+        let w: f64 = parts[1].parse()
+            .map_err(|_| format!("invalid weight '{}'", parts[1]))?;
+        if w <= 0.0 {
+            return Err(format!("weight must be positive, got {w}"));
+        }
+        any = true;
+    }
+    if !any {
+        return Err("spec must be non-empty".into());
+    }
+    Ok(())
+}
+
+fn validate_weighted_u64_spec(spec: &str) -> Result<(), String> {
+    let mut any = false;
+    for elem in spec.split([';', ',']) {
+        let elem = elem.trim();
+        if elem.is_empty() { continue; }
+        let parts: Vec<&str> = elem.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            return Err(format!("expected 'value:weight', got '{elem}'"));
+        }
+        parts[0].parse::<u64>()
+            .map_err(|_| format!("invalid u64 value '{}'", parts[0]))?;
+        let w: f64 = parts[1].parse()
+            .map_err(|_| format!("invalid weight '{}'", parts[1]))?;
+        if w <= 0.0 {
+            return Err(format!("weight must be positive, got {w}"));
+        }
+        any = true;
+    }
+    if !any {
+        return Err("spec must be non-empty".into());
+    }
+    Ok(())
+}
+
+crate::register_nodes!(signatures, build_node, validate_node);
 #[cfg(test)]
 mod tests {
     use super::*;

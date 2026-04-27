@@ -45,6 +45,11 @@ pub fn build_router(broadcast: MetricsBroadcast) -> Router {
         // tagged with `ControlOrigin::Api { source }`.
         .route("/api/controls", get(routes::list_controls))
         .route("/api/control/{name}", post(routes::set_control))
+        // Scenario / scope tree (SRD 18b). Returns the running
+        // session's scene tree as JSON for renderers that want
+        // hierarchical structure (collapsing scopes, scope-level
+        // aggregate status, etc.).
+        .route("/api/scope-tree", get(routes::scope_tree))
         // WebSocket metric stream
         .route("/ws/metrics", get(ws::metrics_ws))
         // Shared state & middleware

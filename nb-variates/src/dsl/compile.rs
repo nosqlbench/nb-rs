@@ -175,10 +175,51 @@ pub fn compile_gk_strict(source: &str, source_dir: Option<&Path>, strict: bool) 
 pub fn compile_gk_with_log(source: &str, log: &mut super::events::CompileEventLog) -> Result<GkKernel, String> {
     let tokens = lexer::lex(source)?;
     let ast = parser::parse(tokens)?;
+    let pragmas = super::pragmas::collect_from_ast(&ast);
+    record_pragma_events(&pragmas, log);
     let mut compiler = Compiler::new(None, false);
     compiler.source_text = source.to_string();
-    let asm = compiler.build_assembler(&ast)?;
+    compiler.pragmas = pragmas;
+    let mut asm = compiler.build_assembler(&ast)?;
+    asm.set_strict_wires(compiler.pragmas.strict_types(), compiler.pragmas.strict_values());
     asm.compile_with_log(Some(log)).map_err(|e| e.to_string())
+}
+
+/// Scan the source for module-level `// @pragma: …` directives and
+/// record one event per pragma in the supplied log:
+///
+/// - Recognised pragmas → `PragmaAcknowledged` (advisory).
+/// - Unrecognised pragmas → `UnknownPragma` (warning) — pragmas are
+///   forward-compatible, so the compile keeps going.
+///
+/// Hooked into every `compile_gk_with_log`-shaped entry point. The
+/// extracted [`PragmaSet`] can also be re-fetched directly via
+/// [`crate::dsl::pragmas::extract_pragmas`] when downstream graph
+/// transforms need it.
+///
+/// [`PragmaSet`]: crate::dsl::pragmas::PragmaSet
+/// Emit `PragmaAcknowledged` (advisory) for recognised pragma
+/// names and `UnknownPragma` (warning) for the rest. Forward-
+/// compatible: an unknown pragma never blocks compilation.
+pub(crate) fn record_pragma_events(
+    set: &super::pragmas::PragmaSet,
+    log: &mut super::events::CompileEventLog,
+) {
+    use super::events::CompileEvent;
+    for entry in &set.entries {
+        let known = matches!(entry.name.as_str(), "strict_types" | "strict_values" | "strict");
+        if known {
+            log.push(CompileEvent::PragmaAcknowledged {
+                name: entry.name.clone(),
+                line: entry.line,
+            });
+        } else {
+            log.push(CompileEvent::UnknownPragma {
+                name: entry.name.clone(),
+                line: entry.line,
+            });
+        }
+    }
 }
 
 /// Compile with full diagnostics: errors, warnings, suggestions.
@@ -257,6 +298,16 @@ fn positional_int_lit(arg: &crate::dsl::ast::Arg) -> Option<u64> {
     }
 }
 
+/// Extract a string literal from an optional positional argument.
+/// Re-exported for cursor-sugar handlers in node modules that
+/// validate string-literal-only constructor args.
+pub fn positional_str_lit(arg: Option<&crate::dsl::ast::Arg>) -> Option<String> {
+    match arg? {
+        crate::dsl::ast::Arg::Positional(crate::dsl::ast::Expr::StringLit(s, _)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
 /// Compile a parsed AST into a runtime kernel.
 pub fn compile_ast(file: &GkFile) -> Result<GkKernel, String> {
     compile_ast_with_path(file, None)
@@ -290,6 +341,10 @@ fn compile_ast_strict_with_source(
 ) -> Result<GkKernel, String> {
     let mut compiler = Compiler::new(source_dir.map(|p| p.to_path_buf()), strict);
     compiler.source_text = source.to_string();
+    // Pragmas affect strict-wire mode even when no event log is
+    // supplied — collect them from the AST so library callers
+    // that go through `compile_gk_with_path` still honour them.
+    compiler.pragmas = super::pragmas::collect_from_ast(file);
     compiler.compile(file)
 }
 
@@ -323,6 +378,10 @@ pub(super) struct Compiler {
     pub(super) cursor_limit: Option<u64>,
     /// Diagnostic context label.
     context_label: String,
+    /// Module-level pragmas extracted from the source. Drive the
+    /// assembler's `strict_types` / `strict_values` flags
+    /// (SRD 15 §"Module-Level Pragmas" + §"Strict Wire Mode").
+    pub(super) pragmas: super::pragmas::PragmaSet,
 }
 
 /// Records a cursor whose `range(...)` bounds reference const
@@ -354,6 +413,7 @@ impl Compiler {
             cursor_schemas: Vec::new(),
             deferred_extents: Vec::new(),
             cursor_limit: None,
+            pragmas: super::pragmas::PragmaSet::default(),
         }
     }
 
@@ -371,6 +431,7 @@ impl Compiler {
             cursor_schemas: Vec::new(),
             deferred_extents: Vec::new(),
             cursor_limit: None,
+            pragmas: super::pragmas::PragmaSet::default(),
         }
     }
 
@@ -379,11 +440,23 @@ impl Compiler {
     fn process_cursor(&mut self, asm: &mut GkAssembler, decl: &crate::dsl::ast::CursorDecl) -> Result<(), String> {
         let source_name = &decl.name;
 
+        // Cursor-sugar dispatch: any node module can register a
+        // handler that recognizes a non-`range` constructor (e.g.
+        // `vectordata_base("ds", "label_00")`) and rewrites it into
+        // a synthetic `range(...)` plus a list of aux bindings to
+        // emit after input ports are wired. The core stays
+        // generic — nothing here knows that vectordata exists.
+        // See `dsl::cursor_sugar` for the registry mechanism.
+        let sugar = crate::dsl::cursor_sugar::dispatch(source_name, &decl.constructor)?;
+        let effective_constructor = match &sugar {
+            Some(s) => s.effective_constructor.clone(),
+            None => decl.constructor.clone(),
+        };
+
         // All sources get an "ordinal" projection.
-        let projections = vec![
+        let mut projections = vec![
             ("ordinal".to_string(), crate::node::PortType::U64),
         ];
-        // TODO: dataset_source constructors add vector/metadata projections
 
         // Determine extent from constructor args. Three cases per arg:
         //   1. Integer literal → use directly
@@ -396,7 +469,7 @@ impl Compiler {
         // routine reads the folded values after compilation and updates
         // the schema's extent in place.
         let mut deferred: Option<(Option<u64>, String, Option<u64>, String)> = None;
-        let extent = match &decl.constructor {
+        let extent = match &effective_constructor {
             crate::dsl::ast::Expr::Call(call) if call.func == "range" && call.args.len() >= 2 => {
                 let start_literal = positional_int_lit(&call.args[0]);
                 let end_literal = positional_int_lit(&call.args[1]);
@@ -454,6 +527,24 @@ impl Compiler {
                 vec![WireRef::input(&input_name)],
             );
             asm.add_output(&node_name, WireRef::node(&node_name));
+        }
+
+        // Apply any aux bindings the sugar handler asked for.
+        // Bindings whose `projection` is `Some` are also published
+        // as cursor projections — both pinned on the schema and
+        // exposed as kernel outputs the runtime can read.
+        if let Some(sugar) = sugar {
+            for aux in sugar.aux_bindings {
+                self.compile_binding(asm, &[aux.name.clone()], &aux.value)
+                    .map_err(|e| format!(
+                        "cursor '{source_name}': failed to compile aux binding '{}': {e}",
+                        aux.name,
+                    ))?;
+                if let Some((field, port_type)) = aux.projection {
+                    projections.push((field, port_type));
+                    asm.add_output(&aux.name, WireRef::node(&aux.name));
+                }
+            }
         }
 
         // If a limit is set, insert a limit() node that shadows the cursor wire.
@@ -524,13 +615,14 @@ impl Compiler {
                     Statement::ExternPort(p) => vec![p.name.clone()],
                     Statement::Coordinates(_, _) => vec![],
                     Statement::Cursor(_) => vec![],
+                    Statement::Pragma { .. } => vec![],
                 }
             }).collect();
 
             let mut referenced: HashSet<String> = HashSet::new();
             for stmt in &file.statements {
                 let expr = match stmt {
-                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) => continue,
+                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
                     Statement::InitBinding(b) => &b.value,
                     Statement::CycleBinding(b) => &b.value,
                 };
@@ -546,7 +638,21 @@ impl Compiler {
 
         // Zero inferred inputs means all bindings are constants — valid.
 
+        // Pragmas were already collected from the AST by the
+        // top-level compile entry points. If a caller bypasses
+        // those (custom Compiler invocation), populate from this
+        // AST as a last resort so the strict-wire flags below
+        // still reflect the source.
+        if self.pragmas.entries.is_empty() {
+            self.pragmas = super::pragmas::collect_from_ast(file);
+        }
+
         let mut asm = GkAssembler::new(self.input_names.clone());
+        // Honour module-level pragmas: a `pragma strict_values` (or
+        // `strict`) directive at the source head opts into
+        // auto-inserted assertion nodes (SRD 15 §"Module-Level
+        // Pragmas" + §"Strict Wire Mode").
+        asm.set_strict_wires(self.pragmas.strict_types(), self.pragmas.strict_values());
 
         // Second pass: process all bindings
         for stmt in &file.statements {
@@ -612,6 +718,12 @@ impl Compiler {
                 Statement::Cursor(decl) => {
                     self.process_cursor(&mut asm, decl)?;
                 }
+                Statement::Pragma { .. } => {
+                    // Pragmas were collected before this pass (see
+                    // `collect_pragmas`) and applied to the
+                    // assembler via `set_strict_wires` already.
+                    // Nothing to do during binding processing.
+                }
             }
         }
 
@@ -671,13 +783,14 @@ impl Compiler {
                     Statement::ExternPort(p) => vec![p.name.clone()],
                     Statement::Coordinates(_, _) => vec![],
                     Statement::Cursor(_) => vec![],
+                    Statement::Pragma { .. } => vec![],
                 }
             }).collect();
 
             let mut referenced: HashSet<String> = HashSet::new();
             for stmt in &file.statements {
                 let expr = match stmt {
-                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) => continue,
+                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
                     Statement::InitBinding(b) => &b.value,
                     Statement::CycleBinding(b) => &b.value,
                 };
@@ -694,6 +807,7 @@ impl Compiler {
         // Zero inferred inputs means all bindings are constants — valid.
 
         let mut asm = GkAssembler::new(self.input_names.clone());
+        asm.set_strict_wires(self.pragmas.strict_types(), self.pragmas.strict_values());
 
         for stmt in file.statements.clone() {
             match &stmt {
@@ -714,6 +828,7 @@ impl Compiler {
                 Statement::ExternPort(_) => {}
                 Statement::ModuleDef(_) => {}
                 Statement::Coordinates(_, _) => {}
+                Statement::Pragma { .. } => {}
                 Statement::Cursor(decl) => {
                     self.process_cursor(&mut asm, decl)?;
                 }
@@ -765,13 +880,14 @@ impl Compiler {
                     Statement::ExternPort(p) => vec![p.name.clone()],
                     Statement::Coordinates(_, _) => vec![],
                     Statement::Cursor(_) => vec![],
+                    Statement::Pragma { .. } => vec![],
                 }
             }).collect();
 
             let mut referenced: HashSet<String> = HashSet::new();
             for stmt in &file.statements {
                 let expr = match stmt {
-                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) => continue,
+                    Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
                     Statement::InitBinding(b) => &b.value,
                     Statement::CycleBinding(b) => &b.value,
                 };
@@ -819,6 +935,7 @@ impl Compiler {
                 Statement::Cursor(decl) => {
                     self.process_cursor(&mut asm, decl)?;
                 }
+                Statement::Pragma { .. } => {}
             }
         }
 

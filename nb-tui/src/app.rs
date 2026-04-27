@@ -5,7 +5,7 @@
 //!
 //! The TUI runs on a dedicated std::thread (not tokio) to avoid
 //! blocking the async runtime. It reads from two sources:
-//! - MetricsFrame channel (latency histograms from scheduler)
+//! - cadence-window `MetricSet` snapshots from the metrics store
 //! - Arc<RwLock<RunState>> (phase progress from executor)
 
 use std::io;
@@ -420,6 +420,26 @@ fn cursor_count_label(cursor_name: &str) -> String {
 /// Per-second form of [`cursor_count_label`] (e.g. `row` → `rows/s`).
 fn cursor_rate_label(cursor_name: &str) -> String {
     format!("{}/s", cursor_count_label(cursor_name))
+}
+
+/// Wall-clock-driven spinner glyph for active phases.
+///
+/// Picks a frame from `throbber_widgets_tui::symbols::throbber::BRAILLE_SIX`
+/// every 250 ms — matching the TUI's 4 Hz redraw cadence so a
+/// new render always shows the next frame, not the same one
+/// twice in a row. Indexed by `now_millis / 250` with no per-
+/// frame state, so concurrent Running phases tick in lockstep
+/// rather than chaotically. `BRAILLE_SIX` gives a dense rotation
+/// that still degrades gracefully (renders as dots) on partial-
+/// glyph fonts.
+fn spinner_frame() -> &'static str {
+    use throbber_widgets_tui::symbols::throbber::BRAILLE_SIX;
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let idx = ((elapsed / 250) as usize) % BRAILLE_SIX.symbols.len();
+    BRAILLE_SIX.symbols[idx]
 }
 
 /// Health-tint color for a phase entry in the scenario tree.
@@ -2128,9 +2148,10 @@ impl App {
             // so the user can see at a glance whether a phase went
             // clean, had blips, or degraded badly.
             let health_color = phase_health_color(phase);
+            let running_spinner = spinner_frame();
             let (icon, icon_color) = match &phase.status {
                 PhaseStatus::Completed => ("✓", health_color),
-                PhaseStatus::Running => ("▶", health_color),
+                PhaseStatus::Running => (running_spinner, health_color),
                 PhaseStatus::Pending => ("○", colors::PHASE_PENDING),
                 PhaseStatus::Failed(_) => ("✗", colors::PHASE_FAILED),
             };

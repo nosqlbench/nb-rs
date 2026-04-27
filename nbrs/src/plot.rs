@@ -56,15 +56,6 @@ struct PlotArgs {
     mode: String,
 }
 
-/// Completion candidates for `plot gk`.
-pub fn plot_gk_completion() -> (&'static [&'static str], &'static [&'static str]) {
-    (
-        &["cycles=", "output=", "--width=", "--height=", "--max-labels=",
-          "--xscale=", "--yscale=", "--mode="],
-        &["--no-color"],
-    )
-}
-
 fn parse_plot_args(args: &[String]) -> Result<PlotArgs, String> {
     let mut pa = PlotArgs {
         expr: String::new(),

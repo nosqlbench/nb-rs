@@ -1,116 +1,13 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
-//! CLI tree definition, usage text, and utility functions shared
-//! across subcommands.
-
-use crate::bench::bench_gk_completion;
-use crate::plot::plot_gk_completion;
-use crate::run::run_completion;
-
-/// Discover YAML workload files for `workload=` completion.
-///
-/// Searches the current directory, `workloads/`, and `examples/`
-/// (recursively) for `.yaml` and `.yml` files.
-fn discover_workload_files(partial: &str, _context: &[&str]) -> Vec<String> {
-    let mut files = Vec::new();
-    let search_dirs = [".", "workloads", "examples"];
-
-    for dir in &search_dirs {
-        let path = std::path::Path::new(dir);
-        if path.is_dir() {
-            collect_yaml_files(path, dir, partial, &mut files);
-        }
-    }
-
-    files.sort();
-    files.dedup();
-    files
-}
-
-fn collect_yaml_files(dir: &std::path::Path, prefix: &str, partial: &str, out: &mut Vec<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let sub_prefix = if prefix == "." {
-                path.file_name().unwrap().to_string_lossy().to_string()
-            } else {
-                format!("{}/{}", prefix, path.file_name().unwrap().to_string_lossy())
-            };
-            collect_yaml_files(&path, &sub_prefix, partial, out);
-        } else if let Some(ext) = path.extension() {
-            if ext == "yaml" || ext == "yml" {
-                let rel = if prefix == "." {
-                    path.file_name().unwrap().to_string_lossy().to_string()
-                } else {
-                    format!("{}/{}", prefix, path.file_name().unwrap().to_string_lossy())
-                };
-                if rel.starts_with(partial) {
-                    out.push(rel);
-                }
-            }
-        }
-    }
-}
-
-/// Discover workload-declared parameters for dynamic completion.
-///
-/// When `workload=somefile.yaml` is on the command line, parse the
-/// file's `params:` section and return param names as `key=` completions.
-fn discover_workload_params(_partial: &str, context: &[&str]) -> Vec<String> {
-    for word in context {
-        let path = if let Some(p) = word.strip_prefix("workload=") {
-            p
-        } else if word.ends_with(".yaml") || word.ends_with(".yml") {
-            word
-        } else {
-            continue;
-        };
-        // Try to read the YAML and extract top-level params
-        if let Ok(source) = std::fs::read_to_string(path)
-            && let Ok(doc) = serde_yaml::from_str::<serde_json::Value>(&source)
-                && let Some(params) = doc.get("params").and_then(|v| v.as_object()) {
-                    return params.keys().map(|k| format!("{k}=")).collect();
-                }
-    }
-    Vec::new()
-}
-
-/// Build the definitive CLI command tree. Completion candidates are
-/// derived from each subcommand's definition — no separate lists
-/// to keep in sync.
-pub fn cli_tree() -> veks_completion::CommandTree {
-    use veks_completion::Node;
-
-    let (run_opts, run_flags) = run_completion();
-    let (bench_opts, bench_flags) = bench_gk_completion();
-    let (plot_opts, plot_flags) = plot_gk_completion();
-
-    veks_completion::CommandTree::new("nbrs")
-        .command("run", Node::leaf_with_flags(run_opts, run_flags)
-            .with_value_provider("workload=", discover_workload_files)
-            .with_dynamic_options(discover_workload_params))
-        .command("describe", Node::group(vec![
-            ("gk", Node::group(vec![
-                ("functions", Node::leaf(&[])),
-                ("stdlib", Node::leaf(&[])),
-                ("dag", Node::leaf(&[])),
-                ("modules", Node::leaf(&[])),
-            ])),
-        ]))
-        .command("bench", Node::group(vec![
-            ("gk", Node::leaf_with_flags(bench_opts, bench_flags)),
-        ]))
-        .command("plot", Node::group(vec![
-            ("gk", Node::leaf_with_flags(plot_opts, plot_flags)),
-        ]))
-        .command("web", Node::leaf_with_flags(
-            &["bind=", "port="],
-            &["--daemon", "--stop", "--restart"],
-        ))
-        .command("completions", Node::leaf(&["bash", "zsh", "fish"]))
-}
+//! Usage text and utility functions shared across subcommands.
+//!
+//! Shell completion is owned by [`nb_activity::completions`] — the
+//! same harness `cassnbrs` uses — so `nbrs run workload=<TAB>`,
+//! `scenario=<TAB>`, `adapter=<TAB>`, etc. all expand identically
+//! across personas. `main.rs` wires it up; nothing in this file
+//! duplicates that logic.
 
 pub fn print_usage() {
     eprintln!("nbrs — nosqlbench for Rust");

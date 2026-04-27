@@ -259,6 +259,18 @@ impl StdoutAdapter {
         let writer = if config.filename.eq_ignore_ascii_case("stdout") {
             OutputTarget::Stdout(BufWriter::new(io::stdout()))
         } else {
+            // Create parent directories on demand so `output=path/to/file.txt`
+            // works without a manual `mkdir -p`. Bare filenames in the cwd
+            // skip this since `parent()` returns `Some("")`.
+            if let Some(parent) = std::path::Path::new(&config.filename).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)
+                    .unwrap_or_else(|e| panic!(
+                        "failed to create output directory '{}': {e}",
+                        parent.display()
+                    ));
+            }
             let file = File::create(&config.filename)
                 .unwrap_or_else(|e| panic!("failed to create output file '{}': {e}", config.filename));
             OutputTarget::File(BufWriter::new(file))

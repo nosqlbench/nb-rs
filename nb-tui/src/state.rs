@@ -37,42 +37,13 @@ pub struct LogEntry {
     pub message: String,
 }
 
-/// What kind of node this tree entry represents.
-///
-/// The scenario tree mixes executable phases with scope headers (the
-/// `for_each` / `do_while` constructs that contain them). Tracking the
-/// kind keeps the tree accurate — without it, a top-level phase like
-/// `discover` looks like a parent of nested iterations, which it isn't.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EntryKind {
-    /// An executable phase with a Pending→Running→Completed lifecycle.
-    Phase,
-    /// A visual grouping header (for_each, for_combinations, do_while,
-    /// do_until). Has no lifecycle — rendered once and never changes.
-    Scope,
-}
-
-/// Status of a single phase in the scenario tree.
-#[derive(Clone, Debug)]
-pub struct PhaseEntry {
-    pub name: String,
-    /// Dimensional labels from for_each (e.g., "k=10, table=fknn_default").
-    /// For `Scope` entries this holds the iterator description
-    /// (e.g., "profile in [label_00, label_01, ...]").
-    pub labels: String,
-    pub status: PhaseStatus,
-    /// Whether this entry is an executable phase or a scope header.
-    pub kind: EntryKind,
-    /// Number of ops in the phase.
-    pub op_count: usize,
-    /// Duration if completed.
-    pub duration_secs: Option<f64>,
-    /// Nesting depth for tree display.
-    pub depth: usize,
-    /// Completion summary — populated on `set_phase_completed`.
-    /// `None` for pending/running/scope entries.
-    pub summary: Option<PhaseSummary>,
-}
+// `EntryKind` and `PhaseStatus` now live on the canonical
+// [`nb_activity::scene_tree`] types — re-exported here so existing
+// `crate::state::EntryKind::Phase` references keep working without
+// touching every call site.
+pub use nb_activity::scene_tree::NodeKind as EntryKind;
+pub use nb_activity::scene_tree::PhaseStatus;
+pub use nb_activity::scene_tree::{SceneNode, SceneNodeId, SceneTree};
 
 /// End-of-phase metrics snapshot attached to a completed phase.
 /// Mirrors the live progress bar so an expanded tree entry shows the
@@ -119,15 +90,6 @@ pub struct PhaseSummary {
     /// throughput curve. Empty when the phase produced no
     /// samples (no `phase_progress` updates).
     pub throughput_samples: Vec<f64>,
-}
-
-/// Phase lifecycle state.
-#[derive(Clone, Debug, PartialEq)]
-pub enum PhaseStatus {
-    Pending,
-    Running,
-    Completed,
-    Failed(String),
 }
 
 /// Live metrics for the currently running phase.
@@ -177,6 +139,25 @@ pub struct ActivePhase {
     pub latency_peak_10s: Arc<PeakTracker>,
 }
 
+/// A single entry rendered in the TUI's phase list — a flat
+/// projection over the scene tree's DFS order. Carries the scene-
+/// node id so callers can cross-reference parent / children, plus
+/// the heavy `PhaseSummary` (only meaningful for completed
+/// phases). Held as a `Cow`-equivalent: produced by walking the
+/// tree at iter time, not stored.
+#[derive(Clone, Debug)]
+pub struct PhaseEntry {
+    pub node_id: SceneNodeId,
+    pub name: String,
+    pub labels: String,
+    pub status: PhaseStatus,
+    pub kind: EntryKind,
+    pub op_count: usize,
+    pub duration_secs: Option<f64>,
+    pub depth: usize,
+    pub summary: Option<PhaseSummary>,
+}
+
 /// Top-level run state shared between executor and TUI.
 #[derive(Clone)]
 pub struct RunState {
@@ -187,7 +168,23 @@ pub struct RunState {
     pub profiler: String,
     pub limit: String,
 
-    /// Scenario tree entries in display order.
+    /// Canonical scene tree: every concrete phase + scope header
+    /// wired by parent / children pointers. The pre-mapped
+    /// scenario shape lands here once via `scenario_pre_mapped`;
+    /// lifecycle callbacks (`set_phase_running` / `_completed` /
+    /// `_failed`) mutate node statuses in place.
+    pub tree: SceneTree,
+    /// Heavy per-phase metrics produced at completion. Keyed by
+    /// `SceneNodeId` so scope-level renderers can also look up
+    /// child summaries cheaply. Side-map (rather than baked into
+    /// `SceneNode`) so the tree itself stays small / serializable.
+    pub summaries: HashMap<SceneNodeId, PhaseSummary>,
+    /// Denormalized DFS view of `tree` in display order, kept in
+    /// sync by `rebuild_phases()` after every tree mutation. Read
+    /// by the renderer hot paths via `state.phases` indexing —
+    /// rebuilding once per mutation beats walking the tree per
+    /// frame, and the cost is negligible (mutations are a handful
+    /// per phase lifecycle, not per-op).
     pub phases: Vec<PhaseEntry>,
 
     /// Every phase currently in flight, keyed by (name, labels).
@@ -252,6 +249,8 @@ impl RunState {
             started_at: Instant::now(),
             profiler: "off".to_string(),
             limit: "none".to_string(),
+            tree: SceneTree::new(),
+            summaries: HashMap::new(),
             phases: Vec::new(),
             active_phases: HashMap::new(),
             log_messages: Vec::new(),
@@ -320,64 +319,48 @@ impl RunState {
         }
     }
 
-    /// Add a pending phase to the tree.
-    pub fn add_phase(&mut self, name: &str, labels: &str, depth: usize) {
-        self.phases.push(PhaseEntry {
-            name: name.to_string(),
-            labels: labels.to_string(),
-            status: PhaseStatus::Pending,
-            kind: EntryKind::Phase,
-            op_count: 0,
-            duration_secs: None,
-            depth,
-            summary: None,
-        });
+    /// Replace the scene tree wholesale — called once from the
+    /// observer's `scenario_pre_mapped` hook with the fully
+    /// resolved pre-map. Existing summaries are dropped (they
+    /// never apply across pre-maps).
+    pub fn install_tree(&mut self, tree: SceneTree) {
+        self.tree = tree;
+        self.summaries.clear();
+        self.rebuild_phases();
     }
 
-    /// Add a visual grouping header (for_each / do_while / etc.).
-    /// Scope entries have no lifecycle — they render once and never
-    /// transition. `label` typically reads like
-    /// `"profile in [label_00, label_01, ...]"`.
-    pub fn add_scope(&mut self, label: &str, depth: usize) {
-        self.phases.push(PhaseEntry {
-            name: String::new(),
-            labels: label.to_string(),
-            status: PhaseStatus::Pending,
-            kind: EntryKind::Scope,
-            op_count: 0,
-            duration_secs: None,
-            depth,
-            summary: None,
-        });
+    /// Add a pending phase to the tree at the synthetic root —
+    /// fallback path for sources that don't pre-map.
+    pub fn add_phase(&mut self, name: &str, labels: &str, _depth: usize) {
+        let root = self.tree.root();
+        self.tree.push(root, EntryKind::Phase, name, labels);
+        self.rebuild_phases();
     }
 
-    /// Mark a phase as running. Only matches `Phase`-kind entries —
-    /// scope headers are skipped. The first pending entry with a
-    /// matching (name, labels) wins so repeat iterations (same labels,
-    /// different bindings contexts) transition in encounter order.
+    /// Add a visual grouping header at the synthetic root.
+    pub fn add_scope(&mut self, label: &str, _depth: usize) {
+        let root = self.tree.root();
+        self.tree.push(root, EntryKind::Scope, label, "");
+        self.rebuild_phases();
+    }
+
+    /// Mark a phase as running. The first pending phase matching
+    /// (name, labels) wins, so repeat iterations transition in
+    /// encounter order.
     pub fn set_phase_running(&mut self, name: &str, labels: &str, op_count: usize) {
-        for phase in &mut self.phases {
-            if phase.kind == EntryKind::Phase
-                && phase.name == name
-                && phase.labels == labels
-                && phase.status == PhaseStatus::Pending
-            {
-                phase.status = PhaseStatus::Running;
-                phase.op_count = op_count;
-                return;
-            }
+        if self.tree.find_phase(name, labels, Some(&PhaseStatus::Pending)).is_some() {
+            self.tree.set_phase_running(name, labels, op_count);
+        } else {
+            // Not found — add dynamically and mark running. Phases
+            // that weren't pre-mapped (e.g. unresolvable for_each
+            // at pre-map time) still need a tree slot.
+            let root = self.tree.root();
+            let id = self.tree.push(root, EntryKind::Phase, name, labels);
+            let n = &mut self.tree.nodes[id];
+            n.status = PhaseStatus::Running;
+            n.op_count = op_count;
         }
-        // Not found — add dynamically (for_each phases not known ahead of time)
-        self.phases.push(PhaseEntry {
-            name: name.to_string(),
-            labels: labels.to_string(),
-            status: PhaseStatus::Running,
-            kind: EntryKind::Phase,
-            op_count,
-            duration_secs: None,
-            depth: 0,
-            summary: None,
-        });
+        self.rebuild_phases();
     }
 
     /// Mark a phase as completed and attach a metrics summary.
@@ -388,35 +371,45 @@ impl RunState {
         duration_secs: f64,
         summary: PhaseSummary,
     ) {
-        for phase in &mut self.phases {
-            if phase.kind == EntryKind::Phase
-                && phase.name == name
-                && phase.labels == labels
-                && phase.status == PhaseStatus::Running
-            {
-                phase.status = PhaseStatus::Completed;
-                phase.duration_secs = Some(duration_secs);
-                phase.summary = Some(summary);
-                return;
-            }
+        if let Some(id) = self.tree.find_phase(name, labels, Some(&PhaseStatus::Running)) {
+            self.tree.set_phase_completed(name, labels, duration_secs);
+            self.summaries.insert(id, summary);
+            self.rebuild_phases();
         }
     }
 
     /// Mark a phase as failed.
     pub fn set_phase_failed(&mut self, name: &str, labels: &str, error: &str) {
-        for phase in &mut self.phases {
-            if phase.kind == EntryKind::Phase
-                && phase.name == name
-                && phase.labels == labels
-            {
-                phase.status = PhaseStatus::Failed(error.to_string());
-                return;
-            }
-        }
+        self.tree.set_phase_failed(name, labels, error);
+        self.rebuild_phases();
     }
 
     /// Elapsed time since run started.
     pub fn elapsed_secs(&self) -> f64 {
         self.started_at.elapsed().as_secs_f64()
+    }
+
+    /// Rebuild the denormalized `phases` view from the current
+    /// tree. Called after every mutation that affects the DFS
+    /// order or any node's display fields.
+    fn rebuild_phases(&mut self) {
+        self.phases = self.tree
+            .dfs()
+            .filter(|n| n.kind != EntryKind::Root)
+            .map(|n| PhaseEntry {
+                node_id: n.id,
+                name: n.name.clone(),
+                labels: n.labels.clone(),
+                status: n.status.clone(),
+                kind: n.kind,
+                op_count: n.op_count,
+                duration_secs: n.duration_secs,
+                // SceneNode depths count the synthetic root as 1 —
+                // subtract so top-level scenario entries land at
+                // depth 0 (matching pre-tree behavior).
+                depth: n.depth.saturating_sub(1),
+                summary: self.summaries.get(&n.id).cloned(),
+            })
+            .collect();
     }
 }

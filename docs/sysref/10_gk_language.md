@@ -180,10 +180,11 @@ temporarily disabling sections.
 
 ### Infix Operators
 
-GK supports arithmetic, bitwise, and power operators with
-standard precedence. Operators desugar to function calls in
-the DAG — `a + b` becomes `f64_add(a, b)`, `a & b` becomes
-`u64_and(a, b)`.
+GK supports arithmetic, bitwise, comparison, and power
+operators with standard precedence. Operators desugar to
+function calls in the DAG — `a + b` becomes `f64_add(a, b)`,
+`a & b` becomes `u64_and(a, b)`, `a < b` becomes `u64_lt(a, b)`
+or `f64_lt(a, b)`.
 
 ```
 // Arithmetic (f64)
@@ -197,22 +198,31 @@ masked := hash(cycle) ^ 0xDEADBEEF
 
 // Power
 decay := amplitude ** 0.5
+
+// Comparisons (yield u64 truth: 0 or 1)
+hot   := err_rate > 0.05
+exact := flags == 0
 ```
 
 **Precedence** (lowest to highest, follows Rust):
 
 | Level | Operators | Associativity |
 |-------|-----------|---------------|
-| 1 | `\|` (bitwise OR) | left |
-| 2 | `^` (bitwise XOR) | left |
-| 3 | `&` (bitwise AND) | left |
-| 4 | `<<` `>>` (shifts) | left |
-| 5 | `+` `-` (add/sub) | left |
-| 6 | `*` `/` `%` (mul/div/mod) | left |
-| 7 | `**` (power) | right |
-| 8 | `-` `!` (unary neg/not) | prefix |
+| 1 | `==` `!=` (equality) | left |
+| 2 | `<` `>` `<=` `>=` (relational) | left |
+| 3 | `\|` (bitwise OR) | left |
+| 4 | `^` (bitwise XOR) | left |
+| 5 | `&` (bitwise AND) | left |
+| 6 | `<<` `>>` (shifts) | left |
+| 7 | `+` `-` (add/sub) | left |
+| 8 | `*` `/` `%` (mul/div/mod) | left |
+| 9 | `**` (power) | right |
+| 10 | `-` `!` (unary neg/not) | prefix |
 
-Parentheses override precedence: `(a + b) * c`.
+Parentheses override precedence: `(a + b) * c`. Comparison
+binds looser than arithmetic and bitwise, so `a + b < c * d`
+parses as `(a + b) < (c * d)`. Equality is below relational, so
+`a < b == c` parses as `(a < b) == c`.
 
 **Operator → Node mapping:**
 
@@ -223,8 +233,41 @@ Parentheses override precedence: `(a + b) * c`.
 | `**` | `pow` |
 | `&` `\|` `^` | `u64_and`, `u64_or`, `u64_xor` |
 | `<<` `>>` | `u64_shl`, `u64_shr` |
+| `==` `!=` | `u64_eq` / `u64_ne` (or `f64_*` if either operand is f64) |
+| `<` `>` `<=` `>=` | `u64_lt` / `u64_gt` / `u64_le` / `u64_ge` (or `f64_*`) |
 | `!` (prefix) | `u64_not` |
 | `-` (prefix) | `f64_sub(0.0, x)` |
+
+Comparison results are always `u64` truth values (0 = false,
+1 = true) regardless of operand types — they compose cleanly
+with bitwise operators (`a < b & c < d`) and with the `if(...)`
+intrinsic below.
+
+### Conditional Selection — `if(cond, a, b)`
+
+`if` is a compiler intrinsic, not a registered function: at
+compile time it desugars to `select_u64(cond, a, b)` or
+`select_f64(cond, a, b)` based on the inferred types of `a`
+and `b`. When one branch is u64 and the other f64, the u64
+branch is auto-widened via `to_f64`. The condition is u64 —
+any nonzero value selects `a`, zero selects `b`.
+
+```
+// Step throttle: above a 5%-error threshold the multiplier
+// drops to 0.5; below it sits at 1.05.
+factor := if(err_rate > 0.05, 0.5, 1.05)
+
+// Mixed branches widen automatically (cycle is u64, 100.0 is f64).
+default := if(cycle == 0, 100.0, to_f64(cycle))
+
+// Pure u64 stays u64.
+clamped := if(x > 1000, 1000, x)
+```
+
+Both branches are *always* evaluated — there is no short-
+circuit. `if` is an expression-level select, not a control-flow
+construct. Side-effecting nodes inside an unselected branch
+still run (they're part of the DAG); design accordingly.
 
 ### Literal Promotion
 
@@ -265,6 +308,18 @@ gk[advisory]: widening u64 → f64 in operator *
 ```
 
 ### Auto-Conversion to String
+
+Auto-adapters are one half of the compiler's type-and-value
+wiring story. The other half is assertion nodes: runtime guards
+the compiler can splice in when it can't *prove* a wire already
+satisfies a downstream node's contract. Both are invisible to the
+module author — adapters handle type coercion, assertions handle
+value validity — and both are skipped whenever the static type
+system already proves the wire is safe. See
+[SRD 15 "Input Validity Model"](15_strict_mode.md#input-validity-model-unsafe-by-default--opt-in-guards)
+for the full two-layer design (unsafe-by-default fast path,
+opt-in strict wire guards, const constraint metadata, type and
+value assertion families).
 
 When a non-string value feeds a string wire input, the compiler
 auto-inserts a conversion adapter:
@@ -762,8 +817,10 @@ access. The `cursor` keyword declares a cursor and wires it
 to a constructor that determines its data source:
 
 ```
-cursor base = dataset_source("example:label_00", "base")
 cursor users = range(0, 1000000)
+cursor base  = vectordata_base("example", "label_00")
+cursor q     = vectordata_query("example", "label_00")
+cursor any   = vectordata_source("example", "label_00", "base")
 ```
 
 The cursor itself is just a position value (a `u64` ordinal).
@@ -772,7 +829,8 @@ tracker. Data access happens through **accessor functions**
 that take the cursor's ordinal as input and return typed values:
 
 ```
-cursor base = dataset_source("example:label_00", "base")
+cursor base = range(0, vector_count("example:label_00"))
+init prebuffer = dataset_prebuffer("example:label_00")
 id := format_u64(base, 10)
 train_vector := vector_at(base, "example:label_00")
 ```
@@ -782,6 +840,129 @@ Accessor functions like `vector_at` use that ordinal to look up
 the corresponding data. This separation means the cursor is a
 simple GK node with a `u64` output, and all data access is
 expressed through standard GK function composition.
+
+#### Cursor-Constructor Sugar
+
+Every vectordata-backed phase otherwise repeats the same
+boilerplate: a `range(...)` extent computed from `vector_count`,
+a `dataset_prebuffer` init binding, and a per-vector projection
+via `vector_at_bytes`. The compiler exposes a generic
+*cursor-sugar* registry — any node module can register a
+handler that recognizes a non-`range` constructor and rewrites
+it into a synthetic `range(...)` plus a list of auxiliary
+bindings. The core compiler stays agnostic; nothing in
+`dsl::compile` knows what sugar names exist.
+
+##### Vectordata sugar (built-in)
+
+The vectordata module registers three forms:
+
+| Form | Equivalent to |
+|------|---------------|
+| `vectordata_base(d, p)` | `range(0, vector_count("d:p"))` + prebuffer + `<cursor>__vector := vector_at_bytes(<cursor>__ordinal, "d:p")` |
+| `vectordata_query(d, p)` | same, but with `query_count` / `query_vector_at_bytes` |
+| `vectordata_source(d, p, "base"\|"query")` | explicit-facet form for tooling that needs the facet as a parameter |
+
+##### Before / after
+
+Verbose form a workload would write today without sugar:
+
+```
+cursor row = range(0, vector_count("example:label_00"))
+init prebuffer = dataset_prebuffer("example:label_00")
+id := format_u64(row, 10)
+train_vector := vector_at_bytes(row, "example:label_00")
+```
+
+Equivalent sugared form:
+
+```
+cursor row = vectordata_base("example", "label_00")
+id := format_u64(row.ordinal, 10)
+// row.vector is auto-published as a Bytes projection;
+// op templates can reference {row.vector} directly.
+```
+
+In a complete phase:
+
+```yaml
+phases:
+  rampup:
+    bindings: |
+      cursor row = vectordata_base("example", "label_00")
+      id := format_u64(row.ordinal, 10)
+    ops:
+      insert:
+        max_batch_size: 64KB
+        prepared: "INSERT INTO vectors (id, value) VALUES ('{id}', {row.vector})"
+```
+
+The cursor's extent (`vector_count`) drives phase auto-sizing — no
+`cycles:` declaration needed; the runtime exhausts the cursor
+across all fibers via the source-dispatch model (SRD 18 §"Source
+dispatch").
+
+##### What stays explicit
+
+Facet-specific projections like `metadata` / `ground_truth` /
+`predicate` stay manual:
+
+```
+cursor row = vectordata_base("example", "label_00")
+// auto: row.ordinal (U64), row.vector (Bytes), prebuffer init
+meta := metadata_value_at(row.ordinal, "example:label_00")
+```
+
+Their existence is dataset-conditional (not every dataset has a
+metadata column or a predicate facet), so the sugar can't safely
+auto-emit them.
+
+##### Adding a new sugar form
+
+Sugar registration is by `inventory::submit!` in any node
+module. A handler matches a constructor name, validates its
+args, and returns a [`CursorSugar`] describing the rewrite:
+
+```rust
+fn my_source_sugar(
+    source_name: &str,
+    constructor: &Expr,
+) -> Result<Option<CursorSugar>, String> {
+    let Expr::Call(call) = constructor else { return Ok(None); };
+    if call.func != "csv_source" { return Ok(None); }
+    let path = positional_str_lit(call.args.first()).ok_or_else(|| ...)?;
+    Ok(Some(CursorSugar {
+        // Synthesized `range(0, csv_row_count("..."))` drives the
+        // cursor's extent through the standard extent path.
+        effective_constructor: /* range(0, csv_row_count(path)) */,
+        aux_bindings: vec![
+            // `<cursor>__row := csv_row(<cursor>__ordinal, path)`
+            // Promoted to a `row` projection: `<cursor>.row` works.
+            AuxBinding {
+                name: format!("{source_name}__row"),
+                value: /* csv_row(...) call */,
+                projection: Some(("row".into(), PortType::Str)),
+            },
+        ],
+    }))
+}
+
+inventory::submit! {
+    CursorSugarRegistration {
+        handler: my_source_sugar,
+        name: "csv",
+    }
+}
+```
+
+`AuxBinding.projection` is the key field: when set, that aux
+binding's wire is registered on the cursor's `SourceSchema` and
+exposed as a kernel output, so workload op templates can
+reference it via `<cursor>.<field>` field-access syntax.
+
+The full surface — `CursorSugar`, `AuxBinding`,
+`CursorSugarRegistration`, and the `dispatch` walker — lives in
+`nb-variates::dsl::cursor_sugar`.
 
 **Cursor-to-accessor wiring**: the compiler resolves `base`
 in accessor function arguments to the cursor node's output.

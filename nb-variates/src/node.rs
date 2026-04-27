@@ -350,16 +350,39 @@ pub struct Port {
     pub lifecycle: Lifecycle,
     /// Cost class for input ports. Ignored for output ports.
     pub wire_cost: WireCost,
+    /// Optional value contract this wire must satisfy at runtime
+    /// (SRD 15 §"Strict Wire Mode"). The compiler uses this to
+    /// decide whether to auto-insert a value assertion when the
+    /// upstream source can't statically be proven to deliver a
+    /// satisfying value. `None` = no constraint declared.
+    ///
+    /// Constraints reuse the same vocabulary as
+    /// [`crate::dsl::const_constraints::ConstConstraint`] — the
+    /// difference is just where the value comes from (a literal
+    /// for `ConstU64`, a wire for `Slot::Wire`).
+    pub constraint: Option<crate::dsl::const_constraints::ConstConstraint>,
 }
 
 impl Port {
     pub fn new(name: impl Into<String>, typ: PortType) -> Self {
-        Self { name: name.into(), typ, lifecycle: Lifecycle::Cycle, wire_cost: WireCost::Data }
+        Self {
+            name: name.into(),
+            typ,
+            lifecycle: Lifecycle::Cycle,
+            wire_cost: WireCost::Data,
+            constraint: None,
+        }
     }
 
     /// Create a port with explicit lifecycle.
     pub fn with_lifecycle(name: impl Into<String>, typ: PortType, lifecycle: Lifecycle) -> Self {
-        Self { name: name.into(), typ, lifecycle, wire_cost: WireCost::Data }
+        Self {
+            name: name.into(),
+            typ,
+            lifecycle,
+            wire_cost: WireCost::Data,
+            constraint: None,
+        }
     }
 
     pub fn u64(name: impl Into<String>) -> Self {
@@ -385,6 +408,15 @@ impl Port {
     /// Create an init-time port (frozen at assembly).
     pub fn init(name: impl Into<String>, typ: PortType) -> Self {
         Self::with_lifecycle(name, typ, Lifecycle::Init)
+    }
+
+    /// Attach a value constraint. Used by node authors that want
+    /// to declare "this wire must satisfy X" so strict-wire-mode
+    /// can auto-insert the right value assertion. See SRD 15
+    /// §"Strict Wire Mode".
+    pub fn with_constraint(mut self, c: crate::dsl::const_constraints::ConstConstraint) -> Self {
+        self.constraint = Some(c);
+        self
     }
 
     /// Mark this port as a config wire (expensive to change).

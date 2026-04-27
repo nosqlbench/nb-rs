@@ -22,6 +22,12 @@ use nb_metrics::labels::Labels;
 use nb_workload::model::{ScenarioNode, WorkloadPhase};
 
 /// Shared context for the recursive executor.
+///
+/// `Clone` is derived so the concurrent scheduler can fork per-task
+/// copies: every Arc field aliases cheaply, while the mutable
+/// `label_stack` forks so each concurrent sibling carries its own
+/// label path.
+#[derive(Clone)]
 pub struct ExecCtx {
     pub phases: HashMap<String, WorkloadPhase>,
     pub workload_params: HashMap<String, String>,
@@ -55,6 +61,20 @@ pub struct ExecCtx {
     pub stop_handle: Arc<nb_metrics::scheduler::StopHandle>,
     /// Run observer for phase lifecycle events (TUI or stderr).
     pub observer: Arc<dyn crate::observer::RunObserver>,
+    /// Canonical scope tree for the current scenario (SRD 18b).
+    /// Built once per session from the resolved scenario nodes;
+    /// mirrors the scenario structure 1:1 with parent / child
+    /// pointers, depth tags, and pragma slots. Today consumed by
+    /// observer pre-mapping and diagnostic display; future steps
+    /// (extern-binding migration, scheduler) drive execution off
+    /// this tree directly.
+    pub scope_tree: Arc<crate::scope_tree::ScopeTree>,
+    /// Per-level concurrency policy (SRD 18b §"Scheduler
+    /// abstraction"). Consulted by the tree walker at each depth
+    /// to decide whether sibling scopes / for_each iterations run
+    /// serially or concurrently. Shared across forked clones —
+    /// the spec is immutable after session construction.
+    pub schedule_spec: Arc<crate::scheduler::ScheduleSpec>,
 }
 
 impl ExecCtx {
@@ -84,16 +104,109 @@ impl ExecCtx {
 }
 
 /// Execute a scenario tree recursively.
+///
+/// Entry point — siblings are at scope-tree depth 0. The per-depth
+/// concurrency policy lives on `ctx.schedule_spec`; when the policy
+/// at some depth allows >1 concurrency, siblings (and ForEach /
+/// phase-level-for_each iterations at the next depth) fork via
+/// cloned per-task `ExecCtx`.
 pub fn execute_tree<'a>(
     ctx: &'a mut ExecCtx,
     nodes: &'a [ScenarioNode],
     bindings: &'a HashMap<String, String>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    execute_tree_at(ctx, nodes, bindings, 0)
+}
+
+/// Depth-tagged tree walk. Each recursive descent (into ForEach
+/// children, ForCombinations children, DoWhile / DoUntil bodies,
+/// or phase-level iterations) bumps `depth`. The `schedule_spec`
+/// on `ctx` is consulted at `depth` to decide sibling strategy.
+fn execute_tree_at<'a>(
+    ctx: &'a mut ExecCtx,
+    nodes: &'a [ScenarioNode],
+    bindings: &'a HashMap<String, String>,
+    depth: usize,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
+        let limit = ctx.schedule_spec.limit_at(depth);
+        if matches!(limit, crate::scheduler::ConcurrencyLimit::Serial) || nodes.len() <= 1 {
+            for node in nodes {
+                execute_node(ctx, node, bindings, depth).await?;
+            }
+            Ok(())
+        } else {
+            run_siblings_concurrently(ctx, nodes, bindings, depth, limit).await
+        }
+    })
+}
+
+/// Spawn each sibling in its own task with a cloned `ExecCtx` and
+/// cloned bindings. Bounded limits gate tasks through a
+/// `Semaphore`; Unlimited launches all at once. Joins via
+/// `JoinSet`; the first task error aborts the rest (remaining
+/// tasks still finish their own permits).
+async fn run_siblings_concurrently(
+    ctx: &mut ExecCtx,
+    nodes: &[ScenarioNode],
+    bindings: &HashMap<String, String>,
+    depth: usize,
+    limit: crate::scheduler::ConcurrencyLimit,
+) -> Result<(), String> {
+    use crate::scheduler::ConcurrencyLimit;
+    let sem: Option<Arc<tokio::sync::Semaphore>> = match limit {
+        ConcurrencyLimit::Bounded(n) => Some(Arc::new(tokio::sync::Semaphore::new(n as usize))),
+        ConcurrencyLimit::Unlimited => None,
+        ConcurrencyLimit::Serial => unreachable!("serial handled by caller"),
+    };
+    let mut set = tokio::task::JoinSet::new();
     for node in nodes {
+        let node = node.clone();
+        let mut task_ctx = ctx.clone();
+        let task_bindings = bindings.clone();
+        let sem = sem.clone();
+        set.spawn(async move {
+            let _permit = match sem {
+                Some(s) => Some(s.acquire_owned().await.map_err(|e| e.to_string())?),
+                None => None,
+            };
+            execute_node(&mut task_ctx, &node, &task_bindings, depth).await
+        });
+    }
+    let mut first_err: Option<String> = None;
+    while let Some(res) = set.join_next().await {
+        match res {
+            Err(join_err) => {
+                if first_err.is_none() {
+                    first_err = Some(format!("concurrent task panicked: {join_err}"));
+                }
+            }
+            Ok(Err(e)) => {
+                if first_err.is_none() { first_err = Some(e); }
+            }
+            Ok(Ok(())) => {}
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Execute a single scenario node. Descent into children happens
+/// at `depth + 1`; iteration loops (ForEach, ForCombinations,
+/// phase-level for_each, DoWhile, DoUntil) also treat their
+/// iteration instances as siblings at `depth + 1` and honor the
+/// concurrency limit at that depth.
+fn execute_node<'a>(
+    ctx: &'a mut ExecCtx,
+    node: &'a ScenarioNode,
+    bindings: &'a HashMap<String, String>,
+    depth: usize,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    Box::pin(async move {
         match node {
             ScenarioNode::Phase(name) => {
-                // Lift phase-level for_each
                 let phase_fe = ctx.phases.get(name.as_str())
                     .and_then(|p| p.for_each.clone());
                 if let Some(spec) = phase_fe {
@@ -103,14 +216,7 @@ pub fn execute_tree<'a>(
                         crate::diag!(crate::observer::LogLevel::Debug, "  for_each {var} in [{}] ({} iterations)",
                             values.join(", "), values.len());
                     }
-                    for value in &values {
-                        let mut inner = bindings.clone();
-                        inner.insert(var.clone(), value.clone());
-                        // for_each pushes label
-                        ctx.push_label(&var, &value);
-                        run_phase(ctx, name, &inner).await?;
-                        ctx.pop_label();
-                    }
+                    run_iterations(ctx, &var, &values, bindings, depth + 1, IterKind::Phase { name }).await?;
                 } else {
                     run_phase(ctx, name, bindings).await?;
                 }
@@ -122,82 +228,21 @@ pub fn execute_tree<'a>(
                     crate::diag!(crate::observer::LogLevel::Debug, "for_each {var} in [{}] ({} iterations × {} children)",
                         values.join(", "), values.len(), children.len());
                 }
-                for value in &values {
-                    let mut inner = bindings.clone();
-                    inner.insert(var.clone(), value.clone());
-                    // for_each pushes label: var=value
-                    ctx.push_label(&var, &value);
-                    execute_tree(ctx, children, &inner).await?;
-                    ctx.pop_label();
-                }
+                run_iterations(ctx, &var, &values, bindings, depth + 1, IterKind::Children { children }).await?;
             }
             ScenarioNode::ForCombinations { specs, children } => {
-                // Resolve dimensions lazily: later dimensions may reference
-                // earlier variables (e.g., "table in vec_{profile}").
-                // Each dimension is resolved inside the Cartesian recursion
-                // after prior variables are bound.
-                fn cartesian_recurse<'a>(
-                    ctx: &'a mut ExecCtx,
-                    specs: &'a [(String, String)],
-                    dim_idx: usize,
-                    bindings: &'a HashMap<String, String>,
-                    children: &'a [ScenarioNode],
-                    first: bool,
-                ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + 'a>> {
-                    Box::pin(async move {
-                        if dim_idx >= specs.len() {
-                            execute_tree(ctx, children, bindings).await?;
-                            return Ok(());
-                        }
-                        let (var, expr) = &specs[dim_idx];
-                        // Substitute already-bound variables into the expression
-                        let mut resolved_expr = expr.clone();
-                        for (k, v) in bindings {
-                            resolved_expr = resolved_expr.replace(&format!("{{{k}}}"), v);
-                        }
-                        let (_, values) = resolve_expr(
-                            &format!("{var} in {resolved_expr}"),
-                            &ctx.workload_params, bindings, &ctx.outer_scope_values)?;
-
-                        if first {
-                            // Build dimension summary for display
-                            let mut dims: Vec<String> = Vec::new();
-                            dims.push(format!("{var}({} values)", values.len()));
-                            // Peek at remaining specs for display
-                            for (v, _) in &specs[dim_idx + 1..] {
-                                dims.push(v.clone());
-                            }
-                            let total_hint = values.len();
-                            if !ctx.quiet() {
-                                crate::diag!(crate::observer::LogLevel::Debug, "for_combinations [{}] ({total_hint}+ combinations × {} children)",
-                                    dims.join(" × "), children.len());
-                            }
-                        }
-
-                        for value in &values {
-                            let mut inner = bindings.clone();
-                            inner.insert(var.clone(), value.clone());
-                            ctx.push_label(var, value);
-                            cartesian_recurse(ctx, specs, dim_idx + 1, &inner, children, false).await?;
-                            ctx.pop_label();
-                        }
-                        Ok(())
-                    })
-                }
-                cartesian_recurse(ctx, specs, 0, bindings, children, true).await?;
+                cartesian_recurse(ctx, specs, 0, bindings, children, depth + 1, true).await?;
             }
             ScenarioNode::DoWhile { condition, counter, children } => {
-                // do_while is transparent to labels — no label push
                 crate::diag!(crate::observer::LogLevel::Debug, "=== do_while: {condition} ===");
                 let mut i = 0u64;
                 loop {
                     let mut inner = bindings.clone();
                     if let Some(c) = counter { inner.insert(c.clone(), i.to_string()); }
-                    execute_tree(ctx, children, &inner).await?;
+                    execute_tree_at(ctx, children, &inner, depth + 1).await?;
                     i += 1;
-                    // TODO: evaluate condition from last op result / GK expr
                     crate::diag!(crate::observer::LogLevel::Debug, "  (do_while: executed {i} iteration(s), condition eval pending)");
-                    break; // stub: one iteration
+                    break;
                 }
             }
             ScenarioNode::DoUntil { condition, counter, children } => {
@@ -206,17 +251,166 @@ pub fn execute_tree<'a>(
                 loop {
                     let mut inner = bindings.clone();
                     if let Some(c) = counter { inner.insert(c.clone(), i.to_string()); }
-                    execute_tree(ctx, children, &inner).await?;
+                    execute_tree_at(ctx, children, &inner, depth + 1).await?;
                     i += 1;
-                    // TODO: evaluate condition from last op result / GK expr
                     crate::diag!(crate::observer::LogLevel::Debug, "  (do_until: executed {i} iteration(s), condition eval pending)");
-                    break; // stub: one iteration
+                    break;
                 }
             }
         }
+        Ok(())
+    })
+}
+
+/// Distinguishes the two iteration shapes that share a body of
+/// "push label / bind var / descend": a bare phase (per-iter we
+/// call `run_phase`) vs. a scope with children (per-iter we
+/// descend via `execute_tree_at`). Keeps `run_iterations` generic
+/// over both without duplicating the concurrency logic.
+enum IterKind<'a> {
+    Phase { name: &'a str },
+    Children { children: &'a [ScenarioNode] },
+}
+
+/// Run N iterations under one variable, either serially or
+/// concurrently based on `limit_at(depth)`. Iterations share the
+/// same variable name but each owns its bound value; each concurrent
+/// iteration forks a full `ExecCtx` clone so label pushes don't
+/// race.
+async fn run_iterations(
+    ctx: &mut ExecCtx,
+    var: &str,
+    values: &[String],
+    bindings: &HashMap<String, String>,
+    depth: usize,
+    kind: IterKind<'_>,
+) -> Result<(), String> {
+    use crate::scheduler::ConcurrencyLimit;
+    let limit = ctx.schedule_spec.limit_at(depth);
+    if matches!(limit, ConcurrencyLimit::Serial) || values.len() <= 1 {
+        for value in values {
+            let mut inner = bindings.clone();
+            inner.insert(var.to_string(), value.clone());
+            ctx.push_label(var, value);
+            match &kind {
+                IterKind::Phase { name } => run_phase(ctx, name, &inner).await?,
+                IterKind::Children { children } => execute_tree_at(ctx, children, &inner, depth).await?,
+            }
+            ctx.pop_label();
+        }
+        return Ok(());
     }
-    Ok(())
-    }) // Box::pin(async move { ... })
+    // Concurrent iterations: fork per-task ctx clones.
+    let sem: Option<Arc<tokio::sync::Semaphore>> = match limit {
+        ConcurrencyLimit::Bounded(n) => Some(Arc::new(tokio::sync::Semaphore::new(n as usize))),
+        ConcurrencyLimit::Unlimited => None,
+        ConcurrencyLimit::Serial => unreachable!(),
+    };
+    let mut set = tokio::task::JoinSet::new();
+    let var_owned = var.to_string();
+    // Materialize the iteration body kind into owned form.
+    enum OwnedKind {
+        Phase(String),
+        Children(Vec<ScenarioNode>),
+    }
+    let owned_kind = Arc::new(match &kind {
+        IterKind::Phase { name } => OwnedKind::Phase(name.to_string()),
+        IterKind::Children { children } => OwnedKind::Children(children.to_vec()),
+    });
+    for value in values {
+        let value = value.clone();
+        let var = var_owned.clone();
+        let mut task_ctx = ctx.clone();
+        let mut inner = bindings.clone();
+        inner.insert(var.clone(), value.clone());
+        let sem = sem.clone();
+        let owned_kind = owned_kind.clone();
+        set.spawn(async move {
+            let _permit = match sem {
+                Some(s) => Some(s.acquire_owned().await.map_err(|e| e.to_string())?),
+                None => None,
+            };
+            task_ctx.push_label(&var, &value);
+            let res = match &*owned_kind {
+                OwnedKind::Phase(name) => run_phase(&mut task_ctx, name, &inner).await,
+                OwnedKind::Children(children) => execute_tree_at(&mut task_ctx, children, &inner, depth).await,
+            };
+            task_ctx.pop_label();
+            res
+        });
+    }
+    let mut first_err: Option<String> = None;
+    while let Some(res) = set.join_next().await {
+        match res {
+            Err(join_err) => {
+                if first_err.is_none() {
+                    first_err = Some(format!("concurrent iteration panicked: {join_err}"));
+                }
+            }
+            Ok(Err(e)) => {
+                if first_err.is_none() { first_err = Some(e); }
+            }
+            Ok(Ok(())) => {}
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// ForCombinations walks dimensions lazily — later dimensions
+/// may reference earlier-bound variables. At the innermost
+/// dimension we descend into children via `execute_tree_at`.
+/// Each dimension's value loop is a sibling-set at `depth + dim`,
+/// but today's impl runs dimensions serially; cross-dimension
+/// concurrency is deferred. The children subtree honors the
+/// per-depth spec normally.
+fn cartesian_recurse<'a>(
+    ctx: &'a mut ExecCtx,
+    specs: &'a [(String, String)],
+    dim_idx: usize,
+    bindings: &'a HashMap<String, String>,
+    children: &'a [ScenarioNode],
+    depth: usize,
+    first: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    Box::pin(async move {
+        if dim_idx >= specs.len() {
+            execute_tree_at(ctx, children, bindings, depth).await?;
+            return Ok(());
+        }
+        let (var, expr) = &specs[dim_idx];
+        let mut resolved_expr = expr.clone();
+        for (k, v) in bindings {
+            resolved_expr = resolved_expr.replace(&format!("{{{k}}}"), v);
+        }
+        let (_, values) = resolve_expr(
+            &format!("{var} in {resolved_expr}"),
+            &ctx.workload_params, bindings, &ctx.outer_scope_values)?;
+
+        if first {
+            let mut dims: Vec<String> = Vec::new();
+            dims.push(format!("{var}({} values)", values.len()));
+            for (v, _) in &specs[dim_idx + 1..] {
+                dims.push(v.clone());
+            }
+            let total_hint = values.len();
+            if !ctx.quiet() {
+                crate::diag!(crate::observer::LogLevel::Debug, "for_combinations [{}] ({total_hint}+ combinations × {} children)",
+                    dims.join(" × "), children.len());
+            }
+        }
+
+        for value in &values {
+            let mut inner = bindings.clone();
+            inner.insert(var.clone(), value.clone());
+            ctx.push_label(var, value);
+            cartesian_recurse(ctx, specs, dim_idx + 1, &inner, children, depth, false).await?;
+            ctx.pop_label();
+        }
+        Ok(())
+    })
 }
 
 /// Execute one phase with the given bindings.
@@ -245,11 +439,20 @@ async fn run_phase(
     let (iter_program, iter_ops) = if is_iter || has_bindings {
         let mut ops = phase.ops.clone();
 
-        // Text substitution: replace {var} placeholders in GK source
-        // and op templates. This must happen before scope ingestion
-        // because GK expressions may embed placeholders like
-        // `vector_at(row, "{spec}")`.
-        crate::scope::substitute_iteration_vars(&mut ops, bindings);
+        // Iteration variables are no longer text-substituted
+        // (SRD 18b §"Iteration variables as scope outputs").
+        // `add_iteration_var` declares each as a typed extern;
+        // the runtime populates extern values per iteration just
+        // below, after the kernel is compiled. References to
+        // `{var}` in GK source resolve through the extern's
+        // passthrough output; op-field bind-point references
+        // (`stmt: "INSERT id={var}"`) render through the same
+        // mechanism at execution time.
+        //
+        // Workload params are still substituted because they're
+        // static for the session — making them externs would
+        // be the same shape but without the per-iter rebinding
+        // benefit.
         crate::scope::substitute_workload_params(&mut ops, &ctx.workload_params);
 
         // Rewrite inline expressions ({{expr}} → {__expr_N}) in op templates.
@@ -282,22 +485,87 @@ async fn run_phase(
         };
         scope.validate().map_err(|e| format!("{gk_context}: {e}"))?;
 
-        // Compile from the validated scope
+        // Compile-and-cache or rebind path (SRD 18b §"Cache-and-
+        // rebind contract").
+        //
+        // The phase scope's `Arc<GkProgram>` lives in a
+        // `OnceLock` on its scope-tree node. First call compiles
+        // (using the chain-walked pragmas), inserts; subsequent
+        // calls retrieve and build a fresh `GkKernel` from the
+        // cached program with a freshly-created `GkState`. Each
+        // call ends up with the same shape — a populated
+        // `GkKernel` ready for outer-scope and iteration-variable
+        // extern injection — but only the first call pays the
+        // compile cost.
         let cursor_limit: Option<u64> = ctx.merged_params.get("limit")
             .and_then(|s| s.parse().ok());
-        let mut kernel = crate::bindings::compile_from_scope(
-            &scope,
-            ctx.workload_dir.as_deref(),
-            ctx.gk_lib_paths.clone(),
-            ctx.strict,
-            &gk_context,
-            cursor_limit,
-        ).map_err(|e| format!("{gk_context}: {e}"))?;
+        let phase_idx = ctx.scope_tree.phase_node_by_name(phase_name);
+        let phase_pragmas = phase_idx
+            .map(|idx| ctx.scope_tree.nodes[idx].pragmas.clone())
+            .unwrap_or_default();
+
+        let mut kernel = if let Some(idx) = phase_idx {
+            let node = &ctx.scope_tree.nodes[idx];
+            if let Some(prog) = node.cached_program.get() {
+                // Cache hit: rebind path. Build a fresh kernel
+                // from the cached program; the freshly-allocated
+                // state is empty and will be populated below.
+                nb_variates::kernel::GkKernel::from_program(prog.clone())
+            } else {
+                // First call for this phase — compile, then
+                // populate the cache. Other callers racing with
+                // us all see the first-winner via OnceLock.
+                let compiled = crate::bindings::compile_from_scope(
+                    &scope,
+                    ctx.workload_dir.as_deref(),
+                    ctx.gk_lib_paths.clone(),
+                    ctx.strict,
+                    &gk_context,
+                    cursor_limit,
+                    &phase_pragmas,
+                ).map_err(|e| format!("{gk_context}: {e}"))?;
+                let prog = compiled.program().clone();
+                let _ = node.cached_program.set(prog);
+                compiled
+            }
+        } else {
+            // Phase not in the scope tree (shouldn't happen for
+            // any executor-driven invocation; defensive). Fall
+            // back to the un-cached compile path.
+            crate::bindings::compile_from_scope(
+                &scope,
+                ctx.workload_dir.as_deref(),
+                ctx.gk_lib_paths.clone(),
+                ctx.strict,
+                &gk_context,
+                cursor_limit,
+                &phase_pragmas,
+            ).map_err(|e| format!("{gk_context}: {e}"))?
+        };
 
         // Wire outer scope values into the inner kernel's inputs
         for (name, value) in &ctx.outer_scope_values {
             if let Some(idx) = kernel.program().find_input(name) {
                 kernel.state().set_input(idx, value.clone());
+            }
+        }
+        // Populate iteration-variable externs (SRD 18b
+        // §"Iteration variables as scope outputs"). Each iter
+        // var was declared as a typed extern by
+        // `add_iteration_var`; here we set the current
+        // iteration's value with type matching the declaration.
+        // String → numeric coercion mirrors the inference in
+        // `add_iteration_var`.
+        for (name, value) in bindings {
+            if let Some(idx) = kernel.program().find_input(name) {
+                let v = if let Ok(n) = value.parse::<u64>() {
+                    nb_variates::node::Value::U64(n)
+                } else if let Ok(n) = value.parse::<f64>() {
+                    nb_variates::node::Value::F64(n)
+                } else {
+                    nb_variates::node::Value::Str(value.clone())
+                };
+                kernel.state().set_input(idx, v);
             }
         }
         let prog = Arc::new(OpBuilder::new(kernel)).program();
@@ -364,8 +632,12 @@ async fn run_phase(
     };
 
     let phase_labels = format_labels(bindings);
+    let stanza_len = op_sequence.stanza_length();
     ctx.observer.phase_starting(phase_name, &phase_labels,
-        op_sequence.stanza_length(), phase_concurrency);
+        stanza_len, phase_concurrency);
+    crate::scene_tree::with_global_mut(|t| {
+        t.set_phase_running(phase_name, &phase_labels, stanza_len);
+    });
 
     let iter_label = bindings.values().next().cloned().unwrap_or_default();
     let activity_name = if !iter_label.is_empty() {
@@ -658,10 +930,16 @@ async fn run_phase(
     let phase_duration = phase_start.elapsed().as_secs_f64();
     if stopped {
         ctx.observer.phase_failed(phase_name, &phase_labels, "stopped by error handler");
+        crate::scene_tree::with_global_mut(|t| {
+            t.set_phase_failed(phase_name, &phase_labels, "stopped by error handler");
+        });
         return Err(format!("phase '{phase_name}' stopped by error handler"));
     }
 
     ctx.observer.phase_completed(phase_name, &phase_labels, phase_duration);
+    crate::scene_tree::with_global_mut(|t| {
+        t.set_phase_completed(phase_name, &phase_labels, phase_duration);
+    });
     Ok(())
 }
 
@@ -715,42 +993,27 @@ fn resolve_expr(
 // Scenario tree pre-mapping (walk without executing)
 // =========================================================================
 
-/// Whether a pre-map entry represents a phase or a scope header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PreMapKind {
-    Phase,
-    Scope,
-}
+use crate::scene_tree::{NodeKind, SceneNodeId, SceneTree};
 
-/// Pre-map entry: either an executable phase or a visual scope header
-/// (for_each / for_combinations / do_while / do_until).
-pub struct PreMapEntry {
-    pub kind: PreMapKind,
-    /// For `Phase`: the phase name. For `Scope`: the iterator
-    /// description (e.g., `"profile in [label_00, label_01, ...]"`).
-    pub name: String,
-    /// For `Phase`: sorted dimensional labels. For `Scope`: empty.
-    pub labels: String,
-    /// Nesting depth for tree indentation.
-    pub depth: usize,
-}
-
-/// Walk the scenario tree without executing to enumerate all concrete phases.
+/// Walk the scenario tree without executing and build a
+/// [`SceneTree`] of every concrete phase and scope header.
 ///
-/// Resolves `for_each` / `for_combinations` expressions to determine
-/// iteration values. `do_while` / `do_until` are shown once (iteration
-/// count unknown at pre-map time).
+/// `for_each` / `for_combinations` specs are resolved here so each
+/// iteration appears as its own concrete phase under a per-iteration
+/// scope header. `do_while` / `do_until` are shown once (iteration
+/// count is unknown at pre-map time).
 pub fn pre_map_tree(
     nodes: &[ScenarioNode],
     phases: &HashMap<String, WorkloadPhase>,
     workload_params: &HashMap<String, String>,
     outer_scope_values: &[(String, nb_variates::node::Value)],
-) -> Result<Vec<PreMapEntry>, String> {
-    let mut entries = Vec::new();
+) -> Result<SceneTree, String> {
+    let mut tree = SceneTree::new();
     let bindings = HashMap::new();
+    let root = tree.root();
     pre_map_recursive(nodes, phases, workload_params, outer_scope_values,
-                      &bindings, 0, &mut entries)?;
-    Ok(entries)
+                      &bindings, root, &mut tree)?;
+    Ok(tree)
 }
 
 fn pre_map_recursive(
@@ -759,122 +1022,83 @@ fn pre_map_recursive(
     workload_params: &HashMap<String, String>,
     outer_scope_values: &[(String, nb_variates::node::Value)],
     bindings: &HashMap<String, String>,
-    depth: usize,
-    out: &mut Vec<PreMapEntry>,
+    parent: SceneNodeId,
+    tree: &mut SceneTree,
 ) -> Result<(), String> {
     for node in nodes {
         match node {
             ScenarioNode::Phase(name) => {
-                // Check for phase-level for_each
                 let phase_fe = phases.get(name.as_str())
                     .and_then(|p| p.for_each.clone());
                 if let Some(spec) = phase_fe {
                     match resolve_expr(&spec, workload_params, bindings, outer_scope_values) {
                         Ok((var, values)) => {
-                            // Emit a scope header above the iterated
-                            // instances so they render as children of
-                            // a named group.
-                            out.push(PreMapEntry {
-                                kind: PreMapKind::Scope,
-                                name: format!("phase.for_each {var} in [{}]", values.join(", ")),
-                                labels: String::new(),
-                                depth,
-                            });
+                            let scope = tree.push(
+                                parent,
+                                NodeKind::Scope,
+                                format!("phase.for_each {var} in [{}]", values.join(", ")),
+                                "",
+                            );
                             for value in &values {
                                 let mut inner = bindings.clone();
                                 inner.insert(var.clone(), value.clone());
-                                out.push(PreMapEntry {
-                                    kind: PreMapKind::Phase,
-                                    name: name.clone(),
-                                    labels: format_labels(&inner),
-                                    depth: depth + 1,
-                                });
+                                tree.push(scope, NodeKind::Phase, name.clone(), format_labels(&inner));
                             }
                         }
                         Err(_) => {
-                            // Can't resolve at pre-map time — show once
-                            out.push(PreMapEntry {
-                                kind: PreMapKind::Phase,
-                                name: name.clone(),
-                                labels: format_labels(bindings),
-                                depth,
-                            });
+                            tree.push(parent, NodeKind::Phase, name.clone(), format_labels(bindings));
                         }
                     }
                 } else {
-                    out.push(PreMapEntry {
-                        kind: PreMapKind::Phase,
-                        name: name.clone(),
-                        labels: format_labels(bindings),
-                        depth,
-                    });
+                    tree.push(parent, NodeKind::Phase, name.clone(), format_labels(bindings));
                 }
             }
             ScenarioNode::ForEach { spec, children } => {
                 match resolve_expr(spec, workload_params, bindings, outer_scope_values) {
                     Ok((var, values)) => {
-                        // One scope header per iteration — so each
+                        // One scope header per iteration so each
                         // iteration's phases cluster under their own
-                        // concrete binding, not under a single header
-                        // that aggregates all values.
+                        // concrete binding.
                         for value in &values {
-                            out.push(PreMapEntry {
-                                kind: PreMapKind::Scope,
-                                name: format!("for_each {var}={value}"),
-                                labels: String::new(),
-                                depth,
-                            });
+                            let scope = tree.push(
+                                parent,
+                                NodeKind::Scope,
+                                format!("for_each {var}={value}"),
+                                "",
+                            );
                             let mut inner = bindings.clone();
                             inner.insert(var.clone(), value.clone());
                             pre_map_recursive(children, phases, workload_params,
-                                outer_scope_values, &inner, depth + 1, out)?;
+                                outer_scope_values, &inner, scope, tree)?;
                         }
                     }
                     Err(_) => {
-                        out.push(PreMapEntry {
-                            kind: PreMapKind::Scope,
-                            name: format!("for_each {spec}"),
-                            labels: String::new(),
-                            depth,
-                        });
+                        let scope = tree.push(parent, NodeKind::Scope, format!("for_each {spec}"), "");
                         pre_map_recursive(children, phases, workload_params,
-                            outer_scope_values, bindings, depth + 1, out)?;
+                            outer_scope_values, bindings, scope, tree)?;
                     }
                 }
             }
             ScenarioNode::ForCombinations { specs, children } => {
-                let summary = specs.iter()
-                    .map(|(v, _)| v.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                out.push(PreMapEntry {
-                    kind: PreMapKind::Scope,
-                    name: format!("for_combinations [{summary}]"),
-                    labels: String::new(),
-                    depth,
-                });
+                let summary = specs.iter().map(|(v, _)| v.as_str()).collect::<Vec<_>>().join(", ");
+                let scope = tree.push(
+                    parent,
+                    NodeKind::Scope,
+                    format!("for_combinations [{summary}]"),
+                    "",
+                );
                 pre_map_combinations(specs, 0, phases, workload_params,
-                    outer_scope_values, bindings, depth + 1, children, out)?;
+                    outer_scope_values, bindings, scope, children, tree)?;
             }
             ScenarioNode::DoWhile { condition, children, .. } => {
-                out.push(PreMapEntry {
-                    kind: PreMapKind::Scope,
-                    name: format!("do_while {condition}"),
-                    labels: String::new(),
-                    depth,
-                });
+                let scope = tree.push(parent, NodeKind::Scope, format!("do_while {condition}"), "");
                 pre_map_recursive(children, phases, workload_params,
-                    outer_scope_values, bindings, depth + 1, out)?;
+                    outer_scope_values, bindings, scope, tree)?;
             }
             ScenarioNode::DoUntil { condition, children, .. } => {
-                out.push(PreMapEntry {
-                    kind: PreMapKind::Scope,
-                    name: format!("do_until {condition}"),
-                    labels: String::new(),
-                    depth,
-                });
+                let scope = tree.push(parent, NodeKind::Scope, format!("do_until {condition}"), "");
                 pre_map_recursive(children, phases, workload_params,
-                    outer_scope_values, bindings, depth + 1, out)?;
+                    outer_scope_values, bindings, scope, tree)?;
             }
         }
     }
@@ -888,13 +1112,13 @@ fn pre_map_combinations(
     workload_params: &HashMap<String, String>,
     outer_scope_values: &[(String, nb_variates::node::Value)],
     bindings: &HashMap<String, String>,
-    depth: usize,
+    parent: SceneNodeId,
     children: &[ScenarioNode],
-    out: &mut Vec<PreMapEntry>,
+    tree: &mut SceneTree,
 ) -> Result<(), String> {
     if dim_idx >= specs.len() {
         return pre_map_recursive(children, phases, workload_params,
-            outer_scope_values, bindings, depth, out);
+            outer_scope_values, bindings, parent, tree);
     }
     let (var, expr) = &specs[dim_idx];
     let mut resolved_expr = expr.clone();
@@ -910,13 +1134,12 @@ fn pre_map_combinations(
                 let mut inner = bindings.clone();
                 inner.insert(var.clone(), value.clone());
                 pre_map_combinations(specs, dim_idx + 1, phases, workload_params,
-                    outer_scope_values, &inner, depth, children, out)?;
+                    outer_scope_values, &inner, parent, children, tree)?;
             }
         }
         Err(_) => {
-            // Can't resolve this dimension — continue with remaining
             pre_map_combinations(specs, dim_idx + 1, phases, workload_params,
-                outer_scope_values, bindings, depth, children, out)?;
+                outer_scope_values, bindings, parent, children, tree)?;
         }
     }
     Ok(())

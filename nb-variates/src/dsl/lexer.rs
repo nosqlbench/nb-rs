@@ -37,6 +37,12 @@ pub enum TokenKind {
     Final,
     /// `cursor` keyword
     Cursor,
+    /// `pragma` keyword (module-level directive opening, SRD 15
+    /// §"Module-Level Pragmas"). Followed by an `Ident` naming the
+    /// pragma. Distinct from line comments so the parser sees
+    /// pragmas as first-class statements rather than scraping them
+    /// out of `// @pragma:` text.
+    Pragma,
     /// `.` (field access: `base.ordinal`)
     Dot,
     /// Integer literal: `1000`, `0xFF`
@@ -91,6 +97,18 @@ pub enum TokenKind {
     Pipe,
     /// `!` (unary bitwise NOT)
     Bang,
+    /// `<` (less-than comparison)
+    Lt,
+    /// `>` (greater-than comparison)
+    Gt,
+    /// `==` (equal-to comparison)
+    EqEq,
+    /// `!=` (not-equal-to comparison)
+    BangEq,
+    /// `<=` (less-than-or-equal comparison)
+    LtEq,
+    /// `>=` (greater-than-or-equal comparison)
+    GtEq,
     /// End of input
     Eof,
 }
@@ -269,7 +287,16 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
             '{' => { tokens.push(Token { kind: TokenKind::LBrace, span }); pos += 1; col += 1; continue; }
             '}' => { tokens.push(Token { kind: TokenKind::RBrace, span }); pos += 1; col += 1; continue; }
             ',' => { tokens.push(Token { kind: TokenKind::Comma, span }); pos += 1; col += 1; continue; }
-            '=' => { tokens.push(Token { kind: TokenKind::Eq, span }); pos += 1; col += 1; continue; }
+            '=' => {
+                if pos + 1 < chars.len() && chars[pos + 1] == '=' {
+                    tokens.push(Token { kind: TokenKind::EqEq, span });
+                    pos += 2; col += 2;
+                } else {
+                    tokens.push(Token { kind: TokenKind::Eq, span });
+                    pos += 1; col += 1;
+                }
+                continue;
+            }
             ':' => { tokens.push(Token { kind: TokenKind::Colon, span }); pos += 1; col += 1; continue; }
             '+' => { tokens.push(Token { kind: TokenKind::Plus, span }); pos += 1; col += 1; continue; }
             '-' => { tokens.push(Token { kind: TokenKind::Minus, span }); pos += 1; col += 1; continue; }
@@ -289,22 +316,41 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                 if pos + 1 < chars.len() && chars[pos + 1] == '<' {
                     tokens.push(Token { kind: TokenKind::ShiftLeft, span });
                     pos += 2; col += 2;
-                    continue;
+                } else if pos + 1 < chars.len() && chars[pos + 1] == '=' {
+                    tokens.push(Token { kind: TokenKind::LtEq, span });
+                    pos += 2; col += 2;
+                } else {
+                    tokens.push(Token { kind: TokenKind::Lt, span });
+                    pos += 1; col += 1;
                 }
-                // bare `<` is not a valid token currently
+                continue;
             }
             '>' => {
                 if pos + 1 < chars.len() && chars[pos + 1] == '>' {
                     tokens.push(Token { kind: TokenKind::ShiftRight, span });
                     pos += 2; col += 2;
-                    continue;
+                } else if pos + 1 < chars.len() && chars[pos + 1] == '=' {
+                    tokens.push(Token { kind: TokenKind::GtEq, span });
+                    pos += 2; col += 2;
+                } else {
+                    tokens.push(Token { kind: TokenKind::Gt, span });
+                    pos += 1; col += 1;
                 }
-                // bare `>` is not a valid token currently
+                continue;
             }
             '.' => { tokens.push(Token { kind: TokenKind::Dot, span }); pos += 1; col += 1; continue; }
             '&' => { tokens.push(Token { kind: TokenKind::Ampersand, span }); pos += 1; col += 1; continue; }
             '|' => { tokens.push(Token { kind: TokenKind::Pipe, span }); pos += 1; col += 1; continue; }
-            '!' => { tokens.push(Token { kind: TokenKind::Bang, span }); pos += 1; col += 1; continue; }
+            '!' => {
+                if pos + 1 < chars.len() && chars[pos + 1] == '=' {
+                    tokens.push(Token { kind: TokenKind::BangEq, span });
+                    pos += 2; col += 2;
+                } else {
+                    tokens.push(Token { kind: TokenKind::Bang, span });
+                    pos += 1; col += 1;
+                }
+                continue;
+            }
             _ => {}
         }
 
@@ -356,6 +402,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                 "shared" => TokenKind::Shared,
                 "final" => TokenKind::Final,
                 "cursor" => TokenKind::Cursor,
+                "pragma" => TokenKind::Pragma,
                 _ => TokenKind::Ident(word),
             };
             tokens.push(Token { kind, span });

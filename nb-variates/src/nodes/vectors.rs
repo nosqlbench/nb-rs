@@ -1217,8 +1217,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Look up a base vector by index from a loaded dataset.\nReturns the vector as a JSON array string: [0.1,0.2,...].\nThe index wraps modulo the dataset size.\nRequires a dataset loaded at init time.\nExample: vector_at(mod(cycle, vector_count), dataset)",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1229,8 +1229,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Look up a base vector by index, returning raw f32 little-endian bytes.\nSuitable for CQL blob columns or binary protocols.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1241,8 +1241,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Look up a query vector by index from a loaded dataset.\nReturns the vector as a JSON array string.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1253,8 +1253,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Look up a query vector by index, returning raw f32 little-endian bytes.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1265,8 +1265,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Look up ground-truth k-nearest neighbor indices for a query.\nReturns indices as a JSON array string: [42,17,99,...].\nUsed for recall verification in vector search workloads.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1277,8 +1277,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Look up ground-truth distances for a query's k-nearest neighbors.\nReturns distances as a JSON array string.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1289,8 +1289,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Look up filtered ground-truth neighbor indices for a query.\nUsed for filtered ANN recall verification.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1301,8 +1301,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Look up filtered ground-truth distances for a query.\nUsed for filtered ANN recall verification.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1312,7 +1312,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "dataset distance/similarity function name",
             help: "Returns the distance function declared in the dataset metadata\n(e.g., 'cosine', 'euclidean', 'dot_product').\nConstant per dataset.\nExample: dataset_distance_function(\"glove-25-angular\")",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1321,7 +1321,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "dataset vector dimensionality",
             help: "Returns the dimensionality of vectors in the loaded dataset.\nConstant per dataset — evaluated once at init time.\nExample: vector_dim(\"glove-100\")",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1330,7 +1330,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "dataset vector count",
             help: "Returns the number of vectors in the loaded dataset.\nConstant per dataset — evaluated once at init time.\nExample: vector_count(\"glove-100\")",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1339,7 +1339,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "dataset query vector count",
             help: "Returns the number of query vectors in the dataset.",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1348,7 +1348,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "ground-truth neighbors per query (maxk)",
             help: "Returns the number of ground-truth neighbors per query (the k in k-NN).",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1358,8 +1358,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Returns the number of matching base vectors for a query's\npredicate without loading the full index list.\nUses dim_at() which reads only the 4-byte header.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1370,8 +1370,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Variable-length list of base vector ordinals that match\nthe predicate for a given query index.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1381,7 +1381,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "number of predicate result sets",
             help: "Returns the number of metadata index result sets (typically equals query count).",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1390,7 +1390,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "list available facets in a dataset",
             help: "Returns a comma-separated list of facet names available\nin the dataset's default profile.",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1399,7 +1399,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "total number of profiles in a dataset",
             help: "Returns the number of profiles defined in the dataset.\nConstant per dataset — evaluated once at init time.\nExample: dataset_profile_count(\"example\")",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1408,7 +1408,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "comma-separated list of profile names",
             help: "Returns a comma-separated list of all profile names in the dataset,\nsorted by base_count (canonical order).\nExample: dataset_profile_names(\"example\")",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1418,8 +1418,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Returns profiles whose names start with the given prefix.\nIf prefix is empty, returns all profiles.\nUsed by for_each: phase templates to discover profiles dynamically.\nExample: matching_profiles(\"example\", \"label\")",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
-                ParamSpec { name: "prefix", slot_type: SlotType::ConstStr, required: false, example: "\"\"" },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
+                ParamSpec { name: "prefix", slot_type: SlotType::ConstStr, required: false, example: "\"\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1430,8 +1430,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Returns the profile name at a given index from the dataset's\nsorted profile list. Index wraps modulo profile count.\nExample: dataset_profile_name_at(cycle, \"example\")",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1442,8 +1442,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Returns the base vector count for the profile at a given index\nin the dataset's sorted profile list. Index wraps modulo profile count.\nExample: profile_base_count(cycle, \"example\")",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1454,8 +1454,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Returns a comma-separated list of facet names for the profile at a\ngiven index in the dataset's sorted profile list.\nExample: profile_facets(cycle, \"example\")",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1465,7 +1465,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "eagerly download dataset facets to local cache",
             help: "Downloads all facets for a dataset to the local cache before\nworkload execution. Returns the number of facets prebuffered.\nSubsequent loads use fast local mmap access.\nExample: dataset_prebuffer(\"example\")",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1475,8 +1475,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Read a metadata value for a base vector by ordinal.\nFor scalar ordinal data, returns the integer value as a string.\nReads from the metadata_content facet.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1487,8 +1487,8 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Read a predicate value for a query by ordinal.\nFor scalar ordinal data, returns the integer value as a string.\nReads from the metadata_predicates facet.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" },
+                ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -1498,7 +1498,7 @@ pub fn signatures() -> &'static [FuncSig] {
             description: "number of metadata content records",
             help: "Returns the number of metadata content records in the dataset.",
             identity: None, variadic_ctor: None,
-            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"" }],
+            params: &[ParamSpec { name: "source", slot_type: SlotType::ConstStr, required: true, example: "\"test\"", constraint: None }],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
         },
@@ -1628,3 +1628,137 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
 
 #[cfg(feature = "vectordata")]
 crate::register_nodes!(signatures, build_node);
+
+// =========================================================================
+// Cursor-sugar handlers (SRD 18 §"Source-driven workloads")
+// =========================================================================
+//
+// Three sugar forms recognized by this module — none of them
+// known to the core compiler, which dispatches generically
+// through `dsl::cursor_sugar`. Each desugars to a synthetic
+// `range(0, vector_count|query_count(...))` constructor plus
+// auxiliary bindings:
+//
+//   - `__<cursor>_prebuffer := dataset_prebuffer("ds:profile")`
+//     loaded once at init time so cycle-time accessor calls hit
+//     prefetched memory.
+//   - `<cursor>__vector := vector_at_bytes(<cursor>__ordinal,
+//     "ds:profile")` (or `query_vector_at_bytes` for the query
+//     facet) — published as the cursor's `vector` projection so
+//     workloads can reference `<cursor>.vector`.
+//
+// Forms:
+//   - `vectordata_source(dataset, profile, facet)` — explicit facet
+//   - `vectordata_base(dataset, profile)`           — facet = "base"
+//   - `vectordata_query(dataset, profile)`          — facet = "query"
+//
+// Facet-specific projections like `metadata` / `ground_truth` /
+// `predicate` stay explicit (the user writes
+// `meta := metadata_value_at(<cursor>.ordinal, "ds:profile")` by
+// hand) because their existence is dataset-conditional — not
+// every dataset declares a metadata column or a predicate facet.
+
+#[cfg(feature = "vectordata")]
+fn vectordata_sugar(
+    source_name: &str,
+    constructor: &crate::dsl::ast::Expr,
+) -> Result<Option<crate::dsl::cursor_sugar::CursorSugar>, String> {
+    use crate::dsl::ast::{Arg, CallExpr, Expr};
+    use crate::dsl::compile::positional_str_lit;
+    use crate::dsl::cursor_sugar::{AuxBinding, CursorSugar};
+
+    let Expr::Call(call) = constructor else { return Ok(None); };
+
+    let (dataset, profile, facet) = match call.func.as_str() {
+        "vectordata_source" => {
+            let d = positional_str_lit(call.args.first()).ok_or_else(|| format!(
+                "cursor '{source_name}': vectordata_source(dataset, profile, facet) — first arg must be a string literal"
+            ))?;
+            let p = positional_str_lit(call.args.get(1)).ok_or_else(|| format!(
+                "cursor '{source_name}': vectordata_source(dataset, profile, facet) — second arg must be a string literal"
+            ))?;
+            let f = positional_str_lit(call.args.get(2)).ok_or_else(|| format!(
+                "cursor '{source_name}': vectordata_source(dataset, profile, facet) — third arg must be a string literal (\"base\" or \"query\")"
+            ))?;
+            (d, p, f)
+        }
+        "vectordata_base" | "vectordata_query" => {
+            let f = call.func.strip_prefix("vectordata_").unwrap().to_string();
+            let d = positional_str_lit(call.args.first()).ok_or_else(|| format!(
+                "cursor '{source_name}': {}(dataset, profile) — first arg must be a string literal",
+                call.func,
+            ))?;
+            let p = positional_str_lit(call.args.get(1)).ok_or_else(|| format!(
+                "cursor '{source_name}': {}(dataset, profile) — second arg must be a string literal",
+                call.func,
+            ))?;
+            (d, p, f)
+        }
+        _ => return Ok(None),
+    };
+
+    if facet != "base" && facet != "query" {
+        return Err(format!(
+            "cursor '{source_name}': vectordata facet must be \"base\" or \"query\", got \"{facet}\""
+        ));
+    }
+    let (count_func, vector_func) = match facet.as_str() {
+        "base" => ("vector_count", "vector_at_bytes"),
+        "query" => ("query_count", "query_vector_at_bytes"),
+        _ => unreachable!(),
+    };
+
+    let combined = format!("{dataset}:{profile}");
+    let span = call.span;
+    let lit = |s: String| Expr::StringLit(s, span);
+    let positional = |e: Expr| Arg::Positional(e);
+
+    let effective_constructor = Expr::Call(CallExpr {
+        func: "range".into(),
+        args: vec![
+            positional(Expr::IntLit(0, span)),
+            positional(Expr::Call(CallExpr {
+                func: count_func.into(),
+                args: vec![positional(lit(combined.clone()))],
+                span,
+            })),
+        ],
+        span,
+    });
+
+    let prebuffer_binding = AuxBinding {
+        name: format!("__{source_name}_prebuffer"),
+        value: Expr::Call(CallExpr {
+            func: "dataset_prebuffer".into(),
+            args: vec![positional(lit(combined.clone()))],
+            span,
+        }),
+        projection: None,
+    };
+
+    let vector_binding = AuxBinding {
+        name: format!("{source_name}__vector"),
+        value: Expr::Call(CallExpr {
+            func: vector_func.into(),
+            args: vec![
+                positional(Expr::Ident(format!("{source_name}__ordinal"), span)),
+                positional(lit(combined)),
+            ],
+            span,
+        }),
+        projection: Some(("vector".into(), crate::node::PortType::Bytes)),
+    };
+
+    Ok(Some(CursorSugar {
+        effective_constructor,
+        aux_bindings: vec![prebuffer_binding, vector_binding],
+    }))
+}
+
+#[cfg(feature = "vectordata")]
+inventory::submit! {
+    crate::dsl::cursor_sugar::CursorSugarRegistration {
+        handler: vectordata_sugar,
+        name: "vectordata",
+    }
+}

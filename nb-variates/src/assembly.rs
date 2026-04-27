@@ -176,6 +176,19 @@ pub struct GkAssembler {
     context: String,
     /// Binding modifiers for named outputs.
     output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
+    /// SRD 15 §"Strict Wire Mode": when true, the resolver
+    /// auto-inserts `AssertValue` nodes in front of every wire
+    /// input whose declared `Port.constraint` can't be statically
+    /// proven satisfied by the source.
+    pub(crate) strict_values: bool,
+    /// SRD 15: when true, the resolver auto-inserts `AssertType`
+    /// nodes in front of wires where the source's runtime variant
+    /// can't be statically proven to match the sink's declared
+    /// `PortType`. Today this is mainly latent — the type system
+    /// already proves variants match for nearly every wire — so
+    /// the flag exists for forward compatibility with dynamic
+    /// JSON navigation, `Ext` unwraps, and cross-adapter values.
+    pub(crate) strict_types: bool,
 }
 
 impl GkAssembler {
@@ -194,7 +207,17 @@ impl GkAssembler {
             source: String::new(),
             context: "(assembler)".into(),
             output_modifiers: HashMap::new(),
+            strict_values: false,
+            strict_types: false,
         }
+    }
+
+    /// Enable strict-wire-mode auto-insertion of value/type assertion
+    /// nodes (SRD 15 §"Strict Wire Mode"). Off by default — the
+    /// caller (compiler / DSL pragma extractor) opts in.
+    pub fn set_strict_wires(&mut self, strict_types: bool, strict_values: bool) {
+        self.strict_types = strict_types;
+        self.strict_values = strict_values;
     }
 
     /// Set the source text and diagnostic context for this assembler.
@@ -780,6 +803,9 @@ impl GkAssembler {
         let mut all_nodes: Vec<PendingNode> = Vec::new();
         let mut all_name_to_idx: HashMap<String, usize> = HashMap::new();
         let mut adapter_count = 0usize;
+        let mut assertion_count = 0usize;
+        let strict_values = self.strict_values;
+        let strict_types = self.strict_types;
 
         for pn in self.nodes {
             let idx = all_nodes.len();
@@ -865,6 +891,89 @@ impl GkAssembler {
                         to_port: port_idx,
                         to_type: expected_type,
                     });
+                }
+
+                // === Strict-wire assertion insertion (SRD 15) ===
+                //
+                // After a wire is resolved (and any type adapter
+                // inserted), look at the sink port's declared
+                // `constraint`. If strict_values is on, we either
+                // prove the source already satisfies it (skip) or
+                // splice an `AssertValue` node in front of the
+                // sink. The skip cases mirror the four bullets in
+                // SRD 15 §"Strict Wire Mode": static type match is
+                // already handled by the adapter pass above; here
+                // we cover constant sources and upstream-assertion
+                // chains for value constraints.
+                let sink_port = &all_nodes[node_idx].node.meta().wire_inputs()[port_idx];
+                if let Some(constraint) = sink_port.constraint.clone() {
+                    let last_source = node_wiring.last().expect("wire just pushed").clone();
+                    if strict_values && !value_constraint_proven(
+                        &all_nodes,
+                        &last_source,
+                        &constraint,
+                    ) {
+                        let assert_name = format!("__assert_v_{assertion_count}");
+                        assertion_count += 1;
+                        let assert_idx = all_nodes.len();
+
+                        if let Some(ref mut log) = log {
+                            let from_name = match wire_ref {
+                                WireRef::Input(n) => n.clone(),
+                                WireRef::Node(n, _) => n.clone(),
+                            };
+                            log.push(crate::dsl::events::CompileEvent::AssertionInserted {
+                                from_node: from_name,
+                                to_node: all_nodes[node_idx].name.clone(),
+                                kind: format!("{:?} value-assert {:?}",
+                                    expected_type, &constraint),
+                            });
+                        }
+
+                        all_name_to_idx.insert(assert_name.clone(), assert_idx);
+                        let assert_wiring = vec![last_source];
+                        while resolved_wiring.len() <= assert_idx {
+                            resolved_wiring.push(Vec::new());
+                        }
+                        resolved_wiring[assert_idx] = assert_wiring;
+
+                        all_nodes.push(PendingNode {
+                            name: assert_name,
+                            node: crate::nodes::assertions::assert_value_node(
+                                expected_type,
+                                constraint,
+                            ),
+                            inputs: vec![],
+                        });
+
+                        // Replace the just-pushed source with the
+                        // assertion's output.
+                        *node_wiring.last_mut().unwrap() =
+                            WireSource::NodeOutput(assert_idx, 0);
+                    } else if let Some(ref mut log) = log {
+                        let from_name = match wire_ref {
+                            WireRef::Input(n) => n.clone(),
+                            WireRef::Node(n, _) => n.clone(),
+                        };
+                        log.push(crate::dsl::events::CompileEvent::AssertionSkipped {
+                            from_node: from_name,
+                            to_node: all_nodes[node_idx].name.clone(),
+                            reason: assertion_skip_reason(
+                                strict_values,
+                                &all_nodes,
+                                &last_source,
+                                &constraint,
+                            ),
+                        });
+                    }
+                } else if strict_types && source_type != expected_type {
+                    // Type mismatch was already adapted above; the
+                    // post-adapter wire is statically the right
+                    // type. No assertion needed. Tracking the skip
+                    // here is forward-compatible — once dynamic
+                    // type cases (JSON nav, Ext unwraps) appear,
+                    // this is where the AssertType insertion would
+                    // hook in.
                 }
             }
 
@@ -1057,6 +1166,80 @@ impl GkAssembler {
             context: self.context,
             output_modifiers: self.output_modifiers,
         })
+    }
+}
+
+/// Decide whether the source feeding `wire_source` already
+/// guarantees the sink's value `constraint` at compile time.
+/// Returns `true` if the assertion can be safely skipped.
+///
+/// Today we recognise two skip cases (SRD 15 §"Strict Wire Mode"):
+///
+/// 1. **Constant source.** The source node has no wire inputs and
+///    its name matches the convention used by `fixed::ConstU64`
+///    et al. Const sources have already been validated against
+///    their `ParamSpec.constraint` at the factory layer, so any
+///    further runtime check would be redundant.
+/// 2. **Upstream assertion.** The source is itself an
+///    `AssertValue` node (its name starts with `__assert_v_`),
+///    which already enforces the same or stronger contract.
+fn value_constraint_proven(
+    all_nodes: &[PendingNode],
+    src: &WireSource,
+    _constraint: &crate::dsl::const_constraints::ConstConstraint,
+) -> bool {
+    match src {
+        WireSource::Input(_) => false,
+        WireSource::NodeOutput(idx, _) => {
+            let meta = all_nodes[*idx].node.meta();
+            // Const-source heuristic: a node with no wire inputs
+            // is a constant. Today's `ConstU64` / `ConstF64` /
+            // `ConstBool` (in `nodes::fixed`) and the synthesised
+            // `ConstNode` from compile-time folding both qualify.
+            let no_wire_inputs = meta.wire_inputs().is_empty();
+            if no_wire_inputs {
+                return true;
+            }
+            // Upstream assertion: skip stacking the same guard.
+            // Conservative — any `__assert_v_*` upstream counts as
+            // proof. A fancier analysis would compare constraint
+            // shapes; for now, idempotency is good enough.
+            if meta.name.starts_with("__assert_v_")
+                || meta.name.starts_with("assert_")
+            {
+                return true;
+            }
+            false
+        }
+    }
+}
+
+/// Format the reason a strict-wire assertion was skipped, for the
+/// `AssertionSkipped` advisory event. Mirrors the bullets in SRD 15
+/// §"Strict Wire Mode" so the log is grep-able.
+fn assertion_skip_reason(
+    strict_values: bool,
+    all_nodes: &[PendingNode],
+    src: &WireSource,
+    _constraint: &crate::dsl::const_constraints::ConstConstraint,
+) -> String {
+    if !strict_values {
+        return "strict_values not enabled".into();
+    }
+    match src {
+        WireSource::Input(_) => "raw input wire".into(),
+        WireSource::NodeOutput(idx, _) => {
+            let meta = all_nodes[*idx].node.meta();
+            if meta.wire_inputs().is_empty() {
+                "constant source already validated".into()
+            } else if meta.name.starts_with("__assert_v_")
+                || meta.name.starts_with("assert_")
+            {
+                "upstream assertion".into()
+            } else {
+                "no skip rule matched".into()
+            }
+        }
     }
 }
 

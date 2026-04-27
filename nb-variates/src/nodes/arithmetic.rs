@@ -194,6 +194,115 @@ impl GkNode for ModU64 {
     }
 }
 
+/// Modulo of a u64 value by a *wire-fed* divisor.
+///
+/// Signature: `mod_wire(input: u64, divisor: u64) -> (u64)`
+///
+/// The divisor is computed at cycle time from another node — for
+/// example, a control read or a runtime-derived shard count. The
+/// divisor port declares a `NonZeroU64` constraint, so under
+/// `// @pragma: strict_values` the compiler auto-inserts an
+/// `assert_u64_nonzero` between the source and the divisor input
+/// (SRD 15 §"Strict Wire Mode"). Without strict mode, the node
+/// trusts the divisor and a zero value will panic at cycle time —
+/// the canonical "panic at hour 14" hazard, opt-out by design.
+///
+/// Use this when the modulus genuinely varies across cycles. For
+/// the const case, prefer [`ModU64`] which is faster (the divisor
+/// is baked into the JIT closure as a constant).
+///
+/// JIT level: P2 (compiled_u64 closure; not const-foldable).
+pub struct ModWireU64 {
+    meta: NodeMeta,
+}
+
+impl Default for ModWireU64 {
+    fn default() -> Self { Self::new() }
+}
+
+impl ModWireU64 {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "mod_wire".into(),
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("input")),
+                    // The divisor wire declares its non-zero
+                    // contract here. Strict-wire mode auto-inserts
+                    // an `assert_u64_nonzero` upstream when the
+                    // source can't statically guarantee it.
+                    Slot::Wire(
+                        Port::u64("divisor")
+                            .with_constraint(crate::dsl::const_constraints::ConstConstraint::NonZeroU64),
+                    ),
+                ],
+            },
+        }
+    }
+}
+
+impl GkNode for ModWireU64 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let divisor = inputs[1].as_u64();
+        // Trust the divisor by contract. Bad input is the user's
+        // problem unless they opted into strict_values, in which
+        // case the upstream assertion has already rejected zero.
+        outputs[0] = Value::U64(inputs[0].as_u64() % divisor);
+    }
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        Some(Box::new(|inputs, outputs| {
+            outputs[0] = inputs[0] % inputs[1];
+        }))
+    }
+}
+
+/// Division of a u64 value by a *wire-fed* divisor.
+///
+/// Signature: `div_wire(input: u64, divisor: u64) -> (u64)`
+///
+/// Sibling of [`ModWireU64`] for integer division. Same wire-input
+/// contract: divisor must be non-zero. Strict-wire mode auto-wires
+/// the assertion. JIT level: P2.
+pub struct DivWireU64 {
+    meta: NodeMeta,
+}
+
+impl Default for DivWireU64 {
+    fn default() -> Self { Self::new() }
+}
+
+impl DivWireU64 {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "div_wire".into(),
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("input")),
+                    Slot::Wire(
+                        Port::u64("divisor")
+                            .with_constraint(crate::dsl::const_constraints::ConstConstraint::NonZeroU64),
+                    ),
+                ],
+            },
+        }
+    }
+}
+
+impl GkNode for DivWireU64 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::U64(inputs[0].as_u64() / inputs[1].as_u64());
+    }
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        Some(Box::new(|inputs, outputs| {
+            outputs[0] = inputs[0] / inputs[1];
+        }))
+    }
+}
+
 /// Clamp an unsigned integer to [min, max].
 ///
 /// Signature: `clamp(input: u64, min: u64, max: u64) -> (u64)`
@@ -608,7 +717,7 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Wrapping addition of N wire inputs. With zero inputs returns 0.\nUseful for combining multiple independently generated components.\nParameters:\n  input... — any number of u64 wire inputs\nExample: sum(hash(cycle), hash(add(cycle, 1000)))\nIdentity element is 0. Overflow wraps at 2^64.",
             identity: Some(0),
             variadic_ctor: Some(|n| Box::new(SumN::new(n))),
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false, example: "cycle" }],
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false, example: "cycle", constraint: None }],
             arity: Arity::VariadicWires { min_wires: 0 },
             commutativity: crate::node::Commutativity::AllCommutative,
         },
@@ -618,7 +727,7 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Wrapping multiplication of N wire inputs. With zero inputs returns 1.\nUseful for combining independent scaling factors.\nParameters:\n  input... — any number of u64 wire inputs\nExample: product(hash(cycle), mod(cycle, 10))\nIdentity element is 1. Overflow wraps at 2^64.",
             identity: Some(1),
             variadic_ctor: Some(|n| Box::new(ProductN::new(n))),
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false, example: "cycle" }],
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false, example: "cycle", constraint: None }],
             arity: Arity::VariadicWires { min_wires: 0 },
             commutativity: crate::node::Commutativity::AllCommutative,
         },
@@ -628,7 +737,7 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Returns the smallest of N wire inputs. With zero inputs returns u64::MAX.\nUseful for clamping to the lowest of several generated bounds.\nParameters:\n  input... — any number of u64 wire inputs\nExample: min(hash(cycle), mod(cycle, 1000))\nIdentity element is u64::MAX.",
             identity: Some(u64::MAX),
             variadic_ctor: Some(|n| Box::new(MinN::new(n))),
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false, example: "cycle" }],
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false, example: "cycle", constraint: None }],
             arity: Arity::VariadicWires { min_wires: 0 },
             commutativity: crate::node::Commutativity::AllCommutative,
         },
@@ -638,7 +747,7 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Returns the largest of N wire inputs. With zero inputs returns 0.\nUseful for selecting the highest of several generated values.\nParameters:\n  input... — any number of u64 wire inputs\nExample: max(hash(cycle), mod(cycle, 500))\nIdentity element is 0.",
             identity: Some(0),
             variadic_ctor: Some(|n| Box::new(MaxN::new(n))),
-            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false, example: "cycle" }],
+            params: &[ParamSpec { name: "input", slot_type: SlotType::Wire, required: false, example: "cycle", constraint: None }],
             arity: Arity::VariadicWires { min_wires: 0 },
             commutativity: crate::node::Commutativity::AllCommutative,
         },
@@ -649,8 +758,8 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "add a constant (wrapping)",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "addend", slot_type: SlotType::ConstU64, required: true, example: "10" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "addend", slot_type: SlotType::ConstU64, required: true, example: "10", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -661,8 +770,8 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "multiply by a constant (wrapping)",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "factor", slot_type: SlotType::ConstU64, required: true, example: "10" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "factor", slot_type: SlotType::ConstU64, required: true, example: "10", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -673,8 +782,9 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "divide by a constant",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "divisor", slot_type: SlotType::ConstU64, required: true, example: "10" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "divisor", slot_type: SlotType::ConstU64, required: true, example: "10",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::NonZeroU64) },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -685,21 +795,46 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "modulo by a constant",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "modulus", slot_type: SlotType::ConstU64, required: true, example: "1000" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "modulus", slot_type: SlotType::ConstU64, required: true, example: "1000",
+                    constraint: Some(crate::dsl::const_constraints::ConstConstraint::NonZeroU64) },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             help: "Modular reduction: output = input % modulus, producing [0, K).\nThe most common operation after hash — bounds a hashed value\ninto a usable integer range.\nParameters:\n  input   — u64 wire input (typically hashed)\n  modulus — upper bound (exclusive, must be > 0)\nExample: mod(hash(cycle), 1000)  // yields 0..999",
         },
         FuncSig {
+            name: "mod_wire", category: C::Arithmetic,
+            outputs: 1, description: "modulo by a wire-fed divisor",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "divisor", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Modulo by a wire-fed divisor. Sibling of `mod` for cases where\nthe divisor varies per cycle (e.g. driven by a control or a\nruntime-derived shard count). The divisor port declares a\n`NonZeroU64` constraint, so under `// @pragma: strict_values`\nthe compiler auto-inserts an `assert_u64_nonzero` upstream.\nWithout strict mode the node trusts the divisor; a zero panics.\nParameters:\n  input   — u64 wire input\n  divisor — u64 wire input (non-zero)\nExample: shard := mod_wire(cycle, concurrency())",
+        },
+        FuncSig {
+            name: "div_wire", category: C::Arithmetic,
+            outputs: 1, description: "divide by a wire-fed divisor",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "divisor", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Integer division by a wire-fed divisor. Sibling of `div`. Same\nnon-zero contract on the `divisor` wire. Use when the divisor\ngenuinely varies per cycle.\nParameters:\n  input   — u64 wire input\n  divisor — u64 wire input (non-zero)\nExample: bucket := div_wire(cycle, partition_size())",
+        },
+        FuncSig {
             name: "clamp", category: C::Arithmetic,
             outputs: 1, description: "clamp u64 to [min, max]",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "min", slot_type: SlotType::ConstU64, required: true, example: "100" },
-                ParamSpec { name: "max", slot_type: SlotType::ConstU64, required: true, example: "100" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "min", slot_type: SlotType::ConstU64, required: true, example: "100", constraint: None },
+                ParamSpec { name: "max", slot_type: SlotType::ConstU64, required: true, example: "100", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -710,8 +845,8 @@ pub fn signatures() -> &'static [FuncSig] {
             outputs: 1, description: "interleave bits of two u64 values",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true, example: "cycle" },
-                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "a", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "b", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -723,7 +858,7 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Decompose a single u64 into multiple coordinate digits, like\nnested loops unrolled into a flat index. Each radix defines the\nmodulus for that digit; radix=0 means unbounded (captures remainder).\nProduces one output port per radix.\nParameters:\n  input    — u64 wire input\n  radix... — one or more u64 constants (variadic)\nExample: mixed_radix(cycle, 10, 26, 0)  // 3 outputs: d0 in [0,10), d1 in [0,26), d2 unbounded\nTheory: mixed-radix decomposition generalizes base conversion;\neach position can have a different base.",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
             ],
             arity: Arity::VariadicConsts { min_consts: 1 },
             commutativity: crate::node::Commutativity::Positional,
@@ -734,7 +869,7 @@ pub fn signatures() -> &'static [FuncSig] {
             help: "Passes the input value through unchanged.\nUseful for debugging, naming intermediate values, or as a\nplaceholder during graph construction.\nParameters:\n  input — any wire value\nExample: identity(hash(cycle))  // same as hash(cycle)",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -751,6 +886,8 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
         "mul" => Some(Ok(Box::new(MulU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
         "div" => Some(Ok(Box::new(DivU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
         "mod" => Some(Ok(Box::new(ModU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
+        "mod_wire" => Some(Ok(Box::new(ModWireU64::new()))),
+        "div_wire" => Some(Ok(Box::new(DivWireU64::new()))),
         "clamp" => Some(Ok(Box::new(ClampU64::new(
             consts.first().map(|c| c.as_u64()).unwrap_or(0),
             consts.get(1).map(|c| c.as_u64()).unwrap_or(u64::MAX),
@@ -765,7 +902,33 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
 }
 
 
-crate::register_nodes!(signatures, build_node);
+/// Assembly-time constant validation. See SRD 15 §"Const Constraint Metadata".
+///
+/// `div` and `mod` declare `NonZeroU64` on their constant param;
+/// Pass 1 enforces those before this validator runs. The only
+/// rule left here is `mixed_radix`'s variadic positional check —
+/// the non-terminal radixes must each be non-zero, but the last
+/// one is allowed to be `0` as the "everything left" sentinel,
+/// and that variadic positional rule can't ride on a per-param
+/// `ParamSpec.constraint`.
+pub(crate) fn validate_node(
+    name: &str,
+    consts: &[crate::dsl::factory::ConstArg],
+) -> Result<(), String> {
+    match name {
+        "mixed_radix" => {
+            for (i, c) in consts.iter().enumerate().take(consts.len().saturating_sub(1)) {
+                if c.as_u64() == 0 {
+                    return Err(format!("radix {i} must be non-zero"));
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+crate::register_nodes!(signatures, build_node, validate_node);
 #[cfg(test)]
 mod tests {
     use super::*;

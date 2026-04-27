@@ -26,6 +26,14 @@ pub enum Statement {
     ExternPort(ExternPort),
     /// `cursor name = Cursor()` or `cursor name = constructor_expr`
     Cursor(CursorDecl),
+    /// `pragma <name>` — a module-level directive opting into a
+    /// compile-time graph transform (SRD 15 §"Module-Level
+    /// Pragmas"). First-class grammar, distinct from line
+    /// comments. Recognised pragmas trigger
+    /// `CompileEvent::PragmaAcknowledged`; unknown names trigger
+    /// `CompileEvent::UnknownPragma` and are otherwise ignored
+    /// (forward-compatible).
+    Pragma { name: String, span: Span },
 }
 
 /// An external input port declaration.
@@ -147,6 +155,19 @@ pub enum BinOpKind {
     Shl,
     /// `>>` — desugars to `u64_shr(a, b)`
     Shr,
+    /// `==` — desugars to `u64_eq` / `f64_eq`. Output type is `u64`
+    /// (0 = false, 1 = true).
+    Eq,
+    /// `!=` — desugars to `u64_ne` / `f64_ne`. Output type is `u64`.
+    Ne,
+    /// `<` — desugars to `u64_lt` / `f64_lt`. Output type is `u64`.
+    Lt,
+    /// `>` — desugars to `u64_gt` / `f64_gt`. Output type is `u64`.
+    Gt,
+    /// `<=` — desugars to `u64_le` / `f64_le`. Output type is `u64`.
+    Le,
+    /// `>=` — desugars to `u64_ge` / `f64_ge`. Output type is `u64`.
+    Ge,
 }
 
 /// A typed parameter in a module signature.

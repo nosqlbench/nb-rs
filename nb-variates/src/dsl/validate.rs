@@ -55,13 +55,14 @@ pub(crate) fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
                 defined.insert(p.name.clone());
             }
             Statement::Cursor(_) => {}
+            Statement::Pragma { .. } => {}
         }
     }
 
     // Second pass: validate function calls and collect references
     for stmt in &file.statements {
         let expr = match stmt {
-            Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) => continue,
+            Statement::Coordinates(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
             Statement::InitBinding(b) => &b.value,
             Statement::CycleBinding(b) => &b.value,
         };
@@ -140,6 +141,7 @@ pub(crate) fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
                 seen_defs.insert(p.name.clone());
             }
             Statement::Cursor(_) => {}
+            Statement::Pragma { .. } => {}
         }
     }
 }

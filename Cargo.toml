@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "nb-rs",
+    "nbrs",
     "nb-variates",
     "nb-metrics",
     "nb-workload",

@@ -113,8 +113,22 @@ impl BindingScope {
     /// Ingest bindings from a `BindingsDef::GkSource`, classifying each
     /// line by the given origin. Extracts coordinates and handles all
     /// GK declaration forms (init, shared, final, cursor, extern, plain).
+    ///
+    /// A "line" here is a *logical* line: physical newlines inside
+    /// unbalanced `()`/`[]`/`{}` or inside a string literal are
+    /// absorbed into the current binding. This is what lets multi-line
+    /// expressions like
+    ///
+    /// ```gk
+    /// rate_adjust := control_set("rate",
+    ///                            to_f64(control_u64("rate")) * 1.05)
+    /// ```
+    ///
+    /// survive the later split-on-`\n` in [`Self::emit`]: we rejoin
+    /// them onto one physical line so the downstream parser sees a
+    /// complete expression.
     pub fn ingest_gk_source(&mut self, source: &str, origin: BindingOrigin) {
-        for line in source.lines() {
+        for line in logical_lines(source) {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('#') {
                 continue;
@@ -186,12 +200,25 @@ impl BindingScope {
     }
 
     /// Add an iteration variable from `for_each`.
+    ///
+    /// Iteration variables are declared as `extern` ports rather
+    /// than init-time bindings (SRD 18b §"Iteration variables as
+    /// scope outputs"). The runtime sets the extern's value
+    /// before the leaf kernel executes, so we no longer
+    /// text-substitute literal values into the GK source. The
+    /// type is inferred from the current iteration's value:
+    /// numeric strings get `u64`/`f64`, anything else is `String`.
     pub fn add_iteration_var(&mut self, name: &str, value: &str) {
-        self.bindings.push(ScopedBinding {
+        let type_name = if value.parse::<u64>().is_ok() {
+            "u64"
+        } else if value.parse::<f64>().is_ok() {
+            "f64"
+        } else {
+            "String"
+        };
+        self.externs.push(ExternDecl {
             name: name.to_string(),
-            line: format!("init {name} = \"{value}\""),
-            origin: BindingOrigin::IterationVar,
-            modifier: ScopeModifier::Init,
+            type_name: type_name.to_string(),
         });
     }
 
@@ -463,6 +490,59 @@ impl BindingScope {
 /// `"cursor baz"` → `(Cursor, "baz")`
 /// `"final qux"` → `(Final, "qux")`
 /// `"plain"` → `(None, "plain")`
+/// Split `source` into logical lines, treating newlines inside
+/// unbalanced `()`, `[]`, `{}` or string literals as continuations.
+///
+/// A logical line ends at the first physical newline that sits at
+/// bracket-depth 0 and outside any string. Each returned String has
+/// its interior newlines collapsed to single spaces so the downstream
+/// GK parser sees one-expression-per-line, which is all it supports.
+fn logical_lines(source: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    let mut depth: i32 = 0;
+    let mut in_str: Option<char> = None;
+    let mut chars = source.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match in_str {
+            Some(quote) => {
+                buf.push(ch);
+                if ch == '\\' {
+                    // Preserve the escaped character verbatim.
+                    if let Some(nx) = chars.next() {
+                        buf.push(nx);
+                    }
+                } else if ch == quote {
+                    in_str = None;
+                }
+            }
+            None => match ch {
+                '"' | '\'' => { in_str = Some(ch); buf.push(ch); }
+                '(' | '[' | '{' => { depth += 1; buf.push(ch); }
+                ')' | ']' | '}' => {
+                    if depth > 0 { depth -= 1; }
+                    buf.push(ch);
+                }
+                '\n' => {
+                    if depth > 0 {
+                        // Still inside brackets — collapse the
+                        // physical newline so the stored line is a
+                        // single-line expression.
+                        buf.push(' ');
+                    } else {
+                        out.push(std::mem::take(&mut buf));
+                    }
+                }
+                _ => buf.push(ch),
+            },
+        }
+    }
+    if !buf.is_empty() {
+        out.push(buf);
+    }
+    out
+}
+
 fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
     if let Some(rest) = lhs.strip_prefix("shared ") {
         (ScopeModifier::Shared, rest.trim())
@@ -524,15 +604,19 @@ pub fn build_scope(
                     } else {
                         // Different from base — this op has its own bindings.
                         // Ingest the DIFFERENCE (lines not in base) as Op origin,
-                        // and the shared lines as Inherited.
-                        let base_lines: HashSet<&str> = base.lines()
-                            .map(|l| l.trim())
+                        // and the shared lines as Inherited. Compare by
+                        // *logical* lines so multi-line expressions
+                        // (function calls broken over several physical
+                        // lines) stay intact instead of being split at
+                        // the paren and ingested piecewise.
+                        let base_logical: Vec<String> = logical_lines(base).into_iter()
+                            .map(|l| l.trim().to_string())
                             .filter(|l| !l.is_empty())
                             .collect();
-                        for line in src.lines() {
+                        for line in logical_lines(src) {
                             let trimmed = line.trim();
                             if trimmed.is_empty() { continue; }
-                            if base_lines.contains(trimmed) {
+                            if base_logical.iter().any(|b| b == trimmed) {
                                 // This line is inherited — already ingested from base
                             } else {
                                 // This line is op-specific
@@ -866,8 +950,13 @@ mod tests {
         ).unwrap();
         scope.validate().unwrap();
         let emitted = scope.emit();
-        assert!(emitted.contains("init table = \"vec_default\""),
-            "expected init table in:\n{emitted}");
+        // Iteration variables now declare as `extern <name>:
+        // <Type>` so the runtime can populate them per iteration
+        // without recompiling (SRD 18b §"Iteration variables as
+        // scope outputs"). Type is inferred from the value;
+        // "vec_default" doesn't parse numerically → String.
+        assert!(emitted.contains("extern table: String"),
+            "expected extern table declaration in:\n{emitted}");
         assert!(emitted.contains("profiles :="),
             "expected profiles in:\n{emitted}");
     }
@@ -948,7 +1037,10 @@ mod tests {
         // This was the bug: validate() used to fail with false shadow error
         scope.validate().unwrap();
         let emitted = scope.emit();
-        assert!(emitted.contains("init table = \"fknn_default\""), "missing init table");
+        // Iter vars now declare as extern (SRD 18b). The original
+        // bug — false-shadow detection — is unchanged regardless
+        // of how the iter var materialises.
+        assert!(emitted.contains("extern table: String"), "missing extern table in:\n{emitted}");
         assert!(emitted.contains("profiles :="), "missing profiles");
         // profiles should appear exactly once
         let count = emitted.matches("profiles :=").count();

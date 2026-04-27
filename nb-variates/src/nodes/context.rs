@@ -279,8 +279,8 @@ pub fn signatures() -> &'static [FuncSig] {
                    Example: row = limit(row, 100)  // stop after 100 items",
             identity: None, variadic_ctor: None,
             params: &[
-                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "row" },
-                ParamSpec { name: "max_items", slot_type: SlotType::ConstU64, required: true, example: "100" },
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "row", constraint: None },
+                ParamSpec { name: "max_items", slot_type: SlotType::ConstU64, required: true, example: "100", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,

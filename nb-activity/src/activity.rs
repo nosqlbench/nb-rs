@@ -1010,9 +1010,10 @@ impl Activity {
         progress_flag.store(false, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(10));
 
-        // Print validation summary AND capture to MetricsFrame in one pass.
-        // snapshot() drains the histogram (delta semantics), so we must
-        // use the same snapshot for both printing and SQLite capture.
+        // Print validation summary AND capture to the metrics
+        // store in one pass. `snapshot()` drains the histogram
+        // (delta semantics), so we must use the same snapshot
+        // for both printing and SQLite capture.
         if !validation_metrics.is_empty() {
             let mut total_passed = 0u64;
             let mut total_failed = 0u64;

@@ -449,18 +449,9 @@ impl nb_activity::observer::RunObserver for TuiObserver {
         self.tui_active.load(Ordering::Acquire)
     }
 
-    fn scenario_pre_mapped(&self, entries: &[(nb_activity::observer::PreMapKind, String, String, usize)]) {
+    fn scenario_pre_mapped(&self, tree: &nb_activity::scene_tree::SceneTree) {
         if let Ok(mut s) = self.state.write() {
-            for (kind, name, labels, depth) in entries {
-                match kind {
-                    nb_activity::observer::PreMapKind::Phase => {
-                        s.add_phase(name, labels, *depth);
-                    }
-                    nb_activity::observer::PreMapKind::Scope => {
-                        s.add_scope(name, *depth);
-                    }
-                }
-            }
+            s.install_tree(tree.clone());
         }
     }
 

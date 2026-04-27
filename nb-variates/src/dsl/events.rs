@@ -57,6 +57,31 @@ pub enum CompileEvent {
     Warning { message: String },
     /// Summary of the compiled program.
     Summary { nodes: usize, outputs: usize, constants_folded: usize },
+    /// A module-level pragma was acknowledged. Recorded once per
+    /// recognised `// @pragma: <name>` directive at the top of the
+    /// source. Lets `--diagnose` show which graph transforms the
+    /// module asked for.
+    PragmaAcknowledged { name: String, line: usize },
+    /// An unrecognised module-level pragma was seen. Pragmas are
+    /// forward-compatible: an old binary parses a newer module
+    /// that opts into features it doesn't support, and the only
+    /// effect is this advisory.
+    UnknownPragma { name: String, line: usize },
+    /// Strict-wire mode auto-inserted an assertion node between
+    /// `from_node` and `to_node`. SRD 15 §"Strict Wire Mode".
+    AssertionInserted {
+        from_node: String,
+        to_node: String,
+        kind: String,
+    },
+    /// Strict-wire mode considered inserting an assertion but
+    /// proved it redundant. The reason field names which skip
+    /// rule applied (constant source, upstream assertion, etc.).
+    AssertionSkipped {
+        from_node: String,
+        to_node: String,
+        reason: String,
+    },
 }
 
 impl CompileEvent {
@@ -78,10 +103,14 @@ impl CompileEvent {
             CompileEvent::TypeAdapterInserted { .. } => EventLevel::Advisory,
             CompileEvent::TypeWidening { .. } => EventLevel::Advisory,
             CompileEvent::LegacyTranslated { .. } => EventLevel::Advisory,
+            CompileEvent::PragmaAcknowledged { .. } => EventLevel::Advisory,
+            CompileEvent::AssertionInserted { .. } => EventLevel::Advisory,
+            CompileEvent::AssertionSkipped { .. } => EventLevel::Advisory,
 
             // Warning: potential issues
             CompileEvent::ConfigWireCycleWarning { .. } => EventLevel::Warning,
             CompileEvent::Warning { .. } => EventLevel::Warning,
+            CompileEvent::UnknownPragma { .. } => EventLevel::Warning,
         }
     }
 }
@@ -158,6 +187,14 @@ impl CompileEventLog {
                 format!("{message}"),
             CompileEvent::Summary { nodes, outputs, constants_folded } =>
                 format!("{nodes} nodes, {outputs} outputs, {constants_folded} constant(s) folded"),
+            CompileEvent::PragmaAcknowledged { name, line } =>
+                format!("pragma '{name}' acknowledged (line {line})"),
+            CompileEvent::UnknownPragma { name, line } =>
+                format!("unknown pragma '{name}' at line {line}; ignored"),
+            CompileEvent::AssertionInserted { from_node, to_node, kind } =>
+                format!("assertion inserted: {from_node} → {to_node} ({kind})"),
+            CompileEvent::AssertionSkipped { from_node, to_node, reason } =>
+                format!("assertion skipped: {from_node} → {to_node} ({reason})"),
             };
             format!("gk[{tag}]: {msg}")
         }).collect::<Vec<_>>().join("\n")

@@ -20,15 +20,10 @@ pub enum LogLevel {
     Error,
 }
 
-/// Kind of pre-mapped scenario entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PreMapKind {
-    /// An executable phase (Pending → Running → Completed).
-    Phase,
-    /// A scope header (for_each / for_combinations / do_while / do_until).
-    /// Rendered as a visual group in the scenario tree.
-    Scope,
-}
+/// Kind of pre-mapped scenario entry. Re-export of
+/// [`crate::scene_tree::NodeKind`] for callers that already
+/// imported it via the observer module.
+pub use crate::scene_tree::NodeKind as PreMapKind;
 
 /// Lifecycle events from the executor.
 pub trait RunObserver: Send + Sync {
@@ -95,19 +90,20 @@ pub trait RunObserver: Send + Sync {
     /// cadence windows, `now` values, and session-lifetime aggregates.
     fn on_metrics_query(&self, _query: std::sync::Arc<nb_metrics::metrics_query::MetricsQuery>) {}
 
-    /// Pre-populated scenario tree entries.
+    /// Pre-populated scenario tree.
     ///
-    /// Called once before execution begins. Each entry is
-    /// `(kind, name_or_label, labels, depth)`:
-    /// - for [`PreMapKind::Phase`]: `name_or_label` is the phase name
-    ///   and `labels` is the binding context.
-    /// - for [`PreMapKind::Scope`]: `name_or_label` is the iterator
-    ///   description (e.g., `"profile in [label_00, label_01, ...]"`)
-    ///   and `labels` is empty.
+    /// Called once before execution begins with the full
+    /// [`crate::scene_tree::SceneTree`] — synthetic root, every
+    /// concrete phase, and every scope header (`for_each`,
+    /// `for_combinations`, `do_while`, `do_until`) wired up by
+    /// parent / children pointers.
     ///
-    /// The TUI uses this to show all phases as Pending and every
-    /// for_each as a group header in the scenario tree from the start.
-    fn scenario_pre_mapped(&self, _entries: &[(PreMapKind, String, String, usize)]) {}
+    /// The TUI uses this to show all phases as Pending from the
+    /// start; renderers that want hierarchical features (collapse,
+    /// scope-level aggregate status) walk the tree directly. The
+    /// callee may store the tree (e.g. behind an `RwLock`) and
+    /// mutate node statuses in place via the lifecycle callbacks.
+    fn scenario_pre_mapped(&self, _tree: &crate::scene_tree::SceneTree) {}
 }
 
 /// Live metrics snapshot for progress updates.

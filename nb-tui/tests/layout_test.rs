@@ -138,9 +138,16 @@ fn render_layout_has_all_sections() {
     // detail block.
     assert!(text.contains("rows/s"), "missing rows/s label:\n{text}");
 
-    // Scenario tree
+    // Scenario tree. The Running marker is now an animated
+    // Braille spinner, so we accept any of its frames rather
+    // than the old static `▶`.
+    use throbber_widgets_tui::symbols::throbber::BRAILLE_SIX;
     assert!(text.contains("✓"), "missing completed phase marker:\n{text}");
-    assert!(text.contains("▶"), "missing running phase marker:\n{text}");
+    assert!(
+        BRAILLE_SIX.symbols.iter().any(|s| text.contains(s)),
+        "missing running phase spinner frame (any of {:?}):\n{text}",
+        BRAILLE_SIX.symbols,
+    );
     assert!(text.contains("○"), "missing pending phase marker:\n{text}");
     assert!(text.contains("teardown"), "missing teardown in tree:\n{text}");
     assert!(text.contains("pvs_query"), "missing pvs_query in tree:\n{text}");
