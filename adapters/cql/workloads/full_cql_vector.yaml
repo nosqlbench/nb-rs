@@ -1,0 +1,313 @@
+#!/usr/bin/env nbrs
+# CQL Vector Search — Multi-Profile Discovery
+#
+# Generic phases parameterized by {table}, {dataset}, and {profile}.
+# Scenario trees set {profile} (and sometimes {table}) via for
+# iteration variables. Dataset-facing calls use the canonical
+# "{dataset}:{profile}" composite inline format.
+#
+# Usage:
+#   nbrs full_cql_vector.yaml scenario=fulltest
+#   nbrs full_cql_vector.yaml scenario=filtered_knn
+#   nbrs full_cql_vector.yaml scenario=unfiltered
+#   nbrs full_cql_vector.yaml scenario=filtered_knn limit=100
+
+params:
+  adapter: cql
+  dataset: example
+  prefix: ""
+  oracles_prefix: "label_"
+  keyspace: baselines
+  k_values: "1,10,100"
+  k_1_limits: "1,2,4,8,16,32,64"
+  k_10_limits: "10,20,30,40,50"
+  k_100_limits: "100,200,300,400,500"
+  concurrency: "100"
+  query_concurrency: "20"
+  replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
+  fknn_profile: default
+  optimize_for_values: "RECALL,LATENCY"
+#  cassandra_dialect: "cndb"
+#  cassandra_dialect: "cass5"
+
+summary:
+  recall: "recall; mean(recall) over profile~label"
+  recallnmore: |
+    recall; mean(recall) over profile~label
+    latency; mean(latency) over profile~label
+
+# Named plot specs — same DSL the `nbrs plot "<spec>"` form
+# accepts. Each entry is persisted into the metrics db's
+# `session_metadata` table at end-of-run, so post-hoc
+# `nbrs plot --name recall_at_k10` (or `nbrs plot all`)
+# regenerates the PNG without needing this file.
+plot:
+  # Mean recall@10 across all profile labels at k=10, swept
+  # over `limit`. The motivating shape — one line, x = limit,
+  # y = average recall across all profiles for the matching k.
+  recall_at_k10: "recall@10.mean over limit where k=10"
+  # Same x-axis, but one line per profile so per-profile
+  # divergence is visible.
+  recall_per_profile_k10: "recall@10.mean over limit by profile where k=10"
+  recall_per_profile_k100: "recall@100.mean over limit by profile where k=100"
+  # k=100 sweep — same shape, different filter.
+  recall_at_k100: "recall@100.mean over limit where k=100"
+
+bindings: |
+  profiles := matching_profiles("{dataset}", "{prefix}")
+
+scenarios:
+
+  fulltest:
+    - scenario: test_oracles
+    - scenario: test_fknn
+
+  # Per-profile partition test (label_00..label_11)
+  test_oracles:
+    - for: "profile in matching_profiles('{dataset}', '{oracles_prefix}')"
+      phases:
+        - for: "table in vec_{profile}, optimize_for in {optimize_for_values}"
+          phases:
+            - teardown
+            - schema
+            - rampup
+            - await_index
+            - for: "k in {k_values}, limit in {k_{k}_limits}"
+              phases:
+                - ann_query
+
+  # Filtered KNN against default profile
+  # For smoke testing: nbrs full_cql_vector.yaml filtered_knn limit=100
+  test_fknn:
+    - scenario: rampup_fknn
+    - scenario: query_fknn
+
+  rampup_fknn:
+    - for: "profile in {fknn_profile}, table in fknn_{profile}, optimize_for in {optimize_for_values}"
+      phases:
+        - teardown
+        - schema
+        - fknn_rampup_data
+        - await_index
+
+  query_fknn:
+    - for: "profile in {fknn_profile}, table in fknn_{profile}, optimize_for in {optimize_for_values}"
+      phases:
+        - for: "k in {k_values}, limit in {k_{k}_limits}"
+          phases:
+            - pvs_query
+  await_fknn:
+    - for: "profile in {fknn_profile}, table in fknn_{profile}, optimize_for in {optimize_for_values}"
+      phases:
+        - await_index
+
+
+
+# =====================================================================
+# Generic Phases — parameterized by {table}, {dataset}, and {profile}
+# =====================================================================
+
+phases:
+
+  # ── Schema DDL (parameterized by {table}, {dataset}:{profile}, {optimize_for}) ──
+  # Single unified schema: keyspace → table (with metadata column) → indexes.
+  # All IF NOT EXISTS — idempotent and safe to re-run.
+  # ANN-only workloads simply leave the metadata column null.
+
+  schema:
+    concurrency: 1
+    bindings: |
+      dim := vector_dim("{dataset}:{profile}")
+      similarity_function := dataset_distance_function("{dataset}:{profile}")
+    ops:
+      create_keyspace:
+        raw: |
+          CREATE KEYSPACE IF NOT EXISTS {keyspace} 
+          WITH replication = {replication} AND durable_writes = true
+      create_table:
+        raw: |
+          CREATE TABLE IF NOT EXISTS {keyspace}.{table} 
+          (key text PRIMARY KEY, value vector<float, {dim}>, metadata int)
+      create_vector_index:
+        raw: |
+          CREATE CUSTOM INDEX IF NOT EXISTS {table}_idx 
+          ON {keyspace}.{table} (value) 
+          USING 'StorageAttachedIndex' 
+          WITH OPTIONS = {'optimize_for': '{optimize_for}', 'similarity_function': '{similarity_function}'}
+      create_metadata_index:
+        raw: |
+          CREATE CUSTOM INDEX IF NOT EXISTS {table}_meta_idx 
+          ON {keyspace}.{table} (metadata) USING 'StorageAttachedIndex'
+
+  # Anti-DDL: tear down in reverse order (indexes → table).
+  # Keyspace left intact (shared across tests).
+  teardown:
+    concurrency: 1
+    ops:
+      drop_metadata_index:
+        raw: "DROP INDEX IF EXISTS {keyspace}.{table}_meta_idx"
+      drop_vector_index:
+        raw: "DROP INDEX IF EXISTS {keyspace}.{table}_idx"
+      drop_table:
+        raw: "DROP TABLE IF EXISTS {keyspace}.{table}"
+
+  await_index:
+    summary: true
+    concurrency: 1
+    ops:
+      # Wait for the metadata SAI index ({table}_meta_idx) to
+      # finish building. Polling only the vector index lets
+      # pvs_query / fknn workloads start before the metadata
+      # index is fully built, which can silently undercount
+      # filter-matching rows on early queries. Int-column SAI
+      # usually finishes well before the vector index, but the
+      # race is real.
+      #
+      # `system_views.sai_column_indexes` is the Cassandra 5.x
+      # SAI view exposing build state. The earlier `cass6` form
+      # against `system_views.indexes` is left here (commented)
+      # for reference — it 404s on Cassandra 5.0 with "table
+      # indexes does not exist", and the polling op surfaces
+      # that as a hard ExecutionError rather than swallowing it,
+      # which means the workload's `errors:` policy stops the
+      # phase + the run rather than spinning silently.
+#      wait_for_index:
+#        raw: "SELECT index_name, is_building FROM system_views.sai_column_indexes WHERE keyspace_name = '{keyspace}' AND index_name = '{table}_meta_idx' AND is_building = true ALLOW FILTERING"
+#        poll: await_empty
+#        poll_interval_ms: 5000
+#        timeout_ms: 600000
+#        poll_max_error_retries: 3
+#        poll_metric_name: index_build_time_s
+      wait_for_index_cass6:
+        raw: "SELECT index_name, is_building FROM system_views.indexes WHERE keyspace_name = '{keyspace}' AND index_name = '{table}_meta_idx' AND is_building = true ALLOW FILTERING"
+        poll: await_empty
+        poll_interval_ms: 5000
+        timeout_ms: 600000
+        poll_max_error_retries: 3
+        poll_metric_name: index_build_time_s
+
+  # ── Data loading (parameterized by {table}, {dataset}:{profile}) ────────────
+  # ANN rampup: key + vector only. Used by fulltest, unfiltered.
+
+  rampup:
+    summary: true
+    concurrency: "{concurrency}"
+    bindings: |
+      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
+      cursor row = range(0, vector_count(prebuffered))
+      id := format_u64(row, 10)
+      train_vector := vector_at(prebuffered, row)
+    ops:
+      insert:
+        max_batch_size: 64KB
+        batchtype: unlogged
+        prepared: |
+          INSERT INTO {keyspace}.{table} 
+                 ( key,    value) 
+          VALUES ( '{id}', {train_vector})
+  # Filtered-KNN rampup: includes metadata column for predicate filtering
+  fknn_rampup_data:
+    summary: true
+    concurrency: "{concurrency}"
+    bindings: |
+      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
+      cursor row = range(0, vector_count(prebuffered))
+      id := format_u64(row, 10)
+      train_vector := vector_at(prebuffered, row)
+      meta := metadata_value_at(prebuffered, row)
+    ops:
+      insert:
+        max_batch_size: 64KB
+        batchtype: unlogged
+        prepared: |
+          INSERT INTO {keyspace}.{table} 
+          (  key,    value,          metadata) VALUES 
+          (  '{id}', {train_vector}, {meta})
+
+  # ── Search (parameterized by {table}, {dataset}:{profile}, {k}) ────────────
+
+  ann_query:
+    summary:
+      - recall
+    concurrency: "{query_concurrency}"
+    bindings: |
+      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
+      init query_counts = query_count(prebuffered)
+      cursor q = range(0, query_counts * 100)
+      query_vector := query_vector_at(prebuffered, q % query_counts)
+      ground_truth := neighbor_indices_at(prebuffered, q)
+    ops:
+      select_ann:
+        prepared: |
+          SELECT key FROM {keyspace}.{table} 
+          ORDER BY value
+          ANN OF {query_vector} 
+          LIMIT {limit}
+        evaluations:
+          relevancy:
+            actual: key
+            expected: "{ground_truth}"
+            k: "{k}"
+            r: "{limit}"
+            functions:
+              - recall
+
+  pvs_metadata_query:
+    concurrency: "{query_concurrency}"
+    errors: count
+    bindings: |
+      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
+      init query_counts = query_count(prebuffered)
+      cursor q = range(0, query_counts * 100)          
+      predicate := predicate_value_at(prebuffered, q % query_counts)
+    ops:
+      select_ann:
+        # LIMIT {limit} (search depth) rather than LIMIT {k}
+        # (recall cutoff). With a server that *post-filters* SAI
+        # ANN+WHERE, the wider candidate set lets a larger
+        # fraction of true neighbours survive the metadata
+        # predicate; with a server that *pre-filters*, the LIMIT
+        # is irrelevant to recall and this match the standard
+        # "search depth ≥ k" recall-measurement convention. The
+        # relevancy below truncates back to k via `r=limit`.
+        prepared: |
+          SELECT key FROM {keyspace}.{table}
+          WHERE metadata = {predicate}
+          LIMIT {limit}
+
+  pvs_query:
+    summary:
+      recall_only: recall
+    concurrency: "{query_concurrency}"
+    errors: count
+    bindings: |
+      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
+      init query_counts = query_count(prebuffered)
+      cursor q = range(0, query_counts * 10)
+      query_vector := query_vector_at(prebuffered, q % query_counts)
+      predicate := predicate_value_at(prebuffered, q % query_counts)
+      ground_truth := filtered_neighbor_indices_at(prebuffered, q % query_counts)
+    ops:
+      select_ann:
+        # LIMIT {limit} (search depth) rather than LIMIT {k}
+        # (recall cutoff). With a server that *post-filters* SAI
+        # ANN+WHERE, the wider candidate set lets a larger
+        # fraction of true neighbours survive the metadata
+        # predicate; with a server that *pre-filters*, the LIMIT
+        # is irrelevant to recall and this match the standard
+        # "search depth ≥ k" recall-measurement convention. The
+        # relevancy below truncates back to k via `r=limit`.
+        prepared: |
+          SELECT key,value FROM {keyspace}.{table}
+          WHERE metadata = {predicate}
+          ORDER BY value
+          ANN OF {query_vector} LIMIT {limit}
+        evaluations:
+          relevancy:
+            actual: key
+            expected: "{ground_truth}"
+            k: "{k}"
+            r: "{limit}"
+            functions:
+              - recall
+

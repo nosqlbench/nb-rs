@@ -53,7 +53,7 @@ blocks:
         prepared: "INSERT INTO ..."
 ```
 
-CLI override: `cassnbrs run ... concurrency=200` replaces the
+CLI override: `nbrs run ... concurrency=200` replaces the
 effective concurrency for every block that hasn't overridden
 it locally.
 

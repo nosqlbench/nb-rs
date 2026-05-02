@@ -201,7 +201,7 @@ which is already the behavior today and remains the rule.
 
 Per-phase sparkline storage is not a UI-side ring buffer — it's
 a **summary** (in the sense of
-[`nb_metrics::summaries`](../../nb-metrics/src/summaries/mod.rs)):
+[`nbrs_metrics::summaries`](../../nbrs-metrics/src/summaries/mod.rs)):
 a retained, transforming view of instrument data, attachable to
 any scalar-valued metric (rate, gauge, counter) the same way
 other summaries like `F64Stats` and `LiveWindowHistogram` attach
@@ -270,7 +270,7 @@ than a static `▶`. Two properties matter:
 graceful degradation: on partial-glyph fonts it still renders
 as recognizable dots rather than a missing-character box.
 
-A helper `spinner_frame() -> &'static str` in `nb-tui::app`
+A helper `spinner_frame() -> &'static str` in `nbrs-tui::app`
 encapsulates this — there is no spinner state on `App` or
 `RunState`; the function is pure over `SystemTime::now()`.
 

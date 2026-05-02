@@ -1,0 +1,74 @@
+name: Build
+
+on: [push,pull_request,workflow_dispatch]
+
+jobs:
+  build-and-test:
+    services:
+      cassandra:
+        image: cassandra:3.11.11
+        ports:
+          - 9042:9042
+    strategy:
+      matrix:
+        include:
+          - name: Ubuntu 20.04 - Release
+            runner: ubuntu-20.04
+            cargo_flags: --release
+
+          - name: Ubuntu 22.04 - Release
+            runner: ubuntu-22.04
+            cargo_flags: --release
+
+          - name: Ubuntu 20.04 - Debug
+            runner: ubuntu-20.04
+            cargo_flags:
+
+          - name: Ubuntu 22.04 - Debug
+            runner: ubuntu-22.04
+            cargo_flags:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          # Need all history so we can validate the commits.
+          fetch-depth: 0
+
+      # Enforce that all new commits are signed off according to the DCO,
+      # per CONTRIBUTING.md. Prior commits are either pre-fork, are signed off,
+      # or were made by Keith Wansbrough, who hereby certifies the DCO with regard
+      # to each such commit.
+      - run: |
+          DCO_SIGNING_BASE_COMMIT=c0b2ceb11dbe4628bd377f45776170b4348cb57c
+          git log ${DCO_SIGNING_BASE_COMMIT}.. --grep "^signed-off-by: .\+\(@\| at \).\+" --regexp-ignore-case --invert-grep --no-merges --pretty=oneline > tmp-unsigned-dco
+          # The following commit IDs are signed off as follows:
+          # 00d3207: Keith Wansbrough hereby certifies the DCO with regard to this commit.
+          # 1206d15: Brandon Dail <brandon@dail.family> has certified in https://github.com/cassandra-rs/cassandra-rs/pull/117#issuecomment-971611331
+          # 865a762: Bot-authored commit, no DCO required.
+          # 741e699: Jake <me@jh.gg> has certified in https://github.com/cassandra-rs/cassandra-rs/pull/93#issuecomment-972289201
+          grep -v "00d32073bdc21d992ee645a536e34728ca2a0086\|1206d1506fb7a1df637abe2dac102cfe39e37fb5\|865a76274eab12caddae68f399c571834d213056\|741e6991393f4dcf68f7ab896b21948db3b19d5d" tmp-unsigned-dco > tmp-unsigned-dco-2 || /bin/true
+          if [ -s tmp-unsigned-dco-2 ] ; then
+            echo '**One or more commits are not signed off! Unsigned commits:'
+            cat tmp-unsigned-dco-2
+            echo '**Please sign these commits and amend your PR.'
+            /bin/false
+          fi
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+      - name: cache custom ubuntu packages
+        uses: actions/cache@v3
+        with:
+          path: scripts/packages
+          key: ubuntu-packages-${{ matrix.runner }}
+      - run: scripts/install_ubuntu_packages.sh
+
+      # Check we're clean and tidy.
+      - run: cargo fmt --all --check
+      # We now build all the code, then test it.
+      - run: cargo build --all ${{ matrix.cargo_flags }}
+      # Tests must be run on a single thread since they share keyspaces and tables.
+      - run: cargo test ${{ matrix.cargo_flags }} -- --test-threads 1

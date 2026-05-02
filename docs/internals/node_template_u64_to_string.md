@@ -1,6 +1,6 @@
 # Memo 02: Annotated Implementation of U64ToString
 
-A walkthrough of the `U64ToString` node in `nb-variates/src/nodes/convert.rs`,
+A walkthrough of the `U64ToString` node in `nbrs-variates/src/nodes/convert.rs`,
 explaining how a minimal GK node is structured and how it connects to the
 assembly pipeline.
 
@@ -128,7 +128,7 @@ this node's output is pulled.
 
 ## How It Gets Auto-Inserted
 
-In `nb-variates/src/assembly.rs`, the `auto_adapter()` function maps
+In `nbrs-variates/src/assembly.rs`, the `auto_adapter()` function maps
 type mismatches to adapter nodes:
 
 ```rust

@@ -2,7 +2,8 @@
 
 The adapter interface is the contract between the execution engine
 and protocol-specific drivers. A tiered pipeline separates
-init-time template analysis from cycle-time execution.
+scope-init template analysis from dynamic per-cycle execution
+(see [SRD 11](11_gk_evaluation.md) for the lifecycle vocabulary).
 
 ---
 
@@ -90,7 +91,7 @@ pub trait OpDispenser: Send + Sync {
     fn execute<'a>(
         &'a self,
         cycle: u64,
-        fields: &'a ResolvedFields,
+        ctx: &'a ExecCtx<'a>,
     ) -> Pin<Box<dyn Future<Output = Result<OpResult, ExecutionError>>
              + Send + 'a>>;
 }
@@ -99,6 +100,18 @@ pub trait OpDispenser: Send + Sync {
 `DriverAdapter` is constructed once per activity and shared via
 `Arc`. `OpDispenser` is created per unique template at init time
 and shared across fibers.
+
+`ExecCtx` bundles two parallel dynamic-pull views of GK state:
+
+- `ctx.fields: &ResolvedFields` — op-field substitution view for
+  this dispenser. Adapters consume *only* this.
+- `ctx.pulls: &ResolvedPulls` — wrapper-side handle-indexed view
+  used by validation / conditional / throttle wrappers higher in
+  the chain. Adapters ignore this.
+
+See [SRD 32 §"`ExecCtx` — dynamic-pull bundle"](32_wrappers.md) for
+the design and [SRD 31 §"Pull plan vs bind plan"](31_op_pipeline.md)
+for the contract that keeps the two views distinct.
 
 ---
 

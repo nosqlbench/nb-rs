@@ -1,0 +1,21 @@
+[package]
+name = "nbrs-adapter-testkit"
+version = "0.1.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "Testkit adapter for nb-rs: simulates operation execution with configurable results, latency, and error injection"
+keywords = ["nosqlbench", "workload", "benchmark", "simulation"]
+categories = ["command-line-utilities", "simulation"]
+repository = "https://github.com/nosqlbench/nb-rs"
+homepage = "https://github.com/nosqlbench/nb-rs"
+readme = "README.md"
+
+[dependencies]
+nbrs-activity = { path = "../../nbrs-activity", version = "0.1.1" }
+nbrs-adapter-stdout = { path = "../stdout", version = "0.1.1" }
+nbrs-workload = { path = "../../nbrs-workload", version = "0.1.1" }
+tokio = { version = "1", features = ["time", "sync"] }
+serde_json = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+nbrs-variates = { path = "../../nbrs-variates", version = "0.1.1" }
+inventory = "0.3.24"

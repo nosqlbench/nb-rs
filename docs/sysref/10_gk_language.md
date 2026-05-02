@@ -113,11 +113,12 @@ can be named anything and any cursor shape (single, nested,
 decomposed via `mixed_radix`) is fine. The engine treats
 `cycle` identically to any other user-named input.
 
-> **Note:** The current Rust implementation still uses `coordinates`
-> in some code paths (`coordinates := (cycle)`, `set_coordinates`,
-> `coord_names`). The parser accepts both `inputs` and `coordinates`
-> during transition. All new code and documentation should use
-> `inputs`.
+> **Note:** `inputs` is the only accepted keyword. The legacy
+> `coordinates` alias is gone — the lexer rejects it. Some
+> internal AST/struct names (`Statement::Coordinates`, `coord_count`,
+> `coord_names`) retain historical naming for AST stability;
+> these are implementation details and don't surface in user-
+> visible source or error messages.
 
 ### Coordinate Decomposition
 
@@ -154,15 +155,41 @@ name := weighted_strings(bucket, "alice:0.3;bob:0.3;carol:0.4")
 ```
 email := "{format_u64(hash(cycle), 10)}@example.com"
 query := "SELECT * FROM {keyspace}.{table} WHERE id = {user_id}"
+sum   := "x + y = {x + y}"
+slot  := "row {row.ordinal}"
 ```
 
-`{name}` references resolve to other bindings or workload
-parameters. String interpolation is desugared to the built-in `printf` node
-function — the compiler splits the template into a format string
-and `{name}` references, then wires them into a `Printf` node
-that formats the output at evaluation time.
-This is pure syntactic sugar; no special runtime support is
-needed beyond the standard node evaluation path.
+The body inside each `{ … }` is parsed as a full GK expression
+— bare identifiers, function calls, infix arithmetic, and field
+access all work, exactly the same as on the right-hand side of
+any binding. The compiler:
+
+1. Splits the literal into segments: literal text + placeholder
+   bodies. The scan is brace-aware (parens / brackets nest)
+   and string-aware (a `}` inside a `"…"` doesn't terminate the
+   placeholder).
+2. Lexes and parses each placeholder body via the same
+   expression parser the rest of the language uses.
+3. Emits a `printf(fmt, expr1, expr2, ...)` call where `fmt`
+   is the literal segments joined by `{}` placeholders, in the
+   same positional order as `expr1, expr2, ...`.
+
+`{{` and `}}` are printf's own escapes for emitting literal
+braces — they keep their meaning and don't open a placeholder.
+A printf format spec the user wrote by hand
+(`"x={:05}"`, `"{0:.3}"`) isn't a valid GK expression, so the
+literal stays unchanged and the user's format spec reaches
+printf intact. An unbalanced `{` likewise leaves the literal
+alone.
+
+This is pure syntactic sugar — no special runtime support is
+needed beyond the standard `printf` node. Iteration variables
+that appear inside string literals
+(`vector_dim("{dataset}:{profile}")`) flow through the same
+wire mechanism as any other identifier reference: they're
+declared as `extern` ports on the scope, the runner sets them
+per iteration, and the dataset function reads its `source`
+input wire at eval time.
 
 ### Comments
 
@@ -409,7 +436,7 @@ Resolution order for `{expr}`:
 1. Named binding — if `expr` matches a declared binding name,
    wire to that binding's output.
 2. Const expression eval — evaluate `expr` at compile time
-   (init-time fold). Result becomes a `ConstNode`.
+   (compile-const fold per SRD 11). Result becomes a `ConstNode`.
 3. Error — if neither succeeds, compilation fails with a
    diagnostic describing the unresolved reference.
 
@@ -469,8 +496,9 @@ Output Selection ▶ Mark which nodes are outputs (referenced by
   │               op fields, params, or extra bindings)
   │
   ▼
-Constant Folding ▶ Evaluate init-time nodes (no input
-  │               dependency), replace with constants
+Constant Folding ▶ Evaluate compile-const nodes (no
+  │               extern / cycle-input dependency), replace
+  │               with leaf const nodes (SRD 11)
   │
   ▼
 GkProgram ──────▶ Immutable compiled DAG (shared via Arc)
@@ -503,6 +531,11 @@ pub enum Value {
     Bool(bool),
     Str(String),
     Bytes(Vec<u8>),
+    Json(serde_json::Value),
+    Ext(Box<dyn ReflectedValue>),
+    Handle(Arc<dyn Any + Send + Sync>),
+    VecF32(Arc<[f32]>),
+    VecI32(Arc<[i32]>),
 }
 ```
 
@@ -515,6 +548,30 @@ Type names in the DSL and diagnostics use Rust-standard names:
 `u64`, `f64`, `bool`, `String`, `Vec<u8>`. These are familiar to
 Rust users and unambiguous. The internal `Value` enum mirrors
 these names directly, avoiding any mapping layer.
+
+`Handle` is the typed-resource carrier (`PortType::Handle`):
+an `Arc<dyn Any + Send + Sync>` produced by resolver nodes
+(e.g., `dataset_open`) and consumed by reader nodes that
+downcast to the concrete resource type. Cloning a `Value::Handle`
+during input-gather is one `Arc::clone` (atomic increment,
+zero allocations) — the design that lets resolved resources
+flow on wires between scope-stable resolvers (compile-const or
+scope-init) and per-cycle readers without re-doing the
+resolution work. See SRD 11 §"Three Evaluation Lifecycles" for
+the lifecycle taxonomy and
+[SRD 53 §"Dataset Handles"](53_vectordata.md#dataset-handles-dynamic-access)
+for the canonical use case.
+
+`VecF32` / `VecI32` are typed-vector carriers
+(`PortType::VecF32`, `PortType::VecI32`) — `Arc<[f32]>` and
+`Arc<[i32]>` respectively. They flow on wires the same as any
+other value, but adapter binding code can serialize them
+directly (`SerializeValue` for `[T]` writes wire bytes
+without intermediate boxing). Cloning is one `Arc::clone`,
+zero allocations. The `to_display_string()` fallback renders
+them as JSON-array text (`"[0.1,0.2,...]"`), so workloads can
+mix typed-vector and string-substitution paths without a
+separate node family. See SRD 53 §"Native Vector Binding".
 
 ---
 
@@ -747,14 +804,18 @@ Phase scope (with own bindings):
 Phase scope (no own bindings):
   Uses the workload kernel directly — no recompilation.
 
-for_each iteration (structural variable):
-  source = phase bindings (with {var} substituted) + auto externs
-  Each iteration compiles its own kernel from substituted source.
-
-for_each iteration (parametric variable):
-  Variable only in op fields, not in bindings.
-  Reuses outer kernel — no recompilation. Only op field strings
-  are substituted per iteration.
+for_each iteration:
+  Iteration variables are declared as `extern` ports on the
+  phase scope (auto-added by `add_iteration_var`); the GK
+  source contains identifier references, not text-substituted
+  values. The compiled kernel is iter-invariant — same
+  `Arc<GkProgram>` reused for every iteration. Per-iteration
+  values flow through `GkState`: the runner copies each
+  iteration's bound value into the kernel's input slot before
+  the cycle body runs. Op field strings (`stmt:`, `raw:`,
+  `prepared:`) carry `{var}` placeholders that are resolved
+  per cycle from `ResolvedFields`, so they pick up the same
+  per-iteration values without recompilation.
 ```
 
 ### Inheritance Rules
@@ -778,19 +839,26 @@ for_each iteration (parametric variable):
 4. **Phases without own bindings** use the workload kernel
    directly. No recompilation, no overhead.
 
-5. **for_each substitution** happens on the phase's own
-   bindings source (not a flattened copy of the outer source).
-   The iteration variable `{var}` is replaced in:
-   - The phase bindings source text (if structural)
-   - All op field values (`stmt:`, `raw:`, `prepared:`)
-   - The phase's `cycles:` config expression
+5. **for_each iteration variables** are bound through the
+   wire mechanism, not by text substitution. Each
+   `for_each var in …` scope auto-declares `var` as an
+   `extern` port on the enclosing phase's scope. References to
+   `var` in the phase's GK source — including those that
+   appear inside string literals via interpolation
+   (`vector_dim("{dataset}:{var}")`) — resolve to that extern.
+   Op field values (`stmt:`, `raw:`, `prepared:`) carry
+   workload-style `{var}` placeholders that are resolved per
+   cycle from `ResolvedFields`. The phase's `cycles:` config
+   expression is evaluated against the iteration's bound
+   values via the same wire mechanism.
 
-6. **Per-iteration kernel**: each structural `for_each`
-   iteration compiles its own GK kernel. Parametric iterations
-   reuse the outer kernel. Either way:
-   - Init-time constants resolve per-iteration
-   - The cycle count can vary per iteration
-   - Each iteration is a complete phase lifecycle
+6. **One compiled kernel per phase scope**, not per iteration.
+   The kernel is iter-invariant; per-iteration values flow
+   through `GkState`. Init-time constants that depend on
+   iteration variables (`vector_count("{dataset}:{profile}")`)
+   resolve through dataset function nodes that read their
+   `source` input wire and look up the underlying data via the
+   global cache on first eval per spec.
 
 ### Binding Modifiers
 
@@ -799,7 +867,7 @@ Bindings can carry modifiers that control scope behavior:
 ```
 shared counter := hash(cycle)    # mutable across iteration boundaries
 final dim := 128                 # immutable; cannot be shadowed
-shared init budget = 100         # combined: shared + init-time
+shared init budget = 100         # combined: shared + scope-init
 ```
 
 - **`shared`**: the runner propagates the value back to the
@@ -962,7 +1030,7 @@ reference it via `<cursor>.<field>` field-access syntax.
 
 The full surface — `CursorSugar`, `AuxBinding`,
 `CursorSugarRegistration`, and the `dispatch` walker — lives in
-`nb-variates::dsl::cursor_sugar`.
+`nbrs-variates::dsl::cursor_sugar`.
 
 **Cursor-to-accessor wiring**: the compiler resolves `base`
 in accessor function arguments to the cursor node's output.
@@ -1040,20 +1108,25 @@ comma-separated string. Each element becomes one iteration.
    → snapshot outer_scope_values (folded constants)
 3. For each phase in scenario:
    a. If no for_each and no own bindings → use shared kernel
-   b. If own bindings → auto-extern composition, compile phase kernel
+   b. If own bindings → auto-extern composition, compile phase
+      kernel (cached on the scope-tree node; reused across
+      every iteration).
    c. If for_each:
       i.   Evaluate for_each expression via eval_const_expr
       ii.  Split result on commas → iteration list
-      iii. Detect structural vs parametric variable
-      iv.  For each iteration value:
-           - If structural: substitute {var} in bindings, generate
-             auto-externs from outer manifest, compile inner kernel
-           - If parametric: substitute {var} in op fields only,
-             reuse outer kernel (no recompilation)
-           - Wire scope values into inner kernel's extern inputs
+      iii. Each iteration variable is auto-declared as an
+           `extern` port on the phase scope (typed from the
+           value: numeric → u64/f64, otherwise String).
+      iv.  Compile the phase kernel once; cache on the
+           scope-tree node for reuse across all iterations.
+      v.   For each iteration value:
+           - Set the corresponding extern input on the kernel
+             state to the iteration's bound value.
            - Resolve per-iteration cycles from kernel constants
-           - Run phase with per-iteration kernel and ops
-      v.   After loop: write-back shared outputs to outer_scope_values
+             (cycles expressions read from the same wires).
+           - Run phase with the shared kernel, fresh state.
+      vi.  After loop: write-back shared outputs to
+           outer_scope_values.
 ```
 
 ### Phase Lifecycle Isolation
@@ -1080,8 +1153,9 @@ only through the database (or other external system), or via
 
 GK bindings like `vector_at(cycle, "example:label-1")` need the
 dataset source at node construction time — the node opens a file
-handle, loads metadata, and preallocates buffers. This is init-time
-work that can't be deferred to cycle-time. Structural variable
+handle, loads metadata, and preallocates buffers. This is
+scope-init work (SRD 11) that can't be deferred to per-cycle
+evaluation. Structural variable
 substitution before compilation ensures the source string is a
 literal that the node constructor can act on.
 

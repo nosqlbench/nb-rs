@@ -12,13 +12,13 @@ All operational messages go to stderr:
 ```
 vectordata: resolved 'glove-25-angular' → https://...
 1 ops, 100 cycles, concurrency=10, adapter=cql
-cassnbrs: connecting to 127.0.0.1 (keyspace: <none>)
-cassnbrs: done.
+nbrs: connecting to 127.0.0.1 (keyspace: <none>)
+nbrs: done.
 ```
 
 ### Conventions
 
-- Prefix with subsystem: `vectordata:`, `cassnbrs:`, `validation:`
+- Prefix with subsystem: `vectordata:`, `nbrs:`, `validation:`
 - Warnings: `warning: <message>`
 - Errors: `error: <message>` followed by context
 - No timestamps in operational messages (the activity has metrics

@@ -1,6 +1,6 @@
 # Memo 03: Annotated Implementation of HashRange
 
-A walkthrough of the `HashRange` node in `nb-variates/src/nodes/hash.rs`.
+A walkthrough of the `HashRange` node in `nbrs-variates/src/nodes/hash.rs`.
 This node exercises five metadata features: wire input, constant input,
 Phase 2 compiled closure, Phase 3 JIT constants, and a fusion equivalence
 contract. It is the most feature-complete single node in the codebase.

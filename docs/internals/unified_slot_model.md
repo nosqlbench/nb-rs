@@ -280,13 +280,13 @@ variadic names (`x_0`, `x_1`, ...) from `FusionPattern::VariadicNode`.
 
 | File | Nature of Change |
 |------|-----------------|
-| `nb-variates/src/node.rs` | `SlotType`, `ConstValue`, `Slot` (with convenience ctors), `Commutativity`; `NodeMeta` reduced to 3 fields; `GkNode` gains `commutativity()` |
-| `nb-variates/src/dsl/registry.rs` | `ParamSpec` uses `SlotType`; `Arity` (was `SigArity`); `FuncSig` gains `commutativity`, loses old fields |
-| `nb-variates/src/dsl/compile.rs` | `sig.is_variadic()` |
-| `nb-variates/src/fusion.rs` | `node.commutativity()`, typed constants, `VariadicNode` pattern |
-| `nb-variates/src/assembly.rs` | `meta().wire_inputs()` |
-| `nb-variates/src/nodes/*.rs` | All ~130 nodes: `Slot::const_*()` constructors, `commutativity` overrides on 4 nodes |
-| `nb-variates/src/sampling/*.rs` | Same |
+| `nbrs-variates/src/node.rs` | `SlotType`, `ConstValue`, `Slot` (with convenience ctors), `Commutativity`; `NodeMeta` reduced to 3 fields; `GkNode` gains `commutativity()` |
+| `nbrs-variates/src/dsl/registry.rs` | `ParamSpec` uses `SlotType`; `Arity` (was `SigArity`); `FuncSig` gains `commutativity`, loses old fields |
+| `nbrs-variates/src/dsl/compile.rs` | `sig.is_variadic()` |
+| `nbrs-variates/src/fusion.rs` | `node.commutativity()`, typed constants, `VariadicNode` pattern |
+| `nbrs-variates/src/assembly.rs` | `meta().wire_inputs()` |
+| `nbrs-variates/src/nodes/*.rs` | All ~130 nodes: `Slot::const_*()` constructors, `commutativity` overrides on 4 nodes |
+| `nbrs-variates/src/sampling/*.rs` | Same |
 | `nb-rs/src/main.rs` | Derived methods for describe output |
-| `nb-web/src/{routes,graph}.rs` | Derived methods for web UI |
-| `nb-activity/src/bindings.rs` | Derived methods for compile-level probing |
+| `nbrs-web/src/{routes,graph}.rs` | Derived methods for web UI |
+| `nbrs-activity/src/bindings.rs` | Derived methods for compile-level probing |

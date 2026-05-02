@@ -14,7 +14,7 @@ queries involve:
 
 The `vectordata` crate provides these as structured binary data via
 the `veks-anode` wire format (MNode for metadata, PNode for
-predicates). The `cassnbrs` persona needs to translate this data
+predicates). The `nbrs` persona needs to translate this data
 into CQL for Cassandra/SAI vector workloads.
 
 ## The Translation Problem
@@ -80,7 +80,7 @@ params:
   table: items
 
 bindings: |
-  coordinates := (cycle)
+  inputs := (cycle)
   dim := vector_dim("{dataset}")
   count := vector_count("{dataset}")
   base_vec := vector_at(cycle, "{dataset}")

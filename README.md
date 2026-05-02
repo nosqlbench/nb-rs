@@ -75,7 +75,7 @@ $ ./service.yaml cycles=100 threads=4 rate=1000
 **Adapters** — Protocol drivers for:
 - stdout (debugging, dry-run, format=json/csv/stmt)
 - HTTP (REST APIs, configurable timeouts)
-- CQL (Cassandra/ScyllaDB via cassnbrs persona)
+- CQL (Cassandra/ScyllaDB via nbrs persona)
 - Model (simulated service latency)
 
 **Observability** — Built-in metrics and dashboards:
@@ -119,15 +119,15 @@ See [`examples/`](examples/) for categorized workload examples:
 ## Architecture
 
 ```
-nb-variates     GK engine: DAG compilation, node functions, JIT, provenance
-nb-workload     YAML parsing, bind points, inline expressions, phasing
-nb-activity     Async execution engine, dispenser wrappers, capture flow
-nb-metrics      HDR histograms, frame capture, OpenMetrics export
-nb-rate         Async token bucket rate limiter
-nb-errorhandler Composable error routing
+nbrs-variates     GK engine: DAG compilation, node functions, JIT, provenance
+nbrs-workload     YAML parsing, bind points, inline expressions, phasing
+nbrs-activity     Async execution engine, dispenser wrappers, capture flow
+nbrs-metrics      HDR histograms, frame capture, OpenMetrics export
+nbrs-rate         Async token bucket rate limiter
+nbrs-errorhandler Composable error routing
 nb-rs           CLI binary (nbrs), bench, plot, web dashboard
-nb-tui          Terminal UI for live monitoring
-nb-web          Web dashboard with Axum + HTMX
+nbrs-tui          Terminal UI for live monitoring
+nbrs-web          Web dashboard with Axum + HTMX
 ```
 
 ## License

@@ -1,0 +1,40 @@
+[package]
+name = "nbrs-activity"
+version = "0.1.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "Activity execution engine for nb-rs"
+keywords = ["nosqlbench", "workload", "benchmark", "data-generation"]
+categories = ["command-line-utilities", "simulation"]
+repository = "https://github.com/nosqlbench/nb-rs"
+homepage = "https://github.com/nosqlbench/nb-rs"
+readme = "README.md"
+
+[features]
+default = []
+flamegraph = ["pprof"]
+
+[dependencies]
+tokio = { version = "1", features = ["sync", "time", "rt", "macros", "signal"] }
+nbrs-metrics = { path = "../nbrs-metrics", version = "0.1.1", features = ["victoriametrics", "sqlite"] }
+nbrs-rate = { path = "../nbrs-rate", version = "0.1.1" }
+nbrs-errorhandler = { path = "../nbrs-errorhandler", version = "0.1.1" }
+nbrs-workload = { path = "../nbrs-workload", version = "0.1.1" }
+nbrs-variates = { path = "../nbrs-variates", version = "0.1.1" }
+futures = "0.3"
+inventory = "0.3.24"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+# Insertion-ordered map. Used for iter-var bindings whose
+# user-visible iteration / display order must follow scenario-
+# tree declaration order, not Rust's randomised HashMap order.
+# See `executor::run_phase` call sites that build `phase_labels`,
+# `gk_context`, and `activity_name`.
+indexmap = "2"
+pprof = { version = "0.15", features = ["flamegraph"], optional = true }
+libc = "0.2"
+
+[dev-dependencies]
+nbrs-adapter-stdout = { path = "../adapters/stdout", version = "0.1.1" }

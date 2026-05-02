@@ -1,7 +1,7 @@
 # 50: CQL Adapter
 
 The CQL adapter provides native Cassandra protocol access via the
-Apache Cassandra C++ driver. Part of the `cassnbrs` persona.
+Apache Cassandra C++ driver. Part of the `nbrs` persona.
 
 ---
 
@@ -10,7 +10,7 @@ Apache Cassandra C++ driver. Part of the `cassnbrs` persona.
 `cassandra-cpp` Rust crate wrapping the Apache Cassandra C++
 driver via FFI. Statically linked from a Docker-built sysroot.
 
-Build: `cd personas/cassnbrs && bash build.sh`
+Build: `cd adapters/cql && bash build.sh`
 
 ---
 

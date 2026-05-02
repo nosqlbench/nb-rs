@@ -10,28 +10,65 @@
 
 mod bench;
 mod cli;
+mod completion;
 mod daemon;
 mod describe;
+mod inspector;
+mod db_merge;
 mod plot;
+mod plot_metrics;
+mod report;
 mod run;
+mod summary;
 #[allow(dead_code)]
 mod web_push;
 
+#[cfg(feature = "openapi")]
+mod openapi;
+
 fn main() {
+    // Shell-completion callback. Reads `_NBRS_COMPLETE=bash`,
+    // emits candidates, exits. Must run BEFORE any
+    // arg-consuming logic so tab presses never touch adapters,
+    // files, or stderr. See `nbrs/src/completion.rs` for the
+    // stratified tap progression: tab 1 → workload commands;
+    // tab 2 → global flags; tab 3 → everything.
+    let tree = completion::build_tree();
+    if completion::handle_complete_env(&tree) {
+        return;
+    }
+
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    // Shell completion: share the same harness cassnbrs uses so
-    // `workload=<TAB>`, `scenario=<TAB>`, `adapter=<TAB>`, and
-    // param-name completion behave identically across personas.
-    // Handles `completions` (preamble / --shell bash) and the hidden
-    // `__complete` callback. Must run before any other work so tab
-    // presses never touch adapters, files, or stderr.
-    let completion_spec = nb_activity::completions::CompletionSpec {
-        binary_name: "nbrs",
-        subcommands: &["run", "describe", "bench", "plot", "web", "completions"],
-        run_params: nb_activity::runner::KNOWN_PARAMS,
-    };
-    if nb_activity::completions::handle_if_match(&completion_spec, &args) {
+    // `nbrs attach` connects to a running nbrs's OOB
+    // introspection socket (SRD-02 §"Display and Diagnostic
+    // Decoupling"). Probes the socket on entry — fails fast
+    // with a clear message if no live server is reachable
+    // rather than dropping the user into a REPL with broken
+    // queries. Renamed from the legacy `--inspector` flag.
+    if args.first().map(|s| s.as_str()) == Some("attach") {
+        inspector::inspector_command(&args[1..]);
+        return;
+    }
+
+    // `nbrs summary` renders a summary report from a
+    // previously-written `metrics.db`. Same
+    // SqliteReporter::format_summary code path the runner uses
+    // at end-of-run, so identical input → identical output.
+    // It's a proper subcommand (not a workload) because it
+    // operates on a finished session — no workload file to
+    // parse, no scenarios to execute.
+    if args.first().map(|s| s.as_str()) == Some("summary") {
+        summary::summary_command(&args[1..]);
+        return;
+    }
+
+    // `nbrs completions` emits a `source <(...)` preamble
+    // (recommended: `eval "$(nbrs completions)"`).
+    // `nbrs completions --shell bash` emits the raw shim that
+    // the preamble sources. Same UX as `veks completions`.
+    if args.first().map(|s| s.as_str()) == Some("completions") {
+        completion::print_completions(&args[1..]);
         return;
     }
 
@@ -50,7 +87,14 @@ fn main() {
             bench::bench_command(&args[1..]);
         }
         "plot" => {
-            plot::plot_command(&args[1..]);
+            // `nbrs plot gk <expr>` keeps the legacy terminal-
+            // braille GK-expression plotter. Everything else goes
+            // to the metrics-DB plotter (`nbrs plot --metric ...`).
+            if args.get(1).map(|s| s.as_str()) == Some("gk") {
+                plot::plot_command(&args[1..]);
+            } else {
+                plot_metrics::plot_metrics_command(&args[1..]);
+            }
         }
         "web" => {
             daemon::web_command(&args);
@@ -58,6 +102,15 @@ fn main() {
         "run" => {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(run::run_command(&args));
+        }
+        #[cfg(feature = "openapi")]
+        "describe-openapi" => {
+            openapi::describe_command(&args[1..]);
+        }
+        #[cfg(feature = "openapi")]
+        "run-openapi" => {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(openapi::run_command(&args[1..]));
         }
         _ => {
             // Bare workload file: nbrs myworkload.yaml [params...]

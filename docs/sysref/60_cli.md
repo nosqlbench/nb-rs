@@ -51,7 +51,7 @@ detects `.yaml`/`.yml` extensions and routes to `run`.
 All parameters use `key=value` syntax:
 
 ```
-cassnbrs run adapter=cql hosts=127.0.0.1 workload=cql_vector.yaml \
+nbrs run adapter=cql hosts=127.0.0.1 workload=cql_vector.yaml \
   tags=phase:search cycles=100 concurrency=100
 ```
 
@@ -174,7 +174,7 @@ When running `bench`, the CLI prints a summary of all inputs:
 ```
 1 input: cycle (u64)
 3 bindings:
-  user_id: u64 (cycle-time)
-  dim: u64 (init-time, folded to 25)
-  query: str (cycle-time)
+  user_id: u64 (dynamic)
+  dim: u64 (compile-const, folded to 25)
+  query: str (dynamic)
 ```

@@ -339,35 +339,25 @@ worth stating in the decision.
 
 ---
 
-## 9. Extra Bindings — staleness audit
+## 9. Extra Bindings — RESOLVED (slice α, 2026-04-30)
 
-**Where.** `31_op_pipeline.md:144–148` (your `>>` comment on
-the section being out of date after GK consolidation).
+**Resolution.** The `validation::extra_bindings(...)` function
+and the `extras` parameter on `synthesis::resolve_with_extras*`
+have been deleted. Wrapper-side reads (validation, conditional,
+throttle) now flow through the canonical
+[`ScopeFixture`] / [`PullPlan`] / [`PullHandle`] path documented
+in [SRD 32 §"Init-Time Fixture and Consumer Self-Registration"]
+and [SRD 31 §"Pull plan vs bind plan"]. The bind-point scanner
+(`bindings::collect_param_bindings`) was already walking both op
+fields and params, so the GK kernel has always known about every
+referenced name; the side channel was a plumbing artifact that
+this slice retired.
 
-**Context.** The "Extra Bindings" section describes validation
-and non-adapter consumers needing GK outputs that aren't
-referenced in op fields. After recent GK consolidation — the
-binding compiler scanning both op fields and params, captures
-being reified into GK ports (SRD 34), and the new "GK is the
-access surface" principle (SRD 10) — this section may be
-redundant or plainly wrong.
-
-**Questions to decide.**
-
-- Is the `validation::extra_bindings(template)` path still
-  needed, or has the single-pass binding compiler absorbed it?
-- If the section is redundant, delete it and point readers at
-  SRD 34 (capture points) and SRD 10 (reification).
-- If the section is still relevant, update the narrative to
-  match what the code actually does today.
-
->> remove that stale section
-
-**Action.** Either delete the section with a breadcrumb
-(`see SRD 10 / SRD 34`), or rewrite it to reflect the current
-single-pass model. Depends on a code-side check first.
-
->>
+[`ScopeFixture`]: ../../nbrs-activity/src/fixture.rs
+[`PullPlan`]: ../../nbrs-activity/src/fixture.rs
+[`PullHandle`]: ../../nbrs-activity/src/fixture.rs
+[SRD 32 §"Init-Time Fixture and Consumer Self-Registration"]: 32_wrappers.md
+[SRD 31 §"Pull plan vs bind plan"]: 31_op_pipeline.md
 
 ---
 
@@ -380,7 +370,7 @@ single-pass model. Depends on a code-side check first.
 and the 00_index description. But:
 
 - SRD 24 has a committed selector grammar, shipped code
-  (`nb-metrics/src/selector.rs` with 38 tests), and an
+  (`nbrs-metrics/src/selector.rs` with 38 tests), and an
   explicitly empty `Open questions` section.
 - SRD 23 has shipped `controls.rs` with 26+ tests, landed
   gauge reification end-to-end, and this memo is resolving

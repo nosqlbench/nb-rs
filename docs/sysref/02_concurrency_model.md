@@ -77,7 +77,9 @@ never interact with the atomic cursor directly.
 ```rust
 let item = source.render_item(ordinal);   // fiber-local
 fiber.set_source_item(&item);             // feed into GK state
-let fields = fiber.resolve_with_extras(template, &extras);
+let fields = fiber.resolve_with_field_pulls(template, &field_pulls[idx]);
+let pulls  = fiber.resolve_pulls(&pull_plans[idx]);
+let ctx    = ExecCtx::new(&fields, &pulls);
 ```
 
 For each ordinal in the reserved range, the fiber produces a
@@ -248,7 +250,7 @@ no measurable benefit over the default.
 ## Executor Task Structure
 
 ```rust
-async fn executor_task(activity, dispensers, extra_bindings, program, ...) {
+async fn executor_task(activity, dispensers, field_pulls, pull_plans, program, ...) {
     let mut fiber = FiberBuilder::new(program);
     let mut source = activity.source_factory.create_reader();
 
@@ -265,10 +267,16 @@ async fn executor_task(activity, dispensers, extra_bindings, program, ...) {
             fiber.set_source_item(&item);
 
             let (idx, template) = op_sequence.get_with_index(ordinal);
-            let fields = fiber.resolve_with_extras(template, &extras[idx]);
+            // Two parallel index-driven materializations from the
+            // same GkState — fields for the inner adapter, pulls for
+            // wrapper-side reads (validation, conditional, throttle).
+            // SRD 31 §"Pull plan vs bind plan".
+            let fields = fiber.resolve_with_field_pulls(template, &field_pulls[idx]);
+            let pulls  = fiber.resolve_pulls(&pull_plans[idx]);
+            let ctx    = ExecCtx::new(&fields, &pulls);
 
             // Execute — yields to tokio during I/O
-            let result = dispensers[idx].execute(ordinal, &fields).await;
+            let result = dispensers[idx].execute(ordinal, &ctx).await;
 
             // Record metrics, store captures
             record_metrics(&activity.metrics, &result);
@@ -277,3 +285,270 @@ async fn executor_task(activity, dispensers, extra_bindings, program, ...) {
     }
 }
 ```
+
+---
+
+## No Blocking Primitives in Async Contexts
+
+A hard rule: **code reachable from a tokio worker (every
+`async fn`, `tokio::spawn`, anything `.await`-driven) must never
+block the OS thread on a synchronous primitive.**
+
+### Forbidden in async paths
+
+- `std::sync::Mutex::lock()`, `RwLock::read()` / `.write()` —
+  any sync lock acquisition. The lock itself isn't the problem;
+  *holding it across an `.await`* parks the worker for arbitrary
+  time, and `std::sync::RwLock` on Linux is writer-preferring,
+  so even nested same-thread reads deadlock when a writer is
+  queued.
+- `std::sync::mpsc::Receiver::recv()`,
+  `crossbeam_channel::Receiver::recv()`,
+  `flume::Receiver::recv()` — any sync `recv` blocks the OS
+  thread. Use `tokio::sync::oneshot` / `mpsc` / `broadcast` and
+  `.await` the receiver.
+- `std::thread::sleep` — use `tokio::time::sleep(...).await`.
+- `SyncSender::send` on a full bounded channel — use `try_send`
+  with a non-blocking-drop policy, or a tokio channel + `.await`.
+
+### Why the runtime can hang
+
+The tokio worker pool has N threads (typically `num_cpus`).
+Each worker runs the scheduler in a loop: pick a runnable task,
+poll it, repeat. When a task `.await`s an async primitive that
+isn't ready, the worker sets the task aside, registers a
+wakeup, and picks another runnable task.
+
+A sync block doesn't yield to the scheduler. The worker thread
+sits in a syscall or cmpxchg loop until the OS unblocks it.
+While stuck, the worker runs no other tasks.
+
+If many async tasks block on sync primitives at once, *all*
+workers can be stuck simultaneously. The runtime has no thread
+free to drive the timer wheel or process I/O readiness. Tasks
+that should wake on a deadline (e.g., `sleep(5ms).await`) never
+get polled — the wakeup comes from the timer driver, but the
+timer driver runs on the same worker pool. The runtime appears
+deadlocked. From outside, the process is at 0% CPU with all
+worker threads parked on `futex_wait_queue` / `epoll_wait`.
+
+### The case that motivated this rule
+
+`CadenceReporter::ingest()` was previously implemented as
+"send command to actor + wait on ack via
+`crossbeam_channel::Receiver::recv()`". Each per-phase ingest
+pinned one tokio worker for a round-trip. With 100+ fibers
+logging `fiber exit (normal)` through the same observer write
+path during phase teardown, plus the phase boundary doing
+ingest/close_path, all workers were pinned. The activity's
+drain-loop `tokio::time::sleep(5ms).await` never got polled —
+its wakeup needs the timer driver, which needs an idle worker.
+
+The fix: `ingest` and `close_path` are fire-and-forget. The
+actor processes commands in FIFO order, so a follow-up call
+(next phase's ingest, shutdown_flush, etc.) sees prior effects
+naturally. Deterministic publication at session shutdown is
+provided by `shutdown_flush`, which is intentionally allowed
+to block — it's called once at end of run, after all tokio
+tasks have completed.
+
+### Design rules for new code
+
+1. **The fast path must not block.** Use an actor channel, write
+   through an atomic, or `.await` a tokio primitive. Never
+   sync `recv()`, never `lock()` across `.await`, never
+   `thread::sleep` on a tokio worker.
+2. **Synchronous semantics are a debugging affordance, not the
+   default.** If tests need to observe an in-flight effect,
+   expose a `flush_for_tests()` helper (documented
+   non-production) that uses a sync ack.
+3. **One blocking call per session is the ceiling, not the
+   target.** `shutdown_flush` is the single sanctioned exception
+   in nb-rs's metrics path. New components must not add another
+   without a matching SRD justification.
+
+### What's safe
+
+- `parking_lot::Mutex` / `parking_lot::RwLock` for short, never-
+  -across-`.await` critical sections. Both allow nested same-
+  thread reads, so the writer-preferring deadlock pattern
+  doesn't apply. They still block the OS thread; don't hold them
+  across an `.await`.
+- `tokio::sync::Mutex` / `RwLock` when the critical section
+  *must* span an `.await`.
+- Atomics (`AtomicU64`, `AtomicBool`, etc.) for hot-path
+  counters and flags.
+- `arc_swap::ArcSwap<T>` for lock-free atomic snapshot
+  publication of read-mostly state — the canonical pattern for
+  cross-component shared data (see SRD-42 §"Lock-free
+  consolidation lifecycle").
+- `crossbeam_channel` for cross-thread queuing as long as the
+  *async side* uses `try_send` and the *sync side* (the actor
+  thread) uses `recv()`. Never `recv()` from an async context.
+
+### Watchlist for code review
+
+- Any `recv()`, `lock()`, `read()`, `write()`, or
+  `thread::sleep` inside an `async fn` or under `tokio::spawn`
+  is a red flag.
+- Any new public method that uses `crossbeam_channel` or
+  `std::sync::mpsc` for cross-thread coordination must verify
+  it doesn't `.recv()` from an async context.
+- A `parking_lot::Mutex/RwLock` is fine but its `.read()` /
+  `.write()` still block the OS thread. Use only when (a) the
+  critical section is short and (b) it cannot run inside an
+  `.await`. For state shared with async, prefer the actor +
+  `arc-swap` pattern (SRD-42).
+
+---
+
+## Display and Diagnostic Decoupling
+
+A second hard rule, orthogonal to async/blocking but in the same
+spirit: **the display and diagnostic plane must be a strict actor
+relative to the core machine. The two planes share no mutable
+state. They communicate only through immutable snapshots
+(downstream) and typed commands (upstream).**
+
+The display plane includes: TUI, console progress lines, web
+status pages, log file sinks, and any out-of-band introspection
+endpoint. The diagnostic plane includes: `diag!()` writes,
+session.log, panic-route hooks. Treat all of these the same way.
+
+### Why this is a separate rule
+
+The async/blocking rule keeps the runtime alive. This rule keeps
+*observability* alive. They fail differently:
+
+- A blocking-primitive bug parks tokio workers; the user sees a
+  process at 0% CPU and asks "is it stuck?".
+- A display-coupling bug freezes the UI alongside the core, so
+  even when the user *knows* it's stuck, the very tool meant to
+  show them why is frozen too. Diagnostics that go silent during
+  a hang are the wrong shape of diagnostic.
+
+The first rule is satisfied by the standard tokio playbook. The
+second requires an explicit architectural choice — one most
+projects accidentally violate by sharing an `Arc<RwLock<State>>`
+between the renderer and the writer.
+
+### The actor shape
+
+```
+        ┌─────────────────┐                  ┌────────────────┐
+        │   Core machine  │                  │  Display plane │
+        │ (RunState owner │                  │   (TUI / web / │
+        │     actor)      │                  │  log sink / …) │
+        │                 │   Arc<ArcSwap<   │                │
+        │                 │     Snapshot>>   │                │
+        │                 │ ───────────────► │  store.load()  │
+        │                 │   (snapshot pub) │  (zero-wait)   │
+        │                 │                  │                │
+        │   inbox.recv()  │  mpsc::Sender    │                │
+        │  (typed command │ ◄─────────────── │  inbox.send(   │
+        │   match exhaust)│   <UiCommand>    │     UiCommand) │
+        └─────────────────┘                  └────────────────┘
+```
+
+- **Downstream (core → display):** the core owns a private
+  mutable `RunState`. On every change, it publishes
+  `Arc::new(snapshot)` into a shared `arc_swap::ArcSwap<Snapshot>`.
+  The display reads via `store.load()` — a single atomic
+  operation that *cannot wait*. It always returns the most
+  recently published `Arc<Snapshot>`. If the core is stalled,
+  the display continues to render the last-good snapshot; the
+  freshness staleness is itself a useful diagnostic signal.
+
+- **Upstream (display → core):** every action the display can
+  initiate is a variant of a typed `UiCommand` enum, sent over a
+  bounded `mpsc::Sender<UiCommand>` into the core's actor
+  inbox. The display uses `try_send` and surfaces `Full` /
+  `Disconnected` in the snapshot ("core is backed up", "core
+  exited"). It never blocks waiting for the core to drain.
+
+- **No shared mutable state in either direction.** No
+  `Arc<RwLock<RunState>>` shared between core and UI. No
+  `Arc<Mutex<…>>` that both sides take. Type-safety falls out:
+  the actor's `match cmd` is exhaustive, so a new UI capability
+  cannot be added without the core handling it.
+
+### Existing reference: the dynamic-controls path
+
+The TUI's `e` keybinding routes through
+`Control<T>::set(value, ControlOrigin::Tui).await` (SRD-23).
+That path is already an actor: the control's applier runs on a
+dedicated task, the `set` returns once the apply is queued, and
+the display reads the post-apply value through the control's
+ArcSwap-backed reify path. **Generalize this shape to every
+upstream action**, don't reinvent it. New display capabilities
+(request shutdown, pin selection, request stack dump, request
+fiber-pool snapshot) become new `UiCommand` variants, never new
+shared-state fields.
+
+### The case that motivates this rule
+
+The TUI froze together with a stalled core during an ann_query
+phase teardown. Diagnostic instrumentation revealed the cause —
+the renderer holds `Arc<RwLock<RunState>>::read()` to draw each
+frame; the executor holds `Arc<RwLock<RunState>>::write()` from
+its `RunObserver` callbacks. When the executor's worker stalled
+mid-callback (waiting on a downstream actor), every TUI render
+queued behind the held write guard. The very tool meant to show
+the user the state of the machine was the first thing to go
+silent. The fix is structural: replace the shared `RwLock` with
+`(ArcSwap<RunState>, mpsc::Sender<UiCommand>)`, and route every
+`RunObserver` event through the same actor inbox the UI sends to.
+
+### Diagnostic sinks belong on a dedicated thread
+
+`diag!()` writes and session.log appends must not run inline on
+a tokio worker. A slow filesystem (NFS, a full disk, a
+fsync-heavy snapshot) can stall the writer for seconds; in line
+with the async/blocking rule, that stall pins a worker. Route
+diagnostic writes through an mpsc channel into a dedicated
+single-thread sink. The sink is the only thread that touches
+the file. Producers `try_send` and drop on overflow with a
+visible "log dropped" counter — never block waiting for the
+sink to catch up.
+
+### Out-of-band introspection
+
+The "poke and prod the machine while it's stuck" surface (an
+HTTP endpoint, Unix socket, or signal handler) must run on a
+dedicated OS thread, not as a tokio task. If tokio is wedged,
+the introspection thread is still alive. It interacts with the
+core only through the same `UiCommand` channel and the
+`ArcSwap<Snapshot>` reader — so it produces the same snapshots
+the TUI sees, plus on-demand dumps (fiber-pool census, pending
+inbox depth, last `RunObserver` event) that don't depend on the
+runtime making forward progress.
+
+### Design rules for new code
+
+1. **Never share a `Mutex` or `RwLock` across the core/display
+   boundary.** If you find yourself reaching for one, the
+   correct shape is `(ArcSwap<Snapshot>, mpsc::Sender<Command>)`.
+2. **Every UI→core action is a typed `Command` variant.** No
+   "convenience" mutation paths through shared state, even when
+   "it's just a flag".
+3. **Display reads must be `O(load)`.** A snapshot read takes
+   exactly one atomic load. If a render path needs a lock, the
+   shape is wrong.
+4. **Diagnostic writes don't run on tokio workers.** Route to a
+   dedicated thread sink.
+5. **An OOB introspection surface is a first-class deliverable.**
+   It runs on its own OS thread and consumes the same
+   snapshot/command channels as the UI.
+
+### Watchlist for code review
+
+- Any `Arc<RwLock<…>>` or `Arc<Mutex<…>>` reachable from both
+  core code and display/diagnostic code is a red flag.
+- A `RunObserver` impl that calls `.write()` on shared display
+  state (instead of sending a command into an actor inbox) is a
+  red flag.
+- A `diag!` / log emission that writes synchronously to a file
+  from a tokio worker is a red flag.
+- A render path that takes more than one atomic operation to
+  obtain its data is a red flag — it's almost certainly waiting
+  on something it shouldn't.

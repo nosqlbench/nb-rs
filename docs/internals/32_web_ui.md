@@ -1,10 +1,10 @@
-# SRD 32 — Web UI (nb-web)
+# SRD 32 — Web UI (nbrs-web)
 
 ## Purpose
 
 The web UI provides a browser-based dashboard for monitoring,
 controlling, and inspecting nb-rs workloads. It serves as the
-graphical counterpart to the terminal TUI (`nb-tui`) and the
+graphical counterpart to the terminal TUI (`nbrs-tui`) and the
 CLI (`nbrs describe`).
 
 Built with Axum + Askama + htmx. No JavaScript build step, no SPA
@@ -69,7 +69,7 @@ Interactive version of `nbrs describe gk dag`:
 - **Live preview**: as you type (debounced), the DAG re-renders
 - **Example loader**: dropdown of example `.gk` files
 
-Uses `nb_variates::viz::gk_to_svg()` for pure-Rust SVG rendering.
+Uses `nbrs_variates::viz::gk_to_svg()` for pure-Rust SVG rendering.
 No graphviz installation needed.
 
 ### 5. Workload Inspector
@@ -105,7 +105,7 @@ signals — deferred until the activity lifecycle API is designed.
 ```
 Browser (htmx)
     ↕ HTTP + WebSocket
-Axum server (nb-web)
+Axum server (nbrs-web)
     ├── Static files (htmx.js, CSS)
     ├── Askama templates (HTML fragments)
     ├── API routes (JSON for programmatic access)
@@ -221,11 +221,11 @@ that feeds the TUI. The web server subscribes to the same
 
 ## Relationship to Other Components
 
-- **nb-tui (SRD TUI)**: Same metric frame source, different renderer.
+- **nbrs-tui (SRD TUI)**: Same metric frame source, different renderer.
   TUI renders to terminal; web renders to HTML.
-- **nb-metrics (SRD 16)**: `MetricsFrame` is the shared data model.
+- **nbrs-metrics (SRD 16)**: `MetricsFrame` is the shared data model.
   Both TUI and web consume frames from the capture thread.
-- **nb-variates (SRD 24/27/30)**: Registry, stdlib, and viz module
+- **nbrs-variates (SRD 24/27/30)**: Registry, stdlib, and viz module
   power the function browser, stdlib browser, and DAG viewer.
-- **nb-activity (SRD 21)**: Live activity state for the dashboard.
+- **nbrs-activity (SRD 21)**: Live activity state for the dashboard.
   Shared via `Arc`.

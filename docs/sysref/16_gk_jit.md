@@ -262,7 +262,7 @@ integration.
 ## Extern-helper table
 
 Each predicate has one dedicated fail helper. The helpers live
-in `nb-variates/src/jit/codegen.rs` and are registered with
+in `nbrs-variates/src/jit/codegen.rs` and are registered with
 Cranelift's JIT symbol table so the emitted native code can
 call them.
 
@@ -316,7 +316,7 @@ can run at Phase-2 during troubleshooting.
 
 ## Tests
 
-`nb-variates/src/jit/codegen.rs` carries unit coverage:
+`nbrs-variates/src/jit/codegen.rs` carries unit coverage:
 
 - Per-predicate happy path: value passes through.
 - Per-predicate catchable-panic path: violation fires and

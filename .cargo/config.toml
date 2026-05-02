@@ -5,7 +5,6 @@
 t = "test --release"
 b = "build --release"
 in = "install --path nbrs"
-ic = "install --path personas/cassnbrs"
 
 # Direct all test temp files to target/test-tmp/ instead of /tmp.
 [env]
@@ -13,8 +12,18 @@ TMPDIR = { value = "target/test-tmp", relative = true }
 
 # Use mold linker for final binaries — dramatically faster than ld for
 # large binaries (~350 MB debug). mold parallelizes across all cores.
+#
+# `force-frame-pointers=yes` keeps `rbp` reserved as the frame-pointer
+# register on x86_64. `nbrs-activity::profiler` defaults to
+# `perf record --call-graph fp` (set via `profiler=perf` on the CLI);
+# without this flag, perf would have to fall back to DWARF call-graphs
+# whose post-processing routes through `addr2line` and is 5–10× slower
+# at flamegraph generation. Cost: one register reserved across the
+# binary — negligible for the workload-driver path. The tradeoff is
+# documented in `nbrs-activity::profiler` next to the call-graph
+# selection logic.
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+rustflags = ["-C", "link-arg=-fuse-ld=mold", "-C", "force-frame-pointers=yes"]
 
 [profile.dev]
 # Split debuginfo into separate files — smaller binary, faster link.
@@ -24,4 +33,4 @@ split-debuginfo = "unpacked"
 opt-level = 2
 
 [profile.release]
-debug = false
+debug = true

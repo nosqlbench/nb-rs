@@ -1,0 +1,67 @@
+#!/usr/bin/env nbrs
+# all(<cursor>) — iterate a cursor's full extent at scenario level.
+#
+# Demonstrates the comprehension-level `all(<cursor>)` clause-source
+# generator (SRD-18c §"Layer 3: Named generators"). The scenario's
+# `for` clause expands the cursor's extent into a list of ordinals;
+# each iteration runs the inner phase with `xval` bound to the
+# next ordinal.
+#
+# This is the simple case for "I have an N-row dataset and want to
+# run a test once per row" — a comprehension reads the cursor's
+# resolved extent and emits the values; the inner phase consumes
+# `{xval}` like any other binding.
+#
+# Note on cycle counts: a cursor declared in scope causes the
+# runtime to auto-derive phase cycles from the cursor's extent
+# (cursors are typically the cycle-counter for phases that consume
+# them). With this example's cursor extent of 50, each inner
+# phase invocation runs 50 cycles. The `for` comprehension drives
+# 50 outer iterations, so you'll see 50×50 = 2500 prints. In a
+# real workload that doesn't want cursor-cycle inference, declare
+# the cursor at scenario level (so it's visible to the
+# comprehension but not to the inner phase) — that's planned but
+# not yet supported. For now, override with explicit cycles.
+#
+# Usage:
+#   nbrs run all_cursor.yaml scenario=enumerate
+
+# Workload-level bindings — the cursor declaration goes here so
+# its extent auxiliaries (`__cursor_extent_row_{start,end}`) are
+# visible to the scenario-level `for` comprehension.
+#
+# `range(0, 50)` is the literal-extent constructor; for real
+# datasets, swap in a vectordata cursor sugar (e.g.,
+# `vectordata_base("dataset:profile")`) and the same `all(row)`
+# form works unchanged.
+bindings: |
+  cursor row = range(0, 50)
+
+scenarios:
+  enumerate:
+    # `for: "xval in all(row)"` — comprehension reads the cursor's
+    # extent (50) and iterates xval over [0, 50).
+    - for: "xval in all(row)"
+      phases: [print]
+
+  # The same form composes with `where` and `order`. Pick every
+  # 10th ordinal:
+  every_tenth:
+    - for: "xval in all(row) where {xval} % 10 == 0"
+      phases: [print]
+
+  # First 5 only:
+  first_five:
+    - for: "xval in all(row) order lex/5"
+      phases: [print]
+
+phases:
+  # Phase has no own `bindings:` block — that way the workload-level
+  # cursor declaration above flows through unchanged.
+  print:
+    adapter: stdout
+    cycles: 1
+    concurrency: 1
+    ops:
+      info:
+        stmt: "xval={xval}"

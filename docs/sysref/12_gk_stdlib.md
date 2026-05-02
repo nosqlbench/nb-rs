@@ -16,16 +16,16 @@ Node metadata should declare the cost class of each input port:
 
 | Class | Semantics | Example |
 |-------|-----------|---------|
-| `config` | Expensive to change. Initializes internal state (LUT, distribution table). Expected to be wired to init-time constants or rarely-changing values. | `weighted_strings` weights parameter |
-| `data` | Cheap per-cycle input. The node's primary computation path. | `hash` input value, `mod` dividend |
+| `config` | Expensive to change. Initializes internal state (LUT, distribution table). Expected to be wired to effectively-const sources (per [SRD 11](11_gk_evaluation.md): compile-const, scope-init, or iteration externs). | `weighted_strings` weights parameter |
+| `data` | Cheap dynamic input. The node's primary computation path. | `hash` input value, `mod` dividend |
 
 The compiler can use this information to:
-- **Warn** when a `config` wire is connected to a cycle-time
-  binding (the LUT would be rebuilt every cycle)
+- **Warn** when a `config` wire is connected to a dynamic
+  binding (the LUT would be rebuilt on every pull)
 - **Error** when the cost would be catastrophic (e.g., O(n)
-  rebuild per cycle on a million-entry distribution)
+  rebuild per pull on a million-entry distribution)
 - **Allow** explicit override when the user intentionally wants
-  per-cycle reconfiguration (functional testing of the node)
+  dynamic reconfiguration (functional testing of the node)
 
 This is a metadata annotation on `PortMeta`, not a runtime
 enforcement — the node always works correctly regardless of
@@ -216,7 +216,7 @@ operate on the same GK wires everything else does — a
 | Node | Signature | Description |
 |------|-----------|-------------|
 | `this_or` | `T?, T → T` | Returns the first argument if it resolves to a defined value, otherwise the second. Lets a workload explicitly say "use this or fall back to that" across scopes. Arguments are ordinary wires; `default` can be a literal, a param lookup, a capture, or another `this_or`. |
-| `required` | `T? → T` | Compile/init-time assertion that the input resolves to a defined, non-empty value. Passes the value through on success; raises an error with the parameter name on failure. Use to catch missing-parameter bugs before cycles run. |
+| `required` | `T? → T` | Compile / scope-init assertion that the input resolves to a defined, non-empty value. Passes the value through on success; raises an error with the parameter name on failure. Use to catch missing-parameter bugs before cycles run. |
 | `is_positive` | `N → N` | Predicate: pass through if value > 0, error otherwise (numeric types). |
 | `in_range` | `N, N, N → N` | Predicate: pass through if `lo ≤ value ≤ hi`, error with a range-mismatch diagnostic otherwise. |
 | `matches` | `String, String → String` | Predicate: pass through if value matches the regex, error otherwise. |
@@ -233,18 +233,52 @@ behavior through a setjmp/longjmp shim documented in
 
 ### Vectordata Integration (feature-gated)
 
+Vectors are array-shaped data. The canonical access path keeps
+them in their packed binary form end-to-end — the runtime reads
+mmap'd `f32` slices, hands them out as `Bytes`, and prepared-
+binding adapters wire the bytes directly into the wire protocol
+(CQL prepared statements do an LE → BE swap and bind as a
+`vector<float, dim>` BLOB; no string round-trip). The string
+variants below predate the byte path and remain only for
+diagnostic display / debug printing.
+
+**Bytes accessors (production fast path):**
+
 | Node | Signature | Description |
 |------|-----------|-------------|
-| `vector_at` | `u64, String → String` | training vector at index |
-| `query_vector_at` | `u64, String → String` | query vector at index |
-| `neighbor_indices_at` | `u64, String → String` | ground truth neighbors |
-| `neighbor_distances_at` | `u64, String → String` | ground truth distances |
-| `vector_dim` | `String → u64` | dataset dimension count |
-| `vector_count` | `String → u64` | dataset training set size |
+| `vector_at_bytes` | `u64, String → Bytes` | training vector at index, packed `f32` LE bytes |
+| `query_vector_at_bytes` | `u64, String → Bytes` | query vector at index, packed `f32` LE bytes |
+
+**Scalar / count accessors:**
+
+| Node | Signature | Description |
+|------|-----------|-------------|
+| `vector_dim` | `String → u64` | dataset dimension count (const-folded at init) |
+| `vector_count` | `String → u64` | training-set size (const-folded at init) |
+| `query_count` | `String → u64` | query-set size (const-folded at init) |
+| `metadata_value_at` | `u64, String → String` | per-vector metadata value (string for now — metadata types are dataset-conditional and dynamically dispatched) |
 | `dataset_distance_function` | `String → String` | similarity metric name |
 
-Dataset resolution: bare name → `vectordata` catalog → URL → download + cache.
-Datasets loaded once globally via `DATASET_CACHE`.
+**Typed-vector accessors:**
+
+| Node | Signature | Description |
+|------|-----------|-------------|
+| `vector_at` | `Handle, u64 → VecF32` | base vector at index |
+| `query_vector_at` | `Handle, u64 → VecF32` | query vector at index |
+| `neighbor_indices_at` | `Handle, u64 → VecI32` | ground-truth neighbor indices |
+| `neighbor_distances_at` | `Handle, u64 → VecF32` | ground-truth neighbor distances |
+
+The legacy string and byte accessor variants
+(`vector_at_bytes` / `query_vector_at_bytes`) are removed.
+Vectors flow as typed `Value::VecF32(Arc<[f32]>)` or
+`Value::VecI32(Arc<[i32]>)` end-to-end; the CQL adapter binds
+them via scylla's native `SerializeValue` for `[T]` and the
+display path via `Value::to_display_string()` renders them as
+JSON-array text. See SRD 53 §"Native Vector Binding".
+
+Dataset resolution: bare name → `vectordata` catalog → URL →
+download + cache. Datasets loaded once globally via
+`DATASET_CACHE`.
 
 For workloads, the vectordata module also registers
 **cursor-construction sugar** so `cursor row = vectordata_base("ds",
@@ -259,7 +293,7 @@ different source kind (CSV, streaming, etc.).
 ## Registration
 
 Nodes are registered in the DSL compiler's function registry
-(`nb-variates/src/dsl/registry.rs`). Each entry maps a function
+(`nbrs-variates/src/dsl/registry.rs`). Each entry maps a function
 name to a factory that produces a `Box<dyn GkNode>` from parsed
 arguments.
 
@@ -285,7 +319,7 @@ then calls:
     crate::register_nodes!(signatures, build_node);
 
 This works across crate boundaries — adapter crates can define
-domain-specific nodes (e.g., `cql_timeuuid` in cassnbrs) that
+domain-specific nodes (e.g., `cql_timeuuid` in nbrs-adapter-cql) that
 automatically appear in the GK function registry at link time.
 
 ---

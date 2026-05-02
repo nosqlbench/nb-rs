@@ -1,0 +1,19 @@
+[package]
+name = "nbrs-adapter-http"
+version = "0.1.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "HTTP adapter for nb-rs: executes workload operations as HTTP requests"
+keywords = ["nosqlbench", "workload", "benchmark", "http"]
+categories = ["command-line-utilities", "web-programming::http-client"]
+repository = "https://github.com/nosqlbench/nb-rs"
+homepage = "https://github.com/nosqlbench/nb-rs"
+readme = "README.md"
+
+[dependencies]
+nbrs-activity = { path = "../../nbrs-activity", version = "0.1.1", default-features = false }
+nbrs-variates = { path = "../../nbrs-variates", version = "0.1.1" }
+nbrs-workload = { path = "../../nbrs-workload", version = "0.1.1" }
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1"
+inventory = "0.3.24"

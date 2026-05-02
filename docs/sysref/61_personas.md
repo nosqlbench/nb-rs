@@ -1,152 +1,161 @@
-# 61: Persona Model
+# 61: Single Binary, Feature-Gated Drivers
 
-Personas are protocol-specific binaries that extend the core
-nb-rs engine with native database drivers.
+`nbrs` is the single user-facing CLI. Protocol-specific drivers
+that need heavy or non-portable build requirements (C++
+toolchain, system libraries) are gated behind Cargo features,
+so users compile in only what they need.
+
+This is a deliberate flip from the earlier *persona* model
+(separate binaries per protocol family). Personas were retired
+in favor of features once the cost of multi-binary maintenance
+(duplicate `main.rs`, duplicate TUI wiring, fork drift) outgrew
+the benefit (avoiding optional deps).
 
 ---
 
 ## Architecture
 
 ```
-nbrs (core)                    cassnbrs (persona)
-├── nb-adapter-stdout          ├── nb-adapter-stdout
-├── nb-adapter-http            ├── nb-adapter-http
-├── nb-adapter-model           ├── nb-adapter-model
-└── (no native drivers)        └── cassnbrs-adapter-cql
-                                    └── cassandra-cpp (static)
+nbrs (single binary)
+├── nbrs-adapter-stdout              (always)
+├── nbrs-adapter-http                (always)
+├── nbrs-adapter-testkit             (always)
+├── nbrs-adapter-plotter             (always)
+├── nbrs-adapter-cql                 (always — common surface)
+│   ├── engine-scylla feature        (default — pure-Rust)
+│   └── engine-cassandra-cpp feature (opt-in — needs libcassandra)
+└── nbrs-adapter-openapi             (openapi feature)
 ```
 
-The core `nbrs` binary includes only lightweight adapters with
-no system dependencies. Persona binaries add native protocol
-drivers that may require C/C++ libraries, system packages, or
-special build procedures.
+The default build picks up every adapter that compiles cleanly
+on stock Rust. Opt-in features add drivers that require system
+toolchains.
 
 ---
 
-## Persona Structure
+## Cargo features on `nbrs`
 
-Each persona is a thin composition root:
-
-```rust
-// personas/cassnbrs/src/main.rs
-fn main() {
-    let args = std::env::args().skip(1).collect();
-    let prepared = nb_activity::runner::prepare(&args)?;
-
-    match prepared.driver.as_str() {
-        "cql" | "cassandra" => {
-            let adapter = CqlAdapter::connect(&config).await?;
-            prepared.run_with_driver(Arc::new(adapter)).await;
-        }
-        "stdout" => { /* core adapter */ }
-        "http" => { /* core adapter */ }
-        other => { eprintln!("unknown adapter '{other}'"); }
-    }
-}
-```
-
-All personas reuse:
-- `nb-activity::runner::prepare()` for workload parsing, GK
-  compilation, activity setup
-- `nb-activity::Activity` for execution engine
-- `nb-metrics` for instrumentation
-- All core adapters (stdout, http, model)
+| Feature | Default | Adds |
+|---------|---------|------|
+| `engine-scylla` | yes | Pure-Rust ScyllaDB driver. `cqldriver=scylla`. |
+| `engine-cassandra-cpp` | no | DataStax Cassandra C++ driver. `cqldriver=cassandra-cpp`. Requires `libcassandra` + libuv + openssl on the host or via `adapters/cql/build.sh`. |
+| `all-engines` | no | Both CQL engines linked; runtime selection via `cqldriver=`. |
+| `openapi` | no | Adds `describe-openapi` and `run-openapi` subcommands that synthesize ops from an OpenAPI 3.x spec. |
+| `flamegraph` | no | Forwards to `nbrs-activity/flamegraph` for built-in CPU profiling. |
 
 ---
 
-## Current Personas
+## Building
 
-### cassnbrs — Cassandra/CQL
-
-- **Driver**: Apache Cassandra C++ driver via `cassandra-cpp`
-- **Build**: Docker-based sysroot for static linking
-  (`bash build.sh` or `bash build.sh docker`)
-- **Excluded from workspace**: requires C++ driver installation
-- **Adapters**: `CqlAdapter` with `CqlRawDispenser` and
-  `CqlPreparedDispenser`
-
-### opennbrs — OpenSearch
-
-- **Driver**: HTTP-based (uses core HTTP adapter)
-- **In workspace**: no special dependencies
-
----
-
-## Build
-
-### Workspace Build (core + opennbrs)
+### Default (everything that needs no system toolchain)
 
 ```bash
-cargo build --release
+cargo build --release -p nbrs
 ```
 
-### cassnbrs Build
+### Opt-in: cassandra-cpp engine
+
+The DataStax C++ driver isn't on crates.io; build infrastructure
+lives under `adapters/cql/`:
 
 ```bash
-cd personas/cassnbrs
+cd adapters/cql
 
-# Full build: C++ driver in Docker + cargo
+# Full build: builds C driver in Docker, extracts to sysroot/, then cargo
 bash build.sh
 
-# Driver only (first time)
+# Driver only — useful for first-time setup
 bash build.sh driver
 
-# Cargo only (driver already built)
+# Cargo only (after sysroot/ exists)
 bash build.sh cargo
 
-# Everything in Docker (no host Rust needed)
+# Everything inside Docker (no host Rust needed)
 bash build.sh docker
 ```
 
-The `build.sh` script:
-1. Builds the C++ driver from source in Docker
-2. Extracts static libraries and headers to `sysroot/`
-3. Sets `CASSANDRA_SYS_LIB_PATH` and builds with cargo
-4. Verifies static linking (no runtime `libcassandra.so` needed)
+`build.sh cargo` invokes:
+
+```bash
+cargo build --release -p nbrs --no-default-features \
+    --features engine-cassandra-cpp
+```
+
+Both engines together:
+
+```bash
+cargo build --release -p nbrs --features all-engines
+```
+
+### Opt-in: OpenAPI workload generation
+
+```bash
+cargo build --release -p nbrs --features openapi
+```
+
+Adds `describe-openapi` and `run-openapi` subcommands.
 
 ---
 
-## Future Personas
+## Adapter selection at runtime
 
-| Persona | Binary | Driver Crate | Status |
-|---------|--------|-------------|--------|
-| cassnbrs | `cassnbrs` | `cassandra-cpp` | Implemented |
-| opennbrs | `opennbrs` | HTTP | Implemented |
-| grpcnbrs | `grpcnbrs` | `tonic` | Planned |
-| sqlnbrs | `sqlnbrs` | `sqlx` | Planned |
-| redisnbrs | `redisnbrs` | `redis` | Planned |
+User-facing names (registered in inventory):
 
-Each new persona follows the same pattern: adapter crate
-implementing `DriverAdapter`/`OpDispenser`, persona binary
-crate with `main.rs` dispatch, build script for any native
-dependencies.
+- `adapter=stdout`
+- `adapter=http`
+- `adapter=testkit`
+- `adapter=plotter`
+- `adapter=cql`
 
----
+`adapter=cql` is a meta-adapter that resolves to a concrete
+engine via [`AliasResolverEntry`](../../nbrs-activity/src/adapter.rs).
+The user picks the engine with `cqldriver=scylla` /
+`cqldriver=cassandra-cpp`. Direct dispatch by engine name is
+intentionally not exposed — engines stay an internal concept.
 
-## Design Rationale
+```bash
+# Default — picks the lowest-rank engine (cassandra-cpp if both
+# are linked; scylla otherwise).
+nbrs run adapter=cql workload=...
 
-Personas exist to solve three problems that a monolithic binary cannot:
-
-- **Fast compilation**: only compile the drivers you need. Pulling in
-  CQL, gRPC, SQL, Redis, and Kafka transitive dependencies in a single
-  binary makes every rebuild slow for every user.
-- **Minimal dependencies**: CQL users don't need gRPC libraries. HTTP
-  users don't need the Cassandra C++ driver. Each persona ships exactly
-  the drivers it needs — no more.
-- **Independent release cadence**: a driver update (e.g., a new version
-  of `cassandra-cpp`) doesn't require a core nb-rs release. The persona
-  binary crate can rev independently.
-
-The core `nb-activity` runtime, GK compiler, metrics, and rate limiting
-are shared across all personas via library crates. Only the protocol
-adapter code is persona-specific.
+# Force a specific engine.
+nbrs run adapter=cql cqldriver=scylla
+nbrs run adapter=cql cqldriver=cassandra-cpp
+```
 
 ---
 
-## Design Principle
+## Why features instead of personas
 
-Personas prevent dependency bloat. A user testing Cassandra
-doesn't need gRPC dependencies. A user testing HTTP doesn't
-need the Cassandra C++ driver. Each persona is a self-contained
-binary with exactly the drivers it needs, statically linked
-for single-binary deployment.
+- **Single composition root.** One `main.rs`, one TUI wiring,
+  one set of subcommand dispatch. No fork drift.
+- **Familiar Cargo idiom.** Users who already know how to
+  `cargo build --features ...` for any other Rust crate can
+  drive nbrs the same way.
+- **Reusable glue.** TUI observer, post-run summary, completion
+  shell — all live in `nbrs-tui` / `nbrs-activity` / `nbrs-workload`
+  and are reachable from any future binary that wants them.
+- **Honest minimal default.** `cargo build -p nbrs` builds
+  cleanly on a stock Rust toolchain with no system packages.
+- **Independent driver evolution.** Driver crates
+  (`nbrs-adapter-cql`, `nbrs-adapter-openapi`) version
+  independently. A driver-only release doesn't churn the
+  user-facing CLI.
+
+---
+
+## Future drivers
+
+| Driver | Crate | Feature flag | Status |
+|--------|-------|--------------|--------|
+| Scylla / Cassandra | `nbrs-adapter-cql` | `engine-scylla` | Default |
+| Cassandra (C++) | `nbrs-adapter-cql` | `engine-cassandra-cpp` | Implemented |
+| OpenAPI 3.x | `nbrs-adapter-openapi` | `openapi` | Implemented |
+| gRPC | `nbrs-adapter-grpc` (planned) | `grpc` | Planned |
+| SQL (sqlx) | `nbrs-adapter-sql` (planned) | `sql` | Planned |
+| Redis | `nbrs-adapter-redis` (planned) | `redis` | Planned |
+
+Each new driver follows the same pattern: a library crate that
+implements [`DriverAdapter`](../../nbrs-activity/src/adapter.rs)
+or registers an `AliasResolverEntry`, plus a feature flag on
+`nbrs` that pulls it in.

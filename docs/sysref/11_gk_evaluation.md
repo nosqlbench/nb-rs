@@ -69,58 +69,246 @@ for the broader discussion of provenance-based invalidation.
 
 ---
 
-## Init-Time vs Cycle-Time
+## Three Evaluation Lifecycles
 
-The two lifecycles exist because some work is too expensive or
-nonsensical to repeat every cycle. Init-time bindings form their
-own DAG resolved once at assembly — before the first cycle fires.
-This lets expensive setup (LUT construction, CSV loading, alias
-table building, connection establishment) happen in a dedicated
-phase where cost doesn't matter. The cycle-time DAG then starts
-with all init values frozen, no lazy initialization, no first-cycle
-penalties. Init-time values are shared via `Arc` — one alias table
-used by many nodes is built once and referenced by all of them.
+A GK node's *lifecycle* is the granularity at which it is
+re-evaluated. Three are recognised, ordered from coldest to
+hottest:
 
-### Cycle-Time Nodes
+| Lifecycle | When evaluated | Re-evaluated when… |
+|-----------|----------------|---------------------|
+| **compile-const** | Once, during GK compilation | Never. Replaced in the DAG with a leaf const node. |
+| **scope-init** | Once per scope activation, immediately after `bind_outer_scope` populates iteration-variable externs | The enclosing comprehension advances to its next iteration (the scope is re-activated with new extern values). Never per cycle. |
+| **dynamic** | Once per pull, on demand at execution time | Whenever a transitively dependent input changes (provenance-based invalidation). Includes per-cycle pulls *and* intra-stanza recomputation when capture ports or `do_while`/`do_until` counters tick. |
 
-Depend on inputs (directly or transitively). Evaluated every
-cycle. Examples: `hash(cycle)`, `mod(hash(cycle), 1000000)`.
+The previous binary "init-time vs cycle-time" terminology
+collapsed compile-const and scope-init into one bucket. They are
+distinct: compile-const is resolved before the kernel is even
+shared; scope-init is resolved each time an enclosing comprehension
+re-activates the scope. Both are **scope-stable** — they hold a
+single value for the entire activation of their owning scope —
+which is the property the init-binding contract below depends on.
 
-### Init-Time Nodes
+### Effectively-Const Nodes
 
-No input dependency. Evaluated once during constant folding
-and replaced with literal constants in the DAG. Examples:
-`vector_dim("glove-25")`, `vector_count("glove-25")`.
+A node is **effectively-const** at a given scope-init point if
+it produces exactly one value for the entire activation of the
+owning scope. The set is closed under upstream traversal: a node
+whose every upstream wire reaches an effectively-const producer
+is itself effectively-const.
 
-### Constant Folding
+| Producer | Effectively-const? | Why |
+|----------|-------------------|-----|
+| Literal in source | Yes | Resolved at parse / compile. |
+| Compile-const fold result | Yes | Already a leaf const node. |
+| Workload param (`final` binding) | Yes | Bound once at workload-kernel init, never reassigned. |
+| `for_each` / `for_combinations` iteration extern | Yes — *for the duration of one activation* | Rebound by `bind_outer_scope` on each iteration; held constant for every cycle within that iteration. See [SRD 18b §"Iteration variables as scope outputs"](18b_scenario_tree_and_scheduler.md). |
+| `do_while` / `do_until` counter | **No** | Dynamic — ticks within the scope's own evaluation; not stable for the activation. |
+| Graph input (e.g. `cycle`) | **No** | Dynamic — changes every cycle. |
+| Capture / volatile port | **No** | Dynamic — mutated by op execution within a stanza. |
+| Non-deterministic source (`counter`, `current_epoch_millis`, `elapsed_millis`, `thread_id`) | **No** | Excluded by construction even when wires would suggest otherwise. |
 
-After compilation, `fold_init_constants()` identifies init-time
-nodes and evaluates them:
+The iteration-extern entry is the load-bearing case the prior
+"binary" model handled wrong. A leaf phase nested inside
+`for_combinations [profile, table]` sees `profile` and `table`
+as input slots; the data-flow analysis flagged any binding
+downstream of those slots as dynamic and refused to fold it.
+But `profile` is rebound exactly once per phase activation and
+held fixed for every cycle — the same stability guarantee as a
+folded literal. Treating iteration externs as effectively-const
+is what permits `init prebuffered = dataset_prebuffer("{dataset}:{profile}")`
+to be a legal init binding inside such a scope.
+
+### Compile-Time Constant Folding
+
+Compile-time fold is the implementation of the compile-const
+lifecycle. It runs once per `GkProgram` build, before the program
+is wrapped in `Arc` and shared:
 
 ```
-Phase 1: Mark nodes as init-time or cycle-time
-  - Graph inputs → cycle-time
-  - External ports → cycle-time
-  - NodeOutput from cycle-time node → cycle-time (propagates)
-  - Everything else → init-time
+Phase 1: Classify each node by upstream wire chain
+  - Graph input / external port / non-deterministic source
+                                  → not effectively-const
+  - NodeOutput whose source is not effectively-const
+                                  → not effectively-const (propagates)
+  - Wire to an iteration extern (for_each / for_combinations)
+                                  → not effectively-const at *compile*
+                                    time. Extern values are unknown
+                                    until scope activation; folding is
+                                    deferred to the scope-init pass.
+  - Everything else               → effectively-const at compile time
 
-Phase 2: Evaluate init-time nodes with dummy inputs
+Phase 2: Evaluate compile-const nodes with dummy inputs
 
-Phase 3: Replace evaluated nodes with ConstU64/ConstF64/ConstStr
+Phase 3: Replace evaluated nodes with leaf const nodes
+         (ConstU64, ConstF64, ConstStr, ConstHandle, …)
 ```
 
-Type adapter nodes (`__u64_to_f64`, etc.) participate in folding.
-A chain like `ConstU64(42) → __u64_to_f64 → sin` folds to
-`ConstF64(sin(42.0))` — the entire chain is evaluated once and
+Type adapter nodes (`__u64_to_f64`, etc.) participate. A chain
+like `ConstU64(42) → __u64_to_f64 → sin` folds to
+`ConstF64(sin(42.0))` — the whole chain is evaluated once and
 replaced with a single constant.
 
-Non-deterministic nodes (`counter`, `current_epoch_millis`,
-`elapsed_millis`, `thread_id`) are excluded from folding regardless
-of their input status.
-
 Folded constants are available via `kernel.get_constant(name)` for
-use by activity config resolution (cycles, concurrency from
-dataset metadata).
+activity config resolution (cycles, concurrency from dataset
+metadata).
+
+### Scope-Init Pass
+
+The scope-init pass is the implementation of the scope-init
+lifecycle. It runs once per scope activation, *after*
+`bind_outer_scope` has populated the kernel's iteration-extern
+input slots and *before* any fiber is created.
+
+```
+For each declared init binding b in this scope's program:
+  1. Pull b's name on the activation kernel's state. The standard
+     pull walks back through b's subgraph, evaluating each upstream
+     node against the populated externs and caching the result in
+     the state's per-node buffer (clean flag set to true).
+  2. Verify the resulting value is non-`None` (Plan B, below).
+
+After every init binding has been pulled, the executor wraps the
+kernel in an `OpBuilder` that snapshots the
+`(node_idx, port_idx, Value)` triples for those bindings as
+`init_overrides`. Each fiber spawned from this `OpBuilder` seeds
+the triples into its own state's buffers and marks the
+corresponding nodes clean. A fiber's first dynamic pull of an
+init binding reads the seeded buffer directly — the binding's
+eval function does not re-fire, regardless of how many cycles
+or fibers traverse it.
+```
+
+This is the runtime side of the init-binding contract: one eval
+per scope activation, full stop, regardless of fiber count.
+
+Reference points in the code:
+- `nbrs_variates::kernel::engines::GkState::seed_node_buffer` —
+  primitive that writes a value into a node's buffer slot and
+  marks it clean.
+- `nbrs_activity::synthesis::OpBuilder::init_overrides` — the
+  per-activation snapshot that fiber state inherits.
+- `nbrs_activity::executor::run_phase` Plan B block — the
+  per-init-binding pull + non-None verification, immediately
+  after `kernel.bind_outer_scope(parent_kernel)`.
+
+---
+
+## Init Binding Contract
+
+`init <name> = <expr>` is a **const-like constraint**: it asserts
+that `<expr>` evaluates to a single value for the entire
+activation of the enclosing scope. The compiler and runtime
+together enforce two checks:
+
+### Compile-Time Check (Plan A)
+
+During GK compilation, after wire resolution and topological
+sort:
+
+> For every binding declared `init`, every node in its upstream
+> wire chain must be either compile-const or an iteration extern
+> (effectively-const at scope-init time per the table above).
+
+If any upstream node is non-effectively-const — a graph input,
+a capture port, a `do_while`/`do_until` counter, a chain through
+a non-deterministic source — compilation **fails** with a
+diagnostic naming the init binding and the offending wire. There
+is no soft fall-through to dynamic evaluation.
+
+This check runs in the compile-time fold pass. Compile-const
+classification (above) and the init-binding check share the same
+upstream walk; the init check simply demands the upstream set be
+a subset of `{compile-const ∪ iteration externs}`.
+
+### Scope-Activation Check (Plan B)
+
+After scope-init evaluation runs (the scope is activated, externs
+populated, the scope-init pass has stashed values), the kernel
+verifies:
+
+> Every binding declared `init` has produced a single concrete
+> value and is materialized as a leaf const-like node (ConstU64,
+> ConstF64, ConstStr, ConstHandle, etc.) — no remaining wires,
+> no deferred eval.
+
+If any init binding fails to materialize — most commonly because
+its value type is not foldable to a leaf node, or its eval
+returned `Value::None`, or a panic was caught and the node was
+left unfolded — this is a **hard runtime error** at scope
+activation, before any cycles run. The phase fails to start;
+the diagnostic names the binding, the residual node type, and
+the eval result.
+
+Plan A is the type-system-style check that runs at compile time
+when iteration-extern values are unknown but the wire structure
+is fully visible. Plan B is the construction-correctness check
+that runs at scope activation when the values are known and the
+fold pass has had its chance. Together they ensure: an init
+binding either evaluates exactly once per scope activation, or
+the workload refuses to run.
+
+### Why Both Checks
+
+Plan A alone catches structural errors at workload-author time
+(no need to wait for runtime; failures travel with the source).
+But it cannot catch runtime conditions — a remote facet that
+returns 403, an opaque eval panic, a `Value::None` from an
+otherwise-valid init function — because those depend on real
+extern values.
+
+Plan B alone is robust against runtime conditions but defers
+clear structural errors (e.g. an init binding that wires through
+a `cycle`-dependent node) to runtime, where the failure surface
+is larger and the diagnostic less localized to the source line.
+
+Both are cheap. Both run at most once per scope activation. The
+combined check is the contract.
+
+### Diagnostic Format
+
+Both checks emit the same shape — `init binding '<name>'
+violates the init contract: <reason>`. The reason names the
+offending wire (Plan A) or the runtime failure mode (Plan B).
+Plan B errors carry the executor's `gk_context` prefix
+identifying the phase / scope.
+
+Plan A reasons (compile-time, from
+`fold_init_constants_impl`):
+
+- **`wire on node '<n>' reaches coordinate input '<name>'
+  (dynamic; changes every cycle)`** — init binding wired to a
+  graph input declared by `inputs := (...)`.
+- **`wire on node '<n>' reaches capture port '<name>' (dynamic;
+  mutated by op execution)`** — init binding wired to an
+  `extern X: T = default` port (capture surface).
+- **`wire on node '<n>' reaches non-deterministic source '<name>'
+  (dynamic by construction)`** — `counter`, `current_epoch_millis`,
+  `elapsed_millis`, `session_start_millis`, or `thread_id`.
+- **`wire on node '<n>' reaches dynamic node '<upstream>'
+  upstream`** — fallback when the chain is dynamic but the
+  immediate seed isn't one of the patterns above (e.g. a chain
+  through a `do_while` counter).
+
+Plan B reasons (scope-activation, from `executor::run_phase`):
+
+- **`scope-init eval returned Value::None`** — the eval function
+  signaled a fatal failure (e.g. `dataset_prebuffer` couldn't
+  resolve the source) and refused to produce a value.
+- **`scope-init eval panicked: <message>`** — the eval function
+  panicked; details captured via `catch_unwind`. The panic does
+  *not* poison the fiber pool; the phase fails to start cleanly.
+
+---
+
+## Non-Deterministic Nodes
+
+`counter`, `current_epoch_millis`, `elapsed_millis`, `thread_id`
+are excluded from compile-const folding *and* from
+effectively-const classification regardless of their input
+wires. They are inherently dynamic even when a static analysis
+would suggest otherwise. An `init` binding that depends on one
+of these fails the Plan A check.
 
 ---
 
@@ -203,9 +391,10 @@ pub struct FiberBuilder {
 impl FiberBuilder {
     pub fn new(program: Arc<GkProgram>) -> Self;
     pub fn set_inputs(&mut self, inputs: &[u64]);
-    pub fn resolve_with_extras(
-        &mut self, template: &ParsedOp, extra_bindings: &[String]
+    pub fn resolve_with_field_pulls(
+        &mut self, template: &ParsedOp, field_pull_names: &[String]
     ) -> ResolvedFields;
+    pub fn resolve_pulls(&mut self, plan: &PullPlan) -> ResolvedPulls;
     pub fn capture(&mut self, name: &str, value: Value);
     pub fn reset_captures(&mut self, cycle: u64);
     pub fn apply_captures(&mut self);
@@ -216,9 +405,18 @@ No separate params argument — workload params are injected into
 the GK source as constant bindings before compilation and resolve
 as normal GK outputs. No globals mechanism needed.
 
-`resolve_with_extras` iterates the op's field map, substitutes
-`{name}` bind points from GK outputs and captures,
-and pulls any extra bindings needed by validation.
+`resolve_with_field_pulls` iterates the op's field map, substitutes
+`{name}` bind points from GK outputs and captures, and additionally
+pulls each name in `field_pull_names` (the union of bind-point
+names referenced by op fields) into `ResolvedFields` for the inner
+adapter's name-keyed reads.
+
+`resolve_pulls` materializes a [`PullPlan`] (sealed at init from
+the per-template `ScopeFixture`, SRD 32 §"Init-Time Fixture and
+Consumer Self-Registration") into a `ResolvedPulls` keyed by
+`PullHandle`. This is the wrapper-side read path — distinct from
+`ResolvedFields` and bundled alongside it in `ExecCtx` (SRD 31
+§"Pull plan vs bind plan").
 
 ---
 
@@ -250,8 +448,10 @@ forward) from **access** (reading data at the current position):
 loop {
     if !cursors.advance() { break }  // cursor exhausted
     cursors.inject_into_state(&mut state);
-    let fields = fiber.resolve_with_extras(template, extras);
-    dispenser.execute(cycle, &fields).await;
+    let fields = fiber.resolve_with_field_pulls(template, &field_pulls[idx]);
+    let pulls  = fiber.resolve_pulls(&pull_plans[idx]);
+    let ctx = ExecCtx::new(&fields, &pulls);
+    dispenser.execute(cycle, &ctx).await;
 }
 ```
 
@@ -279,10 +479,11 @@ different data sources independently.
 
 After cursor advance and injection, the GK DAG does not
 eagerly re-evaluate all nodes. Values are pulled lazily when
-`resolve_with_extras` requests specific outputs. Only nodes
-in the provenance chain of the requested output are evaluated.
-Combined with per-node caching, this means accessor functions
-for unrequested fields are never called.
+`resolve_with_field_pulls` (or `PullPlan::resolve` for wrapper
+reads) requests specific outputs. Only nodes in the provenance
+chain of the requested output are evaluated. Combined with
+per-node caching, this means accessor functions for unrequested
+fields are never called.
 
 ### DataSource API
 
@@ -298,5 +499,5 @@ DataSource (per-cursor, stateful)
 
 All source API surface (`DataSource`, `SourceItem`,
 `SourceSchema`, `DataSourceFactory`, `Cursors`) lives in
-`nb-variates::source`. The runtime crates consume these types
+`nbrs-variates::source`. The runtime crates consume these types
 but do not define them.

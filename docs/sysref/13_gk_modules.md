@@ -42,7 +42,7 @@ full_name := weighted_strings(hash(cycle), "names.csv")
 Module files are resolved in order:
 1. Workload directory (same directory as the `.yaml`)
 2. `--gk-lib` paths (CLI argument)
-3. Bundled stdlib (compiled into `nb-variates`)
+3. Bundled stdlib (compiled into `nbrs-variates`)
 4. Error if not found
 
 ---
@@ -51,13 +51,14 @@ Module files are resolved in order:
 
 GK kernels compose at two levels:
 
-### Init → Cycle Staging
+### Compile-Const → Dynamic Staging
 
-Init-time constants from one evaluation feed into cycle-time
-computation as folded constants:
+Compile-const values from one evaluation feed into dynamic
+computation as folded constants (see [SRD 11](11_gk_evaluation.md)
+§"Three Evaluation Lifecycles"):
 
 ```
-// These evaluate at init time (no input dependency):
+// These evaluate at compile-const time (no input dependency):
 dim := vector_dim("glove-25-angular")
 train_count := vector_count("glove-25-angular")
 

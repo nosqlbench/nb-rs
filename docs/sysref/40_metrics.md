@@ -1,6 +1,6 @@
 # 40: Metrics Framework
 
-nb-metrics provides labeled instruments with delta-snapshot
+nbrs-metrics provides labeled instruments with delta-snapshot
 semantics. Reporters consume immutable frames at configurable
 intervals.
 
@@ -92,7 +92,7 @@ Used for: relevancy score means, system metrics.
 ## Summaries
 
 Downstream of the primary instruments above, **summaries**
-(`nb_metrics::summaries::*`) are retained, transforming views
+(`nbrs_metrics::summaries::*`) are retained, transforming views
 of instrument data. A summary sits between a source (a primary
 instrument, a scheduler-emitted snapshot, an observer callback)
 and a reader (usually a display), and holds whatever
@@ -288,7 +288,7 @@ pub trait InstrumentSet: Send + Sync {
 }
 ```
 
-`ActivityMetrics` implements this in nb-activity. The
+`ActivityMetrics` implements this in nbrs-activity. The
 `capture_delta` call resets internal delta accumulators
 (histograms, F64Stats) and emits counter changes since the
 last call.

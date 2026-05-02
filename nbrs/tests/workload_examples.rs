@@ -197,3 +197,410 @@ fn deterministic_output() {
     let (out2, _) = run_inline("v={{hash(cycle)}}", &["cycles=5"]);
     assert_eq!(out1, out2, "same workload should produce identical output");
 }
+
+// ─── Shared cells (SRD-16 §"Mutability Rules: Shared Mutable") ─────
+//
+// Round-trip test for `shared X := <literal>` end-to-end via
+// stdout. Each scenario in `shared_cells.yaml` emits stable,
+// grep-able lines so the assertions can check exact values
+// rather than substring-fuzzing.
+
+#[test]
+fn shared_cells_basic_emits_all_four_types() {
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/shared_cells.yaml",
+        &["scenario=basic"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+
+    let lines: Vec<&str> = stdout.lines()
+        .filter(|l| l.starts_with("shared/basic "))
+        .collect();
+    assert_eq!(lines.len(), 3,
+        "basic scenario should emit one line per cycle (3 cycles), got {} lines:\n{}",
+        lines.len(), stdout);
+
+    // All three lines carry the same shared values (no writers,
+    // values stay at compile-time initials). Only `cycle=N`
+    // varies. Verify each shared type's literal initializer
+    // round-trips exactly through the cell-aware lookup path.
+    for (i, line) in lines.iter().enumerate() {
+        assert!(line.contains(&format!("cycle={i} ")),
+            "line {i} should report cycle={i}: {line}");
+        assert!(line.contains("budget=100"),
+            "u64 shared cell value must round-trip: {line}");
+        assert!(line.contains("rate=0.5"),
+            "f64 shared cell value must round-trip: {line}");
+        assert!(line.contains("label=alpha"),
+            "String shared cell value must round-trip: {line}");
+        assert!(line.contains("enabled=true"),
+            "bool shared cell value must round-trip: {line}");
+        assert!(line.contains("scaled=200"),
+            "derived binding consuming a shared cell value must \
+             see the cell value (mul(budget_u64, 2) = 200): {line}");
+    }
+}
+
+#[test]
+fn shared_cells_loop_iterates_with_visible_counter() {
+    // do_while: "{i} < {iterations}" with iterations=3 should
+    // produce three iterations. The counter `i` is set on the
+    // loop kernel's input slot each iteration; children bind
+    // it through the standard scope chain. Each iteration's
+    // child phase reads `i` via cell-aware lookup.
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/shared_cells.yaml",
+        &["scenario=loop"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+
+    let lines: Vec<&str> = stdout.lines()
+        .filter(|l| l.starts_with("shared/loop "))
+        .collect();
+    assert_eq!(lines.len(), 3,
+        "loop scenario should emit 3 iterations, got {} lines:\n{}",
+        lines.len(), stdout);
+
+    // Counter increments 0, 1, 2; the workload-scoped `budget`
+    // shared cell is visible to the child every iteration.
+    for (i, line) in lines.iter().enumerate() {
+        assert_eq!(line, &format!("shared/loop iter={i} budget=100"),
+            "iter {i} line shape mismatch: {line}");
+    }
+}
+
+#[test]
+fn shared_cells_mixed_types_round_trip() {
+    // One cycle, four ops — each emitting a single shared
+    // value tagged by type. Verifies that all four scalar
+    // types accepted by `try_fold_shared_init` make it through
+    // the full pipeline (compile → cell creation →
+    // bind_outer_scope → op-template interpolation → stdout).
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/shared_cells.yaml",
+        &["scenario=mixed_types"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+
+    assert!(stdout.contains("shared/typed kind=u64 value=100"),
+        "u64 shared value missing from output:\n{stdout}");
+    assert!(stdout.contains("shared/typed kind=f64 value=0.5"),
+        "f64 shared value missing from output:\n{stdout}");
+    assert!(stdout.contains("shared/typed kind=str value=alpha"),
+        "String shared value missing from output:\n{stdout}");
+    assert!(stdout.contains("shared/typed kind=bool value=true"),
+        "bool shared value missing from output:\n{stdout}");
+}
+
+#[test]
+fn shared_cells_default_scenario_runs_all() {
+    // The default scenario chains all three demonstrations
+    // back-to-back, exercising the full surface in one
+    // session. The combined output must contain at least one
+    // line of each prefix.
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/shared_cells.yaml",
+        &[],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+
+    assert!(stdout.lines().any(|l| l.starts_with("shared/basic ")),
+        "default scenario must include the basic demo:\n{stdout}");
+    assert!(stdout.lines().any(|l| l.starts_with("shared/loop ")),
+        "default scenario must include the loop demo:\n{stdout}");
+    assert!(stdout.lines().any(|l| l.starts_with("shared/typed ")),
+        "default scenario must include the mixed-types demo:\n{stdout}");
+}
+
+// ─── Coverage matrix: workload_coverage_matrix.yaml ─────────────
+//
+// Single-file matrix exercising every user-accessible workload
+// construct that's wired end-to-end. Each scenario emits
+// stable line prefixes (`cm/<scenario>/...`) so assertions
+// match exact shapes rather than substring-fuzzing.
+//
+// Scenarios *not* exercised here (constructs that are documented
+// but not yet wired or not deterministically testable via stdout)
+// are listed at the bottom of this section as commented-out
+// `#[test]` stubs paired with the `# ... :` blocks at the end of
+// `workload_coverage_matrix.yaml`. When the corresponding
+// construct lands, uncomment both halves together.
+
+#[test]
+fn coverage_matrix_shared_types_all_four_with_edge_values() {
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/workload_coverage_matrix.yaml",
+        &["scenario=shared_types"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+
+    let expected_lines = [
+        "cm/shared_types kind=u64 sub=zero value=0",
+        "cm/shared_types kind=u64 sub=big value=1000",
+        "cm/shared_types kind=f64 sub=zero value=0",
+        "cm/shared_types kind=f64 sub=pi value=3.14159",
+        "cm/shared_types kind=str sub=empty value=[]",
+        "cm/shared_types kind=str sub=text value=matrix",
+        "cm/shared_types kind=bool sub=on value=true",
+        "cm/shared_types kind=bool sub=off value=false",
+    ];
+    for expected in expected_lines {
+        assert!(stdout.contains(expected),
+            "missing line `{expected}` in:\n{stdout}");
+    }
+}
+
+#[test]
+fn coverage_matrix_final_modifier_round_trips() {
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/workload_coverage_matrix.yaml",
+        &["scenario=final_modifier"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+    assert!(stdout.contains("cm/final base_dim=256"),
+        "final-modifier value missing:\n{stdout}");
+}
+
+#[test]
+fn coverage_matrix_derived_binding_consumes_shared_cell() {
+    // `doubled_count := mul(count_big, 2)` reads the cell
+    // value (1000) through standard GK wiring. Output must
+    // show the multiplied result, proving the cell value
+    // flows downstream (not just visible via `lookup`).
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/workload_coverage_matrix.yaml",
+        &["scenario=derived_from_shared"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+    assert!(stdout.contains("cm/derived count_big=1000 doubled=2000"),
+        "derived binding output missing:\n{stdout}");
+}
+
+#[test]
+fn coverage_matrix_for_each_chain_three_levels() {
+    // 3-level chain: workload → for_each → phase. The phase
+    // sees both the for_each iter var (0,1,2 from the CSV)
+    // and the workload-scope shared values via the
+    // bind_outer_scope chain.
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/workload_coverage_matrix.yaml",
+        &["scenario=for_each_chain"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+
+    let lines: Vec<&str> = stdout.lines()
+        .filter(|l| l.starts_with("cm/for_each_chain "))
+        .collect();
+    assert_eq!(lines.len(), 3, "expected 3 iterations:\n{stdout}");
+    for (i, line) in lines.iter().enumerate() {
+        assert_eq!(line, &format!(
+            "cm/for_each_chain iter={i} count_big=1000 label=matrix"
+        ), "line {i} shape mismatch: {line}");
+    }
+}
+
+#[test]
+fn coverage_matrix_do_while_chain_three_levels() {
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/workload_coverage_matrix.yaml",
+        &["scenario=do_while_chain"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+
+    let lines: Vec<&str> = stdout.lines()
+        .filter(|l| l.starts_with("cm/do_while_chain "))
+        .collect();
+    assert_eq!(lines.len(), 3, "expected 3 do-while iterations:\n{stdout}");
+    for (i, line) in lines.iter().enumerate() {
+        assert_eq!(line, &format!(
+            "cm/do_while_chain i={i} count_big=1000 label=matrix"
+        ), "line {i} shape mismatch: {line}");
+    }
+}
+
+#[test]
+fn coverage_matrix_conditional_op_gated_by_shared_bool() {
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/workload_coverage_matrix.yaml",
+        &["scenario=conditional_op"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+
+    // gated_on (if: flag_on=true) fires, gated_off (if:
+    // flag_off=false) is suppressed, always fires.
+    assert!(stdout.contains("cm/conditional gated=on result=fired"),
+        "gated_on (true) must fire:\n{stdout}");
+    assert!(stdout.contains("cm/conditional gated=always result=fired"),
+        "always must fire:\n{stdout}");
+    assert!(!stdout.contains("cm/conditional gated=off"),
+        "gated_off (false) must be suppressed:\n{stdout}");
+}
+
+#[test]
+fn coverage_matrix_multi_cell_no_cross_name_interference() {
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/workload_coverage_matrix.yaml",
+        &["scenario=multi_cell"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+    assert!(stdout.contains(
+        "cm/multi_cell zero=0 big=1000 pi=3.14159 text=matrix on=true off=false"
+    ), "multi-cell output missing or malformed:\n{stdout}");
+}
+
+#[test]
+fn coverage_matrix_nested_for_each_inner_sees_outer_iter_var() {
+    // Inner for_each spec `inner in pre_{outer}` references the
+    // outer for_each's iter var. The fix routes the inner's
+    // dispatcher to the outer's *live execution* kernel (via
+    // `effective_parent_kernel` preferring `ctx.current_parent_kernel`
+    // over the scope-tree canonical ancestor), so spec
+    // interpolation resolves `{outer}` to the current iteration's
+    // value rather than the canonical default.
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/workload_coverage_matrix.yaml",
+        &["scenario=nested_for_each"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+
+    // Outer iterates over a,b,c — three iterations. Each
+    // inner_for_each enumerates a single value (`pre_<outer>`),
+    // so the leaf phase fires three times total.
+    let lines: Vec<&str> = stdout.lines()
+        .filter(|l| l.starts_with("cm/nested "))
+        .collect();
+    assert_eq!(lines.len(), 3,
+        "expected 3 nested-iteration leaf calls:\n{stdout}");
+    for (outer, expected) in [("a", "pre_a"), ("b", "pre_b"), ("c", "pre_c")] {
+        let target = format!("cm/nested outer={outer} inner={expected}");
+        assert!(lines.contains(&target.as_str()),
+            "missing nested line `{target}`:\n{stdout}");
+    }
+}
+
+#[test]
+fn coverage_matrix_default_runs_full_matrix() {
+    // Round-trip: every other scenario's identifying line
+    // appears at least once in the default-scenario combined
+    // output.
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/workload_coverage_matrix.yaml",
+        &[],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+
+    let prefixes = [
+        "cm/shared_types ",
+        "cm/final ",
+        "cm/derived ",
+        "cm/for_each_chain ",
+        "cm/do_while_chain ",
+        "cm/conditional ",
+        "cm/multi_cell ",
+    ];
+    for prefix in prefixes {
+        assert!(stdout.lines().any(|l| l.starts_with(prefix)),
+            "default scenario missing prefix `{prefix}`:\n{stdout}");
+    }
+}
+
+#[test]
+fn json_shaped_workload_param_values_round_trip() {
+    // Workload params whose values are JSON-shaped or
+    // CQL-map-shaped (`{'class': 'SimpleStrategy', ...}`,
+    // `{"a": 1}`) must round-trip through op-template
+    // `{name}` substitution unchanged. The `{...}` content of
+    // the value is literal text, never a bind point — same
+    // disambiguation rule that
+    // `nbrs_workload::bindpoints::is_literal_content` applies
+    // to op-template parsing, also enforced inside the GK
+    // string-interpolation desugar (SRD-10 §"String
+    // Interpolation": invalid GK expression bodies leave the
+    // literal alone).
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/json_param.yaml",
+        &[],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+
+    assert!(stdout.contains(
+        "json_param/cql_replication value={'class': 'SimpleStrategy', 'replication_factor': '1'}"
+    ), "CQL replication map must round-trip:\n{stdout}");
+    assert!(stdout.contains(
+        "json_param/json_object value={\"a\": 1, \"b\": [2, 3]}"
+    ), "JSON object must round-trip:\n{stdout}");
+    assert!(stdout.contains("json_param/scalar_string value=plain"),
+        "scalar string param must round-trip:\n{stdout}");
+}
+
+#[test]
+fn unresolved_placeholder_error_carries_yaml_location() {
+    // `for_each: "color in {undeclared_thing}"` references a name
+    // that's neither a workload param, an outer iter var, nor an
+    // inherited binding. The resulting interpolation error must
+    // be prefixed with `<path>:<line>:<col>:` so the user can
+    // jump directly to the offending spec in the YAML.
+    let (_stdout, stderr) = run_workload(
+        "examples/workloads/diag_unresolved.yaml",
+        &[],
+    );
+    assert!(stderr.contains("examples/workloads/diag_unresolved.yaml:"),
+        "error must carry workload path:\n{stderr}");
+    // The for_each line is at line 13 in the file; column points
+    // at the spec text's start. Don't pin the exact column (it's
+    // formatting-sensitive) but verify line:col format is present.
+    assert!(stderr.contains("diag_unresolved.yaml:13:"),
+        "error must carry the line of the failing for_each:\n{stderr}");
+    assert!(stderr.contains("unresolved placeholder '{undeclared_thing}'"),
+        "error must still describe the failing placeholder:\n{stderr}");
+}
+
+// ── Documented-but-not-yet-exercised tests ──────────────────
+//
+// Each `#[test]` below pairs with a commented-out scenario at
+// the bottom of `workload_coverage_matrix.yaml`. When the
+// corresponding construct lands, uncomment both halves
+// together. Keeping them here makes the gap visible in the
+// test binary's symbol table without breaking compilation.
+
+// #[test]
+// fn coverage_matrix_concurrent_shared_writes_lwwins() {
+//     // Concurrent for_each branches all decrement the same
+//     // shared cell. Last-write-wins baseline (SRD-16
+//     // §"Concurrent semantics: last-write-wins") makes the
+//     // exact final count non-deterministic, so this test is
+//     // gated on the templated patterns shipping
+//     // (`shared(atomic)` / `shared(sum)`). The kernel-level
+//     // test `shared_last_write_wins_under_concurrent_writers`
+//     // covers the Mutex serialization API surface today.
+// }
+
+// #[test]
+// fn coverage_matrix_state_driven_do_while_termination() {
+//     // do_while: "{count_big} > 0" with a child phase that
+//     // decrements `count_big`. Requires per-cycle propagation
+//     // from the leaf phase's per-cycle kernel back to the
+//     // loop scope's SharedCell, which isn't yet wired (no GK
+//     // binding syntax targets an outer shared cell, and the
+//     // dispatcher only writes the counter, not arbitrary
+//     // shared names). Tracked in SRD-18b §"Open: per-cycle
+//     // propagation".
+// }
+
+// #[test]
+// fn coverage_matrix_cursor_driven_phase() {
+//     // `cycles: ===auto` with a cursor-bound source. Needs a
+//     // mock source the adapter-testkit doesn't currently
+//     // provide. Vectordata integration tests cover this with
+//     // real datasets; the synthetic single-file demo is gated
+//     // on a mock source crate.
+// }
+
+// #[test]
+// fn coverage_matrix_delay_field_reads_shared_cell() {
+//     // `delay: rate_pi` resolves the cell value per cycle.
+//     // Mechanically should work today, but verifying delay
+//     // application requires timing measurement that stdout
+//     // grepping can't perform. Gated on a metric-based
+//     // assertion path that compares wall-clock to expected.
+// }

@@ -1,0 +1,20 @@
+[package]
+name = "nbrs-rate"
+version = "0.1.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "Rate limiter for nb-rs: token bucket with time-scaled permits and burst recovery"
+keywords = ["nosqlbench", "workload", "benchmark", "data-generation"]
+categories = ["command-line-utilities", "simulation"]
+repository = "https://github.com/nosqlbench/nb-rs"
+homepage = "https://github.com/nosqlbench/nb-rs"
+readme = "README.md"
+
+[dependencies]
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+futures = "0.3"
+nbrs-metrics = { path = "../nbrs-metrics", version = "0.1.1" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
+nbrs-metrics = { path = "../nbrs-metrics", version = "0.1.1" }

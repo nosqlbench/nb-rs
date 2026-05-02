@@ -217,7 +217,7 @@ nbrs bench gk graph.gk --compare iters=5
 nbrs bench gk graph.gk --compare-modes iters=5
 
 # Full test suite
-nbrs bench gk "nb-variates/tests/perf_tests/*.gk" --compare-modes iters=5
+nbrs bench gk "nbrs-variates/tests/perf_tests/*.gk" --compare-modes iters=5
 ```
 
 The `--compare-modes` flag shows all three variants (raw, push,

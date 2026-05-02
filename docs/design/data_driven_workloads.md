@@ -391,7 +391,7 @@ The scheduler is an internal optimization — the user doesn't configure it dire
 
 ## Crate Sovereignty
 
-All GK-involved API surface — the `source` keyword, `DataSource` trait, source projections, chunk consumption, and source-to-coordinate wiring — lives in the **nb-variates** (GK) crate. The GK crate defines:
+All GK-involved API surface — the `source` keyword, `DataSource` trait, source projections, chunk consumption, and source-to-coordinate wiring — lives in the **nbrs-variates** (GK) crate. The GK crate defines:
 
 - `DataSource` trait and `SourceItem` types
 - `SourceReader` and `WorkPool` for partitioned consumption
@@ -399,13 +399,13 @@ All GK-involved API surface — the `source` keyword, `DataSource` trait, source
 - Source combinators (`zip`, `filter`, `sample`)
 - Source projection nodes for the GK graph
 
-The runtime crates (nb-activity, adapters) consume these types but don't define them. The GK crate maintains sovereignty over the data model — sources are a GK concept, not a runtime concept. The runtime asks the GK graph "what sources exist?" and "what is their extent?" — the GK crate answers authoritatively.
+The runtime crates (nbrs-activity, adapters) consume these types but don't define them. The GK crate maintains sovereignty over the data model — sources are a GK concept, not a runtime concept. The runtime asks the GK graph "what sources exist?" and "what is their extent?" — the GK crate answers authoritatively.
 
 This means:
-- `nb-variates` defines `DataSource`, `SourceReader`, source nodes
-- `nb-activity` implements the fiber loop, work-stealing pool, and executor
-- Adapters (cassnbrs, etc.) implement batch dispensers that consume from `DataSource`
-- `nb-workload` parses the `source` keyword in YAML and passes it to GK compilation
+- `nbrs-variates` defines `DataSource`, `SourceReader`, source nodes
+- `nbrs-activity` implements the fiber loop, work-stealing pool, and executor
+- Adapters (nbrs-adapter-cql, etc.) implement batch dispensers that consume from `DataSource`
+- `nbrs-workload` parses the `source` keyword in YAML and passes it to GK compilation
 
 ## Migration Path
 

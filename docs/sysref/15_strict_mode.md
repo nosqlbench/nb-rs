@@ -51,20 +51,22 @@ A clean non-strict compile (no warnings) will also pass strict.
 ## Config Wire Promotion (implemented)
 
 Config wire inputs (ports marked `WireCost::Config`) must be
-connected to init-time sources in strict mode.
+connected to effectively-const sources in strict mode (per
+[SRD 11 §"Effectively-Const Nodes"](11_gk_evaluation.md): a
+compile-const, scope-init, or iteration-extern producer).
 
-| Mode | Config wire ← cycle-time source |
+| Mode | Config wire ← dynamic source |
 |------|-------------------------------|
 | Non-strict | Warning to stderr + compile event log |
 | Strict | Hard error — compilation fails |
 
-This prevents accidental per-cycle LUT rebuilds and similar
+This prevents accidental dynamic LUT rebuilds and similar
 expensive recomputation. The user must wire config inputs to
-init-time constants or explicitly acknowledge the cost.
+scope-stable values or explicitly acknowledge the cost.
 
 **Rationale:** A node like `dynamic_weighted_select` rebuilds its
 alias table (O(n)) when the weights spec changes. Wiring this to
-a cycle-time source means O(n) work per cycle — almost certainly
+a dynamic source means O(n) work per pull — almost certainly
 a mistake. Strict mode catches it at compile time.
 
 ---
@@ -100,6 +102,36 @@ downstream node.
 **Rationale:** Unused bindings are often typos or leftover
 artifacts. In library modules, every binding should have a
 purpose. Strict mode forces cleanup.
+
+---
+
+## Empty Iteration Sources (implemented)
+
+A `for_each`, `for_combinations`, or `for_each_union` sub-space
+that resolves to zero values produces zero iterations of its
+children. This is sometimes intentional (toggling a sub-space
+off via an empty parameter list) and sometimes a workload
+error (a typo, a misnamed parameter, a filter that didn't
+match anything).
+
+| Mode | Empty iteration source |
+|------|------------------------|
+| Non-strict | Warning to session log + stderr — naming the construct, the offending dimension, and (for `for_each_union`) which sub-space (e.g. `2/2`) collapsed |
+| Strict | Hard error — fails the run before any of that sub-space's children execute, with the same diagnostic |
+
+**Rationale:** Silent zero iteration looks identical to a
+real run that did the requested work, just without any
+queries — exactly the failure mode that prompted the addition
+of this condition. The default-mode warning surfaces the issue;
+strict mode rejects it up front so a CI run can't quietly
+skip a sub-space.
+
+The diagnostic always names which dimension produced no
+values, the resolved expression after parameter substitution,
+and the structural location (top-level `for_each`,
+`for_combinations` clause N, or `for_each_union` sub-space N
+of M) so the operator can fix the workload without
+instrumenting the runner.
 
 ---
 
@@ -261,7 +293,7 @@ skips the check.
 Constructors stay infallible. The validator is the
 authoritative check; a node that forgets to declare a constraint
 is the bug surface, and the
-[fuzz test](../../nb-variates/tests/fuzz_type_adapters.rs) exists
+[fuzz test](../../nbrs-variates/tests/fuzz_type_adapters.rs) exists
 to find those gaps. When a random DAG triggers a constructor
 panic, the fix is adding the missing check, not making the
 constructor fallible.
@@ -392,7 +424,7 @@ parent/child relationship: workload → phase → `for_each`
 iteration. Each compose step is its own [`PragmaSet`], its own
 `GkProgram`, its own state.
 
-[`PragmaSet`]: ../../nb-variates/src/dsl/pragmas.rs
+[`PragmaSet`]: ../../nbrs-variates/src/dsl/pragmas.rs
 
 If you're confused about which combinator is at play, SRD 13b is
 the reference. Pragma scope rules apply only to the scope-
@@ -464,7 +496,7 @@ impl PragmaSet {
 }
 ```
 
-Callers at scope boundaries (`nb-activity` for workload → phase →
+Callers at scope boundaries (`nbrs-activity` for workload → phase →
 iteration) build the inner `PragmaSet`, call `attach_to(outer)`,
 log/raise on the returned conflicts, and feed the attached
 result into the inner kernel's compile.
@@ -475,11 +507,11 @@ result into the inner kernel's compile.
   (`PragmaSet { parent }` + `attach_to`). Single-scope use is
   fully wired: the lib reads pragmas from each kernel's source
   AST, applies strict-wire flags, walks the chain at lookup.
-- **Pending:** `nb-activity` adoption — the workload runner does
+- **Pending:** `nbrs-activity` adoption — the workload runner does
   not yet call `attach_to` at phase / iteration boundaries. Until
   it does, every kernel sees only its own pragmas. The conflict-
   detection path is unit-tested but not yet exercised end-to-end
-  across an `nb-activity` scope chain.
+  across an `nbrs-activity` scope chain.
 
 ---
 
@@ -549,7 +581,7 @@ expected.
 ## Fuzz Test Invariants (SRD ties)
 
 The type-adapter-transform fuzz test
-(`nb-variates/tests/fuzz_type_adapters.rs`) is the backstop for
+(`nbrs-variates/tests/fuzz_type_adapters.rs`) is the backstop for
 this whole model. Its invariants formalise the contract:
 
 1. **No compiler panics.** For any random DAG, the compiler
@@ -649,7 +681,7 @@ the meaning of each parameter.
 | Unused bindings | Implemented | Nodes with no consumers and not in output_map |
 | Implicit type coercions | Implemented | Auto-inserted `__adapt_*` nodes detected |
 | Non-deterministic nodes | Implemented | Zero-input non-init nodes (counter, etc.) |
-| Unqualified bind points | Design target | Requires nb-activity changes |
+| Unqualified bind points | Design target | Requires nbrs-activity changes |
 | Undeclared string refs | Design target | Requires string template resolution changes |
 | Named function arguments | Implemented | Already enforced in module calls |
 | Const constraint metadata | Implemented | `ConstConstraint` field on `ParamSpec`; factory walks each owning `FuncSig.params` and rejects with `bad constant <func>: <reason>`. Cross-param relational rules use the per-module `validate_node` hook on `register_nodes!`. |
@@ -660,6 +692,6 @@ the meaning of each parameter.
 | Strict wire mode (single-scope) | Implemented | `GkAssembler::set_strict_wires(types, values)`. Pragma-driven via `pragma strict_values` / `strict_types` / `strict`. Compiler auto-inserts `AssertValue` for wires whose sink declares a `Port::with_constraint(...)` and whose source isn't a constant or upstream assertion. |
 | Skip-rules: const source, upstream assertion | Implemented | The compiler skips the assertion when the source is a no-wire-input constant node or an existing assertion. Static type match is handled by the existing adapter pass. |
 | `AssertionInserted` / `AssertionSkipped` events | Implemented | Symmetric advisories alongside `TypeAdapterInserted`; reason field names which skip rule applied. |
-| Pragma scope stack + `PragmaSet { parent }` | Implemented | Lookups walk the chain; `attach_to(outer)` returns conflicts. Single-scope today; `nb-activity` adoption at phase / iteration boundaries is pending. |
+| Pragma scope stack + `PragmaSet { parent }` | Implemented | Lookups walk the chain; `attach_to(outer)` returns conflicts. Single-scope today; `nbrs-activity` adoption at phase / iteration boundaries is pending. |
 | Skip-rule: fusion-derived bound | Design target | The fusion pass doesn't yet expose its inferred output ranges, so `mod(x, 1000)` feeding a constraint of u64 ∈ [0, 10000) still gets an assertion under strict_values. Wiring this is a follow-up. |
 | First wire-typed dynamic divisor (`mod_wire` / `div_wire`) | Implemented | Nodes in `nodes::arithmetic` declare a `NonZeroU64` constraint on the divisor wire. End-to-end fuzz test confirms strict_values inserts the assertion when the source isn't a const. |

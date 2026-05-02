@@ -6,8 +6,8 @@
 //! output as a horizontal-bar histogram.
 
 use std::collections::HashMap;
-use nb_variates::dsl::compile::compile_gk;
-use nb_variates::node::Value;
+use nbrs_variates::dsl::compile::compile_gk;
+use nbrs_variates::node::Value;
 
 // ── Terminal helpers ────────────────────────────────────────────
 
@@ -120,7 +120,7 @@ fn normalize_source(expr: &str) -> Result<String, String> {
             let lines: Vec<&str> = expr.lines().map(|l| l.trim())
                 .filter(|l| !l.is_empty() && !l.starts_with("//"))
                 .collect();
-            let mut out_lines = vec!["coordinates := (cycle)".to_string()];
+            let mut out_lines = vec!["inputs := (cycle)".to_string()];
             for (i, line) in lines.iter().enumerate() {
                 if line.contains(":=") {
                     out_lines.push(line.to_string());
@@ -132,7 +132,7 @@ fn normalize_source(expr: &str) -> Result<String, String> {
             }
             Ok(out_lines.join("\n"))
         } else {
-            Ok(format!("coordinates := (cycle)\nout := {expr}"))
+            Ok(format!("inputs := (cycle)\nout := {expr}"))
         }
     }
 }

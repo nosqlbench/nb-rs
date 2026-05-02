@@ -10,23 +10,25 @@ service targets using composable data generation kernels.
 
 ```
 ┌───────────────────────────────────────────────────────────┐
-│                     Persona Binaries                      │
-│  cassnbrs (CQL)  ·  opennbrs (OpenSearch)  ·  nbrs (core)│
+│                       nbrs (binary)                       │
+│  Single CLI; protocol drivers gated by Cargo features     │
 ├───────────────────────────────────────────────────────────┤
 │                     Adapter Crates                        │
-│  nb-adapter-stdout  ·  nb-adapter-http  ·  nb-adapter-model│
-│  cassnbrs-adapter-cql (external, static-linked)           │
+│  nbrs-adapter-stdout  ·  nbrs-adapter-http                │
+│  nbrs-adapter-testkit ·  nbrs-adapter-plotter             │
+│  nbrs-adapter-cql  (engine-scylla / engine-cassandra-cpp) │
+│  nbrs-adapter-openapi (openapi feature)                   │
 ├───────────────────────────────────────────────────────────┤
-│                       nb-activity                         │
+│                       nbrs-activity                         │
 │  Activity engine: executor, op synthesis, sequencing,     │
 │  validation, dispenser wrappers                           │
 ├───────────────┬─────────────────────┬─────────────────────┤
-│  nb-workload  │  nb-variates        │  nb-metrics         │
+│  nbrs-workload  │  nbrs-variates        │  nbrs-metrics         │
 │  YAML parsing │  GK kernel, nodes,  │  Timers, counters,  │
 │  ParsedOp     │  DSL compiler,      │  HDR histograms,    │
 │  tag filters  │  constant folding   │  frame capture      │
 ├───────────────┴─────────────────────┴─────────────────────┤
-│  nb-rate          nb-errorhandler       nb-web  ·  nb-tui │
+│  nbrs-rate          nbrs-errorhandler       nbrs-web  ·  nbrs-tui │
 │  Token bucket     Error routing         Web UI    Term UI │
 │  rate limiter     spec parser           API       status  │
 └───────────────────────────────────────────────────────────┘
@@ -35,39 +37,41 @@ service targets using composable data generation kernels.
 ### Dependency Rules
 
 1. Dependencies flow downward only — no reverse dependencies
-2. `nb-variates` is fully standalone (no workload, adapter, or
+2. `nbrs-variates` is fully standalone (no workload, adapter, or
    activity dependency). It can be extracted and used in other
    projects for deterministic data generation.
-3. `nb-workload` is standalone (parses YAML to `ParsedOp`)
-4. `nb-activity` depends on all three foundation crates
-   (nb-workload, nb-variates, nb-metrics) and defines the
+3. `nbrs-workload` is standalone (parses YAML to `ParsedOp`)
+4. `nbrs-activity` depends on all three foundation crates
+   (nbrs-workload, nbrs-variates, nbrs-metrics) and defines the
    adapter trait contract
 5. Adapter crates implement `DriverAdapter` / `OpDispenser`
-   from nb-activity
-6. Persona binaries are composition roots — they depend on
-   everything and wire adapters to the activity engine
+   from nbrs-activity
+6. The `nbrs` binary is the composition root — it depends on
+   every adapter (some optionally via Cargo features) and
+   wires them to the activity engine
 
 ### Workspace Structure
 
 ```
 nb-rs/
-├── nb-rs/                   main binary (stdout, http, model)
-├── nb-variates/             GK kernel and node library
-├── nb-workload/             YAML workload parser
-├── nb-activity/             execution engine
-├── nb-metrics/              metrics instruments and reporters
-├── nb-rate/                 rate limiter
-├── nb-errorhandler/         error routing
-├── nb-web/                  web UI (optional)
-├── nb-tui/                  terminal UI (optional)
+├── nbrs/                    single user-facing binary
+├── nbrs-variates/           GK kernel and node library
+├── nbrs-workload/           YAML workload parser
+├── nbrs-activity/           execution engine
+├── nbrs-metrics/            metrics instruments and reporters
+├── nbrs-rate/               rate limiter
+├── nbrs-errorhandler/       error routing
+├── nbrs-web/                web UI
+├── nbrs-tui/                terminal UI + TuiObserver
 ├── adapters/
-│   ├── nb-adapter-stdout/   text output
-│   ├── nb-adapter-http/     HTTP client
-│   └── nb-adapter-model/    simulation/diagnostic
-├── personas/
-│   ├── cassnbrs/            Cassandra persona (excluded from workspace)
-│   │   └── adapter/         CQL adapter crate (cassandra-cpp)
-│   └── opennbrs/            OpenSearch persona
+│   ├── stdout/              text output
+│   ├── http/                HTTP client
+│   ├── testkit/             simulation/diagnostic
+│   ├── plotter/             live terminal plots
+│   ├── cql/                 CQL adapter (scylla + cassandra-cpp engines,
+│   │                        common surface, workloads/, build.sh,
+│   │                        Dockerfiles, sysroot/)
+│   └── openapi/             OpenAPI 3.x workload synthesis
 ├── workloads/               shared workload examples
 └── docs/
     ├── design/              SRDv1 (historical)
@@ -76,25 +80,26 @@ nb-rs/
     └── guide/               user-facing documentation
 ```
 
-`cassnbrs` is excluded from the main workspace because it requires
-the Apache Cassandra C++ driver. It builds separately via
-`personas/cassnbrs/build.sh` which manages the driver sysroot.
+The cassandra-cpp engine isn't on crates.io and needs a system
+toolchain; build it via `adapters/cql/build.sh` (Docker-based
+sysroot) and link it with `cargo build -p nbrs --features
+engine-cassandra-cpp`.
 
 ---
 
 ## Data Flow
 
 ```
-Workload YAML ──▶ nb-workload ──▶ ParsedOp[]
+Workload YAML ──▶ nbrs-workload ──▶ ParsedOp[]
                                       │
-                                      ├──▶ nb-variates (compile GK bindings)
+                                      ├──▶ nbrs-variates (compile GK bindings)
                                       │        │
                                       │        ▼
                                       │    GkProgram (immutable, shared Arc)
                                       │        │
 CLI params ─────────────────────────┐ │        │
                                     ▼ ▼        ▼
-                                nb-activity
+                                nbrs-activity
                               ┌────────────────────┐
                               │  Activity           │
                               │  ├── OpSequence     │
@@ -142,19 +147,20 @@ The core `nbrs` binary includes lightweight universal adapters
 drivers that bring heavy dependencies (C++ libraries, system
 packages). These are built as separate **persona** binaries.
 
-Each persona is a thin composition root:
-1. Reuses the full nb-rs execution engine
-2. Adds one or more protocol-specific adapters
-3. Provides adapter-specific help text and defaults
+`nbrs` is the single user-facing binary. Protocol drivers that
+need heavy or non-portable build dependencies are gated behind
+Cargo features so users compile in only what they need:
 
-Current personas:
-- **cassnbrs** — Cassandra/CQL via Apache C++ driver
-- **opennbrs** — OpenAPI-driven HTTP services (also usable for
-  OpenSearch and similar REST APIs)
+- **engine-scylla** (default) — pure-Rust ScyllaDB driver
+- **engine-cassandra-cpp** (opt-in) — Apache Cassandra C++
+  driver via `adapters/cql/build.sh`-built sysroot
+- **all-engines** — both CQL engines, runtime-selected via
+  `cqldriver=`
+- **openapi** — OpenAPI 3.x workload synthesis (adds
+  `describe-openapi` / `run-openapi` subcommands)
 
-The persona model prevents dependency bloat in the core binary
-while allowing each persona to statically link its driver for
-single-binary deployment.
+See [SRD 61](61_personas.md) for the feature-gating model and
+the rationale for retiring the earlier persona-binary approach.
 
 ---
 
@@ -164,8 +170,8 @@ single-binary deployment.
 |----------|------|-----------|
 | Workload → Activity | `ParsedOp` | Parsed ops, bindings, params, tags |
 | Variates → Activity | `GkProgram` + `GkState` | Immutable program (includes globals) shared via Arc; per-fiber mutable state |
-| Activity → Adapter | `DriverAdapter` / `OpDispenser` | Init-time template analysis, cycle-time execution |
-| Activity → Adapter | `ResolvedFields` | Typed values + lazy strings per cycle |
+| Activity → Adapter | `DriverAdapter` / `OpDispenser` | Scope-init template analysis, dynamic per-cycle execution |
+| Activity → Adapter | `ExecCtx` (`ResolvedFields` + `ResolvedPulls`) | Op-field bind values for the inner adapter, plus wrapper-side handle-indexed pulls (SRD 32) |
 | Adapter → Activity | `OpResult` / `ExecutionError` | Result body + captures, or scoped error |
 | Activity → Metrics | `ActivityMetrics` | Timers, counters, gauges |
 | Metrics → Reporters | `MetricsFrame` | Immutable snapshots at capture intervals |

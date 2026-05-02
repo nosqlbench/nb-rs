@@ -1,24 +1,65 @@
 [workspace]
 members = [
     "nbrs",
-    "nb-variates",
-    "nb-metrics",
-    "nb-workload",
-    "nb-rate",
-    "nb-errorhandler",
-    "nb-activity",
-    "nb-tui",
-    "nb-web",
-    "adapters/nb-adapter-stdout",
-    "adapters/nb-adapter-testkit",
-    "adapters/nb-adapter-http",
-    "adapters/nb-adapter-plotter",
-    "personas/opennbrs",
-]
-# cassnbrs requires the Apache Cassandra C++ driver (-lcassandra).
-# Build separately: cd personas/cassnbrs && cargo build --release
-exclude = [
-    "personas/cassnbrs",
-    "personas/cassnbrs/adapter",
+    "nbrs-variates",
+    "nbrs-metrics",
+    "nbrs-workload",
+    "nbrs-rate",
+    "nbrs-errorhandler",
+    "nbrs-activity",
+    "nbrs-tui",
+    "nbrs-web",
+    "adapters/stdout",
+    "adapters/testkit",
+    "adapters/http",
+    "adapters/plotter",
+    "adapters/cql",
+    "adapters/openapi",
+    # Vendored: cassandra-cpp 3.0.2 with the trace_id retrieval
+    # surface added that the upstream wrapper omits. See
+    # vendor/cassandra-cpp/CHANGES.local.md for the diff
+    # against upstream.
+    "vendor/cassandra-cpp",
 ]
 resolver = "3"
+
+# Exclude the vendored cassandra-cpp from the default test /
+# build set. Its lib-tests link `-lcassandra` against the
+# system, which we only have in the cassandra-cpp Docker
+# sysroot — running `cargo test --workspace` from a clean
+# checkout would otherwise fail to link. The crate still
+# builds when an actual workspace member depends on it
+# (adapters/cql with the engine-cassandra-cpp feature) under
+# the build.sh sysroot, and its tests can be invoked
+# explicitly via `cargo test -p cassandra-cpp` when desired.
+default-members = [
+    "nbrs",
+    "nbrs-variates",
+    "nbrs-metrics",
+    "nbrs-workload",
+    "nbrs-rate",
+    "nbrs-errorhandler",
+    "nbrs-activity",
+    "nbrs-tui",
+    "nbrs-web",
+    "adapters/stdout",
+    "adapters/testkit",
+    "adapters/http",
+    "adapters/plotter",
+    "adapters/cql",
+    "adapters/openapi",
+]
+
+# vectordata + veks-completion 1.0.0 are now published; the
+# storage-transport refactor and the cache-aware typed-scalar
+# reader (which we previously pulled from the local working
+# copy) are part of the public release. links/vectordata-rs is
+# still kept around for visibility into upstream-in-flight
+# changes but is no longer load-bearing for nbrs builds.
+
+# Profile settings (debug, frame pointers, etc.) live in
+# `.cargo/config.toml` so they layer cleanly with the existing
+# `[profile.release] debug = true` and the linker rustflags
+# already declared there. See the comments in that file for the
+# `force-frame-pointers` rationale (perf `--call-graph fp`
+# default in `profiler=perf` mode needs them).

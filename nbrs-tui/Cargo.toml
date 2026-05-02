@@ -1,0 +1,39 @@
+[package]
+name = "nbrs-tui"
+version = "0.1.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "Terminal UI for nb-rs: live metrics dashboard, progress, op throughput"
+keywords = ["nosqlbench", "workload", "benchmark", "data-generation"]
+categories = ["command-line-utilities", "simulation"]
+repository = "https://github.com/nosqlbench/nb-rs"
+homepage = "https://github.com/nosqlbench/nb-rs"
+readme = "README.md"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+libc = "0.2"
+nbrs-metrics = { path = "../nbrs-metrics", version = "0.1.1" }
+nbrs-activity = { path = "../nbrs-activity", version = "0.1.1" }
+# Needed for SRD 23 §"TUI surface" — session-root lookup and
+# runtime-context globals that back the control-edit affordance.
+nbrs-variates = { path = "../nbrs-variates", version = "0.1.1" }
+# tokio::spawn needed for non-blocking control writes from the
+# event loop; `rt` feature supplies the handle.
+tokio = { version = "1", features = ["sync", "time", "rt"] }
+throbber-widgets-tui = "0.8"
+# arc-swap publishes immutable RunState snapshots from the
+# RunState actor (see SRD-02 §"Display and Diagnostic
+# Decoupling"). The TUI / web / OOB surfaces all read via
+# `snapshot.load()` — a single atomic op that cannot wait on
+# any writer.
+arc-swap = "1"
+# parking_lot::Mutex for the few intra-TUI cells (reporter
+# ownership, mpsc receiver claim) — never used to share state
+# with the core machine, which goes through the actor handle
+# instead. See SRD-02.
+parking_lot = "0.12"
+
+[dev-dependencies]
+hdrhistogram = "7"

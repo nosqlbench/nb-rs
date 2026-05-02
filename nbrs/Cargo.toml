@@ -14,24 +14,99 @@ readme = "README.md"
 name = "nbrs"
 path = "src/main.rs"
 
+[features]
+# Default: pure-Rust scylla CQL engine. Builds anywhere; needs
+# no C++ toolchain. Publishable to crates.io.
+default = ["engine-scylla"]
+
+# Pure-Rust ScyllaDB driver. Speaks the Apache Cassandra wire
+# protocol — works against both Apache Cassandra and ScyllaDB.
+engine-scylla = ["nbrs-adapter-cql/engine-scylla"]
+
+# DataStax Cassandra C++ driver via FFI. Requires the system
+# `libcassandra` plus libuv / openssl. Build locally against a
+# sysroot prepared by `adapters/cql/build.sh driver`.
+engine-cassandra-cpp = ["nbrs-adapter-cql/engine-cassandra-cpp", "dep:cassandra-cpp"]
+
+# Convenience: enable both engines in one binary, with runtime
+# selection via `cqldriver=scylla` / `cqldriver=cassandra-cpp`.
+# When both are linked, cassandra-cpp wins by default (lower
+# AliasResolverEntry rank); flip with `cqldriver=scylla`.
+all-engines = ["engine-scylla", "engine-cassandra-cpp"]
+
+# OpenAPI workload generation. Adds `describe-openapi` and
+# `run-openapi` subcommands that synthesize ops from an
+# OpenAPI 3.x spec and run them through the standard `http`
+# adapter (or stdout for dry-run).
+openapi = ["dep:nbrs-adapter-openapi", "dep:openapiv3"]
+
+# Forward to nbrs-activity's flamegraph profiler.
+flamegraph = ["nbrs-activity/flamegraph"]
+
 [dependencies]
-nb-variates = { path = "../nb-variates", version = "0.1.1" }
-nb-metrics = { path = "../nb-metrics", version = "0.1.1" }
-nb-workload = { path = "../nb-workload", version = "0.1.1" }
-nb-rate = { path = "../nb-rate", version = "0.1.1" }
-nb-errorhandler = { path = "../nb-errorhandler", version = "0.1.1" }
-nb-activity = { path = "../nb-activity", version = "0.1.1" }
+nbrs-variates = { path = "../nbrs-variates", version = "0.1.1" }
+nbrs-metrics = { path = "../nbrs-metrics", version = "0.1.1" }
+nbrs-workload = { path = "../nbrs-workload", version = "0.1.1" }
+nbrs-rate = { path = "../nbrs-rate", version = "0.1.1" }
+nbrs-errorhandler = { path = "../nbrs-errorhandler", version = "0.1.1" }
+nbrs-activity = { path = "../nbrs-activity", version = "0.1.1" }
 tokio = { version = "1", features = ["full"] }
+# parking_lot::RwLock used by `RunState` shared with TuiObserver —
+# the std RwLock is writer-preferring on Linux and deadlocks
+# nested same-thread reads, which the TUI render path uses.
+parking_lot = "0.12"
 glob = "0.3"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 serde_json = "1"
 serde_yaml = "0.9"
-nb-tui = { path = "../nb-tui", version = "0.1.1" }
-nb-web = { path = "../nb-web", version = "0.1.1" }
-nb-adapter-stdout = { path = "../adapters/nb-adapter-stdout", version = "0.1.1" }
-nb-adapter-testkit = { path = "../adapters/nb-adapter-testkit", version = "0.1.1" }
-nb-adapter-http = { path = "../adapters/nb-adapter-http", version = "0.1.1" }
-nb-adapter-plotter = { path = "../adapters/nb-adapter-plotter", version = "0.1.1" }
+nbrs-tui = { path = "../nbrs-tui", version = "0.1.1" }
+nbrs-web = { path = "../nbrs-web", version = "0.1.1" }
+nbrs-adapter-stdout = { path = "../adapters/stdout", version = "0.1.1" }
+nbrs-adapter-testkit = { path = "../adapters/testkit", version = "0.1.1" }
+nbrs-adapter-http = { path = "../adapters/http", version = "0.1.1" }
+nbrs-adapter-plotter = { path = "../adapters/plotter", version = "0.1.1" }
+# CQL adapter — `default-features = false` so the engine choice
+# flows through nbrs's own feature flags (engine-scylla /
+# engine-cassandra-cpp / all-engines).
+nbrs-adapter-cql = { path = "../adapters/cql", version = "0.1.1", default-features = false }
+# Only needed for the TUI's `set_level(LogLevel::ERROR)` shim
+# that suppresses C++ driver chatter while the TUI owns the
+# screen. Gated behind the same feature that pulls the engine.
+cassandra-cpp = { version = "3", optional = true }
+# OpenAPI workload generation — opt-in via the `openapi`
+# feature. Adapter crate carries the spec parser + workload
+# synthesis; nbrs's `openapi` module wires the subcommands.
+nbrs-adapter-openapi = { path = "../adapters/openapi", version = "0.1.1", optional = true }
+openapiv3 = { version = "2", optional = true }
 reqwest = { version = "0.12", features = ["blocking"] }
 serde = { version = "1", features = ["derive"] }
 libc = "0.2"
+# Pure-Rust plotting library. Used by `nbrs plot` to render
+# PNGs from the metrics db. Default features pull in fontconfig
+# (system dep) for system-font rendering — disable and rely on
+# the embedded ab_glyph backend so the build is hermetic.
+plotters = { version = "0.3", default-features = false, features = [
+    "bitmap_backend",
+    "bitmap_encoder",
+    "svg_backend",
+    "ab_glyph",
+    "line_series",
+    "point_series",
+    "chrono",
+] }
+# Used by `nbrs plot` for direct queries against the metrics db.
+# `bundled` so we don't depend on system libsqlite3.
+rusqlite = { version = "0.31", features = ["bundled"] }
+# Stratified shell-completion engine. Drives the bash-completion
+# script and the per-command tier filter. Tracks the published
+# vectordata-rs 1.0.0 release.
+veks-completion = "1"
+
+[dev-dependencies]
+# Headless terminal emulator for E2E tests of the
+# `tui=terminal` ↔ `tui=on` toggle path. The toggle is
+# interactive-only — Ctrl-T isn't observable from a piped
+# stderr — so the integration test spawns `nbrs` inside a
+# `SteppableTerminal`, sends Ctrl-T keystrokes, and reads
+# back the rendered cells to assert which sink is active.
+shadow-terminal = "0.2"

@@ -181,13 +181,158 @@ bindings: |
   shared error_budget := 100
 ```
 
-Inner scope mutations to `error_budget` are visible to the
-outer scope and to subsequent inner scopes (if sequential).
+Inner scope mutations to `error_budget` become visible to
+the outer scope and to subsequent inner scopes.
 
-Implementation: the runner maps `error_budget` to a shared
-input slot. `set_input()` on the inner state writes through
-to the outer state's input slot. Provenance invalidation
-propagates normally.
+#### Implementation: SharedCell-backed input slots
+
+Storage is unified across kernels via `SharedCell` —
+`Arc<Mutex<Value>>` — attached to input slots. The
+mechanism:
+
+1. **Compile.** `shared X := <literal>` (cycle-binding form
+   with `Shared` modifier and a literal RHS) compiles to an
+   input slot for `X` with the literal as initial value, plus
+   a passthrough output `X` reading from that slot, with the
+   output marked `Shared`. Storage is identical to `extern X:
+   type = literal` — the modifier carries the cross-scope
+   intent.
+
+2. **Outer construction.** `GkKernel::new_with_inputs` and
+   `from_program` call `seed_shared_cells` after the
+   modifier pipeline runs (`set_output_modifiers`). Every
+   `Shared`-modifier output that has a backing input slot
+   gets a fresh `SharedCell` initialized from the slot's
+   current value, attached to outer's state.
+
+3. **Bind.** `inner.bind_outer_scope(&outer)` looks at outer's
+   shared cells (`outer.state.shared_cell(idx)`) and attaches
+   the same `Arc` to inner's matching input slots. Reads at
+   bind time are taken from the cell. Both kernels now hold
+   clones of the same `Arc`.
+
+4. **Write through.** `inner.state.set_input(idx, val)` on a
+   shared-cell-backed slot does two things: writes to inner's
+   local snapshot (for fast reads inside inner's eval), and
+   writes through the `Mutex` to the cell. Other kernels
+   sharing the cell don't see the update in their local
+   snapshots until they refresh.
+
+5. **Read intrinsically.** `kernel.lookup(name)` and the
+   per-cycle eval path both read through the cell on every
+   access — no explicit "refresh" step. The cell is the
+   canonical storage for shared slots; `eval_node` queries
+   it via `EngineCore::read_input` during input gathering, so
+   evaluations against a kernel pick up sibling writes
+   automatically. Dispatchers don't need to know which slots
+   are shared.
+
+`bind_outer_scope` and the cell wiring replace the earlier
+explicit `propagate_shared_to` round-trip — writes flow
+through shared storage automatically and reads see them
+intrinsically. No scope-exit copy, no refresh step, no
+dispatcher-side bookkeeping.
+
+#### Concurrent semantics: last-write-wins
+
+The `Mutex` serializes concurrent writers. The current
+semantic is **last-write-wins by lock-acquisition order** —
+no merging, no atomic-fetch-add, no aggregation. For the
+canonical `shared error_budget := 100` example with two
+workers each decrementing on errors, two concurrent writes
+of `99` produce a final value of `99`, not `98` —
+read-modify-write is not atomic at this level.
+
+This is the documented contract for now. Templated patterns
+(see §"Open: per-binding sharing pattern templates" below)
+are the path to atomic counters, sum-reduction, set-merge,
+and other semantics that this baseline doesn't deliver.
+
+#### Open: per-binding sharing pattern templates
+
+The shipped `SharedCell` mechanism delivers **last-write-wins**
+across concurrent writers. That's correct for some patterns
+(latest-status flags, coalesced metadata) and wrong for
+others (atomic counters, summed totals, merged sets).
+
+The canonical example — `shared error_budget := 100`
+decremented by many workers — wants `fetch_sub` atomic
+semantics, not a lock. With the current Mutex-based shim,
+two concurrent decrements of an unrelated cell write the
+same `99` and lose one decrement.
+
+Concurrent shared mutation has more than one viable
+semantic, and the right choice is per-binding, not global:
+
+- **Atomic reduction** — `shared count: u64` decremented by
+  many workers wants `fetch_sub` semantics. Specialized to
+  numeric-monoid types.
+- **Mutex with last-write-wins** — `shared latest_status:
+  String` where it's fine for one worker's value to
+  overwrite another. The current default. Works for any
+  type but loses intermediate writes.
+- **Coalescing / merge** — `shared seen_keys: Set` where
+  writes are unioned, not overwritten. Requires a typed
+  merge operator per binding.
+- **Aggregation** — `shared total_latency: f64` where each
+  iteration's contribution sums into a running total.
+  Combiner is the binding's responsibility; the runtime
+  invokes it at write time.
+
+These are distinct contracts with distinct correctness
+guarantees. A future implementation needs to be **explicit
+about templating which one applies per `shared` declaration**
+— the syntax / modifier surface should let the user pick:
+
+```
+shared(atomic) error_budget: u64 := 100         # fetch_sub
+shared(last)   latest_status: String := "init"  # last-write-wins (current default)
+shared(merge)  seen_keys: Set := []             # union
+shared(sum)    total_latency: f64 := 0.0        # aggregation
+```
+
+(Strawman syntax; real spelling is open.) Without this,
+`shared` defaults to last-write-wins for all types, which
+is right for some workloads and wrong for others.
+
+Until templates land:
+- Last-write-wins is the documented contract.
+- Workloads that need atomic-counter semantics either run
+  sequentially (no race) or accept the last-write-wins loss.
+- The four primitive read APIs (`shared_cell`,
+  `attach_shared_cell`, `refresh_shared`, `set_input`'s
+  write-through) are the building blocks any future
+  template would compose against — no rewrite of the
+  storage layer is needed when templates are added.
+
+#### Non-literal `shared` initializers
+
+`shared X := <literal>` (numeric, string, or `true`/`false`)
+gives X a real input slot and SharedCell. `shared X :=
+<non-literal-expression>` keeps the legacy cycle-binding
+shape: a computation node tagged with the `Shared` modifier,
+no input slot, no cell. The Shared metadata survives but
+cross-scope mutability is not active for that binding.
+
+This is a deliberate restriction. A non-literal init
+(`shared rolling := hash(cycle)`) doesn't have a sensible
+single initial value — the cell would be populated from
+some particular cycle's evaluation, and subsequent inner
+writes would compete with the per-cycle re-evaluation. The
+semantics aren't well-defined yet. Future work either folds
+compile-const non-literals (e.g. `shared base :=
+mod(hash(0), 1000)`) at compile time, or rejects them with a
+clear error.
+
+#### Idempotence and safety (sequential path)
+
+`propagate_shared_to` is safe to call repeatedly: a no-op
+when no shared outputs differ from outer's current input
+values. Writing through to outer's input slot dirties
+outer's dependent nodes per the standard `set_input`
+invalidation path; subsequent outer reads re-evaluate. Flow
+stays outer → inner → outer (sequential, not circular)
+because outer evaluations don't fire during inner's window.
 
 ### Inner-Only Mutable
 
@@ -287,6 +432,33 @@ values that must remain constant across all iterations.
 
 ## Implementation via Existing Mechanisms
 
+### Per-Scope Canonical Kernel Cache
+
+Each non-trivial `ScopeNode` in `nbrs-activity::scope_tree`
+carries a `cached_kernel: OnceLock<Arc<GkKernel>>` slot
+(M3.1+). The canonical kernel is the *single authoritative
+answer* for "what is `<name>` at this scope?" — every name
+visible at this scope (own outputs plus parent-inherited values
+bound via `bind_outer_scope`) resolves through the standard GK
+API on this one kernel. Callers do not walk the scope tree to
+do name resolution; GK's auto-extern + outer-scope wiring
+already encapsulates the layering.
+
+Per-execution kernels (per-iteration in for_each, per-fiber in
+phase) come from `GkKernel::from_program(canonical.program()
+.clone())` — the cache-and-rebind primitive whose docstring
+references this section directly. The canonical's program is
+`Arc`-shared; only state is cloned per execution.
+
+For text interpolation against a kernel's name space, callers
+use `nbrs_activity::interpolate::interpolate_via_kernel(text,
+&kernel)`. The implementation tries `get_constant` (own
+outputs) first, then `get_input` (extern slots populated by
+`bind_outer_scope` or the dispatcher's per-clause `set_input`).
+That two-step lookup is the runtime expression of the
+shadowing rule in §"Visibility Rules" — own bindings shadow
+inherited values.
+
 ### Output Manifest
 
 The runner extracts the outer scope's output manifest before
@@ -358,11 +530,17 @@ No `shared` keyword required within the for_each boundary.
 
 ### Shared Write-Back (`shared` keyword)
 
-After a `for_each` loop completes, the runner scans the outer
-manifest for outputs marked `shared`. For each, it copies the
-last iteration's value from `iter_carried_scope` back into
-`outer_scope_values`. This makes shared mutations visible to
-subsequent phases.
+Shared write-back is now a GK API: `inner.propagate_shared_to(&mut outer)`
+at each iteration boundary copies inner's `shared`-output values
+back into outer's matching input slots. See §"Mutability Rules:
+Shared Mutable" above for the full rationale; the rest of this
+section describes the pre-API runner pattern that the GK call
+replaces.
+
+(Pre-API, the runner did this manually: at the end of each
+iteration, scan the outer manifest for outputs marked `shared`,
+copy the last iteration's value from `iter_carried_scope` back
+into `outer_scope_values`.)
 
 `shared` write-back is just updating an input slot on the
 outer state — it cannot cause runaway because:
@@ -432,8 +610,8 @@ iteration patterns like iterating over table names.
 | `extern name: type` | bindings | Declare input from outer scope |
 | `final name := expr` | bindings | Immutable; cannot be shadowed by inner scopes |
 | `shared name := expr` | bindings | Mutable; propagates upward to outer scope after for_each |
-| `shared init name = expr` | bindings | Combined: shared + init-time binding |
-| `final init name = expr` | bindings | Combined: final + init-time binding |
+| `shared init name = expr` | bindings | Combined: shared + scope-init binding (per [SRD 11](11_gk_evaluation.md) §"Init Binding Contract") |
+| `final init name = expr` | bindings | Combined: final + scope-init binding (per [SRD 11](11_gk_evaluation.md) §"Init Binding Contract") |
 | `loop_scope: clean\|inherit` | phase | How loop is seeded from outer (default: `clean`) |
 | `iter_scope: clean\|inherit` | phase | How iteration is seeded from loop (default: `inherit` for for_each, `clean` otherwise) |
 | `for_each: "var in expr"` | phase | Iterate, creating per-iteration scope |
@@ -536,3 +714,78 @@ Properties that composition preserves:
 All scoping is orchestrated by the runner using existing
 kernel APIs. The GK core remains a flat, single-scope
 evaluation engine.
+
+---
+
+## Open Design Issue: constant/non-constant duality at the read API
+
+**Status:** unresolved as of 2026-04-30. Documented for later
+review; do not paper over with more wrappers.
+
+The current public read surface on `GkKernel` exposes the
+storage-strategy split:
+
+- `get_constant(name)` — reads the folded-output buffer.
+- `get_input(name)` — reads the input-slot array.
+- `lookup(name)` — wraps the two-tier shadowing read
+  (`get_constant.or_else(get_input)`) into a single named
+  idiom. Internally still two reads.
+
+`lookup` removes the duplicated `or_else` pattern at call
+sites (was inlined three times: `interpolate_via_kernel`,
+`bind_outer_scope`, `propagate_shared_to`). It does *not*
+remove the underlying duality — the caller can still see
+`get_constant` and `get_input` on the type, and the kernel
+still has two physical storage planes for what is logically
+one wire's value.
+
+This is a design smell at the caller surface area. From the
+user's perspective, asking "what is the value of `<name>` in
+this scope?" should be one question with one read. Today the
+caller has three options (`pull`, `lookup`, or the raw
+primitives), and `lookup`'s implementation reveals that
+"folded constant" and "live input" are distinct things the
+runtime tracks separately.
+
+The reasons this isn't trivially collapsible — and the
+constraints any future fix must respect:
+
+- **Mutability.** `pull` must take `&mut self` because
+  evaluating a dirty node mutates the buffer + clean flags.
+  `lookup` is `&self` and never evaluates. Collapsing to one
+  method forces a choice: every read takes `&mut`, or
+  evaluation moves elsewhere (eager seeding, interior
+  mutability, etc.). All three options have downsides
+  rejected during this design pass — eager seeding loses
+  per-scope buffer reuse, interior mutability violates the
+  shared-engine/per-fiber-state split, `&mut` everywhere
+  fights Rust aliasing at every callsite.
+
+- **Engine vs state split.** `Arc<GkProgram>` is the engine,
+  `GkState` is per-fiber. The scope tree caches the canonical
+  state via `Arc<GkKernel>` so multiple readers share the
+  seeded folded constants without re-computing. Whatever the
+  unified read becomes, it needs to preserve this split.
+
+- **Storage layouts are real and load-bearing.** Folded
+  constants live in `state.core.buffers[node][port]`; input
+  slots live in `state.core.inputs[idx]`. Auto-passthrough
+  outputs (`__port_<name>`) have a name in the output map
+  and a wire source pointing at an input slot — their
+  "buffer" is empty by design because evaluating an identity
+  passthrough is wasted work; the input slot is the truth.
+  Any unification has to pick one source of truth or
+  reconcile both at read time.
+
+The current `lookup` is a *containment* of the smell, not a
+fix. Future work — possibly a redesign of the read path —
+should aim to make `kernel.lookup(name)` (or whatever it's
+called) the *only* read on the public type, retiring
+`get_constant` and `get_input` from the public surface, and
+push the storage-strategy choice fully into the kernel's
+internals where the caller never sees it.
+
+Anything that adds *more* surface area in the meantime
+(e.g., a new method that returns `Option<Value>` for
+"computed values" alongside the existing two) makes this
+worse, not better.

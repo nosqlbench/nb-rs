@@ -3,8 +3,8 @@
 
 //! Usage text and utility functions shared across subcommands.
 //!
-//! Shell completion is owned by [`nb_activity::completions`] — the
-//! same harness `cassnbrs` uses — so `nbrs run workload=<TAB>`,
+//! Shell completion is owned by [`nbrs_activity::completions`] — the
+//! same harness `nbrs` uses — so `nbrs run workload=<TAB>`,
 //! `scenario=<TAB>`, `adapter=<TAB>`, etc. all expand identically
 //! across personas. `main.rs` wires it up; nothing in this file
 //! duplicates that logic.
@@ -17,6 +17,14 @@ pub fn print_usage() {
     eprintln!("  nbrs run workload=file.yaml tags=block:main rate=1000 format=json");
     eprintln!("  nbrs run op='hello {{{{cycle}}}}' cycles=10");
     eprintln!("  nbrs run op='id={{{{mod(hash(cycle), 1000)}}}}' cycles=100 format=json");
+    eprintln!("  nbrs attach                  Attach to a running nbrs over its OOB socket");
+    eprintln!("  nbrs attach --pid <N>        Attach to a specific running instance");
+    eprintln!("  nbrs attach -c phases        One-shot: run a command and exit");
+    eprintln!("  nbrs summary                 List stored summaries in logs/latest/metrics.db");
+    eprintln!("  nbrs summary all             Render every stored named summary");
+    eprintln!("  nbrs summary --name <NAME>   Render the stored summary <NAME>");
+    eprintln!("  nbrs summary '*'             Ad-hoc all-metrics report");
+    eprintln!("  nbrs summary --name <NAME> --create '<spec>'  Persist + render");
     eprintln!("  nbrs describe gk functions    List all GK node functions");
     eprintln!("  nbrs describe gk functions-md Dump all functions to markdown file");
     eprintln!("  nbrs describe gk stdlib       List standard library modules");

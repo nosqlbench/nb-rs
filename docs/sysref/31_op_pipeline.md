@@ -11,7 +11,10 @@ compilation, dispenser creation, wrapping, and per-cycle execution.
 ParsedOp[]
   │
   ├── Compile GK bindings ──▶ GkKernel ──▶ GkProgram (Arc)
-  │     (scans op fields AND params for {name} references)
+  │     (scans op fields AND params for {name} references — see SRD 16
+  │      §"Auto-Extern Generation"; bind point scanner already walks
+  │      the full template, so the kernel knows every name referenced
+  │      by any consumer)
   │
   ├── Build OpSequence ──▶ cycle → template LUT
   │
@@ -19,16 +22,28 @@ ParsedOp[]
         │
         ├── adapter.map_op(template) ──▶ raw OpDispenser
         │
-        ├── TraversingDispenser::wrap(raw, template, stats)
-        │     (element/byte counting, capture extraction)
+        ├── ScopeFixture::new(kernel)        ◀── consumer self-registration
+        │     │
+        │     ├── TraversingDispenser::fixture(template, &mut fx)
+        │     ├── ValidatingDispenser::fixture(template, &mut fx)
+        │     ├── ConditionalDispenser::fixture(template, &mut fx)
+        │     ├── ThrottleDispenser::fixture(template, &mut fx)
+        │     │   (each consumer registers names it reads at cycle time;
+        │     │    unknown names ⇒ Err, no silent drops)
+        │     │
+        │     └── fixture.seal() ──▶ PullPlan (ordered, deduplicated)
         │
-        ├── ValidatingDispenser::wrap(traversed, template, labels)
-        │     (assertions, relevancy — only if declared)
-        │
-        ├── Collect extra_bindings for validation needs
-        │
-        └── Final dispenser stored in dispensers[]
+        └── Final wrapped dispenser stored in dispensers[]
+              (each wrapper holds the PullHandles its fixture returned)
 ```
+
+The fixture is the **net product of all consumers' scope-init
+preparation**. There is no top-level coordinator that gathers names
+"on behalf of" a consumer — each consumer is responsible for its
+own scoping against the GK context. Activity construction iterates
+the registered consumer set and seals the fixture at the end. See
+[32: Dispenser Wrappers](32_wrappers.md) §"Init-Time Fixture and
+Consumer Self-Registration" for the trait contract.
 
 ### Wrapping Order
 
@@ -58,13 +73,24 @@ Per cycle within a fiber:
 1. Rate limit    ── acquire token (if rate= configured)
 2. Select        ── op_sequence.get_with_index(cycle) → (idx, template)
 3. Set inputs    ── fiber.set_inputs([cycle])
-4. Resolve       ── fiber.resolve_with_extras(template, extras[idx])
-                    → ResolvedFields (from GK outputs, captures)
-5. Execute       ── dispenser.execute(cycle, &fields)
-                    → ConditionalDispenser (checks `if:`, may skip)
-                      → ValidatingDispenser (assertions, relevancy)
+4. Resolve       ── two parallel index-driven materializations from
+                    GkState; both are O(plan_size), no name hashing:
+                    ├── BindPlan::resolve(state)  → ResolvedFields
+                    │     (op-field substitution; positional view for
+                    │      the inner adapter — prepared-statement order
+                    │      matters here)
+                    └── PullPlan::resolve(state)  → ResolvedPulls
+                          (name-free handle access for outer wrappers;
+                           PullHandle is a Copy index into the plan)
+5. Execute       ── dispenser.execute(cycle, &ExecCtx { fields, pulls })
+                    → ConditionalDispenser (reads `if` via PullHandle)
+                      → ValidatingDispenser (reads ground truth via
+                                             PullHandle; assertions
+                                             on result body)
                         → TraversingDispenser (counts, captures)
-                          → adapter dispenser (CQL/HTTP/stdout)
+                          → adapter dispenser (CQL/HTTP/stdout — sees
+                                               only `fields`, never
+                                               `pulls`)
                     → Result<OpResult, ExecutionError>
 6. Metrics       ── service_time, wait_time, response_time
                     (skipped ops: only cycles_total + skips_total)
@@ -72,11 +98,34 @@ Per cycle within a fiber:
 8. Error         ── route through ErrorRouter if Err
 ```
 
-**Design note:** `resolve_with_extras` exists because validation
-needs GK outputs not referenced in op fields. When the GK kernel
-becomes the unified state holder (sysref 10), all outputs would
-be available through a single resolution path, eliminating
-the "extras" mechanism.
+### Pull plan vs bind plan
+
+The two dynamic-pull plans look similar but serve different
+contracts and must not be conflated:
+
+| | `BindPlan` → `ResolvedFields` | `PullPlan` → `ResolvedPulls` |
+|---|---|---|
+| Scope | Names referenced in op fields (`op.values()`) | Names registered by wrappers via `ScopeFixture` |
+| Access shape | Positional, by column order in the prepared statement | By `PullHandle` (Copy, index into plan) |
+| Consumer | Innermost adapter dispenser | Outer wrappers (validation, conditional, throttle, …) |
+| Why distinct | Adapters need slot-ordered typed values that match the prepared statement; consumers need by-name handles resolved at init | A wrapper's read should not depend on whether the same name happens to appear in op fields |
+
+Both are populated from the same `GkState` per cycle; the GK
+kernel remains the single canonical source of values. A name
+that appears in both an op field and a wrapper config is pulled
+once from the kernel and observed via two independent
+materializations of the cycle's value snapshot. Eventual
+unification (slice α.7+) is open work; the contracts above are
+load-bearing and should be preserved by any future merge.
+
+**Historical note:** `resolve_with_extras` and the
+`extra_bindings` side channel — formerly threaded from the
+activity layer into a single `ResolvedFields` for both adapter
+and wrapper reads — are removed by slice α.4. The two-plan
+shape above replaces them. SRD-16 §"Open Design Issue" has
+related context on the kernel's read-API consolidation;
+`PullPlan` here sits *above* the kernel's `lookup` and is
+agnostic to the kernel's internal storage-strategy split.
 
 ### Conditional Op Execution
 
@@ -91,12 +140,12 @@ ops:
     stmt: "INSERT INTO t (id, val) VALUES ({id}, 'default')"
 ```
 
-**Implementation:** The condition is resolved as part of normal
-GK evaluation (included in `extra_bindings` for the op). The
-`ConditionalDispenser` checks `fields.get_value(condition_name)`
-and returns `OpResult::skipped()` if falsy. The condition field
-is stripped from resolved fields before the inner dispensers see
-it, so adapters never see internal condition values.
+**Implementation:** `ConditionalDispenser::fixture` registers the
+condition name with the scope fixture and stores the returned
+`PullHandle`. At cycle time, the wrapper reads
+`ctx.pulls.get(self.condition_handle)` and returns
+`OpResult::skipped()` if falsy. The condition is invisible to the
+inner adapter — adapters see only `ctx.fields`.
 
 **Truthiness:** A value is truthy unless it is `0` (u64),
 `0.0` (f64), `false` (bool), an empty string, or `None`.

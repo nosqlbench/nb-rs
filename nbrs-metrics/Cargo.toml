@@ -1,0 +1,45 @@
+[package]
+name = "nbrs-metrics"
+version = "0.1.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "Metrics collection and reporting for nb-rs"
+keywords = ["nosqlbench", "workload", "benchmark", "data-generation"]
+categories = ["command-line-utilities", "simulation"]
+repository = "https://github.com/nosqlbench/nb-rs"
+homepage = "https://github.com/nosqlbench/nb-rs"
+readme = "README.md"
+
+[dependencies]
+hdrhistogram = "7"
+tokio = { version = "1", features = ["sync", "time"] }
+futures = "0.3"
+# Lock-free metrics consolidation lifecycle (SRD-42):
+# crossbeam-channel for non-blocking command queue from many writers
+# (every phase boundary calls ingest/close_path) to a single owner
+# thread; arc-swap for lock-free atomic snapshot publication so
+# readers (TUI, metrics queries) never block the consolidator.
+crossbeam-channel = "0.5"
+arc-swap = "1"
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+regex = { version = "1", optional = true }
+reqwest = { version = "0.12", features = ["blocking"], optional = true }
+base64 = { version = "0.22", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
+
+[features]
+default = []
+sqlite = ["dep:rusqlite", "dep:regex"]
+victoriametrics = ["dep:reqwest"]
+all-reporters = ["sqlite", "victoriametrics", "dep:base64"]
+
+[[bench]]
+name = "instruments"
+harness = false
+
+[[bench]]
+name = "cadence_layout"
+harness = false

@@ -144,9 +144,9 @@ error: unrecognized parameter(s): 'trhreads'. Check for typos.
 The system must never silently discard errors. Specific rules:
 
 - **Fallible results**: Every `Result` must be matched or
-  propagated. `let _ = fallible()` is prohibited on cycle-time
+  propagated. `let _ = fallible()` is prohibited on dynamic
   code paths. `.ok()` must not be used to discard errors.
-- **Mutex access**: Cycle-time mutex acquisition uses
+- **Mutex access**: Dynamic mutex acquisition uses
   `unwrap_or_else(|e| e.into_inner())` (recover from poison),
   not `.unwrap()` (panics the fiber).
 - **Missing values**: Every `Option::None` that indicates a
@@ -159,3 +159,90 @@ The system must never silently discard errors. Specific rules:
 - **Panics**: Reserved for invariant violations (programmer
   errors). Operational errors always return `Err(...)`.
   Panicking on bad user input or network failures is a bug.
+
+---
+
+## Status-Determination Invariant
+
+**Test-fixture verification logic must short-circuit on every
+non-positive case.** Any code path whose job is to determine
+whether a system, fixture, or external dependency is in a
+specific positive state — `index built`, `service ready`,
+`schema present`, `endpoint healthy`, `data loaded` — has
+exactly two acceptable terminations:
+
+1. **The specific positive case.** Return success.
+2. **Anything else.** Throw / return an error that propagates.
+
+This is non-negotiable for fixture-verification code. Examples:
+
+- Polling `system_views.sai_column_indexes` to detect index
+  build completion. The positive case is "0 rows match" (no
+  index still building). Any other observable outcome —
+  connection error, syntax error against a schema view that
+  doesn't exist on this Cassandra version, malformed result,
+  partial response — must propagate as an error, not be
+  retried-around or treated as "still waiting".
+- Reading a vectordata catalog entry to verify a profile is
+  reachable. "Profile present and parseable" succeeds; any
+  other result errors out (the cycle-time fall-back path is
+  *separate* — that's a runtime behaviour, not a verification
+  step).
+- Probing a CQL keyspace for an expected table. Table present
+  succeeds; "missing", "permission denied", "schema
+  disagreement" all error.
+
+### Why
+
+Test fixtures are part of the **testing protocol**, not the
+test load. Their job is to certify the system's pre-state so
+the workload's measurements are interpretable. A fixture
+verification step that swallows errors — treating "I couldn't
+read the status" the same as "the status is bad" or "the
+status is good" — silently degrades every measurement that
+follows. The whole point of a workload run is then in question.
+
+### Default Action
+
+If the workload's normative `errors:` policy doesn't
+explicitly classify a fixture-verification failure, the
+default action is **stop the test run**, not retry-around or
+warn-and-continue. Verification code is responsible for
+making this contract explicit at its call sites — either by
+returning a non-retryable `ExecutionError`, or by surfacing
+the error before the cycle dispatcher's error router can
+soften it.
+
+### Retries Within
+
+A fixture-verification step **may** retry on retryable
+errors (connection refused, transient timeout) up to a small
+fixed limit before propagating. This is fine: retry-with-limit
+is bounded; silent-swallowing is not. The polling wrapper
+(`PollingDispenser`) honours `poll_max_error_retries` for
+exactly this reason — transient blips during a long index
+build don't kill the run, but persistent errors do, after the
+limit.
+
+### Per-Op Policy Layer
+
+This invariant is enforced **per op template** by an
+`ErrorPolicyDispenser` wrapper that sits inside the op
+dispenser stack — see [SRD 32](32_wrappers.md)
+§"ErrorPolicyDispenser". The wrapper attaches via two
+equivalent surfaces in the workload YAML:
+
+```yaml
+stage: testing-protocol     # named profile → bakes in WarnLogStop
+```
+```yaml
+error_policy:               # explicit per-op control
+  on_error: warn_log_stop
+  retry_limit: 3
+```
+
+The `testing-protocol`, `evaluation`, and `polling` stage
+profiles all default to `WarnLogStop` for `on_error`, with
+appropriate `retry_limit` budgets. Workloads that don't
+declare a stage or explicit policy fall through to the
+activity-level `errors:` router unchanged.

@@ -3,13 +3,27 @@
 
 //! The `describe` subcommand: introspect GK functions, stdlib, modules, and DAGs.
 
-use nb_variates::dsl::registry;
+use nbrs_variates::dsl::registry;
 
 pub fn describe_command(args: &[String]) {
-    let topic = args.first().map(|s| s.as_str()).unwrap_or("");
+    let first = args.first().map(|s| s.as_str()).unwrap_or("");
+
+    // `nbrs describe adapter=<name>` / `nbrs describe adapter`
+    // shorthand. The `key=value` form mirrors the rest of nbrs's
+    // CLI, so it composes with the user's muscle memory.
+    if let Some((topic, value)) = first.split_once('=')
+        && topic == "adapter"
+    {
+        describe_adapter(value);
+        return;
+    }
+
+    let topic = first;
     let subtopic = args.get(1).map(|s| s.as_str()).unwrap_or("");
 
     match (topic, subtopic) {
+        ("adapter", "") => describe_adapters_list(),
+        ("adapter", name) => describe_adapter(name),
         ("gk", "functions") => describe_gk_functions(),
         ("gk", "functions-md") => {
             let rest: Vec<String> = args.iter().skip(2).cloned().collect();
@@ -36,15 +50,104 @@ pub fn describe_command(args: &[String]) {
         }
         _ => {
             eprintln!("nbrs describe <topic>");
-            eprintln!("  gk           Generation kernel topics");
+            eprintln!("  adapter[=<name>]   List adapters / show one adapter's params + drivers");
+            eprintln!("  gk                 Generation kernel topics");
             eprintln!();
             eprintln!("For workload analysis, use: nbrs run workload=file.yaml dryrun=phase,gk");
         }
     }
 }
 
+fn describe_adapters_list() {
+    use nbrs_activity::adapter::{registered_driver_names, default_drivers};
+
+    let mut names = registered_driver_names();
+    names.sort();
+    names.dedup();
+    if names.is_empty() {
+        println!("No adapters registered in this binary.");
+        return;
+    }
+    println!("Registered adapters:");
+    for name in names {
+        let drivers = default_drivers(name);
+        if drivers.is_empty() {
+            println!("  {name}");
+        } else {
+            // Multi-driver adapter — show the rank-derived default
+            // and the alternative drivers compiled in.
+            let default = drivers.first().copied().unwrap_or("");
+            let alts: Vec<&str> = drivers.iter().skip(1).copied().collect();
+            if alts.is_empty() {
+                println!("  {name}    (driver: {default})");
+            } else {
+                println!("  {name}    (drivers: {default} [default], {})", alts.join(", "));
+            }
+        }
+    }
+    println!();
+    println!("For details: nbrs describe adapter=<name>");
+}
+
+fn describe_adapter(name: &str) {
+    use nbrs_activity::adapter::{
+        find_adapter_registration, default_drivers, find_driver,
+    };
+
+    let Some(reg) = find_adapter_registration(name) else {
+        eprintln!("No adapter named '{name}' is registered in this binary.");
+        eprintln!();
+        describe_adapters_list();
+        return;
+    };
+
+    let aliases = (reg.names)();
+    println!("Adapter: {name}");
+    if aliases.len() > 1 {
+        println!("  Aliases:        {}", aliases.join(", "));
+    }
+    println!("  Display:        {:?}", (reg.display_preference)());
+
+    let adapter_params = (reg.known_params)();
+    if !adapter_params.is_empty() {
+        println!("  Adapter params: {}", adapter_params.join(", "));
+    }
+
+    let drivers = default_drivers(name);
+    if drivers.is_empty() {
+        println!();
+        return;
+    }
+
+    let default = drivers.first().copied().unwrap_or("");
+    println!();
+    println!("  Drivers (compiled into this binary, rank order — first is default):");
+    for driver in &drivers {
+        let marker = if *driver == default { " [default]" } else { "" };
+        match find_driver(name, driver) {
+            Some(impl_) => {
+                let dparams = (impl_.known_params)();
+                println!("    {driver}{marker}  rank={}", impl_.default_rank);
+                if !dparams.is_empty() {
+                    println!("      params: {}", dparams.join(", "));
+                }
+            }
+            None => println!("    {driver}{marker}"),
+        }
+    }
+    if drivers.len() > 1 {
+        println!();
+        // Selector convention: drivers are picked via
+        // `<adapter>driver=…` (e.g. `cqldriver=scylla`). Surface
+        // the exact knob + accepted values so the user doesn't
+        // have to read the source.
+        println!("  Select a driver with: {name}driver=<{}>",
+            drivers.join("|"));
+    }
+}
+
 fn describe_gk_functions() {
-    use nb_activity::bindings::probe_compile_level;
+    use nbrs_activity::bindings::probe_compile_level;
 
     let grouped = registry::by_category();
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
@@ -135,7 +238,7 @@ fn describe_gk_functions() {
 /// by category, including signatures, parameters, descriptions,
 /// and help text.
 fn describe_gk_functions_md(path: &str) {
-    use nb_activity::bindings::probe_compile_level;
+    use nbrs_activity::bindings::probe_compile_level;
     use std::io::Write;
 
     let grouped = registry::by_category();
@@ -206,34 +309,34 @@ fn describe_gk_functions_md(path: &str) {
             let mut all_params: Vec<String> = Vec::new();
             for p in sig.params {
                 match p.slot_type {
-                    nb_variates::node::SlotType::Wire => {
+                    nbrs_variates::node::SlotType::Wire => {
                         all_params.push(format!("{}: wire", p.name));
                     }
-                    nb_variates::node::SlotType::ConstStr => {
+                    nbrs_variates::node::SlotType::ConstStr => {
                         if p.required {
                             all_params.push(format!("{}: str", p.name));
                         } else {
                             all_params.push(format!("[{}]: str", p.name));
                         }
                     }
-                    nb_variates::node::SlotType::ConstU64 => {
+                    nbrs_variates::node::SlotType::ConstU64 => {
                         if p.required {
                             all_params.push(format!("{}: u64", p.name));
                         } else {
                             all_params.push(format!("[{}]: u64", p.name));
                         }
                     }
-                    nb_variates::node::SlotType::ConstF64 => {
+                    nbrs_variates::node::SlotType::ConstF64 => {
                         if p.required {
                             all_params.push(format!("{}: f64", p.name));
                         } else {
                             all_params.push(format!("[{}]: f64", p.name));
                         }
                     }
-                    nb_variates::node::SlotType::ConstVecU64 => {
+                    nbrs_variates::node::SlotType::ConstVecU64 => {
                         all_params.push(format!("{}: vec<u64>", p.name));
                     }
-                    nb_variates::node::SlotType::ConstVecF64 => {
+                    nbrs_variates::node::SlotType::ConstVecF64 => {
                         all_params.push(format!("{}: vec<f64>", p.name));
                     }
                 }
@@ -284,11 +387,11 @@ fn describe_gk_functions_md(path: &str) {
 /// extracts `ModuleDef` statements, and prints them grouped by
 /// category (source filename) with ANSI coloring.
 fn describe_gk_stdlib() {
-    use nb_variates::dsl::lexer::lex;
-    use nb_variates::dsl::parser::parse;
-    use nb_variates::dsl::ast::Statement;
+    use nbrs_variates::dsl::lexer::lex;
+    use nbrs_variates::dsl::parser::parse;
+    use nbrs_variates::dsl::ast::Statement;
 
-    let sources = nb_variates::dsl::stdlib_sources();
+    let sources = nbrs_variates::dsl::stdlib_sources();
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
 
     let (bold, dim, reset, green, cyan, magenta) = if is_tty {
@@ -382,9 +485,9 @@ fn describe_gk_stdlib() {
 /// Usage:
 ///   nbrs describe gk modules [--dir=path]
 fn describe_gk_modules(args: &[String]) {
-    use nb_variates::dsl::lexer::lex;
-    use nb_variates::dsl::parser::parse;
-    use nb_variates::dsl::ast::Statement;
+    use nbrs_variates::dsl::lexer::lex;
+    use nbrs_variates::dsl::parser::parse;
+    use nbrs_variates::dsl::ast::Statement;
 
     let dir = args.iter()
         .find_map(|a| a.strip_prefix("--dir="))
@@ -547,7 +650,7 @@ fn extract_first_comment(source: &str, name: &str) -> Option<String> {
 /// Usage:
 ///   nbrs describe gk dag <file.gk> [--format=dot|mermaid|svg] [--output=file]
 fn describe_gk_dag(args: &[String]) {
-    use nb_variates::viz;
+    use nbrs_variates::viz;
 
     let file = args.iter().find(|a| !a.starts_with("--"));
     let format = args.iter()

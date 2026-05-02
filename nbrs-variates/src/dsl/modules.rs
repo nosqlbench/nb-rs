@@ -1,0 +1,645 @@
+// Copyright 2024-2026 Jonathan Shook
+// SPDX-License-Identifier: Apache-2.0
+
+//! Module resolution subsystem for the GK DSL compiler.
+//!
+//! Handles locating, parsing, and caching `.gk` module files so the
+//! compiler can inline them at call sites.  Resolution order:
+//!
+//! 1. In-process cache (already-resolved modules)
+//! 2. `<name>.gk` in the workload-local `source_dir`
+//! 3. Any `.gk` file in `source_dir` that exports a binding named `<name>`
+//! 4. The same two searches repeated for each `--gk-lib` path
+//! 5. The embedded standard library
+
+use std::collections::HashSet;
+
+use crate::assembly::{GkAssembler, WireRef};
+use crate::dsl::ast::*;
+use crate::dsl::lexer;
+use crate::dsl::parser;
+use crate::dsl::validate::collect_references;
+
+use super::compile::{Compiler, STDLIB_MODULES};
+
+/// A resolved GK module ready for inlining.
+pub(super) struct ResolvedModule {
+    /// Input parameter names (from formal signature or inferred).
+    pub(super) inputs: Vec<String>,
+    /// Input parameter types (from formal signature; empty if inferred).
+    pub(super) input_types: Vec<Option<String>>,
+    /// Output binding names (from formal signature or last binding).
+    pub(super) outputs: Vec<String>,
+    /// Output types (from formal signature; empty if inferred).
+    /// Reserved for future strict-mode type checking of downstream consumers.
+    #[allow(dead_code)]
+    pub(super) output_types: Vec<Option<String>>,
+    /// Whether this module has a formal typed signature.
+    pub(super) is_formal: bool,
+    /// The module's AST statements.
+    pub(super) statements: Vec<Statement>,
+}
+
+impl Compiler {
+    /// Generate a fresh anonymous node name for desugared intermediates.
+    pub(super) fn anon_name(&mut self) -> String {
+        let name = format!("__anon_{}", self.anon_counter);
+        self.anon_counter += 1;
+        name
+    }
+
+    /// Splice a resolver between any `Str`-producing wire and any
+    /// `Handle`-typed input port on a freshly built node, per the
+    /// function's `default_resolver` hint
+    /// (SRD 53 §"Source-string call-site sugar").
+    ///
+    /// For each `Handle` input port:
+    ///   - if the wire already produces `Handle`, leave it alone;
+    ///   - if the wire produces `Str` and the function declares a
+    ///     `DefaultResolver`, build the resolver
+    ///     (`dataset_open(<wire>, <facet_lit>)` or
+    ///     `dataset_group_open(<wire>)`), add it as an anon node, and
+    ///     redirect the wire to the resolver's output;
+    ///   - if the wire produces something else, leave it — the
+    ///     standard type-adapter pass will report the mismatch with a
+    ///     standard error.
+    ///
+    /// No-op if the function isn't in the registry, has no
+    /// `default_resolver`, or the node has no Handle inputs.
+    pub(super) fn auto_promote_handle_inputs(
+        &mut self,
+        asm: &mut crate::assembly::GkAssembler,
+        func_name: &str,
+        node: &Box<dyn crate::node::GkNode>,
+        wire_refs: &mut Vec<crate::assembly::WireRef>,
+    ) -> Result<(), String> {
+        use crate::dsl::registry::{registry, DefaultResolver};
+        use crate::nodes::identity::ConstStr;
+        use crate::node::PortType;
+        use crate::assembly::WireRef;
+
+        // Find the FuncSig — only some functions opt into auto-promotion.
+        let resolver = registry()
+            .into_iter()
+            .find(|sig| sig.name == func_name)
+            .and_then(|sig| sig.default_resolver);
+        let resolver = match resolver {
+            Some(r) => r,
+            None => return Ok(()),
+        };
+
+        let meta = node.meta();
+        // Walk this node's input ports. The slot/wire alignment is the
+        // same as wire_refs (positional), so we iterate the wire-typed
+        // ports in order to match wire_refs[i].
+        let mut wire_idx = 0;
+        for slot in &meta.ins {
+            let port = match slot {
+                crate::node::Slot::Wire(p) => p,
+                crate::node::Slot::Const { .. } => continue,
+            };
+            if wire_idx >= wire_refs.len() { break; }
+            // Only promote Handle inputs.
+            if port.typ == PortType::Handle {
+                let src = &wire_refs[wire_idx];
+                let src_type = asm.wire_type(src);
+                if src_type == Some(PortType::Str) {
+                    // Build the resolver call as anonymous nodes.
+                    let resolver_name = self.anon_name();
+                    match resolver {
+                        DefaultResolver::Facet(facet) => {
+                            // Anonymous facet const wire.
+                            let facet_const = self.anon_name();
+                            asm.add_node(
+                                &facet_const,
+                                Box::new(ConstStr::new(facet.to_string())),
+                                vec![],
+                            );
+                            let resolver_node: Box<dyn crate::node::GkNode> =
+                                Box::new(crate::nodes::vectors::DatasetOpen::new());
+                            asm.add_node(
+                                &resolver_name,
+                                resolver_node,
+                                vec![src.clone(), WireRef::node(facet_const)],
+                            );
+                        }
+                        DefaultResolver::Group => {
+                            let resolver_node: Box<dyn crate::node::GkNode> =
+                                Box::new(crate::nodes::vectors::DatasetGroupOpen::new());
+                            asm.add_node(
+                                &resolver_name,
+                                resolver_node,
+                                vec![src.clone()],
+                            );
+                        }
+                    }
+                    wire_refs[wire_idx] = WireRef::node(resolver_name);
+                }
+            }
+            wire_idx += 1;
+        }
+        Ok(())
+    }
+
+    /// Try to resolve a function call as a GK module and inline it.
+    ///
+    /// Returns `Ok(true)` if the module was found and inlined, `Ok(false)`
+    /// if no module was found, or `Err` on resolution/inlining failure.
+    pub(super) fn try_inline_module(
+        &mut self,
+        asm: &mut GkAssembler,
+        func_name: &str,
+        caller_args: &[Arg],
+        targets: &[String],
+    ) -> Result<bool, String> {
+        use crate::dsl::validate::{literal_type, types_compatible};
+
+        // Resolve the module (load + parse + cache)
+        let module = match self.resolve_module(func_name)? {
+            Some(m) => m,
+            None => return Ok(false),
+        };
+
+        let module_inputs = module.inputs.clone();
+        let module_input_types = module.input_types.clone();
+        let module_outputs = module.outputs.clone();
+        let module_is_formal = module.is_formal;
+        let module_stmts = module.statements.clone();
+
+        // Module inlining is the *flatten* combinator (SRD 13b
+        // §"Inline"): the module's `Statement`s splice into this
+        // host's DAG and the boundary disappears. Pragmas declared
+        // inside the module body therefore become *additive*
+        // contributions to the *same* `PragmaSet` — they're not a
+        // separate scope. The outer-wins / conflict-detection
+        // semantics from SRD 15 §"Pragma Scope" fire at *scope
+        // composition* boundaries (workload → phase → for_each),
+        // which live in `nbrs-activity`, not here.
+        for stmt in &module_stmts {
+            if let crate::dsl::ast::Statement::Pragma { name, span } = stmt {
+                self.pragmas.entries.push(super::pragmas::Pragma {
+                    name: name.clone(),
+                    args: Vec::new(),
+                    line: span.line,
+                });
+            }
+        }
+
+        // Strict mode: require all module arguments to be named
+        if self.strict {
+            for arg in caller_args {
+                if matches!(arg, Arg::Positional(_)) {
+                    return Err(format!(
+                        "strict mode: module '{}' called with positional args — use named args (e.g., param_name: value)",
+                        func_name
+                    ));
+                }
+            }
+        }
+
+        // Build argument mapping: module input name → caller's wire/const
+        // Named args map by name, positional args map by order of module_inputs
+        let mut arg_map: std::collections::HashMap<String, Arg> = std::collections::HashMap::new();
+        let mut positional_idx = 0;
+
+        for arg in caller_args {
+            match arg {
+                Arg::Named(name, _) => {
+                    arg_map.insert(name.clone(), arg.clone());
+                }
+                Arg::Positional(_) => {
+                    if positional_idx < module_inputs.len() {
+                        arg_map.insert(module_inputs[positional_idx].clone(), arg.clone());
+                        positional_idx += 1;
+                    }
+                }
+            }
+        }
+
+        // Strict mode: require all module inputs to be provided by the caller
+        if self.strict {
+            for input_name in &module_inputs {
+                if !arg_map.contains_key(input_name) {
+                    return Err(format!(
+                        "strict mode: module '{}' input '{}' not provided — add '{}: <value>'",
+                        func_name, input_name, input_name
+                    ));
+                }
+            }
+        }
+
+        // --- Type validation for formal modules ---
+        if module_is_formal {
+            // Arity check
+            let provided = arg_map.len();
+            let expected = module_inputs.len();
+            if provided != expected {
+                return Err(format!(
+                    "module '{}' expects {} arguments, got {}",
+                    func_name, expected, provided
+                ));
+            }
+
+            // Named argument validation: all names must match declared params
+            for arg_name in arg_map.keys() {
+                if !module_inputs.contains(arg_name) {
+                    return Err(format!(
+                        "module '{}' has no parameter named '{}' — available: {}",
+                        func_name, arg_name, module_inputs.join(", ")
+                    ));
+                }
+            }
+
+            // Missing parameter check
+            for input_name in &module_inputs {
+                if !arg_map.contains_key(input_name) {
+                    return Err(format!(
+                        "module '{}' parameter '{}' not provided",
+                        func_name, input_name
+                    ));
+                }
+            }
+
+            // Literal type checking against declared param types
+            for (i, input_name) in module_inputs.iter().enumerate() {
+                if let Some(Some(declared_type)) = module_input_types.get(i)
+                    && let Some(arg) = arg_map.get(input_name) {
+                        let expr = match arg {
+                            Arg::Positional(e) | Arg::Named(_, e) => e,
+                        };
+                        if let Some(lit_type) = literal_type(expr)
+                            && !types_compatible(&lit_type, declared_type) {
+                                return Err(format!(
+                                    "module '{}' parameter '{}' expects {}, got {} literal",
+                                    func_name, input_name, declared_type, lit_type
+                                ));
+                            }
+                        // Wire arguments: type checked when the assembler validates wiring
+                    }
+            }
+
+            // Output arity check
+            if targets.len() > module_outputs.len() {
+                return Err(format!(
+                    "module '{}' produces {} outputs: outputs, but {} targets requested",
+                    func_name, module_outputs.len(), targets.len()
+                ));
+            }
+        }
+
+        // Generate a unique prefix for this module inlining
+        let prefix = format!("__{func_name}_{}_", self.anon_counter);
+        self.anon_counter += 1;
+
+        // Inline each statement from the module, rewriting names
+        for stmt in &module_stmts {
+            match stmt {
+                Statement::Inputs(_, _) => {} // skip — coords handled by caller
+                Statement::InitBinding(b) => {
+                    let prefixed_name = format!("{prefix}{}", b.name);
+                    let rewritten = self.rewrite_module_expr(
+                        &b.value, &prefix, &module_inputs, &arg_map,
+                    );
+                    self.compile_binding(asm, &[prefixed_name], &rewritten)?;
+                }
+                Statement::CycleBinding(b) => {
+                    let prefixed_targets: Vec<String> = b.targets.iter()
+                        .map(|t| format!("{prefix}{t}"))
+                        .collect();
+                    let rewritten = self.rewrite_module_expr(
+                        &b.value, &prefix, &module_inputs, &arg_map,
+                    );
+                    self.compile_binding(asm, &prefixed_targets, &rewritten)?;
+                }
+                Statement::ModuleDef(_) | Statement::ExternPort(_) => {} // nested module defs not inlined
+                Statement::Cursor(_) => {}
+                Statement::Pragma { .. } => {} // pragmas don't inline; they're module-scoped
+            }
+        }
+
+        // Wire module outputs to caller's targets via identity nodes.
+        // This makes the target name available as both a wire source
+        // (for downstream nodes) and an output.
+        for (i, target) in targets.iter().enumerate() {
+            let output_name = module_outputs.get(i).cloned()
+                .unwrap_or_else(|| func_name.to_string());
+            let prefixed = format!("{prefix}{output_name}");
+            // Create a passthrough node named after the target, wired
+            // from the module's prefixed output. This makes `target`
+            // available as a node name for downstream wiring.
+            // Use PortPassthrough which accepts any port type (f64, u64, Str).
+            let out_type = self.output_type_of(asm, &prefixed);
+            asm.add_node(
+                target,
+                Box::new(crate::nodes::identity::PortPassthrough::new(target, out_type)),
+                vec![WireRef::node(&prefixed)],
+            );
+            self.all_names.push(target.clone());
+        }
+
+        Ok(true)
+    }
+
+    /// Query the output type of a named node in the assembler.
+    fn output_type_of(&self, asm: &GkAssembler, name: &str) -> crate::node::PortType {
+        asm.node_output_type(name)
+    }
+
+    /// Rewrite an expression from a module, substituting input references
+    /// with the caller's arguments and prefixing internal names.
+    pub(super) fn rewrite_module_expr(
+        &self,
+        expr: &Expr,
+        prefix: &str,
+        module_inputs: &[String],
+        arg_map: &std::collections::HashMap<String, Arg>,
+    ) -> Expr {
+        match expr {
+            Expr::Ident(name, span) => {
+                if module_inputs.contains(name) {
+                    // Replace with caller's argument
+                    if let Some(arg) = arg_map.get(name) {
+                        match arg {
+                            Arg::Positional(e) | Arg::Named(_, e) => e.clone(),
+                        }
+                    } else {
+                        // Unresolved module input — keep as-is (becomes
+                        // a coordinate reference in the caller)
+                        Expr::Ident(name.clone(), *span)
+                    }
+                } else {
+                    // Internal name — prefix it
+                    Expr::Ident(format!("{prefix}{name}"), *span)
+                }
+            }
+            Expr::Call(call) => {
+                let rewritten_args: Vec<Arg> = call.args.iter().map(|arg| {
+                    match arg {
+                        Arg::Positional(e) => Arg::Positional(
+                            self.rewrite_module_expr(e, prefix, module_inputs, arg_map)
+                        ),
+                        Arg::Named(n, e) => Arg::Named(
+                            n.clone(),
+                            self.rewrite_module_expr(e, prefix, module_inputs, arg_map)
+                        ),
+                    }
+                }).collect();
+                Expr::Call(CallExpr {
+                    func: call.func.clone(),
+                    args: rewritten_args,
+                    span: call.span,
+                })
+            }
+            Expr::ArrayLit(elems, span) => {
+                Expr::ArrayLit(
+                    elems.iter().map(|e| self.rewrite_module_expr(e, prefix, module_inputs, arg_map)).collect(),
+                    *span,
+                )
+            }
+            Expr::BinOp(lhs, op, rhs) => {
+                Expr::BinOp(
+                    Box::new(self.rewrite_module_expr(lhs, prefix, module_inputs, arg_map)),
+                    *op,
+                    Box::new(self.rewrite_module_expr(rhs, prefix, module_inputs, arg_map)),
+                )
+            }
+            Expr::UnaryNeg(inner, span) => {
+                Expr::UnaryNeg(
+                    Box::new(self.rewrite_module_expr(inner, prefix, module_inputs, arg_map)),
+                    *span,
+                )
+            }
+            Expr::UnaryBitNot(inner, span) => {
+                Expr::UnaryBitNot(
+                    Box::new(self.rewrite_module_expr(inner, prefix, module_inputs, arg_map)),
+                    *span,
+                )
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// Resolve a module by name.
+    ///
+    /// Resolution order:
+    /// 1. Cache (already resolved)
+    /// 2. `<name>.gk` in `source_dir` (workload-local)
+    /// 3. Any `.gk` in `source_dir` containing a matching binding
+    /// 4. Same two searches for each `--gk-lib` path
+    /// 5. Embedded stdlib
+    pub(super) fn resolve_module(&mut self, name: &str) -> Result<Option<&ResolvedModule>, String> {
+        if self.module_cache.contains_key(name) {
+            return Ok(self.module_cache.get(name));
+        }
+
+        // Strategy 1-2: filesystem search in source_dir
+        if let Some(source_dir) = &self.source_dir {
+            let source_dir = source_dir.clone();
+
+            // 1. Look for <name>.gk in source_dir
+            let module_path = source_dir.join(format!("{name}.gk"));
+            if module_path.exists() {
+                let source = std::fs::read_to_string(&module_path)
+                    .map_err(|e| format!("failed to read module '{}': {e}", module_path.display()))?;
+                let resolved = Self::parse_module(&source, name)?;
+                self.module_cache.insert(name.to_string(), resolved);
+                return Ok(self.module_cache.get(name));
+            }
+
+            // 2. Scan all .gk files in source_dir for a matching export
+            if let Ok(entries) = std::fs::read_dir(&source_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("gk") {
+                        let source = match std::fs::read_to_string(&path) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                        if let Ok(resolved) = Self::parse_module(&source, name) {
+                            self.module_cache.insert(name.to_string(), resolved);
+                            return Ok(self.module_cache.get(name));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Strategy 3: search --gk-lib directories
+        let lib_paths = self.gk_lib_paths.clone();
+        for lib_dir in &lib_paths {
+            // 3a. Look for <name>.gk in lib_dir
+            let module_path = lib_dir.join(format!("{name}.gk"));
+            if module_path.exists() {
+                let source = std::fs::read_to_string(&module_path)
+                    .map_err(|e| format!("failed to read module '{}': {e}", module_path.display()))?;
+                let resolved = Self::parse_module(&source, name)?;
+                self.module_cache.insert(name.to_string(), resolved);
+                return Ok(self.module_cache.get(name));
+            }
+
+            // 3b. Scan all .gk files in lib_dir for a matching export
+            if let Ok(entries) = std::fs::read_dir(lib_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("gk") {
+                        let source = match std::fs::read_to_string(&path) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                        if let Ok(resolved) = Self::parse_module(&source, name) {
+                            self.module_cache.insert(name.to_string(), resolved);
+                            return Ok(self.module_cache.get(name));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Strategy 4: embedded stdlib
+        if let Some(resolved) = self.resolve_stdlib(name)? {
+            self.module_cache.insert(name.to_string(), resolved);
+            return Ok(self.module_cache.get(name));
+        }
+
+        Ok(None)
+    }
+
+    /// Search the embedded stdlib for a module.
+    fn resolve_stdlib(&self, name: &str) -> Result<Option<ResolvedModule>, String> {
+        for (_filename, source) in STDLIB_MODULES {
+            if let Ok(resolved) = Self::parse_module(source, name) {
+                return Ok(Some(resolved));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Parse a `.gk` source and extract a module by name.
+    ///
+    /// First checks for a formal `ModuleDef` statement matching the name.
+    /// If found, uses its typed signature and body directly.
+    /// Otherwise, falls back to subgraph extraction by binding name.
+    pub(super) fn parse_module(source: &str, target_name: &str) -> Result<ResolvedModule, String> {
+        let tokens = lexer::lex(source)?;
+        let ast = parser::parse(tokens)?;
+
+        // Strategy 1: look for a formal ModuleDef with matching name
+        for stmt in &ast.statements {
+            if let Statement::ModuleDef(mdef) = stmt
+                && mdef.name == target_name {
+                    let inputs: Vec<String> = mdef.params.iter()
+                        .map(|p| p.name.clone())
+                        .collect();
+                    let input_types: Vec<Option<String>> = mdef.params.iter()
+                        .map(|p| Some(p.typ.clone()))
+                        .collect();
+                    let outputs: Vec<String> = mdef.outputs.iter()
+                        .map(|o| o.name.clone())
+                        .collect();
+                    let output_types: Vec<Option<String>> = mdef.outputs.iter()
+                        .map(|o| Some(o.typ.clone()))
+                        .collect();
+                    return Ok(ResolvedModule {
+                        inputs,
+                        input_types,
+                        outputs,
+                        output_types,
+                        is_formal: true,
+                        statements: mdef.body.clone(),
+                    });
+                }
+        }
+
+        // Strategy 2: subgraph extraction by binding name
+        // Build a map: binding name → (statement index, references)
+        let mut name_to_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut stmt_refs: Vec<HashSet<String>> = Vec::new();
+
+        for (i, stmt) in ast.statements.iter().enumerate() {
+            let (names, expr) = match stmt {
+                Statement::Inputs(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => {
+                    stmt_refs.push(HashSet::new());
+                    continue;
+                }
+                Statement::InitBinding(b) => (vec![b.name.clone()], &b.value),
+                Statement::CycleBinding(b) => (b.targets.clone(), &b.value),
+            };
+            for name in &names {
+                name_to_idx.insert(name.clone(), i);
+            }
+            let mut refs = HashSet::new();
+            collect_references(expr, &mut refs);
+            stmt_refs.push(refs);
+        }
+
+        // Check that the target binding exists in this file
+        let target_idx = match name_to_idx.get(target_name) {
+            Some(&idx) => idx,
+            None => return Err(format!("no binding named '{target_name}' in module")),
+        };
+
+        // Trace backward from target to find all needed statements
+        let mut needed: HashSet<usize> = HashSet::new();
+        let mut worklist = vec![target_idx];
+        while let Some(idx) = worklist.pop() {
+            if !needed.insert(idx) { continue; }
+            if idx < stmt_refs.len() {
+                for ref_name in &stmt_refs[idx] {
+                    if let Some(&dep_idx) = name_to_idx.get(ref_name) {
+                        worklist.push(dep_idx);
+                    }
+                }
+            }
+        }
+
+        // Extract only the needed statements, preserving order
+        let extracted: Vec<Statement> = ast.statements.iter().enumerate()
+            .filter(|(i, _)| needed.contains(i))
+            .map(|(_, s)| s.clone())
+            .collect();
+
+        if extracted.is_empty() {
+            return Err(format!("empty subgraph for '{target_name}'"));
+        }
+
+        // Infer inputs: referenced names not defined within the subgraph
+        let mut defined: HashSet<String> = HashSet::new();
+        let mut referenced: HashSet<String> = HashSet::new();
+        for stmt in &extracted {
+            match stmt {
+                Statement::Inputs(names, _) => {
+                    for n in names { defined.insert(n.clone()); }
+                }
+                Statement::InitBinding(b) => { defined.insert(b.name.clone()); }
+                Statement::CycleBinding(b) => {
+                    for t in &b.targets { defined.insert(t.clone()); }
+                }
+                Statement::ModuleDef(_) | Statement::ExternPort(_) => {}
+                Statement::Cursor(_) => {}
+                Statement::Pragma { .. } => {}
+            }
+        }
+        for stmt in &extracted {
+            let expr = match stmt {
+                Statement::Inputs(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
+                Statement::InitBinding(b) => &b.value,
+                Statement::CycleBinding(b) => &b.value,
+            };
+            collect_references(expr, &mut referenced);
+        }
+
+        let mut inputs: Vec<String> = referenced.into_iter()
+            .filter(|name| !defined.contains(name))
+            .collect();
+        inputs.sort();
+
+        Ok(ResolvedModule {
+            input_types: inputs.iter().map(|_| None).collect(),
+            inputs,
+            outputs: vec![target_name.to_string()],
+            output_types: vec![None],
+            is_formal: false,
+            statements: extracted,
+        })
+    }
+}

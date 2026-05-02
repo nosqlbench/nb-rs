@@ -127,8 +127,8 @@ pub fn web_command(args: &[String]) {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let broadcast = nb_web::ws::MetricsBroadcast::new(16);
-        if let Err(e) = nb_web::server::serve_with(addr, broadcast).await {
+        let broadcast = nbrs_web::ws::MetricsBroadcast::new(16);
+        if let Err(e) = nbrs_web::server::serve_with(addr, broadcast).await {
             eprintln!("error: web server failed: {e}");
         }
     });

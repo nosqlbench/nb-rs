@@ -16,7 +16,7 @@ SRD 18 §"Principles" already stated the design intent:
 > — visible to all children via the standard scope composition
 > mechanism (auto-externs, `shared`/`final`).
 
-The current implementation in `nb-activity` does not do this.
+The current implementation in `nbrs-activity` does not do this.
 Instead it accumulates iteration variables as a flat
 `HashMap<String, String>` and *text-substitutes* `{var}` into the
 leaf phase's source before compiling per iteration. That collapses
@@ -35,8 +35,59 @@ scheduler that decides when those scopes run.
 
 | Tree | What it is | Source of truth |
 |------|-----------|-----------------|
-| **Scenario tree** | The static structure of the workload as authored: scenarios, `for_each`, `for_combinations`, `do_while`, `do_until`, phases. Each node is a kind. | `nb-workload` parses YAML / `.gk` into this. |
-| **Scope tree** | The runtime hierarchy of GK scopes (one `GkProgram` per non-trivial node) plus their pragma chains and extern wiring. Mirrors the scenario tree 1:1 for control-flow and phase nodes. | `nb-activity` builds this from the scenario tree at compile time. |
+| **Scenario tree** | The static structure of the workload as authored: scenarios, `Comprehension` nodes (single-clause `for_each`, multi-clause `for_combinations`, `for_each_union`), `do_while`, `do_until`, phases. Each node is a kind. | `nbrs-workload` parses YAML / `.gk` into this. |
+| **Scope tree** | The runtime hierarchy of GK scopes (one `GkProgram` per non-trivial node) plus their pragma chains and extern wiring. Mirrors the scenario tree 1:1 for control-flow and phase nodes. | `nbrs-activity` builds this from the scenario tree at compile time. |
+
+### The Comprehension model
+
+All iteration shapes — single-variable `for_each`, multi-clause
+`for_combinations`, and `for_each_union` — collapse into one
+`ScenarioNode::Comprehension { comprehension, children }`
+variant. The discriminator is the embedded
+[`nbrs_variates::comprehension::Comprehension`] AST:
+
+- `ComprehensionMode::Cartesian(clauses)` with one clause is
+  the simple `for_each var in expr` form.
+- `ComprehensionMode::Cartesian(clauses)` with multiple clauses
+  is the cross-product (`for_combinations`).
+- `ComprehensionMode::Union(subspaces)` is the union of
+  per-subspace cross products (`for_each_union`).
+
+The scope-tree mirror (`ScopeKind::Comprehension { comprehension }`)
+uses the same AST. A single `find_comprehension_scope(comp)`
+lookup replaces the prior `find_for_each_scope` /
+`find_for_combinations_scope` / `find_for_each_union_scope`
+trio.
+
+The canonical owner is `nbrs-variates::comprehension` —
+parsing, evaluation (`evaluate_spec`,
+`enumerate_tuples`, etc.), and synthesis
+(`synthesize_for_each_scope`) all live there. The ergonomic
+one-call API:
+
+```rust
+let iter = nbrs_variates::comprehension::iterate(
+    &comprehension, &parent_kernel,
+    &workload_params, gk_lib_paths, workload_dir, strict, "context",
+)?;
+for child_kernel in iter {
+    // Each yielded GkKernel has the iteration's coordinate
+    // values bound on input slots and parent-scope wiring
+    // already done.
+}
+```
+
+`ComprehensionIter` is an `ExactSizeIterator<Item = GkKernel>`
+that synthesizes the canonical kernel once, shares its
+`Arc<GkProgram>` across iterations, and materializes a fresh
+per-iteration child via `from_program` + `bind_outer_scope` +
+`propagate_parent_inputs` + per-tuple `set_input`. Union mode
+concatenates per-sub-space tuple streams over the same
+canonical kernel.
+
+The migration plan is in
+`docs/internals/50_comprehensions_first_class.md` — Phases A
+through E shipped; Phase F (this update) closes the loop.
 
 The scenario tree is what the user wrote. The scope tree is how
 GK sees the same structure. The scheduler operates on both:
@@ -53,8 +104,9 @@ Each scenario node maps to a scope as follows:
 |-----------|-----------------|
 | Scenario root | The outermost scope under the workload scope. Carries scenario-name and any scenario-level pragmas. |
 | Phase | A leaf scope. Compiles its own `GkProgram` if it has its own bindings or extern needs; otherwise reuses the parent. |
-| `for_each var in [...]` | Its own scope. The list elements are *iteration values*; `var` is a binding *output* of this scope (one value per iteration). Children see `var` as an extern. |
-| `for_combinations` | One scope per dimension, nested in declaration order. Each dimension's variable is a binding output visible to its inner dimensions and the leaf. |
+| `Comprehension` (single-clause `for_each`) | Its own scope. The list elements are *iteration values*; the clause's `var` is a binding *output* of this scope (one value per iteration). Children see `var` as an extern. |
+| `Comprehension` (multi-clause `for_combinations`) | One scope carrying every clause. Each clause's variable is a binding output visible to its child scopes and the leaf. The cross product enumerates over all clause value lists. |
+| `Comprehension` (Union mode `for_each_union`) | Its own scope. Each sub-space contributes a sub-stream of tuples; children see the deduped coordinate set as externs regardless of which sub-space the current tuple came from. |
 | `do_while` / `do_until` | Its own scope. Carries the optional counter as a binding output. The condition is evaluated against this scope's outputs after each child execution. |
 
 Scope nesting follows the scenario tree exactly. Three nested
@@ -106,6 +158,83 @@ outputs, not text substitutions.
 This means **one compile per leaf phase**, regardless of how
 many iterations enclose it. Compile cost is paid once at session
 start; iteration is just rebinding extern inputs.
+
+---
+
+## Scope coordinates
+
+The iteration variables a kernel sits under form a structured
+position the GK model formalises as the kernel's **scope
+coordinates**. Two definitions:
+
+- A **scope coordinate set** for a single scope is the
+  ordered name→value tuple of every iteration extern that
+  scope owns — i.e. variables declared via
+  `extern <var>: <type>` in this scope's source and not
+  inherited from a parent. Order is the comprehension's
+  source-level clause order (preserved by `IndexMap`'s
+  insertion semantics).
+- A **scope coordinate path** is the leaf-first list of
+  coordinate sets, walking from the kernel's own scope up
+  through every enclosing comprehension scope. Workload-root
+  params (top-level `params:` in the document) don't
+  contribute — they're configuration, not iteration
+  coordinates. Non-comprehension scope nodes (scenario lists,
+  individual phases) contribute an empty stratum, which the
+  presentation layer skips.
+
+### Invariant
+
+Every kernel that has been initialised in its scope —
+constructed through any of the standard `GkKernel` constructors
+or via `bind_outer_scope` — has its scope coordinate path
+populated. Concretely:
+
+- Construction (`new_with_inputs` / `from_program`) seeds the
+  path with `[own]` (or empty if the scope owns no coords).
+- `bind_outer_scope(outer)` extends the path: post-bind,
+  the path is `[own] ++ outer.scope_coordinates()`.
+
+Consumers — presentation layer, inspector, scope-aware
+diagnostics — call [`GkKernel::scope_coordinates`] and get
+the full path back without walking the scope tree themselves.
+The kernel is the source of truth.
+
+### Classification rule
+
+The structural data model carries the rule:
+`InputKind::IterationExtern` (set by the DSL compiler when
+processing `Statement::ExternPort` with no default — see
+[SRD 11 §"Effectively-Const Nodes"](11_gk_evaluation.md))
+combined with `program.is_inherited(name)` returning `false`.
+Both checks come from the program metadata; no string parsing
+of the for_each spec, no heuristics. Workload-param injections
+(`final <name> := <literal>`) are not externs and don't
+qualify; cascaded-extern names (the same `extern` declared in
+an inner scope to mirror an outer scope's coord) carry the
+inherited flag and so are owned by the outer level, not this
+one.
+
+### Presentation
+
+The presentation layer renders the path as **striated parens**
+— one `(…)` per stratum, leaf first, separated by `, `:
+
+```
+ann_query (k=10, limit=20), (table=fknn_default, optimize_for=RECALL), (profile=default)
+```
+
+Each stratum corresponds to one enclosing comprehension scope.
+Empty strata are skipped, so a chain that passes through a
+scenario-list node doesn't render an empty `()`. The operator
+reads the active iteration off each level independently —
+which the previous flat-comma form couldn't show, because two
+levels with the same coord name (`k` from one scope, `k` from
+a co-named coord deeper) would collapse together.
+
+Lives in [`nbrs_variates::kernel::scope_coords`]; presentation-
+layer formatter is `format_scope_coordinate_path` in
+`nbrs_activity::executor`.
 
 ---
 
@@ -275,14 +404,14 @@ paths.
 
 ## Migration
 
-The scope-tree model is a sizeable change to `nb-activity`. The
+The scope-tree model is a sizeable change to `nbrs-activity`. The
 migration is incremental:
 
 1. **Introduce the canonical scope tree as a data structure** —
    a new `ScopeTree` mirroring `ScenarioNode` 1:1 plus parent
    pointers, depth, scope-level pragma sets, and slots for
    per-node compiled kernels. Build it lazily at first; existing
-   code continues to work. *Done — `nb-activity/src/scope_tree.rs`.*
+   code continues to work. *Done — `nbrs-activity/src/scope_tree.rs`.*
 
 2. **Wire scope-aware compilation** —
    - Per-phase pragma extraction + chain attach
@@ -363,7 +492,7 @@ internal-only constructors.
 
 4. **Hierarchical display** — surface the scope tree to the TUI /
    observers / web API so renderers can show nesting. *Done.*
-   - New canonical type `nb_activity::scene_tree::SceneTree` —
+   - New canonical type `nbrs_activity::scene_tree::SceneTree` —
      parent / children pointers, depth tags, per-node lifecycle
      status, DFS iterator, scope-level aggregate-status walk.
      Distinct from the static `ScopeTree`: for_each iterations
@@ -376,12 +505,12 @@ internal-only constructors.
      the flat tuple slice. Renderers either store the tree and
      mutate node statuses on lifecycle callbacks, or walk it
      fresh per frame.
-   - `nb-tui` keeps a denormalized DFS view (`RunState.phases`)
+   - `nbrs-tui` keeps a denormalized DFS view (`RunState.phases`)
      that's rebuilt after every tree mutation, so existing render
      code paths read it as before. Heavy `PhaseSummary` data
      lives in a `summaries: HashMap<SceneNodeId, PhaseSummary>`
      side-map keyed by node id.
-   - `nb_activity::scene_tree::install_global` / `current` /
+   - `nbrs_activity::scene_tree::install_global` / `current` /
      `with_global_mut` give out-of-band consumers a process-wide
      `OnceLock<Arc<RwLock<SceneTree>>>`. The runner publishes
      after pre-map; executor lifecycle emits update the global
@@ -390,6 +519,421 @@ internal-only constructors.
      for richer renderers.
 
 Each step is independently shippable and gates the next one.
+
+### M3 — per-scope kernel composition
+
+Migration steps 1-4 above set up the scope-tree skeleton and
+fixed the leaf-phase compile path. M3 extends that to
+*intermediate scopes* (for_each, for_combinations,
+for_each_union), bringing them in line with §"Iteration variables
+as scope outputs" — every non-trivial scope owns a real GK
+kernel, iteration values flow as kernel inputs/outputs, and the
+runtime dispatcher drives the recursion through standard GK
+composition (`bind_outer_scope`, auto-extern, `from_program`).
+
+Phases:
+
+- **M3.1 — `cached_kernel` slot promotion + install primitive.**
+  `ScopeNode::cached_kernel: OnceLock<Arc<GkKernel>>` (was
+  `Arc<GkProgram>`). The canonical kernel carries its
+  folded-constant-seeded state so `get_constant(name)` is a
+  straight `&self` read. `ScopeTree::install_kernel(idx, kernel)`
+  installs lock-free; the workload kernel installs at the root
+  immediately after `populate_pragmas`. Per-execution kernels
+  still come from `GkKernel::from_program(program.clone())` for
+  mutable state.
+
+- **M3.2 — Per-scope kernel synthesis.**
+  `scope::build_for_each_scope_kernel` generates a `GkProgram`
+  for each `ForEach` / `ForCombinations` scope at pre-map time:
+
+  ```text
+    extern <inherited_name>: <type>      # one per name
+                                         # referenced in any
+                                         # clause's spec text
+                                         # that exists in the
+                                         # parent manifest
+    extern <iter_var>: <native_type>     # one per clause's iter
+                                         # var, typed by
+                                         # recursive probe
+                                         # pre-evaluation
+  ```
+
+  GK's `extern` declaration auto-installs a passthrough node
+  (`__port_<name>` in `compile.rs`), so each name appears as
+  both an input *and* an output of the kernel. Children's
+  standard `bind_outer_scope(parent)` chains inheritance through
+  arbitrary nesting depth — no caller-side scope walking.
+
+  Native-type iter vars follow the principle "stick to native
+  types as the general rule": each clause's spec is
+  pre-evaluated against the parent kernel (with prior clauses'
+  first values substituted as text probes for any
+  `{prior_var}` references), and the extern is declared with
+  the result's native type (`u64` / `f64` / `bool` / `String`).
+  For dependent clauses, the probe walks the clause sequence
+  recursively — clause N uses clause N-1's pre-evaluated first
+  value as the substitute. This eliminates the prior
+  always-stringify behavior; numeric iteration values stay
+  numeric through the kernel's input slot.
+
+- **M3.3 — Dependent-tuple dispatcher.**
+  `executor::dispatch_dependent_tuples` drives a single
+  for_each scope through its installed kernel. The recursion
+  creates a *fresh per-branch kernel* via the cache-and-rebind
+  primitive (`GkKernel::from_program(canonical.program().clone())`)
+  at every recursive descent — one way of instancing for
+  logical subspaces, no exceptions. Each branch:
+
+  1. Calls `bind_outer_scope(parent_kernel)` so inherited
+     workload-scope values flow in by name.
+  2. Sets prior clauses' typed values into matching input slots
+     via `kernel.state().set_input`.
+  3. Interpolates this clause's spec text via
+     `interpolate::interpolate_via_kernel(&kernel)` —
+     `{name}` lookups query `get_constant` then `get_input`
+     on the single kernel; no walking, no parallel
+     mechanism. Inner shadows outer per
+     SRD-16 §"Visibility Rules: Shadowing".
+  4. Evaluates via `eval_const_expr` (or comma-split with
+     per-element type detection) to a typed `Vec<Value>`.
+  5. For each value, recurses to clause N+1 — under the
+     level's `schedule=` `Semaphore` for parallel branches,
+     so concurrent siblings don't share state.
+
+  At `clause_idx == clauses.len()` the recursion converts the
+  accumulated typed bindings to the existing executor's
+  `HashMap<String, String>` shape and falls through to
+  `execute_tree_at` for child execution. The HashMap step is
+  the M3.4 retirement target — it lives at the boundary where
+  the dispatcher hands off to legacy iter-var injection.
+
+  Multi-clause handling supports the dependent-tuple
+  comprehension shape from the original design discussion:
+
+  ```yaml
+  for_each: "k in {k_values}, limit in {k_{k}_limits}"
+  ```
+
+  Single scope, lex-order clause binding, dependent name
+  composition (the inner `{k}` in clause 2's spec resolves
+  against the kernel's now-set `k` input). Total tuples = Σ
+  |k_v_limits| over v ∈ k_values, **not** the Cartesian
+  product. `for_each_union` runs the same dispatcher per
+  sub-space, with the outer loop walking sub-spaces.
+
+  Routing from `executor::execute_node`: when a `ForEach` /
+  `ForCombinations` / `ForEachUnion` scenario node has a
+  matching scope with an installed canonical kernel (via the
+  `find_for_each_scope` / `find_for_combinations_scope` /
+  `find_for_each_union_scope` lookups on `ScopeTree`), the
+  dispatcher takes over. Otherwise the legacy
+  `cartesian_recurse` / `run_iterations` HashMap-based path
+  remains as the cutover safety net.
+
+- **M3.4 — _Shipped._ Unified comprehension dispatch + flat
+  `outer_manifest` retirement.** The per-kind dispatch zoo
+  (ForEach, ForCombinations, ForEachUnion, DoWhile, DoUntil,
+  phase-level for_each) collapsed to a single
+  `dispatch_comprehension` driver behind a `Comprehension`
+  trait with two strategies — `TupleComprehension` and
+  `DoLoopComprehension`. The
+  `bindings: HashMap<String, String>` parameter that had been
+  threaded through `executor::*` signatures is gone; iter-var
+  values flow exclusively via `ExecCtx::current_parent_kernel`.
+  See §"M3.4 — unified comprehension dispatch" below for the
+  trait surface, retired surface area, and pre-map migration.
+
+- **M3.4b — _Shipped._ Per-leaf-phase parent kernel.** Every
+  leaf phase compiles against its *immediate parent scope's*
+  manifest via `current_parent_kernel`. The workload root
+  kernel is installed at session start (no separate
+  bootstrap path), and the legacy `outer_manifest` /
+  `outer_scope_values` fallback is gone — the workload
+  always supplies a real parent. Iter vars auto-extern from
+  the parent kernel manifest with their already-detected
+  native types; no separate `add_iteration_var` injection.
+
+- **M3.5 — _Shipped._ HashMap-based interpolation retired.**
+  The legacy `interpolate::interpolate(text, &bindings_hashmap,
+  &workload_params_hashmap)` entry point is gone. Every
+  interpolation site now has a kernel handy and goes through
+  `interpolate_via_kernel` (`get_constant` / `get_input` on
+  the same kernel; inner shadows outer per
+  SRD-16 §"Visibility Rules: Shadowing"). Dead
+  `resolve_for_each` and the `phase_iterations` legacy loop
+  retired alongside.
+
+- **M3.6 — _Shipped._ Workload params as workload-kernel
+  `final` bindings.** Workload-declared params (the YAML
+  `params:` block, with CLI overrides applied) are injected
+  as `final` bindings on the workload kernel and inherited by
+  every descendant scope through `bind_outer_scope` — they
+  appear in the parent-kernel manifest like any other folded
+  constant. The pre-M3.6 `substitute_workload_params` text pass
+  is replaced by `rewrite_workload_param_idents_in_bindings`,
+  which substitutes the *literal value* into GK source (so
+  `mod(hash(cycle), {user_count})` resolves the const-divisor
+  slot directly without a wire-vs-const ambiguity). Op-template
+  fields (`raw:`, `stmt:`, `prepared:`) keep `{name}`
+  placeholders and substitute at runtime via the
+  parent-kernel-derived iter-var-values map in `run_phase`.
+
+  The runner at the boundary filters `workload.params` by
+  `workload.declared_params` before passing to the kernel
+  compiler — ad-hoc CLI params (`cycles=`, `workload=`,
+  `tags=`) stay out of the GK identifier space.
+
+### M3.4 — unified comprehension dispatch
+
+M3.3 left a "small zoo" of iteration kinds (ForEach,
+ForCombinations, ForEachUnion, DoWhile, DoUntil, phase-level
+for_each), each with its own dispatch logic. M3.4 collapses them
+into a single control-loop harness with a strategy plugin per
+kind. The `bindings: HashMap<String, String>` parameter that had
+been threaded through `executor::*` signatures retires; iter-var
+values flow exclusively via `ExecCtx::current_parent_kernel`.
+
+#### `Comprehension` trait + dispatcher
+
+```rust
+trait Comprehension: Send {
+    fn next(&mut self)
+        -> Result<Option<Vec<(String, Value)>>, String>;
+}
+```
+
+Two implementations cover every iteration kind:
+
+- **`TupleComprehension`** — for_each, for_combinations,
+  for_each_union sub-spaces, phase-level for_each. The
+  constructor walks the dependent-tuple tree once using fresh
+  per-branch kernels for clause-by-clause spec evaluation; the
+  resulting flat list drains via `next`.
+- **`DoLoopComprehension`** — do_while, do_until. Streams
+  iteration bindings via counter increment + condition
+  evaluation against a fresh kernel per call.
+
+A single `dispatch_comprehension(ctx, canonical, parent,
+comprehension, terminal, depth, sequential_only)` drives each
+iteration. `TerminalAction::Children` descends into nested
+scenario nodes; `TerminalAction::Phase(name)` runs the phase
+itself (phase-level for_each). Per-branch kernel instancing
+preserved across all kinds — `GkKernel::from_program` per
+iteration, `bind_outer_scope(parent_kernel)` for inheritance,
+`set_input` for the iteration's typed values, then either
+`execute_tree_at` or `run_phase` under that kernel as
+`current_parent_kernel`.
+
+Concurrency: serial (do-loops, single-element comprehensions)
+or parallel via the level's `schedule=` `Semaphore`. Concurrent
+branches each get their own fresh kernel — no shared state.
+
+#### What retired in M3.4
+
+| Removed | Replaced by |
+|---|---|
+| `run_iterations` + `IterKind` enum | `dispatch_comprehension` with strategy |
+| `cartesian_recurse` | `TupleComprehension` enumeration |
+| Separate per-kind dispatch logic | Unified strategy + dispatcher |
+| `bindings: HashMap<String, String>` parameter on `execute_tree`, `execute_tree_at`, `execute_node`, `run_siblings_concurrently`, `run_phase`, `PhaseScheduler::run` | `ctx.current_parent_kernel`-derived iter-var values via `extract_manifest` + `get_constant`/`get_input` |
+| `add_iteration_var` typed-extern injection at leaf-phase compile | Iter vars auto-extern from parent scope manifest (via M3.2 synthesis) |
+| Manual wire loops in `run_phase` for `outer_scope_values` + iter vars | Single `kernel.bind_outer_scope(parent_kernel)` call |
+
+#### Pre-map uses the same dispatcher logic
+
+The `pre_map_recursive` walker (SceneTree pre-mapping for TUI /
+dryrun output) was migrated to the unified `Comprehension`
+strategy. The plan view IS what the session does — same
+`TupleComprehension::new` walks dependent tuples, same per-scope
+canonical kernels, same iteration enumeration. No separate
+session-start traversal logic. Result: `ctx.outer_manifest` /
+`ctx.outer_scope_values` fields and `resolve_expr` retired
+entirely.
+
+#### Deferred follow-on: Streaming dispatch for state-driven comprehensions
+
+M3.4's `dispatch_comprehension` drains the strategy eagerly into
+a `Vec<Vec<(String, Value)>>` before any iteration runs. That's
+correct for `TupleComprehension`: tuple lists are pure functions
+of the parent kernel state at scope entry, and sibling
+iterations are independent (or concurrent under `schedule=`).
+It's **wrong for `DoLoopComprehension`** when the condition
+depends on `shared` state that children mutate per iteration —
+SRD-16 §"Shared Mutable" says iteration N's children's writes
+must be observable to iteration N+1's condition evaluation. The
+current draining pre-computes the entire counter sequence
+before any child runs, so condition flips driven by child
+effects can't terminate the loop.
+
+##### Mechanism: one kernel for the whole loop, GK handles the rest
+
+A do-loop is **one logical context** evaluated repeatedly. It's
+not a set of independent sub-spaces (those are tuple
+comprehensions). Per SRD-16's "GK kernels are the canonical
+state holder" axiom, that means **one kernel for the whole
+loop's duration**. M3.4's kernel-per-branch instancing rule
+applies to logical subspaces — concurrent siblings, dependent
+tuples — not to sequential refinements of a single context.
+
+So:
+
+- **Do-loop dispatcher uses the scope's canonical kernel
+  directly** for the entire loop. No `from_program` per
+  iteration. Counter increments via `set_input` on the same
+  kernel; condition evaluates against the same kernel each
+  time; `bind_outer_scope` from this kernel into children's
+  scopes feeds them the live state.
+- **Shared write-back is built into GK's sub-context API**, not
+  a runner-side helper. SRD-16 §"Mutability Rules: Shared
+  Mutable" already commits to this:
+  > the runner maps `error_budget` to a shared input slot.
+  > `set_input()` on the inner state writes through to the
+  > outer state's input slot. Provenance invalidation
+  > propagates normally.
+
+  When the design is implemented in GK, `set_input` on an inner
+  kernel whose extern was wired via `bind_outer_scope(shared)`
+  writes through to the outer kernel's slot transparently. The
+  do-loop dispatcher does no special work — it just uses the
+  same kernel across iterations and child writes propagate via
+  GK's standard sub-context plumbing.
+
+This collapses the design to a single mechanism alignment:
+
+```text
+do_loop scope canonical kernel  (one instance, whole-loop lifetime)
+  │
+  │  iteration N:
+  │    set_input(counter, N)
+  │    eval condition; if false, halt
+  │    bind_outer_scope into children's per-phase kernels
+  │      → children's set_input on shared slots writes through
+  │        to this canonical (GK-built-in)
+  │  iteration N+1:
+  │    set_input(counter, N+1)
+  │    eval condition (now reflects children's shared writes)
+  │    ...
+```
+
+##### Comprehension trait surface
+
+The strategy needs to know it's running against a single
+persistent kernel and signal sequential dispatch. Minimal
+addition:
+
+```rust
+trait Comprehension: Send {
+    fn next(&mut self)
+        -> Result<Option<Vec<(String, Value)>>, String>;
+
+    /// `true` when iterations share a single persistent kernel
+    /// (do-loops). The dispatcher passes the same `&mut
+    /// GkKernel` to `next()` instead of forking via
+    /// `from_program`. `false` (default) means
+    /// kernel-per-branch via `from_program` — the M3.4 model.
+    fn shares_kernel_across_iterations(&self) -> bool { false }
+}
+```
+
+For shared-kernel comprehensions, `next()`'s first effect each
+call is `set_input` on the iteration variable(s); the rest of
+the kernel state carries over from prior iterations
+automatically. Condition evaluation reads via standard
+`get_constant`/`get_input`.
+
+##### Dispatcher branching
+
+`dispatch_comprehension` switches on
+`shares_kernel_across_iterations()`:
+
+- **Per-branch instancing** (tuple comprehensions, current
+  M3.4 behavior): drain into Vec, fork
+  `GkKernel::from_program(canonical.program().clone())` per
+  iteration, walk serially or concurrently per `schedule=`.
+- **Shared-kernel** (do-loops): build one canonical kernel
+  instance from `cached_kernel.from_program(...)` at loop
+  entry, hold it for the loop's duration, drive `next()`
+  against it sequentially. Children `bind_outer_scope` from
+  this same canonical at each iteration; their shared writes
+  flow back via the GK API.
+
+Concurrency at the do-loop iteration level is structurally
+unavailable — sequential kernel evolution is the model, not a
+performance constraint.
+
+##### Loop-scope semantics interaction
+
+SRD-16 §"Scope Lifecycle for for_each" describes
+`loop_scope: clean | inherit` and `iter_scope: clean | inherit`
+knobs. With the shared-kernel-for-the-whole-loop model, these
+collapse cleanly:
+
+- `iter_scope: inherit` (do_while / do_until default) — the
+  shared kernel naturally retains state across iterations.
+- `iter_scope: clean` — at iteration entry, restore the kernel
+  state from a snapshot taken at loop entry. One snapshot at
+  loop entry, restore-from-snapshot per iteration. No fancy
+  machinery; same primitive as for_each's `original_scope_values`.
+
+##### What this depends on
+
+The clean version of this design is contingent on GK's sub-
+context API delivering the SRD-16 contract — `set_input` on
+inner kernels with `shared`-modifier wires writes through to
+the outer kernel's state. If that's not yet implemented in GK
+proper, this milestone is split:
+
+1. **GK side**: implement `bind_outer_scope` such that subsequent
+   `set_input` on the inner kernel for `shared`-modifier wires
+   propagates to the outer kernel's slot. Subject to its own
+   SRD-16 review.
+2. **Runner side**: do-loop dispatcher uses one persistent
+   kernel across iterations as described above. Trivially short
+   once (1) is in place.
+
+Until (1) lands, the runner can't sidestep with a workaround
+without violating "GK is the canonical state holder" — that's
+exactly the kind of parallel mechanism we've spent M3.1-3.4
+retiring. Better to land (1) first and keep the runner thin.
+
+### Test coverage map (M3.1-3.6)
+
+- `nbrs-activity/src/scope_tree.rs::tests::install_kernel_seeds_canonical_state`
+  — install primitive + cached canonical via standard GK
+  `get_constant`. (M3.1)
+- `nbrs-activity/src/scope_tree.rs::tests::install_is_idempotent_via_oncelock`
+  — `OnceLock` semantics. (M3.1)
+- `nbrs-activity/src/scope_tree.rs::tests::for_each_scope_kernel_inherits_parent_via_bind_outer_scope`
+  — synthesis + chain inheritance through extern auto-passthrough. (M3.2)
+- `nbrs-activity/src/scope_tree.rs::tests::for_each_scope_kernel_uses_native_type_for_numeric_iter_var`
+  — native-type detection from non-dependent clause pre-eval. (M3.2)
+- `nbrs-activity/src/scope_tree.rs::tests::for_each_scope_kernel_recursive_probe_for_dependent_clause`
+  — recursive probe types `limit` as `u64` via `k=1` →
+  `k_1_limits` chain. (M3.2)
+- `nbrs-activity/src/interpolate.rs::tests::kernel_*` — four
+  tests covering `interpolate_via_kernel` lookup
+  (`get_constant`, `get_input`, unresolved error, nested
+  fixed-point). (M3.3a, M3.5)
+- `nbrs/tests/m3_dependent_for_each.rs` — three full-pipeline
+  integration tests exercising the dispatcher end-to-end:
+  dependent-tuple `{k_{k}_limits}`, multi-clause Cartesian
+  product, `for_each_union` across sub-spaces. (M3.3c+d, M3.4)
+- `nbrs/tests/workload_examples.rs` — fourteen integration
+  tests covering the full M3.4-3.6 surface end-to-end:
+  phased + non-phased workloads, scenario filtering, workload
+  param overrides via CLI, GK / legacy / inline binding modes,
+  conditional ops, ratio weighting, deterministic output. The
+  `feature_showcase_*`, `service_model_mixed_ops`, and
+  `basic_workload_runs` cases specifically exercise workload
+  params flowing as `final` bindings on the workload kernel
+  (M3.6) into both op-template substitution and binding-RHS
+  literal injection.
+- `nbrs-activity/src/bindings.rs::tests::compile_provides_cycle_output`
+  — declared inputs auto-expose as kernel outputs (parity
+  with `extern`); user-written `cycle := identity(cycle)`
+  shim no longer required. (M3.4b prerequisite for the
+  legacy auto-injection retirement.)
 
 ### Why pragmas don't get their own migration step
 
@@ -400,6 +944,130 @@ exists (step 1) and we compile each scope's kernel against its
 parent (step 2), pragma propagation is just *populating the
 field* and *querying it through the chain*. No separate
 machinery; no separate step.
+
+---
+
+## Open design: unified scenario-tree visitor
+
+Three things currently walk the scenario / scope tree with
+overlapping logic:
+
+1. **Runtime dispatch** — `executor::execute_tree_at` and the
+   comprehension dispatchers fork per-iteration kernels,
+   evaluate specs, descend into children. The full
+   composition-and-execute pass.
+
+2. **Dryrun** — `dryrun=phases` / `dryrun=cycle` / `dryrun=controls`
+   walk the same tree to enumerate iterations, render plan
+   labels, materialize control trees. They reuse the
+   `Comprehension` strategy where possible (per the M3.4
+   "Pre-map uses the same dispatcher logic" subsection) but
+   stop short of running children.
+
+3. **Param-reference validation** — `runner::collect_param_references`
+   scans static text for `{name}` and composite templates,
+   then validates declared workload params against the
+   union. Today (post-this-pass) the validator uses
+   regex-style template matching to recognize composite
+   references like `{k_{k}_limits}` against declared
+   `k_1_limits` — over-permissive (matches any param shaped
+   like the template, not just the ones for actual iter-var
+   values), but cheap and runtime-independent.
+
+These three should converge on **one visitor abstraction**: a
+trait with a `visit_<kind>` method per scenario-node kind,
+plus an accumulator that the visitor mutates as it walks. The
+runtime dispatcher, dryrun, and validation each become an
+accumulator implementation; the tree walk lives in one place.
+
+### Why we haven't done it yet
+
+The runtime dispatcher is the most complex of the three —
+async, owns the per-iteration kernel forks, manages
+`current_parent_kernel` install/restore, has the do-loop
+streaming branch (SRD-18b §"Deferred follow-on"). Pulling its
+logic into a visitor without regressing performance or
+clarity needs a careful design pass. Today's validation is a
+shallow walk that the regex-template approach handles well
+enough as a lint; today's dryrun shares strategy code with
+the dispatcher but not the full traversal.
+
+### What converging would buy
+
+- **Validation accuracy.** A walk that knows the iter-var
+  bindings can substitute through `{k_{k}_limits}` and
+  produce the exact set of ground forms (`k_1_limits`,
+  `k_10_limits`) that the workload references. The current
+  template-matching gives false positives (over-permissive).
+
+- **Dryrun parity.** Anywhere dryrun differs from the
+  dispatcher in subtle traversal details (today they both
+  use `Comprehension` for tuple comprehensions, but other
+  axes — phase descent, label propagation — diverge), a
+  shared visitor closes the gap by construction.
+
+- **Single source of "what does this workload do".** The
+  visitor becomes the canonical "here's the shape of the
+  execution" abstraction. Future analyses (cost
+  estimation, control-tree planning, deadlock detection)
+  plug in as accumulators without touching the walker.
+
+### Sketch
+
+```rust
+trait ScenarioVisitor {
+    type Acc;
+    fn visit_phase(&self, name: &str, ctx: &VisitCtx, acc: &mut Self::Acc);
+    fn visit_for_each(&self, spec: &str, ctx: &VisitCtx, acc: &mut Self::Acc) -> ChildrenAction;
+    fn visit_do_while(&self, condition: &str, counter: Option<&str>,
+                      ctx: &VisitCtx, acc: &mut Self::Acc) -> ChildrenAction;
+    // ... one per scenario-node kind
+}
+
+struct VisitCtx {
+    /// Currently-bound iter vars and their possible values
+    /// at this depth. `for_each "k in 1,10"` adds `k → [1, 10]`.
+    iter_vars: Vec<(String, IterValues)>,
+    /// Workload-scope GK kernel for evaluating spec expressions.
+    parent_kernel: Arc<GkKernel>,
+    /// Accumulated label path (for dryrun rendering).
+    label_path: Vec<String>,
+}
+
+enum ChildrenAction {
+    /// Walk children once per (potentially substituted) iteration.
+    EnumerateThenChildren,
+    /// Walk children without enumeration (dryrun-static, validation).
+    StaticChildren,
+    /// Skip children entirely.
+    Skip,
+}
+```
+
+The runtime dispatcher's accumulator owns the async task
+state and per-iteration kernel forks. Dryrun's accumulator
+records the materialized iteration list. Validation's
+accumulator records the set of reachable param names with
+their resolved iter-var values. Same walker, three drivers.
+
+### Migration shape (when we get there)
+
+1. Extract the current async dispatcher's traversal into a
+   visitor `RuntimeDispatcher: ScenarioVisitor` whose acc is
+   the existing `ExecCtx`-shaped state.
+2. Switch dryrun to a sibling visitor `DryRunPlanner: ScenarioVisitor`
+   that emits the iteration plan without forking kernels.
+3. Replace `collect_param_references` with a third visitor
+   `ParamRefCollector: ScenarioVisitor` that enumerates
+   ground forms via the spec evaluator. Drop the
+   regex-template fallback.
+
+This is in the M3 backlog, not on the active list — the
+current implementations work, and the consolidation is
+worth doing only when one of the three needs an axis that
+the others already have (e.g., when validation needs
+ground-form accuracy, or when dryrun needs cost
+estimation).
 
 ---
 

@@ -20,7 +20,7 @@ explains the design intent behind it.
 | 02 | [Concurrency Model](02_concurrency_model.md) | Async fibers, tokio runtime, cycle source, rate limiting |
 | 03 | [Error Handling](03_error_handling.md) | Error scoping, routing, retry semantics, silent failure policy |
 
-### 2. GK Kernel (nb-variates)
+### 2. GK Kernel (nbrs-variates)
 
 | # | Document | Scope |
 |---|----------|-------|
@@ -33,17 +33,21 @@ explains the design intent behind it.
 | 16 | [GK Engines](16_gk_engines.md) | Compilation levels, provenance push/pull, engine variants, auto-selection heuristic |
 | 16b | [GK JIT Wiring](16_gk_jit.md) | Cranelift ↔ Rust call boundary, setjmp/longjmp for catchable predicate violations, hybrid-kernel wrapping, `invoke_with_catch` contract |
 
-### 3. Workload Specification (nb-workload)
+### 3. Workload Specification (nbrs-workload)
 
 | # | Document | Scope |
 |---|----------|-------|
+| 18 | [Control Flow](18_control_flow.md) | Scenario tree, scopes, iteration shapes, loop counters |
+| 18b | [Scenario Tree and Scheduler](18b_scenario_tree_and_scheduler.md) | Two-tree model, comprehension AST, kernel composition, find-by-comprehension lookup |
+| 18c | [Comprehension Syntax](18c_comprehension_syntax.md) | Layered grammar — literal lists, ranges, generators, `where` filter, SI suffixes, tuple LHS, sequencer-style LUT expansions |
+| 18d | [Comprehension Traversal Order](18d_comprehension_traversal_order.md) | Tuple emission order — lex, diagonal, extrema-first, concentric shells, low-discrepancy (Halton/Sobol/LHS), custom |
 | 20 | [Workload Model](20_workload_model.md) | YAML structure, ParsedOp, blocks, tags, normalization |
 | 21 | [Parameters and Bind Points](21_parameters.md) | Param resolution, bind point syntax, workload/CLI/env scoping |
 | 22 | [Op Sequencing](22_op_sequencing.md) | Stanza model, sequencer types, weighted ratios, cycle mapping |
 | 23 | [Dynamic Controls](23_dynamic_controls.md) | Runtime-mutable per-component parameters (concurrency, rates, log level), confirmed-apply writes, enumerable declaration, reification as gauges |
 | 24 | [Component Lookup](24_component_lookup.md) | Finding components by dimensional-label predicates — the selector grammar and lookup API used by dynamic controls, metrics selection, and scripted orchestration |
 
-### 4. Execution Engine (nb-activity)
+### 4. Execution Engine (nbrs-activity)
 
 | # | Document | Scope |
 |---|----------|-------|
@@ -53,13 +57,14 @@ explains the design intent behind it.
 | 33 | [Result Validation](33_result_validation.md) | Assertions, relevancy metrics, ground truth, binding visibility |
 | 34 | [Capture Points](34_capture_points.md) | Inter-op data flow, GK ports, capture extraction |
 
-### 5. Metrics and Observability (nb-metrics)
+### 5. Metrics and Observability (nbrs-metrics)
 
 | # | Document | Scope |
 |---|----------|-------|
 | 40 | [Metrics Framework](40_metrics.md) | Instruments, frames, delta semantics, reporters, scheduling |
 | 41 | [Logging and Diagnostics](41_logging.md) | Conventions, GK compiler events, --explain mode |
 | 42 | [Windowed Metrics Access](42_windowed_metrics.md) | User-specified cadences, auto-intermediate buckets, non-draining `now`, arbitrary past-duration queries |
+| 44 | [Workload Checkpointing](44_workload_checkpointing.md) | Phase-boundary + cursor-state resume, per-phase identity hashing, durability ordering, invocation-agnostic error handling |
 
 ### 6. Adapters
 
@@ -75,7 +80,7 @@ explains the design intent behind it.
 | # | Document | Scope |
 |---|----------|-------|
 | 60 | [CLI Structure](60_cli.md) | Command tree, completions, workload discovery, bench command |
-| 61 | [Persona Model](61_personas.md) | cassnbrs, opennbrs, build structure, adapter selection |
+| 61 | [Single Binary, Feature-Gated Drivers](61_personas.md) | nbrs binary, Cargo features, adapter selection, future drivers |
 | 62 | [TUI Layout](62_tui_layout.md) | Tree-centric layout, per-phase detail blocks, dynamic Focus LOD, 120-col baseline |
 
 ---

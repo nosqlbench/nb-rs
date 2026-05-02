@@ -3,6 +3,9 @@ name = "nb-tools"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
+# Internal-only: collection of one-off analysis utilities used
+# during development. No stable surface — not published.
+publish = false
 
 [workspace]
 
@@ -11,4 +14,4 @@ name = "query-label-analysis"
 path = "src/query_label_analysis.rs"
 
 [dependencies]
-vectordata = "0.21"
+vectordata = "1.0.2"

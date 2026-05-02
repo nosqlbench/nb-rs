@@ -56,18 +56,27 @@ GK bindings:
 
     ↓ (compiled because relevancy.expected references it)
 
-Binding compiler scans params for {name} → includes "ground_truth"
+Bind-point scanner walks the full op template (op fields + params),
+sees `{ground_truth}` inside `relevancy.expected`, and adds it to
+the kernel's required-outputs set (SRD 16 §"Auto-Extern Generation").
     ↓
-resolve_with_extras(template, ["ground_truth"])
+ValidatingDispenser::fixture(template, &mut scope_fixture)
+    → scope_fixture.register_pull("ground_truth")
+    → returns PullHandle, stored on the dispenser
     ↓
-ResolvedFields contains both op fields AND ground_truth
+At cycle time:
+    PullPlan::resolve(state) → ResolvedPulls
     ↓
-ValidatingDispenser reads ground_truth from ResolvedFields
+ValidatingDispenser reads ground_truth via stored PullHandle:
+    let gt = ctx.pulls.get(self.expected_handle);
 ```
 
 **Key**: `ground_truth` is NOT an op field. It's a GK binding
-needed only by validation. The binding compiler finds it by
-scanning params, and the resolver pulls it as an extra binding.
+needed only by validation. The validation wrapper self-registers
+the name with the scope fixture at init, receives a `PullHandle`,
+and reads from `ResolvedPulls` at cycle time. There is no
+"extras" side channel — see SRD 32 §"Init-Time Fixture and
+Consumer Self-Registration" for the contract.
 
 **Missing ground truth is a hard error**, not a silent zero:
 ```

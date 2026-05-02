@@ -3,25 +3,25 @@
 > **Status.** Design committed and shipping end-to-end across
 > the runtime. The following integration points are all in code:
 >
-> - `nb-metrics/src/controls.rs` — `Control<T>`,
+> - `nbrs-metrics/src/controls.rs` — `Control<T>`,
 >   `ControlBuilder` (`final_at_scope`, `branch_scope`,
 >   `from_f64`), `ControlRegistry`, `ErasedControl::set_f64`.
-> - `nb-rate/src/applier.rs` — `RateLimiterApplier` +
+> - `nbrs-rate/src/applier.rs` — `RateLimiterApplier` +
 >   `RateLimiter::reconfigure`.
-> - `nb-activity/src/fiber_pool.rs` — `FiberPool` +
+> - `nbrs-activity/src/fiber_pool.rs` — `FiberPool` +
 >   `ConcurrencyApplier`; wired into
 >   `Activity::run_with_adapters`, declared on the activity's
 >   component at `attach_component` time.
-> - `nb-variates/src/nodes/runtime_context.rs` — `control`,
+> - `nbrs-variates/src/nodes/runtime_context.rs` — `control`,
 >   `control_u64`, `control_bool`, `control_str`, `control_set`,
 >   `rate`, `concurrency`, `phase`, `cycle`. The GK compiler
 >   threads the enclosing DSL binding name into `ControlSet`
 >   for attribution (`ControlOrigin::Gk { binding }`).
-> - `nb-activity/src/runner.rs` — `dryrun=controls` renders the
+> - `nbrs-activity/src/runner.rs` — `dryrun=controls` renders the
 >   component tree after phase construction.
-> - `nb-tui/src/app.rs` — inline `e` keybind + `ControlEditPrompt`
+> - `nbrs-tui/src/app.rs` — inline `e` keybind + `ControlEditPrompt`
 >   with validator / final-scope error surfacing.
-> - `nb-web/src/routes.rs` — `GET /api/controls` and
+> - `nbrs-web/src/routes.rs` — `GET /api/controls` and
 >   `POST /api/control/{name}` with structured error bodies.
 >
 > Outstanding: control-value types richer than `f64`/`u64`/
@@ -314,7 +314,7 @@ Five prospective writers, each with its own
    rate-limited per GK-node invocation, and a kill-switch
    disables GK writes if the runner detects thrash.
 
-4. **Web API (`ControlOrigin::Api`).** When `nb-web` is built
+4. **Web API (`ControlOrigin::Api`).** When `nbrs-web` is built
    in, `POST /control/:path/:name { value, origin }`. Mirrors
    the component path resolution the TUI uses. Authentication
    out of scope for v1.
