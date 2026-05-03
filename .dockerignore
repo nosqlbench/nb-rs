@@ -1,0 +1,8 @@
+target/
+.git/
+**/*.rs.bk
+.idea/
+.vscode/
+*.log
+adapters/cql/sysroot/
+adapters/cql/nbrs
