@@ -1195,6 +1195,13 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         // a sub-space (SRD-15 §"Empty Iteration Sources").
         match crate::executor::pre_map_tree(
             &scenario_nodes, &phases, &scope_tree, strict,
+            // Seed the path with the top-level scenario name —
+            // pre_map_recursive extends it through every nested
+            // construct as it walks. See SRD-44 §"Phase
+            // identity" for the path-segment vocabulary.
+            vec![crate::checkpoint::PathSegment::Scenario(
+                scenario_name.to_string(),
+            )],
         ) {
             Ok(scene_tree) => {
                 observer.scenario_pre_mapped(&scene_tree);

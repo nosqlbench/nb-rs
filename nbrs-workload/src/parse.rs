@@ -722,6 +722,15 @@ fn parse_phases(
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let summary = phase_obj.get("summary").cloned();
+        // Per-phase `checkpoint:` declaration. Three forms
+        // (short string, bool/none, full mapping) handled by
+        // [`Checkpoint`]'s custom deserialize. Absent → None →
+        // phase always re-runs on resume (per SRD-44 §"No
+        // workload-level default").
+        let checkpoint = phase_obj.get("checkpoint")
+            .map(|v| serde_json::from_value::<crate::model::Checkpoint>(v.clone()))
+            .transpose()
+            .map_err(|e| format!("phase '{phase_name}' checkpoint: {e}"))?;
 
         phases.insert(phase_name.clone(), WorkloadPhase {
             cycles,
@@ -735,6 +744,7 @@ fn parse_phases(
             loop_scope,
             iter_scope,
             summary,
+            checkpoint,
         });
         phase_order.push(phase_name.clone());
     }
@@ -1777,5 +1787,120 @@ phases:
                 other => panic!("expected IncludedScenario, got {other:?}"),
             }
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Checkpoint declaration parsing — SRD-44 §"Forms"
+    // -----------------------------------------------------------------
+
+    fn parse_checkpoint_field(yaml: &str) -> Option<crate::model::Checkpoint> {
+        let yaml = format!(
+            "phases:\n  p:\n{}\n    ops:\n      - select 1;\n",
+            yaml.lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n")
+        );
+        let v: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml parse");
+        let json: serde_json::Value = serde_json::to_value(&v).expect("json convert");
+        let phases_obj = json.get("phases").and_then(|p| p.as_object()).expect("phases");
+        let phase = phases_obj.get("p").and_then(|p| p.as_object()).expect("phase p");
+        phase.get("checkpoint")
+            .map(|v| serde_json::from_value::<crate::model::Checkpoint>(v.clone()).expect("checkpoint parse"))
+    }
+
+    #[test]
+    fn checkpoint_short_form_idempotent() {
+        let cp = parse_checkpoint_field("checkpoint: idempotent").expect("present");
+        assert!(cp.idempotent);
+        assert!(cp.hashed);
+        assert!(cp.verify.is_none());
+    }
+
+    #[test]
+    fn checkpoint_short_form_none_disables_skip() {
+        let cp = parse_checkpoint_field("checkpoint: none").expect("present");
+        assert!(!cp.idempotent);
+        // hashed default-true is preserved even when disabled —
+        // the disabled state is about skip eligibility, not
+        // about the hash field.
+        assert!(cp.hashed);
+        assert!(cp.verify.is_none());
+    }
+
+    #[test]
+    fn checkpoint_short_form_no_and_false_and_off_all_disable() {
+        for word in &["no", "false", "off"] {
+            let cp = parse_checkpoint_field(&format!("checkpoint: {word}")).expect("present");
+            assert!(!cp.idempotent, "expected disabled for '{word}'");
+        }
+    }
+
+    #[test]
+    fn checkpoint_bool_false_disables() {
+        // YAML's bare `false` should map to disabled.
+        let cp = parse_checkpoint_field("checkpoint: false").expect("present");
+        assert!(!cp.idempotent);
+    }
+
+    #[test]
+    fn checkpoint_full_form_all_explicit() {
+        let cp = parse_checkpoint_field(
+            "checkpoint:\n  idempotent: true\n  hashed: false"
+        ).expect("present");
+        assert!(cp.idempotent);
+        assert!(!cp.hashed);
+        assert!(cp.verify.is_none());
+    }
+
+    #[test]
+    fn checkpoint_full_form_with_verify() {
+        let cp = parse_checkpoint_field(
+            "checkpoint:\n  idempotent: true\n  verify:\n    raw: 'SELECT 1'\n    poll: assert_one"
+        ).expect("present");
+        assert!(cp.idempotent);
+        assert!(cp.hashed); // default
+        let v = cp.verify.expect("verify body");
+        assert_eq!(v.get("raw").and_then(|x| x.as_str()), Some("SELECT 1"));
+        assert_eq!(v.get("poll").and_then(|x| x.as_str()), Some("assert_one"));
+    }
+
+    #[test]
+    fn checkpoint_full_form_idempotent_false_equivalent_to_none() {
+        let cp = parse_checkpoint_field(
+            "checkpoint:\n  idempotent: false\n  hashed: true"
+        ).expect("present");
+        assert!(!cp.idempotent);
+        assert!(cp.hashed);
+    }
+
+    #[test]
+    fn checkpoint_unknown_short_form_errors() {
+        // Should fail to parse — an unknown short string is a
+        // workload bug, not silently treated as `none`.
+        let yaml = "phases:\n  p:\n    checkpoint: maybe\n    ops:\n      - select 1;\n";
+        let v: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let json: serde_json::Value = serde_json::to_value(&v).unwrap();
+        let phases_obj = json.get("phases").and_then(|p| p.as_object()).unwrap();
+        let phase = phases_obj.get("p").and_then(|p| p.as_object()).unwrap();
+        let cp_val = phase.get("checkpoint").unwrap().clone();
+        let err = serde_json::from_value::<crate::model::Checkpoint>(cp_val).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown short form"), "expected unknown-short-form error, got: {msg}");
+        assert!(msg.contains("'maybe'"), "expected the bad token in error, got: {msg}");
+    }
+
+    #[test]
+    fn checkpoint_unknown_key_errors() {
+        let yaml = "phases:\n  p:\n    checkpoint:\n      idempotent: true\n      bogus: yes\n    ops:\n      - select 1;\n";
+        let v: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let json: serde_json::Value = serde_json::to_value(&v).unwrap();
+        let cp_val = json.pointer("/phases/p/checkpoint").unwrap().clone();
+        let err = serde_json::from_value::<crate::model::Checkpoint>(cp_val).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown key 'bogus'"), "expected unknown-key error, got: {msg}");
+    }
+
+    #[test]
+    fn checkpoint_field_absent_yields_none() {
+        let cp = parse_checkpoint_field("# no checkpoint declared\n");
+        assert!(cp.is_none(), "absent declaration should yield None, not Default");
     }
 }

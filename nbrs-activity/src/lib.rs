@@ -69,6 +69,7 @@ pub mod params;
 pub mod scope;
 pub mod scope_tree;
 pub mod scene_tree;
+pub mod checkpoint;
 pub mod scheduler;
 pub mod profiler;
 pub mod session_signals;

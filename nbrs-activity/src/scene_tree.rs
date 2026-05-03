@@ -147,6 +147,21 @@ pub struct SceneNode {
     /// re-numbering per draw.
     #[serde(default)]
     pub seq: Option<usize>,
+    /// Fully-qualified structural location of this node in the
+    /// workload YAML — outer-first chain of scenarios,
+    /// for_each/for_combinations clauses, do-loops, and
+    /// (terminal) the phase name itself. Populated for
+    /// `Phase` nodes; ancestor `Scope` nodes carry partial
+    /// paths (everything down to but not including the phase
+    /// name).
+    ///
+    /// Used by the checkpoint resume planner — `yaml_path`
+    /// plus the leaf-first coord-path string is the
+    /// per-phase identity tuple that decides whether a saved
+    /// checkpoint entry applies to a freshly-pre-mapped
+    /// phase. See SRD-44 §"Phase identity".
+    #[serde(default)]
+    pub yaml_path: Vec<crate::checkpoint::PathSegment>,
 }
 
 /// The scene tree itself. `nodes[0]` is always the synthetic root.
@@ -177,6 +192,7 @@ impl SceneTree {
             op_names: Vec::new(),
             own_names: Vec::new(),
             seq: None,
+            yaml_path: Vec::new(),
         });
         t
     }
@@ -222,9 +238,27 @@ impl SceneTree {
             op_names: Vec::new(),
             own_names: Vec::new(),
             seq,
+            yaml_path: Vec::new(),
         });
         self.nodes[parent].children.push(id);
         id
+    }
+
+    /// Set the structural YAML path for a node. Called by the
+    /// pre-map walker as it descends through scenarios /
+    /// for_each / for_combinations / do-loops, so each Scope
+    /// and Phase node carries the full chain from the workload
+    /// root down to its declaration site. Used by the
+    /// checkpoint resume planner to identify phases across
+    /// runs (per SRD-44 §"Phase identity").
+    pub fn set_yaml_path(
+        &mut self,
+        id: SceneNodeId,
+        path: Vec<crate::checkpoint::PathSegment>,
+    ) {
+        if id < self.nodes.len() {
+            self.nodes[id].yaml_path = path;
+        }
     }
 
     /// Total number of `Phase` entries in the tree. Equal to the

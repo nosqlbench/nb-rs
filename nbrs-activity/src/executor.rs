@@ -1757,10 +1757,17 @@ pub fn pre_map_tree(
     phases: &HashMap<String, WorkloadPhase>,
     scope_tree: &crate::scope_tree::ScopeTree,
     strict: bool,
+    // `initial_path`: caller seeds this with the scenario's
+    // location (`vec![PathSegment::Scenario(name)]`); pre-map
+    // extends it through every nested for_each /
+    // for_combinations / do-loop / sub-scenario as it walks,
+    // so each phase node carries its full identity per
+    // SRD-44 §"Phase identity".
+    initial_path: Vec<crate::checkpoint::PathSegment>,
 ) -> Result<SceneTree, String> {
     let mut tree = SceneTree::new();
     let root = tree.root();
-    pre_map_recursive(nodes, phases, scope_tree, root, &[], None, &mut tree, strict)?;
+    pre_map_recursive(nodes, phases, scope_tree, root, &[], None, &initial_path, &mut tree, strict)?;
     Ok(tree)
 }
 
@@ -1795,9 +1802,17 @@ fn pre_map_recursive(
     parent: SceneNodeId,
     parent_coords: &[ScopeCoord],
     effective_parent_kernel: Option<&std::sync::Arc<nbrs_variates::kernel::GkKernel>>,
+    // `parent_path`: structural YAML path accumulated from the
+    // workload root down to the current parent scope. Each
+    // call appends one PathSegment per scenario / for_each /
+    // for_combinations / do-loop level, populating each
+    // created scene-tree node with its own complete path. See
+    // SRD-44 §"Phase identity".
+    parent_path: &[crate::checkpoint::PathSegment],
     tree: &mut SceneTree,
     strict: bool,
 ) -> Result<(), String> {
+    use crate::checkpoint::PathSegment;
     for node in nodes {
         match node {
             ScenarioNode::Phase(name) => {
@@ -1823,6 +1838,13 @@ fn pre_map_recursive(
                         )?,
                         _ => Vec::new(),
                     };
+                    // Phase-level for_each: the wrapping scope
+                    // node represents the for_each construct
+                    // (one path level), and each per-iteration
+                    // phase node sits under it with the phase
+                    // name as the terminal segment.
+                    let mut scope_path = parent_path.to_vec();
+                    scope_path.push(PathSegment::ForEach { var: var.clone() });
                     let scope = tree.push(
                         parent,
                         NodeKind::Scope,
@@ -1833,6 +1855,9 @@ fn pre_map_recursive(
                                 .join(", ")),
                         "",
                     );
+                    tree.set_yaml_path(scope, scope_path.clone());
+                    let mut phase_path = scope_path;
+                    phase_path.push(PathSegment::Phase(name.clone()));
                     for step in &steps {
                         let id = tree.push(
                             scope,
@@ -1841,8 +1866,11 @@ fn pre_map_recursive(
                             canonical_phase_label(&step.coord_path),
                         );
                         tree.set_phase_op_names(id, op_names.clone());
+                        tree.set_yaml_path(id, phase_path.clone());
                     }
                 } else {
+                    let mut phase_path = parent_path.to_vec();
+                    phase_path.push(PathSegment::Phase(name.clone()));
                     let id = tree.push(
                         parent,
                         NodeKind::Phase,
@@ -1850,6 +1878,7 @@ fn pre_map_recursive(
                         canonical_phase_label(parent_coords),
                     );
                     tree.set_phase_op_names(id, op_names);
+                    tree.set_yaml_path(id, phase_path);
                 }
             }
             ScenarioNode::Comprehension { comprehension, children } => {
@@ -1875,23 +1904,30 @@ fn pre_map_recursive(
                             )?,
                             _ => Vec::new(),
                         };
+                        // Single-clause for_each: one path
+                        // segment for the construct. All
+                        // iteration scopes share this path.
+                        let mut scope_path = parent_path.to_vec();
+                        scope_path.push(PathSegment::ForEach { var: clauses[0].var.clone() });
                         let header = format!("for_each {} in {}",
                             clauses[0].var, clauses[0].expr);
                         if steps.is_empty() {
                             let scope = tree.push(parent, NodeKind::Scope, header, "");
                             tree.set_own_names(scope, own_names.clone());
+                            tree.set_yaml_path(scope, scope_path.clone());
                             pre_map_recursive(
                                 children, phases, scope_tree, scope, parent_coords,
-                                effective_parent_kernel, tree, strict,
+                                effective_parent_kernel, &scope_path, tree, strict,
                             )?;
                         } else {
                             for step in &steps {
                                 let scope = tree.push(parent, NodeKind::Scope,
                                     format!("for_each {}", iter_label(&step.bindings)), "");
                                 tree.set_own_names(scope, own_names.clone());
+                                tree.set_yaml_path(scope, scope_path.clone());
                                 pre_map_recursive(
                                     children, phases, scope_tree, scope, &step.coord_path,
-                                    Some(&step.bound_kernel), tree, strict,
+                                    Some(&step.bound_kernel), &scope_path, tree, strict,
                                 )?;
                             }
                         }
@@ -1901,9 +1937,14 @@ fn pre_map_recursive(
                             .map(|c| (c.var.clone(), c.expr.clone())).collect();
                         let summary = clauses.iter().map(|c| c.var.as_str())
                             .collect::<Vec<_>>().join(", ");
+                        let mut scope_path = parent_path.to_vec();
+                        scope_path.push(PathSegment::ForCombinations {
+                            vars: clauses.iter().map(|c| c.var.clone()).collect(),
+                        });
                         let scope = tree.push(parent, NodeKind::Scope,
                             format!("for_combinations [{summary}]"), "");
                         tree.set_own_names(scope, own_names.clone());
+                        tree.set_yaml_path(scope, scope_path.clone());
                         let steps = match (canonical, parent_kernel.as_ref()) {
                             (Some(c), Some(p)) => premap_iterate(
                                 c, p, parent_coords, &pairs, filter, None, None, strict,
@@ -1914,17 +1955,29 @@ fn pre_map_recursive(
                             let inner_scope = tree.push(scope, NodeKind::Scope,
                                 iter_label(&step.bindings), "");
                             tree.set_own_names(inner_scope, own_names.clone());
+                            tree.set_yaml_path(inner_scope, scope_path.clone());
                             pre_map_recursive(
                                 children, phases, scope_tree, inner_scope, &step.coord_path,
-                                Some(&step.bound_kernel), tree, strict,
+                                Some(&step.bound_kernel), &scope_path, tree, strict,
                             )?;
                         }
                     }
                     ComprehensionMode::Union(subspaces) => {
                         let names = comprehension.coordinate_names().join(", ");
+                        // Union: treat as ForCombinations with
+                        // the merged variable list. Sub-spaces
+                        // don't create distinct path levels —
+                        // they're alternative materialisations
+                        // of the same conceptual iteration.
+                        let mut scope_path = parent_path.to_vec();
+                        scope_path.push(PathSegment::ForCombinations {
+                            vars: comprehension.coordinate_names()
+                                .into_iter().map(String::from).collect(),
+                        });
                         let scope = tree.push(parent, NodeKind::Scope,
                             format!("for_each_union [{names}] ({} sub-spaces)", subspaces.len()), "");
                         tree.set_own_names(scope, own_names.clone());
+                        tree.set_yaml_path(scope, scope_path.clone());
                         let total = subspaces.len();
                         for (i, sub) in subspaces.iter().enumerate() {
                             let pairs: Vec<(String, String)> = sub.iter()
@@ -1940,9 +1993,10 @@ fn pre_map_recursive(
                                 let inner_scope = tree.push(scope, NodeKind::Scope,
                                     iter_label(&step.bindings), "");
                                 tree.set_own_names(inner_scope, own_names.clone());
+                                tree.set_yaml_path(inner_scope, scope_path.clone());
                                 pre_map_recursive(
                                     children, phases, scope_tree, inner_scope, &step.coord_path,
-                                    Some(&step.bound_kernel), tree, strict,
+                                    Some(&step.bound_kernel), &scope_path, tree, strict,
                                 )?;
                             }
                         }
@@ -1950,17 +2004,23 @@ fn pre_map_recursive(
                 }
             }
             ScenarioNode::IncludedScenario { name, children } => {
+                let mut scope_path = parent_path.to_vec();
+                scope_path.push(PathSegment::ScenarioInclude(name.clone()));
                 let scope = tree.push(parent, NodeKind::Scope, format!("scenario '{name}'"), "");
+                tree.set_yaml_path(scope, scope_path.clone());
                 pre_map_recursive(
                     children, phases, scope_tree, scope, parent_coords,
-                    effective_parent_kernel, tree, strict,
+                    effective_parent_kernel, &scope_path, tree, strict,
                 )?;
             }
             ScenarioNode::DoWhile { condition, counter, children } => {
                 // Iteration count is unknown a priori (condition-
                 // driven); show one scope header without
                 // enumerating iterations.
+                let mut scope_path = parent_path.to_vec();
+                scope_path.push(PathSegment::DoWhile { counter: counter.clone() });
                 let scope = tree.push(parent, NodeKind::Scope, format!("do_while {condition}"), "");
+                tree.set_yaml_path(scope, scope_path.clone());
                 if let Some(idx) = scope_tree.iter_dfs().find_map(|(i, n)| match &n.kind {
                     crate::scope_tree::ScopeKind::DoWhile { condition: c, counter: ct }
                         if c == condition && ct == counter => Some(i),
@@ -1974,11 +2034,14 @@ fn pre_map_recursive(
                 }
                 pre_map_recursive(
                     children, phases, scope_tree, scope, parent_coords,
-                    effective_parent_kernel, tree, strict,
+                    effective_parent_kernel, &scope_path, tree, strict,
                 )?;
             }
             ScenarioNode::DoUntil { condition, counter, children } => {
+                let mut scope_path = parent_path.to_vec();
+                scope_path.push(PathSegment::DoUntil { counter: counter.clone() });
                 let scope = tree.push(parent, NodeKind::Scope, format!("do_until {condition}"), "");
+                tree.set_yaml_path(scope, scope_path.clone());
                 if let Some(idx) = scope_tree.iter_dfs().find_map(|(i, n)| match &n.kind {
                     crate::scope_tree::ScopeKind::DoUntil { condition: c, counter: ct }
                         if c == condition && ct == counter => Some(i),
@@ -1992,7 +2055,7 @@ fn pre_map_recursive(
                 }
                 pre_map_recursive(
                     children, phases, scope_tree, scope, parent_coords,
-                    effective_parent_kernel, tree, strict,
+                    effective_parent_kernel, &scope_path, tree, strict,
                 )?;
             }
         }

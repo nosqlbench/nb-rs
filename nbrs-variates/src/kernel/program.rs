@@ -510,6 +510,211 @@ impl GkProgram {
         self.input_provenance.get(node_idx).copied().unwrap_or(0)
     }
 
+    /// Canonical content-addressable hash of this program.
+    ///
+    /// SHA-256 over a deterministic byte sequence describing
+    /// every node's kind + constant slots, every wiring edge,
+    /// and the named input / output declarations. Stable
+    /// across compilations of equivalent input — two programs
+    /// produced from identical source + identical workload-
+    /// scope state hash to the same value, and a change that
+    /// affects what the program actually computes (a renamed
+    /// output, a new node, a const-slot value change, a
+    /// re-routed wire) shifts the hash.
+    ///
+    /// Used by checkpointing (SRD-44 §"Why hash the compiled
+    /// program, not the YAML body") for per-phase identity:
+    /// the resume planner skips a phase only when the saved
+    /// hash matches the freshly-compiled program's hash, so a
+    /// `{dataset}` change that ripples into a phase's
+    /// compiled form correctly invalidates that phase's
+    /// saved status, while phases whose programs are
+    /// unaffected stay skip-eligible.
+    ///
+    /// ## Determinism contract
+    ///
+    /// - Outputs are emitted in alphabetical order (not the
+    ///   compiler's declaration order, which can shuffle
+    ///   slightly across compilation passes).
+    /// - For each output, the producing node and its
+    ///   transitive input chain are walked in deterministic
+    ///   order — wire-source list iterated in port-position
+    ///   order, recursion uses the producer's stable
+    ///   (already-canonical) hash as the wire reference.
+    /// - Const slots are iterated in `NodeMeta.ins` order,
+    ///   which is the DSL-declared positional order and is
+    ///   compiler-invariant.
+    /// - `Input(idx)` wires are translated to the input's
+    ///   *name* (stable across runs) rather than its index
+    ///   (a compile-time positional choice).
+    /// - Floating-point constants hash via their bit
+    ///   representation, so 0.0 vs -0.0 hash differently and
+    ///   NaNs are distinguishable from each other only by
+    ///   their bit pattern (rare but consistent).
+    pub fn canonical_hash(&self) -> [u8; 32] {
+        use sha2::{Sha256, Digest};
+        let mut h = Sha256::new();
+        h.update(b"GkProgram-v1\n");
+
+        // Inputs: emit name + kind + port type. Sorted by name
+        // for stability — input declaration order is set by
+        // the compiler's traversal of the source, which is
+        // stable for a given source but can drift across
+        // compiler revisions.
+        let mut inputs: Vec<(usize, &InputDef)> = self.input_defs.iter().enumerate().collect();
+        inputs.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+        for (_, def) in &inputs {
+            h.update(b"in:");
+            h.update(def.name.as_bytes());
+            h.update(b":");
+            h.update(format!("{:?}", def.port_type).as_bytes());
+            h.update(b":");
+            h.update(format!("{:?}", def.kind).as_bytes());
+            h.update(b"\n");
+        }
+
+        // Outputs: alphabetical. For each output, walk the
+        // producing node and its input chain depth-first
+        // through `node_canonical_hash` (memoised). The
+        // stream of (output-name, node-hash) tuples is the
+        // canonical "what does this program produce?" form.
+        let mut outputs: Vec<&(String, usize, usize)> = self.output_list.iter().collect();
+        outputs.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut node_hashes: HashMap<usize, [u8; 32]> = HashMap::new();
+        for (name, ni, pi) in &outputs {
+            let nh = self.node_canonical_hash(*ni, &mut node_hashes);
+            h.update(b"out:");
+            h.update(name.as_bytes());
+            h.update(b":port:");
+            h.update(pi.to_le_bytes().as_ref());
+            h.update(b":");
+            h.update(&nh);
+            h.update(b"\n");
+            // Output modifier (`final`, `shared`) — affects
+            // semantic identity (a `shared` slot reads
+            // differently than a `final` slot even with the
+            // same producing node).
+            if let Some(modifier) = self.output_modifiers.get(name.as_str()) {
+                h.update(b"  mod:");
+                h.update(format!("{:?}", modifier).as_bytes());
+                h.update(b"\n");
+            }
+        }
+
+        // Inherited-output set: marks names that pass through
+        // this scope without "owning" them. Affects
+        // compute_own_coordinates → scope-coordinate
+        // attribution → potentially affects observable
+        // identity (e.g. label-set keys in metrics).
+        let mut inherited: Vec<&String> = self.inherited_outputs.iter().collect();
+        inherited.sort();
+        for name in inherited {
+            h.update(b"inh:");
+            h.update(name.as_bytes());
+            h.update(b"\n");
+        }
+
+        // Init-output set: every name whose producing node is
+        // expected to fold to a constant at scope-init time
+        // (per SRD-11 §"Init Binding Contract"). A workload
+        // edit that promotes a binding from `final` to `init`
+        // (or vice versa) changes the eval-lifecycle of the
+        // node graph — distinct programs.
+        let mut init_outs: Vec<&String> = self.init_outputs.iter().collect();
+        init_outs.sort();
+        for name in init_outs {
+            h.update(b"init:");
+            h.update(name.as_bytes());
+            h.update(b"\n");
+        }
+
+        // Cursor schemas: source declarations carry into the
+        // program's compile-time identity (different source
+        // bounds = different program).
+        for schema in &self.cursor_schemas {
+            h.update(b"cursor:");
+            h.update(schema.name.as_bytes());
+            h.update(b":");
+            h.update(format!("{:?}", schema.extent).as_bytes());
+            h.update(b"\n");
+        }
+
+        h.finalize().into()
+    }
+
+    /// Recursive helper: hash a single node's canonical form,
+    /// memoising on node index. The hash incorporates the
+    /// node's kind (`meta.name`), every const slot's value,
+    /// and every wire input — wires to other nodes resolve to
+    /// those nodes' canonical hashes, so the result is a
+    /// Merkle-tree summary of the producer's full transitive
+    /// dependency cone.
+    fn node_canonical_hash(
+        &self,
+        ni: usize,
+        memo: &mut HashMap<usize, [u8; 32]>,
+    ) -> [u8; 32] {
+        if let Some(h) = memo.get(&ni) {
+            return *h;
+        }
+        // Insert a sentinel to handle the (theoretical)
+        // cycle case — GK DAGs aren't supposed to cycle, but
+        // guarding against an infinite recursion if a future
+        // node graph violates that is cheap insurance.
+        memo.insert(ni, [0u8; 32]);
+
+        use sha2::{Sha256, Digest};
+        let mut h = Sha256::new();
+        let meta = self.nodes[ni].meta();
+        h.update(b"node:");
+        h.update(meta.name.as_bytes());
+        h.update(b"\n");
+
+        // Output ports: name + type, in declaration order.
+        for port in &meta.outs {
+            h.update(b"  outp:");
+            h.update(port.name.as_bytes());
+            h.update(b":");
+            h.update(format!("{:?}", port.typ).as_bytes());
+            h.update(b"\n");
+        }
+
+        // Input slots in declaration order. For Wire slots,
+        // pull the wire-source for that port and resolve it.
+        // Const slots inline their value's bytes.
+        let wires = &self.wiring[ni];
+        let mut wire_idx = 0;
+        for slot in &meta.ins {
+            match slot {
+                crate::node::Slot::Wire(port) => {
+                    h.update(b"  wirep:");
+                    h.update(port.name.as_bytes());
+                    h.update(b":");
+                    h.update(format!("{:?}", port.typ).as_bytes());
+                    h.update(b":");
+                    if let Some(src) = wires.get(wire_idx) {
+                        canonical_wire_source(src, self, memo, &mut h);
+                    } else {
+                        h.update(b"unwired");
+                    }
+                    h.update(b"\n");
+                    wire_idx += 1;
+                }
+                crate::node::Slot::Const { name, value } => {
+                    h.update(b"  const:");
+                    h.update(name.as_bytes());
+                    h.update(b":");
+                    canonical_const_value(value, &mut h);
+                    h.update(b"\n");
+                }
+            }
+        }
+
+        let result: [u8; 32] = h.finalize().into();
+        memo.insert(ni, result);
+        result
+    }
+
     /// Number of nodes in the program.
     pub fn node_count(&self) -> usize {
         self.nodes.len()
@@ -847,5 +1052,140 @@ impl GkProgram {
         }
 
         Ok(folded)
+    }
+}
+
+/// Hash one [`super::WireSource`] in canonical form. Inputs
+/// resolve to their *name* (stable identifier) rather than
+/// their positional index. Node-output references recurse via
+/// [`GkProgram::node_canonical_hash`].
+fn canonical_wire_source(
+    src: &super::WireSource,
+    program: &GkProgram,
+    memo: &mut HashMap<usize, [u8; 32]>,
+    h: &mut sha2::Sha256,
+) {
+    use sha2::Digest;
+    match src {
+        super::WireSource::Input(idx) => {
+            h.update(b"input:");
+            if let Some(def) = program.input_defs.get(*idx) {
+                h.update(def.name.as_bytes());
+            } else {
+                h.update(b"<oob>");
+            }
+        }
+        super::WireSource::NodeOutput(ni, pi) => {
+            h.update(b"node:");
+            let nh = program.node_canonical_hash(*ni, memo);
+            h.update(&nh);
+            h.update(b":port:");
+            h.update(pi.to_le_bytes().as_ref());
+        }
+    }
+}
+
+/// Hash one [`crate::node::ConstValue`] in canonical form.
+/// Floats hash via their bit pattern so 0.0 vs -0.0 (and
+/// distinct NaN payloads) are distinguishable. Strings and
+/// vectors include explicit length tags so concatenation is
+/// unambiguous.
+fn canonical_const_value(v: &crate::node::ConstValue, h: &mut sha2::Sha256) {
+    use crate::node::ConstValue;
+    use sha2::Digest;
+    match v {
+        ConstValue::U64(x) => {
+            h.update(b"u64:");
+            h.update(x.to_le_bytes().as_ref());
+        }
+        ConstValue::F64(x) => {
+            h.update(b"f64:");
+            h.update(x.to_bits().to_le_bytes().as_ref());
+        }
+        ConstValue::Str(s) => {
+            h.update(b"str:");
+            h.update((s.len() as u64).to_le_bytes().as_ref());
+            h.update(s.as_bytes());
+        }
+        ConstValue::VecU64(xs) => {
+            h.update(b"vu64:");
+            h.update((xs.len() as u64).to_le_bytes().as_ref());
+            for x in xs {
+                h.update(x.to_le_bytes().as_ref());
+            }
+        }
+        ConstValue::VecF64(xs) => {
+            h.update(b"vf64:");
+            h.update((xs.len() as u64).to_le_bytes().as_ref());
+            for x in xs {
+                h.update(x.to_bits().to_le_bytes().as_ref());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod canonical_hash_tests {
+    use crate::dsl::compile_gk;
+
+    #[test]
+    fn identical_source_produces_identical_hash() {
+        let src = "final dataset := \"sift1m\"\nfinal count := 100\n";
+        let k1 = compile_gk(src).expect("compile1");
+        let k2 = compile_gk(src).expect("compile2");
+        assert_eq!(k1.program().canonical_hash(), k2.program().canonical_hash());
+    }
+
+    #[test]
+    fn different_const_value_changes_hash() {
+        let a = compile_gk("final x := 100\n").expect("compile a");
+        let b = compile_gk("final x := 101\n").expect("compile b");
+        assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
+            "differing const value must change canonical hash");
+    }
+
+    #[test]
+    fn different_string_value_changes_hash() {
+        let a = compile_gk("final s := \"sift1m\"\n").expect("compile a");
+        let b = compile_gk("final s := \"sift10m\"\n").expect("compile b");
+        assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
+            "differing string value must change canonical hash");
+    }
+
+    #[test]
+    fn renamed_output_changes_hash() {
+        // Same RHS, different output name → different program
+        // identity. The output map contributes to canonical
+        // identity.
+        let a = compile_gk("final foo := 42\n").expect("compile a");
+        let b = compile_gk("final bar := 42\n").expect("compile b");
+        assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
+            "renamed output must change canonical hash");
+    }
+
+    #[test]
+    fn comment_only_change_does_not_change_hash() {
+        let a = compile_gk("final x := 42\n").expect("compile a");
+        let b = compile_gk("# explanatory comment\nfinal x := 42\n# trailing comment\n")
+            .expect("compile b");
+        assert_eq!(a.program().canonical_hash(), b.program().canonical_hash(),
+            "comment-only edits should not affect canonical hash — \
+             the AST is what's hashed, not the source bytes");
+    }
+
+    #[test]
+    fn whitespace_change_does_not_change_hash() {
+        let a = compile_gk("final x := 42\n").expect("compile a");
+        let b = compile_gk("final  x  :=  42\n\n\n").expect("compile b");
+        assert_eq!(a.program().canonical_hash(), b.program().canonical_hash(),
+            "whitespace-only edits should not affect canonical hash");
+    }
+
+    #[test]
+    fn additional_binding_changes_hash() {
+        let a = compile_gk("final x := 1\n").expect("compile a");
+        let b = compile_gk("final x := 1\nfinal y := 2\n").expect("compile b");
+        assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
+            "added output must change canonical hash");
     }
 }

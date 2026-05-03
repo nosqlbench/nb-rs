@@ -342,6 +342,151 @@ pub struct WorkloadPhase {
     /// configures what is shown (true = all available columns).
     #[serde(default)]
     pub summary: Option<serde_json::Value>,
+    /// Checkpoint declaration: skip-on-resume eligibility plus
+    /// optional sub-properties (hashing, verify op). `None` =
+    /// no declaration = phase always re-runs on resume. See
+    /// SRD-44 §"Eligibility — `checkpoint:` per-phase declaration".
+    ///
+    /// Parsed via [`Checkpoint`]'s custom deserialize from the
+    /// three YAML forms (short string, disabled string/bool,
+    /// full mapping).
+    #[serde(default)]
+    pub checkpoint: Option<Checkpoint>,
+}
+
+/// Per-phase checkpoint declaration. Three legal forms in YAML:
+///
+/// - `checkpoint: idempotent` — short form, equivalent to
+///   `Checkpoint { idempotent: true, hashed: true, verify: None }`.
+/// - `checkpoint: none` (or `false`, or `no`) — explicitly not
+///   skip-eligible. Equivalent to no declaration; the phase
+///   always re-runs on resume.
+/// - `checkpoint: { idempotent: true, hashed: true, verify: ... }`
+///   — full mapping form with sub-properties.
+///
+/// See SRD-44 §"Forms" and §"Sub-properties" for the full
+/// contract. The `Default` is "skip-eligible with hashing on,
+/// no verify" — what the short form `idempotent` produces.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Checkpoint {
+    /// Marks this phase as skip-eligible on resume. `false`
+    /// here is equivalent to `checkpoint: none` and means the
+    /// phase always re-runs.
+    pub idempotent: bool,
+    /// When `true` (the default for any set checkpoint
+    /// declaration), the resume planner additionally verifies
+    /// that the freshly-pre-mapped phase's compiled program
+    /// hash matches the saved one before honouring the saved
+    /// status. `false` is the operator opt-out — "trust
+    /// structural identity (yaml_path + coords) alone".
+    pub hashed: bool,
+    /// Optional verify op-template body. When present, the
+    /// resume planner runs this op against the live system
+    /// before classifying the phase as Skip; verify failure
+    /// reclassifies to re-run with wholesale purge.
+    /// Currently typed as a generic YAML value — the runtime
+    /// re-parses it through the op-template grammar so the
+    /// existing pipeline (SRD-32 wrappers, SRD-03 status-
+    /// determination invariants) governs the verify
+    /// execution.
+    pub verify: Option<serde_json::Value>,
+}
+
+impl Default for Checkpoint {
+    fn default() -> Self {
+        Self {
+            idempotent: true,
+            hashed: true,
+            verify: None,
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Checkpoint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // The YAML accepts strings, booleans, and mappings —
+        // each meaning a different declaration form. Serde's
+        // visitor pattern lets us handle each input shape
+        // directly without going through a typed-value
+        // intermediate, which means this works equally well
+        // for the YAML parser path and the JSON-staged path
+        // (parse.rs walks `serde_json::Map` for phases).
+        struct CheckpointVisitor;
+        impl<'de> serde::de::Visitor<'de> for CheckpointVisitor {
+            type Value = Checkpoint;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("checkpoint declaration: short string ('idempotent' / 'none' / etc), bool, or mapping with sub-properties")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Checkpoint, E> {
+                let trimmed = s.trim().to_ascii_lowercase();
+                match trimmed.as_str() {
+                    "idempotent" => Ok(Checkpoint::default()),
+                    "none" | "no" | "false" | "off" | "" => Ok(Checkpoint {
+                        idempotent: false,
+                        hashed: true,
+                        verify: None,
+                    }),
+                    other => Err(E::custom(format!(
+                        "checkpoint: unknown short form '{other}'; \
+                         expected 'idempotent', 'none', 'no', 'false', or a mapping"
+                    ))),
+                }
+            }
+
+            fn visit_string<E: serde::de::Error>(self, s: String) -> Result<Checkpoint, E> {
+                self.visit_str(&s)
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, b: bool) -> Result<Checkpoint, E> {
+                if b {
+                    Ok(Checkpoint::default())
+                } else {
+                    Ok(Checkpoint {
+                        idempotent: false,
+                        hashed: true,
+                        verify: None,
+                    })
+                }
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Checkpoint, E> {
+                // Bare `null` ≡ `none`.
+                Ok(Checkpoint {
+                    idempotent: false,
+                    hashed: true,
+                    verify: None,
+                })
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Checkpoint, M::Error>
+            where M: serde::de::MapAccess<'de>
+            {
+                let mut idempotent = true;
+                let mut hashed = true;
+                let mut verify: Option<serde_json::Value> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "idempotent" => idempotent = map.next_value::<bool>()?,
+                        "hashed" => hashed = map.next_value::<bool>()?,
+                        "verify" => verify = Some(map.next_value::<serde_json::Value>()?),
+                        other => {
+                            return Err(serde::de::Error::custom(format!(
+                                "checkpoint: unknown key '{other}'; \
+                                 expected 'idempotent', 'hashed', or 'verify'"
+                            )));
+                        }
+                    }
+                }
+                Ok(Checkpoint { idempotent, hashed, verify })
+            }
+        }
+        deserializer.deserialize_any(CheckpointVisitor)
+    }
 }
 
 /// A node in a scenario execution tree.
