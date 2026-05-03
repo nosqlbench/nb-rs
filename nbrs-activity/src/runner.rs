@@ -34,6 +34,7 @@ pub const KNOWN_PARAMS: &[&str] = &[
     "profiler", "profiler_callgraph", "tui",
     "latency-cadences", "latency_cadences",
     "jobname", "instance", "prompush_apikeyfile",
+    "resume", "resume_latest", "force_retry_failed",
 ];
 
 /// Convert the workload-model `SummaryConfig` (parsed from the
@@ -385,9 +386,27 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     let seq_type = merged_params.get("seq")
         .map(|s| SequencerType::parse(s).unwrap_or(SequencerType::Bucket))
         .unwrap_or(SequencerType::Bucket);
-    let error_spec = merged_params.get("errors")
+    let mut error_spec = merged_params.get("errors")
         .cloned()
         .unwrap_or_else(|| ".*:warn,stop".to_string());
+    // SRD-44 §"--force-retry-failed": when set on a resume
+    // invocation, prepend a `.*:retry,warn` rule to the errors
+    // cascade so any failure surfaces a retry rather than the
+    // workload's normal stop / fail behaviour. Idempotent: when
+    // set on a fresh run, it still applies (doesn't gate on
+    // is_resume) — operators who want the override on a fresh
+    // run get it; operators who pass it accidentally without
+    // resume= get the same generous-retry policy they'd see on
+    // resume.
+    let force_retry_failed = params.get("force_retry_failed")
+        .map(|s| s != "false" && s != "0")
+        .unwrap_or(false)
+        || args.iter().any(|a| a == "--force-retry-failed");
+    if force_retry_failed {
+        error_spec = format!(".*:retry,warn;{error_spec}");
+        crate::diag!(crate::observer::LogLevel::Info,
+            "--force-retry-failed: errors cascade prefixed with '.*:retry,warn'");
+    }
 
     // Validate CLI parameters (runner-known + adapter-registered + workload-declared).
     //
@@ -559,12 +578,63 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             .or_else(|| a.strip_prefix("report-openmetrics-to=")))
         .map(|s| s.to_string());
 
+    // Resolve the resume source BEFORE creating the new session
+    // — `Session::new` eagerly remaps `logs/latest` at the new
+    // session id, so any path resolution that depends on the old
+    // `latest` target has to happen first. Stored as
+    // `resume_target` and consulted later when constructing the
+    // checkpoint writer + plan. SRD-44 §"Resume CLI surface".
+    let resume_target: Option<std::path::PathBuf> = {
+        let explicit = params.get("resume")
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let p = std::path::PathBuf::from(s);
+                if p.is_file() { p }
+                else if p.is_dir() { p.join("checkpoint.json") }
+                else { std::path::PathBuf::from("logs").join(s).join("checkpoint.json") }
+            });
+        let resume_latest = params.get("resume_latest")
+            .map(|s| s != "false" && s != "0")
+            .unwrap_or(false)
+            || args.iter().any(|a| a == "--resume-latest");
+        if resume_latest {
+            // Resolve the symlink to a concrete session dir
+            // *now* — once `Session::new` runs the symlink will
+            // be repointed at the new session.
+            let latest = std::path::PathBuf::from("logs/latest");
+            let resolved = std::fs::read_link(&latest).ok()
+                .map(|target| {
+                    if target.is_absolute() { target }
+                    else { std::path::PathBuf::from("logs").join(target) }
+                })
+                .map(|d| d.join("checkpoint.json"));
+            explicit.or(resolved)
+        } else {
+            explicit
+        }
+    };
+
     // Session: root context for this run. Creates logs/{scenario}_{timestamp}/
+    // for fresh runs; reuses the prior session dir when resuming
+    // so the metrics.db is appended-to in-place per SRD-44
+    // §"Wholesale metrics-purge".
     let scenario_for_session = params.get("scenario").map(|s| s.as_str()).unwrap_or("default");
-    let session = crate::session::Session::new(
-        workload_file.as_deref().unwrap_or("inline"),
-        scenario_for_session,
-    );
+    let session = match resume_target.as_ref() {
+        Some(p) if p.exists() => {
+            let prior_dir = p.parent()
+                .map(|d| d.to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from("logs/latest"));
+            crate::session::Session::resume(
+                prior_dir,
+                workload_file.as_deref().unwrap_or("inline"),
+                scenario_for_session,
+            )
+        }
+        _ => crate::session::Session::new(
+            workload_file.as_deref().unwrap_or("inline"),
+            scenario_for_session,
+        ),
+    };
     let session_id = session.id.clone();
 
     // dryrun=controls: defer the tree walk until after phase
@@ -1193,7 +1263,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         // iteration sources fail the run here — before any
         // phase executes — so a CI run can't silently skip
         // a sub-space (SRD-15 §"Empty Iteration Sources").
-        match crate::executor::pre_map_tree(
+        let pre_mapped_tree = match crate::executor::pre_map_tree(
             &scenario_nodes, &phases, &scope_tree, strict,
             // Seed the path with the top-level scenario name —
             // pre_map_recursive extends it through every nested
@@ -1205,7 +1275,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         ) {
             Ok(scene_tree) => {
                 observer.scenario_pre_mapped(&scene_tree);
-                crate::scene_tree::install_global(scene_tree);
+                Some(scene_tree)
             }
             Err(e) if strict => {
                 return Err(e);
@@ -1216,7 +1286,90 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 // Non-strict: the pre-map failure is purely a
                 // diagnostic affordance. The TUI will populate
                 // its tree lazily as phases run.
+                None
             }
+        };
+
+        // --- Checkpoint writer + resume plan (SRD-44) ---
+        //
+        // The writer file lives at `<session-dir>/checkpoint.json`
+        // and is rewritten atomically on every flush. Resume from
+        // an explicit prior session is wired through the
+        // `--resume <session>` / `--resume-latest` CLI surface
+        // (see runner CLI parsing); for a fresh session the writer
+        // starts empty and the plan reruns everything.
+        let checkpoint_path = session.output_dir.join("checkpoint.json");
+        // `resume_target` was resolved at the top of run(),
+        // before Session::new repointed `logs/latest` at the new
+        // session id. SRD-44 §"Resume CLI surface".
+        let saved_doc = match resume_target.as_ref() {
+            Some(p) => match crate::checkpoint::storage::read(p) {
+                Ok(Some(doc)) => Some(doc),
+                Ok(None) => {
+                    crate::diag!(crate::observer::LogLevel::Warn,
+                        "resume: no checkpoint found at {} — fresh session",
+                        p.display());
+                    None
+                }
+                Err(e) => {
+                    return Err(format!("resume: {e}"));
+                }
+            },
+            None => None,
+        };
+        let invocation = saved_doc.as_ref().map(|d| d.invocation + 1).unwrap_or(1);
+        let started_at = saved_doc.as_ref()
+            .map(|d| d.started_at.clone())
+            .unwrap_or_else(|| crate::checkpoint::storage::now_rfc3339());
+        let checkpoint_writer = std::sync::Arc::new(match saved_doc.as_ref() {
+            Some(_doc) => {
+                // Restore from saved.
+                let doc = saved_doc.clone().unwrap();
+                crate::checkpoint::CheckpointWriter::from_existing(
+                    checkpoint_path.clone(), doc,
+                    crate::checkpoint::storage::now_rfc3339(), invocation,
+                )
+            }
+            None => crate::checkpoint::CheckpointWriter::new(
+                checkpoint_path.clone(),
+                session.id.clone(),
+                started_at,
+                invocation,
+            ),
+        });
+        let resume_plan = if let (Some(saved), Some(tree)) =
+            (saved_doc.as_ref(), pre_mapped_tree.as_ref())
+        {
+            let candidates = crate::checkpoint::scene_tree_resume_candidates(
+                tree, &scope_tree, &phases);
+            std::sync::Arc::new(crate::checkpoint::ResumePlan::from_checkpoint(
+                saved, &candidates,
+            ))
+        } else {
+            std::sync::Arc::new(crate::checkpoint::ResumePlan::fresh())
+        };
+
+        // Declare every pre-mapped phase into the writer so a
+        // future resume can tell "didn't run yet" from "wasn't
+        // planned". Idempotent — re-declaring an entry the
+        // writer already restored from disk is a no-op.
+        if let Some(tree) = pre_mapped_tree.as_ref() {
+            crate::checkpoint::declare_scene_tree_phases(
+                &checkpoint_writer, tree, &phases,
+            );
+        }
+
+        if resume_plan.is_resume {
+            let skip = resume_plan.skip_count();
+            let mismatch = resume_plan.mismatch_count();
+            let cursor = resume_plan.cursor_resume_count();
+            crate::diag!(crate::observer::LogLevel::Info,
+                "resume: invocation #{invocation} — \
+                 {skip} skip, {mismatch} mismatched, {cursor} cursor-resume");
+        }
+
+        if let Some(scene_tree) = pre_mapped_tree {
+            crate::scene_tree::install_global(scene_tree);
         }
 
         // Execute the scenario tree recursively via the executor module.
@@ -1283,6 +1436,9 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         })
                     })
                 }),
+                checkpoint_writer: Some(checkpoint_writer.clone()),
+                resume_plan: resume_plan.clone(),
+                sqlite_reporter: sqlite_reporter.clone(),
             };
             let scheduler = crate::scheduler::build(&schedule_spec);
             scheduler.run(
@@ -2183,7 +2339,9 @@ pub fn normalize_args(args: &[String]) -> Vec<String> {
 /// here so [`parse_params`] doesn't reject them and any consumer
 /// can re-check the raw `args` for them.
 const RECOGNIZED_BARE_FLAGS: &[&str] = &[
-    "--strict",  // SRD-15 strict-mode toggle.
+    "--strict",              // SRD-15 strict-mode toggle.
+    "--resume-latest",       // SRD-44: resume from logs/latest.
+    "--force-retry-failed",  // SRD-44: prepend retry,warn to errors.
 ];
 
 /// Parse `key=value` pairs from command line args.

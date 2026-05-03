@@ -37,6 +37,8 @@
 //!
 //! Both are per-op: different ops simulate independent backends.
 
+pub mod gk_fixtures;
+
 use std::collections::HashMap;
 use std::io::{self, Write, BufWriter};
 use std::sync::{Arc, Mutex};
@@ -94,6 +96,19 @@ pub struct ModelParams {
     /// permit is acquired, so this represents "too many already
     /// being served." `None` = no overload rejection.
     pub overload: Option<usize>,
+    /// Driver-level fail-on-cycle test fixture (SRD-44 §"resumable
+    /// test fixture"; design memo `resumable_test_fixture.md`
+    /// variant A). When set, the op returns an `Err` tagged
+    /// `result-throw-name` (default `ThrowAt`) on the cycle whose
+    /// numeric value equals this threshold. Distinct surface from
+    /// the GK-level `throw_at(...)` node — this throws from inside
+    /// the adapter's op execution path, exercising the
+    /// op-result-error branch of the errors cascade.
+    pub throw_at_cycle: Option<u64>,
+    /// Error name to tag the synthetic throw with. Default
+    /// `ThrowAt`; pin a specific name when the workload's
+    /// errors cascade needs to match a label.
+    pub throw_name: String,
 }
 
 impl Default for ModelParams {
@@ -106,6 +121,8 @@ impl Default for ModelParams {
             error_message: "simulated error".into(),
             capacity: None,
             overload: None,
+            throw_at_cycle: None,
+            throw_name: "ThrowAt".into(),
         }
     }
 }
@@ -307,6 +324,28 @@ impl OpDispenser for ModelDispenser {
                 None => None,
             };
 
+            // Driver-level throw_at fixture (resumable-test
+            // staircase). Tripping here surfaces the failure at
+            // the op-result boundary, exercising the
+            // `Result<OpResult, ExecutionError>` branch of the
+            // errors cascade — distinct from the GK-level
+            // `throw_at(...)` node which panics during binding
+            // eval.
+            if let Some(threshold) = self.model_params.throw_at_cycle
+                && cycle == threshold
+            {
+                if self.diagnose {
+                    eprintln!("  testkit: ThrowAt cycle={cycle} threshold={threshold}");
+                }
+                return Err(ExecutionError::Op(AdapterError {
+                    error_name: self.model_params.throw_name.clone(),
+                    message: format!(
+                        "testkit driver-level throw_at: cycle {cycle} reached threshold {threshold}",
+                    ),
+                    retryable: false,
+                }));
+            }
+
             // Error injection: deterministic per cycle
             if self.model_params.error_rate > 0.0 {
                 let h = xxh3::xxh3_64(&cycle.to_le_bytes());
@@ -389,6 +428,25 @@ pub fn extract_model_params(params: &HashMap<String, serde_json::Value>) -> Mode
         && n > 0 {
             mp.overload = Some(n);
         }
+
+    // result-throw-at: fail on the cycle whose value equals this
+    // threshold. Accepts either a JSON number or a numeric string
+    // (workload YAML often interpolates a binding here, which
+    // arrives as a string).
+    if let Some(val) = params.get("result-throw-at") {
+        if let Some(n) = val.as_u64() {
+            mp.throw_at_cycle = Some(n);
+        } else if let Some(s) = val.as_str()
+            && let Ok(n) = s.trim().parse::<u64>()
+        {
+            mp.throw_at_cycle = Some(n);
+        }
+    }
+    if let Some(val) = params.get("result-throw-name")
+        && let Some(s) = val.as_str()
+    {
+        mp.throw_name = s.to_string();
+    }
 
     mp
 }
@@ -541,6 +599,67 @@ mod tests {
         let result = dispenser.execute(0, &ctx).await.unwrap();
         assert!(result.body.is_some());
     }
+
+    #[test]
+    fn extract_model_params_picks_up_throw_at_numeric() {
+        let mut params = HashMap::new();
+        params.insert("result-throw-at".into(), serde_json::Value::from(42u64));
+        let mp = extract_model_params(&params);
+        assert_eq!(mp.throw_at_cycle, Some(42));
+        // Default name when only throw-at is set.
+        assert_eq!(mp.throw_name, "ThrowAt");
+    }
+
+    #[test]
+    fn extract_model_params_picks_up_throw_at_string() {
+        // Workload YAML often interpolates a binding into result-throw-at,
+        // which arrives at the adapter as a string after expansion.
+        let mut params = HashMap::new();
+        params.insert("result-throw-at".into(), serde_json::Value::from("17"));
+        params.insert("result-throw-name".into(), serde_json::Value::from("staircase"));
+        let mp = extract_model_params(&params);
+        assert_eq!(mp.throw_at_cycle, Some(17));
+        assert_eq!(mp.throw_name, "staircase");
+    }
+
+    #[tokio::test]
+    async fn driver_level_throw_at_fires_on_threshold_cycle() {
+        let mut params = HashMap::new();
+        params.insert("result-throw-at".into(), serde_json::Value::from(3u64));
+        params.insert("result-throw-name".into(), serde_json::Value::from("staircase"));
+
+        let adapter = ModelAdapter::new();
+        let mut template = nbrs_workload::model::ParsedOp::simple("test", "SELECT 1;");
+        template.params = params;
+        let dispenser = adapter.map_op(&template).unwrap();
+
+        let fields = ResolvedFields::new(
+            vec!["stmt".into()],
+            vec![nbrs_variates::node::Value::Str("SELECT 1;".into())],
+        );
+        let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
+        let ctx = nbrs_activity::adapter::ExecCtx::new(&fields, &pulls);
+
+        // Cycles below threshold succeed.
+        for c in [0u64, 1, 2] {
+            let r = dispenser.execute(c, &ctx).await;
+            assert!(r.is_ok(), "cycle {c} below threshold should succeed");
+        }
+        // Cycle == threshold trips.
+        let r = dispenser.execute(3, &ctx).await;
+        match r {
+            Err(ExecutionError::Op(e)) => {
+                assert_eq!(e.error_name, "staircase");
+                assert!(e.message.contains("3"), "message should name the cycle: {}", e.message);
+            }
+            other => panic!("expected throw-at op error, got {other:?}"),
+        }
+        // Cycles past threshold succeed (the op is not stuck).
+        for c in [4u64, 5] {
+            let r = dispenser.execute(c, &ctx).await;
+            assert!(r.is_ok(), "cycle {c} past threshold should succeed");
+        }
+    }
 }
 
 // =========================================================================
@@ -554,6 +673,7 @@ inventory::submit! {
             "result", "result-latency",
             "result-error-rate", "result-error-name", "result-error-message",
             "result-capacity", "result-overload",
+            "result-throw-at", "result-throw-name",
         ],
         display_preference: || nbrs_activity::adapter::DisplayPreference::Auto,
         create: |params| Box::pin(async move {

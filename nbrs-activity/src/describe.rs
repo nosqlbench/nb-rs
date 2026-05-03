@@ -46,11 +46,21 @@ pub fn print_kernel_analysis(
             }
         }
 
-        let mod_str = match modifier {
-            nbrs_variates::dsl::ast::BindingModifier::Shared => " [shared]",
-            nbrs_variates::dsl::ast::BindingModifier::Final => " [final]",
-            nbrs_variates::dsl::ast::BindingModifier::None => "",
+        // Build the [final shared volatile] tag suffix from the
+        // modifier's flag set. Order is fixed so the output is
+        // stable.
+        let mod_str = {
+            let mut tags: Vec<&str> = Vec::new();
+            if modifier.is_final() { tags.push("final"); }
+            if modifier.is_shared() { tags.push("shared"); }
+            if modifier.is_volatile() { tags.push("volatile"); }
+            if tags.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", tags.join(" "))
+            }
         };
+        let mod_str = mod_str.as_str();
         let out_type = if port_idx < meta.outs.len() {
             format!("{:?}", meta.outs[port_idx].typ)
         } else { "?".into() };

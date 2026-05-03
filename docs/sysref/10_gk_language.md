@@ -862,12 +862,21 @@ for_each iteration:
 
 ### Binding Modifiers
 
-Bindings can carry modifiers that control scope behavior:
+Bindings can carry one or more wire-coloring modifiers before
+the binding name. Modifiers may appear in any order; the parser
+collects them as a flag set. The currently-recognised modifiers
+form a single closed enum (`WireModifier` in
+`nbrs-variates/src/dsl/ast.rs`) — adding a new modifier means
+adding one variant + one bit assignment + one parser arm; no
+downstream consumer churn beyond the call sites that ask "is
+this modifier set?".
 
 ```
-shared counter := hash(cycle)    # mutable across iteration boundaries
-final dim := 128                 # immutable; cannot be shadowed
-shared init budget = 100         # combined: shared + scope-init
+shared counter := hash(cycle)         # mutable across iteration boundaries
+final dim := 128                      # immutable; cannot be shadowed
+shared init budget = 100              # combined: shared + scope-init
+volatile threshold := f(...)          # value excluded from hash_const
+shared volatile counter := 0          # mutable + identity-invisible
 ```
 
 - **`shared`**: the runner propagates the value back to the
@@ -877,6 +886,32 @@ shared init budget = 100         # combined: shared + scope-init
 - **`final`**: inner scopes cannot redefine this name.
   The runner enforces this at compile time when generating
   auto-extern declarations.
+
+- **`volatile`** *(SRD-44)*: marks the wire as non-deterministic
+  for `hash_const` purposes — its value is excluded from the
+  const-folded identity hash that the resume planner uses.
+  The author is signalling "this looks foldable but treat the
+  value as opaque." Also suppresses the strict-mode
+  "non-deterministic node" warning for the immediate source
+  node when it has empty wiring (the keyword IS the
+  acknowledgment).
+
+**Invalid combinations:**
+
+- `final` + `volatile` → rejected at parse time. `final` folds
+  the value into a const slot at compile/init time; `volatile`
+  excludes it from const-fold. The two contradict directly.
+
+All other combinations (`final shared`, `shared volatile`) are
+valid and supported.
+
+**Tagging is consistent across binding kinds.** `init` and
+`extern` are separate AST node types because their right-hand-
+side contracts differ (init takes `=` not `:=`; extern declares
+a port with type + default). But the wire-coloring modifier set
+is shared — `volatile init x = 0` and `volatile y := f(...)`
+both attach the same `BindingModifier { is_volatile: true }`
+to the binding's wire identity.
 
 ### Cursor Declaration
 

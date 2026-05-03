@@ -259,7 +259,7 @@ impl GkProgram {
 
     /// Set the binding modifier for a named output.
     pub(crate) fn set_output_modifier(&mut self, name: &str, modifier: crate::dsl::ast::BindingModifier) {
-        if modifier != crate::dsl::ast::BindingModifier::None {
+        if modifier != crate::dsl::ast::BindingModifier::NONE {
             self.output_modifiers.insert(name.to_string(), modifier);
         }
     }
@@ -267,13 +267,13 @@ impl GkProgram {
     /// Query the binding modifier for a named output.
     pub fn output_modifier(&self, name: &str) -> crate::dsl::ast::BindingModifier {
         self.output_modifiers.get(name).copied()
-            .unwrap_or(crate::dsl::ast::BindingModifier::None)
+            .unwrap_or(crate::dsl::ast::BindingModifier::NONE)
     }
 
     /// Return all output names that have the `shared` modifier.
     pub fn shared_outputs(&self) -> Vec<&str> {
         self.output_modifiers.iter()
-            .filter(|(_, m)| **m == crate::dsl::ast::BindingModifier::Shared)
+            .filter(|(_, m)| **m == crate::dsl::ast::BindingModifier::SHARED)
             .map(|(n, _)| n.as_str())
             .collect()
     }
@@ -307,7 +307,7 @@ impl GkProgram {
     /// Return all output names that have the `final` modifier.
     pub fn final_outputs(&self) -> Vec<&str> {
         self.output_modifiers.iter()
-            .filter(|(_, m)| **m == crate::dsl::ast::BindingModifier::Final)
+            .filter(|(_, m)| **m == crate::dsl::ast::BindingModifier::FINAL)
             .map(|(n, _)| n.as_str())
             .collect()
     }
@@ -551,6 +551,43 @@ impl GkProgram {
     ///   representation, so 0.0 vs -0.0 hash differently and
     ///   NaNs are distinguishable from each other only by
     ///   their bit pattern (rare but consistent).
+    /// Aggregate identity over this program **plus** an outer
+    /// chain of ancestor programs (innermost first; the
+    /// workload-root program is last). The result is a
+    /// SHA-256 over each program's `canonical_hash` in
+    /// declaration order, prefixed with a versioned tag so
+    /// future reshapings can be detected.
+    ///
+    /// **Use this when callers need "did anything in scope
+    /// change?"** — including upstream bindings that feed
+    /// in via auto-extern. `canonical_hash` (the per-program
+    /// flavour) covers only this program's own AST and
+    /// cannot detect a workload-param edit that lands in a
+    /// parent kernel's const slots.
+    ///
+    /// `canonical_hash` stays a pure local operation (no
+    /// kernel-chain dependency); GK refuses to walk parent
+    /// scopes inside a per-program hash. The runtime owns
+    /// the parent-chain walk and feeds the resulting program
+    /// chain here. Callers are responsible for ensuring every
+    /// piece of state that should affect identity lives in
+    /// some attached GK module — e.g. nbrs injects workload
+    /// `params:` as a synthetic root module
+    /// (`build_workload_params_kernel`) whose `final` bindings
+    /// land in const slots `canonical_hash` covers.
+    pub fn instance_hash(&self, ancestors: &[&GkProgram]) -> [u8; 32] {
+        use sha2::{Sha256, Digest};
+        let mut h = Sha256::new();
+        h.update(b"GkProgram-instance-v1\n");
+        h.update(self.canonical_hash());
+        for a in ancestors {
+            h.update(a.canonical_hash());
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&h.finalize());
+        out
+    }
+
     pub fn canonical_hash(&self) -> [u8; 32] {
         use sha2::{Sha256, Digest};
         let mut h = Sha256::new();
@@ -590,13 +627,19 @@ impl GkProgram {
             h.update(b":");
             h.update(&nh);
             h.update(b"\n");
-            // Output modifier (`final`, `shared`) — affects
-            // semantic identity (a `shared` slot reads
-            // differently than a `final` slot even with the
-            // same producing node).
-            if let Some(modifier) = self.output_modifiers.get(name.as_str()) {
+            // Output modifier flags (`final`, `shared`,
+            // `volatile`) — affect semantic identity. A
+            // `shared` slot reads differently than a `final`
+            // slot even with the same producing node; a
+            // `volatile` mark is part of the workload's
+            // identity-decision intent. Emitting individual
+            // flag bytes (not Debug-format) so the hash stays
+            // stable under struct-field reordering.
+            if let Some(m) = self.output_modifiers.get(name.as_str()) {
                 h.update(b"  mod:");
-                h.update(format!("{:?}", modifier).as_bytes());
+                h.update(if m.is_final()    { b"F" } else { b"-" });
+                h.update(if m.is_shared()   { b"S" } else { b"-" });
+                h.update(if m.is_volatile() { b"V" } else { b"-" });
                 h.update(b"\n");
             }
         }
@@ -922,22 +965,43 @@ impl GkProgram {
             }
         }
 
-        // Non-deterministic node check
+        // Non-deterministic node check (per SRD-44 + design memo
+        // `resumable_test_fixture.md`). Empty-wiring + not-init +
+        // not-internal nodes are structurally-detected as
+        // non-deterministic. The `volatile` keyword on a binding
+        // wire is the author's explicit acknowledgment — when a
+        // node's output feeds into a volatile output, suppress
+        // both the strict-mode error and the audit warning.
+        //
+        // Direct-consumer check only: walks `output_list` looking
+        // for outputs that map to this node and checks whether
+        // the output's modifier carries `is_volatile`. Suffices
+        // for the common pattern `volatile name := source_fn(...)`.
+        // Full transitive volatile-taint propagation is a future
+        // enhancement keyed to `hash_const`.
         for i in 0..n {
             let name = &self.nodes[i].meta().name;
             let is_nondeterministic = self.wiring[i].is_empty() && !is_init[i]
                 && !name.starts_with("__");
-            if is_nondeterministic {
-                let msg = format!(
-                    "non-deterministic node '{name}' used without explicit acknowledgment"
-                );
-                if strict {
-                    return Err(format!("strict mode: {msg}. Use a deterministic alternative."));
-                }
-                crate::audit::warn(&msg);
-                if let Some(ref mut log) = log {
-                    log.push(crate::dsl::events::CompileEvent::Warning { message: msg });
-                }
+            if !is_nondeterministic { continue; }
+            let consumed_by_volatile = self.output_list.iter().any(|(out_name, node_idx, _port)| {
+                *node_idx == i
+                    && self.output_modifiers.get(out_name)
+                        .map(|m| m.is_volatile())
+                        .unwrap_or(false)
+            });
+            if consumed_by_volatile {
+                continue;
+            }
+            let msg = format!(
+                "non-deterministic node '{name}' used without explicit acknowledgment"
+            );
+            if strict {
+                return Err(format!("strict mode: {msg}. Use a deterministic alternative."));
+            }
+            crate::audit::warn(&msg);
+            if let Some(ref mut log) = log {
+                log.push(crate::dsl::events::CompileEvent::Warning { message: msg });
             }
         }
 
@@ -1187,5 +1251,80 @@ mod canonical_hash_tests {
         let b = compile_gk("final x := 1\nfinal y := 2\n").expect("compile b");
         assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
             "added output must change canonical hash");
+    }
+
+    // -----------------------------------------------------------
+    // instance_hash — aggregates over a parent-chain of programs
+    // -----------------------------------------------------------
+
+    #[test]
+    fn const_inside_function_call_changes_hash() {
+        // The integer literal in `mod(..., N)` lives in a const
+        // slot that canonical_hash should cover — even when it's
+        // an argument to a function call rather than a top-level
+        // `final X := <literal>` binding.
+        let a = compile_gk("inputs := (cycle)\nshard := mod(hash(cycle), 8)\n")
+            .expect("a");
+        let b = compile_gk("inputs := (cycle)\nshard := mod(hash(cycle), 16)\n")
+            .expect("b");
+        assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
+            "literal-arg const value must change canonical hash");
+    }
+
+    #[test]
+    fn instance_hash_with_no_ancestors_differs_from_canonical_hash() {
+        // The instance form prefixes a different domain tag, so
+        // even with an empty ancestor chain the two flavours are
+        // distinguishable. Prevents a caller from accidentally
+        // comparing an instance_hash against a canonical_hash
+        // and getting a coincidental match.
+        let p = compile_gk("final x := 1\n").expect("compile");
+        let prog = p.program();
+        assert_ne!(prog.instance_hash(&[]), prog.canonical_hash());
+    }
+
+    #[test]
+    fn instance_hash_changes_when_an_ancestor_program_changes() {
+        // Parent A vs B differ only in a const-slot literal —
+        // canonical_hash distinguishes them, so instance_hash
+        // computed against the same child must distinguish too.
+        let parent_a = compile_gk("final ds := \"v1\"\n").expect("a");
+        let parent_b = compile_gk("final ds := \"v2\"\n").expect("b");
+        let child = compile_gk("final y := 42\n").expect("child");
+        let cp = child.program();
+        let h_a = cp.instance_hash(&[parent_a.program().as_ref()]);
+        let h_b = cp.instance_hash(&[parent_b.program().as_ref()]);
+        assert_ne!(h_a, h_b,
+            "ancestor const-slot edit must change instance_hash even \
+             when the child program is byte-identical");
+    }
+
+    #[test]
+    fn instance_hash_is_order_sensitive_in_the_chain() {
+        // The chain order matters — different scope-tree paths
+        // must map to different identities. The hash mixes
+        // ancestor[i].canonical_hash() in chain order, so swapping
+        // ancestors yields a different result.
+        let g = compile_gk("final g := 1\n").expect("g");
+        let p = compile_gk("final p := 2\n").expect("p");
+        let c = compile_gk("final c := 3\n").expect("c");
+        let cp = c.program();
+        let chain1 = cp.instance_hash(&[p.program().as_ref(), g.program().as_ref()]);
+        let chain2 = cp.instance_hash(&[g.program().as_ref(), p.program().as_ref()]);
+        assert_ne!(chain1, chain2);
+    }
+
+    #[test]
+    fn instance_hash_is_deterministic_across_rebuilds() {
+        // Two independent compiles of the same source feeding
+        // the same child must produce the same instance_hash.
+        let parent_src = "final ds := \"sift1m\"\n";
+        let p1 = compile_gk(parent_src).expect("p1");
+        let p2 = compile_gk(parent_src).expect("p2");
+        let child = compile_gk("final y := 42\n").expect("child");
+        let cp = child.program();
+        let h1 = cp.instance_hash(&[p1.program().as_ref()]);
+        let h2 = cp.instance_hash(&[p2.program().as_ref()]);
+        assert_eq!(h1, h2);
     }
 }

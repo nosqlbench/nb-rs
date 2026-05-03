@@ -176,6 +176,124 @@ impl GkNode for ThreadId {
     }
 }
 
+/// Environment variable read, frozen at construction.
+///
+/// Signature: `env(name: const str) -> str`
+///
+/// Reads the named env var at node construction (session-init) and
+/// returns the captured value on every evaluation. Errors at
+/// construction if the variable is unset — use `env_or` for a
+/// defaulted form.
+///
+/// Convention: env values are static for a process lifetime
+/// (per project convention). The captured value is constant
+/// within a session; resume invocations re-read the env in their
+/// own process, so resume identity correctly distinguishes runs
+/// with different env values once `hash_const` lands.
+pub struct Env {
+    meta: NodeMeta,
+    value: String,
+}
+
+impl Env {
+    pub fn new(var: &str) -> Result<Self, String> {
+        let value = std::env::var(var).map_err(|_| format!(
+            "env('{var}'): environment variable not set; \
+             use env_or('{var}', '<default>') if a fallback is acceptable",
+        ))?;
+        Ok(Self {
+            meta: NodeMeta {
+                name: "env".into(),
+                outs: vec![Port::str("output")],
+                ins: Vec::new(),
+            },
+            value,
+        })
+    }
+}
+
+impl GkNode for Env {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::Str(self.value.clone());
+    }
+}
+
+/// Environment variable read with default, frozen at construction.
+///
+/// Signature: `env_or(name: const str, default: const str) -> str`
+///
+/// Reads the named env var at node construction; falls back to
+/// the literal `default` when the variable is unset. The captured
+/// value is then constant for the session.
+///
+/// See [`Env`] for the rationale on session-static behavior.
+pub struct EnvOr {
+    meta: NodeMeta,
+    value: String,
+}
+
+impl EnvOr {
+    pub fn new(var: &str, default: &str) -> Self {
+        let value = std::env::var(var).unwrap_or_else(|_| default.to_string());
+        Self {
+            meta: NodeMeta {
+                name: "env_or".into(),
+                outs: vec![Port::str("output")],
+                ins: Vec::new(),
+            },
+            value,
+        }
+    }
+}
+
+impl GkNode for EnvOr {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::Str(self.value.clone());
+    }
+}
+
+/// System temp directory, frozen at construction.
+///
+/// Signature: `tmp_dir() -> str`
+///
+/// Returns `std::env::temp_dir()` captured at node construction.
+/// Like [`Env`] / [`EnvOr`], the value is treated as session-static
+/// per project convention.
+pub struct TmpDir {
+    meta: NodeMeta,
+    value: String,
+}
+
+impl Default for TmpDir {
+    fn default() -> Self { Self::new() }
+}
+
+impl TmpDir {
+    pub fn new() -> Self {
+        let value = std::env::temp_dir()
+            .to_str()
+            .map(String::from)
+            .unwrap_or_else(|| "/tmp".to_string());
+        Self {
+            meta: NodeMeta {
+                name: "tmp_dir".into(),
+                outs: vec![Port::str("output")],
+                ins: Vec::new(),
+            },
+            value,
+        }
+    }
+}
+
+impl GkNode for TmpDir {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::Str(self.value.clone());
+    }
+}
+
 /// Monotonically incrementing counter (thread-safe).
 ///
 /// Signature: `() -> (u64)`
@@ -300,6 +418,41 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
         },
+        FuncSig {
+            name: "env", category: C::Context, outputs: 1,
+            description: "process environment variable, frozen at session-init",
+            help: "Reads the named environment variable at session-init and returns the captured string on every evaluation.\nFails at workload load time if the variable is unset — use env_or for a defaulted form.\nValues are treated as session-static per project convention.\nParameters:\n  name — environment variable name (const string)\nExample: dataset := env(\"DATASET\")",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"DATASET\"", constraint: None },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            default_resolver: None,
+        },
+        FuncSig {
+            name: "env_or", category: C::Context, outputs: 1,
+            description: "process environment variable with default, frozen at session-init",
+            help: "Reads the named environment variable at session-init; falls back to the literal default when the variable is unset. The captured value is constant for the session.\nValues are treated as session-static per project convention.\nParameters:\n  name    — environment variable name (const string)\n  default — fallback string (const)\nExample: dataset := env_or(\"DATASET\", \"default\")",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"DATASET\"", constraint: None },
+                ParamSpec { name: "default", slot_type: SlotType::ConstStr, required: true, example: "\"default\"", constraint: None },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            default_resolver: None,
+        },
+        FuncSig {
+            name: "tmp_dir", category: C::Context, outputs: 1,
+            description: "system temp directory, frozen at session-init",
+            help: "Returns std::env::temp_dir() captured at session-init.\nValue is constant for the session.\nTakes no parameters.\nExample: path := \"{tmp_dir()}/cache\"",
+            identity: None, variadic_ctor: None,
+            params: &[],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            default_resolver: None,
+        },
     ]
 }
 
@@ -354,6 +507,22 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
             let max_items = consts.first().map(|c| c.as_u64()).unwrap_or(u64::MAX);
             Some(Ok(Box::new(CursorLimit::new(max_items))))
         }
+        "env" => {
+            let var = consts.first().map(|c| c.as_str()).unwrap_or("");
+            if var.is_empty() {
+                return Some(Err("env(): missing variable name argument".into()));
+            }
+            Some(Env::new(var).map(|n| Box::new(n) as Box<dyn crate::node::GkNode>))
+        }
+        "env_or" => {
+            let var = consts.first().map(|c| c.as_str()).unwrap_or("");
+            let default = consts.get(1).map(|c| c.as_str()).unwrap_or("");
+            if var.is_empty() {
+                return Some(Err("env_or(): missing variable name argument".into()));
+            }
+            Some(Ok(Box::new(EnvOr::new(var, default))))
+        }
+        "tmp_dir" => Some(Ok(Box::new(TmpDir::new()))),
         _ => None,
     }
 }
@@ -414,5 +583,129 @@ mod tests {
         assert_eq!(out[0].as_u64(), 100);
         node.eval(&[], &mut out);
         assert_eq!(out[0].as_u64(), 101);
+    }
+
+    /// Generate a unique env-var name per test so concurrent test
+    /// threads can't collide on the same key. The process env is
+    /// global state; using fixed names like `TEST_VAR` makes
+    /// tests order-dependent.
+    fn unique_var(tag: &str) -> String {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        format!("__NBRS_TEST_{tag}_{nanos:x}")
+    }
+
+    #[test]
+    fn env_captures_value_at_construction() {
+        let var = unique_var("ENV");
+        unsafe { std::env::set_var(&var, "captured-value"); }
+        let node = Env::new(&var).expect("env should read the set var");
+        // Mutating the env after construction must NOT change the
+        // node's output — the value is frozen at construction.
+        unsafe { std::env::set_var(&var, "later-value"); }
+        let mut out = [Value::None];
+        node.eval(&[], &mut out);
+        assert_eq!(out[0].as_str().to_string(), "captured-value");
+        unsafe { std::env::remove_var(&var); }
+    }
+
+    #[test]
+    fn env_errors_when_var_unset() {
+        let var = unique_var("ENV_MISSING");
+        unsafe { std::env::remove_var(&var); }
+        match Env::new(&var) {
+            Ok(_) => panic!("Env::new should fail when the var is unset"),
+            Err(err) => {
+                assert!(err.contains(&var),
+                    "error should name the missing var: {err}");
+                assert!(err.contains("env_or"),
+                    "error should suggest env_or as the defaulted alternative: {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn env_or_uses_default_when_var_unset() {
+        let var = unique_var("ENV_OR_MISSING");
+        unsafe { std::env::remove_var(&var); }
+        let node = EnvOr::new(&var, "fallback");
+        let mut out = [Value::None];
+        node.eval(&[], &mut out);
+        assert_eq!(out[0].as_str().to_string(), "fallback");
+    }
+
+    #[test]
+    fn env_or_uses_var_value_when_set() {
+        let var = unique_var("ENV_OR_SET");
+        unsafe { std::env::set_var(&var, "real-value"); }
+        let node = EnvOr::new(&var, "fallback");
+        let mut out = [Value::None];
+        node.eval(&[], &mut out);
+        assert_eq!(out[0].as_str().to_string(), "real-value");
+        unsafe { std::env::remove_var(&var); }
+    }
+
+    #[test]
+    fn env_or_captures_at_construction_not_each_eval() {
+        let var = unique_var("ENV_OR_FROZEN");
+        unsafe { std::env::set_var(&var, "first"); }
+        let node = EnvOr::new(&var, "ignored-default");
+        unsafe { std::env::set_var(&var, "second"); }
+        let mut out = [Value::None];
+        node.eval(&[], &mut out);
+        assert_eq!(out[0].as_str().to_string(), "first",
+            "env_or must freeze its value at construction; later env mutations are invisible");
+        unsafe { std::env::remove_var(&var); }
+    }
+
+    #[test]
+    fn tmp_dir_returns_a_path() {
+        let node = TmpDir::new();
+        let mut out = [Value::None];
+        node.eval(&[], &mut out);
+        let s = out[0].as_str().to_string();
+        assert!(!s.is_empty(), "tmp_dir() should produce a non-empty path");
+    }
+
+    #[test]
+    fn tmp_dir_is_stable_across_evals() {
+        let node = TmpDir::new();
+        let mut a = [Value::None];
+        let mut b = [Value::None];
+        node.eval(&[], &mut a);
+        node.eval(&[], &mut b);
+        assert_eq!(a[0].as_str(), b[0].as_str());
+    }
+
+    /// DSL-level integration: env_or / tmp_dir resolve through the
+    /// registry and produce kernels that compile cleanly.
+    #[test]
+    fn env_or_compiles_through_dsl() {
+        let var = unique_var("DSL_ENV_OR");
+        unsafe { std::env::set_var(&var, "x-value"); }
+        let src = format!(
+            "v := env_or(\"{var}\", \"fallback\")\n",
+        );
+        let kernel = crate::dsl::compile_gk(&src).expect("compile env_or");
+        unsafe { std::env::remove_var(&var); }
+        // The output should be the captured value. We can't read
+        // the kernel's outputs directly without an eval pass; the
+        // shape check (compiled cleanly, registered in DSL) is
+        // what this test asserts.
+        let names = kernel.program().output_names();
+        assert!(names.contains(&"v"), "expected output 'v' in {names:?}");
+    }
+
+    #[test]
+    fn tmp_dir_compiles_through_dsl_in_string_template() {
+        // Confirms the existing string-template machinery accepts
+        // function calls like `{tmp_dir()}` in GK string literals
+        // — no new syntax needed for the resumable-test-fixture
+        // workload's path composition.
+        let src = "path := \"{tmp_dir()}/data\"\n";
+        let kernel = crate::dsl::compile_gk(src)
+            .expect("compile tmp_dir() interpolated in a string");
+        let names = kernel.program().output_names();
+        assert!(names.contains(&"path"), "expected output 'path' in {names:?}");
     }
 }

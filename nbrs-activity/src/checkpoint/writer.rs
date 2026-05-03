@@ -45,6 +45,26 @@ pub struct CheckpointWriter {
     /// Absolute path to `logs/<session>/checkpoint.json`.
     path: PathBuf,
     inner: Mutex<Inner>,
+    /// File descriptor of the held flock lockfile
+    /// (`logs/<session>/checkpoint.lock`). The descriptor is
+    /// owned for the lifetime of the writer; closing it (Drop)
+    /// releases the advisory lock automatically. `None` when
+    /// flock acquisition failed soft (e.g. cross-FS lock not
+    /// supported) — the lock is best-effort, not a correctness
+    /// barrier.
+    _lock_fd: Option<LockHandle>,
+}
+
+/// Owning wrapper around a Unix fd that releases the flock when
+/// dropped. `flock(LOCK_UN)` is implicit on close — kernel
+/// releases the lock when the last fd referencing the inode
+/// closes, so `Drop` simply closes the fd.
+struct LockHandle(libc::c_int);
+
+impl Drop for LockHandle {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.0); }
+    }
 }
 
 struct Inner {
@@ -79,6 +99,7 @@ impl CheckpointWriter {
             invocation,
             phases: Vec::new(),
         };
+        let lock = acquire_flock(&path);
         Self {
             path,
             inner: Mutex::new(Inner {
@@ -86,6 +107,7 @@ impl CheckpointWriter {
                 index: HashMap::new(),
                 dirty: false,
             }),
+            _lock_fd: lock,
         }
     }
 
@@ -105,9 +127,11 @@ impl CheckpointWriter {
         doc.checkpoint_at = new_checkpoint_at;
         doc.invocation = new_invocation;
         let index = build_index(&doc.phases);
+        let lock = acquire_flock(&path);
         Self {
             path,
             inner: Mutex::new(Inner { doc, index, dirty: true }),
+            _lock_fd: lock,
         }
     }
 
@@ -185,6 +209,18 @@ impl CheckpointWriter {
         });
     }
 
+    /// Set the program-canonical hash on a declared phase.
+    /// Called once per phase the first time it compiles
+    /// (per-phase compile happens during `run_phase`); the
+    /// hash flows into the saved entry so a future resume
+    /// invocation can detect program drift via
+    /// [`PhaseIdentity::matches_full`].
+    pub fn update_phase_hash(&self, identity: &PhaseIdentity, hash: [u8; 32]) {
+        self.with_entry(identity, |e| {
+            e.identity.phase_hash = Some(hash);
+        });
+    }
+
     /// Record the latest cursor-state snapshot for a Tier 2
     /// phase. Called from the metrics tick callback.
     pub fn update_cursor(
@@ -212,7 +248,7 @@ impl CheckpointWriter {
             if !g.dirty {
                 return Ok(());
             }
-            g.doc.checkpoint_at = now_rfc3339();
+            g.doc.checkpoint_at = super::storage::now_rfc3339();
             g.dirty = false;
             g.doc.clone()
         };
@@ -259,6 +295,75 @@ fn identity_key(identity: &PhaseIdentity) -> String {
     format!("{path_json}\x1f{}", identity.coords)
 }
 
+/// Take a non-blocking exclusive advisory lock on a sibling
+/// `checkpoint.lock` file alongside the checkpoint document.
+/// Returns `Some` on success, `None` when:
+///
+/// - the parent directory can't be created or opened (the
+///   writer falls back to lockless operation — racing two
+///   resumes against an unwritable session is already broken),
+/// - another process holds the lock (`flock(EX|NB)` returns
+///   `EWOULDBLOCK`) — in which case the runner aborts with a
+///   clear diagnostic per SRD-44 §"Concurrent-resume protection".
+///
+/// The flock is **advisory**: only consumers that take the same
+/// lock care. The contract is "no two `nbrs run` invocations on
+/// the same session at once" — flock enforces that without
+/// stopping a stray `cat` or backup tool from reading the
+/// checkpoint file out-of-band.
+fn acquire_flock(checkpoint_path: &std::path::Path) -> Option<LockHandle> {
+    use std::os::unix::ffi::OsStrExt;
+    let parent = checkpoint_path.parent()?;
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        eprintln!(
+            "warning: could not create checkpoint dir {}: {e} (concurrent-resume protection skipped)",
+            parent.display(),
+        );
+        return None;
+    }
+    let lock_path = checkpoint_path.with_extension("lock");
+    let c_path = std::ffi::CString::new(lock_path.as_os_str().as_bytes()).ok()?;
+    let fd = unsafe {
+        libc::open(
+            c_path.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC,
+            0o644,
+        )
+    };
+    if fd < 0 {
+        let errno = std::io::Error::last_os_error();
+        eprintln!(
+            "warning: could not open lockfile {}: {errno} (concurrent-resume protection skipped)",
+            lock_path.display(),
+        );
+        return None;
+    }
+    let rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        let errno = std::io::Error::last_os_error();
+        unsafe { libc::close(fd); }
+        if errno.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            // Another process holds the lock — surface this as
+            // a hard error via panic-with-message; the runner
+            // catches it and reports cleanly.
+            panic!(
+                "checkpoint: another process holds the resume lock at {} \
+                 (concurrent `nbrs run --resume` against the same session?). \
+                 If you're certain no other process is running, remove the \
+                 lockfile and retry.",
+                lock_path.display(),
+            );
+        } else {
+            eprintln!(
+                "warning: flock on {} failed: {errno} (concurrent-resume protection skipped)",
+                lock_path.display(),
+            );
+            return None;
+        }
+    }
+    Some(LockHandle(fd))
+}
+
 fn build_index(phases: &[PhaseEntry]) -> HashMap<String, usize> {
     let mut m = HashMap::with_capacity(phases.len());
     for (i, e) in phases.iter().enumerate() {
@@ -267,39 +372,6 @@ fn build_index(phases: &[PhaseEntry]) -> HashMap<String, usize> {
     m
 }
 
-/// Format the current wall-clock time as an RFC 3339 UTC
-/// timestamp, e.g. `2026-01-01T00:00:00Z`. Matches the shape
-/// session.rs uses for human-readable timestamps; kept local
-/// to avoid pulling in chrono just for one call site.
-fn now_rfc3339() -> String {
-    let dur = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = dur.as_secs();
-    let days = secs / 86400;
-    let time_of_day = secs % 86400;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-    let (year, month, day) = days_to_ymd(days);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z"
-    )
-}
-
-fn days_to_ymd(days: u64) -> (u64, u64, u64) {
-    let z = days + 719468;
-    let era = z / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
-}
 
 #[cfg(test)]
 mod tests {
@@ -382,16 +454,21 @@ mod tests {
     fn from_existing_keeps_completed_phases() {
         let dir = tempdir();
         let path = dir.join("c.json");
-        // First session writes one Completed phase.
-        let w = CheckpointWriter::new(
-            path.clone(), "s".into(), "2026-01-01T00:00:00Z".into(), 1,
-        );
-        let id = ident("schema", "");
-        w.declare_phase(id.clone(), true);
-        w.phase_completed(&id, 0.5);
-        w.flush().expect("flush");
-        // Second session resumes.
-        let saved = super::super::storage::read(&path).expect("read").expect("present");
+        // First session writes one Completed phase, then drops
+        // (releasing its flock) so the resume writer can claim
+        // the lock. Mirrors the production lifecycle: the
+        // prior process exits before the resume invocation
+        // starts.
+        let saved = {
+            let w = CheckpointWriter::new(
+                path.clone(), "s".into(), "2026-01-01T00:00:00Z".into(), 1,
+            );
+            let id = ident("schema", "");
+            w.declare_phase(id.clone(), true);
+            w.phase_completed(&id, 0.5);
+            w.flush().expect("flush");
+            super::super::storage::read(&path).expect("read").expect("present")
+        };
         let w2 = CheckpointWriter::from_existing(
             path.clone(), saved, "2026-01-01T00:01:00Z".into(), 2,
         );
@@ -399,5 +476,22 @@ mod tests {
         assert_eq!(snap.invocation, 2);
         assert_eq!(snap.phases.len(), 1);
         assert_eq!(snap.phases[0].status, PhaseStatus::Completed);
+    }
+
+    #[test]
+    fn flock_blocks_concurrent_writer_on_same_path() {
+        let dir = tempdir();
+        let path = dir.join("c.json");
+        let _w = CheckpointWriter::new(
+            path.clone(), "s".into(), "t".into(), 1,
+        );
+        // A second writer on the same path must panic with the
+        // resume-lock message — not silently shadow the first.
+        let result = std::panic::catch_unwind(|| {
+            let _w2 = CheckpointWriter::new(
+                path.clone(), "s".into(), "t".into(), 1,
+            );
+        });
+        assert!(result.is_err(), "second writer should panic on flock contention");
     }
 }

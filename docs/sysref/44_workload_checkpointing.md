@@ -191,6 +191,33 @@ For a checkpoint entry to apply to a freshly-pre-mapped phase:
    when its program details drift". Rare; documented at the
    declaration site.
 
+### Authors opt out of folding via `volatile`
+
+The wire-level escape hatch for "this binding's value is
+session-stable but should NOT contribute to identity" is the
+`volatile` keyword on a binding name (SRD-10 §"Binding
+Modifiers"). The compiler's analyzer:
+
+- excludes the wire's evaluated value from `hash_const`,
+- propagates non-foldability to direct downstream consumers
+  via the existing det/non-det analyzer walk,
+- suppresses the strict-mode "non-deterministic node used
+  without explicit acknowledgment" complaint for the source
+  node — the `volatile` keyword IS the acknowledgment.
+
+The const-args of a `volatile` binding ARE part of identity
+(they're hashed normally), so editing the binding source
+remains a workload edit that invalidates `hash_const`. The
+opt-out only blocks the *evaluated value* from entering the
+hash; it doesn't blind the resume planner to YAML changes.
+
+**Test fixtures** are the canonical use case
+(`docs/design/resumable_test_fixture.md`): the testkit's
+`side_effect_sequence_next_*` and `throw_at` nodes are
+declared volatile so the staircase test can vary its
+failure-injection point across resumes without invalidating
+identity.
+
 ### Single-walk collisions are bugs
 
 Two checkpoint entries with identical `(yaml_path, coords)`

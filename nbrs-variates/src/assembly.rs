@@ -255,7 +255,7 @@ impl GkAssembler {
 
     /// Set the binding modifier for a named output.
     pub fn set_output_modifier(&mut self, name: &str, modifier: crate::dsl::ast::BindingModifier) {
-        if modifier != crate::dsl::ast::BindingModifier::None {
+        if modifier != crate::dsl::ast::BindingModifier::NONE {
             self.output_modifiers.insert(name.to_string(), modifier);
         }
     }

@@ -148,7 +148,7 @@ fn parse_statement(p: &mut Parser) -> Result<Statement, String> {
         TokenKind::Init => parse_init_binding(p),
         TokenKind::Extern => parse_extern_port(p),
         TokenKind::Cursor => parse_cursor_decl(p),
-        TokenKind::Shared | TokenKind::Final => parse_modified_binding(p),
+        TokenKind::Shared | TokenKind::Final | TokenKind::Volatile => parse_modified_binding(p),
         TokenKind::LParen => parse_destructuring_binding(p),
         TokenKind::Ident(_) => {
             // Lookahead to distinguish:
@@ -290,7 +290,7 @@ fn parse_inputs(p: &mut Parser) -> Result<Statement, String> {
 
 /// `init name = expr`
 fn parse_init_binding(p: &mut Parser) -> Result<Statement, String> {
-    parse_init_binding_with_modifier(p, BindingModifier::None)
+    parse_init_binding_with_modifier(p, BindingModifier::NONE)
 }
 
 fn parse_init_binding_with_modifier(p: &mut Parser, modifier: BindingModifier) -> Result<Statement, String> {
@@ -313,28 +313,49 @@ fn parse_cursor_decl(p: &mut Parser) -> Result<Statement, String> {
     Ok(Statement::Cursor(CursorDecl { name, constructor, span }))
 }
 
-/// `shared name := expr` or `final name := expr`
+/// `<modifier>* name := expr` where each modifier ∈ {final,
+/// shared, volatile, ...}. Modifiers may appear in any order;
+/// duplicates and the contradictory `final` + `volatile` combo
+/// are rejected (see [`BindingModifier::from_iter`]).
 fn parse_modified_binding(p: &mut Parser) -> Result<Statement, String> {
-    let modifier = match p.peek() {
-        TokenKind::Shared => BindingModifier::Shared,
-        TokenKind::Final => BindingModifier::Final,
-        _ => unreachable!(),
-    };
-    p.advance(); // consume 'shared' or 'final'
+    let start_span = p.span();
+    let mut collected: Vec<WireModifier> = Vec::new();
+
+    loop {
+        let m = match p.peek() {
+            TokenKind::Final    => WireModifier::Final,
+            TokenKind::Shared   => WireModifier::Shared,
+            TokenKind::Volatile => WireModifier::Volatile,
+            _ => break,
+        };
+        if collected.contains(&m) {
+            return Err(format!(
+                "duplicate `{m:?}` modifier at line {}, col {}",
+                p.span().line, p.span().col,
+            ));
+        }
+        collected.push(m);
+        p.advance();
+    }
+
+    let modifier = BindingModifier::from_iter(collected)
+        .map_err(|e| format!(
+            "{e} at line {}, col {}", start_span.line, start_span.col,
+        ))?;
 
     match p.peek() {
         TokenKind::Init => parse_init_binding_with_modifier(p, modifier),
         TokenKind::Ident(_) => parse_cycle_binding_with_modifier(p, modifier),
         _ => Err(format!(
-            "expected binding after {:?} at line {}, col {}",
-            modifier, p.span().line, p.span().col
+            "expected binding name after modifiers at line {}, col {}",
+            p.span().line, p.span().col
         )),
     }
 }
 
 /// `name := expr`
 fn parse_cycle_binding(p: &mut Parser) -> Result<Statement, String> {
-    parse_cycle_binding_with_modifier(p, BindingModifier::None)
+    parse_cycle_binding_with_modifier(p, BindingModifier::NONE)
 }
 
 fn parse_cycle_binding_with_modifier(p: &mut Parser, modifier: BindingModifier) -> Result<Statement, String> {
@@ -371,7 +392,7 @@ fn parse_destructuring_binding(p: &mut Parser) -> Result<Statement, String> {
     Ok(Statement::CycleBinding(CycleBinding {
         targets,
         value,
-        modifier: BindingModifier::None,
+        modifier: BindingModifier::NONE,
         span,
     }))
 }
@@ -754,6 +775,91 @@ mod tests {
     fn parse_str(s: &str) -> GkFile {
         let tokens = lex(s).unwrap();
         parse(tokens).unwrap()
+    }
+
+    fn parse_str_err(s: &str) -> String {
+        let tokens = lex(s).unwrap();
+        match parse(tokens) {
+            Ok(_) => panic!("expected parse error from: {s:?}"),
+            Err(e) => e,
+        }
+    }
+
+    fn cycle_modifier_of(f: &GkFile) -> BindingModifier {
+        match &f.statements[0] {
+            Statement::CycleBinding(b) => b.modifier,
+            other => panic!("expected cycle binding, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_volatile_modifier() {
+        let f = parse_str("volatile x := 42");
+        let m = cycle_modifier_of(&f);
+        assert!(m.is_volatile() && !m.is_final() && !m.is_shared());
+    }
+
+    #[test]
+    fn parse_modifiers_in_any_order_yields_same_set() {
+        let m1 = cycle_modifier_of(&parse_str("final shared x := 42"));
+        let m2 = cycle_modifier_of(&parse_str("shared final x := 42"));
+        assert_eq!(m1, m2,
+            "ordering shouldn't matter: `final shared` and `shared final` collapse to the same set");
+        assert!(m1.is_final() && m1.is_shared());
+    }
+
+    #[test]
+    fn parse_shared_volatile_combination() {
+        let m = cycle_modifier_of(&parse_str("shared volatile x := 42"));
+        assert!(m.is_shared() && m.is_volatile() && !m.is_final());
+    }
+
+    #[test]
+    fn parse_rejects_final_volatile_combo() {
+        let err = parse_str_err("final volatile x := 42");
+        assert!(err.contains("final") && err.contains("volatile"),
+            "error should name the conflicting keywords: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_volatile_final_combo_same_as_final_volatile() {
+        // Order-independent rejection.
+        let err = parse_str_err("volatile final x := 42");
+        assert!(err.contains("final") && err.contains("volatile"));
+    }
+
+    #[test]
+    fn parse_rejects_duplicate_modifier() {
+        let err = parse_str_err("final final x := 42");
+        assert!(err.contains("duplicate"), "error should call out duplicate: {err}");
+    }
+
+    /// End-to-end: compile a tiny GK source with a `volatile`
+    /// binding and verify the named output reaches the compiled
+    /// program. Catches regressions where the modifier flag
+    /// somehow filters the binding out of the output set.
+    #[test]
+    fn volatile_binding_compiles_to_named_output() {
+        let kernel = crate::dsl::compile_gk(
+            "volatile y := 42\n"
+        ).expect("compile volatile y");
+        let names = kernel.program().output_names();
+        assert!(names.contains(&"y"), "output names: {names:?}");
+        let m = kernel.program().output_modifier("y");
+        assert!(m.is_volatile(), "modifier should record volatile");
+    }
+
+    #[test]
+    fn parse_volatile_init_binding() {
+        // `volatile init x = 42` — init binding with volatile
+        // modifier. Both kinds of bindings share the modifier set.
+        let f = parse_str("volatile init x = 42");
+        match &f.statements[0] {
+            Statement::InitBinding(b) => {
+                assert!(b.modifier.is_volatile());
+            }
+            other => panic!("expected init binding, got {other:?}"),
+        }
     }
 
     #[test]

@@ -64,6 +64,68 @@ mod inner {
             Ok(reporter)
         }
 
+        /// Wholesale-purge every sample row whose owning
+        /// `metric_instance` carries the supplied label set as a
+        /// **superset match** — i.e. every (key, value) pair in
+        /// `labels` is present on the instance, regardless of
+        /// extra labels the instance may also carry.
+        ///
+        /// Used by the checkpoint resume path (SRD-44 §"Wholesale
+        /// metrics-purge"): a phase that re-runs from scratch on
+        /// resume must invalidate the prior invocation's rows so
+        /// downstream summaries don't double-count.
+        ///
+        /// Returns the number of `sample_value` rows deleted.
+        /// Best-effort under SQL errors — logs and returns 0
+        /// rather than propagating, since a purge failure
+        /// shouldn't abort the run (it surfaces as a duplicate-
+        /// counting metric, not silent corruption of state).
+        pub fn purge_samples_with_labels(
+            &mut self,
+            labels: &Labels,
+        ) -> usize {
+            // Build the AND-of-EXISTS query: for each (k, v) in
+            // labels, the instance's label_set must have an
+            // entry whose label_key.key = k AND label_value.value
+            // = v. Subquery enumerates instance ids matching all
+            // pairs.
+            let pairs: Vec<(String, String)> = labels.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            if pairs.is_empty() {
+                return 0;
+            }
+            let exists_clauses: Vec<String> = (0..pairs.len()).map(|i| {
+                let kparam = i * 2 + 1;
+                let vparam = i * 2 + 2;
+                format!(
+                    "EXISTS (SELECT 1 FROM label_set_entry e \
+                     JOIN label_key k ON k.id = e.key_id \
+                     JOIN label_value v ON v.id = e.value_id \
+                     WHERE e.set_id = mi.label_set_id \
+                     AND k.key = ?{kparam} AND v.value = ?{vparam})",
+                )
+            }).collect();
+            let sql = format!(
+                "DELETE FROM sample_value WHERE instance_id IN (\
+                   SELECT mi.id FROM metric_instance mi WHERE {})",
+                exists_clauses.join(" AND "),
+            );
+            let mut bound: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(pairs.len() * 2);
+            for (k, v) in &pairs {
+                bound.push(k as &dyn rusqlite::ToSql);
+                bound.push(v as &dyn rusqlite::ToSql);
+            }
+            match self.conn.execute(&sql, rusqlite::params_from_iter(bound.iter().copied())) {
+                Ok(n) => n,
+                Err(e) => {
+                    crate::diag::warn(&format!(
+                        "warning: sqlite purge_samples_with_labels failed: {e}"));
+                    0
+                }
+            }
+        }
+
         /// Store a session metadata key-value pair.
         pub fn set_metadata(&mut self, key: &str, value: &str) {
             self.conn.execute(

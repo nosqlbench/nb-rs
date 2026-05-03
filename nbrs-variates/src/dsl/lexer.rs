@@ -35,6 +35,10 @@ pub enum TokenKind {
     Shared,
     /// `final` keyword
     Final,
+    /// `volatile` keyword (SRD-44 + design memo
+    /// `resumable_test_fixture.md`). Wire-coloring modifier
+    /// excluding the binding's value from `hash_const`.
+    Volatile,
     /// `cursor` keyword
     Cursor,
     /// `pragma` keyword (module-level directive opening, SRD 15
@@ -401,6 +405,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                 "extern" => TokenKind::Extern,
                 "shared" => TokenKind::Shared,
                 "final" => TokenKind::Final,
+                "volatile" => TokenKind::Volatile,
                 "cursor" => TokenKind::Cursor,
                 "pragma" => TokenKind::Pragma,
                 _ => TokenKind::Ident(word),

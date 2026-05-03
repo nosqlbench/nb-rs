@@ -126,6 +126,41 @@ pub struct OpCounts {
     pub errors: u64,
 }
 
+/// Format the current wall-clock time as an RFC 3339 UTC
+/// timestamp, e.g. `2026-01-01T00:00:00Z`. Used by the writer
+/// for `started_at` / `checkpoint_at` and by the runner when
+/// stamping a fresh session. Local implementation to avoid
+/// dragging chrono in for one call site.
+pub fn now_rfc3339() -> String {
+    let dur = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = dur.as_secs();
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+    let (year, month, day) = days_to_ymd(days);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z"
+    )
+}
+
+fn days_to_ymd(days: u64) -> (u64, u64, u64) {
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
 /// Atomically write a `Checkpoint` to `path`. Writes to
 /// `<path>.tmp` first, fsyncs the file, renames to `<path>`,
 /// fsyncs the parent directory. A crash anywhere along this

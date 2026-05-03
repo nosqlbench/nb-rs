@@ -53,13 +53,25 @@ impl std::fmt::Display for BindingOrigin {
     }
 }
 
-/// The modifier on a binding declaration.
+/// The modifier on a binding declaration. Mirrors the
+/// `BindingModifier` flag set in nbrs-variates' GK AST plus
+/// the binding-kind keywords (`init`, `cursor`) that
+/// nbrs-activity's text-level scope assembly cares about.
+///
+/// Wire-coloring modifiers (`final`, `shared`, `volatile`)
+/// could in principle combine, but the scope assembly path
+/// historically only needs to know "is this final?" /
+/// "is this shared?" for shadow checks; combinations get
+/// reduced here to the most-distinctive single tag. The full
+/// flag set is preserved in the eventual GK AST when the
+/// scope-emitted source compiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeModifier {
     None,
     Init,
     Shared,
     Final,
+    Volatile,
     Cursor,
 }
 
@@ -568,17 +580,44 @@ fn logical_lines(source: &str) -> Vec<String> {
 }
 
 fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
-    if let Some(rest) = lhs.strip_prefix("shared ") {
-        (ScopeModifier::Shared, rest.trim())
-    } else if let Some(rest) = lhs.strip_prefix("final ") {
-        (ScopeModifier::Final, rest.trim())
-    } else if let Some(rest) = lhs.strip_prefix("init ") {
-        (ScopeModifier::Init, rest.trim())
-    } else if let Some(rest) = lhs.strip_prefix("cursor ") {
-        (ScopeModifier::Cursor, rest.trim())
-    } else {
-        (ScopeModifier::None, lhs)
+    // Strip every recognised modifier prefix before classifying;
+    // multi-modifier forms like `volatile final` or `final shared`
+    // only see a single ScopeModifier tag at the scope-assembly
+    // level (the most-distinctive one wins), but the bare name
+    // still gets extracted correctly. The eventual GK compile
+    // sees the full source line with all keywords intact.
+    let mut rest = lhs;
+    let mut tag = ScopeModifier::None;
+    loop {
+        let prev = rest;
+        if let Some(r) = rest.strip_prefix("shared ") {
+            rest = r.trim();
+            // `final` / `init` / `cursor` are more distinctive
+            // than `shared` for shadow / kind checks; only set
+            // tag if we don't already have a stronger one.
+            if matches!(tag, ScopeModifier::None | ScopeModifier::Volatile) {
+                tag = ScopeModifier::Shared;
+            }
+        } else if let Some(r) = rest.strip_prefix("final ") {
+            rest = r.trim();
+            tag = ScopeModifier::Final;
+        } else if let Some(r) = rest.strip_prefix("volatile ") {
+            rest = r.trim();
+            if matches!(tag, ScopeModifier::None) {
+                tag = ScopeModifier::Volatile;
+            }
+        } else if let Some(r) = rest.strip_prefix("init ") {
+            rest = r.trim();
+            tag = ScopeModifier::Init;
+            break;  // init is a kind-keyword; no modifiers come after it.
+        } else if let Some(r) = rest.strip_prefix("cursor ") {
+            rest = r.trim();
+            tag = ScopeModifier::Cursor;
+            break;
+        }
+        if rest == prev { break; }
     }
+    (tag, rest)
 }
 
 /// Build a `BindingScope` from phase ops and execution context.
@@ -898,7 +937,7 @@ pub fn build_scope(
 
     // Check for final shadowing violations
     for entry in outer_manifest {
-        if entry.modifier == nbrs_variates::dsl::ast::BindingModifier::Final
+        if entry.modifier == nbrs_variates::dsl::ast::BindingModifier::FINAL
             && defined.contains(&entry.name)
         {
             return Err(format!(
@@ -1144,11 +1183,21 @@ fn collect_phase_binding_lhs_names(ops: &[ParsedOp]) -> Vec<String> {
                     .or_else(|| trimmed.find('='))
                     .unwrap_or(trimmed.len());
                 let mut lhs = &trimmed[..lhs_end];
-                for prefix in ["cursor ", "init ", "extern ", "final ", "shared ", "private "] {
-                    if let Some(stripped) = lhs.strip_prefix(prefix) {
-                        lhs = stripped.trim();
-                        break;
+                // Strip ALL leading wire-coloring modifiers in
+                // any order. `volatile final` and `final shared`
+                // both need their bare name extracted, and any
+                // future modifier added to the SRD-10 set must
+                // appear here too.
+                loop {
+                    let mut matched = false;
+                    for prefix in ["cursor ", "init ", "extern ", "final ", "shared ", "volatile ", "private "] {
+                        if let Some(stripped) = lhs.strip_prefix(prefix) {
+                            lhs = stripped.trim();
+                            matched = true;
+                            break;
+                        }
                     }
+                    if !matched { break; }
                 }
                 let lhs = lhs.trim();
                 // Destructured tuple LHS: (a, b, c) := ...

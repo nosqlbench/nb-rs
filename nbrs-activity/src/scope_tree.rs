@@ -402,6 +402,29 @@ impl ScopeTree {
         None
     }
 
+    /// Collect every installed ancestor kernel of `idx`,
+    /// innermost first (immediate parent → workload root).
+    /// Skips ancestor levels whose `cached_kernel` is empty
+    /// (intermediate nodes that don't own their own kernel).
+    /// Used by the checkpoint identity path to feed
+    /// [`nbrs_variates::kernel::GkProgram::instance_hash`]
+    /// (SRD-44 §"Identity matching at resume" + project
+    /// memory `program_vs_instance_hash`).
+    pub fn ancestor_kernels(
+        &self,
+        idx: ScopeNodeIdx,
+    ) -> Vec<std::sync::Arc<nbrs_variates::kernel::GkKernel>> {
+        let mut out = Vec::new();
+        let mut cursor = self.nodes.get(idx).and_then(|n| n.parent);
+        while let Some(p) = cursor {
+            if let Some(k) = self.nodes[p].cached_kernel.get() {
+                out.push(k.clone());
+            }
+            cursor = self.nodes[p].parent;
+        }
+        out
+    }
+
     /// Find a `Comprehension` scope by structural-equality match
     /// against its [`Comprehension`] AST. Returns the **first**
     /// DFS-pre-order match.

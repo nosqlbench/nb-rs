@@ -96,6 +96,25 @@ pub struct ExecCtx {
     /// the user can jump straight to the source. `None` for
     /// inline workloads (`op=`) where there's no file.
     pub workload_source: Option<Arc<WorkloadSource>>,
+    /// Per-session checkpoint writer (SRD-44). `None` when the
+    /// session was constructed without checkpointing (e.g.
+    /// short test fixtures). When present, the executor calls
+    /// `declare_phase` during pre-map and `phase_started` /
+    /// `phase_completed` / `phase_failed` around the dispatch
+    /// of every leaf phase.
+    pub checkpoint_writer: Option<Arc<crate::checkpoint::CheckpointWriter>>,
+    /// Resume plan derived from a saved checkpoint document.
+    /// Defaults to `ResumePlan::fresh()` (every phase re-runs)
+    /// when no checkpoint was loaded; an `Arc` so concurrent
+    /// scheduler forks share the same plan.
+    pub resume_plan: Arc<crate::checkpoint::ResumePlan>,
+    /// SQLite metrics reporter handle, threaded through here so
+    /// the executor can purge prior-invocation sample rows on
+    /// resume re-runs (SRD-44 §"Wholesale metrics-purge"). The
+    /// `Arc<Mutex<Option<...>>>` shape mirrors the runner-side
+    /// declaration: `None` when SQLite is disabled (in-memory
+    /// adapters, fixture tests).
+    pub sqlite_reporter: Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
 }
 
 /// Workload YAML source kept alongside the parsed model so
@@ -920,6 +939,57 @@ async fn run_phase(
         }
     }
 
+    // --- Resume short-circuit (SRD-44 §"Skip on resume") ---
+    //
+    // Consult the resume plan before the expensive compile +
+    // dispatch work. A `Skip` action means a prior invocation
+    // already completed this phase, identity matches, and the
+    // operator declared it idempotent — so the cheapest correct
+    // thing to do is mark it Completed in the scene tree and
+    // return. Mismatches and ReRun fall through to the normal
+    // path; CursorResume is wired in Tier 2.
+    let early_phase_labels = match ctx.current_parent_kernel.as_ref() {
+        Some(parent) => format_scope_coordinate_path(parent.scope_coordinates()),
+        None => String::new(),
+    };
+    let early_identity = phase_identity_for(phase_name, &early_phase_labels);
+    match ctx.resume_plan.action_for(&early_identity) {
+        crate::checkpoint::ResumeAction::Skip => {
+            // Surface the skip on the same observer + scene-tree
+            // surfaces a normal phase uses, so the TUI tree, the
+            // post-run summary, and session.log all show the
+            // phase as Completed (with a sentinel zero duration
+            // — there's no real wall-clock to report). Identity
+            // is left None on the writer's existing entry; the
+            // saved hash and duration from the prior run are
+            // preserved verbatim.
+            crate::diag!(crate::observer::LogLevel::Info,
+                "phase '{phase_name}' [skipped — checkpoint resume]");
+            crate::scene_tree::with_global_mut(|t| {
+                t.set_phase_running(phase_name, &early_phase_labels, 0);
+                t.set_phase_completed(phase_name, &early_phase_labels, 0.0);
+            });
+            ctx.observer.phase_starting(phase_name, &early_phase_labels, 0, 0, 0);
+            ctx.observer.phase_completed(phase_name, &early_phase_labels, 0.0);
+            return Ok(());
+        }
+        crate::checkpoint::ResumeAction::IdentityMismatch { reason } => {
+            crate::diag!(crate::observer::LogLevel::Warn,
+                "phase '{phase_name}' [resume: {reason} — re-running]");
+        }
+        crate::checkpoint::ResumeAction::CursorResume { .. } => {
+            // Tier 2: source-factory restore_cursor wiring lands
+            // alongside the cursor-state collector. For now log
+            // the action and fall through to a clean ReRun so
+            // the run continues correctly even though it pays
+            // the duplicate-work cost.
+            crate::diag!(crate::observer::LogLevel::Info,
+                "phase '{phase_name}' [resume: cursor-state available — \
+                 Tier 2 restore not yet wired, re-running from scratch]");
+        }
+        crate::checkpoint::ResumeAction::ReRun => {}
+    }
+
     // --- Compile inner kernel via BindingScope ---
     let (iter_op_builder, iter_ops, runtime_cursor_extents) = if is_iter || has_bindings {
         let mut ops = phase.ops.clone();
@@ -1331,6 +1401,74 @@ async fn run_phase(
     });
     ctx.observer.phase_starting(phase_name, &phase_labels,
         stanza_len, progress_extent, phase_concurrency);
+    if let Some(writer) = ctx.checkpoint_writer.clone() {
+        let identity = phase_identity_for(phase_name, &phase_labels);
+        // Stamp the writer's entry with this phase's
+        // *instance* hash — the canonical hash of this phase's
+        // program combined with every installed ancestor's
+        // program hash. This lets a future resume detect
+        // upstream-binding edits (workload params, intermediate
+        // for_each scope bindings) that pure per-program
+        // canonical_hash misses. See SRD-44 §"Identity matching
+        // at resume" + project memory
+        // `program_vs_instance_hash`.
+        // Stamp the writer's entry with the phase's
+        // ancestor-chain instance_hash — the workload-root
+        // program's canonical_hash plus every intermediate
+        // scope kernel's canonical_hash, in chain order. This
+        // is the same hash the resume planner pre-computes for
+        // its candidates (see
+        // [`crate::checkpoint::scene_tree_resume_candidates`]),
+        // so saved.phase_hash and candidate.phase_hash compare
+        // directly.
+        //
+        // Doesn't include this phase's own compiled program —
+        // phases compile lazily, so the planner can't include
+        // it in candidates without an eager-compile pass at
+        // pre-map. Pure upstream-binding edits (workload params,
+        // intermediate scope bindings) are caught; pure phase-
+        // body edits are not. See SRD-44 §"Identity matching
+        // at resume" + project memory
+        // `program_vs_instance_hash`. Eager phase-compile at
+        // pre-map is the upgrade path for full coverage.
+        let hash = ctx.scope_tree.phase_node_by_name(phase_name)
+            .and_then(|idx| {
+                let ancestors = ctx.scope_tree.ancestor_kernels(idx);
+                if ancestors.is_empty() { return None; }
+                let head = ancestors[0].program();
+                let tail: Vec<&nbrs_variates::kernel::GkProgram> = ancestors[1..]
+                    .iter().map(|k| k.program().as_ref()).collect();
+                Some(head.instance_hash(&tail))
+            })
+            .unwrap_or_else(|| iter_op_builder.program().canonical_hash());
+        writer.update_phase_hash(&identity, hash);
+
+        // Wholesale metrics-purge (SRD-44): on resume, before a
+        // phase re-runs, delete every sample_value row from the
+        // prior invocation that carries this phase's label set.
+        // No-op for fresh runs (is_resume = false) and for
+        // freshly-declared phases that never executed before.
+        if ctx.resume_plan.is_resume {
+            ctx.push_label("phase", phase_name);
+            let labels_for_purge = ctx.labels();
+            ctx.pop_label();
+            let mut guard = ctx.sqlite_reporter.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(reporter) = guard.as_mut() {
+                let n = reporter.purge_samples_with_labels(&labels_for_purge);
+                if n > 0 {
+                    crate::diag!(crate::observer::LogLevel::Info,
+                        "resume: purged {n} prior sample rows for phase '{phase_name}'");
+                }
+            }
+        }
+
+        writer.phase_started(&identity);
+        if let Err(e) = writer.flush() {
+            crate::diag!(crate::observer::LogLevel::Warn,
+                "checkpoint flush at phase '{phase_name}' start: {e}");
+        }
+    }
 
     let config = ActivityConfig {
         name: activity_name,
@@ -1685,6 +1823,14 @@ async fn run_phase(
         crate::scene_tree::with_global_mut(|t| {
             t.set_phase_failed(phase_name, &phase_labels, &detail_msg);
         });
+        if let Some(writer) = ctx.checkpoint_writer.as_ref() {
+            let identity = phase_identity_for(phase_name, &phase_labels);
+            writer.phase_failed(&identity, &detail_msg);
+            if let Err(e) = writer.flush() {
+                crate::diag!(crate::observer::LogLevel::Warn,
+                    "checkpoint flush after phase '{phase_name}' failed: {e}");
+            }
+        }
         return Err(format!("phase '{phase_name}' {detail_msg}"));
     }
 
@@ -1714,7 +1860,40 @@ async fn run_phase(
     crate::scene_tree::with_global_mut(|t| {
         t.set_phase_completed(phase_name, &phase_labels, phase_duration);
     });
+    if let Some(writer) = ctx.checkpoint_writer.as_ref() {
+        let identity = phase_identity_for(phase_name, &phase_labels);
+        writer.phase_completed(&identity, phase_duration);
+        if let Err(e) = writer.flush() {
+            crate::diag!(crate::observer::LogLevel::Warn,
+                "checkpoint flush after phase '{phase_name}' completed: {e}");
+        }
+    }
     Ok(())
+}
+
+/// Build a runtime [`PhaseIdentity`] for a phase that has just
+/// transitioned. The `yaml_path` is read from the global scene
+/// tree; `coords` is the canonical phase-labels string the
+/// runtime already produced via
+/// [`format_scope_coordinate_path`]. `phase_hash` is `None`
+/// here — the writer was already updated with the hash at
+/// compile time via [`crate::checkpoint::CheckpointWriter::update_phase_hash`],
+/// and identity equality is on `(yaml_path, coords)` regardless.
+fn phase_identity_for(phase_name: &str, phase_labels: &str) -> crate::checkpoint::PhaseIdentity {
+    let yaml_path = crate::scene_tree::current()
+        .and_then(|t| {
+            // Match against any status — the lookup may fire
+            // before set_phase_running (declare path) or after
+            // set_phase_completed (post-flush path).
+            t.find_phase(phase_name, phase_labels, None)
+                .and_then(|id| t.nodes.get(id).map(|n| n.yaml_path.clone()))
+        })
+        .unwrap_or_default();
+    crate::checkpoint::PhaseIdentity {
+        yaml_path,
+        coords: phase_labels.to_string(),
+        phase_hash: None,
+    }
 }
 
 /// Format bindings as a sorted labels string for stable matching.

@@ -2659,6 +2659,7 @@ dependencies = [
  "inventory",
  "libc",
  "nbrs-adapter-stdout",
+ "nbrs-adapter-testkit",
  "nbrs-errorhandler",
  "nbrs-metrics",
  "nbrs-rate",

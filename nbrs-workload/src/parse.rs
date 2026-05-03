@@ -214,7 +214,73 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         }
     }
 
+    // SRD-44 §"Resume protocol" + design memo
+    // `workload_checkpointing.md`: a phase declared
+    // `checkpoint: idempotent` that lives inside a do_while /
+    // do_until loop is rejected at workload load time. The
+    // do-loop iterates the same phase many times under one
+    // checkpoint identity; checkpointing presumes each phase
+    // execution is a discrete unit, which the loop directly
+    // contradicts. Operators who really want a do-loop'd phase
+    // to skip on resume must wrap the loop with explicit
+    // identity, not lean on the phase's `checkpoint:` flag.
+    for (scenario_name, nodes) in &scenarios {
+        let mut bad: Vec<String> = Vec::new();
+        collect_idempotent_under_do_loop(nodes, false, &phases, &mut bad);
+        if !bad.is_empty() {
+            return Err(format!(
+                "scenario '{scenario_name}': phase{plural} {names} \
+                 declared `checkpoint: idempotent` while nested inside \
+                 a do_while / do_until loop. The loop iterates the \
+                 same phase identity multiple times, which contradicts \
+                 the per-execution unit checkpointing assumes. Either \
+                 remove the `checkpoint:` declaration or restructure \
+                 the loop. (SRD-44 §\"Resume protocol\".)",
+                plural = if bad.len() == 1 { "" } else { "s" },
+                names = bad.join(", "),
+            ));
+        }
+    }
+
     Ok(Workload { description, scenarios, ops: all_ops, bindings: doc_bindings, params: resolved_params, phases, phase_order, declared_params, summaries, plots })
+}
+
+/// Walk a scenario tree and collect names of phases declared
+/// `checkpoint: idempotent` that live under a `do_while` /
+/// `do_until` ancestor. Used by the workload-load validation
+/// step above (SRD-44).
+fn collect_idempotent_under_do_loop(
+    nodes: &[crate::model::ScenarioNode],
+    in_do_loop: bool,
+    phases: &HashMap<String, crate::model::WorkloadPhase>,
+    out: &mut Vec<String>,
+) {
+    use crate::model::ScenarioNode;
+    for node in nodes {
+        match node {
+            ScenarioNode::Phase(name) => {
+                if in_do_loop {
+                    let idempotent = phases.get(name)
+                        .and_then(|p| p.checkpoint.as_ref())
+                        .map(|c| c.idempotent)
+                        .unwrap_or(false);
+                    if idempotent {
+                        out.push(format!("'{name}'"));
+                    }
+                }
+            }
+            ScenarioNode::DoWhile { children, .. }
+            | ScenarioNode::DoUntil { children, .. } => {
+                collect_idempotent_under_do_loop(children, true, phases, out);
+            }
+            ScenarioNode::Comprehension { children, .. } => {
+                collect_idempotent_under_do_loop(children, in_do_loop, phases, out);
+            }
+            ScenarioNode::IncludedScenario { children, .. } => {
+                collect_idempotent_under_do_loop(children, in_do_loop, phases, out);
+            }
+        }
+    }
 }
 
 /// Parse a YAML source into just the list of normalized ParsedOps.
@@ -1902,5 +1968,99 @@ phases:
     fn checkpoint_field_absent_yields_none() {
         let cp = parse_checkpoint_field("# no checkpoint declared\n");
         assert!(cp.is_none(), "absent declaration should yield None, not Default");
+    }
+
+    /// SRD-44 validation: a phase declared `checkpoint:
+    /// idempotent` inside a do_while loop must be rejected at
+    /// workload-load time. The do-loop iterates the same phase
+    /// identity multiple times, contradicting the per-execution
+    /// unit checkpointing assumes.
+    #[test]
+    fn rejects_idempotent_phase_inside_do_while() {
+        let yaml = r#"
+scenarios:
+  default:
+    - do_while: "true"
+      phases:
+        - probe
+phases:
+  probe:
+    checkpoint: idempotent
+    cycles: 1
+    ops:
+      step:
+        stmt: "probe"
+"#;
+        let err = super::parse_workload(yaml, &HashMap::new())
+            .expect_err("expected validation rejection");
+        assert!(err.contains("checkpoint: idempotent"),
+            "error should explain the rejection: {err}");
+        assert!(err.contains("'probe'"),
+            "error should name the offending phase: {err}");
+        assert!(err.contains("do_while") || err.contains("do_until"),
+            "error should mention the do-loop ancestor: {err}");
+    }
+
+    /// `do_until` triggers the same rejection.
+    #[test]
+    fn rejects_idempotent_phase_inside_do_until() {
+        let yaml = r#"
+scenarios:
+  default:
+    - do_until: "false"
+      phases:
+        - probe
+phases:
+  probe:
+    checkpoint: idempotent
+    cycles: 1
+    ops:
+      step:
+        stmt: "probe"
+"#;
+        let err = super::parse_workload(yaml, &HashMap::new())
+            .expect_err("expected validation rejection");
+        assert!(err.contains("'probe'"));
+    }
+
+    /// A do_while'd phase WITHOUT checkpoint declaration is
+    /// fine — only the combination with `checkpoint:
+    /// idempotent` is rejected.
+    #[test]
+    fn allows_do_while_phase_without_checkpoint_declaration() {
+        let yaml = r#"
+scenarios:
+  default:
+    - do_while: "true"
+      phases:
+        - probe
+phases:
+  probe:
+    cycles: 1
+    ops:
+      step:
+        stmt: "probe"
+"#;
+        super::parse_workload(yaml, &HashMap::new())
+            .expect("plain do_while phase should parse");
+    }
+
+    /// Idempotent phases NOT inside a do-loop are fine.
+    #[test]
+    fn allows_idempotent_phase_outside_do_loop() {
+        let yaml = r#"
+scenarios:
+  default:
+    - probe
+phases:
+  probe:
+    checkpoint: idempotent
+    cycles: 1
+    ops:
+      step:
+        stmt: "probe"
+"#;
+        super::parse_workload(yaml, &HashMap::new())
+            .expect("idempotent phase outside loop should parse");
     }
 }

@@ -118,6 +118,67 @@ impl Session {
         }
     }
 
+    /// Resume an existing session — reuse its directory, id,
+    /// and (consequently) its `metrics.db` so the resumed
+    /// invocation appends to the same metrics history rather
+    /// than starting fresh in a new dir. Per SRD-44 §"Wholesale
+    /// metrics-purge", phases that re-run on resume need their
+    /// prior sample rows purged in-place; that requires writing
+    /// to the same db, which requires reusing the same session
+    /// dir. The id is read from the directory's basename, so it
+    /// preserves the original timestamp suffix.
+    pub fn resume(
+        prior_session_dir: PathBuf,
+        workload: &str,
+        scenario: &str,
+    ) -> Self {
+        let workload_stem = Path::new(workload)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("workload");
+        let id = prior_session_dir.file_name()
+            .and_then(|s| s.to_str())
+            .map(String::from)
+            .unwrap_or_else(|| {
+                // Fallback: synthesize a fresh id from scenario
+                // + timestamp. Shouldn't fire in practice (we
+                // resolved the dir to a real session before
+                // calling here).
+                format!("{scenario}_{}", format_timestamp())
+            });
+
+        // Re-establish the convenience symlinks under `logs/` so
+        // `tail -f logs/session.log` and `sqlite3 logs/metrics.db`
+        // resolve to this resumed session's artifacts. Same
+        // shape as Session::new — a no-op when the symlinks
+        // already point here from a prior run.
+        let logs = PathBuf::from("logs");
+        let latest = logs.join("latest");
+        let _ = std::fs::remove_file(&latest);
+        let _ = std::os::unix::fs::symlink(&id, &latest);
+        for artifact in ["session.log", "metrics.db"] {
+            let link = logs.join(artifact);
+            let _ = std::fs::remove_file(&link);
+            let target = PathBuf::from("latest").join(artifact);
+            let _ = std::os::unix::fs::symlink(&target, &link);
+        }
+
+        let component = Component::root(
+            Labels::of("session", &id),
+            std::collections::HashMap::new(),
+        );
+        nbrs_variates::nodes::runtime_context::set_session_root(component.clone());
+
+        Self {
+            id,
+            output_dir: prior_session_dir,
+            workload: workload_stem.to_string(),
+            scenario: scenario.to_string(),
+            component,
+            metrics_query: Mutex::new(None),
+        }
+    }
+
     /// Create a `logs/<artifact>` convenience symlink that points
     /// (through `logs/latest`) at the named artifact in the
     /// current session's output dir. Idempotent — replaces any

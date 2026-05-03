@@ -811,7 +811,7 @@ impl Compiler {
                         &[b.name.clone()],
                         &b.value,
                     )?;
-                    if b.modifier != BindingModifier::None {
+                    if b.modifier != BindingModifier::NONE {
                         asm.set_output_modifier(&b.name, b.modifier);
                     }
                     asm.mark_init_output(&b.name);
@@ -829,7 +829,7 @@ impl Compiler {
                     // single, well-defined initial value, and a
                     // computation-shaped RHS doesn't have one. See
                     // SRD-16 §"Non-literal `shared` initializers".
-                    if b.modifier == BindingModifier::Shared {
+                    if b.modifier == BindingModifier::SHARED {
                         if b.targets.len() != 1 {
                             return Err(format!(
                                 "shared binding must be single-target, not tuple unpack \
@@ -862,7 +862,7 @@ impl Compiler {
                             vec![WireRef::input(name)],
                         );
                         asm.add_output(name, WireRef::node(&passthrough_name));
-                        asm.set_output_modifier(name, BindingModifier::Shared);
+                        asm.set_output_modifier(name, BindingModifier::SHARED);
                         continue;
                     }
                     self.compile_binding(
@@ -870,7 +870,7 @@ impl Compiler {
                         &b.targets,
                         &b.value,
                     )?;
-                    if b.modifier != BindingModifier::None {
+                    if b.modifier != BindingModifier::NONE {
                         for target in &b.targets {
                             asm.set_output_modifier(target, b.modifier);
                         }
@@ -1032,7 +1032,7 @@ impl Compiler {
             match &stmt {
                 Statement::CycleBinding(binding) => {
                     self.compile_binding(&mut asm, &binding.targets, &binding.value)?;
-                    if binding.modifier != BindingModifier::None {
+                    if binding.modifier != BindingModifier::NONE {
                         for target in &binding.targets {
                             asm.set_output_modifier(target, binding.modifier);
                         }
@@ -1040,7 +1040,7 @@ impl Compiler {
                 }
                 Statement::InitBinding(binding) => {
                     self.compile_binding(&mut asm, &[binding.name.clone()], &binding.value)?;
-                    if binding.modifier != BindingModifier::None {
+                    if binding.modifier != BindingModifier::NONE {
                         asm.set_output_modifier(&binding.name, binding.modifier);
                     }
                 }
@@ -1149,7 +1149,7 @@ impl Compiler {
                         &[b.name.clone()],
                         &b.value,
                     )?;
-                    if b.modifier != BindingModifier::None {
+                    if b.modifier != BindingModifier::NONE {
                         asm.set_output_modifier(&b.name, b.modifier);
                     }
                     asm.mark_init_output(&b.name);
@@ -1158,7 +1158,7 @@ impl Compiler {
                     // Mirror `compile()`: literal-init `shared`
                     // bindings compile to slot+passthrough so
                     // SharedCells can be wired across kernels.
-                    if b.modifier == BindingModifier::Shared
+                    if b.modifier == BindingModifier::SHARED
                         && b.targets.len() == 1
                         && let Some((init_value, port_type)) =
                             try_fold_shared_init(&b.value)
@@ -1176,7 +1176,7 @@ impl Compiler {
                             vec![WireRef::input(name)],
                         );
                         asm.add_output(name, WireRef::node(&passthrough_name));
-                        asm.set_output_modifier(name, BindingModifier::Shared);
+                        asm.set_output_modifier(name, BindingModifier::SHARED);
                         continue;
                     }
                     self.compile_binding(
@@ -1184,7 +1184,7 @@ impl Compiler {
                         &b.targets,
                         &b.value,
                     )?;
-                    if b.modifier != BindingModifier::None {
+                    if b.modifier != BindingModifier::NONE {
                         for target in &b.targets {
                             asm.set_output_modifier(target, b.modifier);
                         }
@@ -1359,11 +1359,11 @@ mod tests {
         let kernel = compile_gk(src).unwrap();
         assert_eq!(
             kernel.program().output_modifier("counter"),
-            crate::dsl::ast::BindingModifier::Shared
+            crate::dsl::ast::BindingModifier::SHARED
         );
         assert_eq!(
             kernel.program().output_modifier("normal"),
-            crate::dsl::ast::BindingModifier::None
+            crate::dsl::ast::BindingModifier::NONE
         );
     }
 
@@ -1392,7 +1392,7 @@ mod tests {
         let kernel = compile_gk(src).unwrap();
         assert_eq!(
             kernel.program().output_modifier("dim"),
-            crate::dsl::ast::BindingModifier::Final
+            crate::dsl::ast::BindingModifier::FINAL
         );
     }
 
@@ -1405,7 +1405,7 @@ mod tests {
         let kernel = compile_gk(src).unwrap();
         assert_eq!(
             kernel.program().output_modifier("budget"),
-            crate::dsl::ast::BindingModifier::Shared
+            crate::dsl::ast::BindingModifier::SHARED
         );
         // Verify it also compiles as an init-time constant
         assert!(kernel.get_constant("budget").is_some());
@@ -1420,7 +1420,7 @@ mod tests {
         let kernel = compile_gk(src).unwrap();
         assert_eq!(
             kernel.program().output_modifier("max_dim"),
-            crate::dsl::ast::BindingModifier::Final
+            crate::dsl::ast::BindingModifier::FINAL
         );
         assert_eq!(kernel.get_constant("max_dim").unwrap().as_u64(), 256);
     }
@@ -1465,11 +1465,11 @@ mod tests {
         let kernel = compile_gk(src).unwrap();
         assert_eq!(
             kernel.program().output_modifier("h"),
-            crate::dsl::ast::BindingModifier::None
+            crate::dsl::ast::BindingModifier::NONE
         );
         assert_eq!(
             kernel.program().output_modifier("v"),
-            crate::dsl::ast::BindingModifier::None
+            crate::dsl::ast::BindingModifier::NONE
         );
     }
 
