@@ -17,6 +17,7 @@ mod inspector;
 mod db_merge;
 mod metrics_cache;
 mod metrics_cmd;
+mod metricsql_cmd;
 mod palette;
 mod plot;
 mod plot_metrics;

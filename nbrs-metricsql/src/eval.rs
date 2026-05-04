@@ -165,11 +165,29 @@ pub enum MatcherOp {
 /// Evaluation context: the data source plus the time range
 /// the query operates over. Step size matters for range
 /// queries; instant queries use `start_ms == end_ms`.
+///
+/// **Instant-vector lookback delta** (`lookback_ms`): for
+/// instant queries (`start_ms == end_ms`) the selector path
+/// fetches `[T - lookback, T]` and keeps the latest sample
+/// per series — matching PromQL's stale-tolerance window
+/// for instant evaluation. The default is `None`, which
+/// preserves the strict `[T, T]` fetch (a sample must land
+/// exactly at `T` to be returned). Real consumers (the
+/// `nbrs metrics query` CLI) typically set this to 5
+/// minutes or so to absorb cadence skew. Inside a rollup
+/// (`metric[5m]`) the inner ctx has `start_ms != end_ms`,
+/// so lookback never applies — the rollup's own window IS
+/// the lookback.
 pub struct EvalContext<'a> {
     pub data: &'a dyn DataSource,
     pub start_ms: i64,
     pub end_ms: i64,
     pub step_ms: i64,
+    /// `None` → strict instant semantics (caller wanted
+    /// exactly that timestamp). `Some(n)` → for instant
+    /// queries, look back `n` milliseconds for the latest
+    /// sample per series.
+    pub lookback_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +271,9 @@ pub fn evaluate_range(ctx: &EvalContext<'_>, expr: &Expr) -> Result<Vec<Series>,
             start_ms: t,
             end_ms: t,
             step_ms: ctx.step_ms,
+            // Propagate lookback so each step's instant
+            // evaluation honours the same stale-tolerance.
+            lookback_ms: ctx.lookback_ms,
         };
         let step_result = evaluate(&step_ctx, expr)?;
         merge_step_into(&mut merged, step_result);
@@ -321,14 +342,49 @@ fn evaluate_metric_expr(
     if me.label_filterss.is_empty() {
         return Ok(Vec::new());
     }
+    // Instant-vector lookback delta: when the query is
+    // instant (`start_ms == end_ms`) AND the caller asked
+    // for a lookback window, fetch `[T - lookback, T]` and
+    // collapse each series down to its latest sample. This
+    // matches PromQL's stale-tolerance semantics and absorbs
+    // the cadence-skew issue that real `metrics.db` data
+    // exposed (counters and summaries land at slightly
+    // different timestamps within the same cycle).
+    let (fetch_start, fetch_end, instant_lookback) = match (ctx.lookback_ms, ctx.start_ms == ctx.end_ms) {
+        (Some(lb), true) if lb > 0 => (ctx.end_ms - lb, ctx.end_ms, true),
+        _ => (ctx.start_ms, ctx.end_ms, false),
+    };
     let mut out: Vec<Series> = Vec::new();
     let mut seen: Vec<Vec<(String, String)>> = Vec::new();
     for group in &me.label_filterss {
         let matchers = filters_to_matchers(group)?;
-        let fetched = ctx.data.fetch(&matchers, ctx.start_ms, ctx.end_ms)?;
+        let fetched = ctx.data.fetch(&matchers, fetch_start, fetch_end)?;
         for s in fetched {
-            if !seen.iter().any(|prev| label_sets_equal(prev, &s.labels)) {
-                seen.push(s.labels.clone());
+            if seen.iter().any(|prev| label_sets_equal(prev, &s.labels)) {
+                continue;
+            }
+            seen.push(s.labels.clone());
+            if instant_lookback {
+                // Pick the latest sample in the lookback
+                // window; project it to the query anchor.
+                // Drops series with no samples in window.
+                let Some(latest) = s.samples.iter()
+                    .max_by_key(|sm| sm.timestamp_ms) else {
+                    continue;
+                };
+                out.push(Series {
+                    labels: s.labels,
+                    samples: vec![Sample {
+                        timestamp_ms: ctx.end_ms,
+                        value: latest.value,
+                    }],
+                });
+            } else if !s.samples.is_empty() {
+                // Strict instant / range mode: drop series
+                // that have no samples in the requested
+                // window. Matches PromQL's "no data → no
+                // series" intuition; downstream aggregates
+                // and binary ops produce cleaner output.
                 out.push(s);
             }
         }
@@ -352,6 +408,14 @@ fn evaluate_metric_expr(
 /// `group_right`) and the set ops (`and`/`or`/`unless`) are
 /// also deferred.
 fn evaluate_binary(ctx: &EvalContext<'_>, b: &BinaryOpExpr) -> Result<Vec<Series>, EvalError> {
+    // Scalar-ness is an AST property, not a result-shape
+    // property. `sum(cpu)` produces a single series with no
+    // labels but is still a vector — it must broadcast over
+    // its own per-timestamp samples, not collapse to a single
+    // end_ms sample. Inspecting the AST keeps the
+    // distinction crisp.
+    let left_is_scalar_expr = is_scalar_expr(&b.left);
+    let right_is_scalar_expr = is_scalar_expr(&b.right);
     let left = evaluate(ctx, &b.left)?;
     let right = evaluate(ctx, &b.right)?;
     // Set ops dispatch separately — they reshape series and
@@ -374,8 +438,11 @@ fn evaluate_binary(ctx: &EvalContext<'_>, b: &BinaryOpExpr) -> Result<Vec<Series
     let combine_value = move |l: f64, r: f64| eval_binary_value(b.op, l, r, bool_mod);
     let drop_nan_results = is_cmp_op(b.op) && !bool_mod;
 
-    let left_is_scalar = is_scalar_series(&left);
-    let right_is_scalar = is_scalar_series(&right);
+    // Combine the AST signal with the result shape. A
+    // scalar-shaped result from a vector expression (e.g.
+    // `sum(cpu)` with no `by(...)`) is still a vector.
+    let left_is_scalar = left_is_scalar_expr && is_scalar_series(&left);
+    let right_is_scalar = right_is_scalar_expr && is_scalar_series(&right);
 
     let result = if left_is_scalar && right_is_scalar {
         let l = left[0].samples.first().map(|s| s.value).unwrap_or(f64::NAN);
@@ -436,7 +503,7 @@ fn prune_nan_samples(input: Vec<Series>) -> Vec<Series> {
 /// Result series preserve `vec1`'s full labels (`and` /
 /// `unless` / left half of `or`) or `vec2`'s (right half of
 /// `or`); upstream keeps the operand's own metric name.
-fn combine_set_op(
+pub(crate) fn combine_set_op(
     op: BinaryOp,
     left: &[Series],
     right: &[Series],
@@ -496,7 +563,7 @@ fn build_sample_index(
     out
 }
 
-fn is_cmp_op(op: BinaryOp) -> bool {
+pub(crate) fn is_cmp_op(op: BinaryOp) -> bool {
     matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt
         | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge)
 }
@@ -509,11 +576,28 @@ fn is_scalar_series(s: &[Series]) -> bool {
     s.len() == 1 && s[0].labels.is_empty()
 }
 
+/// True when an expression IS scalar by construction — a
+/// numeric literal or another scalar-producing form. Used to
+/// avoid mis-classifying unlabeled aggregate results as
+/// scalars; an `is_scalar_series` check that accepts
+/// `sum(cpu)` would collapse its per-timestamp samples down
+/// to one and break range-query equivalence.
+fn is_scalar_expr(e: &Expr) -> bool {
+    match e {
+        Expr::Number(_) | Expr::Duration(_) => true,
+        // Parens around a scalar passes through. After
+        // `remove_parens_expr` runs at parse time these are
+        // rare, but keep the recursion for completeness.
+        Expr::Paren(p) => p.exprs.len() == 1 && is_scalar_expr(&p.exprs[0]),
+        _ => false,
+    }
+}
+
 /// Per-sample binary op. Comparison ops with `bool_mod`
 /// return 0/1; arithmetic ops use the same machinery the
 /// parser's constant-folder uses, so result semantics agree
 /// (NaN propagation, division-by-zero → ±inf, etc.).
-fn eval_binary_value(op: BinaryOp, l: f64, r: f64, bool_mod: bool) -> f64 {
+pub(crate) fn eval_binary_value(op: BinaryOp, l: f64, r: f64, bool_mod: bool) -> f64 {
     use BinaryOp::*;
     match op {
         Add => l + r,
@@ -606,7 +690,7 @@ fn broadcast_scalar(
 /// `group_modifier` (`on(...)` / `ignoring(...)`) only
 /// changes how the matching key is computed; it doesn't
 /// affect the cardinality.
-fn combine_vectors_modified(
+pub(crate) fn combine_vectors_modified(
     left: &[Series],
     right: &[Series],
     group_modifier: Option<&GroupModifier>,
@@ -663,7 +747,7 @@ fn combine_vectors_modified(
 /// Compute the matching key for a series's label set under
 /// the active group modifier. The default (no modifier) is
 /// "every label except `__name__`".
-fn match_key(
+pub(crate) fn match_key(
     labels: &[(String, String)],
     modifier: Option<&GroupModifier>,
 ) -> Vec<(String, String)> {
@@ -688,14 +772,14 @@ fn match_key(
 /// labels; with `ignoring(...)` it's lhs minus `__name__`
 /// minus the ignored set. Equivalent to `match_key` here —
 /// the function exists so the call site reads its intent.
-fn result_labels_one_to_one(
+pub(crate) fn result_labels_one_to_one(
     labels: &[(String, String)],
     modifier: Option<&GroupModifier>,
 ) -> Vec<(String, String)> {
     match_key(labels, modifier)
 }
 
-fn labels_drop_name(labels: &[(String, String)]) -> Vec<(String, String)> {
+pub(crate) fn labels_drop_name(labels: &[(String, String)]) -> Vec<(String, String)> {
     labels.iter()
         .filter(|(k, _)| k != "__name__")
         .cloned()
@@ -708,7 +792,7 @@ fn labels_drop_name(labels: &[(String, String)]) -> Vec<(String, String)> {
 /// side. Pre-existing entries on `dst` are overwritten —
 /// matches upstream semantics where the join modifier wins
 /// over the primary's own label.
-fn copy_labels_into(
+pub(crate) fn copy_labels_into(
     dst: &mut Vec<(String, String)>,
     src: &[(String, String)],
     extras: &[String],
@@ -735,7 +819,7 @@ fn labels_after_op(labels: &[(String, String)]) -> Vec<(String, String)> {
 /// `combine` to each matched pair. Timestamps unique to one
 /// side don't contribute — there's no value to operate
 /// against.
-fn align_and_combine(
+pub(crate) fn align_and_combine(
     left: &[Sample],
     right: &[Sample],
     combine: &impl Fn(f64, f64) -> f64,
@@ -767,7 +851,61 @@ fn evaluate_func(ctx: &EvalContext<'_>, f: &FuncExpr) -> Result<Vec<Series>, Eva
     if let Some(op) = RollupFn::from_name(&f.name) {
         return evaluate_rollup_fn(ctx, f, op);
     }
+    // Parameterized rollup: `quantile_over_time(phi, vec[w])`
+    // — 2-arg form. Lift it out of the 1-arg dispatch above.
+    if f.name.eq_ignore_ascii_case("quantile_over_time") {
+        return evaluate_quantile_over_time(ctx, f);
+    }
     Err(EvalError::NotYetImplemented("non-aggregate / non-rollup function calls"))
+}
+
+fn evaluate_quantile_over_time(
+    ctx: &EvalContext<'_>,
+    f: &FuncExpr,
+) -> Result<Vec<Series>, EvalError> {
+    if f.args.len() != 2 {
+        return Err(EvalError::BadValue(format!(
+            "quantile_over_time expects 2 args, got {}", f.args.len())));
+    }
+    let Expr::Number(NumberExpr { value: phi, .. }) = &f.args[0] else {
+        return Err(EvalError::BadValue(
+            "quantile_over_time first arg must be a numeric quantile".into()));
+    };
+    let phi = *phi;
+    if !(0.0..=1.0).contains(&phi) {
+        return Err(EvalError::BadValue(format!(
+            "quantile_over_time phi must be in [0, 1], got {phi}")));
+    }
+    let arg = &f.args[1];
+    let _window_ms: Option<i64> = window_of_arg(arg, ctx.step_ms)?;
+    let input = evaluate(ctx, arg)?;
+    let mut out: Vec<Series> = Vec::with_capacity(input.len());
+    for s in input {
+        let value = quantile_via_hdr(&s.samples, phi);
+        let labels = labels_after_op(&s.labels);
+        out.push(Series {
+            labels,
+            samples: vec![Sample { timestamp_ms: ctx.end_ms, value }],
+        });
+    }
+    Ok(out)
+}
+
+/// Compute a phi-quantile via HDR histogram. Same precision
+/// choice as the streaming reducer so batch and streaming
+/// land on the same value, exactly. Negative / NaN samples
+/// are skipped; values are floored to `u64`.
+fn quantile_via_hdr(samples: &[Sample], phi: f64) -> f64 {
+    let mut hist = hdrhistogram::Histogram::<u64>::new_with_bounds(
+        1, 1_000_000_000_000, 3,
+    ).expect("HDR construction");
+    for s in samples {
+        if s.value.is_nan() || s.value < 0.0 { continue; }
+        let v = (s.value.floor().min(1_000_000_000_000.0) as u64).max(1);
+        let _ = hist.record(v);
+    }
+    if hist.len() == 0 { return f64::NAN; }
+    hist.value_at_quantile(phi) as f64
 }
 
 /// Rollup-function reducers: take a range-vector argument
@@ -781,6 +919,7 @@ enum RollupFn {
     Rate, Increase, Delta,
     SumOverTime, AvgOverTime, MinOverTime, MaxOverTime,
     CountOverTime, LastOverTime, FirstOverTime,
+    StddevOverTime, StdvarOverTime,
 }
 
 impl RollupFn {
@@ -796,6 +935,8 @@ impl RollupFn {
             "count_over_time"  => Some(Self::CountOverTime),
             "last_over_time"   => Some(Self::LastOverTime),
             "first_over_time"  => Some(Self::FirstOverTime),
+            "stddev_over_time" => Some(Self::StddevOverTime),
+            "stdvar_over_time" => Some(Self::StdvarOverTime),
             _ => None,
         }
     }
@@ -892,6 +1033,14 @@ fn reduce_rollup(op: RollupFn, samples: &[Sample], window_ms: i64) -> f64 {
         RollupFn::CountOverTime => xs.len() as f64,
         RollupFn::LastOverTime => xs.last().unwrap().value,
         RollupFn::FirstOverTime => xs.first().unwrap().value,
+        RollupFn::StddevOverTime => {
+            let vals: Vec<f64> = xs.iter().map(|s| s.value).collect();
+            population_variance(&vals).sqrt()
+        }
+        RollupFn::StdvarOverTime => {
+            let vals: Vec<f64> = xs.iter().map(|s| s.value).collect();
+            population_variance(&vals)
+        }
     }
 }
 
@@ -900,17 +1049,19 @@ fn reduce_rollup(op: RollupFn, samples: &[Sample], window_ms: i64) -> f64 {
 /// single vector argument and reduce per-group; the
 /// percentile / histogram aggregates land later.
 #[derive(Debug, Clone, Copy)]
-enum AggregateOp { Sum, Avg, Min, Max, Count, Group }
+enum AggregateOp { Sum, Avg, Min, Max, Count, Group, Stddev, Stdvar }
 
 impl AggregateOp {
     fn from_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
-            "sum"   => Some(Self::Sum),
-            "avg"   => Some(Self::Avg),
-            "min"   => Some(Self::Min),
-            "max"   => Some(Self::Max),
-            "count" => Some(Self::Count),
-            "group" => Some(Self::Group),
+            "sum"    => Some(Self::Sum),
+            "avg"    => Some(Self::Avg),
+            "min"    => Some(Self::Min),
+            "max"    => Some(Self::Max),
+            "count"  => Some(Self::Count),
+            "group"  => Some(Self::Group),
+            "stddev" => Some(Self::Stddev),
+            "stdvar" => Some(Self::Stdvar),
             _ => None,
         }
     }
@@ -988,6 +1139,17 @@ fn group_key(
 /// samples in `members` and emit a single [`Series`] tagged
 /// with `group_labels`. Samples with NaN values are skipped
 /// per Prometheus' aggregate semantics.
+/// Population variance — `Σ(x - mean)² / n`. Returns NaN
+/// for empty input (matching `Sum`'s "no data" snapshot)
+/// and `0.0` for a single sample. Matches upstream PromQL's
+/// `stdvar` semantics.
+fn population_variance(vals: &[f64]) -> f64 {
+    if vals.is_empty() { return f64::NAN; }
+    let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+    let m2: f64 = vals.iter().map(|v| (v - mean) * (v - mean)).sum();
+    m2 / vals.len() as f64
+}
+
 fn reduce_group(
     op: AggregateOp,
     group_labels: Vec<(String, String)>,
@@ -1015,6 +1177,11 @@ fn reduce_group(
             AggregateOp::Max   => vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
             AggregateOp::Count => vals.len() as f64,
             AggregateOp::Group => 1.0,
+            // Population variance / stddev — matches
+            // upstream PromQL semantics. NaN for n < 1 (no
+            // data) and 0 for n == 1 (single sample).
+            AggregateOp::Stdvar => population_variance(&vals),
+            AggregateOp::Stddev => population_variance(&vals).sqrt(),
         };
         Sample { timestamp_ms: t, value }
     }).collect();
@@ -1059,6 +1226,13 @@ fn evaluate_rollup(ctx: &EvalContext<'_>, re: &RollupExpr) -> Result<Vec<Series>
         start_ms: anchor_start_ms,
         end_ms: anchor_end_ms,
         step_ms: ctx.step_ms,
+        // The rollup's window IS the lookback; for windowed
+        // rollups (`metric[5m]`) the inner ctx has
+        // `start != end` so the selector returns all
+        // samples in window. For windowless rollups
+        // (`metric offset 5m`) the inner ctx is instant —
+        // propagating the outer lookback is correct.
+        lookback_ms: ctx.lookback_ms,
     };
     evaluate(&inner_ctx, &re.expr)
 }
@@ -1169,7 +1343,7 @@ fn filters_to_matchers(group: &[LabelFilter]) -> Result<Vec<Matcher>, EvalError>
     Ok(out)
 }
 
-fn label_sets_equal(a: &[(String, String)], b: &[(String, String)]) -> bool {
+pub(crate) fn label_sets_equal(a: &[(String, String)], b: &[(String, String)]) -> bool {
     if a.len() != b.len() { return false; }
     for (k, v) in a {
         if !b.iter().any(|(k2, v2)| k2 == k && v2 == v) {
@@ -1223,7 +1397,7 @@ mod tests {
     }
 
     fn ctx_for(ds: &MemoryDataSource) -> EvalContext<'_> {
-        EvalContext { data: ds, start_ms: 0, end_ms: 100, step_ms: 1 }
+        EvalContext { data: ds, start_ms: 0, end_ms: 100, step_ms: 1 , lookback_ms: None}
     }
 
     #[test]
@@ -1299,6 +1473,94 @@ mod tests {
     }
 
     #[test]
+    fn instant_lookback_picks_latest_sample_in_window() {
+        let ds = WindowedDataSource {
+            series: vec![
+                series(&[("__name__", "cpu"), ("host", "h1")],
+                    &[(50, 1.0), (90, 2.0), (95, 3.0)]),
+            ],
+        };
+        // Anchor at 100, lookback 30ms — window is [70, 100],
+        // so samples at 90 and 95 are visible; the latest
+        // (95 → value 3.0) wins. The sample at 50 is
+        // outside the window and ignored.
+        let ctx = EvalContext {
+            data: &ds, start_ms: 100, end_ms: 100, step_ms: 1,
+            lookback_ms: Some(30),
+        };
+        let got = evaluate(&ctx, &parse("cpu").expect("parse")).expect("eval");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].samples.len(), 1);
+        assert_eq!(got[0].samples[0].value, 3.0);
+        // Sample is projected to the query anchor, not its
+        // own timestamp.
+        assert_eq!(got[0].samples[0].timestamp_ms, 100);
+    }
+
+    #[test]
+    fn instant_lookback_drops_series_with_no_samples_in_window() {
+        let ds = WindowedDataSource {
+            series: vec![
+                series(&[("__name__", "cpu"), ("host", "h1")], &[(0, 1.0)]),
+                series(&[("__name__", "cpu"), ("host", "h2")], &[(50, 2.0)]),
+            ],
+        };
+        // Window [70, 100] — only h2's sample is at 50, also
+        // outside. h1's at 0 outside. Both drop.
+        let ctx = EvalContext {
+            data: &ds, start_ms: 100, end_ms: 100, step_ms: 1,
+            lookback_ms: Some(30),
+        };
+        let got = evaluate(&ctx, &parse("cpu").expect("parse")).expect("eval");
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn instant_lookback_does_not_apply_inside_rollup() {
+        let ds = WindowedDataSource {
+            series: vec![
+                series(&[("__name__", "cpu"), ("host", "h1")],
+                    &[(0, 0.0), (30_000, 50.0), (60_000, 100.0)]),
+            ],
+        };
+        // `rate(cpu[60s])` at instant T=60_000. Inside the
+        // rollup, ctx becomes [0, 60_000] (start != end), so
+        // the instant lookback should NOT collapse the
+        // window down to one sample. The rollup must see
+        // all three samples to compute (last - first) /
+        // window_seconds correctly.
+        let ctx = EvalContext {
+            data: &ds, start_ms: 60_000, end_ms: 60_000, step_ms: 1,
+            lookback_ms: Some(5_000),  // 5s lookback, narrower than rollup window
+        };
+        let got = evaluate(&ctx, &parse("rate(cpu[60s])").expect("parse"))
+            .expect("eval");
+        assert_eq!(got.len(), 1);
+        // Rate over 60s with a 100-unit increase → 100/60.
+        assert!((got[0].samples[0].value - (100.0 / 60.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn lookback_none_preserves_strict_instant_semantics() {
+        let ds = WindowedDataSource {
+            series: vec![
+                series(&[("__name__", "cpu"), ("host", "h1")],
+                    &[(50, 1.0), (95, 2.0)]),
+            ],
+        };
+        // Strict instant: query at T=100, no lookback. Data
+        // source returns nothing for [100, 100], so result
+        // is empty — current pre-lookback behaviour
+        // preserved when caller passes `lookback_ms: None`.
+        let ctx = EvalContext {
+            data: &ds, start_ms: 100, end_ms: 100, step_ms: 1,
+            lookback_ms: None,
+        };
+        let got = evaluate(&ctx, &parse("cpu").expect("parse")).expect("eval");
+        assert!(got.is_empty());
+    }
+
+    #[test]
     fn unimplemented_node_types_surface_cleanly() {
         let ds = MemoryDataSource { series: vec![] };
         let ctx = ctx_for(&ds);
@@ -1335,7 +1597,7 @@ mod tests {
             series: vec![series(&[("__name__", "cpu")], &[(0, 1.0)])],
             last_range: std::cell::Cell::new((-1, -1)),
         };
-        let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 , lookback_ms: None};
         let ast = parse("cpu[5m]").expect("parse");
         evaluate(&ctx, &ast).expect("eval");
         let (start, end) = ds.last_range.get();
@@ -1350,7 +1612,7 @@ mod tests {
             series: vec![series(&[("__name__", "cpu")], &[(0, 1.0)])],
             last_range: std::cell::Cell::new((-1, -1)),
         };
-        let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 , lookback_ms: None};
         let ast = parse("cpu offset 1h").expect("parse");
         evaluate(&ctx, &ast).expect("eval");
         let (start, end) = ds.last_range.get();
@@ -1365,7 +1627,7 @@ mod tests {
             series: vec![series(&[("__name__", "cpu")], &[(0, 1.0)])],
             last_range: std::cell::Cell::new((-1, -1)),
         };
-        let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 , lookback_ms: None};
         let ast = parse("cpu[5m] offset 1h").expect("parse");
         evaluate(&ctx, &ast).expect("eval");
         let (start, end) = ds.last_range.get();
@@ -1379,7 +1641,7 @@ mod tests {
             series: vec![series(&[("__name__", "cpu")], &[(0, 1.0)])],
             last_range: std::cell::Cell::new((-1, -1)),
         };
-        let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 , lookback_ms: None};
         let ast = parse("cpu offset -1h").expect("parse");
         evaluate(&ctx, &ast).expect("eval");
         let (_, end) = ds.last_range.get();
@@ -1393,7 +1655,7 @@ mod tests {
             last_range: std::cell::Cell::new((-1, -1)),
         };
         // anchor at 12345 seconds → 12_345_000 ms.
-        let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 1_000_000, end_ms: 1_000_000, step_ms: 1 , lookback_ms: None};
         let ast = parse("cpu @ 12345").expect("parse");
         evaluate(&ctx, &ast).expect("eval");
         let (_, end) = ds.last_range.get();
@@ -1561,7 +1823,7 @@ mod tests {
                 &[(0, 0.0), (30_000, 50.0), (60_000, 100.0)],
             )],
         };
-        let ctx = EvalContext { data: &ds, start_ms: 60_000, end_ms: 60_000, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 60_000, end_ms: 60_000, step_ms: 1 , lookback_ms: None};
         let got = evaluate(&ctx, &parse("rate(counter[60s])").expect("parse")).expect("eval");
         assert_eq!(got.len(), 1);
         assert_eq!(lookup_label(&got[0], "__name__"), None);
@@ -1574,7 +1836,7 @@ mod tests {
         let ds = WindowedDataSource {
             series: vec![series(&[("__name__", "c")], &[(0, 5.0), (1000, 8.0), (2000, 12.0)])],
         };
-        let ctx = EvalContext { data: &ds, start_ms: 2000, end_ms: 2000, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 2000, end_ms: 2000, step_ms: 1 , lookback_ms: None};
         let got = evaluate(&ctx, &parse("increase(c[2s])").expect("parse")).expect("eval");
         assert_eq!(got[0].samples[0].value, 7.0);
     }
@@ -1584,7 +1846,7 @@ mod tests {
         let ds = WindowedDataSource {
             series: vec![series(&[("__name__", "g")], &[(0, 100.0), (1000, 80.0)])],
         };
-        let ctx = EvalContext { data: &ds, start_ms: 1000, end_ms: 1000, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 1000, end_ms: 1000, step_ms: 1 , lookback_ms: None};
         let got = evaluate(&ctx, &parse("delta(g[1s])").expect("parse")).expect("eval");
         assert_eq!(got[0].samples[0].value, -20.0);
     }
@@ -1594,7 +1856,7 @@ mod tests {
         let ds = WindowedDataSource {
             series: vec![series(&[("__name__", "v")], &[(0, 1.0), (10, 2.0), (20, 3.0)])],
         };
-        let ctx = EvalContext { data: &ds, start_ms: 20, end_ms: 20, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 20, end_ms: 20, step_ms: 1 , lookback_ms: None};
         let got = evaluate(&ctx, &parse("sum_over_time(v[20ms])").expect("parse")).expect("eval");
         assert_eq!(got[0].samples[0].value, 6.0);
     }
@@ -1604,7 +1866,7 @@ mod tests {
         let ds = WindowedDataSource {
             series: vec![series(&[("__name__", "v")], &[(0, 1.0), (10, 7.0), (20, 4.0)])],
         };
-        let ctx = EvalContext { data: &ds, start_ms: 20, end_ms: 20, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 20, end_ms: 20, step_ms: 1 , lookback_ms: None};
         let go = |q: &str| -> f64 {
             let got = evaluate(&ctx, &parse(q).expect("parse")).expect("eval");
             got[0].samples[0].value
@@ -1622,7 +1884,7 @@ mod tests {
         let ds = WindowedDataSource {
             series: vec![series(&[("__name__", "v")], &[(100, 5.0), (200, 9.0)])],
         };
-        let ctx = EvalContext { data: &ds, start_ms: 200, end_ms: 200, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 200, end_ms: 200, step_ms: 1 , lookback_ms: None};
         let got = evaluate(&ctx, &parse("max_over_time(v[200ms])").expect("parse")).expect("eval");
         assert_eq!(got[0].samples.len(), 1);
         assert_eq!(got[0].samples[0].timestamp_ms, 200);
@@ -1633,7 +1895,7 @@ mod tests {
         let ds = WindowedDataSource {
             series: vec![series(&[("__name__", "v")], &[(0, 1.0)])],
         };
-        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 0, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 0, step_ms: 1 , lookback_ms: None};
         // No `[w]` window — current code requires it.
         let err = evaluate(&ctx, &parse("rate(v)").expect("parse")).expect_err("eval");
         assert!(matches!(err, EvalError::BadValue(_)));
@@ -1657,7 +1919,7 @@ mod tests {
     #[test]
     fn data_source_error_propagates_as_evalerror_datasource() {
         let ds = FailingDataSource { message: "sqlite died" };
-        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 0, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 0, step_ms: 1 , lookback_ms: None};
         let err = evaluate(&ctx, &parse("cpu").expect("parse")).expect_err("eval");
         match err {
             EvalError::DataSource(e) => assert_eq!(e.message, "sqlite died"),
@@ -1673,7 +1935,7 @@ mod tests {
                 &[(0, 0.0), (1000, 1.0), (2000, 2.0), (3000, 3.0)],
             )],
         };
-        let ctx = EvalContext { data: &ds, start_ms: 1000, end_ms: 3000, step_ms: 1000 };
+        let ctx = EvalContext { data: &ds, start_ms: 1000, end_ms: 3000, step_ms: 1000 , lookback_ms: None};
         let got = evaluate_range(&ctx, &parse("rate(c[1s])").expect("parse")).expect("eval");
         assert_eq!(got.len(), 1);
         // Per-second rate is 1.0 across the steady-rate counter.
@@ -2087,7 +2349,7 @@ mod tests {
                 &[(0, 10.0), (10, 11.0), (20, 12.0), (30, 13.0)],
             )],
         };
-        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 30, step_ms: 10 };
+        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 30, step_ms: 10 , lookback_ms: None};
         // Each step returns the [T, T] sample for the host=a series.
         let got = evaluate_range(&ctx, &parse("cpu").expect("parse")).expect("eval");
         assert_eq!(got.len(), 1);
@@ -2103,7 +2365,7 @@ mod tests {
                 series(&[("__name__", "cpu"), ("host", "b")], &[(0, 3.0), (10, 4.0)]),
             ],
         };
-        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 10, step_ms: 10 };
+        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 10, step_ms: 10 , lookback_ms: None};
         let got = evaluate_range(&ctx, &parse("sum(cpu)").expect("parse")).expect("eval");
         assert_eq!(got.len(), 1);
         let ts: Vec<_> = got[0].samples.iter().map(|s| (s.timestamp_ms, s.value)).collect();
@@ -2114,7 +2376,7 @@ mod tests {
     #[test]
     fn range_query_step_zero_is_rejected() {
         let ds = WindowedDataSource { series: vec![] };
-        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 10, step_ms: 0 };
+        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 10, step_ms: 0 , lookback_ms: None};
         let err = evaluate_range(&ctx, &parse("cpu").expect("parse")).expect_err("eval");
         assert!(matches!(err, EvalError::BadValue(_)));
     }
@@ -2130,7 +2392,7 @@ mod tests {
                 &[(0, 1.0), (7, 2.0), (14, 3.0), (20, 4.0)],
             )],
         };
-        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 20, step_ms: 7 };
+        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 20, step_ms: 7 , lookback_ms: None};
         let got = evaluate_range(&ctx, &parse("cpu").expect("parse")).expect("eval");
         let timestamps: Vec<i64> = got[0].samples.iter().map(|s| s.timestamp_ms).collect();
         assert_eq!(timestamps, vec![0, 7, 14, 20]);
@@ -2141,7 +2403,7 @@ mod tests {
         let ds = WindowedDataSource {
             series: vec![series(&[("__name__", "cpu")], &[(5, 42.0)])],
         };
-        let ctx = EvalContext { data: &ds, start_ms: 5, end_ms: 5, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 5, end_ms: 5, step_ms: 1 , lookback_ms: None};
         let got = evaluate_range(&ctx, &parse("cpu").expect("parse")).expect("eval");
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].samples.len(), 1);

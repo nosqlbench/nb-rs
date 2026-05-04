@@ -46,6 +46,7 @@ flamegraph = ["nbrs-activity/flamegraph"]
 [dependencies]
 nbrs-variates = { path = "../nbrs-variates", version = "0.1.1" }
 nbrs-metrics = { path = "../nbrs-metrics", version = "0.1.1" }
+nbrs-metricsql = { path = "../nbrs-metricsql", version = "0.1.0", features = ["sqlite"] }
 nbrs-workload = { path = "../nbrs-workload", version = "0.1.1" }
 nbrs-rate = { path = "../nbrs-rate", version = "0.1.1" }
 nbrs-errorhandler = { path = "../nbrs-errorhandler", version = "0.1.1" }

@@ -29,6 +29,8 @@ pub fn metrics_command(args: &[String]) {
         Some("list") => list(rest, false),
         Some("show") => list(rest, true),
         Some("match") => match_specs(rest),
+        Some("query") => crate::metricsql_cmd::query(rest),
+        Some("watch") => crate::metricsql_cmd::watch(rest),
         Some(other) => {
             eprintln!("nbrs metrics: unknown subcommand '{other}'");
             print_metrics_usage();
@@ -54,6 +56,15 @@ fn print_metrics_usage() {
     eprintln!("                               match — copy-paste into other");
     eprintln!("                               commands or sanity-check a");
     eprintln!("                               filter pattern.");
+    eprintln!("  nbrs metrics query  <expr>   Evaluate a metricsql");
+    eprintln!("                               expression against the db.");
+    eprintln!("                               Run `nbrs metrics query` with");
+    eprintln!("                               no args for full flag list.");
+    eprintln!("  nbrs metrics watch  <expr>   Live-update a metricsql");
+    eprintln!("                               expression on a polling");
+    eprintln!("                               interval. Uses the streaming");
+    eprintln!("                               engine when supported, batch");
+    eprintln!("                               eval otherwise.");
     eprintln!();
     eprintln!("Filter expressions:");
     eprintln!("  recall*                      Family-name glob.");

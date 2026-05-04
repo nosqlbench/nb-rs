@@ -754,7 +754,7 @@ mod tests {
         add_summary_sample(&conn, id_c, 100, 1000, 7.0, 30.0);
 
         let ds = open_ds(conn);
-        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 1000, step_ms: 1 };
+        let ctx = EvalContext { data: &ds, start_ms: 0, end_ms: 1000, step_ms: 1, lookback_ms: None };
         let ast = crate::parse(r#"max(latency_p99{op="read"}) by (zone)"#)
             .expect("parse");
         let mut got = evaluate(&ctx, &ast).expect("evaluate");
