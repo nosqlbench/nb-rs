@@ -241,15 +241,46 @@ Where `<agg>` ∈ `{sum, count, min, max, group}` and
 min_over_time, max_over_time, first_over_time,
 last_over_time}`.
 
-### Rejected shapes (this push, with `CompileError::Unsupported`)
+### Rejected shapes (with `CompileError::Unsupported`)
+
+The following remain unsupported in `compile_streaming` as of
+the current state:
 
 | Shape | Reason for deferral |
 |-------|--------------------|
-| Binary ops in a streaming plan (`a + b`, `cpu > 3`) | Per-timestamp distributive ✓, but adds a node type to the compiler. Folds into the same algebra in a later push. |
-| Algebraic reducers (`avg`, `stddev`, `rate`, `increase`, `delta`) | Same algebra, non-trivial accumulators. Bundled follow-up so the merge-time-ordering conversation happens once, not per-reducer. |
-| Holistic reducers (`quantile`, `topk`, `count_values`) | Needs explicit policy choice (see §"Holistic-function policy"). |
-| Vector-matching modifiers (`on`, `ignoring`, `group_left`, `group_right`) | Structural extension; handled by the existing batch path; stream-side adds in a focused pass. |
-| Range-query stepping | The stream model evaluates one window at a time; range-query stepping pairs with sliding-window framing (§"Window framing"). |
+| `topk` / `bottomk` / `count_values` (truly holistic) | No bounded mergeable sketch yet; would need Misra-Gries or similar streaming top-K. Batch supports them. |
+| Range-query stepping inside a `StreamingPlan` | Stream model evaluates one window at a time; pairs with sliding-window framing (§"Window framing"). |
+
+**Now supported (filled in by follow-up pushes since the
+original SRD landed):** binary ops in plans, algebraic
+reducers (`Avg`, `Stddev`, `Rate`, `Increase`, `Delta`),
+HDR-sketch reducers (`QuantileOverTime`), vector-matching
+modifiers, set ops (`and`/`or`/`unless`).
+
+### Carve-out: `rate` and `increase` semantics diverge from batch
+
+`rate(...[w])` and `increase(...[w])` are deliberately
+**excluded from the streaming-equivalence test**. The batch
+path implements full PromQL semantics: counter-reset
+adjustment (walk samples, add back the pre-reset value when
+`xs[i] < xs[i-1]`) and window-edge extrapolation (scale the
+result when the first/last samples don't sit at the window
+edges). Both behaviours assume a *fixed* window with known
+edges and require walking the full sample sequence in
+temporal order.
+
+Streaming sees a *sliding* arrival window: samples land
+incrementally, the "window" is whatever the runtime has
+ingested so far, and partition order across merge isn't
+strictly temporal. Both adjustments would oscillate as data
+flows in. The streaming reducer therefore uses the simpler
+`(last - first) / window_secs` algebra — which matches what
+live consumers (TUI panels, dashboards) actually want:
+trend, not exact window-fitted final number.
+
+`delta` stays in the equivalence set — gauge semantics with
+no reset detection or extrapolation, batch and streaming
+match exactly.
 
 ---
 
@@ -521,35 +552,59 @@ The push is done when **all** of the following hold:
 
 ## Followup roadmap
 
-Each item below is a self-contained follow-up push that
-**rides on the algebra established here**. None of them
-re-open the `Reducer` trait; each just adds new impls and
-small extensions:
+### Landed since this SRD was written
 
-1. **Algebraic reducers**: `Avg`, `Stddev`, `Rate`,
+1. ✅ **Algebraic reducers**: `Avg`, `Stddev`, `Rate`,
    `Increase`, `Delta`, plus their `_over_time` variants.
-   Each carries non-trivial accumulator state (`(sum,
-   count)`, Welford, `(first/last + ts)`). Property test
-   catches order-of-merge bugs.
-2. **HDR-sketch reducers**: `QuantileOverTime`,
-   `HistogramQuantile`. Wraps `hdrhistogram::Histogram` as
-   the `Acc` type. Resolves §"Holistic-function policy".
-3. **Sliding-window framing**: a window-management layer
-   over the existing reducers. Resolves §"Window framing".
-4. **Binary ops in streaming plans**: a `Binary { op,
-   left_child, right_child }` plan node + per-timestamp
-   value combine. Reducers unchanged.
-5. **Vector-matching modifiers** (`on`, `ignoring`,
-   `group_left`, `group_right`) in streaming plans. Mirrors
-   the batch implementation in `eval.rs`.
-6. **`WatchableDataSource`** extension trait: ingestion
-   stream from a real producer. Lands when the sqlite
-   `DataSource` adapter is producing real ingests.
-7. **Continuous-query runtime**: the layer that owns active
-   `StreamingPlan` instances, drives them from a sample
-   feed, and exposes their snapshots to the TUI / web /
-   reports. Lands when 1–6 are mature enough that the
-   query catalog is non-trivial.
+2. ✅ **HDR-sketch reducer**: `QuantileOverTime` —
+   `hdrhistogram::Histogram` as the `Acc` type. Negative /
+   NaN samples dropped; values floored to `u64`. Covers
+   nb-rs's nanosecond-latency use case.
+3. ✅ **Binary ops in streaming plans**: `Binary { op,
+   left_child, right_child }` plan node, per-timestamp
+   value combine, reducers unchanged.
+4. ✅ **Vector-matching modifiers** (`on`, `ignoring`,
+   `group_left`, `group_right`) and set ops (`and` / `or` /
+   `unless`) — mirror the batch implementation.
+5. ✅ **Continuous-query runtime** (SRD-48): owns active
+   `StreamingPlan` instances, drives from `SampleFeed`,
+   exposes ArcSwap snapshots. First push complete; runtime
+   feature flag.
+6. ✅ **Sqlite `DataSource` adapter**: schema patches
+   (indexes, PRAGMAs), stat-suffix resolution, INTERSECT-
+   based matchers. Powers `nbrs metrics query` /
+   `nbrs metrics watch`.
+
+### Still deferred
+
+1. **Sliding-window framing** for distributive ops — design
+   parked in §"Window framing"; works for distributive ops
+   but not min/max/quantile, which is why SRD-48 chose
+   tumbling-window framing as the default.
+2. **Streaming top-K / `count_values`** — would need
+   Misra-Gries or GK-sketch. Batch handles these via
+   `topk`/`bottomk`/`quantile`.
+3. **`WatchableDataSource`** extension trait — gated on a
+   real push producer (reporter wiring) wanting
+   change-notification semantics. Polling adapter is
+   sufficient until then.
+4. **`tokio::sync::watch::Receiver` subscription** on the
+   continuous-query runtime — gated on a real consumer (TUI
+   panel) wanting change-notification semantics. Readers
+   currently poll via `ArcSwap::load`.
+
+### Batch evaluator — orthogonal additions
+
+Not strictly part of SRD-47's streaming algebra, but worth
+noting because they came out of the same surge of work and
+shape what the streaming layer doesn't have to do:
+
+- ✅ Counter-reset adjustment in `rate` / `increase` (batch).
+- ✅ PromQL window-edge extrapolation for partial windows.
+- ✅ Subquery `expr[w:s]` and `expr[w:]` (inherit-step).
+- ✅ `@ start()` / `@ end()` modifier resolution.
+- ✅ `topk` / `bottomk` / `quantile` parameterized
+  aggregates (batch-only; holistic class).
 
 ---
 

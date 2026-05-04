@@ -408,19 +408,20 @@ The first push lands a minimal viable runtime — enough
 to power one TUI panel against a `PullFeed`. That's the
 shortest path to user-visible value.
 
-| Capability | This push | Subsequent pushes |
-|-----------|-----------|-------------------|
-| `ContinuousQueryRuntime` struct + actor | ✅ | — |
-| `register` / `tick` / `QueryHandle::snapshot` | ✅ | — |
-| `PullFeed` (wraps `DataSource`) | ✅ | — |
-| `PushFeed` (channel-based ingest) | — | ✅ next push |
-| `WatchableDataSource` trait | — | gated on real producer |
-| Subscription via `watch::Receiver` | ✅ | — |
-| Tumbling window policy | ✅ | — |
-| Grid window policy | — | ✅ followup |
-| TUI panel binding | — | ✅ separate push (TUI work) |
-| Web endpoint | — | ✅ separate push (web work) |
-| Memory budget enforcement | minimal (cap on plan count) | ✅ followup |
+| Capability | First push | Status |
+|-----------|-----------|--------|
+| `ContinuousQueryRuntime` struct + actor | ✅ | done |
+| `register` / `tick` / `QueryHandle::snapshot` | ✅ | done |
+| `PullFeed` (wraps `DataSource`) | ✅ | done |
+| `Lifetime` + `Tumbling` window policies | ✅ | done |
+| Backfill at register time | ✅ | done |
+| `PushFeed` (channel-based ingest) | — | deferred (gated on reporter wiring) |
+| `WatchableDataSource` trait | — | deferred (gated on real producer) |
+| Subscription via `watch::Receiver` | — | **deferred** — readers currently poll via `ArcSwap::load`. Lands when a real consumer (TUI panel) needs change-notification semantics. |
+| Grid window policy | — | deferred (sliding-window design parked in SRD-47 §"Window framing") |
+| TUI panel binding | — | separate push (TUI work) |
+| Web endpoint | — | separate push (web work) |
+| Memory budget enforcement | minimal (cap on plan count) | followup |
 
 ### Tasks
 
@@ -429,7 +430,7 @@ shortest path to user-visible value.
 | 1 | `ContinuousQueryRuntime` skeleton + actor | Owner thread starts on construction; `register` sends a command; receives a PlanId. |
 | 2 | `PullFeed` wrapping `DataSource` | `fetch_since(matchers, since)` returns post-watermark series; `latest_ts()` works. |
 | 3 | Tick loop: watermark-advance ingest + snapshot publish | After `tick()`, `handle.snapshot()` reflects new data. |
-| 4 | `QueryHandle::subscribe` via `tokio::sync::watch` | Subscriber sees a fresh snapshot per tick. |
+| 4 | `QueryHandle::subscribe` via `tokio::sync::watch` | **Deferred.** Subscribers can poll via `QueryHandle::snapshot()` (ArcSwap clone) or `snapshot_handle()` (zero-copy guard) until a real consumer needs change-notification semantics. |
 | 5 | Backfill at register time | First snapshot after `register()` contains historical data within `warmup_window`. |
 | 6 | Tumbling window policy | After `tumble_window` elapses, accumulators reset; subscribers see the change. |
 | 7 | Property test: streaming-via-runtime equals batch | Random partition of input samples → ingest through runtime → snapshot equals `evaluate` result. Same harness pattern as SRD-47's load-bearing test. |
