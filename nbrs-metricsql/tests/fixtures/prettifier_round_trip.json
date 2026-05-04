@@ -1,0 +1,210 @@
+{
+  "source": "prettifier_test.go",
+  "helper": "same_or_another",
+  "round_trip": [
+    {
+      "input": "foo",
+      "expected": "foo"
+    },
+    {
+      "input": "foo{bar=\"baz\"}",
+      "expected": "foo{bar=\"baz\"}"
+    },
+    {
+      "input": "foo{\"3bar\"=\"baz\"}",
+      "expected": "foo{\"3bar\"=\"baz\"}"
+    },
+    {
+      "input": "\"metr\\\"ic\"",
+      "expected": "\"metr\\\"ic\""
+    },
+    {
+      "input": "'metr\"ic'",
+      "expected": "'metr\"ic'"
+    },
+    {
+      "input": "{foo=\"bar\",\"la\\\"bel\"=\"val\"}",
+      "expected": "{foo=\"bar\",\"la\\\"bel\"=\"val\"}"
+    },
+    {
+      "input": "{\"metr\\\\ic\"}",
+      "expected": "{\"metr\\\\ic\"}"
+    },
+    {
+      "input": "{\"3foo\", bar=\"baz\"}",
+      "expected": "{\"3foo\", bar=\"baz\"}"
+    },
+    {
+      "input": "foo{bar=\"baz\",x=\"y\" or q=\"w\",r=\"t\"}",
+      "expected": "foo{bar=\"baz\",x=\"y\" or q=\"w\",r=\"t\"}"
+    },
+    {
+      "input": "foo{bar=\"baz\"} + rate(x{y=\"x\"}[5m] offset 1h)",
+      "expected": "foo{bar=\"baz\"} + rate(x{y=\"x\"}[5m] offset 1h)"
+    },
+    {
+      "input": "{\"3foobar_baz_namespace_pod_name_container_name_container_cpu_usage_seconds_total_sum_rate\"}",
+      "expected": "{\"3foobar_baz_namespace_pod_name_container_name_container_cpu_usage_seconds_total_sum_rate\"}"
+    },
+    {
+      "input": "foobar_baz:namespace_pod_name_container_name:container_cpu_usage_seconds_total:sum_rate",
+      "expected": "foobar_baz:namespace_pod_name_container_name:container_cpu_usage_seconds_total:sum_rate"
+    },
+    {
+      "input": "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+      "expected": "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\""
+    },
+    {
+      "input": "WITH (x = {a=\"b\"}) x",
+      "expected": "WITH (x = {a=\"b\"}) x"
+    },
+    {
+      "input": "WITH (x = {a=\"b\"}) {x,y=\"z\"}",
+      "expected": "WITH (x = {a=\"b\"}) {x,y=\"z\"}"
+    },
+    {
+      "input": "WITH (x = {a=\"b\"}) {y=\"z\",x}",
+      "expected": "WITH (x = {a=\"b\"}) {y=\"z\",x}"
+    },
+    {
+      "input": "WITH (x = {a=\"b\"}) x{y=\"z\"}",
+      "expected": "WITH (x = {a=\"b\"}) x{y=\"z\"}"
+    },
+    {
+      "input": "WITH (f(s) = {x=\"foo\"+s+\"bar\"}) f(\"x\")",
+      "expected": "WITH (f(s) = {x=\"foo\"+s+\"bar\"}) f(\"x\")"
+    },
+    {
+      "input": "WITH (x = sum(rate({a=\"b\"}[1m]))) x",
+      "expected": "WITH (x = sum(rate({a=\"b\"}[1m]))) x"
+    },
+    {
+      "input": "WITH (f(x) = abc{x}, z = f({foo=\"bar\"})) z",
+      "expected": "WITH (f(x) = abc{x}, z = f({foo=\"bar\"})) z"
+    },
+    {
+      "input": "count({__name__=~\"node_arp_entries|node_cooling_device_cur_state\"})",
+      "expected": "count({__name__=~\"node_arp_entries|node_cooling_device_cur_state\"})"
+    },
+    {
+      "input": "{__name__=~\"foo|bar\"}",
+      "expected": "{__name__=~\"foo|bar\"}"
+    },
+    {
+      "input": "{__name__!~\"foo|bar\"}",
+      "expected": "{__name__!~\"foo|bar\"}"
+    },
+    {
+      "input": "sum({__name__=~\"metric.*\"})",
+      "expected": "sum({__name__=~\"metric.*\"})"
+    },
+    {
+      "input": "{\"foo\"}",
+      "expected": "foo"
+    },
+    {
+      "input": "{\"3foo\"}",
+      "expected": "{\"3foo\"}"
+    },
+    {
+      "input": "{\"foo\", bar=\"baz\"}",
+      "expected": "foo{bar=\"baz\"}"
+    },
+    {
+      "input": "{\"foo\", \"bar\"=\"baz\"}",
+      "expected": "foo{bar=\"baz\"}"
+    },
+    {
+      "input": "foo{\"bar3\"=\"baz\"}",
+      "expected": "foo{bar3=\"baz\"}"
+    },
+    {
+      "input": "foobar_baz:namespace_pod_name_container_name:container_cpu_usage_seconds_total:sum_rate{}",
+      "expected": "foobar_baz:namespace_pod_name_container_name:container_cpu_usage_seconds_total:sum_rate"
+    },
+    {
+      "input": "process_cpu_seconds_total{foo=\"bar\",xjljljlkjopiwererrewre=\"asdfdsfdsfsdfdsfjkljlk\"}",
+      "expected": "process_cpu_seconds_total{\n  foo=\"bar\",xjljljlkjopiwererrewre=\"asdfdsfdsfsdfdsfjkljlk\"\n}"
+    },
+    {
+      "input": "process_cpu_seconds_total{\"3foo\"=\"bar\",xjljljlkjopiwererrewre=\"asdfdsfdsfsdfdsfjkljlk\"}",
+      "expected": "process_cpu_seconds_total{\n  \"3foo\"=\"bar\",xjljljlkjopiwererrewre=\"asdfdsfdsfsdfdsfjkljlk\"\n}"
+    },
+    {
+      "input": "{\"process_cpu_seconds_total\", \"foo\"=\"bar\",xjljljlkjopiwererrewre=\"asdfdsfdsfsdfdsfjkljlk\"}",
+      "expected": "process_cpu_seconds_total{\n  foo=\"bar\",xjljljlkjopiwererrewre=\"asdfdsfdsfsdfdsfjkljlk\"\n}"
+    },
+    {
+      "input": "{\"3process_cpu_seconds_total\", \"foo\"=\"bar\",xjljljlkjopiwererrewre=\"asdfdsfdsfsdfdsfjkljlk\"}",
+      "expected": "{\n\"3process_cpu_seconds_total\", \n  foo=\"bar\",xjljljlkjopiwererrewre=\"asdfdsfdsfsdfdsfjkljlk\"\n}"
+    },
+    {
+      "input": "process_cpu_seconds_total{foo=\"bar\",xjljljlkjopiwererrewre=\"asdfdsfdsfsdfdsfjkljlk\",very_long_label_aaaaaaaaaaaaaaa=\"fdsfdsffdsfs\"}",
+      "expected": "process_cpu_seconds_total{\n  foo=\"bar\",\n  xjljljlkjopiwererrewre=\"asdfdsfdsfsdfdsfjkljlk\",\n  very_long_label_aaaaaaaaaaaaaaa=\"fdsfdsffdsfs\"\n}"
+    },
+    {
+      "input": "{foo=\"bar\",xjljljlkjopiwererrewre=\"asdfdsfdsfsdfdsfjkljlk\",very_long_label_aaaaaaaaaaaaaaa=\"fdsfdsffdsfs\"}",
+      "expected": "{\n  foo=\"bar\",\n  xjljljlkjopiwererrewre=\"asdfdsfdsfsdfdsfjkljlk\",\n  very_long_label_aaaaaaaaaaaaaaa=\"fdsfdsffdsfs\"\n}"
+    },
+    {
+      "input": "process_cpu_seconds_total{instance=\"foobar-baz\",job=\"job1234567\" or instance=\"lkjlkjlkjlkjlkjlkjlkjlkjlkjlk\",job=\"lkjljlkjalkadsfdsffdsfdsfd\",\n\t\tsome_very_long_label=\"very_very_very_long_value_12397787_dfdfdfsds_dsffdfsf\"}",
+      "expected": "process_cpu_seconds_total{\n  instance=\"foobar-baz\",job=\"job1234567\"\n    or\n  instance=\"lkjlkjlkjlkjlkjlkjlkjlkjlkjlk\",\n  job=\"lkjljlkjalkadsfdsffdsfdsfd\",\n  some_very_long_label=\"very_very_very_long_value_12397787_dfdfdfsds_dsffdfsf\"\n}"
+    },
+    {
+      "input": "(sum(rate(process_cpu_seconds_total{instance=\"foo\",job=\"bar\"}[5m] offset 1h @ start())) by (x) / on(x) group_right(y) prefix \"x\" sum(rate(node_cpu_seconds_total{mode!=\"idle\"}[5m]) keep_metric_names)) keep_metric_names",
+      "expected": "(\n  sum(\n    rate(\n      process_cpu_seconds_total{instance=\"foo\",job=\"bar\"}[5m] offset 1h @ start()\n    )\n  ) by(x)\n    / on(x) group_right(y) prefix \"x\"\n  sum(rate(node_cpu_seconds_total{mode!=\"idle\"}[5m]) keep_metric_names)\n) keep_metric_names"
+    },
+    {
+      "input": "(sum(rate({\"3process_cpu_seconds_total\", instance=\"foo\",job=\"bar\"}[5m] offset 1h @ start())) by (x) / on(x) group_right(y) prefix \"x\" sum(rate(node_cpu_seconds_total{mode!=\"idle\"}[5m]) keep_metric_names)) keep_metric_names",
+      "expected": "(\n  sum(\n    rate(\n      {\"3process_cpu_seconds_total\", instance=\"foo\",job=\"bar\"}[5m] offset 1h @ start()\n    )\n  ) by(x)\n    / on(x) group_right(y) prefix \"x\"\n  sum(rate(node_cpu_seconds_total{mode!=\"idle\"}[5m]) keep_metric_names)\n) keep_metric_names"
+    },
+    {
+      "input": "process_cpu_seconds_total{aaaaaaaaaaaaaaaaaa=\"bbbbbb\"} offset 5m + (rate(xxxxxxxxxxxxxxxx{yyyyyyyy=\"aaaaaaa\"}) keep_metric_names)",
+      "expected": "(process_cpu_seconds_total{aaaaaaaaaaaaaaaaaa=\"bbbbbb\"} offset 5m)\n  +\n(rate(xxxxxxxxxxxxxxxx{yyyyyyyy=\"aaaaaaa\"}) keep_metric_names)"
+    },
+    {
+      "input": "process_cpu_seconds_total{aaaaaaaaaaaaaaaaaa=\"bbbbbb\",cccccccccccccccccccccc!~\"ddddddddddddddddddddddd\"} offset 5m + (rate(xxxxxxxxxxxxxxxx{yyyyyyyy=\"aaaaaaa\"}) keep_metric_names)",
+      "expected": "(\n  process_cpu_seconds_total{\n    aaaaaaaaaaaaaaaaaa=\"bbbbbb\",\n    cccccccccccccccccccccc!~\"ddddddddddddddddddddddd\"\n  } offset 5m\n)\n  +\n(rate(xxxxxxxxxxxxxxxx{yyyyyyyy=\"aaaaaaa\"}) keep_metric_names)"
+    },
+    {
+      "input": "process_cpu_seconds_total{foo=\"bar\",aaaaaaaaaaaaaaaaaaaaaaaa=\"bbbbbbbbbbbbbbbbbbbb\",c=\"dddddddddddd\"}[5m:3s] offset 5h3m @ 12345",
+      "expected": "process_cpu_seconds_total{\n  foo=\"bar\",aaaaaaaaaaaaaaaaaaaaaaaa=\"bbbbbbbbbbbbbbbbbbbb\",c=\"dddddddddddd\"\n}[5m:3s] offset 5h3m @ 12345"
+    },
+    {
+      "input": "process_cpu_seconds_total{foo=\"bar\",aaaaaaaaaaaaaaaaaaaaaaaa=\"bbbbbbbbbbbbbbbbbbbb\",ccccccccccccccc=\"dddddddddddd\"}[5m:3s] offset 5h3m @ 12345",
+      "expected": "process_cpu_seconds_total{\n  foo=\"bar\",\n  aaaaaaaaaaaaaaaaaaaaaaaa=\"bbbbbbbbbbbbbbbbbbbb\",\n  ccccccccccccccc=\"dddddddddddd\"\n}[5m:3s] offset 5h3m @ 12345"
+    },
+    {
+      "input": "sum without(x,y) (process_cpu_seconds_total{foo=\"bar\",aaaaaaaaaaaaaaaaaaaaaaaa=\"bbbbbbbbbbbbbbbbbbbb\",c=\"dddddddddddd\"}[5m:3s] offset 5h3m @ 12345)",
+      "expected": "sum(\n  process_cpu_seconds_total{\n    foo=\"bar\",aaaaaaaaaaaaaaaaaaaaaaaa=\"bbbbbbbbbbbbbbbbbbbb\",c=\"dddddddddddd\"\n  }[5m:3s] offset 5h3m @ 12345\n) without(x,y)"
+    },
+    {
+      "input": "clamp_min(process_cpu_seconds_total{aaaaaaaaaaaaaaaaaaaaaaaaa=\"bbbb\",cccccc=\"dddd\",ppppppppppppppppppppppppp=~\"xxxxxxx\"}, 123, \"456\")",
+      "expected": "clamp_min(\n  process_cpu_seconds_total{\n    aaaaaaaaaaaaaaaaaaaaaaaaa=\"bbbb\",\n    cccccc=\"dddd\",\n    ppppppppppppppppppppppppp=~\"xxxxxxx\"\n  },\n  123,\n  \"456\"\n)"
+    },
+    {
+      "input": "with (f(a)=foo{a,qw=\"ert\"}, x = process_cpu_seconds_total{aaaaaaaaaaaaaaaaaaaaaaaaa=\"bbbb\",cccccc=\"dddd\",ppppppppppppppppppppppppp=~\"xxxxxxx\"}, y=f({ab=\"cde\"}) + efg{h=\"j\"}) x + sum(y)",
+      "expected": "WITH (\n  f(a) = foo{a,qw=\"ert\"},\n  x = (\n    process_cpu_seconds_total{\n      aaaaaaaaaaaaaaaaaaaaaaaaa=\"bbbb\",\n      cccccc=\"dddd\",\n      ppppppppppppppppppppppppp=~\"xxxxxxx\"\n    }\n  ),\n  y = f({ab=\"cde\"}) + efg{h=\"j\"},\n)\nx + sum(y)"
+    },
+    {
+      "input": "with ( x = (a{b=\"c\"})  + (with (q=we{rt=\"z\"}) q)) ((abc) / x) + (with(rt=234+234) 2*rt+ poasdfklkjlkjfdsfjklfdfdsfdsfddfsfd)",
+      "expected": "WITH (\n  x = a{b=\"c\"} + WITH (q = we{rt=\"z\"}) q,\n)\n(abc / x) + WITH (rt = 234 + 234) (2 * rt) + poasdfklkjlkjfdsfjklfdfdsfdsfddfsfd"
+    },
+    {
+      "input": "WITH(BAR=1m,x(BAZ)=sum(rate({a=\"b\"}[BAR:BAZ])) offset BAR) x",
+      "expected": "WITH (BAR = 1m, x(BAZ) = sum(rate({a=\"b\"}[BAR:BAZ])) offset BAR) x"
+    },
+    {
+      "input": "{__name__=\"foo\"}",
+      "expected": "foo"
+    },
+    {
+      "input": "{__name__=\"foo\",bar=\"baz\"}",
+      "expected": "foo{bar=\"baz\"}"
+    },
+    {
+      "input": "10 - (3 + 3 + 4)",
+      "expected": "10 - ((3 + 3) + 4)"
+    }
+  ]
+}

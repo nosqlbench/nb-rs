@@ -281,24 +281,25 @@ pub fn parse_session_kv(s: &str) -> SessionDirSpec {
             "error"   => { spec.reuse = SessionReuse::Error;   continue; }
             _ => {}
         }
-        // Bare path heuristic: an item containing `/` (or one
-        // that resolves to an existing directory) is treated as
-        // `path:<value>`. Lets operators write
-        // `--session logs/fulltest_2026...` without remembering
-        // the explicit `path:` prefix.
-        if item.contains('/') || std::path::Path::new(item).is_dir() {
-            spec.session_path = Some(item.to_string());
-            continue;
-        }
-        // key:value pair.
+        // key:value pair takes precedence over the
+        // bare-token heuristics so `dir:/tmp/x` etc.
+        // disambiguate cleanly.
         let (key, value) = match item.split_once(':') {
             Some((k, v)) => (k.trim(), v.trim()),
             None => {
-                // Bare token without `:` and no `/`: treat as
-                // session name (per SRD-04 most-specific-name
-                // rule). Names without paths land under
-                // `logs/<name>/`.
-                spec.session_name = Some(item.to_string());
+                // Bare token without `:`. Two heuristics:
+                //   - contains `/` OR resolves to an existing
+                //     directory → treat as `path:<value>`.
+                //     Lets operators write
+                //     `--session logs/fulltest_2026...` without
+                //     remembering the `path:` prefix.
+                //   - otherwise → session name (SRD-04
+                //     most-specific-name rule).
+                if item.contains('/') || std::path::Path::new(item).is_dir() {
+                    spec.session_path = Some(item.to_string());
+                } else {
+                    spec.session_name = Some(item.to_string());
+                }
                 continue;
             }
         };
