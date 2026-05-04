@@ -49,7 +49,9 @@ pub mod ast;
 pub mod parser;
 pub mod prettifier;
 pub mod eval;
+pub mod streaming;
 
 pub use ast::Expr;
 pub use eval::{DataSource, DataSourceError, EvalContext, EvalError, evaluate, evaluate_range};
+pub use streaming::{StreamingPlan, CompileError, compile_streaming};
 pub use parser::{parse, parse_for_prettify, ParseError};

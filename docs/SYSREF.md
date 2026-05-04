@@ -81,6 +81,7 @@ should be preceded by re-reading the SRD in full.
 - [SRD 40: Metrics Framework](sysref/40_metrics.md) — instruments, frames, delta semantics, reporters.
 - [SRD 42: Windowed Metrics Access](sysref/42_windowed_metrics.md) — user-specified cadences, auto-intermediate buckets.
 - [SRD 46: Reports](sysref/46_reports.md) — unified `report:` block; plots and tables; figure enumeration; CLI surface; style language.
+- [SRD 47: MetricsQL Streaming Aggregation](sysref/47_metricsql_streaming.md) — `Reducer` algebra (distributive / algebraic / holistic), `StreamingPlan` compiler, ingest+snapshot, equivalence property test as the load-bearing artifact, holistic-function and sliding-window deferred decisions.
 
 ### Concurrency, errors, strict mode
 

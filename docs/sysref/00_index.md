@@ -66,6 +66,7 @@ explains the design intent behind it.
 | 42 | [Windowed Metrics Access](42_windowed_metrics.md) | User-specified cadences, auto-intermediate buckets, non-draining `now`, arbitrary past-duration queries |
 | 44 | [Workload Checkpointing](44_workload_checkpointing.md) | Phase-boundary + cursor-state resume, per-phase identity hashing, durability ordering, invocation-agnostic error handling |
 | 45 | [Sessions](45_sessions.md) | Session id + directory resolution, `SESSION_DIRECTORY` env / `--session-dir`, reuse policy (`error`/`restart`/`resume`), lifecycle cleanup (`--sessions-max`, `--sessions-shelflife`), resume hint on exit |
+| 47 | [MetricsQL Streaming Aggregation](47_metricsql_streaming.md) | `Reducer` algebra (distributive / algebraic / holistic), `StreamingPlan` compiler, ingest + snapshot data path, equivalence property test, holistic-function and sliding-window deferred decisions |
 
 ### 6. Adapters
 

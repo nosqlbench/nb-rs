@@ -13,7 +13,10 @@
 //!   4. Binary ops with vector matching
 //!   5. Range queries (stepped multi-instant evaluation)
 //!   6. Rollup-consumer functions (`rate`, `*_over_time`)
-//!   7. [`DataSource`] boundary formalised                  ← *here*
+//!   7. [`DataSource`] boundary formalised
+//!   8. Set ops + filter-mode comparisons
+//!   9. Vector-matching modifiers (`on`/`ignoring`/
+//!      `group_left`/`group_right`)                         ← *here*
 //!
 //! The boundary review at step (7) was informed by the four
 //! call shapes the previous passes exposed against `fetch`:
@@ -35,7 +38,8 @@
 
 use crate::ast::{
     AggrModifier, AggrModifierOp, BinaryOp, BinaryOpExpr, DurationExpr, Expr,
-    FuncExpr, LabelFilter, LabelFilterOp, MetricExpr, NumberExpr, RollupExpr,
+    FuncExpr, GroupModifier, GroupOp, JoinModifier, JoinOp, LabelFilter,
+    LabelFilterOp, MetricExpr, NumberExpr, RollupExpr,
 };
 
 /// One observation: time + value, with the labels that
@@ -348,40 +352,148 @@ fn evaluate_metric_expr(
 /// `group_right`) and the set ops (`and`/`or`/`unless`) are
 /// also deferred.
 fn evaluate_binary(ctx: &EvalContext<'_>, b: &BinaryOpExpr) -> Result<Vec<Series>, EvalError> {
-    if b.group_modifier.is_some() || b.join_modifier.is_some() {
-        return Err(EvalError::NotYetImplemented(
-            "vector-matching modifiers (on / ignoring / group_left / group_right)"));
-    }
-    if matches!(b.op, BinaryOp::And | BinaryOp::Or | BinaryOp::Unless
-        | BinaryOp::If | BinaryOp::IfNot | BinaryOp::Default) {
-        return Err(EvalError::NotYetImplemented("set / filter binary operators"));
-    }
-    if is_cmp_op(b.op) && !b.bool_modifier {
-        return Err(EvalError::NotYetImplemented(
-            "filter-mode comparisons (use `<op> bool` until this lands)"));
-    }
     let left = evaluate(ctx, &b.left)?;
     let right = evaluate(ctx, &b.right)?;
+    // Set ops dispatch separately — they reshape series and
+    // sample lists rather than computing per-pair values.
+    // The matching modifier (`on`/`ignoring`) still steers
+    // their key computation, but join modifiers (group_left/
+    // group_right) aren't legal there.
+    if matches!(b.op, BinaryOp::And | BinaryOp::Or | BinaryOp::Unless) {
+        if b.join_modifier.is_some() {
+            return Err(EvalError::BadValue(format!(
+                "{:?} doesn't support group_left / group_right", b.op)));
+        }
+        return Ok(combine_set_op(b.op, &left, &right, b.group_modifier.as_ref()));
+    }
+    // Filter-mode comparisons use the same per-sample compute
+    // as `bool`-mode but drop the sample when the predicate is
+    // false (NaN signals "drop"). Series that end up empty
+    // are pruned from the output.
     let bool_mod = b.bool_modifier;
     let combine_value = move |l: f64, r: f64| eval_binary_value(b.op, l, r, bool_mod);
+    let drop_nan_results = is_cmp_op(b.op) && !bool_mod;
 
     let left_is_scalar = is_scalar_series(&left);
     let right_is_scalar = is_scalar_series(&right);
 
-    if left_is_scalar && right_is_scalar {
+    let result = if left_is_scalar && right_is_scalar {
         let l = left[0].samples.first().map(|s| s.value).unwrap_or(f64::NAN);
         let r = right[0].samples.first().map(|s| s.value).unwrap_or(f64::NAN);
-        return Ok(scalar_series(ctx, combine_value(l, r)));
-    }
-    if left_is_scalar {
+        scalar_series(ctx, combine_value(l, r))
+    } else if left_is_scalar {
         let l = left[0].samples.first().map(|s| s.value).unwrap_or(f64::NAN);
-        return Ok(broadcast_scalar(&right, l, true, &combine_value));
-    }
-    if right_is_scalar {
+        broadcast_scalar(&right, l, true, &combine_value)
+    } else if right_is_scalar {
         let r = right[0].samples.first().map(|s| s.value).unwrap_or(f64::NAN);
-        return Ok(broadcast_scalar(&left, r, false, &combine_value));
+        broadcast_scalar(&left, r, false, &combine_value)
+    } else {
+        combine_vectors_modified(
+            &left, &right,
+            b.group_modifier.as_ref(),
+            b.join_modifier.as_ref(),
+            &combine_value,
+        )
+    };
+
+    if drop_nan_results {
+        Ok(prune_nan_samples(result))
+    } else {
+        Ok(result)
     }
-    Ok(combine_vectors(&left, &right, &combine_value))
+}
+
+/// Strip NaN-valued samples and drop series that end up
+/// empty. Used by filter-mode comparisons (`cpu > 3` without
+/// `bool`): the per-sample compute returns NaN for "predicate
+/// false", which we want to elide rather than carry forward.
+fn prune_nan_samples(input: Vec<Series>) -> Vec<Series> {
+    input.into_iter().filter_map(|s| {
+        let kept: Vec<Sample> = s.samples.into_iter()
+            .filter(|sm| !sm.value.is_nan())
+            .collect();
+        if kept.is_empty() { None }
+        else { Some(Series { labels: s.labels, samples: kept }) }
+    }).collect()
+}
+
+/// Set ops (`and` / `or` / `unless`). Pair series by the
+/// matching key (labels-without-name by default; `on`/
+/// `ignoring` reshape it), then filter per-sample by
+/// timestamp.
+///
+/// - `vec1 and vec2`    — keep `vec1`'s sample when `vec2`
+///                        has a sample at the same
+///                        (key, timestamp).
+/// - `vec1 or vec2`     — every `vec1` sample, plus every
+///                        `vec2` sample whose
+///                        (key, timestamp) is absent from
+///                        `vec1`.
+/// - `vec1 unless vec2` — `vec1`'s samples whose
+///                        (key, timestamp) does NOT appear
+///                        in `vec2`.
+///
+/// Result series preserve `vec1`'s full labels (`and` /
+/// `unless` / left half of `or`) or `vec2`'s (right half of
+/// `or`); upstream keeps the operand's own metric name.
+fn combine_set_op(
+    op: BinaryOp,
+    left: &[Series],
+    right: &[Series],
+    modifier: Option<&GroupModifier>,
+) -> Vec<Series> {
+    let right_index = build_sample_index(right, modifier);
+    let left_index = build_sample_index(left, modifier);
+    let mut out: Vec<Series> = Vec::new();
+    for ls in left {
+        let key = match_key(&ls.labels, modifier);
+        let kept: Vec<Sample> = ls.samples.iter().filter(|sm| {
+            let present_on_right = right_index.iter().any(|(k, ts)|
+                label_sets_equal(k, &key) && *ts == sm.timestamp_ms);
+            match op {
+                BinaryOp::And => present_on_right,
+                BinaryOp::Unless => !present_on_right,
+                BinaryOp::Or => true,
+                _ => unreachable!(),
+            }
+        }).cloned().collect();
+        if !kept.is_empty() {
+            out.push(Series { labels: ls.labels.clone(), samples: kept });
+        }
+    }
+    if matches!(op, BinaryOp::Or) {
+        for rs in right {
+            let key = match_key(&rs.labels, modifier);
+            let kept: Vec<Sample> = rs.samples.iter().filter(|sm| {
+                let present_on_left = left_index.iter().any(|(k, ts)|
+                    label_sets_equal(k, &key) && *ts == sm.timestamp_ms);
+                !present_on_left
+            }).cloned().collect();
+            if !kept.is_empty() {
+                out.push(Series { labels: rs.labels.clone(), samples: kept });
+            }
+        }
+    }
+    out
+}
+
+/// Build a `(matching-key, timestamp_ms)` membership index
+/// for a series list. Linear scan suffices for the
+/// instant-query and small-range workloads the evaluator
+/// faces today; if a profiler ever flags it we can swap in a
+/// hash structure keyed on canonical labels.
+fn build_sample_index(
+    input: &[Series],
+    modifier: Option<&GroupModifier>,
+) -> Vec<(Vec<(String, String)>, i64)> {
+    let mut out = Vec::new();
+    for s in input {
+        let key = match_key(&s.labels, modifier);
+        for sm in &s.samples {
+            out.push((key.clone(), sm.timestamp_ms));
+        }
+    }
+    out
 }
 
 fn is_cmp_op(op: BinaryOp) -> bool {
@@ -429,9 +541,13 @@ fn eval_binary_value(op: BinaryOp, l: f64, r: f64, bool_mod: bool) -> f64 {
                 f64::NAN
             }
         }
-        // Set / filter ops are dispatched away before reaching
-        // here — guard with NaN to keep the path total.
-        _ => f64::NAN,
+        Default => if l.is_nan() { r } else { l },
+        If      => if r.is_nan() { f64::NAN } else { l },
+        IfNot   => if r.is_nan() { l } else { f64::NAN },
+        // `and` / `or` / `unless` are dispatched as set ops
+        // before reaching `eval_binary_value`; guard with
+        // NaN so the match stays total.
+        And | Or | Unless => f64::NAN,
     }
 }
 
@@ -471,41 +587,139 @@ fn broadcast_scalar(
     }).collect()
 }
 
-/// Vector-vector match. Default semantics: pair series by
-/// label set excluding `__name__`. The `__name__` label is
-/// dropped from the result series — a binary op produces a
-/// new series identity, not a continuation of either operand.
-fn combine_vectors(
+/// Vector-vector match with optional modifiers. Three shapes:
+///
+/// - **1:1** (no `join_modifier`): pair each left series
+///   with the right series sharing the same matching key.
+///   Result labels = the matching key.
+///
+/// - **Many:1** (`group_left(extras)`): every left series
+///   pairs with the right series sharing the matching key;
+///   result keeps left's labels (minus `__name__`) and
+///   copies the listed `extras` over from the matched right.
+///
+/// - **1:Many** (`group_right(extras)`): symmetric of the
+///   above; the right side becomes "many", result keeps
+///   right's labels plus `extras` copied from the matched
+///   left.
+///
+/// `group_modifier` (`on(...)` / `ignoring(...)`) only
+/// changes how the matching key is computed; it doesn't
+/// affect the cardinality.
+fn combine_vectors_modified(
     left: &[Series],
     right: &[Series],
+    group_modifier: Option<&GroupModifier>,
+    join_modifier: Option<&JoinModifier>,
     combine: &impl Fn(f64, f64) -> f64,
 ) -> Vec<Series> {
     let mut out: Vec<Series> = Vec::new();
-    for ls in left {
-        let l_match = match_labels(&ls.labels);
-        for rs in right {
-            if !label_sets_equal(&l_match, &match_labels(&rs.labels)) {
+    let many_left = matches!(join_modifier, Some(j) if matches!(j.op, JoinOp::GroupLeft));
+    let many_right = matches!(join_modifier, Some(j) if matches!(j.op, JoinOp::GroupRight));
+
+    if !many_left && !many_right {
+        // Default 1:1.
+        for ls in left {
+            let key = match_key(&ls.labels, group_modifier);
+            let Some(rs) = right.iter().find(|rs|
+                label_sets_equal(&key, &match_key(&rs.labels, group_modifier))) else {
                 continue;
-            }
-            let labels = labels_after_op(&ls.labels);
+            };
             let samples = align_and_combine(&ls.samples, &rs.samples, combine);
-            out.push(Series { labels, samples });
-            // Default 1:1 matching — once we've paired this
-            // left series, move on. `group_left`/`group_right`
-            // (when implemented) will lift this constraint.
-            break;
+            out.push(Series {
+                labels: result_labels_one_to_one(&ls.labels, group_modifier),
+                samples,
+            });
         }
+        return out;
+    }
+
+    // Many:1 / 1:Many. The "many" side is iterated as the
+    // primary; extras from the join modifier are copied from
+    // the "one" side onto each result series.
+    let extras: &[String] = join_modifier.map(|j| j.labels.as_slice()).unwrap_or(&[]);
+    let (primary, secondary) = if many_left { (left, right) } else { (right, left) };
+    for ps in primary {
+        let key = match_key(&ps.labels, group_modifier);
+        let Some(ss) = secondary.iter().find(|ss|
+            label_sets_equal(&key, &match_key(&ss.labels, group_modifier))) else {
+            continue;
+        };
+        // Sample alignment: orient operands so `combine`
+        // sees them in source order (left, right) regardless
+        // of which side is "primary".
+        let samples = if many_left {
+            align_and_combine(&ps.samples, &ss.samples, combine)
+        } else {
+            align_and_combine(&ss.samples, &ps.samples, combine)
+        };
+        let mut labels = labels_drop_name(&ps.labels);
+        copy_labels_into(&mut labels, &ss.labels, extras);
+        out.push(Series { labels, samples });
     }
     out
 }
 
-/// The matching key for vector-vector ops: every label
-/// except `__name__`.
-fn match_labels(labels: &[(String, String)]) -> Vec<(String, String)> {
+/// Compute the matching key for a series's label set under
+/// the active group modifier. The default (no modifier) is
+/// "every label except `__name__`".
+fn match_key(
+    labels: &[(String, String)],
+    modifier: Option<&GroupModifier>,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = match modifier {
+        None => labels.iter()
+            .filter(|(k, _)| k != "__name__")
+            .cloned().collect(),
+        Some(GroupModifier { op: GroupOp::On, labels: keep }) => labels.iter()
+            .filter(|(k, _)| keep.iter().any(|w| w == k))
+            .cloned().collect(),
+        Some(GroupModifier { op: GroupOp::Ignoring, labels: drop }) => labels.iter()
+            .filter(|(k, _)| k != "__name__" && !drop.iter().any(|w| w == k))
+            .cloned().collect(),
+    };
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Result labels for default 1:1 matching: the matching key
+/// itself. With no modifier that's the lhs label set minus
+/// `__name__`; with `on(...)` it's exactly the listed
+/// labels; with `ignoring(...)` it's lhs minus `__name__`
+/// minus the ignored set. Equivalent to `match_key` here —
+/// the function exists so the call site reads its intent.
+fn result_labels_one_to_one(
+    labels: &[(String, String)],
+    modifier: Option<&GroupModifier>,
+) -> Vec<(String, String)> {
+    match_key(labels, modifier)
+}
+
+fn labels_drop_name(labels: &[(String, String)]) -> Vec<(String, String)> {
     labels.iter()
         .filter(|(k, _)| k != "__name__")
         .cloned()
         .collect()
+}
+
+/// Copy the `extras` labels from `src` onto `dst`. Used by
+/// `group_left(extras)` / `group_right(extras)` to enrich the
+/// "many"-side result with carry-over labels from the "one"
+/// side. Pre-existing entries on `dst` are overwritten —
+/// matches upstream semantics where the join modifier wins
+/// over the primary's own label.
+fn copy_labels_into(
+    dst: &mut Vec<(String, String)>,
+    src: &[(String, String)],
+    extras: &[String],
+) {
+    for label in extras {
+        let Some((_, v)) = src.iter().find(|(k, _)| k == label) else { continue; };
+        match dst.iter_mut().find(|(k, _)| k == label) {
+            Some(entry) => entry.1 = v.clone(),
+            None => dst.push((label.clone(), v.clone())),
+        }
+    }
 }
 
 /// Result-series labels: drop `__name__` (per upstream:
@@ -1590,24 +1804,254 @@ mod tests {
     }
 
     #[test]
-    fn comparisons_filter_mode_unsupported() {
+    fn filter_mode_comparison_drops_unmatched_samples() {
         let ds = MemoryDataSource {
-            series: vec![series(&[("__name__", "cpu"), ("host", "a")], &[(0, 4.0)])],
+            series: vec![
+                series(&[("__name__", "cpu"), ("host", "a")], &[(0, 4.0)]),
+                series(&[("__name__", "cpu"), ("host", "b")], &[(0, 2.0)]),
+                series(&[("__name__", "cpu"), ("host", "c")], &[(0, 5.0)]),
+            ],
         };
         let ctx = ctx_for(&ds);
-        // Without `bool`, comparison acts as a filter — defer.
+        // `cpu > 3` keeps only the samples (and series) whose
+        // value beats 3; `host=b` drops out entirely.
         let ast = parse("cpu > 3").expect("parse");
-        let err = evaluate(&ctx, &ast).expect_err("eval");
-        assert!(matches!(err, EvalError::NotYetImplemented(_)));
+        let mut got = evaluate(&ctx, &ast).expect("eval");
+        got.sort_by(|a, b| lookup_label(a, "host").unwrap_or("").cmp(lookup_label(b, "host").unwrap_or("")));
+        assert_eq!(got.len(), 2);
+        assert_eq!(lookup_label(&got[0], "host"), Some("a"));
+        assert_eq!(got[0].samples[0].value, 4.0);
+        assert_eq!(lookup_label(&got[1], "host"), Some("c"));
+        assert_eq!(got[1].samples[0].value, 5.0);
     }
 
     #[test]
-    fn vector_matching_modifiers_unsupported() {
+    fn filter_mode_drops_series_left_with_no_samples() {
+        let ds = MemoryDataSource {
+            series: vec![
+                series(&[("__name__", "cpu"), ("host", "a")], &[(0, 1.0), (10, 2.0)]),
+            ],
+        };
+        let ctx = ctx_for(&ds);
+        let ast = parse("cpu > 100").expect("parse");
+        let got = evaluate(&ctx, &ast).expect("eval");
+        // Every sample fails the predicate → empty result.
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn and_keeps_left_samples_present_on_right() {
+        let ds = MemoryDataSource {
+            series: vec![
+                series(&[("__name__", "a"), ("host", "h1")], &[(0, 1.0)]),
+                series(&[("__name__", "a"), ("host", "h2")], &[(0, 2.0)]),
+                series(&[("__name__", "b"), ("host", "h1")], &[(0, 9.0)]),
+                // No `b` series for `h2`.
+            ],
+        };
+        let ctx = ctx_for(&ds);
+        let got = evaluate(&ctx, &parse("a and b").expect("parse")).expect("eval");
+        assert_eq!(got.len(), 1);
+        assert_eq!(lookup_label(&got[0], "host"), Some("h1"));
+        // `and` keeps left's value, not right's.
+        assert_eq!(got[0].samples[0].value, 1.0);
+    }
+
+    #[test]
+    fn or_unions_disjoint_series() {
+        let ds = MemoryDataSource {
+            series: vec![
+                series(&[("__name__", "a"), ("host", "h1")], &[(0, 1.0)]),
+                series(&[("__name__", "b"), ("host", "h2")], &[(0, 2.0)]),
+            ],
+        };
+        let ctx = ctx_for(&ds);
+        let got = evaluate(&ctx, &parse("a or b").expect("parse")).expect("eval");
+        assert_eq!(got.len(), 2);
+    }
+
+    #[test]
+    fn or_prefers_left_when_both_match() {
+        let ds = MemoryDataSource {
+            series: vec![
+                series(&[("__name__", "a"), ("host", "h1")], &[(0, 1.0)]),
+                series(&[("__name__", "b"), ("host", "h1")], &[(0, 99.0)]),
+            ],
+        };
+        let ctx = ctx_for(&ds);
+        let got = evaluate(&ctx, &parse("a or b").expect("parse")).expect("eval");
+        // Only the `a` series survives — `b` was suppressed
+        // because the same (labels-without-name, ts) was on
+        // the left.
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].samples[0].value, 1.0);
+    }
+
+    #[test]
+    fn unless_drops_left_samples_present_on_right() {
+        let ds = MemoryDataSource {
+            series: vec![
+                series(&[("__name__", "a"), ("host", "h1")], &[(0, 1.0)]),
+                series(&[("__name__", "a"), ("host", "h2")], &[(0, 2.0)]),
+                series(&[("__name__", "b"), ("host", "h1")], &[(0, 99.0)]),
+            ],
+        };
+        let ctx = ctx_for(&ds);
+        let got = evaluate(&ctx, &parse("a unless b").expect("parse")).expect("eval");
+        assert_eq!(got.len(), 1);
+        assert_eq!(lookup_label(&got[0], "host"), Some("h2"));
+    }
+
+    #[test]
+    fn default_replaces_nan_left_with_right() {
+        let ds = MemoryDataSource {
+            series: vec![
+                series(&[("__name__", "a"), ("host", "h1")], &[(0, f64::NAN)]),
+                series(&[("__name__", "b"), ("host", "h1")], &[(0, 5.0)]),
+            ],
+        };
+        let ctx = ctx_for(&ds);
+        let got = evaluate(&ctx, &parse("a default b").expect("parse")).expect("eval");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].samples[0].value, 5.0);
+    }
+
+    #[test]
+    fn if_keeps_left_when_right_is_present() {
+        let ds = MemoryDataSource {
+            series: vec![
+                series(&[("__name__", "a"), ("host", "h1")], &[(0, 7.0)]),
+                series(&[("__name__", "b"), ("host", "h1")], &[(0, 1.0)]),
+            ],
+        };
+        let ctx = ctx_for(&ds);
+        let got = evaluate(&ctx, &parse("a if b").expect("parse")).expect("eval");
+        assert_eq!(got[0].samples[0].value, 7.0);
+    }
+
+    #[test]
+    fn ifnot_keeps_left_when_right_is_nan() {
+        let ds = MemoryDataSource {
+            series: vec![
+                series(&[("__name__", "a"), ("host", "h1")], &[(0, 7.0)]),
+                series(&[("__name__", "b"), ("host", "h1")], &[(0, f64::NAN)]),
+            ],
+        };
+        let ctx = ctx_for(&ds);
+        let got = evaluate(&ctx, &parse("a ifnot b").expect("parse")).expect("eval");
+        assert_eq!(got[0].samples[0].value, 7.0);
+    }
+
+    #[test]
+    fn on_modifier_restricts_match_to_listed_labels() {
+        let ds = MemoryDataSource {
+            series: vec![
+                series(&[("__name__", "a"), ("host", "h1"), ("zone", "z1")], &[(0, 2.0)]),
+                // Right side has same `host` but different
+                // `zone`; the default key would not match,
+                // but `on(host)` ignores `zone`.
+                series(&[("__name__", "b"), ("host", "h1"), ("zone", "z2")], &[(0, 5.0)]),
+            ],
+        };
+        let ctx = ctx_for(&ds);
+        let got = evaluate(&ctx, &parse("a + on(host) b").expect("parse")).expect("eval");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].samples[0].value, 7.0);
+        // Result labels = the matching key only.
+        assert_eq!(lookup_label(&got[0], "host"), Some("h1"));
+        assert_eq!(lookup_label(&got[0], "zone"), None);
+    }
+
+    #[test]
+    fn ignoring_modifier_drops_listed_labels_from_match_key() {
+        let ds = MemoryDataSource {
+            series: vec![
+                series(&[("__name__", "a"), ("host", "h1"), ("zone", "z1")], &[(0, 2.0)]),
+                series(&[("__name__", "b"), ("host", "h1"), ("zone", "z2")], &[(0, 5.0)]),
+            ],
+        };
+        let ctx = ctx_for(&ds);
+        let got = evaluate(&ctx, &parse("a + ignoring(zone) b").expect("parse")).expect("eval");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].samples[0].value, 7.0);
+        // `ignoring(zone)` keeps `host`; `__name__` always
+        // dropped.
+        assert_eq!(lookup_label(&got[0], "host"), Some("h1"));
+        assert_eq!(lookup_label(&got[0], "zone"), None);
+    }
+
+    #[test]
+    fn group_left_carries_extra_labels_from_right() {
+        let ds = MemoryDataSource {
+            series: vec![
+                series(&[("__name__", "a"), ("host", "h1"), ("region", "r1")], &[(0, 10.0)]),
+                series(&[("__name__", "a"), ("host", "h2"), ("region", "r1")], &[(0, 20.0)]),
+                // The "one" side: keyed on region, carrying
+                // an extra `tier` label group_left will copy.
+                series(&[("__name__", "b"), ("region", "r1"), ("tier", "prod")], &[(0, 2.0)]),
+            ],
+        };
+        let ctx = ctx_for(&ds);
+        let got = evaluate(&ctx, &parse(
+            "a * on(region) group_left(tier) b").expect("parse")).expect("eval");
+        assert_eq!(got.len(), 2);
+        for s in &got {
+            assert_eq!(s.samples[0].value, match lookup_label(s, "host") {
+                Some("h1") => 20.0,
+                Some("h2") => 40.0,
+                _ => panic!("unexpected host"),
+            });
+            assert_eq!(lookup_label(s, "region"), Some("r1"));
+            // `tier` was copied across from the right.
+            assert_eq!(lookup_label(s, "tier"), Some("prod"));
+        }
+    }
+
+    #[test]
+    fn group_right_is_symmetric_to_group_left() {
+        let ds = MemoryDataSource {
+            series: vec![
+                series(&[("__name__", "a"), ("region", "r1"), ("tier", "prod")], &[(0, 2.0)]),
+                series(&[("__name__", "b"), ("host", "h1"), ("region", "r1")], &[(0, 10.0)]),
+                series(&[("__name__", "b"), ("host", "h2"), ("region", "r1")], &[(0, 20.0)]),
+            ],
+        };
+        let ctx = ctx_for(&ds);
+        let got = evaluate(&ctx, &parse(
+            "a * on(region) group_right(tier) b").expect("parse")).expect("eval");
+        assert_eq!(got.len(), 2);
+        for s in &got {
+            assert_eq!(lookup_label(s, "tier"), Some("prod"));
+            // The "many" side is the rhs (b), so `host`
+            // labels survive on each result.
+            assert!(lookup_label(s, "host").is_some());
+        }
+    }
+
+    #[test]
+    fn on_modifier_works_with_set_ops_too() {
+        let ds = MemoryDataSource {
+            series: vec![
+                series(&[("__name__", "a"), ("host", "h1"), ("zone", "z1")], &[(0, 1.0)]),
+                series(&[("__name__", "a"), ("host", "h2"), ("zone", "z1")], &[(0, 2.0)]),
+                // Right side keys on `host`; only h1 has a
+                // counterpart.
+                series(&[("__name__", "b"), ("host", "h1"), ("zone", "z9")], &[(0, 9.0)]),
+            ],
+        };
+        let ctx = ctx_for(&ds);
+        let got = evaluate(&ctx, &parse("a and on(host) b").expect("parse")).expect("eval");
+        assert_eq!(got.len(), 1);
+        assert_eq!(lookup_label(&got[0], "host"), Some("h1"));
+    }
+
+    #[test]
+    fn group_left_on_set_op_is_rejected() {
         let ds = MemoryDataSource { series: vec![] };
         let ctx = ctx_for(&ds);
-        let ast = parse("a + on(host) b").expect("parse");
-        let err = evaluate(&ctx, &ast).expect_err("eval");
-        assert!(matches!(err, EvalError::NotYetImplemented(_)));
+        let err = evaluate(&ctx,
+            &parse("a and on(h) group_left(x) b").expect("parse")).expect_err("eval");
+        assert!(matches!(err, EvalError::BadValue(_)));
     }
 
     /// Time-aware in-memory source: returns each series's
