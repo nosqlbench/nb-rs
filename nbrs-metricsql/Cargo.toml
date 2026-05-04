@@ -16,6 +16,10 @@ hdrhistogram = "7"
 # Sqlite-backed `DataSource` adapter (SRD-47, follow-up).
 # Optional so non-sqlite consumers don't pull rusqlite in.
 rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+# Continuous-query runtime (SRD-48). Actor + ArcSwap pattern
+# mirrors the SRD-40 cadence_reporter shape exactly.
+crossbeam-channel = { version = "0.5", optional = true }
+arc-swap = { version = "1", optional = true }
 
 [features]
 default = []
@@ -24,6 +28,9 @@ default = []
 # (defined by nbrs-metrics). The schema contract is
 # documented at the adapter module's rustdoc.
 sqlite = ["dep:rusqlite"]
+# Enables `nbrs_metricsql::runtime::ContinuousQueryRuntime` —
+# the orchestration layer over `StreamingPlan`. See SRD-48.
+runtime = ["dep:crossbeam-channel", "dep:arc-swap"]
 
 [dev-dependencies]
 # Test fixtures harvested from upstream VM tests live in

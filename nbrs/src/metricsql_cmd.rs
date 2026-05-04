@@ -29,8 +29,11 @@
 use std::path::PathBuf;
 
 use nbrs_metricsql::adapters::sqlite::SqliteDataSource;
-use nbrs_metricsql::eval::{DataSource, EvalContext, evaluate, Series};
-use nbrs_metricsql::streaming::{StreamingPlan, compile_streaming};
+use nbrs_metricsql::eval::{DataSource, DataSourceError, EvalContext, evaluate, Matcher, Series};
+use nbrs_metricsql::runtime::{
+    ContinuousQueryRuntime, QueryHandle, RegisterError, RegisterOptions,
+    SampleFeed, WindowPolicy,
+};
 
 pub fn query(args: &[String]) {
     let parsed = match parse_args(args) {
@@ -106,6 +109,9 @@ pub fn query(args: &[String]) {
     let ctx = EvalContext {
         data: &ds, start_ms: ctx_start, end_ms: ctx_end,
         step_ms, lookback_ms: instant_lookback,
+        // CLI-level instant/range query — `@ start()/end()`
+        // resolve to the original bounds.
+        query_start_ms: Some(ctx_start), query_end_ms: Some(ctx_end),
     };
     match evaluate(&ctx, &expr) {
         Ok(series) => emit(&series, parsed.latest_only),
@@ -327,21 +333,20 @@ fn format_labels(labels: &[(String, String)]) -> String {
 ///
 /// Two engines:
 ///
-/// - **Streaming** (default): compile the expression into a
-///   `StreamingPlan`, watermark-track the latest sample
-///   timestamp, and on each tick fetch only new samples,
-///   ingest them into the plan, snapshot. The streaming
-///   plan accumulates state lifetime; well-suited to
-///   monotonic counters and `*_over_time` rollups.
-/// - **Batch fallback**: when the expression compiles to a
-///   shape `compile_streaming` doesn't accept (e.g. a
-///   query type that doesn't fit the plan tree), drop back
-///   to running the full batch evaluator each tick.
+/// - **Runtime** (default): compile via the SRD-48
+///   `ContinuousQueryRuntime`. Each tick advances per-leaf
+///   watermarks, ingests new samples, republishes the
+///   snapshot. The runtime is the same code path that
+///   future TUI/web consumers will use — dogfooding it
+///   here surfaces production rough edges early.
+/// - **Batch fallback**: when the expression doesn't
+///   `compile_streaming` (e.g. a shape the streaming layer
+///   rejects), drop back to running the full batch
+///   evaluator each tick.
 ///
 /// Both engines produce the same observable output for
 /// supported shapes — the SRD-47 equivalence property
-/// guarantees it. The streaming engine is lower-cost when
-/// you scale to many concurrent watch panels.
+/// guarantees it.
 pub fn watch(args: &[String]) {
     let parsed = match parse_watch_args(args) {
         Ok(p) => p,
@@ -356,13 +361,6 @@ pub fn watch(args: &[String]) {
             parsed.db_path.display());
         std::process::exit(2);
     }
-    let ds = match SqliteDataSource::open(&parsed.db_path) {
-        Ok(ds) => ds,
-        Err(e) => {
-            eprintln!("nbrs metrics watch: open db: {e}");
-            std::process::exit(2);
-        }
-    };
     let expr = match nbrs_metricsql::parse(&parsed.query) {
         Ok(e) => e,
         Err(e) => {
@@ -371,67 +369,129 @@ pub fn watch(args: &[String]) {
         }
     };
 
-    let mut engine: WatchEngine = match compile_streaming(&expr) {
-        Ok(plan) => {
-            eprintln!("# engine: streaming");
-            WatchEngine::Streaming { plan, watermark_ms: 0 }
+    // Try the runtime path first; fall back to batch if
+    // `compile_streaming` rejects the shape. Both paths
+    // need their own SqliteDataSource handle since the
+    // runtime takes ownership of its feed.
+    let runtime_attempt = try_runtime_engine(&parsed);
+    match runtime_attempt {
+        Ok((runtime, handle)) => {
+            eprintln!("# engine: runtime");
+            run_runtime_loop(&parsed, runtime, handle);
         }
-        Err(e) => {
-            eprintln!("# engine: batch (streaming compile rejected: {e})");
-            WatchEngine::Batch
+        Err(reason) => {
+            eprintln!("# engine: batch ({reason})");
+            // Batch path needs its own data-source handle.
+            let ds = match SqliteDataSource::open(&parsed.db_path) {
+                Ok(ds) => ds,
+                Err(e) => {
+                    eprintln!("nbrs metrics watch: open db: {e}");
+                    std::process::exit(2);
+                }
+            };
+            run_batch_loop(&parsed, &ds, &expr);
         }
-    };
+    }
+}
 
-    // First tick: warm up the engine (streaming) by ingesting
-    // a backfill window so the snapshot isn't empty for
-    // continuous-counter queries.
-    if let WatchEngine::Streaming { plan, watermark_ms } = &mut engine {
-        let now = match latest_sample_ts(&parsed.db_path) {
-            Ok(Some(ts)) => ts,
-            _ => 0,
-        };
-        let backfill_start = now - parsed.warmup_ms;
-        backfill_streaming(plan, &ds, backfill_start, now);
-        *watermark_ms = now;
+/// Build a `ContinuousQueryRuntime` for the watch CLI and
+/// register the user's query. Returns the runtime + the
+/// query handle on success; on streaming compile failure,
+/// returns the reason string for diagnostic display.
+fn try_runtime_engine(parsed: &WatchArgs)
+    -> Result<(ContinuousQueryRuntime, QueryHandle), String>
+{
+    let ds = SqliteDataSource::open(&parsed.db_path)
+        .map_err(|e| format!("open db: {e}"))?;
+    let feed = SqliteCliFeed {
+        source: Box::new(ds),
+        db_path: parsed.db_path.clone(),
+    };
+    let runtime = ContinuousQueryRuntime::with_feed(Box::new(feed));
+    let opts = RegisterOptions {
+        // The watch CLI wants lifetime accumulation: no
+        // surprise resets in the user's terminal. The
+        // tumbling default is for live dashboards where
+        // bounded memory matters more than stable output.
+        window_policy: WindowPolicy::Lifetime,
+        warmup_ms: parsed.warmup_ms,
+    };
+    runtime.register_with(&parsed.query, opts)
+        .map(|h| (runtime.clone(), h))
+        .map_err(|e: RegisterError| e.to_string())
+}
+
+/// CLI-specific feed: PullFeed delegates `fetch_since` but
+/// shadows `latest_ts` with a direct probe of the db's
+/// `MAX(timestamp_ms)`. The default `PullFeed::latest_ts`
+/// returns `None` (no general-purpose probe in the
+/// `DataSource` trait); the runtime would skip every tick
+/// without this shim.
+struct SqliteCliFeed {
+    source: Box<SqliteDataSource>,
+    db_path: PathBuf,
+}
+
+impl SampleFeed for SqliteCliFeed {
+    fn fetch_since(&self, matchers: &[Matcher], since_ms: i64, until_ms: i64)
+        -> Result<Vec<Series>, DataSourceError>
+    {
+        // Mirror PullFeed's exclusive-since → inclusive
+        // conversion.
+        let start = since_ms.saturating_add(1);
+        if start > until_ms { return Ok(Vec::new()); }
+        self.source.fetch(matchers, start, until_ms)
     }
 
+    fn latest_ts(&self) -> Result<Option<i64>, DataSourceError> {
+        latest_sample_ts(&self.db_path)
+            .map_err(DataSourceError::new)
+    }
+}
+
+fn run_runtime_loop(
+    parsed: &WatchArgs,
+    runtime: ContinuousQueryRuntime,
+    handle: QueryHandle,
+) {
+    // First snapshot is already populated by `register`'s
+    // backfill. Render it before sleeping so the user sees
+    // data on the first frame.
+    redraw(&parsed.query, &handle.snapshot(),
+        parsed.latest_only, parsed.no_clear);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(parsed.interval_ms as u64));
+        if let Err(e) = runtime.tick() {
+            eprintln!("nbrs metrics watch: tick: {e}");
+            std::process::exit(2);
+        }
+        redraw(&parsed.query, &handle.snapshot(),
+            parsed.latest_only, parsed.no_clear);
+    }
+}
+
+fn run_batch_loop(parsed: &WatchArgs, ds: &SqliteDataSource, expr: &nbrs_metricsql::ast::Expr) {
     loop {
         let now = match latest_sample_ts(&parsed.db_path) {
             Ok(Some(ts)) => ts,
             _ => 0,
         };
-        match &mut engine {
-            WatchEngine::Streaming { plan, watermark_ms } => {
-                if now > *watermark_ms {
-                    let new_start = *watermark_ms + 1;
-                    backfill_streaming(plan, &ds, new_start, now);
-                    *watermark_ms = now;
-                }
-                let snapshot = plan.snapshot(now);
-                redraw(&parsed.query, &snapshot, parsed.latest_only, parsed.no_clear);
-            }
-            WatchEngine::Batch => {
-                let start = now - parsed.warmup_ms;
-                let ctx = EvalContext {
-                    data: &ds, start_ms: start, end_ms: now,
-                    step_ms: 60_000, lookback_ms: None,
-                };
-                match evaluate(&ctx, &expr) {
-                    Ok(series) => redraw(&parsed.query, &series, parsed.latest_only, parsed.no_clear),
-                    Err(e) => {
-                        eprintln!("nbrs metrics watch: evaluate: {e}");
-                        std::process::exit(2);
-                    }
-                }
+        let start = now - parsed.warmup_ms;
+        let ctx = EvalContext {
+            data: ds, start_ms: start, end_ms: now,
+            step_ms: 60_000, lookback_ms: None,
+            query_start_ms: Some(start), query_end_ms: Some(now),
+        };
+        match evaluate(&ctx, expr) {
+            Ok(series) => redraw(&parsed.query, &series,
+                parsed.latest_only, parsed.no_clear),
+            Err(e) => {
+                eprintln!("nbrs metrics watch: evaluate: {e}");
+                std::process::exit(2);
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(parsed.interval_ms as u64));
     }
-}
-
-enum WatchEngine {
-    Streaming { plan: StreamingPlan, watermark_ms: i64 },
-    Batch,
 }
 
 #[derive(Debug)]
@@ -496,24 +556,6 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
     let query = query.ok_or("metricsql expression required (positional argument)")?;
     let db_path = db_path.unwrap_or_else(|| PathBuf::from("logs/latest/metrics.db"));
     Ok(WatchArgs { db_path, query, interval_ms, warmup_ms, latest_only, no_clear })
-}
-
-/// Fetch new samples for every leaf and ingest into the
-/// plan. Each leaf has its own matchers (vec/vec plans
-/// query two different metric names); the plan's
-/// per-leaf filtering routes samples to the right node.
-fn backfill_streaming(
-    plan: &mut StreamingPlan,
-    ds: &SqliteDataSource,
-    start_ms: i64,
-    end_ms: i64,
-) {
-    for matchers in plan.leaf_matchers() {
-        let Ok(series) = ds.fetch(&matchers, start_ms, end_ms) else { continue; };
-        for s in series {
-            plan.ingest_series(&s.labels, &s.samples);
-        }
-    }
 }
 
 fn redraw(query: &str, series: &[Series], latest_only: bool, no_clear: bool) {

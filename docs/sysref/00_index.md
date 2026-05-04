@@ -67,6 +67,7 @@ explains the design intent behind it.
 | 44 | [Workload Checkpointing](44_workload_checkpointing.md) | Phase-boundary + cursor-state resume, per-phase identity hashing, durability ordering, invocation-agnostic error handling |
 | 45 | [Sessions](45_sessions.md) | Session id + directory resolution, `SESSION_DIRECTORY` env / `--session-dir`, reuse policy (`error`/`restart`/`resume`), lifecycle cleanup (`--sessions-max`, `--sessions-shelflife`), resume hint on exit |
 | 47 | [MetricsQL Streaming Aggregation](47_metricsql_streaming.md) | `Reducer` algebra (distributive / algebraic / holistic), `StreamingPlan` compiler, ingest + snapshot data path, equivalence property test, holistic-function and sliding-window deferred decisions |
+| 48 | [MetricsQL Continuous-Query Runtime](48_metricsql_continuous_query.md) | Plan registry, sample feed model (pull / push / watchable), actor + ArcSwap concurrency, lifecycle (register / tick / reset / unregister), window framing policy (tumbling / grid), TUI / web binding model, memory bounds |
 
 ### 6. Adapters
 

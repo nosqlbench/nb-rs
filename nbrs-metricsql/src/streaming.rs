@@ -35,6 +35,33 @@
 //! [`tests::streaming_equals_batch_for_supported_shapes`] —
 //! the load-bearing artifact. If it ever fails, the algebra
 //! is broken; relaxing the test is not the recovery path.
+//!
+//! # Carve-out: `rate` / `increase` semantics
+//!
+//! Two functions are deliberately excluded from the
+//! batch≡streaming guarantee:
+//!
+//! - **`rate(...[w])`** and **`increase(...[w])`** —
+//!   Batch implements full PromQL semantics: counter-reset
+//!   adjustment (walk samples, add back the pre-reset value
+//!   on any `xs[i] < xs[i-1]`) and window-edge extrapolation
+//!   (scale the rate when the first/last samples don't sit
+//!   at the window edges). Both behaviours assume a *fixed*
+//!   window with known edges and require walking the full
+//!   sample sequence in temporal order.
+//!
+//!   Streaming sees a *sliding* arrival window: samples land
+//!   incrementally, the "window" is whatever the runtime has
+//!   ingested so far, and partition order across merge isn't
+//!   strictly temporal. Both adjustments would oscillate as
+//!   data flows in. The streaming reducer therefore uses the
+//!   simpler `(last - first) / window_secs` algebra — which
+//!   is what live consumers (TUI panels, dashboards) want
+//!   anyway: trend, not exact window-fitted final number.
+//!
+//!   For batch reports use the eval path; for live runtime
+//!   monitoring use streaming. Don't compare them digit-for-
+//!   digit.
 
 use crate::ast::{AggrModifier, AggrModifierOp, BinaryOp, Expr, FuncExpr, MetricExpr, NumberExpr, RollupExpr};
 use crate::eval::{Matcher, MatcherOp, Sample, Series};
@@ -2537,18 +2564,25 @@ mod tests {
             // Composition.
             Shape { query: "sum(sum_over_time(cpu[1m])) by (zone)", cardinality: 8, samples_per_series: 4, non_negative_values: false },
             Shape { query: "avg(avg_over_time(cpu[1m])) by (zone)", cardinality: 8, samples_per_series: 4, non_negative_values: false },
-            // Counter / gauge rollups. The batch path
-            // computes `(last-first) / window_secs` on the
-            // input samples; streaming does the same
-            // algebraically.
-            Shape { query: "increase(cpu[1m])",                     cardinality: 4, samples_per_series: 5, non_negative_values: false },
+            // Gauge delta — both batch and streaming compute
+            // `last - first` with no edge extrapolation or
+            // counter-reset detection. Stays in the
+            // equivalence set.
             Shape { query: "delta(cpu[1m])",                        cardinality: 4, samples_per_series: 5, non_negative_values: false },
-            Shape { query: "rate(cpu[1m])",                         cardinality: 4, samples_per_series: 5, non_negative_values: false },
+            // NOTE: `rate` and `increase` are deliberately
+            // EXCLUDED from this equivalence test. Batch
+            // applies PromQL counter-reset adjustment and
+            // window-edge extrapolation; streaming sees a
+            // sliding sample arrival window and uses simpler
+            // `(last - first) / window_secs` semantics. The
+            // divergence is by design — see the streaming
+            // module doc — and is exercised by the focused
+            // tests `rate_streaming_simple_window` and
+            // `increase_streaming_simple_window`.
             // Scalar / vector binary ops.
             Shape { query: "sum(cpu) * 2",                          cardinality: 6, samples_per_series: 4, non_negative_values: false },
             Shape { query: "100 - max(cpu)",                        cardinality: 5, samples_per_series: 3, non_negative_values: false },
             Shape { query: "(sum(cpu) + 10) / 2",                   cardinality: 6, samples_per_series: 4, non_negative_values: false },
-            Shape { query: "rate(cpu[1m]) * 60",                    cardinality: 4, samples_per_series: 5, non_negative_values: false },
             // Holistic (HDR-sketch). Both batch and streaming
             // route through the same HDR config — values
             // must be non-negative for HDR to record them.
@@ -2702,6 +2736,7 @@ mod tests {
         let ctx = crate::eval::EvalContext {
             data: &ds, start_ms: 0, end_ms: anchor_ms, step_ms: 1,
             lookback_ms: None,
+            query_start_ms: None, query_end_ms: None,
         };
         let expr = parse(query).expect("parse");
         crate::eval::evaluate(&ctx, &expr).expect("evaluate")

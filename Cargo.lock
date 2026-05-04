@@ -2781,6 +2781,8 @@ dependencies = [
 name = "nbrs-metricsql"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
+ "crossbeam-channel",
  "hdrhistogram",
  "rusqlite",
  "serde",

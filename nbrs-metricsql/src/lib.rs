@@ -51,6 +51,8 @@ pub mod prettifier;
 pub mod eval;
 pub mod streaming;
 pub mod adapters;
+#[cfg(feature = "runtime")]
+pub mod runtime;
 
 pub use ast::Expr;
 pub use eval::{DataSource, DataSourceError, EvalContext, EvalError, evaluate, evaluate_range};
