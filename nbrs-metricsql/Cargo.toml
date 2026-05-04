@@ -8,7 +8,21 @@ description = "MetricsQL parser/evaluator (Rust port). Compatibility-tested agai
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Sqlite-backed `DataSource` adapter (SRD-47, follow-up).
+# Optional so non-sqlite consumers don't pull rusqlite in.
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+
+[features]
+default = []
+# Enables `nbrs_metricsql::adapters::sqlite::SqliteDataSource`
+# — a `DataSource` impl over the nb-rs metrics.db schema
+# (defined by nbrs-metrics). The schema contract is
+# documented at the adapter module's rustdoc.
+sqlite = ["dep:rusqlite"]
 
 [dev-dependencies]
 # Test fixtures harvested from upstream VM tests live in
 # tests/fixtures/*.json — loaded by integration tests.
+# rusqlite under the test scope so adapter tests can build
+# fresh schemas + insert sample data inline.
+rusqlite = { version = "0.31", features = ["bundled"] }

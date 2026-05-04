@@ -185,7 +185,38 @@ mod inner {
                 CREATE TABLE IF NOT EXISTS session_metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT
-                );"
+                );
+                -- Indexes for read paths. All `IF NOT EXISTS`
+                -- so existing databases pick them up on next
+                -- open without a separate migration. See
+                -- SRD-47 §\"What's missing right now\" — the
+                -- metricsql DataSource adapter uses these
+                -- to avoid full table scans.
+                --
+                -- (label_set_entry.key_id, value_id, set_id):
+                --   matcher resolution — \"which sets have
+                --   label X = value Y\" is the inner loop of
+                --   every selector.
+                CREATE INDEX IF NOT EXISTS idx_label_set_entry_kv
+                    ON label_set_entry(key_id, value_id, set_id);
+                -- (label_set_entry.set_id):
+                --   materializing a result series's labels
+                --   from its label_set_id.
+                CREATE INDEX IF NOT EXISTS idx_label_set_entry_set
+                    ON label_set_entry(set_id);
+                -- (sample_value.instance_id, timestamp_ms):
+                --   range scans for time-window queries. Not
+                --   a primary key (would require a schema
+                --   break) but co-locates samples per
+                --   instance in time order.
+                CREATE INDEX IF NOT EXISTS idx_sample_value_inst_ts
+                    ON sample_value(instance_id, timestamp_ms);
+                -- (metric_instance.family_id):
+                --   bypasses the UNIQUE composite when only
+                --   the family side is known (e.g. \"all
+                --   instances of `latency`\").
+                CREATE INDEX IF NOT EXISTS idx_metric_instance_family
+                    ON metric_instance(family_id);"
             ).map_err(|e| format!("schema creation failed: {e}"))?;
             Ok(())
         }
