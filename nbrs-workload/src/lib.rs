@@ -78,3 +78,4 @@ pub mod inline;
 pub mod bindpoints;
 pub mod tags;
 pub mod spectest;
+pub mod report;

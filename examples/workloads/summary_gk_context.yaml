@@ -28,8 +28,13 @@ params:
   k_values: "10,100"
   probe_count: "500"
 
-# Show recall, compare hnsw vs ivf families
-summary: "recall; mean(recall) over algorithm~hnsw; mean(recall) over algorithm~ivf"
+# Show recall, compare hnsw vs ivf families (SRD-46)
+report:
+  recall: |
+    table default
+      recall
+      mean(recall) over algorithm~hnsw
+      mean(recall) over algorithm~ivf
 
 bindings: |
   inputs := (cycle)
@@ -46,8 +51,6 @@ scenarios:
 
 phases:
   probe:
-    summary:
-      - recall
     cycles: "{probe_count}"
     concurrency: 1
     bindings: |

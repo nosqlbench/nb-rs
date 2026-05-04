@@ -479,31 +479,17 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     let phases = workload.phases;
     let phase_order = workload.phase_order;
     let scenarios = workload.scenarios;
-    // Collect every named summary the workload defined (or
-    // synthesize a single `default` from `summary.yaml`
-    // sidecar if no inline summary was declared). The map is
-    // empty when neither is present — runtime treats that as
-    // "no auto-summary at end of run".
-    let mut workload_summaries = workload.summaries;
-    let workload_plots = workload.plots.clone();
-    if workload_summaries.is_empty() {
-        // Sidecar: if no `summary:` field was present in the
-        // workload YAML, look for `summary.yaml` next to the
-        // workload file. Sidecar provides one summary spec
-        // (no naming).
-        if let Some(wf) = workload_file.as_deref() {
-            if let Some(dir) = std::path::Path::new(wf).parent() {
-                let sidecar = dir.join("summary.yaml");
-                if let Ok(content) = std::fs::read_to_string(&sidecar) {
-                    let trimmed = content.trim();
-                    if !trimmed.is_empty() {
-                        workload_summaries.insert("default".into(),
-                            nbrs_workload::model::SummaryConfig::parse(trimmed));
-                    }
-                }
-            }
-        }
-    }
+    // Unified report block (SRD-46). Tables auto-render at
+    // end-of-run; plot specs persist into the session db so
+    // post-hoc `nbrs report ...` can replay them. Empty
+    // `report:` block ⇒ no auto-render and no persisted specs.
+    let workload_report = workload.report.clone();
+    let workload_summaries: HashMap<String, nbrs_workload::model::SummaryConfig> =
+        workload_report.items()
+            .filter(|i| matches!(i.kind, nbrs_workload::report::Kind::Table))
+            .map(|i| (i.name.clone(),
+                nbrs_workload::model::SummaryConfig::parse(&i.body)))
+            .collect();
 
     // Collect ALL ops: top-level ops + all phase inline ops.
     let mut ops = workload.ops;
@@ -554,11 +540,28 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         .filter_map(|a| a.strip_prefix("--gk-lib="))
         .map(std::path::PathBuf::from)
         .collect();
-    let strict = args.iter().any(|a| a == "--strict");
+    let strict = args.iter().any(|a| a == "--strict")
+        || matches!(params.get("strict").map(String::as_str), Some("true") | Some("1"));
 
     // Parse dryrun= param into diagnostic config
     if let Some(spec) = params.get("dryrun") {
         diag = DiagnosticConfig::parse(spec);
+    }
+
+    // SRD-46 + SRD-15: surface report-block warnings collected
+    // by the parser. Strict mode promotes to a hard error so a
+    // workload with `defaults`-collisions or empty groups can't
+    // silently pass; otherwise we log them and continue.
+    if !workload.report_warnings.is_empty() {
+        if strict {
+            return Err(format!(
+                "report-block warnings (strict mode promotes to errors):\n  - {}",
+                workload.report_warnings.join("\n  - "),
+            ));
+        }
+        for w in &workload.report_warnings {
+            eprintln!("warning: report: {w}");
+        }
     }
 
     // Dry-run mode: dryrun=cycle uses "silent" adapter
@@ -630,9 +633,10 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 scenario_for_session,
             )
         }
-        _ => crate::session::Session::new(
+        _ => crate::session::Session::new_with_args(
             workload_file.as_deref().unwrap_or("inline"),
             scenario_for_session,
+            &args,
         ),
     };
     let session_id = session.id.clone();
@@ -1337,6 +1341,52 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 invocation,
             ),
         });
+
+        // End-of-run notices: drops on success OR error path.
+        //
+        //  - Resume hint: when checkpoint state shows
+        //    incomplete idempotent phases (SRD-44), advise the
+        //    operator how to resume.
+        //  - Keep-purge forecast: when the next new session
+        //    would auto-purge sessions under the keep cap
+        //    (SRD-45), let the operator know how many and how
+        //    to disable.
+        let parent_for_keep_check = if let Some(p) = session.output_dir.parent() {
+            p.to_path_buf()
+        } else {
+            std::path::PathBuf::from("logs")
+        };
+        let session_keep = crate::session::resolve_session_dir(&args).session_keep;
+        struct EndOfRunNoticeGuard {
+            writer: std::sync::Arc<crate::checkpoint::CheckpointWriter>,
+            parent: std::path::PathBuf,
+            keep_cap: usize,
+        }
+        impl Drop for EndOfRunNoticeGuard {
+            fn drop(&mut self) {
+                if let Some(hint) = self.writer.resume_hint() {
+                    eprintln!("\n{hint}");
+                }
+                let n = crate::session::forecast_keep_purge(&self.parent, self.keep_cap);
+                if n > 0 {
+                    crate::diag!(
+                        crate::observer::LogLevel::Info,
+                        "the next new nbrs session will auto-purge {n} prior session \
+                         director{plural} under {} due to --session-keep={cap}. \
+                         To disable: --session-keep=0 (or NBRS_SESSION_KEEP=0). \
+                         To raise the cap: --session-keep=<bigger>.",
+                        self.parent.display(),
+                        plural = if n == 1 { "y" } else { "ies" },
+                        cap = self.keep_cap,
+                    );
+                }
+            }
+        }
+        let _eor_notice_guard = EndOfRunNoticeGuard {
+            writer: checkpoint_writer.clone(),
+            parent: parent_for_keep_check,
+            keep_cap: session_keep,
+        };
         let resume_plan = if let (Some(saved), Some(tree)) =
             (saved_doc.as_ref(), pre_mapped_tree.as_ref())
         {
@@ -1624,29 +1674,60 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             workload_summaries.clone()
         };
 
+    // SRD-46 Details auto-injection: persist run-wide context
+    // (end time, phase + scenario counts, adapter, …) into
+    // session_metadata regardless of whether the workload
+    // declared a `report:` block. Post-run hooks read this to
+    // build the auto-injected Details section that lands at
+    // the top of every output markdown file.
+    if let Ok(mut guard) = sqlite_reporter.lock()
+        && let Some(ref mut reporter) = *guard {
+        let end_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs())
+            .unwrap_or(0);
+        reporter.set_metadata("end_time", &end_time.to_string());
+        reporter.set_metadata("phase_count", &phases.len().to_string());
+        reporter.set_metadata("scenario_count", &scenarios.len().to_string());
+        if let Some(wf) = workload_file.as_deref() {
+            reporter.set_metadata("workload_file", wf);
+        }
+        reporter.set_metadata("adapter", &driver);
+    }
+
     if !active_summaries.is_empty() {
         // Summary report always comes from SQLite — the
         // durable record. The in-memory store exists for GK
         // access and reactive control, not for reporting.
         if let Ok(mut guard) = sqlite_reporter.lock() {
             if let Some(ref mut reporter) = *guard {
-                // Persist every named summary's spec into the
-                // session_metadata table so a later
-                // `nbrs --summary --db <metrics.db>` (no spec
-                // given) can regenerate every named report
-                // from the db alone — no workload file
-                // required. Stored as `summary.<name>` →
-                // `<spec text>`.
-                for (name, cfg) in &active_summaries {
-                    reporter.set_metadata(&format!("summary.{name}"), &cfg.raw);
-                }
-                // Persist named plot specs the same way — under
-                // `plot.<name>` so post-hoc `nbrs plot --name <N>`
-                // can replay each one against the metrics db
-                // without the workload file. Plots are passed
-                // through verbatim; parsing happens at render.
-                for (name, spec) in &workload_plots {
-                    reporter.set_metadata(&format!("plot.{name}"), spec);
+                // Persist every report item (SRD-46) under
+                // `report.<name>` keys. Value carries the kind
+                // keyword (`plot ...` / `table ...`) followed
+                // by an optional `label "..."` line and then
+                // the spec body — same shape the report parser
+                // ingests, so the db-fallback path in
+                // `nbrs report` round-trips through the same
+                // parser the workload uses.
+                for item in workload_report.items() {
+                    let mut value = String::new();
+                    value.push_str(item.kind.as_str());
+                    value.push(' ');
+                    value.push_str(&item.name);
+                    value.push('\n');
+                    if let Some(label) = item.label.as_deref() {
+                        value.push_str("label ");
+                        value.push('"');
+                        value.push_str(label);
+                        value.push_str("\"\n");
+                    }
+                    if let Some(tf) = item.target_file.as_deref() {
+                        value.push_str("target ");
+                        value.push_str(tf);
+                        value.push('\n');
+                    }
+                    value.push_str(&item.body);
+                    reporter.set_metadata(
+                        &format!("report.{}", item.name), &value);
                 }
 
                 // Stable ordering for consistent output across
@@ -2346,8 +2427,33 @@ const RECOGNIZED_BARE_FLAGS: &[&str] = &[
 
 /// Parse `key=value` pairs from command line args.
 pub fn parse_params(args: &[String]) -> HashMap<String, String> {
+    // Flags consumed by `crate::session::resolve_session_dir`
+    // at startup. They appear in raw `args` but shouldn't reach
+    // the per-key params map. Both equals-form
+    // (`--session-dir=/path`) and space-form
+    // (`--session-dir /path`) are recognised; the space-form
+    // value is silently absorbed.
+    const SESSION_DIR_FLAGS: &[&str] = &[
+        // Umbrella flag (kv-list).
+        "--session",
+        // Per-key long-form flags.
+        "--session-name", "--session-path", "--session-reuse",
+        "--session-keep", "--session-shelflife",
+    ];
     let mut params = HashMap::new();
-    for arg in args {
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        // Session-dir flags (consumed by the startup hook,
+        // not stored in params).
+        if SESSION_DIR_FLAGS.iter().any(|p| {
+            arg == p || arg.starts_with(&format!("{p}="))
+        }) {
+            if !arg.contains('=') {
+                let _consumed = iter.next();
+            }
+            continue;
+        }
+
         // Strip leading dashes: --dryrun=phase,gk → dryrun=phase,gk
         let stripped = arg.trim_start_matches('-');
         if let Some(eq_pos) = stripped.find('=') {
@@ -2425,48 +2531,6 @@ fn levenshtein(a: &str, b: &str) -> usize {
 // keep working — pure compatibility shim.
 pub use nbrs_variates::kernel::{extract_manifest, ManifestEntry};
 
-/// Build the gauge column filter from phase-level `summary:` configs.
-///
-/// Returns `None` if any phase uses `summary: true` (show all gauges),
-/// or `Some(patterns)` with the union of all declared gauge name patterns.
-/// An empty Vec means no gauge columns should appear.
-pub fn build_gauge_filter(
-    phases: &HashMap<String, nbrs_workload::model::WorkloadPhase>,
-) -> Option<Vec<String>> {
-    let mut patterns: Vec<String> = Vec::new();
-    let mut any_open = false;
-    for phase in phases.values() {
-        match &phase.summary {
-            None => {} // excluded from summary
-            Some(v) if v.is_boolean() => {
-                // summary: true — show all gauge columns
-                any_open = true;
-            }
-            Some(v) if v.is_array() => {
-                // summary: ["recall", "precision"] — show only matching
-                if let Some(arr) = v.as_array() {
-                    for item in arr {
-                        if let Some(s) = item.as_str() {
-                            if !patterns.contains(&s.to_string()) {
-                                patterns.push(s.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-            Some(v) if v.is_string() => {
-                // summary: "recall" — single pattern
-                if let Some(s) = v.as_str() {
-                    if !patterns.contains(&s.to_string()) {
-                        patterns.push(s.to_string());
-                    }
-                }
-            }
-            _ => { any_open = true; }
-        }
-    }
-    if any_open { None } else { Some(patterns) }
-}
 
 
 #[cfg(test)]

@@ -93,110 +93,33 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
 
     let declared_params: Vec<String> = yaml_params.keys().cloned().collect();
 
-    // Summary report configuration: top-level `summary:` key.
-    // Two accepted shapes:
-    //   - String  (legacy): one anonymous summary, normalized
-    //     to the single entry `"default" → SummaryConfig::parse(s)`.
-    //   - Mapping (new): `name → spec`. Each entry becomes its
-    //     own summary; a name with an extension
-    //     (e.g. `recallnmore.csv`) infers the output format.
-    let mut summaries: HashMap<String, crate::model::SummaryConfig> = HashMap::new();
-    if let Some(val) = obj.get("summary") {
-        match val {
-            JVal::String(s) => {
-                summaries.insert("default".into(),
-                    crate::model::SummaryConfig::parse(s));
-            }
-            JVal::Object(map) => {
-                for (name, spec_val) in map {
-                    let spec_str = match spec_val {
-                        JVal::String(s) => s.clone(),
-                        // Block scalars / pipes give YAML strings
-                        // — already covered by the String arm.
-                        // Anything else (numbers, bools, nested
-                        // maps) is malformed; surface as a
-                        // parse error so the user sees the
-                        // shape they wrote was wrong.
-                        other => {
-                            return Err(format!(
-                                "summary entry '{name}' must be a string \
-                                 (got {kind}). Wrap the spec in quotes or \
-                                 use a YAML block scalar (`|`).",
-                                kind = match other {
-                                    JVal::Null => "null",
-                                    JVal::Bool(_) => "bool",
-                                    JVal::Number(_) => "number",
-                                    JVal::Array(_) => "array",
-                                    JVal::Object(_) => "mapping",
-                                    _ => "other",
-                                }));
-                        }
-                    };
-                    summaries.insert(name.clone(),
-                        crate::model::SummaryConfig::parse(&spec_str));
-                }
-            }
-            _ => {
-                return Err(format!(
-                    "summary: must be a string (single summary) or a \
-                     mapping (named summaries), got {kind}.",
-                    kind = match val {
-                        JVal::Null => "null",
-                        JVal::Bool(_) => "bool",
-                        JVal::Number(_) => "number",
-                        JVal::Array(_) => "array",
-                        _ => "other",
-                    }));
-            }
-        }
+    // Legacy `summary:` and `plot:` keys: removed, no shim.
+    // Operators must migrate to the unified `report:` block
+    // (SRD-46). The error message names both new homes.
+    if obj.contains_key("summary") || obj.contains_key("summaries") {
+        return Err(
+            "`summary:` / `summaries:` removed; use `report:` with \
+             `table <name> ...` directives instead (SRD-46)".to_string()
+        );
+    }
+    if obj.contains_key("plot") || obj.contains_key("plots") {
+        return Err(
+            "`plot:` / `plots:` removed; use `report:` with \
+             `plot <name> ...` directives instead (SRD-46)".to_string()
+        );
     }
 
-    // `plot:` block — parallel to `summary:` but for the
-    // metrics-DB plot generator. Same shape: either a single
-    // spec string (one default plot) or a mapping of named
-    // specs. Persisted into the metrics db at end-of-run.
-    let mut plots: HashMap<String, String> = HashMap::new();
-    if let Some(val) = obj.get("plot").or_else(|| obj.get("plots")) {
-        match val {
-            JVal::String(s) => {
-                plots.insert("default".into(), s.clone());
-            }
-            JVal::Object(map) => {
-                for (name, spec_val) in map {
-                    let spec_str = match spec_val {
-                        JVal::String(s) => s.clone(),
-                        other => {
-                            return Err(format!(
-                                "plot entry '{name}' must be a string \
-                                 (got {kind}). Wrap the spec in quotes or \
-                                 use a YAML block scalar (`|`).",
-                                kind = match other {
-                                    JVal::Null => "null",
-                                    JVal::Bool(_) => "bool",
-                                    JVal::Number(_) => "number",
-                                    JVal::Array(_) => "array",
-                                    JVal::Object(_) => "mapping",
-                                    _ => "other",
-                                }));
-                        }
-                    };
-                    plots.insert(name.clone(), spec_str);
-                }
-            }
-            _ => {
-                return Err(format!(
-                    "plot: must be a string (single plot) or a mapping \
-                     (named plots), got {kind}.",
-                    kind = match val {
-                        JVal::Null => "null",
-                        JVal::Bool(_) => "bool",
-                        JVal::Number(_) => "number",
-                        JVal::Array(_) => "array",
-                        _ => "other",
-                    }));
-            }
-        }
-    }
+    // Unified `report:` block (SRD-46) — plots, tables, defaults,
+    // groups. Parser is in `crate::report::parse_report`. The
+    // returned warnings are stashed on the Workload for
+    // strict-mode promotion downstream (SRD-15).
+    let (report, report_warnings) = if let Some(val) = obj.get("report") {
+        let parsed = crate::report::parse_report(val)
+            .map_err(|e| format!("report: {e}"))?;
+        (parsed.report, parsed.warnings)
+    } else {
+        (crate::report::Report::default(), Vec::new())
+    };
 
     // SRD 21 §"Parameter Resolution": CLI overrides are the
     // outermost layer. Each op has already absorbed the
@@ -242,7 +165,7 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         }
     }
 
-    Ok(Workload { description, scenarios, ops: all_ops, bindings: doc_bindings, params: resolved_params, phases, phase_order, declared_params, summaries, plots })
+    Ok(Workload { description, scenarios, ops: all_ops, bindings: doc_bindings, params: resolved_params, phases, phase_order, declared_params, report, report_warnings })
 }
 
 /// Walk a scenario tree and collect names of phases declared
@@ -787,7 +710,16 @@ fn parse_phases(
         let iter_scope = phase_obj.get("iter_scope")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let summary = phase_obj.get("summary").cloned();
+        // Phase-level `summary:` is gone (SRD-46 made `report:`
+        // the canonical surface). Reject explicitly so silent
+        // drops don't mislead operators migrating workloads.
+        if phase_obj.contains_key("summary") {
+            return Err(format!(
+                "phase '{phase_name}': `summary:` is removed at phase level; \
+                 use a `report:` block with `table <name> ...` items instead \
+                 (SRD-46)"
+            ));
+        }
         // Per-phase `checkpoint:` declaration. Three forms
         // (short string, bool/none, full mapping) handled by
         // [`Checkpoint`]'s custom deserialize. Absent → None →
@@ -809,7 +741,6 @@ fn parse_phases(
             for_each,
             loop_scope,
             iter_scope,
-            summary,
             checkpoint,
         });
         phase_order.push(phase_name.clone());

@@ -124,8 +124,8 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
         phases: HashMap::new(),
         phase_order: Vec::new(),
         declared_params: Vec::new(),
-        summaries: HashMap::new(),
-        plots: HashMap::new(),
+        report: crate::report::Report::default(),
+        report_warnings: Vec::new(),
     })
 }
 

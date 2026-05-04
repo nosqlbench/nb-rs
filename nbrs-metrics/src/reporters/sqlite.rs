@@ -468,9 +468,14 @@ mod inner {
         /// this db, regenerating each one without needing the
         /// original workload file.
         pub fn read_stored_summaries(&self) -> Vec<(String, String)> {
+            // SRD-46: persisted items live under `report.<name>`
+            // with a kind keyword on the first line. This call
+            // enumerates only the `table` items, stripping the
+            // kind/name/label prelude so the returned spec is
+            // the body the table renderer expects.
             let mut stmt = match self.conn.prepare(
                 "SELECT key, value FROM session_metadata \
-                 WHERE key LIKE 'summary.%' ORDER BY key"
+                 WHERE key LIKE 'report.%' ORDER BY rowid"
             ) {
                 Ok(s) => s,
                 Err(_) => return Vec::new(),
@@ -480,9 +485,16 @@ mod inner {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             }) {
                 for entry in iter.flatten() {
-                    if let Some(name) = entry.0.strip_prefix("summary.") {
-                        out.push((name.to_string(), entry.1));
-                    }
+                    let mut lines = entry.1.lines();
+                    let head = match lines.next() { Some(h) => h, None => continue };
+                    let name = match head.strip_prefix("table ") {
+                        Some(rest) => rest.trim().to_string(),
+                        None => continue,
+                    };
+                    let body: String = lines
+                        .filter(|l| !l.starts_with("label "))
+                        .collect::<Vec<_>>().join("\n");
+                    out.push((name, body));
                 }
             }
             out
@@ -574,13 +586,15 @@ mod inner {
         /// summary is projected directly from whatever the workload produced.
         fn query_all_activities(&self) -> Vec<ActivityRow> {
             // Find every distinct label set that has cycles_total > 0.
-            // Phases tagged nosummary="true" are excluded.
+            // Phase-level inclusion / exclusion is gone — every
+            // active phase contributes a row by default; the
+            // `report:` block (SRD-46) decides what gets
+            // rendered into which file.
             let mut stmt = match self.conn.prepare(
                 "SELECT mi.spec, MAX(sv.count)
                  FROM sample_value sv
                  JOIN metric_instance mi ON sv.instance_id = mi.id
                  WHERE mi.spec LIKE 'cycles_total%'
-                   AND mi.spec NOT LIKE '%nosummary=%'
                  GROUP BY mi.id
                  HAVING MAX(sv.count) > 0
                  ORDER BY mi.id"
@@ -589,7 +603,7 @@ mod inner {
                 Err(_) => return Vec::new(),
             };
 
-            let mut rows = Vec::new();
+            let mut rows: Vec<(Vec<(String, String)>, ActivityRow)> = Vec::new();
             let iter = stmt.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
             });
@@ -603,14 +617,11 @@ mod inner {
 
                     let elapsed = self.query_elapsed_ms(labels);
                     let rate = if elapsed > 0.0 { cycles as f64 * 1000.0 / elapsed } else { 0.0 };
-
-                    // Latency from cycles_servicetime (if this activity has it)
                     let latency = self.query_latency(labels);
-
-                    // All gauges for this label set (relevancy, etc.)
                     let gauges = self.query_gauges_for_labels(labels);
 
-                    rows.push(ActivityRow {
+                    let sort_key = parse_label_pairs(labels);
+                    rows.push((sort_key, ActivityRow {
                         activity: display,
                         cycles,
                         rate,
@@ -618,10 +629,17 @@ mod inner {
                         latency_p99_ns: latency.map(|l| l.1),
                         latency_mean_ns: latency.map(|l| l.2),
                         gauges,
-                    });
+                    }));
                 }
             }
-            rows
+
+            // Canonical presentation order: sort rows by the
+            // alphabetised (key, value) tuples extracted from
+            // each row's labels. Values that look like integers
+            // compare numerically (`limit=10` after `limit=2`,
+            // not before).
+            rows.sort_by(|a, b| compare_label_tuples(&a.0, &b.0));
+            rows.into_iter().map(|(_, r)| r).collect()
         }
 
         /// Query latency stats for a label set.
@@ -732,6 +750,73 @@ mod inner {
         latency_mean_ns: Option<f64>,
         /// Gauge values keyed by short name (e.g. "recall@10").
         gauges: Vec<(String, f64)>,
+    }
+
+    /// Parse a `key="value", key="value"` label string (the
+    /// portion between `{...}` in a Prometheus-style spec) into
+    /// a `Vec<(key, value)>` sorted alphabetically by key. Used
+    /// as the canonical sort tuple for rows in
+    /// `build_summary_grid` so dimensional labels — not metric-
+    /// instance insertion order — establish presentation order.
+    pub(crate) fn parse_label_pairs(label_part: &str) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        let bytes = label_part.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b',') { i += 1; }
+            if i >= bytes.len() { break; }
+            let key_start = i;
+            while i < bytes.len() && bytes[i] != b'=' { i += 1; }
+            if i >= bytes.len() { break; }
+            let key = label_part[key_start..i].trim().to_string();
+            i += 1; // consume '='
+            if i < bytes.len() && bytes[i] == b'"' {
+                i += 1;
+                let val_start = i;
+                while i < bytes.len() && bytes[i] != b'"' { i += 1; }
+                let val = label_part[val_start..i].to_string();
+                if i < bytes.len() { i += 1; }
+                out.push((key, val));
+            } else {
+                let val_start = i;
+                while i < bytes.len() && !matches!(bytes[i], b',' | b' ' | b'\t') {
+                    i += 1;
+                }
+                let val = label_part[val_start..i].to_string();
+                out.push((key, val));
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// Lexicographic compare on alphabetised label tuples with
+    /// natural-numeric value compare (so `limit=10` lands after
+    /// `limit=2`, not before). Keys are already sorted by
+    /// [`parse_label_pairs`]; this just zips and compares.
+    pub(crate) fn compare_label_tuples(
+        a: &[(String, String)],
+        b: &[(String, String)],
+    ) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        for (av, bv) in a.iter().zip(b.iter()) {
+            match av.0.cmp(&bv.0) {
+                Ordering::Equal => {}
+                other => return other,
+            }
+            match natural_value_cmp(&av.1, &bv.1) {
+                Ordering::Equal => {}
+                other => return other,
+            }
+        }
+        a.len().cmp(&b.len())
+    }
+
+    fn natural_value_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+        match (a.parse::<i64>(), b.parse::<i64>()) {
+            (Ok(x), Ok(y)) => x.cmp(&y),
+            _ => a.cmp(b),
+        }
     }
 
     /// Auto-select the time unit suffix so the numeric part has significant digits.

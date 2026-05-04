@@ -80,6 +80,7 @@ should be preceded by re-reading the SRD in full.
 
 - [SRD 40: Metrics Framework](sysref/40_metrics.md) — instruments, frames, delta semantics, reporters.
 - [SRD 42: Windowed Metrics Access](sysref/42_windowed_metrics.md) — user-specified cadences, auto-intermediate buckets.
+- [SRD 46: Reports](sysref/46_reports.md) — unified `report:` block; plots and tables; figure enumeration; CLI surface; style language.
 
 ### Concurrency, errors, strict mode
 
@@ -92,6 +93,10 @@ should be preceded by re-reading the SRD in full.
 - [SRD 60: CLI Structure](sysref/60_cli.md), [SRD 61: Personas](sysref/61_personas.md), [SRD 62: TUI Layout](sysref/62_tui_layout.md).
 
 ---
+
+## Deferred / future work
+
+- [SRD 98: Deferred work](sysref/98_todo_deferred.md) — features whose design is settled but implementation is parked: Tier 2 cursor-state snapshot (SRD-44), `verify:` op runtime check, do-loop checkpointing.
 
 ## Design-discussion docs
 

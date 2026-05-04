@@ -39,7 +39,6 @@ scenarios:
 
 phases:
   handle_requests:
-    summary: true
     cycles: "{request_count}"
     concurrency: 1
     bindings: |

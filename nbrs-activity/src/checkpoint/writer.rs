@@ -268,6 +268,45 @@ impl CheckpointWriter {
         self.inner.lock().unwrap().doc.clone()
     }
 
+    /// If the workload has incomplete phases declared
+    /// `checkpoint: idempotent` (any phase whose status is
+    /// `Failed`, `Running`, or `Pending` and whose
+    /// `skip_eligible` flag is `true`), return a multi-line
+    /// hint string the runtime can show the operator on exit:
+    ///
+    /// ```text
+    ///   This workload has resumable phases that didn't complete.
+    ///   To continue from where it stopped:
+    ///     nbrs run <workload> --resume <session>
+    ///   To pin the session name for repeatable resumes:
+    ///     nbrs run <workload> --session <session>
+    /// ```
+    ///
+    /// Returns `None` when every skip-eligible phase already
+    /// reached `Completed` (no resume-worthy state) or when
+    /// nothing was declared idempotent (resume isn't useful for
+    /// the workload at all).
+    pub fn resume_hint(&self) -> Option<String> {
+        let cp = self.snapshot();
+        let recoverable = cp.phases.iter().any(|e| {
+            e.skip_eligible
+                && !matches!(e.status, PhaseStatus::Completed)
+        });
+        if !recoverable {
+            return None;
+        }
+        Some(format!(
+            "This session has resumable phases that didn't complete.\n  \
+             To continue from where it stopped:\n    \
+             nbrs run <workload> --session-dir {} (already set if you exported \
+             SESSION_DIRECTORY) --resume\n  \
+             To pin the session name for repeatable resumes:\n    \
+             nbrs run <workload> --session {} (then add --resume next time)",
+            self.path.parent().map(|p| p.display().to_string()).unwrap_or_default(),
+            cp.session,
+        ))
+    }
+
     /// Path the writer flushes to.
     pub fn path(&self) -> &std::path::Path {
         &self.path

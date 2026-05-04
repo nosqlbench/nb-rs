@@ -46,38 +46,18 @@ pub struct Workload {
     /// ad-hoc CLI params.
     #[serde(default)]
     pub declared_params: Vec<String>,
-    /// Summary report definitions from the workload `summary:`
-    /// section. Empty map = no summaries.
-    ///
-    /// The `summary:` field accepts two forms:
-    ///
-    /// - **String** (single anonymous summary): legacy form,
-    ///   normalized at parse time to a single entry under the
-    ///   key `"default"`.
-    /// - **Mapping** of `name → spec` pairs: each named entry
-    ///   becomes its own summary. The name drives both the
-    ///   per-summary `summary.<name>` row written to
-    ///   `session_metadata` in `metrics.db` (so the standalone
-    ///   `nbrs --summary` command can regenerate every named
-    ///   report from the db alone) and the output filename
-    ///   (`<name>_summary.<format>`). A name that contains an
-    ///   extension (e.g. `recallnmore.csv`) infers the
-    ///   format from the suffix; otherwise the format
-    ///   defaults to Markdown.
-    ///
-    /// The spec text inside each entry is the same DSL that
-    /// the legacy single-string form accepts —
-    /// see [`SummaryConfig::parse`].
+    /// Unified report block (SRD-46): plots and tables under one
+    /// schema with figure enumeration, palette/style cascade, and
+    /// declaration-order rendering. Replaces the separate
+    /// `plot:` and `summary:` blocks (gone, no shim).
     #[serde(default)]
-    pub summaries: std::collections::HashMap<String, SummaryConfig>,
-    /// Named plot specifications, parallel to `summaries`. Each
-    /// value is the raw spec text — `nbrs plot` parses it the
-    /// same way it parses `nbrs plot "<spec>"` from the CLI.
-    /// Persisted into the metrics db at end-of-run as
-    /// `plot.<name>` so post-hoc `nbrs plot --name <name>`
-    /// replays it without the workload file.
-    #[serde(default)]
-    pub plots: std::collections::HashMap<String, String>,
+    pub report: crate::report::Report,
+    /// Non-fatal warnings emitted by the report-block parser
+    /// (SRD-46). Empty in normal mode; strict mode (SRD-15)
+    /// promotes them to errors. Plumbed up so the runner /
+    /// validator decide how to surface them.
+    #[serde(default, skip_serializing)]
+    pub report_warnings: Vec<String>,
 }
 
 /// Parsed summary report configuration.
@@ -182,7 +162,10 @@ impl SummaryConfig {
         let mut aggregates = Vec::new();
         let mut show_details = true;
 
-        for directive in raw.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+        // Strip `#` line comments before parsing (SRD-46:
+        // report/plot/table bodies all support `#` comments).
+        let cleaned = strip_hash_line_comments(raw);
+        for directive in cleaned.split(';').map(str::trim).filter(|s| !s.is_empty()) {
             if directive == "details=hide" {
                 show_details = false;
             } else if let Some(filter) = directive.strip_prefix("filter=") {
@@ -256,6 +239,39 @@ impl SummaryConfig {
             group_by,
         })
     }
+}
+
+/// Strip `#` line comments from a multi-line spec body. A `#`
+/// starts a comment only when it's at line-start or preceded by
+/// whitespace — so hex colors (`#117733`) and JSON sub-blocks
+/// (`{"color": "#fff"}`) survive. Quoted strings are honoured.
+fn strip_hash_line_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for line in s.split_inclusive('\n') {
+        let mut quote: Option<char> = None;
+        let mut prev_ws = true;
+        let mut cut: Option<usize> = None;
+        for (i, ch) in line.char_indices() {
+            match quote {
+                Some(q) if ch == q => { quote = None; prev_ws = false; }
+                Some(_) => { prev_ws = false; }
+                None => match ch {
+                    '"' | '\'' => { quote = Some(ch); prev_ws = false; }
+                    '#' if prev_ws => { cut = Some(i); break; }
+                    c if c.is_whitespace() => { prev_ws = true; }
+                    _ => { prev_ws = false; }
+                }
+            }
+        }
+        match cut {
+            Some(idx) => {
+                out.push_str(&line[..idx]);
+                if line.ends_with('\n') { out.push('\n'); }
+            }
+            None => out.push_str(line),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -337,11 +353,6 @@ pub struct WorkloadPhase {
     #[serde(default)]
     pub iter_scope: Option<String>,
     /// Summary report configuration for this phase.
-    /// Absent means the phase does not appear in the summary.
-    /// Present means the phase contributes a row. The value
-    /// configures what is shown (true = all available columns).
-    #[serde(default)]
-    pub summary: Option<serde_json::Value>,
     /// Checkpoint declaration: skip-on-resume eligibility plus
     /// optional sub-properties (hashing, verify op). `None` =
     /// no declaration = phase always re-runs on resume. See

@@ -24,8 +24,13 @@ params:
   query_count: "200"
 
 # Show recall columns + mean aggregate across "fast" profiles.
-# All detail rows are visible; the aggregate appears at the bottom.
-summary: "recall; mean(recall) over profile~fast"
+# All detail rows are visible; the aggregate appears at the
+# bottom. (SRD-46)
+report:
+  default: |
+    table default
+      recall
+      mean(recall) over profile~fast
 
 bindings: |
   inputs := (cycle)
@@ -63,8 +68,6 @@ scenarios:
 
 phases:
   search:
-    summary:
-      - recall
     cycles: "{query_count}"
     concurrency: 1
     bindings: |

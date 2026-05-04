@@ -4,10 +4,20 @@
 # This script:
 #   1. Builds the Apache Cassandra C++ driver from source in
 #      Docker (matching the host OS for ABI compatibility).
-#   2. Extracts the static library and headers to a local
-#      sysroot under adapters/cql/sysroot/.
+#   2. Extracts the static library and headers into the cql
+#      adapter's per-crate target directory:
+#      adapters/cql/target/sysroot/.
 #   3. Builds nbrs with --features engine-cassandra-cpp,
 #      linking statically against the driver.
+#
+# Lifecycle:
+#   Every artifact this script produces lives under
+#   `adapters/cql/target/`, which cargo manages via the
+#   `[build] target-dir = "target"` setting in
+#   `adapters/cql/.cargo/config.toml`. The script itself
+#   never runs `rm`: fresh state comes from docker-cp
+#   overwriting files of the same name, and cleanup is
+#   `cargo clean` (run from adapters/cql/).
 #
 # Usage:
 #   cd adapters/cql
@@ -16,13 +26,27 @@
 #   bash build.sh cargo     # build only nbrs (driver must exist)
 #   bash build.sh install   # cargo install --path nbrs with the cpp engine
 #   bash build.sh docker    # build nbrs entirely inside Docker
-#   bash build.sh clean     # remove sysroot and build artifacts
+#   bash build.sh clean     # `cargo clean` (this crate) + docker rmi
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SYSROOT="$SCRIPT_DIR/sysroot"
+
+# Pre-cargo linker artifacts (C++ driver static lib + header)
+# and the docker-extracted nbrs binary all live under the
+# adapter-local cargo target/ — see adapters/cql/.cargo/config.toml
+# (`[build] target-dir = "target"`). That makes them part of
+# cargo's lifecycle: `cd adapters/cql && cargo clean` wipes
+# everything; `cargo clean` at workspace root leaves them
+# alone (different target dir entirely).
+#
+# Build script never runs `rm` — fresh-state mechanics defer
+# either to docker (overwriting copies) or to cargo clean.
+ADAPTER_TARGET="$SCRIPT_DIR/target"
+SYSROOT="$ADAPTER_TARGET/sysroot"
+DOCKER_NBRS="$ADAPTER_TARGET/nbrs"
+DOCKER_CONTEXT="$ADAPTER_TARGET/docker-context"
 DOCKER_IMAGE="nbrs-cql-cpp-driver-builder"
 
 # ─── Build the C++ driver in Docker (matching host OS) ───
@@ -47,7 +71,15 @@ build_driver() {
         "$SCRIPT_DIR"
 
     echo "==> Extracting libraries and headers to $SYSROOT..."
-    rm -rf "$SYSROOT"
+    # Fresh-state mechanics:
+    #   - mkdir -p is non-destructive over an existing dir.
+    #   - The Dockerfile builds with `CASS_BUILD_SHARED=OFF`
+    #     so only `libcassandra_static.a` lands in
+    #     `/usr/local/lib/` — no `.so*` for us to clean up.
+    #   - `docker cp` overwrites existing files of the same
+    #     name; old ones are replaced rather than appended.
+    # The user runs `cd adapters/cql && cargo clean` when
+    # they want a totally fresh start.
     mkdir -p "$SYSROOT/lib" "$SYSROOT/include"
 
     # Create a temporary container to copy files from
@@ -61,9 +93,6 @@ build_driver() {
     if [ -d "$SYSROOT/lib/x86_64-linux-gnu" ]; then
         cp -a "$SYSROOT/lib/x86_64-linux-gnu/"* "$SYSROOT/lib/"
     fi
-
-    # Remove shared libs (we only want static linking)
-    find "$SYSROOT/lib" -name "*.so*" -delete
 
     # Create libcassandra.a symlink if only _static.a exists
     # (the -sys crate links -lcassandra, not -lcassandra_static)
@@ -81,9 +110,14 @@ build_driver() {
 # ─── Build nbrs with cargo, using the local sysroot ───
 
 build_cargo() {
-    if [ ! -f "$SYSROOT/lib/libcassandra_static.a" ] && [ ! -f "$SYSROOT/lib/libcassandra.so" ]; then
-        echo "ERROR: Driver not found in $SYSROOT"
-        echo "  Run 'bash build.sh driver' first, or 'bash build.sh' for a full build."
+    # The driver build (build_driver) deletes all `.so*` files
+    # under sysroot — only the static archive remains. So check
+    # for either the canonical name or the upstream-installed
+    # `_static` variant.
+    if [ ! -f "$SYSROOT/lib/libcassandra_static.a" ] \
+       && [ ! -f "$SYSROOT/lib/libcassandra.a" ]; then
+        echo "ERROR: Driver not found in $SYSROOT" >&2
+        echo "  Run 'bash build.sh driver' first, or 'bash build.sh' for a full build." >&2
         exit 1
     fi
 
@@ -117,9 +151,10 @@ build_cargo() {
 # ─── cargo install --path nbrs with the cassandra-cpp engine ───
 
 build_install() {
-    if [ ! -f "$SYSROOT/lib/libcassandra_static.a" ] && [ ! -f "$SYSROOT/lib/libcassandra.so" ]; then
-        echo "ERROR: Driver not found in $SYSROOT"
-        echo "  Run 'bash build.sh driver' first, or 'bash build.sh' for a full build."
+    if [ ! -f "$SYSROOT/lib/libcassandra_static.a" ] \
+       && [ ! -f "$SYSROOT/lib/libcassandra.a" ]; then
+        echo "ERROR: Driver not found in $SYSROOT" >&2
+        echo "  Run 'bash build.sh driver' first, or 'bash build.sh' for a full build." >&2
         exit 1
     fi
 
@@ -153,43 +188,46 @@ build_install() {
 # ─── Build everything inside Docker (no host Rust needed) ───
 
 build_docker() {
-    echo "==> Staging docker build context..."
+    echo "==> Staging docker build context at $DOCKER_CONTEXT..."
     # Workspace Cargo.toml [patch.crates-io] points at
     # links/vectordata-rs/veks-completion, which is a symlink
     # to a sibling project outside the workspace. Docker won't
     # follow symlinks across the build-context boundary, so we
-    # stage the workspace into a tmpdir and materialize that one
-    # patched path. target/ is huge and excluded.
-    local staging
-    staging=$(mktemp -d -t nbrs-docker-ctx.XXXXXX)
-    trap 'rm -rf "$staging"' RETURN
+    # stage the workspace into a known dir and materialize
+    # that one patched path. target/ is huge and excluded.
+    #
+    # The staging dir lives under our cargo-managed target/
+    # so its lifecycle defers to `cargo clean`. `rsync --delete`
+    # ensures fresh content each build without any rm step in
+    # this script.
+    mkdir -p "$DOCKER_CONTEXT"
 
-    rsync -a \
+    rsync -a --delete \
         --exclude=target \
         --exclude=.git \
         --exclude=links \
-        "$PROJECT_ROOT/" "$staging/"
+        "$PROJECT_ROOT/" "$DOCKER_CONTEXT/"
 
     # Materialize only the symlinked path-deps cargo patches against.
     # rsync -L dereferences the symlink chain; --exclude=target keeps
     # the upstream project's build artifacts out.
-    mkdir -p "$staging/links/vectordata-rs"
+    mkdir -p "$DOCKER_CONTEXT/links/vectordata-rs"
     if [ -e "$PROJECT_ROOT/links/vectordata-rs/veks-completion" ]; then
-        rsync -aL --exclude=target --exclude=.git \
+        rsync -aL --delete --exclude=target --exclude=.git \
             "$PROJECT_ROOT/links/vectordata-rs/veks-completion/" \
-            "$staging/links/vectordata-rs/veks-completion/"
+            "$DOCKER_CONTEXT/links/vectordata-rs/veks-completion/"
     else
-        echo "ERROR: $PROJECT_ROOT/links/vectordata-rs/veks-completion not found"
-        echo "  workspace Cargo.toml patches veks-completion against this path"
+        echo "ERROR: $PROJECT_ROOT/links/vectordata-rs/veks-completion not found" >&2
+        echo "  workspace Cargo.toml patches veks-completion against this path" >&2
         exit 1
     fi
 
-    echo "==> Context size: $(du -sh "$staging" | cut -f1)"
+    echo "==> Context size: $(du -sh "$DOCKER_CONTEXT" | cut -f1)"
     echo "==> Building nbrs (cassandra-cpp) entirely in Docker..."
     docker build \
         -f "$SCRIPT_DIR/nbrs-cassandra-cpp.Dockerfile" \
         -t nbrs-cassandra-cpp \
-        "$staging"
+        "$DOCKER_CONTEXT"
 
     echo "==> Docker image: nbrs-cassandra-cpp"
     echo "==> Run: docker run --rm --network host nbrs-cassandra-cpp --help"
@@ -198,17 +236,43 @@ build_docker() {
     echo "==> Extracting binary..."
     local cid
     cid=$(docker create nbrs-cassandra-cpp)
-    docker cp "$cid:/usr/local/bin/nbrs" "$SCRIPT_DIR/nbrs"
+    # Extract under the cargo-managed target/ alongside the
+    # sysroot — `cargo clean` from this crate cleans it up.
+    docker cp "$cid:/usr/local/bin/nbrs" "$DOCKER_NBRS"
     docker rm "$cid" > /dev/null
-    echo "==> Extracted: $SCRIPT_DIR/nbrs"
+    echo "==> Extracted: $DOCKER_NBRS"
 }
 
 # ─── Clean ───
 
 clean() {
     echo "==> Cleaning..."
-    rm -rf "$SYSROOT"
-    rm -f "$SCRIPT_DIR/nbrs"
+
+    # All file-system artifacts (sysroot, docker-extracted
+    # nbrs, docker context) live under `adapters/cql/target/`,
+    # which is the per-crate target directory configured in
+    # `adapters/cql/.cargo/config.toml`. `cargo clean` from
+    # this crate dir owns its lifecycle — no rm in this
+    # script.
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "ERROR: cargo not on PATH — cannot clean" >&2
+        exit 1
+    fi
+    echo "==> cd $SCRIPT_DIR && cargo clean"
+    (cd "$SCRIPT_DIR" && cargo clean)
+
+    # Docker images — defer to docker's own rm.
+    if command -v docker >/dev/null 2>&1; then
+        for img in "$DOCKER_IMAGE" nbrs-cassandra-cpp; do
+            if docker image inspect "$img" >/dev/null 2>&1; then
+                echo "==> docker rmi $img"
+                docker rmi "$img" || true
+            fi
+        done
+    else
+        echo "WARN: docker not on PATH — driver/app images not cleaned" >&2
+    fi
+
     echo "==> Clean complete."
 }
 
@@ -239,11 +303,11 @@ case "${1:-default}" in
         echo "Usage: bash build.sh [driver|cargo|install|docker|clean]"
         echo ""
         echo "  (default)    Build C++ driver in Docker, extract libs, cargo build on host"
-        echo "  driver       Build only the C++ driver in Docker, extract to sysroot/"
-        echo "  cargo        Build only nbrs --features engine-cassandra-cpp (driver must exist in sysroot/)"
-        echo "  install      cargo install --path nbrs --features engine-cassandra-cpp (driver must exist in sysroot/)"
+        echo "  driver       Build only the C++ driver in Docker, extract to target/sysroot/"
+        echo "  cargo        Build only nbrs --features engine-cassandra-cpp (driver must exist)"
+        echo "  install      cargo install --path nbrs --features engine-cassandra-cpp (driver must exist)"
         echo "  docker       Build everything inside Docker (no host Rust needed)"
-        echo "  clean        Remove sysroot and artifacts"
+        echo "  clean        cargo clean (this crate's target/) + docker rmi"
         exit 1
         ;;
 esac

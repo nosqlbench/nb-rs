@@ -345,6 +345,18 @@ fn print_post_run_reports(
     run_state: &nbrs_tui::run_state_actor::RunStateHandle,
     run_result: &Result<(), String>,
 ) {
+    // SRD-46 auto-render: when the workload completed without
+    // being aborted by the error handler, render every plot
+    // item the runner persisted into the session db. Tables
+    // were already rendered inline by the runner. Plots have
+    // to land here because plot_metrics lives in this crate
+    // (cross-crate from nbrs-activity); same fault-gate as
+    // tables (run_result.is_ok() ⇒ render, else skip).
+    if run_result.is_ok() {
+        auto_render_plots();
+        auto_inject_details();
+    }
+
     if let Ok(entries) = std::fs::read_dir("logs/latest") {
         let mut summary_paths: Vec<std::path::PathBuf> = entries
             .filter_map(|e| e.ok())
@@ -373,4 +385,209 @@ fn print_post_run_reports(
         }
     }
     print_post_run_summary(run_state, run_result);
+}
+
+/// Render every persisted plot item from `logs/latest/metrics.db`
+/// post-run (SRD-46). Each plot becomes a PNG in the session
+/// directory and a heading in `summary.md`. Failures are logged
+/// and don't abort other plots — auto-rendering is best-effort.
+fn auto_render_plots() {
+    let db_path = std::path::PathBuf::from("logs/latest/metrics.db");
+    if !db_path.exists() { return; }
+    let conn = match rusqlite::Connection::open(&db_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT key, value FROM session_metadata \
+         WHERE key LIKE 'report.%' ORDER BY rowid"
+    ) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let rows = match stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    }) {
+        Ok(it) => it,
+        Err(_) => return,
+    };
+    let mut idx: usize = 0;
+    let mut total: usize = 0;
+    let entries: Vec<(String, String)> = rows.flatten().collect();
+    for (_key, value) in &entries {
+        idx += 1;
+        let mut lines = value.lines();
+        let head = match lines.next() { Some(h) => h, None => continue };
+        let (kind, name) = if let Some(rest) = head.strip_prefix("plot ") {
+            ("plot", rest.trim().to_string())
+        } else if head.starts_with("table ") {
+            // Tables already rendered inline by the runner.
+            continue;
+        } else {
+            continue;
+        };
+        let mut label: Option<String> = None;
+        let mut body_lines: Vec<&str> = Vec::new();
+        for line in lines {
+            if let Some(rest) = line.strip_prefix("label ") {
+                let s = rest.trim();
+                let s = s.strip_prefix('"').and_then(|x| x.strip_suffix('"'))
+                    .or_else(|| s.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')))
+                    .unwrap_or(s);
+                label = Some(s.to_string());
+            } else {
+                body_lines.push(line);
+            }
+        }
+        let _ = kind;
+        let body = body_lines.join("\n");
+        // Forward to plot_metrics_command exactly the way
+        // `nbrs report plot <name>` would.
+        let mut args: Vec<String> = vec![
+            format!("--name={name}"),
+            "--figure-num".into(), idx.to_string(),
+        ];
+        if let Some(l) = label.as_deref() {
+            args.push("--label".into());
+            args.push(l.to_string());
+        }
+        args.push(body);
+        crate::plot_metrics::plot_metrics_command(&args);
+        total += 1;
+    }
+    if total > 0 {
+        eprintln!("auto-render: {total} plot{} rendered (SRD-46)",
+            if total == 1 { "" } else { "s" });
+    }
+}
+
+/// SRD-46 Details auto-injection: walk every output markdown
+/// file in the session directory (default `summary.md` plus
+/// every named file referenced by `report.<name>` items'
+/// `target` line) and prepend a session-context section.
+///
+/// Source data: `session_metadata` rows the runner persists at
+/// end-of-run (`session`, `start_time`, `end_time`,
+/// `phase_count`, `scenario_count`, `workload_file`,
+/// `adapter`).
+fn auto_inject_details() {
+    let session_dir = std::path::PathBuf::from("logs/latest");
+    let db_path = session_dir.join("metrics.db");
+    if !db_path.exists() { return; }
+    let conn = match rusqlite::Connection::open(&db_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let read_meta = |key: &str| -> Option<String> {
+        conn.query_row(
+            "SELECT value FROM session_metadata WHERE key = ?1",
+            [key],
+            |r| r.get::<_, String>(0),
+        ).ok()
+    };
+
+    let session_id = read_meta("session").unwrap_or_else(|| "?".into());
+    let workload = read_meta("workload_file")
+        .or_else(|| read_meta("workload"))
+        .unwrap_or_else(|| "(inline)".into());
+    let scenario = read_meta("scenario").unwrap_or_else(|| "?".into());
+    let adapter = read_meta("adapter").unwrap_or_else(|| "?".into());
+    let phase_count = read_meta("phase_count").unwrap_or_else(|| "?".into());
+    let scenario_count = read_meta("scenario_count").unwrap_or_else(|| "?".into());
+    let start_time = read_meta("start_time")
+        .and_then(|s| s.parse::<u64>().ok());
+    let end_time = read_meta("end_time")
+        .and_then(|s| s.parse::<u64>().ok());
+    let duration = match (start_time, end_time) {
+        (Some(s), Some(e)) if e >= s => format_duration(e - s),
+        _ => "?".to_string(),
+    };
+    let started = start_time
+        .map(format_unix_seconds)
+        .unwrap_or_else(|| "?".to_string());
+    let ended = end_time
+        .map(format_unix_seconds)
+        .unwrap_or_else(|| "?".to_string());
+
+    let body = format!(
+        "| Field | Value |\n\
+         | --- | --- |\n\
+         | Session | `{session_id}` |\n\
+         | Workload | `{workload}` |\n\
+         | Scenario | `{scenario}` |\n\
+         | Adapter | `{adapter}` |\n\
+         | Started | {started} |\n\
+         | Ended | {ended} |\n\
+         | Duration | {duration} |\n\
+         | Phases | {phase_count} |\n\
+         | Scenarios | {scenario_count} |\n",
+    );
+
+    // Collect every distinct target file referenced by any
+    // persisted report item, plus the default summary.md.
+    let mut files: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    files.insert("summary.md".into());
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT value FROM session_metadata WHERE key LIKE 'report.%'"
+    ) {
+        if let Ok(iter) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for value in iter.flatten() {
+                for line in value.lines() {
+                    if let Some(rest) = line.strip_prefix("target ") {
+                        files.insert(rest.trim().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    for f in &files {
+        let path = session_dir.join(f);
+        if let Err(e) = crate::report::write_named_section_first(
+            &path, "run_details", "Run Details", &body,
+        ) {
+            eprintln!("warning: details auto-inject failed on '{}': {e}",
+                path.display());
+        }
+    }
+}
+
+/// `123` → `2m 3s` / `7261` → `2h 1m 1s`.
+fn format_duration(seconds: u64) -> String {
+    let h = seconds / 3600;
+    let m = (seconds % 3600) / 60;
+    let s = seconds % 60;
+    if h > 0 { format!("{h}h {m}m {s}s") }
+    else if m > 0 { format!("{m}m {s}s") }
+    else { format!("{s}s") }
+}
+
+/// UNIX seconds → ISO-ish `YYYY-MM-DD HH:MM:SS UTC`.
+fn format_unix_seconds(secs: u64) -> String {
+    // Cheap formatter — avoids pulling in chrono just for this.
+    // Days since 1970-01-01 → calendar (proleptic Gregorian).
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let hour = rem / 3600;
+    let min = (rem % 3600) / 60;
+    let sec = rem % 60;
+    let (year, month, day) = days_to_ymd(days as i64);
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02} UTC")
+}
+
+fn days_to_ymd(mut days: i64) -> (i32, u32, u32) {
+    // Howard Hinnant's algorithm.
+    days += 719468;
+    let era = if days >= 0 { days } else { days - 146096 } / 146097;
+    let doe = (days - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = (y + if m <= 2 { 1 } else { 0 }) as i32;
+    (year, m as u32, d as u32)
 }

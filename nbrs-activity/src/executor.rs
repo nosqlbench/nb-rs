@@ -1508,12 +1508,8 @@ async fn run_phase(
 
     // Build labels from component tree: session + for_each levels + phase
     ctx.push_label("phase", phase_name);
-    let mut labels = ctx.labels();
+    let labels = ctx.labels();
     ctx.pop_label();
-    // Phases without a `summary:` field are excluded from the report
-    if phase.summary.is_none() {
-        labels = labels.with("nosummary", "true");
-    }
 
     // Create phase component and attach to session
     let phase_component = Arc::new(RwLock::new(

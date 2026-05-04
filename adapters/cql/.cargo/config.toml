@@ -1,8 +1,22 @@
+# Per-crate target directory. When cargo is invoked from
+# `adapters/cql/` (e.g. by `bash build.sh` or by anyone
+# running `cd adapters/cql && cargo …`), this config takes
+# effect and cargo writes into `adapters/cql/target/`. That's
+# where the C++ driver sysroot lives — `cargo clean` from
+# this dir wipes the sysroot alongside compile artifacts; a
+# `cargo clean` at workspace root touches a different target
+# entirely so the expensive driver build survives unrelated
+# workspace clean cycles.
+[build]
+target-dir = "target"
+
 # Static linking for the Cassandra C++ driver.
-# The -sys crate emits -l dylib=cassandra; we need the static lib.
+# The -sys crate emits -l dylib=cassandra; we need the static
+# lib. Sysroot lives at adapters/cql/target/sysroot/ — managed
+# by cargo's clean state for this crate.
 [target.x86_64-unknown-linux-gnu]
 rustflags = [
-    "-C", "link-arg=-L", "-C", "link-arg=/mnt/datamir/home/jshook/projects/nb-rs/adapters/cql/sysroot/lib",
+    "-C", "link-arg=-L", "-C", "link-arg=/mnt/datamir/home/jshook/projects/nb-rs/adapters/cql/target/sysroot/lib",
     "-C", "link-arg=-Wl,-Bstatic",
     "-C", "link-arg=-lcassandra_static",
     "-C", "link-arg=-Wl,-Bdynamic",

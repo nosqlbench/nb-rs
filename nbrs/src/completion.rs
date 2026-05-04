@@ -28,7 +28,7 @@
 //! requires every node to declare both a category and a level
 //! at the **type** level — undertagged commands fail to compile.
 
-use veks_completion::{CategoryTag, CommandTree, LevelTag, StrictNode, fn_provider};
+use veks_completion::{CategoryTag, CommandTree, LevelTag, Node, StrictNode, fn_provider};
 
 use nbrs_activity::adapter::registered_driver_names;
 use nbrs_activity::runner::{
@@ -114,11 +114,14 @@ pub fn build_tree() -> CommandTree {
         .strict_command("run", run_node())
         .strict_command("attach", attach_node())
         // ---- tap 2: secondary commands ----
-        .strict_command("summary", summary_node())
+        .strict_command("report", report_node())
         // ---- tap 3: less-frequent subcommands ----
         .strict_command("describe", describe_node())
         .strict_command("bench", bench_node())
+        .strict_command("metrics", metrics_node())
         .strict_command("plot", plot_node())
+        .strict_command("table", table_node())
+        .strict_command("gk", gk_node())
         .strict_command("web", web_node())
         .strict_command("completions", completions_node())
         // OpenAPI commands are gated behind a feature; register
@@ -200,8 +203,158 @@ fn print_activation_line() {
 /// Handle the bash-side completion callback (`_NBRS_COMPLETE=bash`).
 /// Returns `true` if the env var was set and candidates were
 /// emitted — the caller should exit immediately.
+///
+/// Wraps `veks_completion::handle_complete_env` with one
+/// post-process: when the cursor sits on a flag that requires
+/// a value (e.g. `--name`, `--metric`, …), advance past it and
+/// run completion on the value position. This means
+/// `nbrs plot ... --name<TAB>` produces the available plot
+/// names instead of just echoing back `--name` — there's only
+/// one possible continuation (a value), so we may as well
+/// take it.
 pub fn handle_complete_env(tree: &CommandTree) -> bool {
-    veks_completion::handle_complete_env("nbrs", tree)
+    let env_set = std::env::var("_NBRS_COMPLETE").ok().as_deref() == Some("bash")
+        || std::env::var("COMPLETE").ok().as_deref() == Some("bash");
+    if !env_set { return false; }
+
+    let argv: Vec<String> = std::env::args().collect();
+    let line = argv.get(1).cloned().unwrap_or_default();
+    let point: usize = argv.get(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(line.len());
+    let (prior, cur) = split_line_local(&line, point);
+
+    // Specialised dispatch: `nbrs metrics match <pattern>`
+    // taps into the dimensional-label cache rather than
+    // veks's flag-list. Caught before the flag-takes-value
+    // pre-process so the partial pattern isn't auto-advanced.
+    if matches_metrics_match(&prior) {
+        let db_path = match db_path_from_args(&prior) {
+            Some(p) => p,
+            None => std::path::PathBuf::from("logs/latest/metrics.db"),
+        };
+        if db_path.exists() {
+            for c in crate::metrics_cache::match_completions(&cur, &db_path) {
+                println!("{c}");
+            }
+        }
+        return true;
+    }
+
+    let (eff_prior, eff_cur) = if flag_takes_value(&cur) {
+        let mut p = prior.clone();
+        p.push(cur.clone());
+        (p, String::new())
+    } else { (prior, cur) };
+
+    let mut words_owned: Vec<String> = vec!["nbrs".to_string()];
+    words_owned.extend(eff_prior);
+    words_owned.push(eff_cur);
+    let words: Vec<&str> = words_owned.iter().map(String::as_str).collect();
+
+    for c in veks_completion::complete(tree, &words) {
+        println!("{c}");
+    }
+    true
+}
+
+/// True when the prior tokens land at the positional pattern
+/// of `nbrs metrics match`. Honours intervening `--db` /
+/// `--session` flag pairs that the user might type before the
+/// pattern; the test is "the last two non-flag-pair tokens
+/// are `metrics` and `match`".
+fn matches_metrics_match(prior: &[String]) -> bool {
+    let tokens: Vec<&String> = strip_flag_value_pairs(prior);
+    let n = tokens.len();
+    n >= 2 && tokens[n - 2] == "metrics" && tokens[n - 1] == "match"
+}
+
+/// Remove flag/value pairs (e.g. `--db PATH`, `--session NAME`)
+/// from a token list so positional-relative checks see only
+/// the bare positional words.
+fn strip_flag_value_pairs(tokens: &[String]) -> Vec<&String> {
+    let mut out: Vec<&String> = Vec::new();
+    let mut iter = tokens.iter().peekable();
+    while let Some(t) = iter.next() {
+        if flag_takes_value(t) {
+            // Skip the value too — assumed to be the next
+            // token (space-form). `=`-form flags are single
+            // tokens and are dropped here as well.
+            let _ = iter.next();
+            continue;
+        }
+        if t.starts_with("--") {
+            // Bare flag (no value) — drop and continue.
+            continue;
+        }
+        out.push(t);
+    }
+    out
+}
+
+/// Pull `--db <path>` (space- or `=`-form) out of an arg list
+/// so the metrics-match completer can target the right db.
+/// Falls back to None — caller defaults to `logs/latest`.
+fn db_path_from_args(args: &[String]) -> Option<std::path::PathBuf> {
+    let mut iter = args.iter();
+    while let Some(a) = iter.next() {
+        if a == "--db" {
+            return iter.next().map(std::path::PathBuf::from);
+        }
+        if let Some(v) = a.strip_prefix("--db=") {
+            return Some(std::path::PathBuf::from(v));
+        }
+    }
+    None
+}
+
+/// Tokenize a shell line up to `point`, mirroring veks's
+/// internal `split_line`: honors quotes + escapes, preserves
+/// `=` as part of a token, drops the binary name.
+fn split_line_local(line: &str, point: usize) -> (Vec<String>, String) {
+    let point = point.min(line.len());
+    let head = &line[..point];
+    let mut words: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_quote: Option<char> = None;
+    let mut chars = head.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match in_quote {
+            Some(q) if ch == q => { in_quote = None; }
+            Some(_) => cur.push(ch),
+            None => match ch {
+                '\'' | '"' => { in_quote = Some(ch); }
+                '\\' => { if let Some(n) = chars.next() { cur.push(n); } }
+                ' ' | '\t' => {
+                    if !cur.is_empty() {
+                        words.push(std::mem::take(&mut cur));
+                    }
+                }
+                _ => cur.push(ch),
+            }
+        }
+    }
+    if !words.is_empty() { words.remove(0); }
+    (words, cur)
+}
+
+/// Flags whose grammar requires a value (the `--flag value` /
+/// `--flag=value` shape). When the cursor sits on one of these
+/// with no trailing whitespace, completion auto-advances to
+/// value-position so the user gets one tab instead of two.
+fn flag_takes_value(cur: &str) -> bool {
+    matches!(cur,
+        "--name" | "--metric" | "--x" | "--series" | "--filter"
+        | "--db" | "--output" | "--label" | "--palette"
+        | "--line" | "--line-width" | "--marker" | "--marker-size"
+        | "--figure-num" | "--title" | "--xlabel" | "--ylabel"
+        | "--xscale" | "--yscale" | "--width" | "--height"
+        | "--csv-also" | "--report" | "--update-markdown"
+        | "--add-to-markdown" | "--format" | "--create"
+        | "--session" | "--session-name" | "--session-path"
+        | "--session-reuse" | "--session-keep" | "--session-shelflife"
+        | "--resume" | "--gk-lib" | "--pid" | "--socket"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -238,16 +391,60 @@ fn attach_node() -> StrictNode<true, true> {
         .with_level(Level::Workload.rank())
 }
 
-fn summary_node() -> StrictNode<true, true> {
+fn report_node() -> StrictNode<true, true> {
+    // `nbrs report ...` — primary surface for SRD-46 named
+    // items. Subcommands (all, plot, table, figure) are
+    // positional and not exposed as flags here; the kind-
+    // filtered name providers attach to the alias commands
+    // (`nbrs plot` / `nbrs table`) below.
+    StrictNode::leaf_with_flags(
+        &["--db", "--format", "--output", "--name", "--label",
+          "--palette", "--report"],
+        &[],
+    )
+        .with_value_provider("--name", fn_provider(report_any_name_provider))
+        .with_value_provider("workload=", fn_provider(workload_provider))
+        .with_category(Category::Tools.tag())
+        .with_level(Level::Secondary.rank())
+}
+
+fn table_node() -> StrictNode<true, true> {
+    // Unadvertised alias for `nbrs report table ...` (SRD-46).
     StrictNode::leaf_with_flags(
         &["--db", "--format", "--output", "--name"],
         &["--create"],
     )
         .with_value_provider("--name", fn_provider(summary_name_provider))
-        // `workload=<file.yaml>` sources named summaries from
-        // the YAML's `summary:` block instead of the metrics
-        // db. Same provider as `nbrs run workload=`.
         .with_value_provider("workload=", fn_provider(workload_provider))
+        .with_category(Category::Tools.tag())
+        .with_level(Level::Secondary.rank())
+}
+
+fn gk_node() -> StrictNode<true, true> {
+    // `nbrs gk visualize <expr|file.gk>`. Lone subcommand for
+    // now; sibling slots (`gk functions`, `gk dag`) live under
+    // `describe gk` until a broader gk-subcommand refactor.
+    StrictNode::leaf_with_flags(&[], &[])
+        .with_category(Category::Tools.tag())
+        .with_level(Level::FullSurface.rank())
+}
+
+fn metrics_node() -> StrictNode<true, true> {
+    // `nbrs metrics <list|show> [<expr>]` — read-side
+    // introspection over the active session db. Modelled as
+    // a group with `list` / `show` as named child nodes so
+    // tab after `nbrs metrics ` offers the subcommands
+    // directly (the bare flag-form would only suggest
+    // `--db` / `--session`, leaving the user without a
+    // discoverable path to the actual operations).
+    StrictNode::group(vec![
+        ("list", Node::leaf_with_flags(
+            &["--db", "--session"], &[])),
+        ("show", Node::leaf_with_flags(
+            &["--db", "--session"], &[])),
+        ("match", Node::leaf_with_flags(
+            &["--db", "--session"], &[])),
+    ])
         .with_category(Category::Tools.tag())
         .with_level(Level::Secondary.rank())
 }
@@ -275,6 +472,9 @@ fn plot_node() -> StrictNode<true, true> {
         &["--verbose"],
     )
         .with_value_provider("--name", fn_provider(plot_name_provider))
+        .with_value_provider("--series", fn_provider(series_provider))
+        .with_value_provider("--x", fn_provider(series_provider))
+        .with_value_provider("--filter", fn_provider(filter_provider))
         // `workload=<file.yaml>` sources named plots from the
         // YAML's `plot:` block instead of the metrics db.
         .with_value_provider("workload=", fn_provider(workload_provider))
@@ -377,6 +577,27 @@ fn pid_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
     out
 }
 
+/// SRD-46 cross-kind name provider for `nbrs report --name`:
+/// emits every plot AND table item the workload defines (or
+/// the session db has persisted). Kind-filtered providers stay
+/// separate so `nbrs plot` / `nbrs table` aliases offer only
+/// their own kind.
+fn report_any_name_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
+    let mut all: Vec<String> = Vec::new();
+    if let Some(path) = workload_from_context(ctx) {
+        all.extend(crate::plot_metrics::list_workload_plot_names(&path));
+        all.extend(crate::summary::list_workload_summary_names(&path));
+    } else {
+        let db_path = db_path_from_context(ctx);
+        all.extend(crate::plot_metrics::list_stored_plot_names(&db_path));
+        all.extend(crate::summary::list_stored_summary_names(&db_path));
+    }
+    all.retain(|n| n.starts_with(partial));
+    all.sort();
+    all.dedup();
+    all
+}
+
 /// Stored-summary-name completion for `nbrs summary --name`.
 /// `workload=<path>` on the line wins (sources from the
 /// workload's `summary:` block). Otherwise falls back to the
@@ -411,6 +632,113 @@ fn plot_name_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
         .into_iter()
         .filter(|n| n.starts_with(partial))
         .collect()
+}
+
+/// Label-key completion for `nbrs plot --series` and `--x`.
+///
+/// Surfaces every distinct label key recorded in the metrics
+/// db, narrowed to the metric family in scope when one can be
+/// determined: `--metric <X>` wins, else `--name <X>` resolves
+/// through the workload's `plot:` block or the db's stored
+/// plots. Keys already present in `--x` / earlier `--series`
+/// args are filtered out so suggestions move forward.
+///
+/// `--series` is comma-separated, so when the partial token
+/// contains commas, the prefix part is preserved verbatim and
+/// matching candidates are appended after the last comma.
+fn series_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
+    let db_path = db_path_from_context(ctx);
+    let workload_path = workload_from_context(ctx);
+    let metric_pattern = metric_from_context(ctx, &db_path, workload_path.as_deref());
+
+    let mut keys = crate::plot_metrics::list_label_keys(&db_path, metric_pattern.as_deref());
+
+    let mut used: std::collections::HashSet<String> = used_label_keys(ctx)
+        .into_iter().map(|s| s.to_string()).collect();
+    let (head, tail) = match partial.rfind(',') {
+        Some(i) => (&partial[..=i], &partial[i + 1..]),
+        None => ("", partial),
+    };
+    for k in head.split(',') {
+        let k = k.trim();
+        if !k.is_empty() { used.insert(k.to_string()); }
+    }
+    keys.retain(|k| !used.contains(k));
+    keys.into_iter()
+        .filter(|k| k.starts_with(tail))
+        .map(|k| format!("{head}{k}"))
+        .collect()
+}
+
+/// `--filter <key>=<value>`: when the partial has no `=`, suggest
+/// label keys followed by `=`. Once `=` is typed we let the user
+/// supply the value freely (no enumeration — the value space is
+/// arbitrary strings).
+fn filter_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
+    if partial.contains('=') { return Vec::new(); }
+    let db_path = db_path_from_context(ctx);
+    let workload_path = workload_from_context(ctx);
+    let metric_pattern = metric_from_context(ctx, &db_path, workload_path.as_deref());
+    crate::plot_metrics::list_label_keys(&db_path, metric_pattern.as_deref())
+        .into_iter()
+        .filter(|k| k.starts_with(partial))
+        .map(|k| format!("{k}="))
+        .collect()
+}
+
+/// Find the metric family the user is plotting from `--metric`
+/// or, failing that, the metric encoded in the named plot
+/// referenced by `--name`.
+fn metric_from_context(
+    ctx: &[&str],
+    db_path: &std::path::Path,
+    workload_path: Option<&std::path::Path>,
+) -> Option<String> {
+    let mut iter = ctx.iter();
+    while let Some(&w) = iter.next() {
+        if w == "--metric" && let Some(&v) = iter.next() {
+            return Some(v.to_string());
+        }
+        if let Some(v) = w.strip_prefix("--metric=") {
+            return Some(v.to_string());
+        }
+    }
+    let mut iter = ctx.iter();
+    while let Some(&w) = iter.next() {
+        if w == "--name" && let Some(&v) = iter.next() {
+            return crate::plot_metrics::metric_for_plot_name(db_path, workload_path, v);
+        }
+        if let Some(v) = w.strip_prefix("--name=") {
+            return crate::plot_metrics::metric_for_plot_name(db_path, workload_path, v);
+        }
+    }
+    None
+}
+
+/// Collect label keys already pinned by `--x` and any prior
+/// `--series` value(s) on the line. Comma-split because
+/// `--series` accepts comma-separated lists.
+fn used_label_keys<'a>(ctx: &'a [&'a str]) -> std::collections::HashSet<&'a str> {
+    let mut out: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut iter = ctx.iter();
+    while let Some(&w) = iter.next() {
+        let val = if w == "--x" || w == "--series" {
+            iter.next().copied()
+        } else if let Some(v) = w.strip_prefix("--x=") {
+            Some(v)
+        } else if let Some(v) = w.strip_prefix("--series=") {
+            Some(v)
+        } else {
+            None
+        };
+        if let Some(v) = val {
+            for k in v.split(',') {
+                let k = k.trim();
+                if !k.is_empty() { out.insert(k); }
+            }
+        }
+    }
+    out
 }
 
 /// Pull `workload=<path>` from the in-progress command line, if
@@ -480,15 +808,34 @@ fn workload_dynamic_params(_partial: &str, ctx: &[&str]) -> Vec<String> {
 // nbrs-activity::completions)
 // ---------------------------------------------------------------------------
 
+/// Maximum directory depth the walker descends from each seed
+/// root. Caps the cost of `workload=<TAB>` in deep trees.
+const WORKLOAD_MAX_DEPTH: usize = 4;
+
+/// Maximum number of directory entries the walker visits in
+/// one completion call. Bounds the cost of a `<TAB>` press in
+/// a large tree.
+const WORKLOAD_MAX_FILES_SCANNED: usize = 1000;
+
+/// Discover workload candidates for `workload=` tab-completion.
+///
+/// Recursively scans up to [`WORKLOAD_MAX_DEPTH`] levels deep
+/// (or [`WORKLOAD_MAX_FILES_SCANNED`] entries, whichever comes
+/// first) under each seed root, emitting every yaml file as a
+/// full relative path so nested workloads surface without the
+/// user having to tab through each level manually.
 fn workload_file_candidates(cur: &str) -> Vec<String> {
     use std::path::Path;
     let mut out: Vec<String> = Vec::new();
+    let mut budget = WORKLOAD_MAX_FILES_SCANNED;
     if cur.contains('/') {
         let split = cur.rfind('/').unwrap();
         let dir_prefix = &cur[..=split];
         let name_prefix = &cur[split + 1..];
-        collect_yaml_entries(Path::new(dir_prefix.trim_end_matches('/')),
-            dir_prefix, name_prefix, &mut out);
+        let seed = Path::new(dir_prefix.trim_end_matches('/'));
+        collect_yaml_recursive(
+            seed, dir_prefix, name_prefix, &mut out, &mut budget, 0,
+        );
     } else {
         let roots: &[(&str, &str)] = &[
             (".", ""),
@@ -496,7 +843,10 @@ fn workload_file_candidates(cur: &str) -> Vec<String> {
             ("examples", "examples/"),
         ];
         for (dir, prefix) in roots {
-            collect_yaml_entries(Path::new(dir), prefix, cur, &mut out);
+            collect_yaml_recursive(
+                Path::new(dir), prefix, cur, &mut out, &mut budget, 0,
+            );
+            if budget == 0 { break; }
         }
     }
     out.sort();
@@ -504,23 +854,39 @@ fn workload_file_candidates(cur: &str) -> Vec<String> {
     out
 }
 
-fn collect_yaml_entries(
+/// Recursive walker. Emits every yaml file at depth ≤
+/// [`WORKLOAD_MAX_DEPTH`] under `dir`. At depth 0 the leaf
+/// filename is filtered by `name_prefix` (the user-typed
+/// partial); deeper levels descend regardless so subdir-buried
+/// workloads still surface by full relative path.
+fn collect_yaml_recursive(
     dir: &std::path::Path,
     emit_prefix: &str,
     name_prefix: &str,
     out: &mut Vec<String>,
+    budget: &mut usize,
+    current_depth: usize,
 ) {
+    if *budget == 0 { return; }
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
+        if *budget == 0 { return; }
+        *budget -= 1;
         let Some(name_os) = entry.path().file_name().map(|n| n.to_owned()) else { continue };
         let name = name_os.to_string_lossy().to_string();
         if name.starts_with('.') { continue; }
-        if !name.starts_with(name_prefix) { continue; }
+        if current_depth == 0 && !name.starts_with(name_prefix) { continue; }
         let path = entry.path();
         if path.is_dir() {
             if matches!(name.as_str(), "target" | "node_modules" | "logs") { continue; }
-            if directory_contains_yaml(&path) {
-                out.push(format!("{emit_prefix}{name}/"));
+            // Descend so files at depth N (N = WORKLOAD_MAX_DEPTH)
+            // remain visible. The cap counts the deepest dir
+            // entries we read, not the dir we recurse into.
+            if current_depth < WORKLOAD_MAX_DEPTH {
+                let child_prefix = format!("{emit_prefix}{name}/");
+                collect_yaml_recursive(
+                    &path, &child_prefix, "", out, budget, current_depth + 1,
+                );
             }
             continue;
         }
@@ -529,30 +895,6 @@ fn collect_yaml_entries(
             out.push(format!("{emit_prefix}{name}"));
         }
     }
-}
-
-fn directory_contains_yaml(dir: &std::path::Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else { return false };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file()
-            && let Some(ext) = path.extension()
-            && (ext == "yaml" || ext == "yml") {
-            return true;
-        }
-        if path.is_dir() {
-            let Ok(inner) = std::fs::read_dir(&path) else { continue };
-            for sub in inner.flatten() {
-                let sub_path = sub.path();
-                if sub_path.is_file()
-                    && let Some(ext) = sub_path.extension()
-                    && (ext == "yaml" || ext == "yml") {
-                    return true;
-                }
-            }
-        }
-    }
-    false
 }
 
 fn scenario_candidates(cur: &str, prior: &[String]) -> Vec<String> {
@@ -604,4 +946,124 @@ impl CommandTreeExt for CommandTree {
 
     #[cfg(not(feature = "openapi"))]
     fn with_openapi_commands(self) -> Self { self }
+}
+
+#[cfg(test)]
+mod walker_tests {
+    use super::*;
+
+    fn tempdir(tag: &str) -> std::path::PathBuf {
+        // /tmp deliberately, not env::temp_dir(): on some setups
+        // (e.g. cargo test under TMPDIR=target/test-tmp) the env
+        // path lives under `target/` which the walker
+        // unconditionally skips, so a tempdir under it would
+        // make the walker treat its own root as noise and find
+        // nothing.
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::path::PathBuf::from("/tmp")
+            .join(format!("nbrs-completion-{tag}-{n:x}"));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn write_yaml(path: &std::path::Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "#test\n").unwrap();
+    }
+
+    #[test]
+    fn walker_finds_yaml_in_nested_subdirs() {
+        let root = tempdir("nested");
+        write_yaml(&root.join("a.yaml"));
+        write_yaml(&root.join("sub/b.yaml"));
+        write_yaml(&root.join("sub/deeper/c.yaml"));
+        write_yaml(&root.join("sub/deeper/even/d.yaml"));
+
+        let mut out = Vec::new();
+        let mut budget = WORKLOAD_MAX_FILES_SCANNED;
+        let prefix = format!("{}/", root.display());
+        collect_yaml_recursive(&root, &prefix, "", &mut out, &mut budget, 0);
+        assert!(out.iter().any(|p| p.ends_with("a.yaml")), "got: {out:?}");
+        assert!(out.iter().any(|p| p.ends_with("sub/b.yaml")), "got: {out:?}");
+        assert!(out.iter().any(|p| p.ends_with("sub/deeper/c.yaml")),
+            "got: {out:?}");
+        assert!(out.iter().any(|p| p.ends_with("sub/deeper/even/d.yaml")),
+            "got: {out:?}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn walker_stops_at_max_depth() {
+        let root = tempdir("depth-cap");
+        write_yaml(&root.join("L1/L2/L3/L4/inside4.yaml"));
+        write_yaml(&root.join("L1/L2/L3/L4/L5/too_deep.yaml"));
+
+        let mut out = Vec::new();
+        let mut budget = WORKLOAD_MAX_FILES_SCANNED;
+        let prefix = format!("{}/", root.display());
+        collect_yaml_recursive(&root, &prefix, "", &mut out, &mut budget, 0);
+        assert!(out.iter().any(|p| p.ends_with("L4/inside4.yaml")),
+            "depth-4 entry visible: {out:?}");
+        assert!(!out.iter().any(|p| p.ends_with("too_deep.yaml")),
+            "depth-5 entry NOT visible: {out:?}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn walker_respects_budget_cap() {
+        let root = tempdir("budget");
+        write_yaml(&root.join("a.yaml"));
+        write_yaml(&root.join("sub/b.yaml"));
+
+        let mut out = Vec::new();
+        let mut budget: usize = 1;
+        let prefix = format!("{}/", root.display());
+        collect_yaml_recursive(&root, &prefix, "", &mut out, &mut budget, 0);
+        assert_eq!(budget, 0, "budget should be exhausted");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn walker_skips_target_node_modules_logs() {
+        let root = tempdir("noise-skip");
+        write_yaml(&root.join("good.yaml"));
+        write_yaml(&root.join("target/never.yaml"));
+        write_yaml(&root.join("node_modules/never.yaml"));
+        write_yaml(&root.join("logs/never.yaml"));
+
+        let mut out = Vec::new();
+        let mut budget = WORKLOAD_MAX_FILES_SCANNED;
+        let prefix = format!("{}/", root.display());
+        collect_yaml_recursive(&root, &prefix, "", &mut out, &mut budget, 0);
+        assert!(out.iter().any(|p| p.ends_with("good.yaml")));
+        assert!(!out.iter().any(|p| p.contains("target/")), "target/ skipped: {out:?}");
+        assert!(!out.iter().any(|p| p.contains("node_modules/")), "node_modules/ skipped: {out:?}");
+        assert!(!out.iter().any(|p| p.contains("/logs/")), "logs/ skipped: {out:?}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn walker_filters_top_level_by_name_prefix() {
+        let root = tempdir("name-prefix");
+        write_yaml(&root.join("alpha.yaml"));
+        write_yaml(&root.join("beta.yaml"));
+        write_yaml(&root.join("sub/anything.yaml"));
+
+        let mut out = Vec::new();
+        let mut budget = WORKLOAD_MAX_FILES_SCANNED;
+        let prefix = format!("{}/", root.display());
+        collect_yaml_recursive(&root, &prefix, "alp", &mut out, &mut budget, 0);
+        assert!(out.iter().any(|p| p.ends_with("alpha.yaml")), "got: {out:?}");
+        assert!(!out.iter().any(|p| p.ends_with("beta.yaml")),
+            "beta filtered: {out:?}");
+        assert!(!out.iter().any(|p| p.ends_with("anything.yaml")),
+            "non-matching subdir not descended: {out:?}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

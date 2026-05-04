@@ -23,7 +23,11 @@ params:
 
 # Show all columns discovered across phases.
 # Filter to only show search and load phases (exclude setup).
-summary: "all"
+# (SRD-46)
+report:
+  default: |
+    table default
+      all
 
 bindings: |
   inputs := (cycle)
@@ -55,7 +59,6 @@ phases:
 
   # summary: true — all available columns shown for this phase
   load:
-    summary: true
     cycles: "{item_count}"
     concurrency: 1
     bindings: |
@@ -68,8 +71,6 @@ phases:
 
   # summary: [recall] — only recall gauges shown for this phase
   search:
-    summary:
-      - recall
     cycles: "{item_count}"
     concurrency: 1
     bindings: |

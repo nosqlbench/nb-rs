@@ -87,18 +87,19 @@ pub fn list_workload_summary_names(workload_path: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Read a workload YAML's `summary:` block and return
-/// `(name, spec_text)` pairs in alphabetical order.
+/// Read a workload YAML's `report:` block and return
+/// `(name, spec_text)` pairs for every `table` item, in
+/// declaration order (SRD-46).
 fn load_workload_summaries(path: &Path) -> Result<Vec<(String, String)>, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("read: {e}"))?;
     let workload = nbrs_workload::parse::parse_workload(
         &text, &std::collections::HashMap::new(),
     ).map_err(|e| format!("parse: {e}"))?;
-    let mut entries: Vec<(String, String)> = workload.summaries.iter()
-        .map(|(name, cfg)| (name.clone(), cfg.raw.clone()))
+    let entries: Vec<(String, String)> = workload.report.items()
+        .filter(|i| matches!(i.kind, nbrs_workload::report::Kind::Table))
+        .map(|i| (i.name.clone(), i.body.clone()))
         .collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(entries)
 }
 
@@ -358,11 +359,16 @@ pub fn summary_command(args: &[String]) {
                         .unwrap_or_else(|| output_path.to_string_lossy().into_owned());
                     format!("[{leaf}]({leaf})\n")
                 };
-                let anchor = format!("summary: {basename}");
+                let label = opts.label.clone()
+                    .unwrap_or_else(|| crate::report::prettify_name(&basename));
+                let heading_display = match opts.figure_num {
+                    Some(n) => format!("{n}. {label} (table)"),
+                    None => format!("{label} (table)"),
+                };
                 let mode = opts.report_mode
                     .unwrap_or(crate::report::WriteMode::Update);
-                match crate::report::write_section(
-                    &report_path, &anchor, &body, mode,
+                match crate::report::write_named_section(
+                    &report_path, &basename, &heading_display, &body, mode,
                 ) {
                     Ok(true) => {}
                     Ok(false) => eprintln!(
@@ -490,6 +496,12 @@ struct SummaryOpts {
     report_mode: Option<crate::report::WriteMode>,
     /// True when `--report=skip` / `--no-report` is passed.
     report_disabled: bool,
+    /// SRD-46: figure number injected by `nbrs report` for
+    /// markdown heading prefix.
+    figure_num: Option<usize>,
+    /// SRD-46: display label injected by `nbrs report`. Falls
+    /// back to a prettified name.
+    label: Option<String>,
 }
 
 fn parse_args(args: &[String]) -> SummaryOpts {
@@ -520,6 +532,17 @@ fn parse_args(args: &[String]) -> SummaryOpts {
             "--name" => {
                 if let Some(v) = iter.next() {
                     opts.name = Some(v.clone());
+                }
+            }
+            "--label" => {
+                if let Some(v) = iter.next() {
+                    opts.label = Some(v.clone());
+                }
+            }
+            "--figure-num" => {
+                if let Some(v) = iter.next()
+                    && let Ok(n) = v.parse::<usize>() {
+                    opts.figure_num = Some(n);
                 }
             }
             "--create" => {

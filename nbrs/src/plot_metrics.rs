@@ -104,9 +104,76 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
         height: 640,
         ..Default::default()
     };
-    for directive in spec.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+    // Strip `#` line-oriented comments before any other parsing.
+    // A `#` outside a quoted string runs the rest of the line out
+    // as a comment. Each input line then trims to its non-comment
+    // content; empty lines drop. (SRD-46: report/plot/table
+    // bodies all support `#` comments.)
+    let cleaned = strip_line_comments(spec);
+    // Per-line splitting: each non-empty line is its own
+    // directive (in addition to `;` separators within a line).
+    // Multi-line plot bodies are normalised here so the rest of
+    // the parser doesn't need to know about them.
+    let by_lines: String = cleaned.lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>().join(";");
+    let parse_over = |rest: &str, opts: &mut PlotMetricsOpts| {
+        // `over <items>` accepts a comma-separated list. Each
+        // item is one of:
+        //   - bare key: contributes to the axis/series set
+        //   - `key~pattern`: substring filter on `key` (in-band
+        //     `~`-prefixed value in opts.filters)
+        // Disposition: the LAST bare key is the x-axis; earlier
+        // bare keys become series-discriminator labels.
+        let mut bare: Vec<String> = Vec::new();
+        for item in rest.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some((k, p)) = item.split_once('~') {
+                opts.filters.push((k.trim().to_string(), format!("~{}", p.trim())));
+            } else {
+                bare.push(item.to_string());
+            }
+        }
+        if let Some(x) = bare.pop() {
+            opts.x_label = Some(x);
+        }
+        for k in bare {
+            opts.series_labels.push(k);
+        }
+    };
+
+    for directive in by_lines.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+        // Two equivalent aggregator-shorthand forms:
+        //
+        //   mean recall@10 over limit         (prefix form)
+        //   mean(recall@10) over limit        (function-call form)
+        //
+        // Both rewrite to `recall@10.mean over limit` before the
+        // directive parser runs.
+        let directive_owned;
+        let directive: &str = if let Some((agg, metric, after)) = parse_function_agg(directive) {
+            directive_owned = if after.is_empty() {
+                format!("{metric}.{agg}")
+            } else {
+                format!("{metric}.{agg} {after}")
+            };
+            &directive_owned
+        } else if let Some((agg_prefix, rest)) = strip_agg_prefix(directive) {
+            let (metric, after) = match rest.split_once(char::is_whitespace) {
+                Some(p) => p,
+                None => (rest, ""),
+            };
+            directive_owned = if after.is_empty() {
+                format!("{metric}.{agg_prefix}")
+            } else {
+                format!("{metric}.{agg_prefix} {after}")
+            };
+            &directive_owned
+        } else {
+            directive
+        };
         if let Some(rest) = directive.strip_prefix("over ") {
-            opts.x_label = Some(rest.trim().to_string());
+            parse_over(rest, &mut opts);
         } else if let Some(rest) = directive.strip_prefix("by ") {
             // `by` takes either a comma-separated list of label
             // keys (multi-key tuple → one series per distinct
@@ -145,7 +212,7 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
                 }
                 // The rest may itself contain `by` and `where`.
                 if let Some((x_part, by_rest)) = after_over.split_once(" by ") {
-                    opts.x_label = Some(x_part.trim().to_string());
+                    parse_over(x_part, &mut opts);
                     let (series_text, where_text) = match by_rest.split_once(" where ") {
                         Some((s, w)) => (s, Some(w)),
                         None => (by_rest, None),
@@ -161,14 +228,14 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
                         }
                     }
                 } else if let Some((x_part, where_rest)) = after_over.split_once(" where ") {
-                    opts.x_label = Some(x_part.trim().to_string());
+                    parse_over(x_part, &mut opts);
                     for f in where_rest.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                         let (k, v) = f.split_once('=')
                             .ok_or_else(|| format!("where filter '{f}' must be <key>=<value>"))?;
                         opts.filters.push((k.trim().to_string(), v.trim().to_string()));
                     }
                 } else {
-                    opts.x_label = Some(after_over.trim().to_string());
+                    parse_over(after_over, &mut opts);
                 }
             } else {
                 return Err(format!(
@@ -245,6 +312,26 @@ struct PlotMetricsOpts {
     /// True when `--report=skip` / `--no-report` was passed.
     /// Suppresses the framing doc entirely.
     report_disabled: bool,
+    /// Optional figure number injected by `nbrs report figure N`
+    /// (SRD-46) so the markdown heading reads
+    /// `## {N}. {Label} (plot) {{#anchor}}`.
+    figure_num: Option<usize>,
+    /// Optional display label injected via `--label="..."` from
+    /// `report_cmd`. Falls back to a prettified item name.
+    label: Option<String>,
+    /// SRD-46 colorblind-safe palette name or numeric index.
+    /// `None` ⇒ default (`wong`).
+    palette: Option<String>,
+    /// Line dash style (`solid`, `dashed`, `dotted`, `none`).
+    /// `None` ⇒ solid.
+    line: Option<String>,
+    /// Stroke width in pixels. `None` ⇒ 2.
+    line_width: Option<f32>,
+    /// Marker shape (`none`, `circle`, `square`, `triangle`,
+    /// `diamond`, `plus`, `cross`). `None` ⇒ `circle`.
+    marker: Option<String>,
+    /// Marker radius in pixels. `None` ⇒ 3.
+    marker_size: Option<f32>,
 }
 
 impl Default for PlotMetricsOpts {
@@ -270,6 +357,13 @@ impl Default for PlotMetricsOpts {
             report: None,
             report_mode: crate::report::WriteMode::Update,
             report_disabled: false,
+            figure_num: None,
+            label: None,
+            palette: None,
+            line: None,
+            line_width: None,
+            marker: None,
+            marker_size: None,
         }
     }
 }
@@ -302,6 +396,24 @@ pub fn plot_metrics_command(args: &[String]) {
     if let Err(e) = render_one(opts) {
         eprintln!("nbrs plot: {e}");
         std::process::exit(1);
+    }
+}
+
+/// Same as [`plot_metrics_command`] but returns errors instead
+/// of `process::exit`-ing. Used by `nbrs report all` so a
+/// per-item failure (e.g. a metric with no rows in the db)
+/// doesn't abort the rest of the batch.
+///
+/// Mirrors the full dispatch in `plot_metrics_command`: stored-
+/// mode (`--name <N>` / `all`) routes through `run_stored`, the
+/// ad-hoc form goes through `parse_args` + `render_one`.
+pub fn plot_metrics_command_result(args: &[String]) -> Result<(), String> {
+    register_bundled_font();
+    if let Some(stored_args) = peel_stored_mode(args) {
+        run_stored_result(stored_args)
+    } else {
+        let opts = parse_args(args)?;
+        render_one(opts)
     }
 }
 
@@ -458,11 +570,18 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
         let stem = out_path.file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "plot".into());
-        let anchor_name = stem.strip_prefix("plot_").unwrap_or(&stem);
+        let anchor_name = stem.strip_prefix("plot_").unwrap_or(&stem).to_string();
         let body = crate::report::image_section_body(&report_path, &out_path);
-        match crate::report::write_section(
+        let label = opts.label.clone()
+            .unwrap_or_else(|| crate::report::prettify_name(&anchor_name));
+        let heading_display = match opts.figure_num {
+            Some(n) => format!("{n}. {label} (plot)"),
+            None => format!("{label} (plot)"),
+        };
+        match crate::report::write_named_section(
             &report_path,
-            &format!("plot: {anchor_name}"),
+            &anchor_name,
+            &heading_display,
             &body,
             opts.report_mode,
         ) {
@@ -639,6 +758,74 @@ fn run_stored(stored: StoredArgs) {
     if any_failed { std::process::exit(1); }
 }
 
+/// Result-returning sibling of [`run_stored`] used by
+/// `nbrs report all`. Same logic, but errors bubble up
+/// instead of `process::exit`-ing.
+fn run_stored_result(stored: StoredArgs) -> Result<(), String> {
+    let db_path = stored.db.clone().unwrap_or_else(
+        || PathBuf::from("logs/latest/metrics.db"));
+    if !db_path.exists() {
+        return Err(format!("metrics db not found at '{}'", db_path.display()));
+    }
+    let stored_specs: Vec<(String, String)> = match &stored.workload {
+        Some(path) => load_workload_plots(path)
+            .map_err(|e| format!("workload '{}': {e}", path.display()))?,
+        None => read_stored_plots(&db_path),
+    };
+    if stored_specs.is_empty() {
+        return match &stored.workload {
+            Some(path) => Err(format!(
+                "workload '{}' has no `plot:` entries", path.display())),
+            None => Err(format!(
+                "'{}' has no stored named plots", db_path.display())),
+        };
+    }
+    let to_render: Vec<(String, String)> = match stored.target {
+        Some(name) => {
+            let Some(spec) = stored_specs.iter().find(|(n, _)| n == &name) else {
+                return Err(format!(
+                    "no stored plot named '{name}' in '{}'", db_path.display()));
+            };
+            vec![spec.clone()]
+        }
+        None => stored_specs,
+    };
+    let mut last_err: Option<String> = None;
+    for (name, spec) in to_render {
+        let mut child_args: Vec<String> = vec![spec.clone()];
+        child_args.push("--db".into());
+        child_args.push(db_path.to_string_lossy().into_owned());
+        // Stored-mode invocations always render to a per-name
+        // output path so the markdown anchor and PNG filename
+        // are unique per item — otherwise two plots with the
+        // same metric (e.g. `recall@10.mean over limit`) collide
+        // on `plot_recall_10.mean_over_limit.png` and the second
+        // overwrites the first in both file and section.
+        let mut output_overridden = false;
+        for a in &stored.extra {
+            if a == "--output" || a.starts_with("--output=") { output_overridden = true; }
+            child_args.push(a.clone());
+        }
+        if !output_overridden {
+            let out_path = derive_stored_output_path(&db_path, &name);
+            child_args.push("--output".into());
+            child_args.push(out_path.to_string_lossy().into_owned());
+        }
+        eprintln!("--- plot '{name}' ---");
+        let opts = match parse_args(&child_args) {
+            Ok(o) => o,
+            Err(e) => { last_err = Some(format!("'{name}': {e}")); continue; }
+        };
+        if let Err(e) = render_one(opts) {
+            last_err = Some(format!("'{name}': {e}"));
+        }
+    }
+    match last_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
 /// Public listing for shell completion. Returns stored plot
 /// names from the metrics db (alphabetical order). Empty Vec
 /// when the db is missing, unreadable, or has none — completion
@@ -657,25 +844,85 @@ pub fn list_workload_plot_names(workload_path: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Read a workload YAML's `plot:` block. Returns
-/// `(name, spec)` pairs in alphabetical order so output names
-/// match the db-stored path's ordering convention.
+/// Resolve a named plot's metric family from either a workload
+/// YAML's `plot:` block or the metrics db's `session_metadata`
+/// table. Returns `None` when the name isn't found.
+pub fn metric_for_plot_name(
+    db_path: &Path,
+    workload_path: Option<&Path>,
+    name: &str,
+) -> Option<String> {
+    let mut spec: Option<String> = None;
+    if let Some(wp) = workload_path
+        && let Ok(plots) = load_workload_plots(wp) {
+        spec = plots.into_iter()
+            .find_map(|(n, s)| if n == name { Some(s) } else { None });
+    }
+    if spec.is_none() {
+        spec = read_stored_plots(db_path).into_iter()
+            .find_map(|(n, s)| if n == name { Some(s) } else { None });
+    }
+    let spec = spec?;
+    parse_spec(&spec).ok().and_then(|o| o.metric)
+}
+
+/// Public listing for shell completion: every distinct label
+/// key found across `metric_instance.spec` rows in the db.
+/// Optionally restrict to a single metric family (the prefix
+/// before `{`). Empty Vec on any error — completion is best-
+/// effort.
+pub fn list_label_keys(db_path: &Path, metric_pattern: Option<&str>) -> Vec<String> {
+    if !db_path.exists() { return Vec::new(); }
+    let Ok(conn) = rusqlite::Connection::open(db_path) else { return Vec::new(); };
+    let (sql, glob) = match metric_pattern {
+        Some(m) => (
+            "SELECT DISTINCT spec FROM metric_instance WHERE spec GLOB ?1",
+            Some(format!("{m}{{*}}")),
+        ),
+        None => ("SELECT DISTINCT spec FROM metric_instance", None),
+    };
+    let Ok(mut stmt) = conn.prepare(sql) else { return Vec::new(); };
+    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut absorb = |spec: String| {
+        for k in parse_labels(&spec).into_keys() {
+            keys.insert(k);
+        }
+    };
+    if let Some(g) = glob {
+        if let Ok(iter) = stmt.query_map([g], |row| row.get::<_, String>(0)) {
+            for s in iter.flatten() { absorb(s); }
+        }
+    } else if let Ok(iter) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+        for s in iter.flatten() { absorb(s); }
+    }
+    keys.into_iter().collect()
+}
+
+/// Read a workload YAML's `report:` block. Returns
+/// `(name, spec)` pairs for every `plot` item, in
+/// declaration order (SRD-46).
 fn load_workload_plots(path: &Path) -> Result<Vec<(String, String)>, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("read: {e}"))?;
     let workload = nbrs_workload::parse::parse_workload(
         &text, &std::collections::HashMap::new(),
     ).map_err(|e| format!("parse: {e}"))?;
-    let mut entries: Vec<(String, String)> = workload.plots.into_iter().collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let entries: Vec<(String, String)> = workload.report.items()
+        .filter(|i| matches!(i.kind, nbrs_workload::report::Kind::Plot))
+        .map(|i| (i.name.clone(), i.body.clone()))
+        .collect();
     Ok(entries)
 }
 
 fn read_stored_plots(db_path: &Path) -> Vec<(String, String)> {
+    // SRD-46: read `report.<name>` rows whose body starts with
+    // `plot ...`. Strips the kind keyword + name + optional
+    // `label "..."` line so the returned spec is the body the
+    // legacy plot renderer expects.
     let Ok(conn) = rusqlite::Connection::open(db_path) else { return Vec::new(); };
     let mut stmt = match conn.prepare(
         "SELECT key, value FROM session_metadata \
-         WHERE key LIKE 'plot.%' ORDER BY key"
+         WHERE key LIKE 'report.%' ORDER BY rowid"
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -685,9 +932,16 @@ fn read_stored_plots(db_path: &Path) -> Vec<(String, String)> {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     }) {
         for entry in iter.flatten() {
-            if let Some(name) = entry.0.strip_prefix("plot.") {
-                out.push((name.to_string(), entry.1));
-            }
+            let mut lines = entry.1.lines();
+            let head = match lines.next() { Some(h) => h, None => continue };
+            let name = match head.strip_prefix("plot ") {
+                Some(rest) => rest.trim().to_string(),
+                None => continue, // skip table items
+            };
+            let body: String = lines
+                .filter(|l| !l.starts_with("label "))
+                .collect::<Vec<_>>().join("\n");
+            out.push((name, body));
         }
     }
     out
@@ -789,6 +1043,16 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
             }
             "--output" => opts.output = Some(PathBuf::from(next(&mut iter, "output")?)),
             "--title" => opts.title = Some(next(&mut iter, "title")?),
+            "--label" => opts.label = Some(next(&mut iter, "label")?),
+            "--palette" => opts.palette = Some(next(&mut iter, "palette")?),
+            "--line" => opts.line = Some(next(&mut iter, "line")?),
+            "--line-width" => opts.line_width = Some(next(&mut iter, "line-width")?
+                .parse().map_err(|_| "--line-width must be a number".to_string())?),
+            "--marker" => opts.marker = Some(next(&mut iter, "marker")?),
+            "--marker-size" => opts.marker_size = Some(next(&mut iter, "marker-size")?
+                .parse().map_err(|_| "--marker-size must be a number".to_string())?),
+            "--figure-num" => opts.figure_num = Some(next(&mut iter, "figure-num")?
+                .parse().map_err(|_| "--figure-num must be a positive integer".to_string())?),
             "--xlabel" => opts.xlabel = Some(next(&mut iter, "xlabel")?),
             "--ylabel" => opts.ylabel = Some(next(&mut iter, "ylabel")?),
             "--xscale" => opts.xscale = next(&mut iter, "xscale")?,
@@ -798,6 +1062,17 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
             "--height" => opts.height = next(&mut iter, "height")?
                 .parse().map_err(|_| "--height must be a positive integer".to_string())?,
             "--verbose" | "-v" => opts.verbose = true,
+            // Global flags consumed at startup
+            // (`apply_session_directory_at_startup`, SRD-15
+            // strict mode). The plot parser sees them in the
+            // arg list but has nothing to do — silently
+            // accept and skip the value when one is expected.
+            "--session" | "--session-name" | "--session-path"
+            | "--session-reuse" | "--session-keep" | "--session-shelflife" => {
+                let _ = iter.next();
+            }
+            "--strict" | "--no-prompt" | "--resume-latest" | "--force-retry-failed" => {}
+            "--resume" | "--gk-lib" => { let _ = iter.next(); }
             "--csv-also" => opts.csv_also = Some(PathBuf::from(next(&mut iter, "csv-also")?)),
             "--report" | "--update-markdown" => {
                 let v = next(&mut iter, "report")?;
@@ -869,6 +1144,13 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                         }
                         _ => return Err(format!("unknown option: {other}")),
                     }
+                } else if matches!(other, "--strict" | "--no-prompt"
+                    | "--resume-latest" | "--force-retry-failed")
+                    || other.starts_with("--session")
+                    || other.starts_with("--gk-lib=")
+                    || other.starts_with("--resume=")
+                {
+                    // Global flag consumed at startup; ignore.
                 } else {
                     return Err(format!("unknown argument: {other}"));
                 }
@@ -926,7 +1208,20 @@ fn query_rows(
     for row in iter.flatten() {
         let mut row = row;
         row.labels = parse_labels(&row.spec);
-        if !filters.iter().all(|(k, v)| row.labels.get(k).map(|x| x == v).unwrap_or(false)) {
+        // Filter match: exact for `key=value`, substring for
+        // values prefixed with `~` (the in-band marker the
+        // `key~pattern` directive form maps onto). Anchored
+        // wildcards aren't a thing yet — `~x` matches any
+        // value that contains `x` as a substring.
+        if !filters.iter().all(|(k, v)| {
+            row.labels.get(k).map(|x| {
+                if let Some(pat) = v.strip_prefix('~') {
+                    x.contains(pat)
+                } else {
+                    x == v
+                }
+            }).unwrap_or(false)
+        }) {
             continue;
         }
         rows.push(row);
@@ -1169,11 +1464,15 @@ fn render_plot(
 
     if is_svg {
         let root = SVGBackend::new(out_path, (opts.width, opts.height)).into_drawing_area();
-        draw_chart(&root, series, &title, &x_axis, &y_axis, x_range, y_range, metric)?;
+        draw_chart(&root, series, &title, &x_axis, &y_axis, x_range, y_range, metric,
+            opts.palette.as_deref(), opts.line.as_deref(), opts.line_width,
+            opts.marker.as_deref(), opts.marker_size)?;
         root.present().map_err(|e| format!("present: {e}"))?;
     } else {
         let root = BitMapBackend::new(out_path, (opts.width, opts.height)).into_drawing_area();
-        draw_chart(&root, series, &title, &x_axis, &y_axis, x_range, y_range, metric)?;
+        draw_chart(&root, series, &title, &x_axis, &y_axis, x_range, y_range, metric,
+            opts.palette.as_deref(), opts.line.as_deref(), opts.line_width,
+            opts.marker.as_deref(), opts.marker_size)?;
         root.present().map_err(|e| format!("present: {e}"))?;
     }
     Ok(())
@@ -1188,6 +1487,11 @@ fn draw_chart<DB>(
     x_range: std::ops::Range<f64>,
     y_range: std::ops::Range<f64>,
     metric: &str,
+    palette_spec: Option<&str>,
+    line_style: Option<&str>,
+    line_width: Option<f32>,
+    marker_shape: Option<&str>,
+    marker_size: Option<f32>,
 ) -> Result<(), String>
 where
     DB: DrawingBackend,
@@ -1215,22 +1519,114 @@ where
         .draw()
         .map_err(|e| format!("draw mesh: {e}"))?;
 
+    let palette = crate::palette::resolve_or_default(palette_spec);
+    let stroke_width = line_width.map(|w| w.max(0.0) as u32).unwrap_or(2);
+    let line_kind = line_style.unwrap_or("solid");
+    let marker_kind = marker_shape.unwrap_or("circle");
+    let m_size = marker_size.map(|s| s.max(0.0) as i32).unwrap_or(3);
+
     for (idx, (series_name, points)) in series.iter().enumerate() {
-        let color = pick_color(idx);
+        let color = crate::palette::series_color(palette, idx);
         let series_label_for_legend = if series_name.is_empty() {
             metric.to_string()
         } else {
             series_name.clone()
         };
         let pts = points.clone();
-        chart
-            .draw_series(LineSeries::new(pts.iter().cloned(), color.stroke_width(2)))
-            .map_err(|e| format!("draw line: {e}"))?
-            .label(series_label_for_legend.clone())
-            .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color.stroke_width(2)));
-        chart
-            .draw_series(pts.iter().map(|p| Circle::new(*p, 3, color.filled())))
-            .map_err(|e| format!("draw points: {e}"))?;
+
+        // Line component — solid (default), dashed, dotted (visual
+        // approximation: short dashes), or none.
+        match line_kind {
+            "none" => {} // no line
+            "dashed" => {
+                chart.draw_series(plotters::series::DashedLineSeries::new(
+                    pts.iter().cloned(), 8, 8, color.stroke_width(stroke_width),
+                ))
+                .map_err(|e| format!("draw dashed line: {e}"))?
+                .label(series_label_for_legend.clone())
+                .legend(move |(x, y)| PathElement::new(
+                    vec![(x, y), (x + 20, y)], color.stroke_width(stroke_width)));
+            }
+            "dotted" => {
+                chart.draw_series(plotters::series::DashedLineSeries::new(
+                    pts.iter().cloned(), 2, 4, color.stroke_width(stroke_width),
+                ))
+                .map_err(|e| format!("draw dotted line: {e}"))?
+                .label(series_label_for_legend.clone())
+                .legend(move |(x, y)| PathElement::new(
+                    vec![(x, y), (x + 20, y)], color.stroke_width(stroke_width)));
+            }
+            _ => {
+                chart.draw_series(LineSeries::new(
+                    pts.iter().cloned(), color.stroke_width(stroke_width)))
+                    .map_err(|e| format!("draw line: {e}"))?
+                    .label(series_label_for_legend.clone())
+                    .legend(move |(x, y)| PathElement::new(
+                        vec![(x, y), (x + 20, y)], color.stroke_width(stroke_width)));
+            }
+        }
+
+        // Marker component — overlay shapes at each datapoint.
+        // Hand-rolled shapes so we don't need extra plotters
+        // features.
+        match marker_kind {
+            "none" => {}
+            "circle" => {
+                chart.draw_series(pts.iter()
+                    .map(|p| Circle::new(*p, m_size, color.filled())))
+                    .map_err(|e| format!("draw circles: {e}"))?;
+            }
+            "square" => {
+                let off = m_size as f64;
+                chart.draw_series(pts.iter().map(|p| {
+                    Rectangle::new(
+                        [(p.0 - off, p.1 - off), (p.0 + off, p.1 + off)],
+                        color.filled(),
+                    )
+                })).map_err(|e| format!("draw squares: {e}"))?;
+            }
+            "triangle" => {
+                chart.draw_series(pts.iter()
+                    .map(|p| TriangleMarker::new(*p, m_size, color.filled())))
+                    .map_err(|e| format!("draw triangles: {e}"))?;
+            }
+            "diamond" => {
+                let off = m_size as f64;
+                chart.draw_series(pts.iter().map(|p| {
+                    Polygon::new(vec![
+                        (p.0, p.1 - off),
+                        (p.0 + off, p.1),
+                        (p.0, p.1 + off),
+                        (p.0 - off, p.1),
+                    ], color.filled())
+                })).map_err(|e| format!("draw diamonds: {e}"))?;
+            }
+            "plus" => {
+                chart.draw_series(pts.iter()
+                    .map(|p| Cross::new(*p, m_size, color.stroke_width(stroke_width))))
+                    .map_err(|e| format!("draw plus: {e}"))?;
+            }
+            "cross" => {
+                let off = m_size as f64;
+                chart.draw_series(pts.iter().flat_map(|p| {
+                    let p = *p;
+                    [
+                        PathElement::new(vec![
+                            (p.0 - off, p.1 - off), (p.0 + off, p.1 + off),
+                        ], color.stroke_width(stroke_width)),
+                        PathElement::new(vec![
+                            (p.0 - off, p.1 + off), (p.0 + off, p.1 - off),
+                        ], color.stroke_width(stroke_width)),
+                    ]
+                })).map_err(|e| format!("draw crosses: {e}"))?;
+            }
+            other => {
+                eprintln!("warning: unknown marker '{other}'; falling back to circle");
+                chart.draw_series(pts.iter()
+                    .map(|p| Circle::new(*p, m_size, color.filled())))
+                    .map_err(|e| format!("draw circles: {e}"))?;
+            }
+        }
     }
 
     if series.len() > 1 || series.keys().any(|k| !k.is_empty()) {
@@ -1395,27 +1791,120 @@ fn csv_escape(s: &str) -> String {
     }
 }
 
-/// Pick a plot color from a small distinct palette.
-fn pick_color(idx: usize) -> RGBColor {
-    const PALETTE: &[(u8, u8, u8)] = &[
-        (31, 119, 180),   // blue
-        (255, 127, 14),   // orange
-        (44, 160, 44),    // green
-        (214, 39, 40),    // red
-        (148, 103, 189),  // purple
-        (140, 86, 75),    // brown
-        (227, 119, 194),  // pink
-        (127, 127, 127),  // gray
-        (188, 189, 34),   // olive
-        (23, 190, 207),   // cyan
-    ];
-    let (r, g, b) = PALETTE[idx % PALETTE.len()];
-    RGBColor(r, g, b)
+/// Aggregator keywords that may appear as a prefix on a plot
+/// directive (`mean recall@10 over limit` ≡
+/// `recall@10.mean over limit`). Lower-case only — directive
+/// parsing is case-sensitive.
+const AGG_PREFIXES: &[&str] = &[
+    "mean", "min", "max", "p50", "p99", "p999", "sum", "count",
+];
+
+/// If `directive` starts with one of the aggregator keywords
+/// followed by whitespace, return `(agg, rest_after_agg)`.
+fn strip_agg_prefix(directive: &str) -> Option<(&str, &str)> {
+    for agg in AGG_PREFIXES {
+        if let Some(rest) = directive.strip_prefix(agg)
+            && let Some(c) = rest.chars().next()
+            && c.is_whitespace() {
+            return Some((agg, rest.trim_start()));
+        }
+    }
+    None
 }
+
+/// Function-call aggregator form: `mean(recall@10) over limit`
+/// ≡ `recall@10.mean over limit`. Returns `(agg, metric, rest_after_close_paren)`
+/// when the directive starts with `<agg>(<metric>)` followed by
+/// whitespace or end-of-string.
+fn parse_function_agg(directive: &str) -> Option<(&str, &str, &str)> {
+    let open = directive.find('(')?;
+    let agg = directive[..open].trim();
+    if !AGG_PREFIXES.contains(&agg) { return None; }
+    let close_rel = directive[open + 1..].find(')')?;
+    let metric = directive[open + 1..open + 1 + close_rel].trim();
+    if metric.is_empty() { return None; }
+    let after = directive[open + 1 + close_rel + 1..].trim();
+    Some((agg, metric, after))
+}
+
+/// Strip `#` line comments from a multi-line spec body. A `#`
+/// starts a comment only when it's at line-start or preceded by
+/// whitespace — so hex colors (`#117733`) and JSON sub-blocks
+/// (`{"color": "#fff"}`) survive. Quoted strings are honoured.
+fn strip_line_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for line in s.split_inclusive('\n') {
+        let mut quote: Option<char> = None;
+        let mut prev_ws = true;
+        let mut cut: Option<usize> = None;
+        for (i, ch) in line.char_indices() {
+            match quote {
+                Some(q) if ch == q => { quote = None; prev_ws = false; }
+                Some(_) => { prev_ws = false; }
+                None => match ch {
+                    '"' | '\'' => { quote = Some(ch); prev_ws = false; }
+                    '#' if prev_ws => { cut = Some(i); break; }
+                    c if c.is_whitespace() => { prev_ws = true; }
+                    _ => { prev_ws = false; }
+                }
+            }
+        }
+        match cut {
+            Some(idx) => {
+                out.push_str(&line[..idx]);
+                if line.ends_with('\n') { out.push('\n'); }
+            }
+            None => out.push_str(line),
+        }
+    }
+    out
+}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agg_prefix_rewrites_to_dotted() {
+        // `mean recall@10 over limit` ≡ `recall@10.mean over limit`.
+        let opts = parse_spec("mean recall@10 over limit where k=10").unwrap();
+        assert_eq!(opts.metric.as_deref(), Some("recall@10.mean"));
+        assert_eq!(opts.x_label.as_deref(), Some("limit"));
+    }
+
+    #[test]
+    fn function_agg_with_substring_filter() {
+        // From SRD-46 example workload: function-call agg form,
+        // multi-key `over` with `~` substring filter on profile.
+        let opts = parse_spec(
+            "mean(recall) over profile~label,limit where k=1"
+        ).unwrap();
+        assert_eq!(opts.metric.as_deref(), Some("recall.mean"));
+        assert_eq!(opts.x_label.as_deref(), Some("limit"));
+        // `profile~label` becomes a substring filter.
+        assert!(opts.filters.contains(&("profile".into(), "~label".into())),
+            "filters: {:?}", opts.filters);
+        // `where k=1` is a regular exact filter.
+        assert!(opts.filters.contains(&("k".into(), "1".into())));
+    }
+
+    #[test]
+    fn agg_prefix_other_aggs() {
+        let p99 = parse_spec("p99 latency over rate").unwrap();
+        assert_eq!(p99.metric.as_deref(), Some("latency.p99"));
+        let max = parse_spec("max recall over k").unwrap();
+        assert_eq!(max.metric.as_deref(), Some("recall.max"));
+    }
+
+    #[test]
+    fn hash_line_comments_in_spec_stripped() {
+        let spec = "recall@10.mean over limit where k=10  # narrow to k=10";
+        let opts = parse_spec(spec).unwrap();
+        assert_eq!(opts.metric.as_deref(), Some("recall@10.mean"));
+        // Filter parsed correctly even with trailing comment.
+        assert_eq!(opts.filters, vec![("k".to_string(), "10".to_string())]);
+    }
 
     #[test]
     fn parses_label_spec() {

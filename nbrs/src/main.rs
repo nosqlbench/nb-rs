@@ -15,9 +15,13 @@ mod daemon;
 mod describe;
 mod inspector;
 mod db_merge;
+mod metrics_cache;
+mod metrics_cmd;
+mod palette;
 mod plot;
 mod plot_metrics;
 mod report;
+mod report_cmd;
 mod run;
 mod summary;
 #[allow(dead_code)]
@@ -40,6 +44,16 @@ fn main() {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
 
+    // SRD-45 startup hook: honors `--session`, `--session-path`,
+    // `--session-name`, …, plus the `NBRS_SESSION*` env vars.
+    // Updates `logs/latest` to point at the resolved session
+    // directory so subsequent subcommands (`run`, `report`,
+    // `plot`, `summary`, `tui`, …) see consistent session
+    // wiring. Must run before any subcommand dispatch — read-
+    // side commands (plot, report) resolve their default
+    // `logs/latest/metrics.db` paths immediately on entry.
+    nbrs_activity::session::apply_session_directory_at_startup(&args);
+
     // `nbrs attach` connects to a running nbrs's OOB
     // introspection socket (SRD-02 §"Display and Diagnostic
     // Decoupling"). Probes the socket on entry — fails fast
@@ -48,18 +62,6 @@ fn main() {
     // queries. Renamed from the legacy `--inspector` flag.
     if args.first().map(|s| s.as_str()) == Some("attach") {
         inspector::inspector_command(&args[1..]);
-        return;
-    }
-
-    // `nbrs summary` renders a summary report from a
-    // previously-written `metrics.db`. Same
-    // SqliteReporter::format_summary code path the runner uses
-    // at end-of-run, so identical input → identical output.
-    // It's a proper subcommand (not a workload) because it
-    // operates on a finished session — no workload file to
-    // parse, no scenarios to execute.
-    if args.first().map(|s| s.as_str()) == Some("summary") {
-        summary::summary_command(&args[1..]);
         return;
     }
 
@@ -86,14 +88,41 @@ fn main() {
         "bench" => {
             bench::bench_command(&args[1..]);
         }
+        "metrics" => {
+            metrics_cmd::metrics_command(&args[1..]);
+        }
+        "report" => {
+            // `nbrs report ...` — primary surface for SRD-46
+            // report items. Sub-dispatch (list, all, glob,
+            // figure N, plot/table) lives in `report_cmd`.
+            report_cmd::report_command(&args[1..], report_cmd::KindFilter::Any);
+        }
         "plot" => {
-            // `nbrs plot gk <expr>` keeps the legacy terminal-
-            // braille GK-expression plotter. Everything else goes
-            // to the metrics-DB plotter (`nbrs plot --metric ...`).
-            if args.get(1).map(|s| s.as_str()) == Some("gk") {
-                plot::plot_command(&args[1..]);
-            } else {
-                plot_metrics::plot_metrics_command(&args[1..]);
+            // Unadvertised alias for `nbrs report plot ...`.
+            report_cmd::report_command(&args[1..], report_cmd::KindFilter::Plot);
+        }
+        "table" => {
+            // Unadvertised alias for `nbrs report table ...`.
+            report_cmd::report_command(&args[1..], report_cmd::KindFilter::Table);
+        }
+        "gk" => {
+            // `nbrs gk visualize <expr|file.gk>` — GK-expression
+            // terminal plotter (formerly `nbrs plot gk`). Sibling
+            // of `gk functions` / `gk dag` (still under
+            // `describe gk` until a broader gk-subcommand
+            // refactor; this entry is the new home for the
+            // visualizer specifically).
+            match args.get(1).map(|s| s.as_str()) {
+                Some("visualize") => plot::plot_command(&args[1..]),
+                Some(other) => {
+                    eprintln!("nbrs gk: unknown subcommand '{other}' \
+                        (try `visualize`)");
+                    std::process::exit(2);
+                }
+                None => {
+                    eprintln!("nbrs gk <subcommand>: expected `visualize`");
+                    std::process::exit(2);
+                }
             }
         }
         "web" => {

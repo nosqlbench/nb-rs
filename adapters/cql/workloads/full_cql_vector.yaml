@@ -30,28 +30,75 @@ params:
 #  cassandra_dialect: "cndb"
 #  cassandra_dialect: "cass5"
 
-summary:
-  recall: "recall; mean(recall) over profile~label"
-  recallnmore: |
-    recall; mean(recall) over profile~label
-    latency; mean(latency) over profile~label
+# Unified report block (SRD-46): plots + tables in declaration
+# order. Each scenario contributes its items to its own
+# scenario-specific markdown file so the post-run reports stay
+# scoped to the data they describe.
+#
+# Scenarios:
+#   - `test_oracles` → ANN/recall sweep, emits recall@N metrics
+#     under the `ann_query` phase.
+#   - `test_fknn`    → filtered-KNN sweep, emits recall metrics
+#     under the `pvs_query` phase.
+#
+# A `Run Details` block is auto-prepended to each markdown
+# file by the runtime — no need to declare it here.
+report:
+  defaults:
+    palette: wong
 
-# Named plot specs — same DSL the `nbrs plot "<spec>"` form
-# accepts. Each entry is persisted into the metrics db's
-# `session_metadata` table at end-of-run, so post-hoc
-# `nbrs plot --name recall_at_k10` (or `nbrs plot all`)
-# regenerates the PNG without needing this file.
-plot:
-  # Mean recall@10 across all profile labels at k=10, swept
-  # over `limit`. The motivating shape — one line, x = limit,
-  # y = average recall across all profiles for the matching k.
-  recall_at_k10: "recall@10.mean over limit where k=10"
-  # Same x-axis, but one line per profile so per-profile
-  # divergence is visible.
-  recall_per_profile_k10: "recall@10.mean over limit by profile where k=10"
-  recall_per_profile_k100: "recall@100.mean over limit by profile where k=100"
-  # k=100 sweep — same shape, different filter.
-  recall_at_k100: "recall@100.mean over limit where k=100"
+  oracles_section: |
+    file oracles_report.md as 'ANN Recall Sweep'
+
+    text 
+     This report covers the **test_oracles** scenario: per-
+     profile partition tests that sweep `k` and `limit` against
+     a SAI-indexed vector column. Recall is measured against the
+     ground truth provided by the dataset's test set.
+
+     Plots below show the per-profile and aggregate recall@k
+     curves; the table summarises mean recall by profile.
+
+    table recall_oracles
+      recall; mean(recall) over profile~label
+      latency; mean(latency) over profile~label
+
+    plot recall_at_k1
+      mean(recall) over profile~label,limit where k=1
+      label "Mean recall@1 across all profile labels and limits"
+    plot recall_at_k10
+      mean recall@10 over limit where k=10
+      label "Mean recall@10 across all profile labels"
+    plot recall_per_profile_k100
+      mean recall@100 over limit by profile where k=100
+      label "Recall@100 per profile (k=100)"
+
+  fknn_section: |
+    file fknn_report.md as 'Filtered-KNN Sweep'
+
+    text This report covers the **test_fknn** scenario:
+     filtered-KNN queries that combine a vector ANN search with
+     an integer metadata predicate. Phases use `pvs_query` (the
+     filtered query op) and produce recall metrics analogous to
+     the oracles run, plus a metadata-only baseline from
+     `pvs_metadata_query`.
+
+     Plots show the recall curve as the ANN search depth
+     (`limit`) grows; the table aggregates by profile.
+
+    table recall_fknn
+      recall; mean(recall) over profile~label
+      latency; mean(latency) over profile~label
+
+    plot fknn_recall_at_k1
+      recall@1 over limit where k=1 and profile=default
+      label "Filtered-KNN mean recall@1"
+    plot fknn_recall_at_k10
+      recall@10 over limit where k=10 and profile=default
+      label "Filtered-KNN mean recall@10"
+    plot fknn_recall_at_k100
+      recall@100 over limit where k=100 and profile=default
+      label "Filtered-KNN mean recall@100"
 
 bindings: |
   profiles := matching_profiles("{dataset}", "{prefix}")
@@ -152,7 +199,6 @@ phases:
         raw: "DROP TABLE IF EXISTS {keyspace}.{table}"
 
   await_index:
-    summary: true
     concurrency: 1
     ops:
       # Wait for the metadata SAI index ({table}_meta_idx) to
@@ -190,7 +236,6 @@ phases:
   # ANN rampup: key + vector only. Used by fulltest, unfiltered.
 
   rampup:
-    summary: true
     concurrency: "{concurrency}"
     bindings: |
       init prebuffered = dataset_prebuffer("{dataset}:{profile}")
@@ -207,7 +252,6 @@ phases:
           VALUES ( '{id}', {train_vector})
   # Filtered-KNN rampup: includes metadata column for predicate filtering
   fknn_rampup_data:
-    summary: true
     concurrency: "{concurrency}"
     bindings: |
       init prebuffered = dataset_prebuffer("{dataset}:{profile}")
@@ -227,8 +271,6 @@ phases:
   # ── Search (parameterized by {table}, {dataset}:{profile}, {k}) ────────────
 
   ann_query:
-    summary:
-      - recall
     concurrency: "{query_concurrency}"
     bindings: |
       init prebuffered = dataset_prebuffer("{dataset}:{profile}")
@@ -276,8 +318,6 @@ phases:
           LIMIT {limit}
 
   pvs_query:
-    summary:
-      recall_only: recall
     concurrency: "{query_concurrency}"
     errors: count
     bindings: |

@@ -67,12 +67,15 @@ pub enum WriteMode {
     AddIfMissing,
 }
 
-/// Append or replace a section under the given anchor heading.
-/// Returns whether the file was modified — `false` for
-/// `AddIfMissing` mode when the section already existed.
-pub fn write_section(
+/// Write a SRD-46 named section: heading carries a display
+/// string plus a stable `{#anchor}` token. The anchor is the
+/// canonical item name; lookup ignores the display text so
+/// reruns that change figure numbers / labels still find and
+/// replace the prior section in place.
+pub fn write_named_section(
     report_path: &Path,
     anchor: &str,
+    heading_display: &str,
     body: &str,
     mode: WriteMode,
 ) -> Result<bool, String> {
@@ -83,37 +86,25 @@ pub fn write_section(
         DOC_HEADER.to_string()
     };
     if !current.starts_with("# ") {
-        // File exists but doesn't look like our report; preserve
-        // the user's existing content and append our header
-        // before our sections so we don't clobber.
         current = format!("{DOC_HEADER}{current}");
     }
 
-    let heading = format!("## {anchor}\n");
+    let new_heading = format!("## {heading_display} {{#{anchor}}}\n");
     let body_trimmed = body.trim_end_matches('\n');
-    let new_section = format!("{heading}\n{body_trimmed}\n\n");
+    let new_section = format!("{new_heading}\n{body_trimmed}\n\n");
 
-    let (updated, modified) = match (find_section(&current, &heading), mode) {
+    let (updated, modified) = match (find_section_by_anchor(&current, anchor), mode) {
         (Some((start, end)), WriteMode::Update) => {
-            // Replace existing section in place — position
-            // preserved, content refreshed.
             let mut out = String::with_capacity(current.len() + new_section.len());
             out.push_str(&current[..start]);
             out.push_str(&new_section);
             out.push_str(&current[end..]);
             (out, true)
         }
-        (Some(_), WriteMode::AddIfMissing) => {
-            // Section already present — leave the file alone.
-            (current, false)
-        }
+        (Some(_), WriteMode::AddIfMissing) => (current, false),
         (None, _) => {
-            // Append. Ensure exactly one trailing blank line
-            // before our new section.
             let mut prefix = current;
-            while prefix.ends_with("\n\n\n") {
-                prefix.pop();
-            }
+            while prefix.ends_with("\n\n\n") { prefix.pop(); }
             if !prefix.ends_with("\n\n") {
                 prefix.push('\n');
                 if !prefix.ends_with("\n\n") { prefix.push('\n'); }
@@ -122,9 +113,7 @@ pub fn write_section(
         }
     };
 
-    if !modified {
-        return Ok(false);
-    }
+    if !modified { return Ok(false); }
 
     if let Some(parent) = report_path.parent() {
         if !parent.as_os_str().is_empty() && !parent.exists() {
@@ -137,30 +126,117 @@ pub fn write_section(
     Ok(true)
 }
 
-/// Locate `[start_byte, end_byte)` of the existing section under
-/// `heading`. End is the byte where the next `## ` heading
-/// starts, or end-of-file. Returns `None` if not found.
-fn find_section(text: &str, heading: &str) -> Option<(usize, usize)> {
-    // Heading must start at line beginning. Search anchored.
-    let pattern = heading;
+/// Like [`write_named_section`] but forces the section to be
+/// the FIRST `##` heading in the file (right after the doc
+/// header). Used for the auto-injected Details block (SRD-46)
+/// so session context always reads at the top.
+///
+/// If the anchor already exists, its content is replaced in
+/// place — same as [`write_named_section`]. If it doesn't
+/// exist, the section is inserted directly after the doc
+/// header line, before any existing `##` sections.
+pub fn write_named_section_first(
+    report_path: &Path,
+    anchor: &str,
+    heading_display: &str,
+    body: &str,
+) -> Result<bool, String> {
+    let mut current = if report_path.exists() {
+        std::fs::read_to_string(report_path)
+            .map_err(|e| format!("read '{}': {e}", report_path.display()))?
+    } else {
+        DOC_HEADER.to_string()
+    };
+    if !current.starts_with("# ") {
+        current = format!("{DOC_HEADER}{current}");
+    }
+
+    let new_heading = format!("## {heading_display} {{#{anchor}}}\n");
+    let body_trimmed = body.trim_end_matches('\n');
+    let new_section = format!("{new_heading}\n{body_trimmed}\n\n");
+
+    let updated = if let Some((start, end)) = find_section_by_anchor(&current, anchor) {
+        // Replace in place — preserves position whether or not
+        // it's currently first.
+        let mut out = String::with_capacity(current.len() + new_section.len());
+        out.push_str(&current[..start]);
+        out.push_str(&new_section);
+        out.push_str(&current[end..]);
+        out
+    } else {
+        // Insert after the first `# ` doc-header block (which
+        // may span multiple lines until a blank line) and
+        // before the first `## ` section.
+        let insertion = current.find("\n## ")
+            .map(|p| p + 1) // land on the `#` of the heading
+            .or_else(|| current.find("\n# ").and_then(|_| {
+                // no `## ` yet — append after the header
+                // paragraph (look for the second `\n\n`)
+                None
+            }))
+            .unwrap_or(current.len());
+        // Step back to the start of any blank-line padding so
+        // the new section is preceded by exactly one blank.
+        let mut prefix = current[..insertion].to_string();
+        let suffix = current[insertion..].to_string();
+        while prefix.ends_with("\n\n\n") { prefix.pop(); }
+        if !prefix.ends_with("\n\n") {
+            prefix.push('\n');
+            if !prefix.ends_with("\n\n") { prefix.push('\n'); }
+        }
+        format!("{prefix}{new_section}{suffix}")
+    };
+
+    if let Some(parent) = report_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create dir '{}': {e}", parent.display()))?;
+        }
+    }
+    std::fs::write(report_path, updated)
+        .map_err(|e| format!("write '{}': {e}", report_path.display()))?;
+    Ok(true)
+}
+
+/// Look up an existing `## … {#anchor}` heading by its anchor
+/// token. End is the byte where the next `## ` heading starts,
+/// or end-of-file.
+fn find_section_by_anchor(text: &str, anchor: &str) -> Option<(usize, usize)> {
+    let token = format!("{{#{anchor}}}");
     let mut start_byte: Option<usize> = None;
-    for (idx, _) in text.match_indices(pattern) {
-        let at_line_start = idx == 0 || text.as_bytes()[idx - 1] == b'\n';
-        if at_line_start {
-            start_byte = Some(idx);
+    for (idx, _) in text.match_indices(&token) {
+        let line_start = text[..idx].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        if text[line_start..].starts_with("## ") {
+            start_byte = Some(line_start);
             break;
         }
     }
     let start_byte = start_byte?;
-    // End: find next `\n## ` at line start after `start_byte +
-    // pattern.len()`.
-    let after = &text[start_byte + pattern.len()..];
-    let mut end_byte = text.len();
-    for (rel, _) in after.match_indices("\n## ") {
-        end_byte = start_byte + pattern.len() + rel + 1; // +1 to land on the `#` of next heading
-        break;
-    }
+    let after = &text[start_byte + 3..];
+    let end_byte = after.find("\n## ")
+        .map(|rel| start_byte + 3 + rel + 1)
+        .unwrap_or(text.len());
     Some((start_byte, end_byte))
+}
+
+/// Pretty-print a snake_case canonical name as a heading-friendly
+/// title. `recall_at_k10` → `Recall At K10`. Used as a fallback
+/// when no `label "…"` directive was supplied.
+pub fn prettify_name(name: &str) -> String {
+    let mut out = String::new();
+    let mut next_upper = true;
+    for ch in name.chars() {
+        if ch == '_' || ch == '-' {
+            out.push(' ');
+            next_upper = true;
+        } else if next_upper {
+            out.extend(ch.to_uppercase());
+            next_upper = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// Build a markdown image reference for a plot file. Uses the
@@ -194,71 +270,64 @@ mod tests {
     }
 
     #[test]
-    fn fresh_file_gets_doc_header() {
-        let p = tmp_path("fresh.md");
-        let _ = std::fs::remove_file(&p);
-        upsert_section(&p, "summary: foo",
-            "| col1 | col2 |\n| --- | --- |\n| a | b |").unwrap();
-        let content = std::fs::read_to_string(&p).unwrap();
-        assert!(content.starts_with("# nb-rs session report"));
-        assert!(content.contains("## summary: foo"));
-        assert!(content.contains("| a | b |"));
-    }
-
-    #[test]
-    fn second_section_appends() {
-        let p = tmp_path("appended.md");
-        let _ = std::fs::remove_file(&p);
-        upsert_section(&p, "summary: a", "table-a").unwrap();
-        upsert_section(&p, "plot: b", "![](b.png)").unwrap();
-        let content = std::fs::read_to_string(&p).unwrap();
-        assert!(content.contains("## summary: a"));
-        assert!(content.contains("## plot: b"));
-        assert!(content.find("## summary: a").unwrap()
-            < content.find("## plot: b").unwrap());
-    }
-
-    #[test]
-    fn rerun_replaces_section_in_place() {
-        let p = tmp_path("replaced.md");
-        let _ = std::fs::remove_file(&p);
-        upsert_section(&p, "summary: a", "v1").unwrap();
-        upsert_section(&p, "plot: b", "img-b").unwrap();
-        upsert_section(&p, "summary: a", "v2-updated").unwrap();
-        let content = std::fs::read_to_string(&p).unwrap();
-        assert!(content.contains("v2-updated"));
-        assert!(!content.contains("v1\n"));
-        // Order preserved
-        assert!(content.find("## summary: a").unwrap()
-            < content.find("## plot: b").unwrap());
-    }
-
-    #[test]
-    fn add_if_missing_skips_existing_sections() {
-        let p = tmp_path("add_only.md");
-        let _ = std::fs::remove_file(&p);
-        let modified_first = write_section(&p, "plot: a", "v1", WriteMode::AddIfMissing).unwrap();
-        assert!(modified_first, "fresh section should be written");
-        let modified_second = write_section(&p, "plot: a", "v2-IGNORED", WriteMode::AddIfMissing).unwrap();
-        assert!(!modified_second, "second write should be skipped");
-        let content = std::fs::read_to_string(&p).unwrap();
-        assert!(content.contains("v1"), "v1 retained");
-        assert!(!content.contains("v2-IGNORED"), "v2 was not written");
-    }
-
-    #[test]
     fn add_if_missing_appends_new_sections() {
         let p = tmp_path("add_new.md");
         let _ = std::fs::remove_file(&p);
-        write_section(&p, "summary: a", "first", WriteMode::AddIfMissing).unwrap();
-        // Add a different anchor — should append, not skip.
-        let modified = write_section(&p, "plot: b", "second", WriteMode::AddIfMissing).unwrap();
-        assert!(modified);
+        let added = write_named_section(
+            &p, "summary_a", "Summary A (table)", "first",
+            WriteMode::AddIfMissing).unwrap();
+        assert!(added);
+        let added2 = write_named_section(
+            &p, "plot_b", "Plot B (plot)", "second",
+            WriteMode::AddIfMissing).unwrap();
+        assert!(added2);
         let content = std::fs::read_to_string(&p).unwrap();
-        assert!(content.contains("## summary: a"));
-        assert!(content.contains("## plot: b"));
+        assert!(content.contains("{#summary_a}"));
+        assert!(content.contains("{#plot_b}"));
         assert!(content.contains("first"));
         assert!(content.contains("second"));
+    }
+
+    #[test]
+    fn named_section_writes_anchor_and_kind() {
+        let p = tmp_path("named.md");
+        let _ = std::fs::remove_file(&p);
+        write_named_section(&p, "recall_at_k10",
+            "3. Recall At K10 (plot)",
+            "![](plot_recall_at_k10.png)",
+            WriteMode::Update).unwrap();
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(content.contains("## 3. Recall At K10 (plot) {#recall_at_k10}"),
+            "heading missing: {content}");
+    }
+
+    #[test]
+    fn named_section_relookup_by_anchor_survives_label_change() {
+        let p = tmp_path("relookup.md");
+        let _ = std::fs::remove_file(&p);
+        write_named_section(&p, "recall_at_k10",
+            "1. Recall At K10 (plot)", "first body",
+            WriteMode::Update).unwrap();
+        // Same anchor, different display heading + body. The
+        // anchor-based lookup must still find and replace the
+        // earlier section in place.
+        write_named_section(&p, "recall_at_k10",
+            "5. Recall@10 reordered (plot)", "second body",
+            WriteMode::Update).unwrap();
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(content.contains("5. Recall@10 reordered (plot) {#recall_at_k10}"),
+            "new heading missing: {content}");
+        assert!(content.contains("second body"), "new body missing: {content}");
+        assert!(!content.contains("first body"), "stale body retained: {content}");
+        // Exactly one heading for this anchor.
+        assert_eq!(content.matches("{#recall_at_k10}").count(), 1);
+    }
+
+    #[test]
+    fn prettify_simple() {
+        assert_eq!(prettify_name("recall_at_k10"), "Recall At K10");
+        assert_eq!(prettify_name("p99-latency"), "P99 Latency");
+        assert_eq!(prettify_name("recall"), "Recall");
     }
 
     #[test]

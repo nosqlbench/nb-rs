@@ -20,9 +20,13 @@ params:
   item_count: "500"
   batch_sizes: "10,50,100"
 
-# Master switch: enables summary and selects recall columns only.
-# Without this line, no summary table is printed.
-summary: "recall"
+# Master switch: enables a report and selects recall columns
+# only. Without this block, no report table is printed.
+# (SRD-46)
+report:
+  default: |
+    table default
+      recall
 
 bindings: |
   inputs := (cycle)
@@ -60,7 +64,6 @@ phases:
         stmt: "Initializing with {item_count} items"
 
   process_batch:
-    summary: true
     cycles: "{item_count}"
     concurrency: 1
     bindings: |

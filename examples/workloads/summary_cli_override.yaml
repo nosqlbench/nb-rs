@@ -38,8 +38,11 @@ params:
   regions: "us-east,us-west,eu-central,eu-west"
   query_count: "300"
 
-# Default: show everything
-summary: "all"
+# Default: show everything (SRD-46)
+report:
+  default: |
+    table default
+      all
 
 bindings: |
   inputs := (cycle)
@@ -52,7 +55,6 @@ scenarios:
 
 phases:
   query_region:
-    summary: true
     cycles: "{query_count}"
     concurrency: 1
     bindings: |
