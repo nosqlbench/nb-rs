@@ -51,5 +51,5 @@ pub mod prettifier;
 pub mod eval;
 
 pub use ast::Expr;
-pub use eval::{DataSource, EvalContext};
+pub use eval::{DataSource, DataSourceError, EvalContext, EvalError, evaluate, evaluate_range};
 pub use parser::{parse, parse_for_prettify, ParseError};
