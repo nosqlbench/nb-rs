@@ -34,6 +34,35 @@ fn nbrs() -> Command {
     cmd
 }
 
+/// Build a unique temp session-path so cargo's parallel test
+/// execution doesn't collide on `logs/default_<timestamp>`.
+/// Caller passes the returned path to `--session-path`; the
+/// `_guard` cleans up on drop.
+struct SessionGuard {
+    path: PathBuf,
+    parent: PathBuf,
+}
+
+impl SessionGuard {
+    fn new(label: &str) -> Self {
+        let parent = std::env::temp_dir().join(format!(
+            "nbrs-m3-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::create_dir_all(&parent).expect("create session parent");
+        let path = parent.join("session");
+        Self { path, parent }
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.parent);
+    }
+}
+
 fn write_workload(label: &str, body: &str) -> PathBuf {
     let mut dir = std::env::temp_dir();
     std::fs::create_dir_all(&dir).expect("temp dir create");
@@ -93,8 +122,11 @@ phases:
         stmt: "k={k} limit={limit}"
 "#;
     let path = write_workload("dependent", yaml);
+    let session = SessionGuard::new("dependent");
     let output = nbrs()
         .args(["run", &format!("workload={}", path.display()), "scenario=default"])
+        .arg("--session-path")
+        .arg(&session.path)
         .output()
         .expect("nbrs failed to start");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -157,8 +189,11 @@ phases:
         stmt: "tuple={alpha}/{num}"
 "#;
     let path = write_workload("cartesian", yaml);
+    let session = SessionGuard::new("cartesian");
     let output = nbrs()
         .args(["run", &format!("workload={}", path.display()), "scenario=default"])
+        .arg("--session-path")
+        .arg(&session.path)
         .output()
         .expect("nbrs failed to start");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -206,8 +241,11 @@ phases:
         stmt: "tup=x{x}y{y}"
 "#;
     let path = write_workload("union", yaml);
+    let session = SessionGuard::new("union");
     let output = nbrs()
         .args(["run", &format!("workload={}", path.display()), "scenario=default"])
+        .arg("--session-path")
+        .arg(&session.path)
         .output()
         .expect("nbrs failed to start");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();

@@ -27,38 +27,54 @@
 //! stays cheap to clone and serialize.
 
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Process-wide handle to the running session's scene tree.
 ///
-/// Published once by the runner after `pre_map_tree` builds the
+/// Published by the runner after `pre_map_tree` builds the
 /// initial pending shape; lifecycle hooks (phase start / complete
 /// / fail) mutate the same tree in place. Out-of-band consumers
 /// (web API, post-run summary, future scripting hooks) read a
 /// snapshot via [`current`] without depending on the observer
 /// surface.
-static GLOBAL_TREE: OnceLock<Arc<RwLock<SceneTree>>> = OnceLock::new();
+///
+/// `Mutex<Option<...>>` rather than `OnceLock<...>` so the
+/// integration-test harness can re-run the runner from the same
+/// test binary without cross-contamination — a `OnceLock` would
+/// pin the first run's tree for the lifetime of the process,
+/// and any subsequent runner invocation would see the wrong
+/// phase identities. Production runs only install once, so the
+/// "first-write-wins" production semantics are preserved by the
+/// runner's call sites, not by the storage shape.
+static GLOBAL_TREE: Mutex<Option<Arc<RwLock<SceneTree>>>> = Mutex::new(None);
 
-/// Install the session's scene tree. The first installer wins —
-/// matches the rest of the singleton-per-session pattern in this
-/// crate (observer, log file, etc.).
+/// Install the session's scene tree. Replaces any previously-
+/// installed tree (e.g. from a prior in-process runner
+/// invocation by the integration-test harness). The runner
+/// itself only installs once per session, so production
+/// behaviour is unchanged.
 pub fn install_global(tree: SceneTree) -> Arc<RwLock<SceneTree>> {
-    GLOBAL_TREE
-        .get_or_init(|| Arc::new(RwLock::new(tree)))
-        .clone()
+    let arc = Arc::new(RwLock::new(tree));
+    *GLOBAL_TREE.lock().unwrap_or_else(|e| e.into_inner()) = Some(arc.clone());
+    arc
 }
 
 /// Snapshot the current global scene tree, if installed. Returns
 /// `None` outside an active session — e.g. standalone `nbrs web`.
 pub fn current() -> Option<SceneTree> {
-    GLOBAL_TREE.get().and_then(|t| t.read().ok().map(|g| g.clone()))
+    let guard = GLOBAL_TREE.lock().unwrap_or_else(|e| e.into_inner());
+    guard.as_ref().and_then(|t| t.read().ok().map(|g| g.clone()))
 }
 
 /// Apply a mutation to the global tree, if installed. No-op when
 /// no session has published one. Used by the runner's lifecycle
 /// emit sites so the global tree mirrors the observer's view.
 pub fn with_global_mut<F: FnOnce(&mut SceneTree)>(f: F) {
-    if let Some(arc) = GLOBAL_TREE.get()
+    let arc = {
+        let guard = GLOBAL_TREE.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clone()
+    };
+    if let Some(arc) = arc
         && let Ok(mut g) = arc.write() {
             f(&mut g);
         }

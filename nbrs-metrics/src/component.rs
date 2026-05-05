@@ -1033,7 +1033,7 @@ mod tests {
         let mut found_value: Option<f64> = None;
         for (labels, set) in &captured {
             if labels.get("name") != Some("rampup") { continue; }
-            if let Some(fam) = set.family("control.concurrency") {
+            if let Some(fam) = set.family("control_concurrency") {
                 if let Some(m) = fam.metrics().next() {
                     if let Some(p) = m.point() {
                         if let crate::snapshot::MetricValue::Gauge(g) = p.value() {
@@ -1054,7 +1054,7 @@ mod tests {
         let current = capture_tree_current(&root);
         let mut saw_via_current = false;
         for (_, set) in &current {
-            if set.family("control.concurrency").is_some() {
+            if set.family("control_concurrency").is_some() {
                 saw_via_current = true;
             }
         }

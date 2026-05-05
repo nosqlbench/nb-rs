@@ -344,13 +344,17 @@ async fn test_decimal_round_trip() -> Result<()> {
             let txt: String = row.get_by_name("txt").unwrap();
             let dec: BigDecimal = row.get_by_name("dec").unwrap();
 
+            // Round-trip identity for non-zero values is exact at
+            // the string level (`BigDecimal` preserves scale).
+            // The zero case is the exception: `BigDecimal` canon-
+            // icalises `0.0000` → `0` (every zero literal collapses
+            // to the same value), so compare numerically there
+            // instead of by display string.
+            let txt_dec = BigDecimal::from_str(&txt).unwrap();
             assert_eq!(
-                txt,
-                dec.to_string(),
+                txt_dec, dec,
                 "Decimal test for literal CQL ({}):  {} and {}",
-                key,
-                txt,
-                dec.to_string()
+                key, txt, dec.to_string(),
             );
         }
     }
@@ -375,13 +379,14 @@ async fn test_decimal_round_trip() -> Result<()> {
             let txt: String = row.get_by_name("txt").unwrap();
             let dec: BigDecimal = row.get_by_name("dec").unwrap();
 
+            // Same as the literal-CQL pass above: compare
+            // numerically so the canonical-zero case
+            // (`0.0000` ≡ `0`) doesn't trip the assertion.
+            let txt_dec = BigDecimal::from_str(&txt).unwrap();
             assert_eq!(
-                txt,
-                dec.to_string(),
+                txt_dec, dec,
                 "Decimal test for driver ({}):  {} and {}",
-                key,
-                txt,
-                dec.to_string()
+                key, txt, dec.to_string(),
             );
         }
     }

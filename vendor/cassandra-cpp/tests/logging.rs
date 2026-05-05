@@ -8,6 +8,16 @@ use slog::*;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+/// `set_slog_logger` and `set_log_logger` both replace the
+/// driver's global logger; `logtest::Logger::start()` likewise
+/// installs a process-wide log subscriber. The three tests in
+/// this file all touch that singleton — running them in parallel
+/// (cargo's default) lets one test's logger replace another's
+/// before the captured-log assertions run, producing flaky
+/// `pop().unwrap()` panics. Take this lock around any test that
+/// installs a logger.
+static LOGGING_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 /// Simple drain which accumulates all messages written to it.
 #[derive(Clone)]
 struct MyDrain(Arc<Mutex<String>>);
@@ -39,6 +49,7 @@ impl Drain for MyDrain {
 #[cfg(feature = "slog")]
 #[tokio::test]
 async fn test_slog_logger() {
+    let _guard = LOGGING_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let drain = MyDrain::default();
     let logger = Logger::root(drain.clone().fuse(), o!());
 
@@ -64,6 +75,7 @@ async fn test_slog_logger() {
 async fn test_log_logger() {
     use log::Level;
 
+    let _guard = LOGGING_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut logger = logtest::Logger::start();
     set_level(LogLevel::WARN);
     set_log_logger();

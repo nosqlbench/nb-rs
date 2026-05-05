@@ -910,6 +910,17 @@ pub fn build_scope(
                 .unwrap_or(cond.trim());
             referenced.insert(bare.to_string());
         }
+        // `delay:` accepts the same shapes as `if:` — a bare
+        // wire name (`delay: think_time`) or a `{...}` inline
+        // expression. Both consume a binding and need to land
+        // in `referenced` so the auto-extern + DCE-keepalive
+        // passes provision them.
+        if let Some(ref delay) = op.delay {
+            let bare = delay.trim()
+                .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+                .unwrap_or(delay.trim());
+            referenced.insert(bare.to_string());
+        }
         // Bindings: scan GK source for `{name}` placeholders
         // that the GK string-interpolation desugar will treat
         // as wire references.
@@ -1047,6 +1058,14 @@ pub fn build_scope(
                 scope.add_required_output(name);
             }
         }
+        if let Some(ref delay) = op.delay {
+            let name = delay.trim()
+                .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+                .unwrap_or(delay.trim());
+            if !name.is_empty() && !exclude.contains(&name.to_string()) {
+                scope.add_required_output(name);
+            }
+        }
         crate::bindings::collect_param_bindings_into(&op.params, exclude, &mut scope.required_outputs);
     }
 
@@ -1179,6 +1198,28 @@ fn collect_phase_binding_lhs_names(ops: &[ParsedOp]) -> Vec<String> {
             for line in logical_lines(src) {
                 let trimmed = line.trim();
                 if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+                // Coordinates (`inputs := (cycle, ...)`) ARE
+                // per-cycle names by definition — the runtime
+                // sets them per iteration. Extract every name
+                // inside the parentheses; without this, `{cycle}`
+                // in op templates resolves at compile time
+                // against the kernel's initial value (0) instead
+                // of being deferred to per-iteration substitution.
+                if let Some(rest) = trimmed.strip_prefix("inputs ")
+                    .or_else(|| trimmed.strip_prefix("inputs:"))
+                    .or_else(|| trimmed.strip_prefix("inputs"))
+                {
+                    let rest = rest.trim_start_matches(':').trim_start_matches('=').trim();
+                    if let Some(inner) = rest.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+                        for piece in inner.split(',') {
+                            let n = piece.trim();
+                            if is_bare_ident(n) && !out.contains(&n.to_string()) {
+                                out.push(n.to_string());
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let lhs_end = trimmed.find(":=")
                     .or_else(|| trimmed.find('='))
                     .unwrap_or(trimmed.len());
@@ -1361,27 +1402,33 @@ fn resolve_placeholders_in_string(
             continue;
         }
 
-        // Bare ident — try kernel lookup. Then per-cycle bindings.
-        // Then error.
+        // Names that are per-cycle (coordinates declared via
+        // `inputs := (cycle, ...)`, or LHS of phase bindings)
+        // MUST be deferred to per-cycle resolution. Their value
+        // varies per iteration; pre-resolving against the parent
+        // kernel here would bake in iteration 0's value (0) and
+        // every subsequent iteration would emit the same string.
+        if per_cycle_names.iter().any(|n| n == body) {
+            out.push('{');
+            out.push_str(body);
+            out.push('}');
+            i = after;
+            continue;
+        }
+        // Bare ident — try kernel lookup. Then error.
         match kernel.lookup(body) {
             Some(v) => out.push_str(&v.to_display_string()),
             None => {
-                if per_cycle_names.iter().any(|n| n == body) {
-                    out.push('{');
-                    out.push_str(body);
-                    out.push('}');
-                } else {
-                    errors.push(format!(
-                        "{field_path}: '{{{body}}}' did not resolve in scope and is \
-                         not a per-cycle binding declared by this phase"
-                    ));
-                    // Still push the placeholder as-is so the rest of
-                    // the string remains parseable for further error
-                    // collection on the same field.
-                    out.push('{');
-                    out.push_str(body);
-                    out.push('}');
-                }
+                errors.push(format!(
+                    "{field_path}: '{{{body}}}' did not resolve in scope and is \
+                     not a per-cycle binding declared by this phase"
+                ));
+                // Still push the placeholder as-is so the rest of
+                // the string remains parseable for further error
+                // collection on the same field.
+                out.push('{');
+                out.push_str(body);
+                out.push('}');
             }
         }
         i = after;

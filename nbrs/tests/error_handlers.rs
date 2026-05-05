@@ -50,15 +50,28 @@ fn write_workload(label: &str, body: &str) -> PathBuf {
 }
 
 /// Run `nbrs run workload=... <extra>` and return (stdout, stderr, success).
+/// Uses a per-invocation `--session-path` so cargo's parallel
+/// test execution doesn't race on `logs/default_<timestamp>`.
 fn run(workload: &std::path::Path, extra: &[&str]) -> (String, String, bool) {
+    let session_parent = std::env::temp_dir().join(format!(
+        "nbrs-errh-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+    ));
+    std::fs::create_dir_all(&session_parent).expect("create session parent");
+    let session_path = session_parent.join("session");
     let mut cmd = nbrs();
     cmd.arg("run");
     cmd.arg(format!("workload={}", workload.display()));
     cmd.arg("tui=off");
+    cmd.arg("--session-path");
+    cmd.arg(&session_path);
     for a in extra {
         cmd.arg(a);
     }
     let out = cmd.output().expect("failed to exec nbrs");
+    let _ = std::fs::remove_dir_all(&session_parent);
     (
         String::from_utf8_lossy(&out.stdout).to_string(),
         String::from_utf8_lossy(&out.stderr).to_string(),

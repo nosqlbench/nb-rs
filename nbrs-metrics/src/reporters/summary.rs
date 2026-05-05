@@ -86,8 +86,8 @@ pub fn rows_from_query(query: &MetricsQuery) -> Vec<ActivityRow> {
         let mut seen = std::collections::HashSet::new();
         for family in snapshot.families() {
             let fname = family.name();
-            if !fname.ends_with(".mean") { continue; }
-            let short = fname.strip_suffix(".mean").unwrap_or(fname);
+            if !fname.ends_with("_mean") { continue; }
+            let short = fname.strip_suffix("_mean").unwrap_or(fname);
             if seen.contains(short) { continue; }
             for metric in family.metrics() {
                 if let Some(point) = metric.point() {

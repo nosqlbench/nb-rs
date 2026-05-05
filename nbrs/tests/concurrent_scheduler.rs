@@ -69,13 +69,27 @@ phases:
 "#;
 
 fn run(workload: &std::path::Path, extra: &[&str]) -> (String, String, bool) {
+    // Per-invocation session parent so cargo's parallel test
+    // execution doesn't collide on `logs/default_<timestamp>`.
+    let session_parent = std::env::temp_dir().join(format!(
+        "nbrs-sched-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+    ));
+    std::fs::create_dir_all(&session_parent).expect("create session parent");
+    let session_path = session_parent.join("session");
+
     let mut cmd = nbrs();
     cmd.arg("run");
     cmd.arg(format!("workload={}", workload.display()));
     cmd.arg("tui=off");
     cmd.arg("adapter=testkit");
+    cmd.arg("--session-path");
+    cmd.arg(&session_path);
     for a in extra { cmd.arg(a); }
     let out = cmd.output().expect("failed to exec nbrs");
+    let _ = std::fs::remove_dir_all(&session_parent);
     (
         String::from_utf8_lossy(&out.stdout).to_string(),
         String::from_utf8_lossy(&out.stderr).to_string(),
@@ -88,18 +102,18 @@ fn line_of(stream: &str, needle: &str) -> Option<usize> {
     stream.lines().position(|l| l.contains(needle))
 }
 
-/// True iff both phases enter before either completes — the
-/// concurrent-dispatch signature in the log stream.
+/// True iff the scheduler announced a concurrent dispatch for
+/// the sibling phases. The announcement line
+///   `concurrent dispatch (limit=…): [1/N] x, [2/N] y, …`
+/// fires once before any phase runs in concurrent mode; serial
+/// mode has no such line and starts each phase only after the
+/// prior one's ✓. The phase-starting log row was removed when
+/// the per-phase output condensed to a single ✓ line, so this
+/// announcement is the cleanest remaining proof of
+/// concurrent-vs-serial dispatch in the log stream.
 fn both_in_flight(stream: &str) -> bool {
-    let left_enter = line_of(stream, "=== phase: left ===");
-    let right_enter = line_of(stream, "=== phase: right ===");
-    let left_done = line_of(stream, "phase 'left' complete");
-    let right_done = line_of(stream, "phase 'right' complete");
-    let (Some(le), Some(re), Some(ld), Some(rd)) =
-        (left_enter, right_enter, left_done, right_done) else { return false };
-    let last_enter = le.max(re);
-    let first_done = ld.min(rd);
-    last_enter < first_done
+    let _ = line_of; // retained for future per-line ordering checks
+    stream.lines().any(|l| l.contains("concurrent dispatch"))
 }
 
 #[test]

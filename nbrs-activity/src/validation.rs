@@ -215,7 +215,7 @@ impl ValidationMetrics {
         let mut stats = HashMap::new();
         let mut running = HashMap::new();
         for func in functions {
-            let metric_name = format!("{}@{}", func.metric_name(), k);
+            let metric_name = format!("{}_at_{}", func.metric_name(), k);
             stats.insert(
                 metric_name.clone(),
                 nbrs_metrics::summaries::f64stats::F64Stats::new(labels.with("name", &metric_name)),
@@ -475,7 +475,7 @@ impl OpDispenser for ValidatingDispenser {
                         &actual_ordered,
                         config.k,
                     );
-                    let metric_name = format!("{}@{}", func.metric_name(), config.k);
+                    let metric_name = format!("{}_at_{}", func.metric_name(), config.k);
                     self.metrics.record_relevancy(&metric_name, score);
                 }
             }
@@ -992,13 +992,13 @@ mod tests {
             &[RelevancyFn::Recall, RelevancyFn::Precision],
             10,
         );
-        assert!(metrics.relevancy_stats.contains_key("recall@10"));
-        assert!(metrics.relevancy_stats.contains_key("precision@10"));
-        assert!(!metrics.relevancy_stats.contains_key("f1@10"));
+        assert!(metrics.relevancy_stats.contains_key("recall_at_10"));
+        assert!(metrics.relevancy_stats.contains_key("precision_at_10"));
+        assert!(!metrics.relevancy_stats.contains_key("f1_at_10"));
 
-        metrics.record_relevancy("recall@10", 0.85);
-        metrics.record_relevancy("recall@10", 0.90);
-        let snap = metrics.relevancy_stats["recall@10"].snapshot();
+        metrics.record_relevancy("recall_at_10", 0.85);
+        metrics.record_relevancy("recall_at_10", 0.90);
+        let snap = metrics.relevancy_stats["recall_at_10"].snapshot();
         assert_eq!(snap.len(), 2);
     }
 

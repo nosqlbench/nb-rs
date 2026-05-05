@@ -30,7 +30,7 @@ report:
 
 bindings: |
   inputs := (cycle)
-  item_id := zero_pad_u64(mod(hash(cycle), {item_count}), 6)
+  item_id := zero_pad_u64(mod_wire(hash(cycle), item_count), 6)
   score := to_f64(mod(hash(hash(cycle)), 100)) / 100.0
 
 scenarios:
@@ -68,7 +68,7 @@ phases:
     concurrency: 1
     bindings: |
       inputs := (cycle)
-      item_id := zero_pad_u64(mod(hash(cycle), {item_count}), 6)
+      item_id := zero_pad_u64(mod_wire(hash(cycle), item_count), 6)
       score := format_f64(to_f64(mod(hash(hash(cycle)), 100)) / 100.0, 4)
     ops:
       process:

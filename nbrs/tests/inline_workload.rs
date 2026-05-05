@@ -17,10 +17,23 @@ fn nbrs() -> Command {
 }
 
 fn run_inline(op: &str, cycles: u64) -> (String, String, bool) {
+    // Per-invocation `--session-path` so cargo's parallel test
+    // execution doesn't race on the default `logs/default_<ts>`.
+    let session_parent = std::env::temp_dir().join(format!(
+        "nbrs-inline-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+    ));
+    std::fs::create_dir_all(&session_parent).expect("create session parent");
+    let session_path = session_parent.join("session");
     let output = nbrs()
         .args(["run", &format!("op={op}"), &format!("cycles={cycles}")])
+        .arg("--session-path")
+        .arg(&session_path)
         .output()
         .expect("failed to execute nbrs");
+    let _ = std::fs::remove_dir_all(&session_parent);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     (stdout, stderr, output.status.success())
@@ -134,10 +147,21 @@ fn json_format() {
 
 #[test]
 fn dry_run_emit() {
+    let session_parent = std::env::temp_dir().join(format!(
+        "nbrs-inline-dry-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+    ));
+    std::fs::create_dir_all(&session_parent).expect("create session parent");
+    let session_path = session_parent.join("session");
     let output = nbrs()
         .args(["run", "op=test {{cycle}}", "cycles=3", "dryrun=emit"])
+        .arg("--session-path")
+        .arg(&session_path)
         .output()
         .expect("failed to execute nbrs");
+    let _ = std::fs::remove_dir_all(&session_parent);
     assert!(output.status.success(), "nbrs failed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
@@ -156,19 +180,41 @@ fn deterministic_output() {
 
 #[test]
 fn empty_op_fails() {
+    let session_parent = std::env::temp_dir().join(format!(
+        "nbrs-inline-empty-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+    ));
+    std::fs::create_dir_all(&session_parent).expect("create session parent");
+    let session_path = session_parent.join("session");
     let output = nbrs()
         .args(["run", "op=", "cycles=1"])
+        .arg("--session-path")
+        .arg(&session_path)
         .output()
         .expect("failed to execute nbrs");
+    let _ = std::fs::remove_dir_all(&session_parent);
     assert!(!output.status.success(), "empty op should fail");
 }
 
 #[test]
 fn op_overrides_workload_with_warning() {
+    let session_parent = std::env::temp_dir().join(format!(
+        "nbrs-inline-override-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+    ));
+    std::fs::create_dir_all(&session_parent).expect("create session parent");
+    let session_path = session_parent.join("session");
     let output = nbrs()
         .args(["run", "op=hello {{cycle}}", "workload=nonexistent.yaml", "cycles=1"])
+        .arg("--session-path")
+        .arg(&session_path)
         .output()
         .expect("failed to execute nbrs");
+    let _ = std::fs::remove_dir_all(&session_parent);
     assert!(output.status.success(), "op= should override workload=");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("warning"), "should warn about override");

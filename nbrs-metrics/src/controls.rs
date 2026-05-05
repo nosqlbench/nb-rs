@@ -852,7 +852,7 @@ impl ControlRegistry {
         for ctl in erased.values() {
             // Numeric family: only when a projection exists.
             if let Some(value) = ctl.gauge_f64() {
-                let family_name = format!("control.{}", ctl.name());
+                let family_name = format!("control_{}", ctl.name());
                 let labels = base_labels.with("control", ctl.name());
                 set.insert_gauge(&family_name, labels, value, captured_at);
             }
@@ -860,7 +860,7 @@ impl ControlRegistry {
             // via the `value` label; the gauge itself is the
             // OpenMetrics-style constant `1.0`. Downstream sinks
             // filter with `control="name" value="running"`.
-            let info_family = format!("control_info.{}", ctl.name());
+            let info_family = format!("control_info_{}", ctl.name());
             let info_labels = base_labels
                 .with("control", ctl.name())
                 .with("value", &ctl.value_string());
@@ -1237,7 +1237,7 @@ mod tests {
         let snap = reg.snapshot_gauges(&base, now);
 
         // Numeric gauge for the reified control.
-        let family = snap.family("control.concurrency")
+        let family = snap.family("control_concurrency")
             .expect("reified control should produce a numeric gauge family");
         let metric = family.metrics().next().unwrap();
         assert_eq!(metric.labels().get("phase"), Some("rampup"));
@@ -1245,7 +1245,7 @@ mod tests {
 
         // The non-reified control has no numeric family —
         // it's carried by the info family instead.
-        assert!(snap.family("control.non_reified").is_none());
+        assert!(snap.family("control_non_reified").is_none());
     }
 
     #[tokio::test]
@@ -1272,16 +1272,16 @@ mod tests {
         let snap = reg.snapshot_gauges(&base, now);
 
         // Numeric control: both families.
-        assert!(snap.family("control.concurrency").is_some());
-        let info = snap.family("control_info.concurrency")
+        assert!(snap.family("control_concurrency").is_some());
+        let info = snap.family("control_info_concurrency")
             .expect("info family should accompany the numeric gauge");
         let m = info.metrics().next().unwrap();
         assert_eq!(m.labels().get("value"), Some("4"));
         assert_eq!(m.labels().get("control"), Some("concurrency"));
 
         // Bool control: info family only, carrying "true".
-        assert!(snap.family("control.enabled").is_none());
-        let info = snap.family("control_info.enabled")
+        assert!(snap.family("control_enabled").is_none());
+        let info = snap.family("control_info_enabled")
             .expect("bool control should emit info family");
         let m = info.metrics().next().unwrap();
         assert_eq!(m.labels().get("value"), Some("true"));
@@ -1290,7 +1290,7 @@ mod tests {
         // operator-facing tooling is expected to strip those if
         // needed. What matters is the label survives and the
         // dimension exists.
-        let info = snap.family("control_info.errors_policy")
+        let info = snap.family("control_info_errors_policy")
             .expect("string control should emit info family");
         let m = info.metrics().next().unwrap();
         assert_eq!(m.labels().get("value"), Some("\"retry\""));

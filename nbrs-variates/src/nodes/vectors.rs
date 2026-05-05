@@ -1021,7 +1021,7 @@ impl GkNode for MatchingProfiles {
         let group = group_of(handle_of(&inputs[0]));
         let prefix = inputs[1].as_str();
         let all = group.profile_names();
-        let matched: Vec<&str> = if prefix.is_empty() {
+        let mut matched: Vec<&str> = if prefix.is_empty() {
             all.iter().map(|s| s.as_str()).collect()
         } else {
             all.iter()
@@ -1029,7 +1029,59 @@ impl GkNode for MatchingProfiles {
                 .map(|s| s.as_str())
                 .collect()
         };
+        // Natural-order sort: alphabetic with numeric runs
+        // compared as numbers so `label_03` sorts before
+        // `label_10`. The upstream `group.profile_names()`
+        // orders by `base_count` (vectordata's choice — useful
+        // for index-based lookups), but `for_each` iteration
+        // wants stable, human-natural order so users see
+        // label_01, label_02, label_03 instead of whatever the
+        // size-sort happens to produce.
+        matched.sort_by(|a, b| natural_cmp(a, b));
         outputs[0] = Value::Str(matched.join(","));
+    }
+}
+
+/// Natural ordering: split each string into alternating text
+/// and numeric runs and compare run-by-run, comparing numeric
+/// runs as integers. Beats lexicographic on `label_03` vs
+/// `label_10` (lex: "10" < "3"; natural: 3 < 10).
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let mut ai = a.chars().peekable();
+    let mut bi = b.chars().peekable();
+    loop {
+        match (ai.peek().copied(), bi.peek().copied()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, _)    => return std::cmp::Ordering::Less,
+            (_, None)    => return std::cmp::Ordering::Greater,
+            (Some(ac), Some(bc)) => {
+                if ac.is_ascii_digit() && bc.is_ascii_digit() {
+                    let mut na: u64 = 0;
+                    while let Some(c) = ai.peek().copied()
+                        && c.is_ascii_digit()
+                    {
+                        na = na.saturating_mul(10).saturating_add((c as u8 - b'0') as u64);
+                        ai.next();
+                    }
+                    let mut nb: u64 = 0;
+                    while let Some(c) = bi.peek().copied()
+                        && c.is_ascii_digit()
+                    {
+                        nb = nb.saturating_mul(10).saturating_add((c as u8 - b'0') as u64);
+                        bi.next();
+                    }
+                    match na.cmp(&nb) {
+                        std::cmp::Ordering::Equal => continue,
+                        non_eq => return non_eq,
+                    }
+                } else {
+                    match ac.cmp(&bc) {
+                        std::cmp::Ordering::Equal => { ai.next(); bi.next(); }
+                        non_eq => return non_eq,
+                    }
+                }
+            }
+        }
     }
 }
 

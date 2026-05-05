@@ -63,7 +63,7 @@ phases:
     concurrency: 1
     bindings: |
       inputs := (cycle)
-      item_id := zero_pad_u64(mod(hash(cycle), {item_count}), 6)
+      item_id := zero_pad_u64(mod_wire(hash(cycle), item_count), 6)
       payload := number_to_words(mod(hash(hash(cycle)), 100))
     ops:
       insert:

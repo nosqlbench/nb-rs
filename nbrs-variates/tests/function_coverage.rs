@@ -1903,6 +1903,12 @@ fn every_registered_function_compiles() {
         ("inv_lerp", "inputs := (cycle)\nf := unit_interval(hash(cycle))\nout := inv_lerp(f, 0.0, 1.0)".into()),
         // FFT (creates output file)
         ("fft_analyze", "inputs := (cycle)\nf := unit_interval(hash(cycle))\nout := fft_analyze(f, \"/tmp/_gk_fft_test.jsonl\", 8)".into()),
+        // `env(name)` errors if the named var isn't set —
+        // use `PATH` which is universally present in test
+        // environments. The auto-generated `env("test")`
+        // would otherwise fail unless someone happens to
+        // export TEST.
+        ("env", "inputs := (cycle)\nout := env(\"PATH\")".into()),
     ].into_iter().collect();
 
     // File I/O nodes — use real fixture files

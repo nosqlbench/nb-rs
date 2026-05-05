@@ -496,6 +496,167 @@ guarantee.
 
 ---
 
+## v2: Canonical metricsql backend
+
+**Status:** in flight (scoped 2026-05-04). The current
+report-DSL grammar (`<metric> over <x> [by <series>] [where
+<k>=<v>] [agg=<fn>]`) and its bespoke SQL builders in
+`plot_metrics.rs` / `summary.rs` are being replaced wholesale
+by a metricsql-backed pipeline. **One query language across
+the whole system** — `nbrs metrics query`, the continuous-
+query runtime (SRD-48), and `nbrs report` all consume the
+same `parse → evaluate → SqliteDataSource` path defined by
+SRD-47 / SRD-48.
+
+### Why
+
+- Two parallel mini-languages drift forever. Today
+  `recall@10.mean over limit where k=10 agg=mean` and
+  `avg(recall_at_10_mean{k="10"}) by (limit)` say roughly the
+  same thing; users have to know which surface they're on.
+- Reports get features-for-free that already work in
+  `nbrs metrics query`: `rate`, counter-reset adjustment,
+  window extrapolation, vector matching, subqueries,
+  `topk`/`bottomk`/`quantile`, `@ start()`/`@ end()`.
+- The DSL's SQL builders deduplicate against the
+  `SqliteDataSource` adapter — same SELECTs, different
+  call paths.
+
+### What changes
+
+**Three layers, each with its own push:**
+
+#### Push A — Canonical metric names (writer-side)
+
+Every stored family name conforms to PromQL's identifier
+grammar `[a-zA-Z_:][a-zA-Z0-9_:]*`. The two non-conforming
+characters in nb-rs's current corpus (`@` and `.`) are
+rewritten:
+
+| Today | Canonical |
+|-------|-----------|
+| `recall@1.mean`            | `recall_at_1_mean`            |
+| `recall@1.p99`             | `recall_at_1_p99`             |
+| `recall@10.mean`           | `recall_at_10_mean`           |
+| `recall@<N>.<stat>`        | `recall_at_<N>_<stat>`        |
+| `control.concurrency`      | `control_concurrency`         |
+| `control_info.concurrency` | `control_info_concurrency`    |
+| `cycles_total`             | unchanged                     |
+| `cycles_servicetime`       | unchanged (summary; queried as `cycles_servicetime_p99` etc. via stat-suffix resolution) |
+| `errors_total`, `result_*` | unchanged                     |
+
+The change lives in `nbrs-metrics/src/reporters/sqlite.rs` (and
+any in-memory metric-name producers — recall observers, the
+control-info reporter, etc.). Stored summary-vs-gauge model
+is unchanged; only the family-name string canonicalizes.
+
+**Migration policy:** existing `metrics.db` files become
+unreadable by the new code. `metrics.db` is a session-scoped
+artifact (per SRD-45) — sessions don't persist across nb-rs
+upgrades, so this is tolerable. No legacy-name fallback.
+
+**Acceptance:** `cargo test --workspace` green; a fresh run
+produces only conformant family names; `SELECT name FROM
+metric_family` shows zero `@` or `.` characters.
+
+#### Push B — Report renderers consume `Vec<Series>`
+
+`plot_metrics.rs` and `summary.rs` stop building SQL. They
+parse the report-body string as metricsql (`nbrs_metricsql::
+parse`), evaluate it via `evaluate` or `evaluate_range`
+against `SqliteDataSource`, and consume the returned
+`Vec<Series>`.
+
+**Render-side directives** (which label is X-axis, which is
+the series discriminator, palette, axis labels, etc.) live
+*outside* the query string — not embedded in it. Plot bodies
+become two-part:
+
+```yaml
+plot recall_at_k10
+  query: avg(recall_at_10_mean{k="10"}) by (limit, profile)
+  x: limit
+  series: profile
+  label: "Recall@10 vs limit, per profile"
+```
+
+The `query:` is opaque to the report parser — it's metricsql,
+parsed at render time. The other keys are render metadata
+in the same flat directive vocabulary the existing parser
+already supports (`label`, `palette`, `xscale`, `yscale`,
+etc.). New keys: `query`, `x`, `series`.
+
+**Tables work the same way:** `query:` returns
+`Vec<Series>`; the renderer projects each series's
+`group_labels` to columns and the (one) sample value to the
+cell.
+
+**Range-vector tables:** when a report wants a time-series
+table, `query:` is evaluated as a range query (anchor over
+the session window with a step); each series's samples
+become rows.
+
+**Acceptance:** every report from `full_cql_vector.yaml`
+re-renders to a numerically-equivalent (within Kahan
+tolerance) plot/table; visual diff acceptable.
+
+#### Push C — DSL deletion + workload YAML rewrite
+
+After Push B lands, the report-DSL parser at
+`nbrs-workload/src/report.rs:121-300` (the body-line
+walker that interprets `over` / `by` / `where` / `agg=`)
+deletes. The YAML chunker — the part that splits a `report:`
+block into named items by the `plot`/`table`/`text`/`file`
+keywords — stays. Everything inside an item's body is now
+just key:value directives, with `query:` carrying the
+metricsql.
+
+Workload YAMLs (`adapters/cql/workloads/*.yaml`) get one
+sweep to rewrite every report body. Translations:
+
+| DSL form | metricsql |
+|----------|-----------|
+| `recall@10.mean over limit` | `query: recall_at_10_mean`<br>`x: limit` |
+| `mean recall@10 over limit by profile where k=10` | `query: avg(recall_at_10_mean{k="10"}) by (limit, profile)`<br>`x: limit`<br>`series: profile` |
+| `recall@1 over limit where k=1 and profile=default` | `query: recall_at_1_mean{k="1", profile="default"}`<br>`x: limit` |
+| `recall@N where ...` (table) | `query: avg(recall_at_<N>_mean{...}) by (...)` |
+
+**No backwards compatibility shim.** Loading a workload
+with the old `over`/`by`/`where` syntax surfaces a parse
+error pointing at SRD-46 v2. Same policy as the legacy
+`plot:` / `summary:` keys (per §"Invariants").
+
+**Acceptance:** `nbrs report all` against
+`full_cql_vector.yaml` produces the same set of artifacts
+as the v1 path did; the DSL parser is removed; ~150 lines
+of grammar-walking code in `report.rs` deletes.
+
+### Push order and gating
+
+Pushes are ordered A → B → C with a gate between each:
+
+- A unblocks B (B can't query the new names until they exist).
+- B unblocks C (C's YAML rewrite produces metricsql, which
+  needs B's renderer to consume it).
+- Each push commits independently. Between pushes, runs
+  produce conformant data but reports still use the old
+  renderer (after A) or use metricsql via new
+  query-renderer keys (after B); the old DSL stays parseable
+  until C.
+
+### Out of scope
+
+- **Cross-session subsetting** — already specified in
+  §"Cross-session subsetting" above; v2 doesn't change it.
+- **Vector visualization** (`gk visualize`) — unrelated path.
+- **Persisted-report rehydration** — the
+  `session_metadata` `report.*` rows continue to store the
+  body string; only the body's grammar changes.
+- **TUI live-report panels** — separate push (gated on the
+  SRD-48 `tokio::sync::watch` subscription work).
+
+---
+
 ## See also
 
 - SRD-04 — Umbrella options pattern.
@@ -504,3 +665,8 @@ guarantee.
 - SRD-40 — Metrics framework (where `metric_instance.spec` is
   defined).
 - SRD-45 — Sessions (where the session db lives).
+- SRD-47 — MetricsQL streaming aggregation (the algebra that
+  underpins the runtime path; report rendering uses the
+  batch evaluator side of the same parser).
+- SRD-48 — Continuous-query runtime (the live-report path
+  that v2 makes natural to wire up later).

@@ -472,6 +472,7 @@ fn plot_node() -> StrictNode<true, true> {
         &["--verbose"],
     )
         .with_value_provider("--name", fn_provider(plot_name_provider))
+        .with_value_provider("--metric", fn_provider(metric_provider))
         .with_value_provider("--series", fn_provider(series_provider))
         .with_value_provider("--x", fn_provider(series_provider))
         .with_value_provider("--filter", fn_provider(filter_provider))
@@ -591,6 +592,18 @@ fn report_any_name_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
         let db_path = db_path_from_context(ctx);
         all.extend(crate::plot_metrics::list_stored_plot_names(&db_path));
         all.extend(crate::summary::list_stored_summary_names(&db_path));
+        // Db-stored items are populated by the runner only for
+        // sessions produced post-SRD-46-persistence-wiring.
+        // For older sessions (or any session whose runner didn't
+        // persist) `session_metadata.workload` still records the
+        // workload's bare name — recover the declared items
+        // from there.
+        if all.is_empty()
+            && let Some(yaml) = workload_path_from_session_db(&db_path)
+        {
+            all.extend(crate::plot_metrics::list_workload_plot_names(&yaml));
+            all.extend(crate::summary::list_workload_summary_names(&yaml));
+        }
     }
     all.retain(|n| n.starts_with(partial));
     all.sort();
@@ -610,11 +623,38 @@ fn summary_name_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
             .collect();
     }
     let db_path = db_path_from_context(ctx);
-    let names: Vec<String> = crate::summary::list_stored_summary_names(&db_path)
+    let stored: Vec<String> = crate::summary::list_stored_summary_names(&db_path);
+    if !stored.is_empty() {
+        return stored.into_iter()
+            .filter(|n| n.starts_with(partial))
+            .collect();
+    }
+    // Db has no persisted summaries — fall back to the workload
+    // recorded in `session_metadata.workload`. Same shape as
+    // `report_any_name_provider`.
+    if let Some(yaml) = workload_path_from_session_db(&db_path) {
+        return crate::summary::list_workload_summary_names(&yaml)
+            .into_iter()
+            .filter(|n| n.starts_with(partial))
+            .collect();
+    }
+    Vec::new()
+}
+
+/// Metric-family completion for `nbrs plot --metric`. Reads
+/// the session db's `metric_family` table so the user gets the
+/// closed vocabulary of metrics actually recorded in this
+/// session (recall_at_10_mean, cycles_total, errors_total, …).
+///
+/// Honours `--db`, `--session-path`, and `--session` on the
+/// line so the suggestions match wherever the eventual command
+/// will read.
+fn metric_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
+    let db_path = db_path_from_context(ctx);
+    crate::plot_metrics::list_metric_families(&db_path)
         .into_iter()
         .filter(|n| n.starts_with(partial))
-        .collect();
-    names
+        .collect()
 }
 
 /// Stored-plot-name completion for `nbrs plot --name`. Same
@@ -628,10 +668,24 @@ fn plot_name_provider(partial: &str, ctx: &[&str]) -> Vec<String> {
             .collect();
     }
     let db_path = db_path_from_context(ctx);
-    crate::plot_metrics::list_stored_plot_names(&db_path)
-        .into_iter()
-        .filter(|n| n.starts_with(partial))
-        .collect()
+    let stored: Vec<String> = crate::plot_metrics::list_stored_plot_names(&db_path);
+    if !stored.is_empty() {
+        return stored.into_iter()
+            .filter(|n| n.starts_with(partial))
+            .collect();
+    }
+    // Fallback: when the session db doesn't carry persisted
+    // plot specs (older runs, or a session that finished before
+    // SRD-46 plot persistence wired up), look up the workload
+    // YAML from `session_metadata.workload` and read its
+    // `report:` block directly.
+    if let Some(yaml) = workload_path_from_session_db(&db_path) {
+        return crate::plot_metrics::list_workload_plot_names(&yaml)
+            .into_iter()
+            .filter(|n| n.starts_with(partial))
+            .collect();
+    }
+    Vec::new()
 }
 
 /// Label-key completion for `nbrs plot --series` and `--x`.
@@ -748,28 +802,96 @@ fn used_label_keys<'a>(ctx: &'a [&'a str]) -> std::collections::HashSet<&'a str>
 fn workload_from_context(ctx: &[&str]) -> Option<std::path::PathBuf> {
     for word in ctx {
         if let Some(v) = word.strip_prefix("workload=") {
-            let resolved = crate::cli::resolve_workload_path(v)
-                .unwrap_or_else(|| v.to_string());
-            let p = std::path::PathBuf::from(resolved);
-            if p.exists() {
-                return Some(p);
+            // Three resolution shapes:
+            //
+            //   1. Direct path/name → `resolve_workload_path` →
+            //      yaml file.
+            //   2. Path to a session directory (`local/foo/`) →
+            //      read `session_metadata.workload` from its
+            //      `metrics.db` and resolve THAT name.
+            //   3. Path to a metrics.db itself → same lookup.
+            //
+            // Shape (2)/(3) lets `workload=<session>` flow back
+            // to the original yaml so completion / `nbrs report`
+            // can find the declared plot/table names without
+            // requiring the user to know where the yaml lives.
+            if let Some(p) = crate::cli::resolve_workload_path(v) {
+                let pb = std::path::PathBuf::from(p);
+                if pb.exists() { return Some(pb); }
+            }
+            let candidate = std::path::PathBuf::from(v);
+            if candidate.exists() {
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+                // Directory: try `<dir>/metrics.db`.
+                let db = candidate.join("metrics.db");
+                if db.exists()
+                    && let Some(name) = workload_name_from_db(&db)
+                    && let Some(yaml) = crate::cli::resolve_workload_path(&name)
+                {
+                    let p = std::path::PathBuf::from(yaml);
+                    if p.exists() { return Some(p); }
+                }
+            } else if candidate.extension().is_none()
+                && let Some(name) = workload_name_from_db(&candidate)
+                && let Some(yaml) = crate::cli::resolve_workload_path(&name)
+            {
+                // Bare `workload=metrics.db`-style — try as-is.
+                let p = std::path::PathBuf::from(yaml);
+                if p.exists() { return Some(p); }
             }
         }
     }
     None
 }
 
+/// Read `session_metadata.workload` from a session db. The
+/// runner records the bare workload name (no extension, no
+/// path) so completion can map back to the declared yaml via
+/// `resolve_workload_path`.
+fn workload_name_from_db(db_path: &std::path::Path) -> Option<String> {
+    if !db_path.exists() { return None; }
+    let conn = rusqlite::Connection::open(db_path).ok()?;
+    conn.query_row(
+        "SELECT value FROM session_metadata WHERE key = 'workload' LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    ).ok()
+}
+
+/// Combine `workload_name_from_db` with `resolve_workload_path`
+/// so a session db's recorded workload name flows back to the
+/// declared yaml file. Returns `None` when either step fails
+/// (e.g. db without metadata, or workload yaml has been moved
+/// since the session ran).
+fn workload_path_from_session_db(db_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let name = workload_name_from_db(db_path)?;
+    let yaml = crate::cli::resolve_workload_path(&name)?;
+    let p = std::path::PathBuf::from(yaml);
+    if p.exists() { Some(p) } else { None }
+}
+
 fn db_path_from_context(ctx: &[&str]) -> std::path::PathBuf {
+    // `--db <path>` is the most explicit form — wins over any
+    // session resolution.
     let mut iter = ctx.iter();
     while let Some(&w) = iter.next() {
-        if w == "--db" {
-            if let Some(&v) = iter.next() {
-                return std::path::PathBuf::from(v);
-            }
+        if w == "--db"
+            && let Some(&v) = iter.next() {
+            return std::path::PathBuf::from(v);
         }
         if let Some(v) = w.strip_prefix("--db=") {
             return std::path::PathBuf::from(v);
         }
+    }
+    // `--session` / `--session-path` / `--session-name` go
+    // through the shared resolver so completion sees the same
+    // db path the command itself will read. Single source of
+    // truth for "what does --session mean".
+    let owned: Vec<String> = ctx.iter().map(|s| s.to_string()).collect();
+    if let Some(dir) = nbrs_activity::session::read_session_dir(&owned) {
+        return dir.join("metrics.db");
     }
     std::path::PathBuf::from("logs/latest/metrics.db")
 }

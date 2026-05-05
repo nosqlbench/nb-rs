@@ -130,8 +130,8 @@ async fn full_flow_workload_like_rate_control() {
         &Labels::of("phase", "rampup"),
         Instant::now(),
     );
-    let family = snap.family("control.rate")
-        .expect("control.rate gauge family should exist");
+    let family = snap.family("control_rate")
+        .expect("control_rate gauge family should exist");
     let metric = family.metrics().next().unwrap();
     assert_eq!(metric.labels().get("control"), Some("rate"));
     assert_eq!(metric.labels().get("phase"), Some("rampup"));

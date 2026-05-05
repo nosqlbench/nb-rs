@@ -43,16 +43,6 @@ params:
 #
 # A `Run Details` block is auto-prepended to each markdown
 # file by the runtime — no need to declare it here.
-
-# Surface recall-family aggregates and latency on the inline
-# progress line and per-phase ✓ DONE summary. Doc-root setting
-# is inherited by every phase that doesn't declare its own
-# `status_metrics:`. Glob patterns: `recall*` matches every
-# `recall_at_K` from the relevancy block; `latency*` matches
-# the `latency_p50` / `latency_p99` / `latency_max` /
-# `latency_mean` family sourced from the service-time histogram.
-status_metrics: [recall*, latency*]
-
 report:
   defaults:
     palette: wong
@@ -70,23 +60,17 @@ report:
      curves; the table summarises mean recall by profile.
 
     table recall_oracles
-      group_by: profile
-      query recall: avg(recall_at_10_mean) by (profile)
-      query latency: avg(cycles_servicetime_mean) by (profile)
+      recall; mean(recall) over profile~label
+      latency; mean(latency) over profile~label
 
     plot recall_at_k1
-      query: avg(recall_at_1_mean{k="1"}) by (limit, profile)
-      x: limit
-      series: profile
+      mean(recall) over profile~label,limit where k=1
       label "Mean recall@1 across all profile labels and limits"
     plot recall_at_k10
-      query: avg(recall_at_10_mean{k="10"}) by (limit)
-      x: limit
+      mean recall@10 over limit where k=10
       label "Mean recall@10 across all profile labels"
     plot recall_per_profile_k100
-      query: avg(recall_at_100_mean{k="100"}) by (limit, profile)
-      x: limit
-      series: profile
+      mean recall@100 over limit by profile where k=100
       label "Recall@100 per profile (k=100)"
 
   fknn_section: |
@@ -103,21 +87,17 @@ report:
      (`limit`) grows; the table aggregates by profile.
 
     table recall_fknn
-      group_by: profile
-      query recall: avg(recall_at_10_mean) by (profile)
-      query latency: avg(cycles_servicetime_mean) by (profile)
+      recall; mean(recall) over profile~label
+      latency; mean(latency) over profile~label
 
     plot fknn_recall_at_k1
-      query: avg(recall_at_1_mean{k="1", profile="default"}) by (limit)
-      x: limit
+      recall@1 over limit where k=1 and profile=default
       label "Filtered-KNN mean recall@1"
     plot fknn_recall_at_k10
-      query: avg(recall_at_10_mean{k="10", profile="default"}) by (limit)
-      x: limit
+      recall@10 over limit where k=10 and profile=default
       label "Filtered-KNN mean recall@10"
     plot fknn_recall_at_k100
-      query: avg(recall_at_100_mean{k="100", profile="default"}) by (limit)
-      x: limit
+      recall@100 over limit where k=100 and profile=default
       label "Filtered-KNN mean recall@100"
 
 bindings: |

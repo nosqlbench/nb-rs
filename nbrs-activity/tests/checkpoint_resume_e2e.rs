@@ -232,9 +232,16 @@ fn tempdir(prefix: &str) -> PathBuf {
 }
 
 fn in_dir<F: FnOnce()>(dir: &std::path::Path, f: F) {
-    // Serialize cwd swaps via a process-wide mutex — tokio test
-    // harness runs tests in parallel by default, and bare
-    // `std::env::set_current_dir` would race.
+    // Serialize cwd swaps AND `nbrs_activity::runner::run`
+    // invocations via a single process-wide mutex. cargo test
+    // runs tests in parallel by default; the runner installs a
+    // process-wide singleton scene tree (`OnceLock`-backed)
+    // whose first-write-wins semantics make parallel runner
+    // executions cross-contaminate (test B's phase identities
+    // get looked up against test A's tree). Holding the lock
+    // across the entire closure (including the runner call)
+    // gives us a clean serial-execution guarantee for tests
+    // that drive the runner end-to-end.
     use std::sync::Mutex;
     static CWD_LOCK: Mutex<()> = Mutex::new(());
     let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -54,6 +54,34 @@ pub mod colors {
     pub const LOG_ERROR: Color = Color::Rgb(244, 67, 54);
 }
 
+/// Reverse a leaf-first scope-coordinate label string into its
+/// root-first form for display. The canonical
+/// [`format_scope_coordinate_path`](nbrs_variates::kernel::scope_coords::format_scope_coordinate_path)
+/// emits `(inner_a=…, inner_b=…), (outer=…)` (leaf-first) so it
+/// stays stable as the canonical structural identity used for
+/// pre-map ↔ runtime matching. Display surfaces (the terminal
+/// observer's phase row and the TUI active-phase panel) prefer
+/// root-first reading order — outer scopes first — to mirror
+/// the scenario tree the user wrote.
+///
+/// Splits on the unambiguous group boundary `"), ("` (paren-comma-
+/// space-paren never appears inside a binding's value), reverses
+/// the segment list, and rejoins. Empty input → empty output.
+/// Single-group input is returned unchanged.
+pub fn coords_root_first(leaf_first: &str) -> String {
+    if leaf_first.is_empty() { return String::new(); }
+    let inner = leaf_first
+        .strip_prefix('(')
+        .and_then(|s| s.strip_suffix(')'))
+        .unwrap_or(leaf_first);
+    let parts: Vec<&str> = inner.split("), (").collect();
+    if parts.len() <= 1 {
+        return leaf_first.to_string();
+    }
+    let rev: Vec<&str> = parts.into_iter().rev().collect();
+    format!("({})", rev.join("), ("))
+}
+
 /// Render a sparkline from a slice of values into a string of
 /// Unicode block characters: ▁▂▃▄▅▆▇█
 ///

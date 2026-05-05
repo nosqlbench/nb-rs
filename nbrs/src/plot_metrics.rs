@@ -55,6 +55,28 @@ use plotters::prelude::*;
 /// derivative of Bitstream Vera; redistribution permitted).
 const DEJAVU_SANS: &[u8] = include_bytes!("DejaVuSans.ttf");
 
+/// Flags that take a value as the next arg. Used by
+/// [`parse_args`]'s positional-spec pre-sweep so a flag's value
+/// (e.g. `local/foo` after `--session`) doesn't get
+/// misclassified as a positional DSL spec and rewrite `opts`.
+const FLAGS_TAKING_VALUE: &[&str] = &[
+    // Plot-specific
+    "--metric", "--x", "--series", "--filter", "--agg",
+    "--db", "--output", "--name", "--label", "--palette",
+    "--line", "--line-width", "--marker", "--marker-size",
+    "--figure-num", "--title", "--xlabel", "--ylabel",
+    "--xscale", "--yscale", "--width", "--height",
+    "--x-min", "--x-max", "--y-min", "--y-max", "--legend",
+    "--query",
+    "--csv-also", "--report", "--update-markdown",
+    "--add-to-markdown",
+    // Global flags consumed at startup but still appearing in
+    // argv when plot's parser walks them.
+    "--session", "--session-name", "--session-path",
+    "--session-reuse", "--session-keep", "--session-shelflife",
+    "--resume", "--gk-lib",
+];
+
 /// Register the bundled font with plotters' ab_glyph backend.
 /// Idempotent — re-registration is a no-op. Called once at the
 /// start of every plot command so PNG and SVG renderers can both
@@ -114,10 +136,11 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
     // directive (in addition to `;` separators within a line).
     // Multi-line plot bodies are normalised here so the rest of
     // the parser doesn't need to know about them.
-    let by_lines: String = cleaned.lines()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>().join(";");
+    // Native-form pre-pass owns the pre-line scan now (see
+    // below); the legacy `by_lines` formed `;`-joined directives
+    // out of every non-empty line. Replaced by `residual_lines`
+    // after we strip the native-form lines (`query:`, `x:`,
+    // `series:`).
     let parse_over = |rest: &str, opts: &mut PlotMetricsOpts| {
         // `over <items>` accepts a comma-separated list. Each
         // item is one of:
@@ -141,6 +164,38 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             opts.series_labels.push(k);
         }
     };
+
+    // Native-form directives: `query: <metricsql>`, `x: <label>`,
+    // `series: <label>[,<label>...]`. These are the canonical
+    // SRD-46-v2 surface — every other directive is the legacy
+    // DSL retained for back-compat. Detected with `:` separator
+    // (not `=`) to keep them distinct from the bind-point /
+    // filter shorthand.
+    //
+    // Splitting and rewriting these BEFORE the per-line
+    // directive walk so a `query:` body containing arbitrary
+    // metricsql isn't sliced apart by the `;`-separator pass
+    // below. We extract them by line index, then drop those
+    // lines before joining.
+    let lines_vec: Vec<&str> = cleaned.lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut residual_lines: Vec<String> = Vec::new();
+    for line in &lines_vec {
+        if let Some(rest) = line.strip_prefix("query:").map(str::trim) {
+            opts.query = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("x:").map(str::trim) {
+            opts.x_label = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("series:").map(str::trim) {
+            for k in rest.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                opts.series_labels.push(k.to_string());
+            }
+        } else {
+            residual_lines.push((*line).to_string());
+        }
+    }
+    let by_lines = residual_lines.join(";");
 
     for directive in by_lines.split(';').map(str::trim).filter(|s| !s.is_empty()) {
         // Two equivalent aggregator-shorthand forms:
@@ -332,6 +387,32 @@ struct PlotMetricsOpts {
     marker: Option<String>,
     /// Marker radius in pixels. `None` ⇒ 3.
     marker_size: Option<f32>,
+    /// Hard-coded axis bounds. `None` for any side ⇒ derive
+    /// from data with a 5% padding band. When set, that side's
+    /// bound is used verbatim — useful for cross-plot
+    /// comparison (so two charts share scales) and for trimming
+    /// outliers without --filter.
+    x_min: Option<f64>,
+    x_max: Option<f64>,
+    y_min: Option<f64>,
+    y_max: Option<f64>,
+    /// Legend placement. Accepts the long form (`top-left`,
+    /// `bottom-right`, `center`, …) or one/two-letter codes
+    /// (`tl`, `br`, `c`, `t`, `b`, `l`, `r`). `None` ⇒
+    /// upper-right (the existing default). `Some("none")`
+    /// suppresses the legend.
+    legend: Option<String>,
+    /// Native MetricsQL expression. When `Some`, the renderer
+    /// bypasses the legacy DSL's SQL builder and routes through
+    /// `nbrs_metricsql::evaluate` against the session db's
+    /// `SqliteDataSource`. The result `Vec<Series>` projects to
+    /// the same `(series_name → Vec<(x, y)>)` shape the legacy
+    /// path produces. Set via:
+    ///
+    ///   - `--query "<metricsql>"` on the CLI, or
+    ///   - a `query: <metricsql>` directive in a `report:`-block
+    ///     plot/table body.
+    query: Option<String>,
 }
 
 impl Default for PlotMetricsOpts {
@@ -364,6 +445,12 @@ impl Default for PlotMetricsOpts {
             line_width: None,
             marker: None,
             marker_size: None,
+            x_min: None,
+            x_max: None,
+            y_min: None,
+            y_max: None,
+            legend: None,
+            query: None,
         }
     }
 }
@@ -437,9 +524,22 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     }
     let primary_db = dbs[0].clone();
 
-    let Some(metric) = opts.metric.as_deref() else {
-        return Err("--metric <pattern> is required (or pass a positional spec)".to_string());
-    };
+    // `metric` is an opaque label used for the title and the
+    // default output filename. With `query:` set, the metricsql
+    // expression itself is the metric; pull a synthetic name
+    // out of it (or fall back to "result") so the rest of the
+    // pipeline doesn't need to special-case the query path.
+    let synthetic_metric = opts.query.as_ref().map(|q| {
+        // Extract a leading identifier-shape token from the
+        // expression — e.g. `avg(recall_at_10_mean)` → "avg".
+        // Best-effort; user can pin via `--metric` to override.
+        q.chars().take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect::<String>()
+    }).filter(|s| !s.is_empty());
+    let metric_owned: String = opts.metric.clone()
+        .or(synthetic_metric)
+        .ok_or_else(|| "--metric <pattern> is required (or pass `--query <metricsql>` / a positional spec)".to_string())?;
+    let metric = metric_owned.as_str();
     let Some(x_label) = opts.x_label.as_deref() else {
         return Err("--x <label_key> is required (or `over <label>` in the spec)".to_string());
     };
@@ -460,16 +560,31 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     } else {
         dbs[0].clone()
     };
-    let rows = query_rows(&query_db, metric, &opts.filters)
-        .map_err(|e| format!("query failed against '{}': {e}", query_db.display()))?;
+    // Two source paths:
+    //   - `query: <metricsql>` → evaluate via the metricsql
+    //     engine, project the resulting `Vec<Series>` into
+    //     `DbRow`s keyed by each Series's labels.
+    //   - else → legacy SQL builder over `metric_instance.spec`.
+    let rows = if let Some(q) = opts.query.as_deref() {
+        rows_via_metricsql(&query_db, q)
+            .map_err(|e| format!("metricsql failed against '{}': {e}", query_db.display()))?
+    } else {
+        query_rows(&query_db, metric, &opts.filters)
+            .map_err(|e| format!("query failed against '{}': {e}", query_db.display()))?
+    };
     // Default-output paths anchor on the first user-supplied db
     // (not the merge temp) so artifacts live next to real
     // session data.
     let db_path = &primary_db;
     if rows.is_empty() {
-        let mut msg = format!("no matching rows in '{}' for metric '{metric}'",
-            db_path.display());
-        if !opts.filters.is_empty() {
+        let mut msg = if let Some(q) = opts.query.as_deref() {
+            format!("metricsql query returned no series in '{}': `{q}`",
+                db_path.display())
+        } else {
+            format!("no matching rows in '{}' for metric '{metric}'",
+                db_path.display())
+        };
+        if !opts.filters.is_empty() && opts.query.is_none() {
             msg.push_str(&format!(" with filters {}",
                 opts.filters.iter().map(|(k, v)| format!("{k}={v}"))
                     .collect::<Vec<_>>().join(", ")));
@@ -867,6 +982,25 @@ pub fn metric_for_plot_name(
 }
 
 /// Public listing for shell completion: every distinct label
+/// All distinct metric family names recorded in `db_path`.
+/// Used by tab-completion for `nbrs plot --metric` so the user
+/// gets the closed vocabulary of the session's actual metrics
+/// rather than having to remember exact identifiers.
+///
+/// Empty Vec on any error — completion is best-effort and never
+/// panics.
+pub fn list_metric_families(db_path: &Path) -> Vec<String> {
+    if !db_path.exists() { return Vec::new(); }
+    let Ok(conn) = rusqlite::Connection::open(db_path) else { return Vec::new(); };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT name FROM metric_family ORDER BY name"
+    ) else { return Vec::new(); };
+    let Ok(iter) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
+        return Vec::new();
+    };
+    iter.flatten().collect()
+}
+
 /// key found across `metric_instance.spec` rows in the db.
 /// Optionally restrict to a single metric family (the prefix
 /// before `{`). Empty Vec on any error — completion is best-
@@ -939,7 +1073,7 @@ fn read_stored_plots(db_path: &Path) -> Vec<(String, String)> {
                 None => continue, // skip table items
             };
             let body: String = lines
-                .filter(|l| !l.starts_with("label "))
+                .filter(|l| !l.starts_with("label ") && !l.starts_with("target "))
                 .collect::<Vec<_>>().join("\n");
             out.push((name, body));
         }
@@ -997,16 +1131,49 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
         height: 640,
         ..Default::default()
     };
+    // Honour `--session` / `--session-path` / `--session-name`
+    // here so plot output (PNG, summary.md) lands inside the
+    // user-specified session dir, not in the `logs/latest`
+    // symlink target. Goes through the shared resolver so every
+    // session-accessing tool (`plot`, `report`, `metrics ...`)
+    // interprets the flag identically.
+    //
+    // `--db` overrides this — explicit db wins over inferred
+    // session.
+    if let Some(session_dir) = nbrs_activity::session::read_session_dir(args) {
+        opts.db = Some(session_dir.join("metrics.db"));
+    }
     // First, sweep for a bare positional spec (one whose token
     // doesn't start with `--`) — that's the single-string DSL
     // form. Apply it as the base, then let flags layer on top
     // and override.
+    //
+    // Flags-with-values must be skipped: in `--session local/foo
+    // --metric recall@1.mean`, the values `local/foo` and
+    // `recall@1.mean` aren't `--`-prefixed but they're not
+    // positional specs either. Walk pairwise so a flag swallows
+    // its value.
     let mut positional: Option<&str> = None;
-    for a in args {
-        if !a.starts_with("--") {
-            positional = Some(a.as_str());
-            break;
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if let Some(stripped) = a.strip_prefix("--") {
+            // `--flag=value` consumes itself only.
+            if stripped.contains('=') { i += 1; continue; }
+            // `--flag` followed by a value the parser will read
+            // — skip both. `--verbose` and similar bool flags
+            // don't take a value, so leave `i+1` for the next
+            // pass.
+            if FLAGS_TAKING_VALUE.contains(&a.as_str()) && i + 1 < args.len() {
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
         }
+        // Bare token that isn't a flag-value pair → positional.
+        positional = Some(a.as_str());
+        break;
     }
     if let Some(spec) = positional {
         opts = parse_spec(spec)?;
@@ -1061,6 +1228,16 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                 .parse().map_err(|_| "--width must be a positive integer".to_string())?,
             "--height" => opts.height = next(&mut iter, "height")?
                 .parse().map_err(|_| "--height must be a positive integer".to_string())?,
+            "--x-min" => opts.x_min = Some(next(&mut iter, "x-min")?
+                .parse().map_err(|_| "--x-min must be a number".to_string())?),
+            "--x-max" => opts.x_max = Some(next(&mut iter, "x-max")?
+                .parse().map_err(|_| "--x-max must be a number".to_string())?),
+            "--y-min" => opts.y_min = Some(next(&mut iter, "y-min")?
+                .parse().map_err(|_| "--y-min must be a number".to_string())?),
+            "--y-max" => opts.y_max = Some(next(&mut iter, "y-max")?
+                .parse().map_err(|_| "--y-max must be a number".to_string())?),
+            "--legend" => opts.legend = Some(next(&mut iter, "legend")?),
+            "--query" => opts.query = Some(next(&mut iter, "query")?),
             "--verbose" | "-v" => opts.verbose = true,
             // Global flags consumed at startup
             // (`apply_session_directory_at_startup`, SRD-15
@@ -1129,6 +1306,16 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                             .map_err(|_| "--width must be a positive integer".to_string())?,
                         "height" => opts.height = v.parse()
                             .map_err(|_| "--height must be a positive integer".to_string())?,
+                        "x-min" => opts.x_min = Some(v.parse()
+                            .map_err(|_| "--x-min must be a number".to_string())?),
+                        "x-max" => opts.x_max = Some(v.parse()
+                            .map_err(|_| "--x-max must be a number".to_string())?),
+                        "y-min" => opts.y_min = Some(v.parse()
+                            .map_err(|_| "--y-min must be a number".to_string())?),
+                        "y-max" => opts.y_max = Some(v.parse()
+                            .map_err(|_| "--y-max must be a number".to_string())?),
+                        "legend" => opts.legend = Some(v.to_string()),
+                        "query" => opts.query = Some(v.to_string()),
                         "csv-also" => opts.csv_also = Some(PathBuf::from(v)),
                         "report" | "update-markdown" => {
                             if v == "skip" || v.is_empty() {
@@ -1171,6 +1358,90 @@ struct DbRow {
     mean: Option<f64>,
     /// Parsed labels — `key → value`.
     labels: std::collections::HashMap<String, String>,
+}
+
+/// Evaluate a MetricsQL expression against the session db and
+/// project the resulting `Vec<Series>` into the same `DbRow`
+/// shape `query_rows` returns, so the downstream
+/// `bucket_rows` + per-cell aggregation pipeline doesn't need
+/// a separate code path. SRD-46 v2 §"Renderers consume
+/// `Vec<Series>`".
+///
+/// Each `Series` has a label set + a sequence of samples; each
+/// sample becomes one `DbRow` with the series's labels and the
+/// sample's value as `mean`. The `spec` is synthesised in
+/// PromQL-ish form (`__name__{labels...}`) for diagnostics.
+fn rows_via_metricsql(db_path: &Path, expr: &str) -> Result<Vec<DbRow>, String> {
+    use nbrs_metricsql::adapters::sqlite::SqliteDataSource;
+    use nbrs_metricsql::eval::{EvalContext, evaluate};
+
+    let ds = SqliteDataSource::open(db_path)
+        .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?;
+    let parsed = nbrs_metricsql::parse(expr)
+        .map_err(|e| format!("parse metricsql: {e}"))?;
+    // Anchor at the latest sample timestamp in the db so the
+    // instant query picks up the freshest values. Lookback
+    // covers cadence skew (counters and summaries land within
+    // ~ms of each other but not always at the exact same
+    // timestamp).
+    let (start_ms, end_ms) = match latest_sample_window(db_path) {
+        Some((s, e)) => (s, e),
+        None => return Ok(Vec::new()),
+    };
+    let ctx = EvalContext {
+        data: &ds,
+        start_ms,
+        end_ms,
+        step_ms: 60_000,
+        lookback_ms: Some(300_000),
+        query_start_ms: Some(start_ms),
+        query_end_ms: Some(end_ms),
+    };
+    let series = evaluate(&ctx, &parsed)
+        .map_err(|e| format!("evaluate metricsql: {e}"))?;
+    let mut rows: Vec<DbRow> = Vec::new();
+    for s in series {
+        let labels: std::collections::HashMap<String, String> = s.labels.iter()
+            .filter(|(k, _)| k != "__name__")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let name = s.labels.iter()
+            .find(|(k, _)| k == "__name__")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| "result".into());
+        let label_pairs: Vec<String> = labels.iter()
+            .map(|(k, v)| format!("{k}=\"{v}\""))
+            .collect();
+        let spec = if label_pairs.is_empty() {
+            name.clone()
+        } else {
+            format!("{name}{{{}}}", label_pairs.join(","))
+        };
+        for sample in s.samples {
+            rows.push(DbRow {
+                spec: spec.clone(),
+                mean: Some(sample.value),
+                labels: labels.clone(),
+            });
+        }
+    }
+    Ok(rows)
+}
+
+/// Find the time window for an instant query: anchor at the
+/// latest sample timestamp in the db, with a wide enough
+/// reach to pull historical samples. `None` when the db has
+/// no samples.
+fn latest_sample_window(db_path: &Path) -> Option<(i64, i64)> {
+    let conn = rusqlite::Connection::open(db_path).ok()?;
+    let (min_ts, max_ts): (i64, i64) = conn.query_row(
+        "SELECT COALESCE(MIN(timestamp_ms), 0), COALESCE(MAX(timestamp_ms), 0) \
+         FROM sample_value",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).ok()?;
+    if max_ts == 0 { return None; }
+    Some((min_ts, max_ts))
 }
 
 /// Pull every row whose metric family matches `metric_pattern`
@@ -1430,11 +1701,18 @@ fn render_plot(
     if !x_min.is_finite() || !x_max.is_finite() || !y_min.is_finite() || !y_max.is_finite() {
         return Err("no finite (x, y) points to plot".to_string());
     }
-    // Padding so points don't sit on the axis edges.
+    // Padding so points don't sit on the axis edges. User-set
+    // bounds (via `--x-min` / `--x-max` / `--y-min` / `--y-max`)
+    // win verbatim — no padding applied — so two charts can
+    // share scales when the user pins them explicitly.
     let x_pad = ((x_max - x_min) * 0.05).max(1e-9);
     let y_pad = ((y_max - y_min) * 0.05).max(1e-9);
-    let x_range = (x_min - x_pad)..(x_max + x_pad);
-    let y_range = (y_min - y_pad)..(y_max + y_pad);
+    let x_lo = opts.x_min.unwrap_or(x_min - x_pad);
+    let x_hi = opts.x_max.unwrap_or(x_max + x_pad);
+    let y_lo = opts.y_min.unwrap_or(y_min - y_pad);
+    let y_hi = opts.y_max.unwrap_or(y_max + y_pad);
+    let x_range = x_lo..x_hi;
+    let y_range = y_lo..y_hi;
 
     let title = opts.title.clone().unwrap_or_else(|| {
         let filter_summary = if opts.filters.is_empty() {
@@ -1462,20 +1740,77 @@ fn render_plot(
         .map(|s| s.eq_ignore_ascii_case("svg"))
         .unwrap_or(false);
 
+    let legend_spec = parse_legend_spec(opts.legend.as_deref())?;
+    let legend_explicit = opts.legend.is_some();
+
     if is_svg {
         let root = SVGBackend::new(out_path, (opts.width, opts.height)).into_drawing_area();
         draw_chart(&root, series, &title, &x_axis, &y_axis, x_range, y_range, metric,
             opts.palette.as_deref(), opts.line.as_deref(), opts.line_width,
-            opts.marker.as_deref(), opts.marker_size)?;
+            opts.marker.as_deref(), opts.marker_size, legend_spec, legend_explicit)?;
         root.present().map_err(|e| format!("present: {e}"))?;
     } else {
         let root = BitMapBackend::new(out_path, (opts.width, opts.height)).into_drawing_area();
         draw_chart(&root, series, &title, &x_axis, &y_axis, x_range, y_range, metric,
             opts.palette.as_deref(), opts.line.as_deref(), opts.line_width,
-            opts.marker.as_deref(), opts.marker_size)?;
+            opts.marker.as_deref(), opts.marker_size, legend_spec, legend_explicit)?;
         root.present().map_err(|e| format!("present: {e}"))?;
     }
     Ok(())
+}
+
+/// Resolved legend placement. `Suppressed` = `--legend none` /
+/// `--legend off`.
+#[derive(Debug, Clone)]
+enum LegendSpec {
+    Position(SeriesLabelPosition),
+    Suppressed,
+}
+
+/// Parse a user-supplied legend code into a [`LegendSpec`].
+/// Accepts the long form (`top-left`, `bottom-right`, `center`,
+/// `top`, `bottom`, `left`, `right`, plus `top-center`,
+/// `bottom-center`) or one/two-letter codes (`tl`, `tr`, `bl`,
+/// `br`, `t`, `b`, `l`, `r`, `c`, `tc`, `bc`).
+///
+/// Returns the existing default (UpperRight) when input is
+/// `None`. Returns `Suppressed` for `none` / `off`.
+fn parse_legend_spec(arg: Option<&str>) -> Result<LegendSpec, String> {
+    let Some(raw) = arg else {
+        return Ok(LegendSpec::Position(SeriesLabelPosition::UpperRight));
+    };
+    let key = raw.trim().to_ascii_lowercase();
+    let pos = match key.as_str() {
+        "none" | "off" | "hide" => return Ok(LegendSpec::Suppressed),
+        // Long form
+        "top-left"     | "upper-left"     => SeriesLabelPosition::UpperLeft,
+        "top"          | "top-center"     | "upper" | "upper-center"
+                                          => SeriesLabelPosition::UpperMiddle,
+        "top-right"    | "upper-right"    => SeriesLabelPosition::UpperRight,
+        "left"         | "middle-left"    => SeriesLabelPosition::MiddleLeft,
+        "center"       | "middle"         => SeriesLabelPosition::MiddleMiddle,
+        "right"        | "middle-right"   => SeriesLabelPosition::MiddleRight,
+        "bottom-left"  | "lower-left"     => SeriesLabelPosition::LowerLeft,
+        "bottom"       | "bottom-center"  | "lower" | "lower-center"
+                                          => SeriesLabelPosition::LowerMiddle,
+        "bottom-right" | "lower-right"    => SeriesLabelPosition::LowerRight,
+        // Single / two-letter shortcodes
+        "tl" | "ul" => SeriesLabelPosition::UpperLeft,
+        "t"  | "tc" | "uc" | "u" => SeriesLabelPosition::UpperMiddle,
+        "tr" | "ur" => SeriesLabelPosition::UpperRight,
+        "l"  | "ml" | "cl" => SeriesLabelPosition::MiddleLeft,
+        "c"  | "m"  | "mm" | "mc" => SeriesLabelPosition::MiddleMiddle,
+        "r"  | "mr" | "cr" => SeriesLabelPosition::MiddleRight,
+        "bl" | "ll" => SeriesLabelPosition::LowerLeft,
+        "b"  | "bc" | "lc" => SeriesLabelPosition::LowerMiddle,
+        "br" | "lr" => SeriesLabelPosition::LowerRight,
+        other => return Err(format!(
+            "--legend: unknown position '{other}' (try: top-left, top, \
+             top-right, left, center, right, bottom-left, bottom, \
+             bottom-right; shortcodes tl/t/tr/l/c/r/bl/b/br; or `none` to suppress)"
+        )),
+    };
+    Ok(LegendSpec::Position(pos))
 }
 
 fn draw_chart<DB>(
@@ -1492,6 +1827,8 @@ fn draw_chart<DB>(
     line_width: Option<f32>,
     marker_shape: Option<&str>,
     marker_size: Option<f32>,
+    legend_spec: LegendSpec,
+    legend_explicit: bool,
 ) -> Result<(), String>
 where
     DB: DrawingBackend,
@@ -1629,14 +1966,29 @@ where
         }
     }
 
-    if series.len() > 1 || series.keys().any(|k| !k.is_empty()) {
-        chart.configure_series_labels()
-            .background_style(WHITE.mix(0.85))
-            .border_style(BLACK)
-            .label_font(("sans-serif", 14))
-            .position(SeriesLabelPosition::UpperRight)
-            .draw()
-            .map_err(|e| format!("draw legend: {e}"))?;
+    // Draw the legend whenever the user has either:
+    //   - multiple series / non-default series naming (the
+    //     "the legend has something useful to show" case), OR
+    //   - explicitly requested a position via `--legend` (any
+    //     value other than the default — `--legend tl`,
+    //     `--legend center`, …) — override the auto-skip so a
+    //     single-series plot still gets a labelled box when
+    //     the user asked for one.
+    //
+    // `LegendSpec::Suppressed` (`--legend none|off|hide`) skips
+    // unconditionally.
+    let auto_show = series.len() > 1 || series.keys().any(|k| !k.is_empty());
+    let force_show = matches!(legend_spec, LegendSpec::Position(_)) && legend_explicit;
+    if (auto_show || force_show) && matches!(legend_spec, LegendSpec::Position(_)) {
+        if let LegendSpec::Position(position) = legend_spec {
+            chart.configure_series_labels()
+                .background_style(WHITE.mix(0.85))
+                .border_style(BLACK)
+                .label_font(("sans-serif", 14))
+                .position(position)
+                .draw()
+                .map_err(|e| format!("draw legend: {e}"))?;
+        }
     }
 
     Ok(())

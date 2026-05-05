@@ -103,6 +103,126 @@ fn load_workload_summaries(path: &Path) -> Result<Vec<(String, String)>, String>
     Ok(entries)
 }
 
+/// Render a SRD-46 v2 metricsql-driven table. Each entry in
+/// `cfg.metricsql_columns` is a `(column_name, expression)`
+/// pair; each is evaluated independently against the session
+/// db's `SqliteDataSource`, then the results are joined on the
+/// `cfg.group_by` label to produce a row per distinct group.
+///
+/// `format` is `md` (markdown table) or `csv`. Other formats
+/// fall back to markdown — same convention as the legacy path.
+fn render_metricsql_table(
+    db_path: &Path,
+    cfg: &SummaryConfig,
+    format: &str,
+) -> Result<String, String> {
+    use nbrs_metricsql::adapters::sqlite::SqliteDataSource;
+    use nbrs_metricsql::eval::{EvalContext, evaluate};
+    use std::collections::BTreeMap;
+
+    let ds = SqliteDataSource::open(db_path)
+        .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?;
+    // Anchor the instant query at the latest sample in the db
+    // with a wide lookback so cadence-skewed gauge writes still
+    // resolve. Same anchor logic as `plot_metrics::rows_via_metricsql`.
+    let conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| format!("open db: {e}"))?;
+    let (min_ts, max_ts): (i64, i64) = conn.query_row(
+        "SELECT COALESCE(MIN(timestamp_ms), 0), COALESCE(MAX(timestamp_ms), 0) \
+         FROM sample_value",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).map_err(|e| format!("read time bounds: {e}"))?;
+    if max_ts == 0 {
+        return Ok(String::new());
+    }
+    let ctx = EvalContext {
+        data: &ds,
+        start_ms: min_ts,
+        end_ms: max_ts,
+        step_ms: 60_000,
+        lookback_ms: Some(300_000),
+        query_start_ms: Some(min_ts),
+        query_end_ms: Some(max_ts),
+    };
+
+    // Evaluate each column expression. For each query, build a
+    // `group_value -> column_value` map. When `group_by` is
+    // empty, every row collapses into a single un-named row;
+    // we put it under the empty string for stable iteration.
+    let group_key = cfg.group_by.as_str();
+    let mut by_group: BTreeMap<String, Vec<Option<f64>>> = BTreeMap::new();
+    let n_cols = cfg.metricsql_columns.len();
+    for (col_idx, (_col_name, expr)) in cfg.metricsql_columns.iter().enumerate() {
+        let parsed = nbrs_metricsql::parse(expr)
+            .map_err(|e| format!("parse '{expr}': {e}"))?;
+        let series = evaluate(&ctx, &parsed)
+            .map_err(|e| format!("evaluate '{expr}': {e}"))?;
+        for s in series {
+            let group_val: String = if group_key.is_empty() {
+                String::new()
+            } else {
+                s.labels.iter()
+                    .find(|(k, _)| k == group_key)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            };
+            // Use the latest sample as the cell value.
+            let value = s.samples.iter()
+                .max_by_key(|s| s.timestamp_ms)
+                .map(|s| s.value);
+            let row = by_group.entry(group_val).or_insert_with(|| vec![None; n_cols]);
+            row[col_idx] = value;
+        }
+    }
+
+    // Emit. Markdown table by default; CSV with `--format=csv`.
+    if format.eq_ignore_ascii_case("csv") {
+        let mut out = String::new();
+        let mut header: Vec<&str> = Vec::new();
+        if !group_key.is_empty() { header.push(group_key); }
+        for (col, _) in &cfg.metricsql_columns { header.push(col); }
+        out.push_str(&header.join(","));
+        out.push('\n');
+        for (group_val, cells) in &by_group {
+            let mut row: Vec<String> = Vec::new();
+            if !group_key.is_empty() { row.push(group_val.clone()); }
+            for cell in cells {
+                row.push(cell.map(|v| format!("{v:.6}")).unwrap_or_default());
+            }
+            out.push_str(&row.join(","));
+            out.push('\n');
+        }
+        return Ok(out);
+    }
+
+    // Markdown.
+    let mut out = String::new();
+    let mut header: Vec<&str> = Vec::new();
+    if !group_key.is_empty() { header.push(group_key); }
+    for (col, _) in &cfg.metricsql_columns { header.push(col); }
+    out.push_str("| ");
+    out.push_str(&header.join(" | "));
+    out.push_str(" |\n|");
+    for _ in &header {
+        out.push_str("---|");
+    }
+    out.push('\n');
+    for (group_val, cells) in &by_group {
+        out.push_str("| ");
+        if !group_key.is_empty() {
+            out.push_str(group_val);
+            out.push_str(" | ");
+        }
+        let cell_strs: Vec<String> = cells.iter()
+            .map(|c| c.map(|v| format!("{v:.4}")).unwrap_or_else(|| "-".into()))
+            .collect();
+        out.push_str(&cell_strs.join(" | "));
+        out.push_str(" |\n");
+    }
+    Ok(out)
+}
+
 pub fn summary_command(args: &[String]) {
     let opts = parse_args(args);
 
@@ -308,8 +428,21 @@ pub fn summary_command(args: &[String]) {
         // derive from the stored name's suffix; default to md.
         let (basename, derived_format) = derive_name_and_format(name);
         let format = cli_format.clone().unwrap_or(derived_format);
-        let report_cfg = report_config_from_summary(cfg);
-        let rendered = reporter.format_summary_with_format(&report_cfg, &format);
+        // SRD-46 v2: native metricsql tables route through a
+        // dedicated renderer; legacy DSL tables stay on the
+        // SqliteReporter path.
+        let rendered = if !cfg.metricsql_columns.is_empty() {
+            match render_metricsql_table(&db_path, cfg, &format) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("nbrs summary: metricsql table '{name}' failed: {e}");
+                    continue;
+                }
+            }
+        } else {
+            let report_cfg = report_config_from_summary(cfg);
+            reporter.format_summary_with_format(&report_cfg, &format)
+        };
         if rendered.is_empty() {
             eprintln!("nbrs summary: '{name}' produced no rows \
                        (db='{}').", db_path.display());
@@ -506,6 +639,13 @@ struct SummaryOpts {
 
 fn parse_args(args: &[String]) -> SummaryOpts {
     let mut opts = SummaryOpts::default();
+    // `--session` / `--session-path` / `--session-name` resolve
+    // to a session dir uniformly across read-side tools — see
+    // `nbrs_activity::session::read_session_dir`. `--db` below
+    // overrides this when it's given explicitly.
+    if let Some(session_dir) = nbrs_activity::session::read_session_dir(args) {
+        opts.db = Some(session_dir.join("metrics.db"));
+    }
     let mut iter = args.iter().peekable();
     while let Some(a) = iter.next() {
         match a.as_str() {
@@ -565,6 +705,15 @@ fn parse_args(args: &[String]) -> SummaryOpts {
                 }
             }
             "--no-report" => opts.report_disabled = true,
+            // Global session flags — already consumed by
+            // `read_session_dir` above. Swallow the value so
+            // it doesn't drift into `opts.spec` as a stray
+            // positional.
+            "--session" | "--session-name" | "--session-path"
+            | "--session-reuse" | "--session-keep" | "--session-shelflife"
+            | "--resume" | "--gk-lib" => { let _ = iter.next(); }
+            "--strict" | "--no-prompt" | "--resume-latest"
+            | "--force-retry-failed" => {}
             other => {
                 if let Some(v) = other.strip_prefix("--db=") {
                     for path in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {

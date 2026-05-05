@@ -31,7 +31,7 @@ bindings: |
   greeting := default_or(simulated_capture, "anonymous")
 
   // Derived computation from the captured value
-  user_id := mod(hash(cycle), {user_count})
+  user_id := mod_wire(hash(cycle), user_count)
 
 ops:
   read_user:

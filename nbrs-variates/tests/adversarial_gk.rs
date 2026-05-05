@@ -224,7 +224,7 @@ fn shared_on_cycle_binding() {
         shared counter := 0
     "#;
     let kernel = compile_gk(src).unwrap();
-    assert_eq!(kernel.program().output_modifier("counter"), BindingModifier::Shared);
+    assert_eq!(kernel.program().output_modifier("counter"), BindingModifier::SHARED);
 }
 
 #[test]
@@ -245,7 +245,7 @@ fn final_on_cycle_binding() {
         final max := mod(hash(cycle), 100)
     "#;
     let kernel = compile_gk(src).unwrap();
-    assert_eq!(kernel.program().output_modifier("max"), BindingModifier::Final);
+    assert_eq!(kernel.program().output_modifier("max"), BindingModifier::FINAL);
 }
 
 #[test]
@@ -255,7 +255,7 @@ fn shared_on_init_binding() {
         shared init budget = 500
     "#;
     let kernel = compile_gk(src).unwrap();
-    assert_eq!(kernel.program().output_modifier("budget"), BindingModifier::Shared);
+    assert_eq!(kernel.program().output_modifier("budget"), BindingModifier::SHARED);
     assert_eq!(kernel.get_constant("budget").unwrap().as_u64(), 500);
 }
 
@@ -266,7 +266,7 @@ fn final_on_init_binding() {
         final init dim = 128
     "#;
     let kernel = compile_gk(src).unwrap();
-    assert_eq!(kernel.program().output_modifier("dim"), BindingModifier::Final);
+    assert_eq!(kernel.program().output_modifier("dim"), BindingModifier::FINAL);
     assert_eq!(kernel.get_constant("dim").unwrap().as_u64(), 128);
 }
 
@@ -279,9 +279,9 @@ fn mixed_modifiers() {
         plain := mod(hash(cycle), 100)
     "#;
     let kernel = compile_gk(src).unwrap();
-    assert_eq!(kernel.program().output_modifier("s"), BindingModifier::Shared);
-    assert_eq!(kernel.program().output_modifier("f"), BindingModifier::Final);
-    assert_eq!(kernel.program().output_modifier("plain"), BindingModifier::None);
+    assert_eq!(kernel.program().output_modifier("s"), BindingModifier::SHARED);
+    assert_eq!(kernel.program().output_modifier("f"), BindingModifier::FINAL);
+    assert_eq!(kernel.program().output_modifier("plain"), BindingModifier::NONE);
 }
 
 #[test]

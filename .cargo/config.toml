@@ -9,6 +9,23 @@ in = "install --path nbrs"
 # Direct all test temp files to target/test-tmp/ instead of /tmp.
 [env]
 TMPDIR = { value = "target/test-tmp", relative = true }
+# Linker search path for the vendored libcassandra static
+# archive. Built once via `bash adapters/cql/build.sh driver`
+# — Docker pulls the C++ driver source, builds, extracts to
+# adapters/cql/target/sysroot/lib. With these in scope every
+# workspace build — including `cargo test --workspace`, which
+# pulls in vendor/cassandra-cpp's tests/examples — finds
+# `-lcassandra` without the developer needing build.sh's env
+# exports. `relative = true` resolves against the workspace
+# root. `force = false` (default) preserves any existing
+# user setting, so a host-installed libcassandra still wins.
+LIBRARY_PATH = { value = "adapters/cql/target/sysroot/lib", relative = true }
+C_INCLUDE_PATH = { value = "adapters/cql/target/sysroot/include", relative = true }
+# The cassandra-cpp-sys build.rs reads these to emit
+# `cargo:rustc-link-search=native=…` and to point bindgen
+# at the headers.
+CASSANDRA_SYS_LIB_PATH = { value = "adapters/cql/target/sysroot/lib", relative = true }
+CASSANDRA_SYS_INCLUDE_PATH = { value = "adapters/cql/target/sysroot/include", relative = true }
 
 # Use mold linker for final binaries — dramatically faster than ld for
 # large binaries (~350 MB debug). mold parallelizes across all cores.
@@ -23,7 +40,20 @@ TMPDIR = { value = "target/test-tmp", relative = true }
 # documented in `nbrs-activity::profiler` next to the call-graph
 # selection logic.
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-fuse-ld=mold", "-C", "force-frame-pointers=yes"]
+# `-lz` covers zlib symbols (`inflateInit2_`, …) that the
+# vendored `libcassandra_static.a` references but the
+# upstream `cassandra-cpp-sys` build.rs doesn't declare. With
+# `-Wl,--as-needed` (mold's default) the lib drops out of
+# any binary that doesn't actually use it, so adding it
+# globally is free for non-cassandra binaries and lets
+# `cargo test --workspace` link the vendor/cassandra-cpp
+# test bins against the sysroot prepared by
+# `bash adapters/cql/build.sh driver`.
+rustflags = [
+    "-C", "link-arg=-fuse-ld=mold",
+    "-C", "force-frame-pointers=yes",
+    "-C", "link-arg=-lz",
+]
 
 [profile.dev]
 # Split debuginfo into separate files — smaller binary, faster link.

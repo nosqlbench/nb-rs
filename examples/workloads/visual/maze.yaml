@@ -15,7 +15,7 @@ params:
 
 bindings: |
   inputs := (cycle)
-  row := char_buf(hash(cycle), "╱╲", {cols})
+  row := char_buf(hash(cycle), "╱╲", cols)
 
 ops:
   line:

@@ -453,19 +453,46 @@ pub fn compile_bindings_with_libs_excluding(
             }
         }
 
-        // Workload-level `bindings:` (top-level YAML block) is
-        // appended to the emitted scope source verbatim. It
-        // bypasses the op-binding param-ident rewrite — `{name}`
-        // placeholders survive, and GK's standard string-
-        // interpolation resolves them at compile time against
-        // the `final <name> := <literal>` workload-param
-        // bindings that `build_scope` already injected (M3.6).
-        // Same path every phase-level kernel uses for its own
-        // GK source — workload-scope is not special-cased here.
+        // Workload-level `bindings:` (top-level YAML block) are
+        // already propagated into every op's `bindings` field by
+        // `merge_bindings` at YAML-parse time, so they reach this
+        // function as Inherited GK source on the ops and land in
+        // `scope.bindings` via Step 1 of `build_scope`. The
+        // dedicated `workload_level_gk` parameter is therefore
+        // redundant for source assembly: appending it verbatim
+        // here would duplicate every workload-level binding line
+        // and surface as `duplicate node name` at GK assembly.
+        //
+        // (The parameter is kept on the function signature so
+        // future callers that *don't* go through `merge_bindings`
+        // — e.g. if a non-YAML loader is added — still have an
+        // explicit place to inject workload-scope source. Today
+        // it's a no-op for the YAML path.)
+        // Workload-level `bindings:` (top-level YAML block) reach
+        // this function via two paths:
+        //
+        // 1. **Op-merge**: `merge_bindings` at YAML-parse time
+        //    propagates them onto each op whose own bindings are
+        //    empty. Step 1 of `build_scope` then ingests them
+        //    from the first op's GkSource into `scope.bindings`.
+        //
+        // 2. **`workload_level_gk` parameter**: the runner passes
+        //    them in directly, for the case where (1) didn't
+        //    fire — e.g. a workload with `bindings:` and only
+        //    phased ops where every phase needs its own kernel,
+        //    so the OUTER `all_ops_for_compile` is empty.
+        //
+        // When (1) fires, scope already has the bindings; appending
+        // the same text via (2) would duplicate every line and
+        // surface as `duplicate node name` at GK assembly. So we
+        // gate (2) on whether the scope already ingested any
+        // workload-level GK source.
+        let scope_already_has_gk = ops.iter().any(|op|
+            matches!(&op.bindings, BindingsDef::GkSource(s) if !s.trim().is_empty()));
         let source = match workload_level_gk {
-            Some(extra) if !extra.trim().is_empty() => {
+            Some(extra) if !extra.trim().is_empty() && !scope_already_has_gk => {
                 let mut s = scope.emit();
-                if !s.ends_with('\n') { s.push('\n'); }
+                if !s.is_empty() && !s.ends_with('\n') { s.push('\n'); }
                 s.push_str(extra);
                 if !s.ends_with('\n') { s.push('\n'); }
                 s

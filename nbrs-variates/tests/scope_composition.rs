@@ -177,9 +177,9 @@ fn shared_modifier_survives_compilation_pipeline() {
     "#).unwrap();
 
     let prog = kernel.program();
-    assert_eq!(prog.output_modifier("running_total"), BindingModifier::Shared);
-    assert_eq!(prog.output_modifier("error_count"), BindingModifier::Shared);
-    assert_eq!(prog.output_modifier("normal_val"), BindingModifier::None);
+    assert_eq!(prog.output_modifier("running_total"), BindingModifier::SHARED);
+    assert_eq!(prog.output_modifier("error_count"), BindingModifier::SHARED);
+    assert_eq!(prog.output_modifier("normal_val"), BindingModifier::NONE);
 
     let mut shared = prog.shared_outputs();
     shared.sort();
@@ -193,7 +193,7 @@ fn shared_init_constant_folds() {
         shared init budget = 100
     "#).unwrap();
 
-    assert_eq!(kernel.program().output_modifier("budget"), BindingModifier::Shared);
+    assert_eq!(kernel.program().output_modifier("budget"), BindingModifier::SHARED);
     assert_eq!(kernel.get_constant("budget").unwrap().as_u64(), 100);
 }
 
@@ -211,9 +211,9 @@ fn final_modifier_survives_compilation_pipeline() {
     "#).unwrap();
 
     let prog = kernel.program();
-    assert_eq!(prog.output_modifier("dataset"), BindingModifier::Final);
-    assert_eq!(prog.output_modifier("dim"), BindingModifier::Final);
-    assert_eq!(prog.output_modifier("mutable_val"), BindingModifier::None);
+    assert_eq!(prog.output_modifier("dataset"), BindingModifier::FINAL);
+    assert_eq!(prog.output_modifier("dim"), BindingModifier::FINAL);
+    assert_eq!(prog.output_modifier("mutable_val"), BindingModifier::NONE);
 
     let mut finals = prog.final_outputs();
     finals.sort();
@@ -227,7 +227,7 @@ fn final_init_constant_folds() {
         final init max_dim = 512
     "#).unwrap();
 
-    assert_eq!(kernel.program().output_modifier("max_dim"), BindingModifier::Final);
+    assert_eq!(kernel.program().output_modifier("max_dim"), BindingModifier::FINAL);
     assert_eq!(kernel.get_constant("max_dim").unwrap().as_u64(), 512);
 }
 
@@ -353,9 +353,9 @@ fn scope_pipeline_with_shared_and_final() {
     "#).unwrap();
 
     let prog = outer.program();
-    assert_eq!(prog.output_modifier("error_budget"), BindingModifier::Shared);
-    assert_eq!(prog.output_modifier("max_dim"), BindingModifier::Final);
-    assert_eq!(prog.output_modifier("normal"), BindingModifier::None);
+    assert_eq!(prog.output_modifier("error_budget"), BindingModifier::SHARED);
+    assert_eq!(prog.output_modifier("max_dim"), BindingModifier::FINAL);
+    assert_eq!(prog.output_modifier("normal"), BindingModifier::NONE);
 
     // Inner scope sees the outer's constants via bind
     let mut inner = compile_gk(r#"
@@ -630,7 +630,7 @@ fn shared_init_compiles_to_slot_with_initial_value() {
 
     // Output exists with Shared modifier.
     assert_eq!(kernel.program().output_modifier("counter"),
-        BindingModifier::Shared);
+        BindingModifier::SHARED);
     // And it's also a real input slot — the compiler created
     // the slot+passthrough pair.
     assert!(kernel.program().find_input("counter").is_some(),

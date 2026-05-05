@@ -21,6 +21,7 @@ mod metricsql_cmd;
 mod palette;
 mod plot;
 mod plot_metrics;
+mod replay;
 mod report;
 mod report_cmd;
 mod run;
@@ -132,6 +133,14 @@ fn main() {
         "run" => {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(run::run_command(&args));
+        }
+        "replay" => {
+            // SRD-63 §6: walk readout_snapshots from the
+            // session db, write the latest render of each
+            // tuple to stdout. Use to reproduce the
+            // operator-visible status / DONE lines after a
+            // run finished.
+            replay::replay_command(&args[1..]);
         }
         #[cfg(feature = "openapi")]
         "describe-openapi" => {

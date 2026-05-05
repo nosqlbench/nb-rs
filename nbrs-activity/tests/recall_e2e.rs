@@ -175,7 +175,7 @@ async fn perfect_recall_when_keys_match_ground_truth() {
 
     validated.execute(0, &ctx).await.expect("validation should not error");
 
-    let (count, mean) = snapshot_mean(&vm, "recall@10");
+    let (count, mean) = snapshot_mean(&vm, "recall_at_10");
     assert_eq!(count, 1, "one recall score should be recorded");
     assert!((mean - 1.0).abs() < 1e-9,
         "perfect-recall scenario should produce recall=1.0, got {mean}");
@@ -199,7 +199,7 @@ async fn zero_recall_when_returned_keys_do_not_match() {
 
     validated.execute(0, &ctx).await.expect("validation should not error");
 
-    let (count, mean) = snapshot_mean(&vm, "recall@10");
+    let (count, mean) = snapshot_mean(&vm, "recall_at_10");
     assert_eq!(count, 1);
     assert_eq!(mean, 0.0, "no overlap → recall must be 0.0");
 }
@@ -252,7 +252,7 @@ async fn averaged_recall_across_three_cycles() {
         validated.execute(cycle, &ctx).await.expect("ok");
     }
 
-    let (count, mean) = snapshot_mean(&vm, "recall@10");
+    let (count, mean) = snapshot_mean(&vm, "recall_at_10");
     assert_eq!(count, 3, "three recall scores should be recorded");
     assert!((mean - 0.5).abs() < 1e-9,
         "average of (1.0, 0.5, 0.0) should be 0.5, got {mean}");
@@ -311,7 +311,7 @@ async fn zero_recall_when_column_name_does_not_match() {
 
     validated.execute(0, &ctx).await.expect("ok");
 
-    let (_, mean) = snapshot_mean(&vm, "recall@4");
+    let (_, mean) = snapshot_mean(&vm, "recall_at_4");
     assert_eq!(mean, 0.0,
         "mismatched column name must produce recall=0 (reproduces the bug)");
 }
@@ -348,7 +348,7 @@ async fn zero_recall_when_body_is_empty() {
 
     validated.execute(0, &ctx).await.expect("ok");
 
-    let (count, mean) = snapshot_mean(&vm, "recall@10");
+    let (count, mean) = snapshot_mean(&vm, "recall_at_10");
     assert_eq!(count, 1, "empty-body should still record a score");
     assert_eq!(mean, 0.0, "empty body → recall=0.0");
 }

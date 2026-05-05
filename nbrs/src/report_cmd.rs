@@ -30,6 +30,17 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
     let (workload_path, rest) = extract_workload(args);
     let workload_arg = workload_path.as_ref()
         .map(|p| format!("workload={}", p.display()));
+    // Resolve `--session` once at the top so every downstream
+    // path (item lookup in db, forwarded render commands,
+    // markdown output, text-section writes) sees the same
+    // session dir. Read-side only — never mutates `logs/latest`.
+    let session_dir: Option<PathBuf> =
+        nbrs_activity::session::read_session_dir(args);
+    let session_db: Option<PathBuf> =
+        session_dir.as_ref().map(|d| d.join("metrics.db"));
+    let output_root: PathBuf = session_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("logs/latest"));
 
     // Promote `nbrs report plot ...` / `nbrs report table ...` to
     // the kind-filtered form, peeling the kind keyword off so the
@@ -45,7 +56,7 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         (kind_filter, rest)
     };
 
-    let items = match resolve_items(workload_path.as_deref()) {
+    let items = match resolve_items(workload_path.as_deref(), session_db.as_deref()) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("nbrs report: {e}");
@@ -57,11 +68,11 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         // Listing form — no selector after the (optional) kind
         // keyword.
         None => print_listing(&items, kind_filter),
-        Some("all") => render_all(&items, kind_filter, &rest[1..], workload_arg.as_deref()),
+        Some("all") => render_all(&items, kind_filter, &rest[1..], workload_arg.as_deref(), &output_root, session_db.as_deref()),
         Some("figure") => {
             let n_arg = rest.get(1).cloned().unwrap_or_default();
             let pass = rest.get(2..).unwrap_or(&[]);
-            render_by_index(&items, kind_filter, &n_arg, pass, workload_arg.as_deref());
+            render_by_index(&items, kind_filter, &n_arg, pass, workload_arg.as_deref(), &output_root, session_db.as_deref());
         }
         // Flag-form: `nbrs plot --name X --series Y ...` — the
         // user is driving the renderer directly with its own
@@ -71,10 +82,13 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         // selection (`nbrs plot X`) but lets the user supply
         // ad-hoc `--metric`/`--filter`/etc.
         Some(arg) if arg.starts_with("--") => {
-            forward_renderer_flags(kind_filter, &rest, workload_arg.as_deref());
+            forward_renderer_flags(
+                kind_filter, &rest, workload_arg.as_deref(),
+                session_db.as_deref(),
+            );
         }
         Some(glob) => {
-            render_by_glob(&items, kind_filter, glob, &rest[1..], workload_arg.as_deref());
+            render_by_glob(&items, kind_filter, glob, &rest[1..], workload_arg.as_deref(), &output_root, session_db.as_deref());
         }
     }
 }
@@ -87,9 +101,22 @@ fn forward_renderer_flags(
     kind_filter: KindFilter,
     args: &[String],
     workload_arg: Option<&str>,
+    session_db: Option<&Path>,
 ) {
     let mut full: Vec<String> = Vec::new();
     if let Some(w) = workload_arg { full.push(w.to_string()); }
+    // Re-inject the resolved session db as an explicit `--db`
+    // (overridable by anything in `args` that supplies its own
+    // `--db`) so the downstream renderer doesn't fall back to
+    // `logs/latest/metrics.db` after we stripped `--session`
+    // out of `args` in `extract_workload`.
+    if let Some(db) = session_db {
+        let already_has_db = args.iter().any(|a| a == "--db" || a.starts_with("--db="));
+        if !already_has_db {
+            full.push("--db".to_string());
+            full.push(db.to_string_lossy().into_owned());
+        }
+    }
     full.extend(args.iter().cloned());
     match kind_filter {
         KindFilter::Plot => crate::plot_metrics::plot_metrics_command(&full),
@@ -148,19 +175,56 @@ struct ResolvedItem {
 }
 
 fn extract_workload(args: &[String]) -> (Option<PathBuf>, Vec<String>) {
+    // Global flags consumed elsewhere (`--session*` by
+    // `read_session_dir`, `workload=` here, startup flags by
+    // `apply_session_directory_at_startup`). Peel them so the
+    // dispatch loop's `rest.first()` classification sees only
+    // the report-subcommand vocabulary (`all`, `figure`,
+    // glob, `--name`, etc.). Without this, `nbrs report
+    // --session local/foo` would route to flag-form because
+    // `--session` is `--`-prefixed.
+    const FLAGS_WITH_VALUES: &[&str] = &[
+        "--session", "--session-name", "--session-path",
+        "--session-reuse", "--session-keep", "--session-shelflife",
+        "--resume", "--gk-lib",
+    ];
+    const BOOL_FLAGS: &[&str] = &[
+        "--strict", "--no-prompt", "--resume-latest",
+        "--force-retry-failed",
+    ];
     let mut workload_path: Option<PathBuf> = None;
     let mut rest: Vec<String> = Vec::new();
-    for a in args {
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
         if let Some(p) = a.strip_prefix("workload=") {
             workload_path = Some(PathBuf::from(p));
-        } else {
-            rest.push(a.clone());
+            i += 1;
+            continue;
         }
+        if FLAGS_WITH_VALUES.contains(&a.as_str()) {
+            // Skip the flag and its value.
+            i += 2;
+            continue;
+        }
+        if FLAGS_WITH_VALUES.iter().any(|f| a.starts_with(&format!("{f}="))) {
+            i += 1;
+            continue;
+        }
+        if BOOL_FLAGS.contains(&a.as_str()) {
+            i += 1;
+            continue;
+        }
+        rest.push(a.clone());
+        i += 1;
     }
     (workload_path, rest)
 }
 
-fn resolve_items(workload_path: Option<&Path>) -> Result<Vec<ResolvedItem>, String> {
+fn resolve_items(
+    workload_path: Option<&Path>,
+    session_db: Option<&Path>,
+) -> Result<Vec<ResolvedItem>, String> {
     if let Some(p) = workload_path {
         let resolved = crate::cli::resolve_workload_path(&p.to_string_lossy())
             .map(PathBuf::from)
@@ -197,7 +261,9 @@ fn resolve_items(workload_path: Option<&Path>) -> Result<Vec<ResolvedItem>, Stri
         // value carries the kind keyword + name + optional
         // `label "..."` + spec body — the same shape the
         // report parser ingests.
-        let db_path = std::path::PathBuf::from("logs/latest/metrics.db");
+        let db_path = session_db
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("logs/latest/metrics.db"));
         if !db_path.exists() { return Ok(Vec::new()); }
         let conn = match rusqlite::Connection::open(&db_path) {
             Ok(c) => c,
@@ -346,6 +412,8 @@ fn render_all(
     filter: KindFilter,
     passthrough: &[String],
     workload_arg: Option<&str>,
+    output_root: &Path,
+    session_db: Option<&Path>,
 ) {
     // SRD-46: figure numbers count only plot+table items, in
     // their order across the whole resolved item list. The
@@ -356,7 +424,7 @@ fn render_all(
     for item in items.iter() {
         if item.kind.is_figure() { fig_num += 1; }
         if !filter.matches(item.kind) { continue; }
-        render_one(fig_num, item, passthrough, workload_arg);
+        render_one(fig_num, item, passthrough, workload_arg, output_root, session_db);
     }
 }
 
@@ -366,6 +434,8 @@ fn render_by_index(
     n_arg: &str,
     passthrough: &[String],
     workload_arg: Option<&str>,
+    output_root: &Path,
+    session_db: Option<&Path>,
 ) {
     let n: usize = match n_arg.parse() {
         Ok(v) if v >= 1 => v,
@@ -380,7 +450,7 @@ fn render_by_index(
                 item.kind.as_str(), filter);
             std::process::exit(2);
         }
-        render_one(n, item, passthrough, workload_arg);
+        render_one(n, item, passthrough, workload_arg, output_root, session_db);
     } else {
         eprintln!("nbrs report: figure {n} out of range (1..{})", items.len());
         std::process::exit(2);
@@ -393,6 +463,8 @@ fn render_by_glob(
     glob: &str,
     passthrough: &[String],
     workload_arg: Option<&str>,
+    output_root: &Path,
+    session_db: Option<&Path>,
 ) {
     // Build (figure_num, item) pairs for figures that pass the
     // kind filter and the glob. Counter advances over every
@@ -410,7 +482,7 @@ fn render_by_glob(
         std::process::exit(2);
     }
     for (n, item) in matches {
-        render_one(n, item, passthrough, workload_arg);
+        render_one(n, item, passthrough, workload_arg, output_root, session_db);
     }
 }
 
@@ -419,6 +491,8 @@ fn render_one(
     item: &ResolvedItem,
     passthrough: &[String],
     workload_arg: Option<&str>,
+    output_root: &Path,
+    session_db: Option<&Path>,
 ) {
     use nbrs_workload::report::Kind;
     // File items are scope directives — they don't render
@@ -428,11 +502,20 @@ fn render_one(
         return;
     }
     if matches!(item.kind, Kind::Text) {
-        render_text(item);
+        render_text(item, output_root);
         return;
     }
     let mut base: Vec<String> = Vec::new();
     if let Some(w) = workload_arg { base.push(w.to_string()); }
+    // Re-inject the resolved session db as an explicit `--db`
+    // so the downstream renderer (which sees only `base` plus
+    // `passthrough`, neither containing the original `--session`
+    // since `extract_workload` peeled it off) reads from the
+    // user-named session and not from `logs/latest`.
+    if let Some(db) = session_db {
+        base.push("--db".into());
+        base.push(db.to_string_lossy().into_owned());
+    }
     base.push(format!("--name={}", item.name));
     base.push("--figure-num".into());
     base.push(n.to_string());
@@ -442,7 +525,7 @@ fn render_one(
     }
     if let Some(t) = item.target_file.as_deref() {
         base.push("--report".into());
-        base.push(format!("logs/latest/{t}"));
+        base.push(output_root.join(t).to_string_lossy().into_owned());
     }
     // Plot-only style flags — appended only when forwarding to
     // the plot renderer. The summary (table) renderer doesn't
@@ -490,9 +573,9 @@ fn render_one(
 /// is set). The heading uses the label, falling back to a
 /// prettified canonical name. No figure number — text isn't a
 /// figure (SRD-46).
-fn render_text(item: &ResolvedItem) {
+fn render_text(item: &ResolvedItem, output_root: &Path) {
     let target = item.target_file.as_deref().unwrap_or("summary.md");
-    let path = std::path::PathBuf::from("logs/latest").join(target);
+    let path = output_root.join(target);
     let label = item.label.clone()
         .unwrap_or_else(|| crate::report::prettify_name(&item.name));
     let heading_display = format!("{label} (text)");
