@@ -244,7 +244,7 @@ pub async fn run_command(args: &[String]) {
         // From here down the terminal is back in cooked mode
         // (or we never claimed it — `tui=off` path). Post-run
         // reports / errors are safe to print.
-        print_post_run_reports(&run_state, &run_result);
+        print_post_run_reports(args, &run_state, &run_result);
 
         if let Err(e) = run_result {
             eprintln!("error: {e}");
@@ -305,7 +305,7 @@ pub async fn run_command(args: &[String]) {
 
     // From here down the terminal is back in cooked mode.
     // Shared with the `tui=terminal` / `tui=off` path above.
-    print_post_run_reports(&run_state, &run_result);
+    print_post_run_reports(args, &run_state, &run_result);
 
     if let Err(ref e) = run_result {
         eprintln!("error: {e}");
@@ -342,9 +342,20 @@ pub async fn run_command(args: &[String]) {
 /// alternate screen would have buffered and discarded any
 /// inline writes).
 fn print_post_run_reports(
+    args: &[String],
     run_state: &nbrs_tui::run_state_actor::RunStateHandle,
     run_result: &Result<(), String>,
 ) {
+    // Resolve the *active* session dir for this run. When the
+    // user passed `--session-path`, `--logs-dir`, or
+    // `--session-name`, the session lives there — NOT under
+    // `logs/latest`, which still points at whatever the
+    // previous run left behind. Falling back to `logs/latest`
+    // when no override is set preserves the historical
+    // bare-CLI behavior.
+    let session_dir = nbrs_activity::session::read_session_dir(args)
+        .unwrap_or_else(|| std::path::PathBuf::from("logs/latest"));
+
     // SRD-46 auto-render: when the workload completed without
     // being aborted by the error handler, render every plot
     // item the runner persisted into the session db. Tables
@@ -353,11 +364,11 @@ fn print_post_run_reports(
     // (cross-crate from nbrs-activity); same fault-gate as
     // tables (run_result.is_ok() ⇒ render, else skip).
     if run_result.is_ok() {
-        auto_render_plots();
-        auto_inject_details();
+        auto_render_plots(&session_dir);
+        auto_inject_details(&session_dir);
     }
 
-    if let Ok(entries) = std::fs::read_dir("logs/latest") {
+    if let Ok(entries) = std::fs::read_dir(&session_dir) {
         let mut summary_paths: Vec<std::path::PathBuf> = entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
@@ -387,12 +398,13 @@ fn print_post_run_reports(
     print_post_run_summary(run_state, run_result);
 }
 
-/// Render every persisted plot item from `logs/latest/metrics.db`
-/// post-run (SRD-46). Each plot becomes a PNG in the session
-/// directory and a heading in `summary.md`. Failures are logged
-/// and don't abort other plots — auto-rendering is best-effort.
-fn auto_render_plots() {
-    let db_path = std::path::PathBuf::from("logs/latest/metrics.db");
+/// Render every persisted plot item from
+/// `<session_dir>/metrics.db` post-run (SRD-46). Each plot
+/// becomes a PNG in the session directory and a heading in
+/// `summary.md`. Failures are logged and don't abort other
+/// plots — auto-rendering is best-effort.
+fn auto_render_plots(session_dir: &std::path::Path) {
+    let db_path = session_dir.join("metrics.db");
     if !db_path.exists() { return; }
     let conn = match rusqlite::Connection::open(&db_path) {
         Ok(c) => c,
@@ -470,8 +482,7 @@ fn auto_render_plots() {
 /// end-of-run (`session`, `start_time`, `end_time`,
 /// `phase_count`, `scenario_count`, `workload_file`,
 /// `adapter`).
-fn auto_inject_details() {
-    let session_dir = std::path::PathBuf::from("logs/latest");
+fn auto_inject_details(session_dir: &std::path::Path) {
     let db_path = session_dir.join("metrics.db");
     if !db_path.exists() { return; }
     let conn = match rusqlite::Connection::open(&db_path) {
@@ -590,4 +601,132 @@ fn days_to_ymd(mut days: i64) -> (i32, u32, u32) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = (y + if m <= 2 { 1 } else { 0 }) as i32;
     (year, m as u32, d as u32)
+}
+
+// ── cli_spec entry ─────────────────────────────────────────
+
+use crate::cli_spec::{
+    Arity, Category, Command, Flag, Handler, Level,
+    ParsedCommand, ValueProvider,
+};
+
+/// `nbrs run` — workload execution. The argument grammar
+/// is too rich for the generic walker (workload `key=value`
+/// params, scenario auto-promotion, adapter passthrough), so
+/// the spec advertises the well-known flag surface for
+/// completion + help and the handler delegates to the
+/// existing async parser.
+pub fn spec() -> Command {
+    Command {
+        name: "run",
+        help: "Execute a workload. Accepts `workload=<file>`,\n\
+               `key=value` workload params, `scenario=<name>`,\n\
+               and adapter flags.",
+        category: Category::Workloads,
+        level: Level::Workload,
+        flags: standard_run_flags(),
+        positionals: Vec::new(),
+        subcommands: Vec::new(),
+        handler: Some(Handler::Async(run_handler)),
+        raw_args: true,
+        completion_override: None,
+    }
+}
+
+fn run_handler(p: ParsedCommand)
+    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>>
+{
+    Box::pin(async move {
+        // Re-prepend the matched command path's last segment
+        // ("run") because the legacy parser expects argv[0] ==
+        // "run". `path` here is `["nbrs", "run"]`; strip the
+        // first ("nbrs") and pass the rest plus the raw tail.
+        let mut argv: Vec<String> = vec!["run".into()];
+        argv.extend(p.raw.iter().cloned());
+        run_command(&argv).await;
+        Ok(())
+    })
+}
+
+fn standard_run_flags() -> Vec<Flag> {
+    vec![
+        Flag {
+            long: "--strict", short: None, aliases: &[],
+            arity: Arity::Bool, value: ValueProvider::None,
+            help: "Strict workload-param validation.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--no-prompt", short: None, aliases: &[],
+            arity: Arity::Bool, value: ValueProvider::None,
+            help: "Don't prompt; assume non-interactive.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--resume-latest", short: None, aliases: &[],
+            arity: Arity::Bool, value: ValueProvider::None,
+            help: "Resume the most recent compatible session.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--force-retry-failed", short: None, aliases: &[],
+            arity: Arity::Bool, value: ValueProvider::None,
+            help: "Retry a previously failed phase on resume.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--session", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::None,
+            help: "SRD-04 session umbrella (path or name).",
+            repeatable: false,
+        },
+        Flag {
+            long: "--session-name", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::None,
+            help: "Override session name.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--session-path", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::Path,
+            help: "Override session directory.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--session-reuse", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::None,
+            help: "Reuse policy for the chosen session.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--session-keep", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::None,
+            help: "Retention policy.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--session-shelflife", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::None,
+            help: "Time-based retention window.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--resume", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::Path,
+            help: "Resume from a specific session.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--gk-lib", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::Path,
+            help: "GK library path override.",
+            repeatable: false,
+        },
+        Flag {
+            long: "--readout", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::None,
+            help: "Readout-binding override.",
+            repeatable: true,
+        },
+    ]
 }

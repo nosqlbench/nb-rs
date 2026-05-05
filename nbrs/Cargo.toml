@@ -58,7 +58,7 @@ tokio = { version = "1", features = ["full"] }
 parking_lot = "0.12"
 glob = "0.3"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 nbrs-tui = { path = "../nbrs-tui", version = "0.1.1" }
 nbrs-web = { path = "../nbrs-web", version = "0.1.1" }

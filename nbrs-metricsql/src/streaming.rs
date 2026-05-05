@@ -2670,10 +2670,6 @@ mod tests {
         out
     }
 
-    fn random_input(rng: &mut XorShift64, shape: &Shape) -> Vec<Series> {
-        random_input_with(rng, shape, false)
-    }
-
     /// Flatten `Vec<Series>` into per-sample tuples so the
     /// partitioner can shuffle independent of series
     /// boundaries — that's what makes the property test

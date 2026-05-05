@@ -102,7 +102,7 @@ specifies how the kernel runs.
 
 ### TUI / CLI / personas
 
-- [SRD 60: CLI Structure](sysref/60_cli.md), [SRD 61: Personas](sysref/61_personas.md), [SRD 62: TUI Layout](sysref/62_tui_layout.md).
+- [SRD 60: CLI Structure](sysref/60_cli.md), [SRD 61: Personas](sysref/61_personas.md), [SRD 62: TUI Layout](sysref/62_tui_layout.md), [SRD 64: Report CLI](sysref/64_report_cli.md) *(DRAFT)*.
 
 ---
 

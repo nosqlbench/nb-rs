@@ -225,3 +225,84 @@ fn parse_args(args: &[String]) -> InspectorOpts {
     }
     opts
 }
+
+// ── cli_spec entry ─────────────────────────────────────────
+
+use crate::cli_spec::{
+    Arity, Category, Command, Flag, Handler, Level,
+    ParsedCommand, ValueProvider,
+};
+
+/// `nbrs attach` — connect to a running nbrs's OOB
+/// introspection socket. Walker-parsed: single flat flag set,
+/// no subcommands.
+pub fn spec() -> Command {
+    Command {
+        name: "attach",
+        help: "Connect to a running nbrs's introspection socket.",
+        category: Category::Shell,
+        level: Level::Workload,
+        flags: vec![
+            Flag {
+                long: "--pid", short: None, aliases: &[],
+                arity: Arity::Value, value: ValueProvider::None,
+                help: "Filter by PID (resolves <runtime-dir>/nbrs-<pid>.sock).",
+                repeatable: false,
+            },
+            Flag {
+                long: "--socket", short: None, aliases: &[],
+                arity: Arity::Value, value: ValueProvider::Path,
+                help: "Direct path to the inspector socket.",
+                repeatable: false,
+            },
+            Flag {
+                long: "--command", short: Some("-c"), aliases: &[],
+                arity: Arity::Value, value: ValueProvider::None,
+                help: "One-shot command(s); repeat for multiple.",
+                repeatable: true,
+            },
+            Flag {
+                long: "--no-tui", short: None, aliases: &[],
+                arity: Arity::Bool, value: ValueProvider::None,
+                help: "Disable TUI mode.",
+                repeatable: false,
+            },
+            Flag {
+                long: "--tui", short: None, aliases: &[],
+                arity: Arity::Value, value: ValueProvider::Custom(static_tui),
+                help: "tui=on|off override.",
+                repeatable: false,
+            },
+        ],
+        positionals: Vec::new(),
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: false,
+        completion_override: None,
+    }
+}
+
+fn static_tui(p: &str, _: &[&str]) -> Vec<String> {
+    ["on", "off"].iter()
+        .filter(|s| s.starts_with(p))
+        .map(|s| s.to_string()).collect()
+}
+
+fn handle(p: ParsedCommand) -> Result<(), String> {
+    // Re-build legacy argv shape so the existing parser/handler
+    // can run unchanged. The spec validated the flag set
+    // upstream; this just translates ParsedCommand → argv.
+    let mut argv: Vec<String> = Vec::new();
+    if let Some(v) = p.flag("--pid")    { argv.push("--pid".into());    argv.push(v.into()); }
+    if let Some(v) = p.flag("--socket") { argv.push("--socket".into()); argv.push(v.into()); }
+    for c in p.flag_all("--command") {
+        argv.push("--command".into());
+        argv.push(c.clone());
+    }
+    if p.bool("--no-tui") { argv.push("--no-tui".into()); }
+    if let Some(v) = p.flag("--tui") {
+        argv.push(format!("tui={v}"));
+    }
+    inspector_command(&argv);
+    Ok(())
+}

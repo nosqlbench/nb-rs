@@ -277,7 +277,7 @@ mod tests {
                 assert_eq!(val_prefix, "1");
                 assert!(quote);
             }
-            other => panic!("expected LabelValue"),
+            other => panic!("expected LabelValue, got {other:?}"),
         }
     }
 
@@ -290,7 +290,7 @@ mod tests {
                 assert_eq!(val_prefix, "lab");
                 assert!(!quote);
             }
-            other => panic!("expected LabelValue"),
+            other => panic!("expected LabelValue, got {other:?}"),
         }
     }
 }

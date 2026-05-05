@@ -22,3 +22,20 @@ regex = "1"
 # "nbrs-workload is standalone" boundary from SRD-01 — see
 # `docs/internals/50_comprehensions_first_class.md`.)
 nbrs-variates = { path = "../nbrs-variates", version = "0.1.1" }
+
+# SRD-64 §6.4–§6.5: AST-preserving workload edit primitive.
+#
+# - tree-sitter + tree-sitter-yaml: parse the source YAML to
+#   a CST whose nodes carry byte ranges, so we can locate the
+#   target subtree without throwing away comments / whitespace
+#   / quote styles in the rest of the file.
+# - marked-yaml: emit new structural blocks (e.g. inserting a
+#   `report:` mapping where none existed) when we need to
+#   produce well-formed YAML that the splicer drops in.
+# - fs4: cross-platform cooperative file locks that serialise
+#   concurrent `nbrs report --add` writers against the same
+#   workload file.
+tree-sitter = "0.25"
+tree-sitter-yaml = "0.7"
+marked-yaml = "0.8"
+fs4 = "0.13"

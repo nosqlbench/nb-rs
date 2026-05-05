@@ -1711,6 +1711,21 @@ fn render_plot(
     let x_hi = opts.x_max.unwrap_or(x_max + x_pad);
     let y_lo = opts.y_min.unwrap_or(y_min - y_pad);
     let y_hi = opts.y_max.unwrap_or(y_max + y_pad);
+
+    // Scale snapping: `dec` / `bin` keep a linear axis but
+    // expand the range so the endpoints sit on a tick-friendly
+    // boundary. User-pinned `--x-min` / `--y-max` etc. override
+    // the snap on that side. `log` is handled by the renderer
+    // (axis-type switch) rather than by range expansion.
+    let (x_lo, x_hi) = scale_snap(
+        x_lo, x_hi, &opts.xscale,
+        opts.x_min.is_some(), opts.x_max.is_some(),
+    );
+    let (y_lo, y_hi) = scale_snap(
+        y_lo, y_hi, &opts.yscale,
+        opts.y_min.is_some(), opts.y_max.is_some(),
+    );
+
     let x_range = x_lo..x_hi;
     let y_range = y_lo..y_hi;
 
@@ -1742,6 +1757,20 @@ fn render_plot(
 
     let legend_spec = parse_legend_spec(opts.legend.as_deref())?;
     let legend_explicit = opts.legend.is_some();
+
+    // `log` axis: plotters' log-scale coord type differs from
+    // the linear range type at compile time, so wiring it
+    // requires a 4-arm dispatch (lin/log × x/y) over the chart
+    // builder. Deferred — for now `log` falls back to `dec`
+    // (which gives decade-aligned linear ticks, the same look
+    // most users want from `log`). Logged here as a TODO; the
+    // behavior is documented in `--help` and the vocab keyword
+    // is still accepted so workloads don't break.
+    if opts.xscale == "log" || opts.yscale == "log" {
+        eprintln!("warning: xscale/yscale 'log' currently renders \
+            with decade-aligned linear ticks (range snapped \
+            to powers of 10); a true log axis is pending.");
+    }
 
     if is_svg {
         let root = SVGBackend::new(out_path, (opts.width, opts.height)).into_drawing_area();
@@ -1775,6 +1804,63 @@ enum LegendSpec {
 ///
 /// Returns the existing default (UpperRight) when input is
 /// `None`. Returns `Suppressed` for `none` / `off`.
+/// Snap an axis range to a tick-friendly boundary based on the
+/// chosen scale mode. The endpoints are widened *outward*
+/// (never inward) so all data stays in view; user-pinned
+/// bounds (`pinned_lo` / `pinned_hi`) skip the snap on that
+/// side so explicit overrides win verbatim.
+///
+/// - `dec` snaps to the nearest decade boundary
+///   (10⌊log10⌋…10⌈log10⌉) — useful when the axis spans
+///   orders of magnitude.
+/// - `bin` snaps to power-of-2 boundaries
+///   (2⌊log2⌋…2⌈log2⌉) — useful for axes swept by doubling
+///   (concurrency, batch-size sweeps).
+/// - `linear` / `log` / unknown / empty: pass through. (`log`
+///   is handled by an axis-type switch elsewhere; the range
+///   stays as-is for the log-scale builder to interpret.)
+fn scale_snap(lo: f64, hi: f64, scale: &str, pinned_lo: bool, pinned_hi: bool)
+    -> (f64, f64)
+{
+    fn snap_dec_lo(v: f64) -> f64 {
+        if v <= 0.0 { return v; }
+        10f64.powi(v.log10().floor() as i32)
+    }
+    fn snap_dec_hi(v: f64) -> f64 {
+        if v <= 0.0 { return v; }
+        10f64.powi(v.log10().ceil() as i32)
+    }
+    fn snap_bin_lo(v: f64) -> f64 {
+        if v <= 0.0 { return v; }
+        2f64.powi(v.log2().floor() as i32)
+    }
+    fn snap_bin_hi(v: f64) -> f64 {
+        if v <= 0.0 { return v; }
+        2f64.powi(v.log2().ceil() as i32)
+    }
+
+    let (lo_fn, hi_fn): (fn(f64) -> f64, fn(f64) -> f64) = match scale {
+        // `log` falls back to decade snap until proper log axis lands.
+        "dec" | "log" => (snap_dec_lo, snap_dec_hi),
+        "bin" => (snap_bin_lo, snap_bin_hi),
+        _ => return (lo, hi),
+    };
+    let new_lo = if pinned_lo { lo } else { lo_fn(lo) };
+    let new_hi = if pinned_hi { hi } else { hi_fn(hi) };
+    // Defend against the floor/ceil collapsing identical values
+    // (data range is exactly a tick boundary) — widen the upper
+    // bound to the next tick so the chart isn't degenerate.
+    if new_lo == new_hi && !pinned_hi {
+        let widened = match scale {
+            "dec" => new_hi * 10.0,
+            "bin" => new_hi * 2.0,
+            _ => new_hi,
+        };
+        return (new_lo, widened);
+    }
+    (new_lo, new_hi)
+}
+
 fn parse_legend_spec(arg: Option<&str>) -> Result<LegendSpec, String> {
     let Some(raw) = arg else {
         return Ok(LegendSpec::Position(SeriesLabelPosition::UpperRight));

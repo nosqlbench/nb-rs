@@ -465,3 +465,64 @@ pub fn stop_daemon() -> Result<(), String> {
     eprintln!("nbrs web: stopped daemon (pid {pid})");
     Ok(())
 }
+
+// ── cli_spec entry ─────────────────────────────────────────
+
+/// `nbrs web` — daemon command. raw_args=true: the flag set
+/// is mostly fine for the walker but the handler currently
+/// expects argv[0] == "web" (it's invoked via `daemon::web_command(&args)`
+/// not `&args[1..]`), so route raw to keep the contract.
+pub fn spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Arity, Category, Command, Flag, Handler,
+        Level, ParsedCommand, ValueProvider};
+    fn handle(p: ParsedCommand) -> Result<(), String> {
+        // web_command expects argv with `web` as argv[0].
+        let mut argv: Vec<String> = vec!["web".into()];
+        argv.extend(p.raw.iter().cloned());
+        web_command(&argv);
+        Ok(())
+    }
+    Command {
+        name: "web",
+        help: "Run the nbrs web daemon.",
+        category: Category::Server,
+        level: Level::FullSurface,
+        flags: vec![
+            Flag {
+                long: "--bind", short: None, aliases: &[],
+                arity: Arity::Value, value: ValueProvider::None,
+                help: "Bind address (e.g. 127.0.0.1).",
+                repeatable: false,
+            },
+            Flag {
+                long: "--port", short: None, aliases: &[],
+                arity: Arity::Value, value: ValueProvider::None,
+                help: "Listen port.",
+                repeatable: false,
+            },
+            Flag {
+                long: "--daemon", short: None, aliases: &[],
+                arity: Arity::Bool, value: ValueProvider::None,
+                help: "Detach as a background daemon.",
+                repeatable: false,
+            },
+            Flag {
+                long: "--stop", short: None, aliases: &[],
+                arity: Arity::Bool, value: ValueProvider::None,
+                help: "Stop a running daemon.",
+                repeatable: false,
+            },
+            Flag {
+                long: "--restart", short: None, aliases: &[],
+                arity: Arity::Bool, value: ValueProvider::None,
+                help: "Restart a running daemon.",
+                repeatable: false,
+            },
+        ],
+        positionals: Vec::new(),
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: true,
+        completion_override: None,
+    }
+}

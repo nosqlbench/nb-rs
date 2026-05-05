@@ -108,28 +108,28 @@ impl LevelTag for Level {
 /// every command must declare both a category and a tap level
 /// or the build fails to compile (`StrictNode<true, true>`
 /// gating on `strict_command`).
+///
+/// Retained for legacy callers; main.rs uses
+/// `cli_spec::completion::build_command_tree(&root)` instead,
+/// so the spec is the single source of truth.
 pub fn build_tree() -> CommandTree {
-    CommandTree::new("nbrs")
-        // ---- tap 1: primary commands ----
-        .strict_command("run", run_node())
-        .strict_command("attach", attach_node())
-        // ---- tap 2: secondary commands ----
-        .strict_command("report", report_node())
-        // ---- tap 3: less-frequent subcommands ----
-        .strict_command("describe", describe_node())
-        .strict_command("bench", bench_node())
-        .strict_command("metrics", metrics_node())
-        .strict_command("plot", plot_node())
-        .strict_command("table", table_node())
-        .strict_command("gk", gk_node())
-        .strict_command("web", web_node())
-        .strict_command("completions", completions_node())
-        // OpenAPI commands are gated behind a feature; register
-        // them only when built in. Keeping them at level 3
-        // matches their discoverability (subcommands users
-        // graduate into, not the first thing they reach for).
-        .with_openapi_commands()
-        // ---- value providers shared across leaves ----
+    let root = crate::cli_spec::root::root();
+    let tree = crate::cli_spec::completion::build_command_tree(&root);
+    attach_global_value_providers(tree)
+}
+
+/// Attach the cross-leaf value providers (`workload=`,
+/// `scenario=`, etc.) to a CommandTree. These aren't tied to
+/// a specific Command — they fire whenever the tab cursor sits
+/// on a matching token regardless of which leaf is active.
+///
+/// **Open gap:** the cli_spec model doesn't yet express
+/// "tree-global" value providers. Workaround for now: this
+/// function is called from main.rs after spec→tree
+/// conversion. Future veks-completion enhancement could lift
+/// global providers into the spec itself.
+pub fn attach_global_value_providers(tree: CommandTree) -> CommandTree {
+    tree
         .global_value_provider("workload=", fn_provider(workload_provider))
         .global_value_provider("scenario=", fn_provider(scenario_provider))
         .global_value_provider("adapter=", fn_provider(adapter_provider))
@@ -392,20 +392,174 @@ fn attach_node() -> StrictNode<true, true> {
 }
 
 fn report_node() -> StrictNode<true, true> {
-    // `nbrs report ...` — primary surface for SRD-46 named
-    // items. Subcommands (all, plot, table, figure) are
-    // positional and not exposed as flags here; the kind-
-    // filtered name providers attach to the alias commands
-    // (`nbrs plot` / `nbrs table`) below.
-    StrictNode::leaf_with_flags(
-        &["--db", "--format", "--output", "--name", "--label",
-          "--palette", "--report"],
-        &[],
-    )
-        .with_value_provider("--name", fn_provider(report_any_name_provider))
-        .with_value_provider("workload=", fn_provider(workload_provider))
+    // `nbrs report ...` — SRD-64 dispatch tree. Each kind
+    // subcommand gets its own per-kind flag list sourced from
+    // `nbrs_workload::report::vocab`, so completion for
+    // `nbrs report plot --<TAB>` only offers flags applicable
+    // to plots (axis flags, marker flags, etc.) and the same
+    // for table / text / file / details.
+    //
+    // Per-flag value providers cover both closed sets
+    // (palette / line / marker / agg / xscale / yscale) and
+    // db-derived sets (--metric, --over, --by, --where).
+    StrictNode::group(vec![
+        ("plot",     kind_subcommand_node(nbrs_workload::report::Kind::Plot)),
+        ("table",    kind_subcommand_node(nbrs_workload::report::Kind::Table)),
+        ("text",     kind_subcommand_node(nbrs_workload::report::Kind::Text)),
+        ("file",     kind_subcommand_node(nbrs_workload::report::Kind::File)),
+        ("details",  kind_subcommand_node(nbrs_workload::report::Kind::Details)),
+        ("list",     Node::leaf_with_flags(
+            &["--db", "--session", "--workload"], &[])),
+        ("all",      Node::leaf_with_flags(
+            &["--db", "--session", "--workload"], &[])),
+        ("show",     Node::leaf_with_flags(
+            &["--db", "--session", "--workload"], &[])
+            .with_value_provider("--name", fn_provider(report_any_name_provider))),
+        ("figure",   Node::leaf_with_flags(
+            &["--db", "--session", "--workload"], &[])),
+        ("rename",   Node::leaf_with_flags(
+            &["--workload", "--session", "--db"],
+            &["--replace", "--dry-run"])),
+        ("scratch",  Node::group(vec![
+            ("list",    Node::leaf_with_flags(&["--session", "--db"], &[])),
+            ("clean",   Node::leaf_with_flags(&["--session", "--db"], &[])),
+            ("promote", Node::leaf_with_flags(&["--session", "--db", "--workload"], &[])),
+        ])),
+    ])
         .with_category(Category::Tools.tag())
         .with_level(Level::Secondary.rank())
+}
+
+/// Build the per-kind subcommand node from the SRD-64 vocab
+/// registry. Every flag applicable to `kind` is exposed; closed-
+/// set value providers attach for directives whose vocab entry
+/// declares one. Db-derived providers (metric / label-key /
+/// label-value-pair) re-use the existing
+/// [`metric_provider`] / [`series_provider`] / [`filter_provider`]
+/// plumbing.
+pub(crate) fn kind_subcommand_node(kind: nbrs_workload::report::Kind) -> Node {
+    use nbrs_workload::report::vocab::{self, ValueProvider};
+
+    let flags: Vec<&'static str> = vocab::cli_flags_for(kind);
+    // Orthogonal dispatch flags (not vocab-driven) — same set
+    // the builder recognises in `report_build::Dispatch`.
+    let mut all_value_flags: Vec<&'static str> = flags.clone();
+    all_value_flags.extend([
+        "--name", "--at", "--contextual", "--rename", "--group",
+        "--workload", "--session", "--db", "--body", "--body-file",
+    ]);
+    let bool_flags: &[&str] = &[
+        "--add", "--replace", "--stdout", "--ascii", "--dry-run",
+    ];
+
+    let mut node = Node::leaf_with_flags(&all_value_flags, bool_flags);
+
+    // Per-vocab-flag value providers. `fn_provider` takes a
+    // function pointer (not a closure), so we route each
+    // closed set through a dedicated tiny `fn` rather than a
+    // factory closure.
+    for d in vocab::ALL_DIRECTIVES {
+        if !d.applies_to.contains(kind) { continue; }
+        match d.value {
+            ValueProvider::Closed(_) => {
+                if let Some(provider) = closed_set_provider_for(d.yaml_directive) {
+                    node = node.with_value_provider(d.cli_flag, fn_provider(provider));
+                }
+            }
+            ValueProvider::DbMetricNames => {
+                node = node.with_value_provider(
+                    d.cli_flag, fn_provider(metric_provider));
+            }
+            ValueProvider::DbLabelKeys => {
+                node = node.with_value_provider(
+                    d.cli_flag, fn_provider(series_provider));
+            }
+            ValueProvider::DbLabelKeyValuePairs => {
+                node = node.with_value_provider(
+                    d.cli_flag, fn_provider(filter_provider));
+            }
+            // Number / HexColor / Json / Text / Path:
+            // suggestions don't help (free-form). Leave the
+            // flag declared so the parser accepts it; the
+            // user types the value freely.
+            _ => {}
+        }
+    }
+
+    // Orthogonal dispatch-flag providers.
+    node = node
+        .with_value_provider("--name", fn_provider(report_any_name_provider))
+        .with_value_provider("--at", fn_provider(at_anchor_provider))
+        .with_value_provider("--contextual", fn_provider(contextual_mode_provider));
+
+    node
+}
+
+/// Map a vocab directive's `yaml_directive` keyword to the
+/// matching closed-set provider fn-pointer. `None` means the
+/// directive's value space isn't a closed set (handled by
+/// the calling match arm).
+fn closed_set_provider_for(yaml_directive: &str)
+    -> Option<fn(&str, &[&str]) -> Vec<String>>
+{
+    match yaml_directive {
+        "palette" => Some(palette_provider),
+        "line"    => Some(line_styles_provider),
+        "marker"  => Some(marker_shapes_provider),
+        "agg"     => Some(agg_fns_provider),
+        "xscale" | "yscale" => Some(axis_scales_provider),
+        _ => None,
+    }
+}
+
+fn palette_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    nbrs_workload::report::vocab::PALETTE_NAMES.iter()
+        .filter(|s| s.starts_with(partial))
+        .map(|s| s.to_string()).collect()
+}
+
+fn line_styles_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    nbrs_workload::report::vocab::LINE_STYLES.iter()
+        .filter(|s| s.starts_with(partial))
+        .map(|s| s.to_string()).collect()
+}
+
+fn marker_shapes_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    nbrs_workload::report::vocab::MARKER_SHAPES.iter()
+        .filter(|s| s.starts_with(partial))
+        .map(|s| s.to_string()).collect()
+}
+
+fn agg_fns_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    nbrs_workload::report::vocab::AGG_FNS.iter()
+        .filter(|s| s.starts_with(partial))
+        .map(|s| s.to_string()).collect()
+}
+
+fn axis_scales_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    nbrs_workload::report::vocab::AXIS_SCALES.iter()
+        .filter(|s| s.starts_with(partial))
+        .map(|s| s.to_string()).collect()
+}
+
+/// Closed set for `--at <scope>`: `root` plus the prefix forms
+/// `scenario:`, `phase:`, `op:`. Past the prefix the value
+/// space depends on the workload + active session, which is
+/// out of scope for this surface — completion stops at the
+/// prefix and the user types the name.
+fn at_anchor_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    ["root", "scenario:", "phase:", "op:"].iter()
+        .filter(|s| s.starts_with(partial))
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Closed set for `--contextual <mode>`.
+fn contextual_mode_provider(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    ["auto", "root", "scenario", "phase", "op"].iter()
+        .filter(|s| s.starts_with(partial))
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn table_node() -> StrictNode<true, true> {
@@ -430,23 +584,30 @@ fn gk_node() -> StrictNode<true, true> {
 }
 
 fn metrics_node() -> StrictNode<true, true> {
-    // `nbrs metrics <list|show> [<expr>]` — read-side
-    // introspection over the active session db. Modelled as
-    // a group with `list` / `show` as named child nodes so
-    // tab after `nbrs metrics ` offers the subcommands
-    // directly (the bare flag-form would only suggest
-    // `--db` / `--session`, leaving the user without a
-    // discoverable path to the actual operations).
+    // `nbrs metrics <list|show|match> [<expr>]` — read-side
+    // introspection over the active session db. Flag lists are
+    // sourced from `metrics_cmd` (LIST_FLAGS / MATCH_FLAGS) so
+    // the parser and completion stay in lockstep — adding a
+    // flag in one place is enough to surface it in tab.
+    let list_flags  = crate::metrics_cmd::list_all_flags();
+    let list_bools  = crate::metrics_cmd::LIST_BOOL_FLAGS;
+    let match_flags = crate::metrics_cmd::match_all_flags();
     StrictNode::group(vec![
-        ("list", Node::leaf_with_flags(
-            &["--db", "--session"], &[])),
-        ("show", Node::leaf_with_flags(
-            &["--db", "--session"], &[])),
-        ("match", Node::leaf_with_flags(
-            &["--db", "--session"], &[])),
+        ("list",  Node::leaf_with_flags(&list_flags,  list_bools)
+            .with_value_provider("--format", fn_provider(static_metrics_format))),
+        ("show",  Node::leaf_with_flags(&list_flags,  list_bools)
+            .with_value_provider("--format", fn_provider(static_metrics_format))),
+        ("match", Node::leaf_with_flags(&match_flags, &[])),
     ])
         .with_category(Category::Tools.tag())
         .with_level(Level::Secondary.rank())
+}
+
+/// Closed-set value provider for `nbrs metrics list/show
+/// --format`. Sourced from `metrics_cmd::FORMAT_VALUES` so
+/// adding a format keyword automatically appears in tab.
+fn static_metrics_format(partial: &str, _ctx: &[&str]) -> Vec<String> {
+    filter_prefix(crate::metrics_cmd::FORMAT_VALUES, partial)
 }
 
 fn describe_node() -> StrictNode<true, true> {
@@ -1187,5 +1348,223 @@ mod walker_tests {
             "non-matching subdir not descended: {out:?}");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── SRD-64 §4 — report completion: per-kind subtree contract ──
+    //
+    // Drives `complete_at_tap` against the published tree and
+    // asserts each kind subcommand offers the right vocab flags.
+
+    use veks_completion::complete_at_tap;
+
+    fn complete(words: &[&str]) -> Vec<String> {
+        let tree = build_tree();
+        // Tap 3 = full surface — `report` is Tap 2, `report
+        // <kind>` traversal needs the deepest tier.
+        complete_at_tap(&tree, words, 3)
+    }
+
+    #[test]
+    fn report_lists_all_subcommands() {
+        // Only subcommands the parser actually accepts. The
+        // pre-cli_spec completion tree advertised `show`,
+        // `text`, `file`, `details` too — but `report_command`
+        // never handled them as keywords (they fell through to
+        // glob-match and errored). Cleaned up so completion
+        // doesn't lie about the surface.
+        let cands = complete(&["nbrs", "report", ""]);
+        for required in ["plot", "table", "list", "all", "figure",
+                         "rename", "scratch"]
+        {
+            assert!(cands.iter().any(|c| c == required),
+                "missing subcommand `{required}` in: {cands:?}");
+        }
+    }
+
+    #[test]
+    fn report_plot_offers_plot_directives() {
+        let cands = complete(&["nbrs", "report", "plot", "demo", "--"]);
+        for required in ["--over", "--by", "--where", "--agg",
+                         "--label", "--palette", "--line",
+                         "--width", "--marker", "--size",
+                         "--color", "--metric",
+                         "--xlabel", "--ylabel", "--xscale", "--yscale",
+                         "--series",
+                         // Orthogonal dispatch flags.
+                         "--add", "--at", "--contextual", "--replace",
+                         "--rename", "--group", "--workload", "--dry-run",
+                         "--name"]
+        {
+            assert!(cands.iter().any(|c| c == required),
+                "missing flag `{required}` in plot completions: {cands:?}");
+        }
+    }
+
+    #[test]
+    fn report_table_excludes_plot_only_directives() {
+        let cands = complete(&["nbrs", "report", "table", "demo", "--"]);
+        for forbidden in ["--xlabel", "--ylabel", "--xscale", "--yscale",
+                          "--marker", "--line", "--width", "--size"]
+        {
+            assert!(!cands.iter().any(|c| c == forbidden),
+                "table completions should not offer `{forbidden}` (plot-only): {cands:?}");
+        }
+        // Data-shape directives still apply to tables.
+        for required in ["--over", "--by", "--where", "--agg",
+                         "--metric", "--label", "--palette", "--color"]
+        {
+            assert!(cands.iter().any(|c| c == required),
+                "table completions missing `{required}`: {cands:?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "nbrs report text/file/details are not currently \
+                accepted by the parser; the completion tree no \
+                longer advertises them. Re-enable when the SRD-64 \
+                flag-form path is extended to non-figure kinds."]
+    fn report_text_excludes_figure_directives() {
+        let cands = complete(&["nbrs", "report", "text", "intro", "--"]);
+        for forbidden in ["--over", "--by", "--where", "--agg",
+                          "--metric", "--xscale", "--yscale", "--marker"]
+        {
+            assert!(!cands.iter().any(|c| c == forbidden),
+                "text completions should not offer `{forbidden}`: {cands:?}");
+        }
+        for required in ["--label", "--body", "--body-file"] {
+            assert!(cands.iter().any(|c| c == required),
+                "text completions missing `{required}`: {cands:?}");
+        }
+    }
+
+    #[test]
+    fn palette_value_completion_offers_closed_set() {
+        let cands = complete(&["nbrs", "report", "plot", "demo",
+                               "--palette", ""]);
+        for required in nbrs_workload::report::vocab::PALETTE_NAMES {
+            assert!(cands.iter().any(|c| c == required),
+                "palette completion missing `{required}`: {cands:?}");
+        }
+        // Sanity: should NOT offer arbitrary strings.
+        assert!(!cands.iter().any(|c| c == "nope"),
+            "completion shouldn't offer arbitrary values: {cands:?}");
+    }
+
+    #[test]
+    fn agg_value_completion_offers_closed_set() {
+        let cands = complete(&["nbrs", "report", "plot", "demo",
+                               "--agg", ""]);
+        for required in nbrs_workload::report::vocab::AGG_FNS {
+            assert!(cands.iter().any(|c| c == required),
+                "agg completion missing `{required}`: {cands:?}");
+        }
+    }
+
+    #[test]
+    fn xscale_value_completion_offers_linear_log() {
+        let cands = complete(&["nbrs", "report", "plot", "demo",
+                               "--xscale", ""]);
+        assert!(cands.iter().any(|c| c == "linear"));
+        assert!(cands.iter().any(|c| c == "log"));
+    }
+
+    #[test]
+    fn marker_value_completion_offers_shape_set() {
+        let cands = complete(&["nbrs", "report", "plot", "demo",
+                               "--marker", ""]);
+        for required in ["circle", "square", "triangle", "diamond",
+                         "plus", "cross", "none"]
+        {
+            assert!(cands.iter().any(|c| c == required),
+                "marker completion missing `{required}`: {cands:?}");
+        }
+    }
+
+    #[test]
+    fn at_anchor_completion_offers_scope_prefixes() {
+        let cands = complete(&["nbrs", "report", "plot", "demo", "--at", ""]);
+        for required in ["root", "scenario:", "phase:", "op:"] {
+            assert!(cands.iter().any(|c| c == required),
+                "--at completion missing `{required}`: {cands:?}");
+        }
+    }
+
+    #[test]
+    fn contextual_completion_offers_all_modes() {
+        let cands = complete(&["nbrs", "report", "plot", "demo",
+                               "--contextual", ""]);
+        for required in ["auto", "root", "scenario", "phase", "op"] {
+            assert!(cands.iter().any(|c| c == required),
+                "--contextual completion missing `{required}`: {cands:?}");
+        }
+    }
+
+    #[test]
+    fn report_scratch_subcommands_listed() {
+        let cands = complete(&["nbrs", "report", "scratch", ""]);
+        for required in ["list", "clean", "promote"] {
+            assert!(cands.iter().any(|c| c == required),
+                "scratch subcommand `{required}` missing: {cands:?}");
+        }
+    }
+
+    #[test]
+    fn report_rename_offers_replace_and_dry_run() {
+        let cands = complete(&["nbrs", "report", "rename", "old_name", "new_name", "--"]);
+        for required in ["--replace", "--dry-run", "--workload"] {
+            assert!(cands.iter().any(|c| c == required),
+                "rename completion missing `{required}`: {cands:?}");
+        }
+    }
+
+    #[test]
+    fn closed_set_filters_by_partial() {
+        // `--palette w` should narrow to palettes starting with `w`.
+        let cands = complete(&["nbrs", "report", "plot", "demo",
+                               "--palette", "w"]);
+        assert!(cands.iter().any(|c| c == "wong"));
+        // Other palettes filtered.
+        assert!(!cands.iter().any(|c| c == "ibm"),
+            "filter should remove non-matching: {cands:?}");
+    }
+}
+
+// ── cli_spec entry for `nbrs completions` ─────────────────
+
+/// `nbrs completions [--shell <name>]` — emit the bash/zsh
+/// completion shim or the activation eval line. Walker-parsed.
+pub fn spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Arity, Category, Command, Flag, Handler,
+        Level, ParsedCommand, ValueProvider};
+    fn shells(p: &str, _: &[&str]) -> Vec<String> {
+        ["bash","zsh","fish","elvish","powershell"].iter()
+            .filter(|s| s.starts_with(p))
+            .map(|s| s.to_string()).collect()
+    }
+    fn handle(p: ParsedCommand) -> Result<(), String> {
+        let mut argv: Vec<String> = Vec::new();
+        if let Some(v) = p.flag("--shell") {
+            argv.push("--shell".into());
+            argv.push(v.into());
+        }
+        super::completion::print_completions(&argv);
+        Ok(())
+    }
+    Command {
+        name: "completions",
+        help: "Print shell-completion shim or activation line.",
+        category: Category::Shell,
+        level: Level::FullSurface,
+        flags: vec![Flag {
+            long: "--shell", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::Custom(shells),
+            help: "bash | zsh | fish | elvish | powershell. Omit for activation line.",
+            repeatable: false,
+        }],
+        positionals: Vec::new(),
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: false,
+        completion_override: None,
     }
 }

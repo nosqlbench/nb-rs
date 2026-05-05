@@ -658,3 +658,46 @@ pub fn plot_command(args: &[String]) {
         }
     }
 }
+
+// ── cli_spec entry ─────────────────────────────────────────
+
+/// `nbrs gk visualize …` — GK expression visualizer. Modelled
+/// here (in plot.rs) since `plot_command` is the entry point.
+/// Top-level `gk` is a Command with `visualize` as a leaf; the
+/// leaf's parser stays imperative for now (raw_args=true).
+pub fn spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
+    fn handle_visualize(p: ParsedCommand) -> Result<(), String> {
+        // plot_command expects argv[0] == "visualize".
+        let mut argv: Vec<String> = vec!["visualize".into()];
+        argv.extend(p.raw.iter().cloned());
+        plot_command(&argv);
+        Ok(())
+    }
+    fn handle_bare(_p: ParsedCommand) -> Result<(), String> {
+        Err("expected `visualize` (try `nbrs gk visualize <expr|file.gk>`)".into())
+    }
+    Command {
+        name: "gk",
+        help: "GK toolset (`gk visualize <expr|file.gk>`).",
+        category: Category::Tools,
+        level: Level::FullSurface,
+        flags: Vec::new(),
+        positionals: Vec::new(),
+        handler: Some(Handler::Sync(handle_bare)),
+        raw_args: true,
+        completion_override: None,
+        subcommands: vec![Command {
+            name: "visualize",
+            help: "Render a GK expression to the terminal.",
+            category: Category::Tools,
+            level: Level::FullSurface,
+            flags: Vec::new(),
+            positionals: Vec::new(),
+            subcommands: Vec::new(),
+            handler: Some(Handler::Sync(handle_visualize)),
+            raw_args: true,
+            completion_override: None,
+        }],
+    }
+}

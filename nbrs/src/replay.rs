@@ -146,3 +146,56 @@ fn run(opts: Opts) -> Result<(), String> {
     }
     Ok(())
 }
+
+// ── cli_spec entry ─────────────────────────────────────────
+
+/// `nbrs replay` — walk readout snapshots from a session db.
+/// Walker-parsed: small, flat flag set fits the generic
+/// walker cleanly, no need for raw_args.
+pub fn spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Arity, Category, Command, Flag, Handler,
+        Level, ParsedCommand, ValueProvider};
+    fn handle(p: ParsedCommand) -> Result<(), String> {
+        let mut argv: Vec<String> = Vec::new();
+        if p.bool("--plain") { argv.push("--plain".into()); }
+        if let Some(v) = p.flag("--db") {
+            argv.push("--db".into()); argv.push(v.into());
+        }
+        if let Some(v) = p.flag("--session") {
+            argv.push("--session".into()); argv.push(v.into());
+        }
+        replay_command(&argv);
+        Ok(())
+    }
+    Command {
+        name: "replay",
+        help: "Walk readout snapshots from a session db.",
+        category: Category::Tools,
+        level: Level::Secondary,
+        flags: vec![
+            Flag {
+                long: "--db", short: None, aliases: &[],
+                arity: Arity::Value, value: ValueProvider::Path,
+                help: "Path to metrics.db.",
+                repeatable: false,
+            },
+            Flag {
+                long: "--session", short: None, aliases: &[],
+                arity: Arity::Value, value: ValueProvider::None,
+                help: "SRD-04 session umbrella (path or name).",
+                repeatable: false,
+            },
+            Flag {
+                long: "--plain", short: None, aliases: &[],
+                arity: Arity::Bool, value: ValueProvider::None,
+                help: "Plain-text output (no ANSI).",
+                repeatable: false,
+            },
+        ],
+        positionals: Vec::new(),
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: false,
+        completion_override: None,
+    }
+}

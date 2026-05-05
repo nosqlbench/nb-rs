@@ -107,6 +107,28 @@ impl Reporter for ConsoleReporter {
                     MetricValue::Gauge(g) => {
                         self.emit(format_args!("  {name}  {value:.2}\n", value = g.value));
                     }
+                    MetricValue::BucketedHistogram(h) => {
+                        self.emit(format_args!(
+                            "  {name}  buckets={n}  count={total}\n",
+                            n = h.buckets.len(), total = h.count));
+                    }
+                    MetricValue::Info(_) => {
+                        let pairs: Vec<String> = metric.labels().iter()
+                            .map(|(k, v)| format!("{k}={v}"))
+                            .collect();
+                        self.emit(format_args!(
+                            "  {name}  info: {{{pairs}}}\n",
+                            pairs = pairs.join(", ")));
+                    }
+                    MetricValue::StateSet(s) => {
+                        let active: Vec<&str> = s.states.iter()
+                            .filter(|(_, a)| *a)
+                            .map(|(n, _)| n.as_str())
+                            .collect();
+                        self.emit(format_args!(
+                            "  {name}  states_active={n} ({list})\n",
+                            n = active.len(), list = active.join(",")));
+                    }
                 }
             }
         }

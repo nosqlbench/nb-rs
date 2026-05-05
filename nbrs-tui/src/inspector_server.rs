@@ -735,6 +735,17 @@ fn format_metric_line(inst: &MetricInstance) -> String {
                 h.count, mean_scaled, scale(p50), scale(p99), scale(max),
             )
         }
+        MetricValue::BucketedHistogram(h) => {
+            format!("{prefix} count={} buckets={} (histogram)",
+                h.count, h.buckets.len())
+        }
+        MetricValue::Info(_) => format!("{prefix} = 1 (info)"),
+        MetricValue::StateSet(s) => {
+            let active: Vec<&str> = s.states.iter()
+                .filter(|(_, a)| *a).map(|(n, _)| n.as_str()).collect();
+            format!("{prefix} states={} active=[{}]",
+                s.states.len(), active.join(","))
+        }
     }
 }
 

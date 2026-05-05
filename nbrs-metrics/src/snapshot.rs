@@ -486,16 +486,34 @@ impl MetricPoint {
 }
 
 /// The typed value carried by a [`MetricPoint`]. Variants mirror
-/// OpenMetrics §5.x — initial implementation covers the three
-/// commonly-used types.
+/// OpenMetrics §5.x. `Histogram` is the HDR-reservoir-backed
+/// summary shape (percentile-based — semantically a Summary
+/// per OpenMetrics §5.5). [`MetricValue::BucketedHistogram`]
+/// is the explicit-`le`-bucket Histogram shape (§5.3) and
+/// [`MetricType::GaugeHistogram`] (§5.4) reuses it under a
+/// different family-type tag.
 #[derive(Clone, Debug)]
 pub enum MetricValue {
-    /// OpenMetrics §5.1.1.
+    /// OpenMetrics §5.1: monotonic counter.
     Counter(CounterValue),
-    /// OpenMetrics §5.2.1.
+    /// OpenMetrics §5.2: instantaneous gauge.
     Gauge(GaugeValue),
-    /// OpenMetrics §5.3.1.
+    /// OpenMetrics §5.5: φ-quantile summary backed by an
+    /// HDR reservoir. (Note: the variant name is historical;
+    /// per OpenMetrics taxonomy this shape is a Summary.)
     Histogram(HistogramValue),
+    /// OpenMetrics §5.3 (Histogram) / §5.4 (GaugeHistogram):
+    /// explicit cumulative `le`-keyed buckets. The owning
+    /// [`MetricFamily::r#type()`] tag (`Histogram` vs
+    /// `GaugeHistogram`) decides whether bucket counts are
+    /// constrained monotonic — see `nbrs-metrics::validation`.
+    BucketedHistogram(BucketedHistogramValue),
+    /// OpenMetrics §5.6: descriptive metadata. The label
+    /// set carries the data; the value is conceptually 1.
+    Info(InfoValue),
+    /// OpenMetrics §5.7: named-state indicator set. Each
+    /// state renders as its own Metric in exposition.
+    StateSet(StateSetValue),
 }
 
 // ---- CounterValue (§5.1.1) ---------------------------------------------
@@ -639,6 +657,117 @@ pub enum BucketBound {
     PositiveInfinity,
 }
 
+// ---- BucketedHistogramValue (§5.3 / §5.4) -------------------------------
+
+/// OpenMetrics §5.3 (Histogram) and §5.4 (GaugeHistogram)
+/// explicit-bucket value: cumulative observation counts at
+/// producer-chosen `le` boundaries, plus optional
+/// `_sum` / `_count` / `_created` siblings.
+///
+/// Histogram (§5.3) bucket counts are required to be
+/// monotonically non-decreasing; GaugeHistogram (§5.4)
+/// permits decreases. The owning [`MetricFamily::r#type()`]
+/// tag distinguishes which constraint applies; the validation
+/// helper in `crate::validation::check_bucket_monotonicity`
+/// enforces it for `Histogram` families.
+///
+/// Difference from [`HistogramValue`]: that variant is the
+/// HDR-reservoir-backed Summary (§5.5), exposing percentile
+/// columns. This variant is the bucket-keyed form — what
+/// OpenMetrics calls a Histogram strictly.
+#[derive(Clone, Debug)]
+pub struct BucketedHistogramValue {
+    /// Cumulative `(le, count)` pairs in ascending `le`
+    /// order. The final pair SHOULD have `le = +Inf` and
+    /// `count == self.count` per spec §5.3; producers that
+    /// omit `+Inf` are tolerated but exposition is
+    /// permitted to synthesize one.
+    pub buckets: Vec<(BucketBound, u64)>,
+    /// Optional sum of all observations.
+    pub sum: Option<f64>,
+    /// Total observation count (== last bucket count).
+    pub count: u64,
+    /// Series start time per spec §5.3 / §5.4.
+    pub created: Option<Instant>,
+    /// Optional per-bucket exemplars, parallel to `buckets`.
+    /// Sparse: missing slot ⇒ no exemplar for that bucket.
+    pub bucket_exemplars: Vec<Option<Exemplar>>,
+}
+
+impl BucketedHistogramValue {
+    /// Construct from cumulative `(le, count)` pairs. `count`
+    /// is the final bucket's count when present, else the
+    /// max across the supplied pairs.
+    pub fn new(buckets: Vec<(BucketBound, u64)>) -> Self {
+        let count = buckets.iter().map(|(_, c)| *c).max().unwrap_or(0);
+        Self {
+            buckets,
+            sum: None,
+            count,
+            created: None,
+            bucket_exemplars: Vec::new(),
+        }
+    }
+
+    pub fn with_sum(mut self, sum: f64) -> Self {
+        self.sum = Some(sum);
+        self
+    }
+
+    pub fn with_created(mut self, t: Instant) -> Self {
+        self.created = Some(t);
+        self
+    }
+
+    pub fn with_bucket_exemplars(mut self, ex: Vec<Option<Exemplar>>) -> Self {
+        self.bucket_exemplars = ex;
+        self
+    }
+}
+
+// ---- InfoValue (§5.6) ---------------------------------------------------
+
+/// OpenMetrics §5.6: descriptive info metric. The label set
+/// of the owning [`Metric`] carries the data; the value is
+/// conceptually always `1`. This struct has no payload —
+/// the variant tag itself is the marker.
+#[derive(Clone, Debug, Default)]
+pub struct InfoValue;
+
+impl InfoValue {
+    pub fn new() -> Self { Self }
+}
+
+// ---- StateSetValue (§5.7) -----------------------------------------------
+
+/// OpenMetrics §5.7: named-state indicator set. Each
+/// `(state, active)` pair renders as a separate Metric in
+/// exposition with the state name carried as a label.
+///
+/// Spec §5.7 requires that exactly one state in a StateSet
+/// MAY be true at a time when the StateSet encodes an enum
+/// (vs a free bitset). This struct doesn't enforce the
+/// "exactly one" constraint — that's a producer-side
+/// convention.
+#[derive(Clone, Debug, Default)]
+pub struct StateSetValue {
+    /// Each entry is `(state_name, active_bool)`. State
+    /// names are arbitrary strings (no ABNF restriction
+    /// beyond label-value rules).
+    pub states: Vec<(String, bool)>,
+}
+
+impl StateSetValue {
+    pub fn new(states: Vec<(String, bool)>) -> Self {
+        Self { states }
+    }
+
+    pub fn with_state(mut self, name: impl Into<String>, active: bool) -> Self {
+        self.states.push((name.into(), active));
+        self
+    }
+}
+
 // =========================================================================
 // Exemplar (OpenMetrics §4.6.1, §4.7)
 // =========================================================================
@@ -726,6 +855,53 @@ pub fn combine_into(
                 &mut a.bucket_exemplars, &b.bucket_exemplars,
                 dst.timestamp, src.timestamp,
             );
+        }
+        (MetricValue::BucketedHistogram(a), MetricValue::BucketedHistogram(b)) => {
+            // Bucket layouts must be compatible. If they
+            // share boundaries we sum element-wise; mismatched
+            // layouts are a type error (the producer is
+            // responsible for emitting consistent buckets per
+            // series).
+            if a.buckets.len() != b.buckets.len()
+                || a.buckets.iter().zip(b.buckets.iter())
+                    .any(|((la, _), (lb, _))| la != lb)
+            {
+                return Err(CombineError::TypeMismatch);
+            }
+            for (i, (_, count_b)) in b.buckets.iter().enumerate() {
+                a.buckets[i].1 = a.buckets[i].1.saturating_add(*count_b);
+            }
+            a.count = a.count.saturating_add(b.count);
+            a.sum = match (a.sum, b.sum) {
+                (Some(sa), Some(sb)) => Some(sa + sb),
+                (Some(s), None) | (None, Some(s)) => Some(s),
+                (None, None) => None,
+            };
+            a.created = match (a.created, b.created) {
+                (Some(x), Some(y)) => Some(x.min(y)),
+                (Some(x), None) | (None, Some(x)) => Some(x),
+                (None, None) => None,
+            };
+            combine_bucket_exemplars(
+                &mut a.bucket_exemplars, &b.bucket_exemplars,
+                dst.timestamp, src.timestamp,
+            );
+        }
+        (MetricValue::Info(_), MetricValue::Info(_)) => {
+            // Info is always-1; combining is a no-op apart
+            // from the timestamp update at the bottom.
+        }
+        (MetricValue::StateSet(a), MetricValue::StateSet(b)) => {
+            // Most-recent-wins on state values: walk `b`'s
+            // states and overwrite `a`'s entries by name,
+            // appending unknown states.
+            for (name, active) in &b.states {
+                if let Some(slot) = a.states.iter_mut().find(|(n, _)| n == name) {
+                    slot.1 = *active;
+                } else {
+                    a.states.push((name.clone(), *active));
+                }
+            }
         }
         _ => return Err(CombineError::TypeMismatch),
     }

@@ -50,6 +50,47 @@ pub fn render_prometheus_text(snapshot: &MetricSet) -> String {
                     let rate = obs as f64 / interval_secs;
                     out.push_str(&format!("{name}_rate{label_str} {rate:.2}\n"));
                 }
+                MetricValue::BucketedHistogram(h) => {
+                    // OpenMetrics §5.3 (Histogram) text format:
+                    // `<name>_bucket{le="..."}` per bucket plus
+                    // `<name>_sum` and `<name>_count`.
+                    for (le, count) in &h.buckets {
+                        let le_str = match le {
+                            crate::snapshot::BucketBound::Finite(v) => v.to_string(),
+                            crate::snapshot::BucketBound::PositiveInfinity => "+Inf".to_string(),
+                        };
+                        let bucket_label = if label_str.is_empty() {
+                            format!("{{le=\"{le_str}\"}}")
+                        } else {
+                            let inner = &label_str[1..label_str.len()-1];
+                            format!("{{{inner},le=\"{le_str}\"}}")
+                        };
+                        out.push_str(&format!("{name}_bucket{bucket_label} {count}\n"));
+                    }
+                    if let Some(s) = h.sum {
+                        out.push_str(&format!("{name}_sum{label_str} {s}\n"));
+                    }
+                    out.push_str(&format!("{name}_count{label_str} {}\n", h.count));
+                }
+                MetricValue::Info(_) => {
+                    // OpenMetrics §5.6 text format: `<name>_info{<labels>} 1`.
+                    out.push_str(&format!("{name}_info{label_str} 1\n"));
+                }
+                MetricValue::StateSet(s) => {
+                    // OpenMetrics §5.7 text format: one
+                    // sample per state with the family name
+                    // as the label key (empty suffix).
+                    for (state_name, active) in &s.states {
+                        let state_label = if label_str.is_empty() {
+                            format!("{{{name}=\"{state_name}\"}}")
+                        } else {
+                            let inner = &label_str[1..label_str.len()-1];
+                            format!("{{{inner},{name}=\"{state_name}\"}}")
+                        };
+                        let v = if *active { 1 } else { 0 };
+                        out.push_str(&format!("{name}{state_label} {v}\n"));
+                    }
+                }
             }
         }
     }

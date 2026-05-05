@@ -24,6 +24,13 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+pub mod vocab;
+pub use vocab::{
+    Directive, DirectiveTarget, KindMask, ValueProvider, YamlForm,
+    ALL_DIRECTIVES, AGG_FNS, AXIS_SCALES, LINE_STYLES, MARKER_SHAPES, PALETTE_NAMES,
+    cli_flags_for, directive_by_cli_flag, directive_by_yaml_keyword, directives_for,
+};
+
 /// Top-level `report:` block.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Report {
@@ -203,7 +210,132 @@ pub struct SeriesOverride {
     pub style: Style,
 }
 
+impl ReportItem {
+    /// Render this item back to its canonical YAML directive
+    /// form — the same string shape the workload-YAML parser
+    /// in [`parse_group`] consumes. Round-trips:
+    /// `parse_group(... item.to_yaml_directive_string() ...) == item`.
+    ///
+    /// The output is one or more lines:
+    ///
+    /// ```text
+    /// plot <name>
+    ///   as <stem>
+    ///   label "<label>"
+    ///   palette=<v>
+    ///   line=<v> width=<n> marker=<v> size=<n> color=<#hex>
+    ///   <body lines verbatim>
+    ///   series <key>=<val> {<json>}
+    /// ```
+    ///
+    /// Order matches [`vocab::ALL_DIRECTIVES`] so the
+    /// round-trip is stable. Style fields that are `None` are
+    /// omitted; the body is appended verbatim (it carries the
+    /// renderer-consumed `over` / `by` / `where` / `agg` /
+    /// `xlabel` / etc. lines).
+    pub fn to_yaml_directive_string(&self) -> String {
+        let mut out = String::new();
+        // Header line: `<kind> <name>`. `Details` items also
+        // round-trip; `File` directives use their target stem
+        // as the "name" (a `file <stem>` line).
+        out.push_str(self.kind.as_str());
+        out.push(' ');
+        out.push_str(&self.name);
+        out.push('\n');
+
+        // `as <stem>` and `label "<text>"` come first when
+        // present — the reader expects identity directives
+        // before the per-renderer body.
+        if let Some(stem) = &self.as_stem {
+            out.push_str("  as ");
+            out.push_str(stem);
+            out.push('\n');
+        }
+        if let Some(label) = &self.label {
+            out.push_str("  label \"");
+            out.push_str(&label.replace('\\', "\\\\").replace('"', "\\\""));
+            out.push_str("\"\n");
+        }
+
+        // Style scalars in declaration order from the vocab
+        // registry. Each is `<key>=<value>` on its own line —
+        // matches the existing parser's `apply_one_style_kv`
+        // contract.
+        for line in self.style.scalar_directive_lines() {
+            out.push_str("  ");
+            out.push_str(&line);
+            out.push('\n');
+        }
+
+        // Body lines (over / by / where / agg / xlabel / etc.)
+        // are passed through verbatim. The body is already in
+        // the canonical form the renderer expects.
+        if !self.body.trim().is_empty() {
+            for line in self.body.split('\n') {
+                if line.trim().is_empty() { continue; }
+                out.push_str("  ");
+                out.push_str(line.trim_start());
+                out.push('\n');
+            }
+        }
+
+        // Per-series sub-blocks. Use the brace-free directive
+        // form (`series profile=hnsw line=dashed`) when only
+        // simple key=value scalars are involved; fall back to
+        // the JSON form for completeness when the series style
+        // carries series-style fields that don't survive the
+        // simple form (today they all do, but reserved for
+        // future extension).
+        for s in &self.style.series {
+            out.push_str("  series ");
+            out.push_str(&s.key);
+            out.push('=');
+            out.push_str(&s.value);
+            for line in s.style.scalar_directive_lines() {
+                out.push(' ');
+                out.push_str(&line);
+            }
+            out.push('\n');
+        }
+
+        out
+    }
+}
+
 impl Style {
+    /// Render the scalar (non-series) fields of this style
+    /// as a list of `key=value` directive lines, in the
+    /// canonical [`vocab::ALL_DIRECTIVES`] order. Used by
+    /// [`ReportItem::to_yaml_directive_string`] and by
+    /// the `series` sub-block renderer.
+    ///
+    /// `None` fields are skipped; only fields whose vocab
+    /// `target` is [`vocab::DirectiveTarget::StyleField`]
+    /// are emitted.
+    pub fn scalar_directive_lines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for d in vocab::ALL_DIRECTIVES {
+            if !matches!(d.target, vocab::DirectiveTarget::StyleField) {
+                continue;
+            }
+            let value: Option<String> = match d.yaml_directive {
+                "palette"       => self.palette.clone(),
+                "line"          => self.line.clone(),
+                "width"         => self.width.map(|v| v.to_string()),
+                "marker"        => self.marker.clone(),
+                "size"          => self.size.map(|v| v.to_string()),
+                "color"         => self.color.clone(),
+                "figure_width"  => self.figure_width.map(|v| v.to_string()),
+                "figure_height" => self.figure_height.map(|v| v.to_string()),
+                _ => None,
+            };
+            if let Some(v) = value {
+                out.push(format!("{}={}", d.yaml_directive, v));
+            }
+        }
+        out
+    }
+
     /// Merge `other` into `self`: every `Some(_)` field in `other`
     /// overrides the corresponding field in `self`. Used to walk
     /// the cascade outer → inner.
@@ -1103,5 +1235,200 @@ g: |
         let items = &p.report.groups[0].items;
         assert_eq!(items[0].label.as_deref(), Some("My label"));
         assert_eq!(items[1].label.as_deref(), Some("Another"));
+    }
+
+    // ------------------------------------------------------------------
+    // Round-trip emitter — Phase A SRD-64 contract test
+    // ------------------------------------------------------------------
+    //
+    // For every report-grammar shape we accept, the emitter
+    // must produce a string that re-parses to an equal AST.
+    // That's the contract that lets `--add` write the same
+    // grammar back to YAML faithfully.
+
+    fn round_trip_via_group(item: &ReportItem) -> ReportItem {
+        let group_body = item.to_yaml_directive_string();
+        let yaml = format!("g: |\n{}",
+            group_body.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n"));
+        let parsed = parse(&yaml);
+        assert_eq!(parsed.report.groups.len(), 1,
+            "round-trip should yield one group, got: {parsed:#?}");
+        let items = &parsed.report.groups[0].items;
+        assert_eq!(items.len(), 1,
+            "round-trip should yield one item, got: {items:#?}");
+        items[0].clone()
+    }
+
+    fn assert_round_trip_eq(item: ReportItem) {
+        let recovered = round_trip_via_group(&item);
+        // Compare individual fields for clearer diffs on failure.
+        assert_eq!(recovered.kind, item.kind);
+        assert_eq!(recovered.name, item.name);
+        assert_eq!(recovered.label, item.label);
+        assert_eq!(recovered.as_stem, item.as_stem);
+        assert_eq!(recovered.style.palette, item.style.palette);
+        assert_eq!(recovered.style.line, item.style.line);
+        assert_eq!(recovered.style.width, item.style.width);
+        assert_eq!(recovered.style.marker, item.style.marker);
+        assert_eq!(recovered.style.size, item.style.size);
+        assert_eq!(recovered.style.color, item.style.color);
+        assert_eq!(recovered.style.figure_width, item.style.figure_width);
+        assert_eq!(recovered.style.figure_height, item.style.figure_height);
+        assert_eq!(recovered.style.series.len(), item.style.series.len());
+        for (a, b) in recovered.style.series.iter().zip(&item.style.series) {
+            assert_eq!(a.key, b.key);
+            assert_eq!(a.value, b.value);
+        }
+        // Body comparison is whitespace-tolerant: the emitter
+        // re-indents to canonical 2-space, the parser strips
+        // leading whitespace anyway.
+        let normalize = |s: &str| s.split('\n')
+            .map(|l| l.trim()).filter(|l| !l.is_empty())
+            .collect::<Vec<_>>().join("\n");
+        assert_eq!(normalize(&recovered.body), normalize(&item.body));
+    }
+
+    #[test]
+    fn round_trip_minimal_plot() {
+        let item = ReportItem {
+            kind: Kind::Plot,
+            name: "demo".to_string(),
+            body: "over cycle\nmetric=throughput".to_string(),
+            ..Default::default()
+        };
+        assert_round_trip_eq(item);
+    }
+
+    #[test]
+    fn round_trip_plot_with_label_and_palette() {
+        let mut item = ReportItem {
+            kind: Kind::Plot,
+            name: "recall".to_string(),
+            label: Some("Recall@10".to_string()),
+            body: "over limit\nby profile".to_string(),
+            ..Default::default()
+        };
+        item.style.palette = Some("wong".to_string());
+        assert_round_trip_eq(item);
+    }
+
+    #[test]
+    fn round_trip_plot_full_style() {
+        let mut item = ReportItem {
+            kind: Kind::Plot,
+            name: "full".to_string(),
+            label: Some("Full".to_string()),
+            as_stem: Some("plot_full".to_string()),
+            body: "over limit\nby profile\nwhere dataset=glove\nagg=mean"
+                .to_string(),
+            ..Default::default()
+        };
+        item.style.palette = Some("tol_muted".to_string());
+        item.style.line = Some("dashed".to_string());
+        item.style.width = Some(2.0);
+        item.style.marker = Some("circle".to_string());
+        item.style.size = Some(4.0);
+        item.style.color = Some("#117733".to_string());
+        item.style.figure_width = Some(800);
+        item.style.figure_height = Some(600);
+        assert_round_trip_eq(item);
+    }
+
+    #[test]
+    fn round_trip_table() {
+        let mut item = ReportItem {
+            kind: Kind::Table,
+            name: "summary".to_string(),
+            label: Some("Summary".to_string()),
+            body: "metric=recall@.*\ngroup_by=profile".to_string(),
+            ..Default::default()
+        };
+        item.style.palette = Some("wong".to_string());
+        assert_round_trip_eq(item);
+    }
+
+    #[test]
+    fn round_trip_with_series_overrides() {
+        let mut item = ReportItem {
+            kind: Kind::Plot,
+            name: "perseries".to_string(),
+            body: "over limit\nby profile".to_string(),
+            ..Default::default()
+        };
+        let mut s1 = Style::default();
+        s1.line = Some("dashed".to_string());
+        s1.marker = Some("triangle".to_string());
+        item.style.series.push(SeriesOverride {
+            key: "profile".to_string(),
+            value: "hnsw".to_string(),
+            style: s1,
+        });
+        let mut s2 = Style::default();
+        s2.line = Some("solid".to_string());
+        item.style.series.push(SeriesOverride {
+            key: "profile".to_string(),
+            value: "ivf".to_string(),
+            style: s2,
+        });
+        let recovered = round_trip_via_group(&item);
+        assert_eq!(recovered.style.series.len(), 2);
+        assert_eq!(recovered.style.series[0].key, "profile");
+        assert_eq!(recovered.style.series[0].value, "hnsw");
+        assert_eq!(recovered.style.series[0].style.line.as_deref(), Some("dashed"));
+        assert_eq!(recovered.style.series[0].style.marker.as_deref(), Some("triangle"));
+        assert_eq!(recovered.style.series[1].value, "ivf");
+        assert_eq!(recovered.style.series[1].style.line.as_deref(), Some("solid"));
+    }
+
+    #[test]
+    fn round_trip_label_with_internal_quotes_is_escaped() {
+        let item = ReportItem {
+            kind: Kind::Plot,
+            name: "tricky".to_string(),
+            label: Some(r#"He said "hi""#.to_string()),
+            body: "over cycle".to_string(),
+            ..Default::default()
+        };
+        // The emitter must escape the inner quotes so the
+        // parser sees a single label string. (The parser today
+        // strips outer quotes only; if it doesn't honour the
+        // escape, the test catches that as a real bug to fix.)
+        let group_body = item.to_yaml_directive_string();
+        assert!(group_body.contains(r#"label "He said \"hi\"""#),
+            "emitter should escape inner quotes; got:\n{group_body}");
+    }
+
+    #[test]
+    fn emitter_orders_directives_canonically() {
+        // `as` comes before `label`; identity before style;
+        // style before body; body before series. This is the
+        // canonical order from vocab::ALL_DIRECTIVES so the
+        // round-trip stays stable.
+        let mut item = ReportItem {
+            kind: Kind::Plot,
+            name: "ordered".to_string(),
+            label: Some("L".to_string()),
+            as_stem: Some("S".to_string()),
+            body: "over cycle".to_string(),
+            ..Default::default()
+        };
+        item.style.palette = Some("wong".to_string());
+        item.style.series.push(SeriesOverride {
+            key: "k".to_string(),
+            value: "v".to_string(),
+            style: Style::default(),
+        });
+        let s = item.to_yaml_directive_string();
+        let pos = |needle: &str| s.find(needle)
+            .unwrap_or_else(|| panic!("missing {needle} in:\n{s}"));
+        let pos_as     = pos("as S");
+        let pos_label  = pos("label \"L\"");
+        let pos_style  = pos("palette=wong");
+        let pos_body   = pos("over cycle");
+        let pos_series = pos("series k=v");
+        assert!(pos_as < pos_label,    "as before label");
+        assert!(pos_label < pos_style, "label before style");
+        assert!(pos_style < pos_body,  "style before body");
+        assert!(pos_body < pos_series, "body before series");
     }
 }

@@ -26,7 +26,7 @@ engine-scylla = ["dep:scylla", "dep:uuid"]
 # and `adapter=cassandra` in inventory; contributes the alias
 # entry with `default_rank: 100` so it wins over scylla when
 # both engines are linked.
-engine-cassandra-cpp = ["dep:cassandra-cpp", "dep:cassandra-cpp-sys"]
+engine-cassandra-cpp = ["dep:cassandra-cpp", "dep:cassandra-cpp-sys", "dep:uuid"]
 
 # Convenience: enable both engines in one binary. Pick at
 # runtime via `cqldriver=scylla` / `cqldriver=cassandra-cpp`,

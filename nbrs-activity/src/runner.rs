@@ -2518,11 +2518,42 @@ fn resolve_workload_file(name: &str) -> Option<String> {
 
 /// Normalize args: detect scenario shorthand where a bare word after
 /// the workload file becomes `scenario=<name>`.
+///
+/// The auto-promotion has to skip the **values** of space-form
+/// flags (`--session-path X`, `--readout Y`, etc.) — otherwise
+/// the path or value gets misread as a scenario name and ends up
+/// as `scenario=<path>`, which downstream code then materialises
+/// as a literal directory at `<cwd>/scenario=<path>` (the
+/// orphaned-dir bug we hit earlier). Use the same list
+/// [`parse_params`] uses so the two surfaces agree on which
+/// flags consume their next token.
 pub fn normalize_args(args: &[String]) -> Vec<String> {
+    /// Long-form flags that consume the next arg as their value.
+    /// Mirror of the `SESSION_DIR_FLAGS` + `--readout` list inside
+    /// [`parse_params`]. Centralising this would mean exposing
+    /// `parse_params`'s constant, which is private; the redundant
+    /// copy here is small and the test below catches drift.
+    const VALUE_FLAGS: &[&str] = &[
+        "--session", "--session-name", "--session-path",
+        "--session-reuse", "--session-keep", "--session-shelflife",
+        "--readout",
+    ];
+
     let mut result = Vec::new();
     let mut workload_seen = false;
     let mut scenario_set = false;
-    for arg in args {
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        // Pass through space-form flag + its value as a unit.
+        // Equals-form (`--session-path=X`) is one token and
+        // skips this branch.
+        if VALUE_FLAGS.iter().any(|f| *f == arg) {
+            result.push(arg.clone());
+            if let Some(next) = iter.next() {
+                result.push(next.clone());
+            }
+            continue;
+        }
         if !workload_seen
             && (arg.ends_with(".yaml") || arg.ends_with(".yml") || arg.contains("workload="))
         {
@@ -2722,6 +2753,75 @@ mod tests {
         assert!(s.contains("scope=subtree"), "missing scope: {s}");
         assert!(s.contains("final@session_root"), "missing final marker: {s}");
         assert!(s.contains("f64-writable"), "missing write surface: {s}");
+    }
+
+    // ── Regression: --session-path value not auto-promoted to scenario= ──
+    //
+    // Bug shape (caught by user during Phase C live exercise):
+    // `nbrs run wl.yaml cycles=2 --session-path X` was rewritten to
+    // `nbrs run wl.yaml cycles=2 --session-path scenario=X` because
+    // `normalize_args` walked tokens flat and saw `X` as a bare
+    // post-workload positional. Symptom: a literal directory at
+    // `<cwd>/scenario=X` was created. The fix peeks for value-taking
+    // flags so the value passes through unchanged.
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn normalize_args_session_path_space_form_value_passes_through() {
+        let out = normalize_args(&s(&[
+            "wl.yaml", "cycles=2", "--session-path", "target/test-tmp/foo/session",
+        ]));
+        // The path arg must NOT be turned into `scenario=...`.
+        assert!(!out.iter().any(|a| a.starts_with("scenario=")),
+            "scenario= auto-promotion fired on a flag value: {out:?}");
+        assert_eq!(out, s(&[
+            "wl.yaml", "cycles=2", "--session-path", "target/test-tmp/foo/session",
+        ]));
+    }
+
+    #[test]
+    fn normalize_args_session_path_equals_form_unchanged() {
+        let out = normalize_args(&s(&[
+            "wl.yaml", "--session-path=target/test-tmp/foo/session",
+        ]));
+        assert_eq!(out, s(&[
+            "wl.yaml", "--session-path=target/test-tmp/foo/session",
+        ]));
+    }
+
+    #[test]
+    fn normalize_args_real_scenario_positional_still_promotes() {
+        // The original feature: bare-word scenario shorthand.
+        // Must keep working when no value-flag interferes.
+        let out = normalize_args(&s(&["wl.yaml", "myscenario", "cycles=2"]));
+        assert_eq!(out, s(&[
+            "wl.yaml", "scenario=myscenario", "cycles=2",
+        ]));
+    }
+
+    #[test]
+    fn normalize_args_scenario_after_session_path_still_promotes() {
+        // After a value-flag pair, the next free positional is
+        // still eligible for scenario= promotion. This confirms
+        // the bookkeeping survives the look-ahead.
+        let out = normalize_args(&s(&[
+            "wl.yaml", "--session-path", "/tmp/x", "myscenario",
+        ]));
+        assert_eq!(out, s(&[
+            "wl.yaml", "--session-path", "/tmp/x", "scenario=myscenario",
+        ]));
+    }
+
+    #[test]
+    fn normalize_args_readout_value_passes_through() {
+        let out = normalize_args(&s(&[
+            "wl.yaml", "--readout", "throughput ok_pct",
+        ]));
+        assert!(!out.iter().any(|a| a.starts_with("scenario=")),
+            "readout body misread as scenario: {out:?}");
     }
 }
 

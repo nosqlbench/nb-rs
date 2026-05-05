@@ -10,6 +10,7 @@
 
 mod bench;
 mod cli;
+mod cli_spec;
 mod completion;
 mod daemon;
 mod describe;
@@ -23,7 +24,9 @@ mod plot;
 mod plot_metrics;
 mod replay;
 mod report;
+mod report_build;
 mod report_cmd;
+mod report_scratch;
 mod run;
 mod summary;
 #[allow(dead_code)]
@@ -33,14 +36,19 @@ mod web_push;
 mod openapi;
 
 fn main() {
+    // Build the canonical CLI spec once. `cli_spec::root` pulls
+    // every subcommand's `spec()` so this single value drives
+    // both completion and dispatch — there is no second list
+    // of names to keep in sync.
+    let root = cli_spec::root::root();
+
     // Shell-completion callback. Reads `_NBRS_COMPLETE=bash`,
     // emits candidates, exits. Must run BEFORE any
     // arg-consuming logic so tab presses never touch adapters,
-    // files, or stderr. See `nbrs/src/completion.rs` for the
-    // stratified tap progression: tab 1 → workload commands;
-    // tab 2 → global flags; tab 3 → everything.
-    let tree = completion::build_tree();
-    if completion::handle_complete_env(&tree) {
+    // files, or stderr.
+    let comp_tree = cli_spec::completion::build_command_tree(&root);
+    let comp_tree = completion::attach_global_value_providers(comp_tree);
+    if completion::handle_complete_env(&comp_tree) {
         return;
     }
 
@@ -51,131 +59,118 @@ fn main() {
     // Updates `logs/latest` to point at the resolved session
     // directory so subsequent subcommands (`run`, `report`,
     // `plot`, `summary`, `tui`, …) see consistent session
-    // wiring. Must run before any subcommand dispatch — read-
-    // side commands (plot, report) resolve their default
+    // wiring. Must run before subcommand dispatch — read-side
+    // commands (plot, report) resolve their default
     // `logs/latest/metrics.db` paths immediately on entry.
     nbrs_activity::session::apply_session_directory_at_startup(&args);
 
-    // `nbrs attach` connects to a running nbrs's OOB
-    // introspection socket (SRD-02 §"Display and Diagnostic
-    // Decoupling"). Probes the socket on entry — fails fast
-    // with a clear message if no live server is reachable
-    // rather than dropping the user into a REPL with broken
-    // queries. Renamed from the legacy `--inspector` flag.
-    if args.first().map(|s| s.as_str()) == Some("attach") {
-        inspector::inspector_command(&args[1..]);
-        return;
-    }
-
-    // `nbrs completions` emits a `source <(...)` preamble
-    // (recommended: `eval "$(nbrs completions)"`).
-    // `nbrs completions --shell bash` emits the raw shim that
-    // the preamble sources. Same UX as `veks completions`.
-    if args.first().map(|s| s.as_str()) == Some("completions") {
-        completion::print_completions(&args[1..]);
-        return;
-    }
-
     if args.is_empty() {
-        cli::print_usage();
+        cli_spec::help::render_usage(&root, &[]);
         return;
     }
 
+    // Bare-workload-file shortcut (`nbrs myworkload.yaml …`).
+    // Predates the spec model and isn't a Command — handle it
+    // before parsing so the walker doesn't see "myworkload.yaml"
+    // as an unknown command.
     let cmd = args[0].as_str();
+    if !cmd.starts_with('-')
+        && root.subcommands.iter().all(|s| s.name != cmd)
+        && let Some(path) = cli::resolve_workload_path(cmd)
+    {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let run_args = build_bare_workload_args(&path, &args[1..]);
+        rt.block_on(run::run_command(&run_args));
+        return;
+    }
 
-    match cmd {
-        "describe" => {
-            describe::describe_command(&args[1..]);
+    // Walker-driven dispatch: parse argv against the spec, look
+    // up the matched leaf's handler, run it. Async handlers spin
+    // up tokio lazily — sync handlers never touch the runtime.
+    let parsed = match cli_spec::walker::parse(&root, &args) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("nbrs: {e}");
+            cli_spec::help::render_usage(&root, &[]);
+            std::process::exit(2);
         }
-        "bench" => {
-            bench::bench_command(&args[1..]);
-        }
-        "metrics" => {
-            metrics_cmd::metrics_command(&args[1..]);
-        }
-        "report" => {
-            // `nbrs report ...` — primary surface for SRD-46
-            // report items. Sub-dispatch (list, all, glob,
-            // figure N, plot/table) lives in `report_cmd`.
-            report_cmd::report_command(&args[1..], report_cmd::KindFilter::Any);
-        }
-        "plot" => {
-            // Unadvertised alias for `nbrs report plot ...`.
-            report_cmd::report_command(&args[1..], report_cmd::KindFilter::Plot);
-        }
-        "table" => {
-            // Unadvertised alias for `nbrs report table ...`.
-            report_cmd::report_command(&args[1..], report_cmd::KindFilter::Table);
-        }
-        "gk" => {
-            // `nbrs gk visualize <expr|file.gk>` — GK-expression
-            // terminal plotter (formerly `nbrs plot gk`). Sibling
-            // of `gk functions` / `gk dag` (still under
-            // `describe gk` until a broader gk-subcommand
-            // refactor; this entry is the new home for the
-            // visualizer specifically).
-            match args.get(1).map(|s| s.as_str()) {
-                Some("visualize") => plot::plot_command(&args[1..]),
-                Some(other) => {
-                    eprintln!("nbrs gk: unknown subcommand '{other}' \
-                        (try `visualize`)");
-                    std::process::exit(2);
-                }
-                None => {
-                    eprintln!("nbrs gk <subcommand>: expected `visualize`");
-                    std::process::exit(2);
-                }
-            }
-        }
-        "web" => {
-            daemon::web_command(&args);
-        }
-        "run" => {
+    };
+
+    // `--help` / `-h` short-circuit: render usage for the matched
+    // command path and exit 0 without invoking the handler. Walker
+    // already stopped at the deepest subcommand seen *before* the
+    // help flag, so `nbrs --help`, `nbrs metrics --help`, and
+    // `nbrs metrics list --help` each render the right slice.
+    if parsed.help_requested {
+        let sub_path: Vec<&str> = parsed.path[1..]
+            .iter().map(String::as_str).collect();
+        cli_spec::help::render_usage(&root, &sub_path);
+        return;
+    }
+
+    // Walk the matched path back through the spec to find the
+    // handler attached to the deepest matched command.
+    let handler = lookup_handler(&root, &parsed.path[1..]);
+    let result: Result<(), String> = match handler {
+        Some(cli_spec::Handler::Sync(f)) => f(parsed),
+        Some(cli_spec::Handler::Async(f)) => {
             let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(run::run_command(&args));
+            rt.block_on(f(parsed))
         }
-        "replay" => {
-            // SRD-63 §6: walk readout_snapshots from the
-            // session db, write the latest render of each
-            // tuple to stdout. Use to reproduce the
-            // operator-visible status / DONE lines after a
-            // run finished.
-            replay::replay_command(&args[1..]);
+        None => {
+            eprintln!("nbrs: command at `{}` has no handler", parsed.path.join(" "));
+            cli_spec::help::render_usage(&root, &parsed.path[1..]
+                .iter().map(String::as_str).collect::<Vec<_>>());
+            std::process::exit(2);
         }
-        #[cfg(feature = "openapi")]
-        "describe-openapi" => {
-            openapi::describe_command(&args[1..]);
-        }
-        #[cfg(feature = "openapi")]
-        "run-openapi" => {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(openapi::run_command(&args[1..]));
-        }
-        _ => {
-            // Bare workload file: nbrs myworkload.yaml [params...]
-            if !cmd.starts_with('-') {
-                if let Some(path) = cli::resolve_workload_path(cmd) {
-                    let rt = tokio::runtime::Runtime::new().unwrap();
-                    let mut run_args = vec![format!("workload={path}")];
-                    // First bare arg (no = or --) after the workload file
-                    // is treated as the scenario name.
-                    let mut scenario_set = false;
-                    for extra in &args[1..] {
-                        if !scenario_set && !extra.contains('=') && !extra.starts_with('-') {
-                            run_args.push(format!("scenario={extra}"));
-                            scenario_set = true;
-                        } else {
-                            run_args.push(extra.clone());
-                        }
-                    }
-                    rt.block_on(run::run_command(&run_args));
-                    return;
-                }
+    };
+
+    if let Err(e) = result {
+        eprintln!("nbrs: {e}");
+        std::process::exit(2);
+    }
+}
+
+/// Walk the matched command path inside the root spec to find
+/// the handler. `path` is the matched-command segments after
+/// the binary name — e.g. `["metrics", "list"]` for
+/// `nbrs metrics list …`.
+fn lookup_handler<'a>(root: &'a cli_spec::Command, path: &[String]) -> Option<cli_spec::Handler> {
+    let mut current = root;
+    for seg in path {
+        current = current.subcommands.iter().find(|s| s.name == seg.as_str())?;
+    }
+    current.handler
+}
+
+/// Translate `nbrs <workload.yaml> [scenario] [params...]` into
+/// the `run`-shaped arg list. Same logic as the legacy main —
+/// preserved verbatim because the walker doesn't model this
+/// shape (it would otherwise trip on the bare-yaml positional).
+fn build_bare_workload_args(path: &str, tail: &[String]) -> Vec<String> {
+    const VALUE_FLAGS: &[&str] = &[
+        "--session", "--session-name", "--session-path",
+        "--session-reuse", "--session-keep",
+        "--session-shelflife", "--readout",
+    ];
+    let mut run_args = vec![format!("workload={path}")];
+    let mut scenario_set = false;
+    let mut iter = tail.iter().peekable();
+    while let Some(extra) = iter.next() {
+        if VALUE_FLAGS.iter().any(|f| *f == extra.as_str()) {
+            run_args.push(extra.clone());
+            if let Some(val) = iter.next() {
+                run_args.push(val.clone());
             }
-            eprintln!("error: unknown command '{cmd}'");
-            cli::print_usage();
-            std::process::exit(1);
+            continue;
+        }
+        if !scenario_set && !extra.contains('=') && !extra.starts_with('-') {
+            run_args.push(format!("scenario={extra}"));
+            scenario_set = true;
+        } else {
+            run_args.push(extra.clone());
         }
     }
+    run_args
 }
 

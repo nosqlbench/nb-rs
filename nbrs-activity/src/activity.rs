@@ -431,7 +431,10 @@ impl nbrs_metrics::component::InstrumentSet for ActivityMetrics {
                     let mtype = match &value {
                         MetricValue::Counter(_) => MetricType::Counter,
                         MetricValue::Gauge(_) => MetricType::Gauge,
-                        MetricValue::Histogram(_) => MetricType::Histogram,
+                        MetricValue::Histogram(_) => MetricType::Summary,
+                        MetricValue::BucketedHistogram(_) => MetricType::Histogram,
+                        MetricValue::Info(_) => MetricType::Info,
+                        MetricValue::StateSet(_) => MetricType::StateSet,
                     };
                     snap.insert_metric(family, mtype, metric_labels, value, now);
                 }
@@ -491,7 +494,10 @@ impl nbrs_metrics::component::InstrumentSet for ActivityMetrics {
                     let mtype = match &value {
                         MetricValue::Counter(_) => MetricType::Counter,
                         MetricValue::Gauge(_) => MetricType::Gauge,
-                        MetricValue::Histogram(_) => MetricType::Histogram,
+                        MetricValue::Histogram(_) => MetricType::Summary,
+                        MetricValue::BucketedHistogram(_) => MetricType::Histogram,
+                        MetricValue::Info(_) => MetricType::Info,
+                        MetricValue::StateSet(_) => MetricType::StateSet,
                     };
                     snap.insert_metric(family, mtype, metric_labels, value, now);
                 }

@@ -51,6 +51,8 @@ pub mod prettifier;
 pub mod eval;
 pub mod streaming;
 pub mod adapters;
+pub mod catalog;
+pub mod grammar;
 #[cfg(feature = "runtime")]
 pub mod runtime;
 

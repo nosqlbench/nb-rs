@@ -42,7 +42,7 @@ use super::registry::Registry;
 pub fn bake(body: &str) -> Result<(BakedBody, Vec<String>), String> {
     let mut lex = Lexer::new(body);
     let mut steps: Vec<RenderStep> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
+    let warnings: Vec<String> = Vec::new();
     let mut first_item = true;
 
     while let Some(token) = lex.next_token()? {
@@ -513,11 +513,6 @@ fn _unused_chars_marker(_: Chars<'_>) {}
 mod tests {
     use super::*;
 
-    fn count_steps(body: &str) -> usize {
-        let (baked, _) = bake(body).expect("parse failed");
-        baked.steps.len()
-    }
-
     #[test]
     fn parses_single_readout_name() {
         let (baked, _) = bake("phase_done").expect("parse");
@@ -757,17 +752,21 @@ mod tests {
         assert!(err.contains("unknown colour / style"),
             "wrong message: {err}");
     }
-}
 
-trait DebugDiscriminant {
-    fn discriminant(&self) -> &'static str;
-}
-impl DebugDiscriminant for RenderStep {
-    fn discriminant(&self) -> &'static str {
-        match self {
-            RenderStep::Literal(_) => "Literal",
-            RenderStep::Render { .. } => "Render",
-            RenderStep::ColorDirective(_) => "ColorDirective",
+    /// Test-only diagnostic trait: emits a one-token name for
+    /// each `RenderStep` variant when an assertion fails.
+    /// Lives inside the test module so the compiler doesn't
+    /// flag it as dead code on production builds.
+    trait DebugDiscriminant {
+        fn discriminant(&self) -> &'static str;
+    }
+    impl DebugDiscriminant for RenderStep {
+        fn discriminant(&self) -> &'static str {
+            match self {
+                RenderStep::Literal(_) => "Literal",
+                RenderStep::Render { .. } => "Render",
+                RenderStep::ColorDirective(_) => "ColorDirective",
+            }
         }
     }
 }

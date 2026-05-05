@@ -96,6 +96,58 @@ pub fn resolve_flag(args: &[String], flag: &str) -> Option<String> {
     }
 }
 
+/// Classify a session-path value: does it look like a
+/// `key=value` workload-param token (e.g. `scenario=foo`)
+/// rather than a real filesystem path? The umbrella
+/// `--session <kv>` parser splits only on `:`, so a
+/// `=`-shaped token slipping into the path slot would silently
+/// materialise directories like `<cwd>/scenario=foo/...`.
+///
+/// Heuristic: the head of `head=tail` matches the workload-
+/// param ABNF (alphanumeric / underscore / hyphen, no slash).
+/// A real path like `/var/tmp/k=v` keeps a leading slash in
+/// the head and passes through unchanged. Leading `./` or
+/// `../` likewise excludes the head from the param-shape
+/// check (the head contains a `/`).
+///
+/// Returns `Err(<error message>)` when the value should be
+/// rejected; `Ok(())` when it's safe to use as a session
+/// path.
+pub fn check_session_path(p: &str, source: &str) -> Result<(), String> {
+    if let Some((head, _)) = p.split_once('=') {
+        let head_looks_like_param = !head.is_empty()
+            && head.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            && !head.contains('/');
+        if head_looks_like_param {
+            return Err(format!(
+                "session path from {source} is '{p}' — that looks \
+                 like a `key=value` workload param, not a path. The umbrella \
+                 `--session <kv>` parser splits only on `:`, so this would \
+                 silently create a `<cwd>/{p}/…` directory tree. \
+                 Did you mean: `--session-path <path>` (with `{p}` as a \
+                 separate workload arg), or `--session path:<path>` (umbrella \
+                 form, `:` as the kv separator)?"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Wrapper around [`check_session_path`] that prints to
+/// stderr and exits with code 2 on rejection. Used at every
+/// entry point that sets `session_path` from CLI / env input:
+/// [`parse_session_kv`] (bare-token branch and `path:`/`dir:`
+/// keys), [`resolve_session_dir`] for `--session-path`, and
+/// the legacy `SESSION_DIRECTORY` env fallback. Same exit-
+/// shape as the existing `--session` configuration-conflict
+/// error in [`resolve_flag`].
+pub(crate) fn validate_session_path_or_exit(p: &str, source: &str) {
+    if let Err(msg) = check_session_path(p, source) {
+        eprintln!("error: {msg}");
+        std::process::exit(2);
+    }
+}
+
 /// Legacy env-var name for `--session-path`. Pre-SRD-04
 /// shipping name that some operators may have in their shell
 /// config; honored as a deprecated fallback below
@@ -296,6 +348,7 @@ pub fn parse_session_kv(s: &str) -> SessionDirSpec {
                 //   - otherwise → session name (SRD-04
                 //     most-specific-name rule).
                 if item.contains('/') || std::path::Path::new(item).is_dir() {
+                    validate_session_path_or_exit(item, "umbrella `--session <bare-token>`");
                     spec.session_path = Some(item.to_string());
                 } else {
                     spec.session_name = Some(item.to_string());
@@ -305,7 +358,10 @@ pub fn parse_session_kv(s: &str) -> SessionDirSpec {
         };
         match key {
             "name"      => spec.session_name = Some(value.to_string()),
-            "path" | "dir" => spec.session_path = Some(value.to_string()),
+            "path" | "dir" => {
+                validate_session_path_or_exit(value, "umbrella `--session path:<v>`");
+                spec.session_path = Some(value.to_string());
+            }
             "reuse" => match SessionReuse::parse(value) {
                 Ok(r) => spec.reuse = r,
                 Err(e) => crate::observer::log(
@@ -380,6 +436,7 @@ pub fn resolve_session_dir(args: &[String]) -> SessionDirSpec {
         spec.session_name = Some(v);
     }
     if let Some(v) = resolve_flag(args, "--session-path") {
+        validate_session_path_or_exit(&v, "`--session-path` flag (or NBRS_SESSION_PATH env)");
         spec.session_path = Some(v);
     }
     if let Some(v) = resolve_flag(args, "--session-reuse") {
@@ -410,6 +467,7 @@ pub fn resolve_session_dir(args: &[String]) -> SessionDirSpec {
             crate::observer::LogLevel::Warn,
             "SESSION_DIRECTORY is deprecated; use NBRS_SESSION_PATH (SRD-04 NBRS_-prefix convention).",
         );
+        validate_session_path_or_exit(&v, "legacy `SESSION_DIRECTORY` env");
         spec.session_path = Some(v);
     }
 
@@ -436,6 +494,51 @@ pub fn read_session_dir(args: &[String]) -> Option<PathBuf> {
         return None;
     }
     spec.resolve("").map(|(p, _)| p)
+}
+
+/// Active-session resolver consolidating the patterns used by
+/// `replay.rs` / `summary.rs` / `report_cmd.rs` /
+/// `metricsql_cmd.rs` / `plot_metrics.rs` / `completion.rs`.
+///
+/// Resolves to an existing session directory in this order:
+///
+/// 1. `--session` / `--session-path` / `--session-name` from
+///    `args` (via [`read_session_dir`]).
+/// 2. The `logs/latest` symlink, when it exists and points at a
+///    session directory with the expected artifacts
+///    (`metrics.db` or `session.log`).
+/// 3. `Err` with a remediation message naming the flags that
+///    would have worked.
+///
+/// Read-only — no filesystem mutation. Use this anywhere a
+/// post-run command needs to operate on an existing session.
+///
+/// **Why a separate function from [`read_session_dir`].**
+/// `read_session_dir` returns `Option` (no opinion on what to do
+/// when nothing's set); `resolve_active` makes that the call
+/// site's failure mode, with a single canonical error message.
+pub fn resolve_active(args: &[String]) -> Result<PathBuf, String> {
+    if let Some(p) = read_session_dir(args) {
+        if !p.exists() {
+            return Err(format!(
+                "session directory '{}' does not exist", p.display(),
+            ));
+        }
+        return Ok(p);
+    }
+    let latest = PathBuf::from("logs/latest");
+    if latest.exists() {
+        // Resolve through the symlink so callers get a stable
+        // path that won't change underneath them mid-run.
+        let resolved = std::fs::canonicalize(&latest)
+            .unwrap_or(latest.clone());
+        return Ok(resolved);
+    }
+    Err(
+        "no active session — run a workload first, or pass \
+         `--session <name>` / `--session-path <dir>` to point \
+         at an existing one".to_string(),
+    )
 }
 
 /// Default for `--sessions-max`: keep the 10 most-recent
@@ -1169,14 +1272,6 @@ mod tests {
         assert!(session.profiler_path("-perf").ends_with("flamegraph-perf.svg"));
     }
 
-    /// Each test gets a unique env var name so concurrent test
-    /// threads can't collide on the global process env.
-    fn unique_env(tag: &str) -> String {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        format!("__NBRS_TEST_{tag}_{n:x}")
-    }
-
     /// Clear every env var that `resolve_session_dir` reads, so a
     /// `spec_*` test sees CLI-only inputs. Without this, a
     /// concurrent test that sets `NBRS_SESSION_NAME` (or any
@@ -1410,6 +1505,63 @@ mod tests {
         // entries still applied.
         assert_eq!(spec.session_name.as_deref(), Some("foo"));
         assert_eq!(spec.reuse, SessionReuse::Restart);
+    }
+
+    // ── check_session_path: catch the `scenario=foo`-as-path footgun ──
+
+    #[test]
+    fn check_session_path_rejects_workload_param_shape() {
+        // The classic recurring footgun: `--session-path scenario=foo`
+        // would silently create `<cwd>/scenario=foo/...` because the
+        // umbrella parser splits only on `:`.
+        for bad in &[
+            "scenario=foo",
+            "scenario=/tmp/foo",
+            "scenario=target",
+            "scenario=target/test-tmp/x",
+            "k=v",
+            "key_with_underscore=value",
+            "kebab-case=value",
+        ] {
+            assert!(check_session_path(bad, "test").is_err(),
+                "should reject '{bad}'");
+        }
+    }
+
+    #[test]
+    fn check_session_path_accepts_real_paths() {
+        for good in &[
+            "/tmp/foo",
+            "/tmp/foo/bar",
+            "logs/session_2026",
+            "./local/x",
+            "../sibling/y",
+            "relative/path",
+            "/var/run/x=y",                  // `=` inside path, not at the head
+            "C:/Windows/maybe",              // exotic but harmless
+            "logs/SESSION/x",
+        ] {
+            assert!(check_session_path(good, "test").is_ok(),
+                "should accept '{good}'");
+        }
+    }
+
+    #[test]
+    fn check_session_path_message_names_remediation() {
+        // The error must point the user at the right flag form,
+        // not just say "bad path".
+        let err = check_session_path("scenario=foo", "test").unwrap_err();
+        assert!(err.contains("--session-path"), "missing flag hint: {err}");
+        assert!(err.contains(":") && err.contains("kv separator"),
+            "missing umbrella-form hint: {err}");
+    }
+
+    #[test]
+    fn check_session_path_empty_head_passes() {
+        // `=value` (empty head) is unusual but doesn't match the
+        // param shape — let it through; downstream path APIs will
+        // reject it on their own terms.
+        assert!(check_session_path("=foo", "test").is_ok());
     }
 
     #[test]

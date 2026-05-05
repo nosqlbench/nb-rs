@@ -66,26 +66,30 @@ report:
      a SAI-indexed vector column. Recall is measured against the
      ground truth provided by the dataset's test set.
 
-     Plots below show the per-profile and aggregate recall@k
+     Figures below show the per-profile and aggregate recall@k
      curves; the table summarises mean recall by profile.
 
     table recall_oracles
       group_by: profile
-      query recall: avg(recall_at_10_mean) by (profile)
-      query latency: avg(cycles_servicetime_mean) by (profile)
+      query recall: avg(recall_at_10_mean) by (profile,limit)
+      query latency: avg(cycles_servicetime_mean) by (profile,limit)
 
     plot recall_at_k1
-      query: avg(recall_at_1_mean{k="1"}) by (limit, profile)
+      query: avg(recall_at_1_mean{k="1"}) by (profile, limit)
       x: limit
+      y-min: 0.8
       series: profile
       label "Mean recall@1 across all profile labels and limits"
     plot recall_at_k10
-      query: avg(recall_at_10_mean{k="10"}) by (limit)
+      query: avg(recall_at_10_mean{k="10"}) by (profile, limit)
       x: limit
+      y-min: 0.8
+      series: profile
       label "Mean recall@10 across all profile labels"
-    plot recall_per_profile_k100
-      query: avg(recall_at_100_mean{k="100"}) by (limit, profile)
+    plot recall_at_k100
+      query: avg(recall_at_100_mean{k="100"}) by (profile, limit)
       x: limit
+      y-min: 0.8
       series: profile
       label "Recall@100 per profile (k=100)"
 
@@ -298,6 +302,10 @@ phases:
       cursor q = range(0, query_counts * 100)
       query_vector := query_vector_at(prebuffered, q % query_counts)
       ground_truth := neighbor_indices_at(prebuffered, q)
+      latency_factor := 0.979 + 4.021 * pow(limit, -0.761)                                                                                                                                                                                                             
+      recall_factor  := 0.509 + 9.491 * pow(limit, -0.402)
+      overscan := if(optimize_for == "LATENCY", latency_factor, recall_factor) 
+
     ops:
       select_ann:
         prepared: |
@@ -336,6 +344,10 @@ phases:
           SELECT key FROM {keyspace}.{table}
           WHERE metadata = {predicate}
           LIMIT {limit}
+        metrics:
+          overscan:
+            kind: gauge
+            value: overscan
 
   pvs_query:
     concurrency: "{query_concurrency}"
@@ -347,6 +359,10 @@ phases:
       query_vector := query_vector_at(prebuffered, q % query_counts)
       predicate := predicate_value_at(prebuffered, q % query_counts)
       ground_truth := filtered_neighbor_indices_at(prebuffered, q % query_counts)
+      latency_factor := 0.979 + 4.021 * pow(limit, -0.761)                                                                                                                                                                                                             
+      recall_factor  := 0.509 + 9.491 * pow(limit, -0.402)
+      overscan := map("LATENCY", "RECALL", latency_factor, recall_factor) 
+
     ops:
       select_ann:
         # LIMIT {limit} (search depth) rather than LIMIT {k}
@@ -370,4 +386,10 @@ phases:
             r: "{limit}"
             functions:
               - recall
+        metrics:
+          overscan:
+            kind: gauge
+            value: overscan
+
+
 

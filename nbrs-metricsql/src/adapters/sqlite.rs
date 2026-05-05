@@ -50,20 +50,31 @@
 //! and tries the truncated name. This matches Prometheus'
 //! convention for summary/histogram metrics.
 
+use crate::catalog::{ExemplarPoint, LabelSet, MetricCatalog, MetricFamilyMeta, MetricType};
 use crate::eval::{DataSource, DataSourceError, Matcher, MatcherOp, Sample, Series};
 use rusqlite::{Connection, params_from_iter, types::Value, OptionalExtension};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// Sqlite-backed [`DataSource`]. Wraps a [`Connection`]
-/// behind a [`Mutex`] so the trait's `&self` `fetch` method
-/// can serialize statement preparation and execution.
+/// Sqlite-backed [`DataSource`] (and [`MetricCatalog`]).
+/// Wraps a [`Connection`] behind a [`Mutex`] so the trait's
+/// `&self` methods can serialize statement preparation and
+/// execution.
 ///
 /// Open with [`SqliteDataSource::open`] for a path or
 /// [`SqliteDataSource::from_connection`] to bring your own
 /// connection (useful for in-memory tests). Either path
 /// applies the read-side PRAGMAs the adapter wants.
+///
+/// `db_path` is captured when [`Self::open`] is used so the
+/// catalog cache layer can mtime-invalidate against the
+/// on-disk file. Sources opened via
+/// [`Self::from_connection`] don't have a path and thus
+/// can't drive mtime-based invalidation; their cache layer
+/// has to fall back to TTL + manual `invalidate()`.
 pub struct SqliteDataSource {
     conn: Mutex<Connection>,
+    db_path: Option<PathBuf>,
 }
 
 impl SqliteDataSource {
@@ -72,12 +83,57 @@ impl SqliteDataSource {
     /// NOT mutate the schema — schema creation is the
     /// writer's responsibility.
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, DataSourceError> {
+        let path_ref = path.as_ref();
         let conn = Connection::open_with_flags(
-            path,
+            path_ref,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
                 | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         ).map_err(|e| DataSourceError::new(format!("open metrics.db: {e}")))?;
-        Self::from_connection(conn)
+        let mut src = Self::from_connection(conn)?;
+        src.db_path = Some(path_ref.to_path_buf());
+        Ok(src)
+    }
+
+    /// Path the source was opened against, if any.
+    /// `None` when constructed via [`Self::from_connection`]
+    /// (e.g. `:memory:` test fixtures).
+    ///
+    /// Used by [`Self::mtime_fn`] so `CachedCatalog` can
+    /// invalidate against on-disk changes when the writer
+    /// flushes new data.
+    pub fn db_path(&self) -> Option<&std::path::Path> {
+        self.db_path.as_deref()
+    }
+
+    /// Closure suitable for
+    /// [`crate::catalog::CachedCatalog::with_mtime_fn`].
+    /// Returns the latest `mtime` of the underlying file as
+    /// a monotonic [`Instant`] (computed by anchoring the
+    /// system-time-difference against an initial fixed
+    /// epoch — `Instant` itself isn't constructable from a
+    /// system time, but the comparison is what matters and
+    /// the offset-relative-to-epoch survives that).
+    ///
+    /// Returns `None` when the source was opened via
+    /// [`Self::from_connection`] (no path available) or when
+    /// the file has disappeared since open.
+    pub fn mtime_fn(
+        &self,
+    ) -> Option<impl Fn() -> Option<std::time::Instant> + Send + Sync + 'static> {
+        let path = self.db_path.clone()?;
+        // Anchor the mtime translation: capture
+        // `Instant::now() - SystemTime::now()` once, then
+        // mtime → Instant = anchor_instant + (mtime -
+        // anchor_system_time). This stays monotonic for as
+        // long as the system clock doesn't run backwards.
+        let anchor_instant = std::time::Instant::now();
+        let anchor_system = std::time::SystemTime::now();
+        Some(move || -> Option<std::time::Instant> {
+            let meta = std::fs::metadata(&path).ok()?;
+            let mtime = meta.modified().ok()?;
+            let delta = mtime.duration_since(anchor_system).ok()?;
+            anchor_instant.checked_add(delta)
+        })
     }
 
     /// Wrap an existing [`Connection`]. PRAGMAs the adapter
@@ -94,7 +150,7 @@ impl SqliteDataSource {
              PRAGMA temp_store = MEMORY;\
              PRAGMA mmap_size  = 268435456;",
         ).map_err(|e| DataSourceError::new(format!("apply pragmas: {e}")))?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self { conn: Mutex::new(conn), db_path: None })
     }
 }
 
@@ -216,6 +272,393 @@ impl DataSource for SqliteDataSource {
     }
 }
 
+// =====================================================================
+// MetricCatalog impl
+// =====================================================================
+
+impl MetricCatalog for SqliteDataSource {
+    fn metric_families(&self) -> Result<Vec<MetricFamilyMeta>, DataSourceError> {
+        let conn = self.conn.lock()
+            .map_err(|_| DataSourceError::new("sqlite mutex poisoned"))?;
+        let mut stmt = conn.prepare(
+            "SELECT name, type, unit, help FROM metric_family ORDER BY name",
+        ).map_err(|e| DataSourceError::new(format!("prepare families: {e}")))?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        }).map_err(|e| DataSourceError::new(format!("query families: {e}")))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (name, ty_str, unit, help) = row
+                .map_err(|e| DataSourceError::new(format!("decode family row: {e}")))?;
+            out.push(MetricFamilyMeta {
+                name,
+                ty: MetricType::parse(&ty_str),
+                unit,
+                help,
+            });
+        }
+        Ok(out)
+    }
+
+    fn label_keys(
+        &self,
+        family_filter: Option<&str>,
+    ) -> Result<Vec<String>, DataSourceError> {
+        let conn = self.conn.lock()
+            .map_err(|_| DataSourceError::new("sqlite mutex poisoned"))?;
+        let mut keys: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+
+        let sql = match family_filter {
+            // Restrict to label keys observed on instances
+            // belonging to the named family.
+            Some(_) => {
+                "SELECT DISTINCT lk.key \
+                 FROM label_key lk \
+                 JOIN label_set_entry lse ON lse.key_id = lk.id \
+                 JOIN metric_instance mi ON mi.label_set_id = lse.set_id \
+                 JOIN metric_family mf ON mf.id = mi.family_id \
+                 WHERE mf.name = ?1 \
+                 ORDER BY lk.key"
+            }
+            None => {
+                "SELECT key FROM label_key ORDER BY key"
+            }
+        };
+
+        let mut stmt = conn.prepare(sql)
+            .map_err(|e| DataSourceError::new(format!("prepare label_keys: {e}")))?;
+        let mut rows: Box<dyn Iterator<Item = rusqlite::Result<String>>> = match family_filter {
+            Some(name) => Box::new(stmt
+                .query_map([name], |r| r.get::<_, String>(0))
+                .map_err(|e| DataSourceError::new(format!("query label_keys: {e}")))?
+                .collect::<Vec<_>>().into_iter()),
+            None => Box::new(stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(|e| DataSourceError::new(format!("query label_keys: {e}")))?
+                .collect::<Vec<_>>().into_iter()),
+        };
+        for row in &mut rows {
+            let k = row.map_err(|e| DataSourceError::new(format!("decode label_key: {e}")))?;
+            keys.insert(k);
+        }
+        Ok(keys.into_iter().collect())
+    }
+
+    fn label_values(
+        &self,
+        key: &str,
+        family_filter: Option<&str>,
+    ) -> Result<Vec<String>, DataSourceError> {
+        let conn = self.conn.lock()
+            .map_err(|_| DataSourceError::new("sqlite mutex poisoned"))?;
+        let sql = match family_filter {
+            Some(_) => {
+                "SELECT DISTINCT lv.value \
+                 FROM label_value lv \
+                 JOIN label_set_entry lse ON lse.value_id = lv.id \
+                 JOIN label_key lk ON lk.id = lse.key_id \
+                 JOIN metric_instance mi ON mi.label_set_id = lse.set_id \
+                 JOIN metric_family mf ON mf.id = mi.family_id \
+                 WHERE lk.key = ?1 AND mf.name = ?2 \
+                 ORDER BY lv.value"
+            }
+            None => {
+                "SELECT DISTINCT lv.value \
+                 FROM label_value lv \
+                 JOIN label_set_entry lse ON lse.value_id = lv.id \
+                 JOIN label_key lk ON lk.id = lse.key_id \
+                 WHERE lk.key = ?1 \
+                 ORDER BY lv.value"
+            }
+        };
+        let mut stmt = conn.prepare(sql)
+            .map_err(|e| DataSourceError::new(format!("prepare label_values: {e}")))?;
+        let mut out = Vec::new();
+        let rows: Vec<rusqlite::Result<String>> = match family_filter {
+            Some(name) => stmt
+                .query_map([key, name], |r| r.get::<_, String>(0))
+                .map_err(|e| DataSourceError::new(format!("query label_values: {e}")))?
+                .collect(),
+            None => stmt
+                .query_map([key], |r| r.get::<_, String>(0))
+                .map_err(|e| DataSourceError::new(format!("query label_values: {e}")))?
+                .collect(),
+        };
+        for row in rows {
+            out.push(row.map_err(|e| DataSourceError::new(format!("decode value: {e}")))?);
+        }
+        Ok(out)
+    }
+
+    fn series(
+        &self,
+        matchers: &[Matcher],
+    ) -> Result<Vec<LabelSet>, DataSourceError> {
+        let conn = self.conn.lock()
+            .map_err(|_| DataSourceError::new("sqlite mutex poisoned"))?;
+
+        // `__name__` matcher restricts to a single family;
+        // bare-Eq is supported, regex / Ne is not (same
+        // restriction as `fetch`).
+        let name_matcher = matchers.iter().find(|m| m.label == "__name__");
+        let resolved = match name_matcher.map(|m| m.op) {
+            Some(MatcherOp::Eq) => {
+                resolve_family(&conn, &name_matcher.unwrap().value)?
+            }
+            Some(_) => {
+                return Err(DataSourceError::new(
+                    "non-Eq match on __name__ not supported by sqlite catalog yet",
+                ));
+            }
+            None => None,
+        };
+
+        let other_matchers: Vec<&Matcher> = matchers.iter()
+            .filter(|m| m.label != "__name__")
+            .collect();
+
+        // Reuse the same label-set filter shape `fetch` uses.
+        let label_set_filter = label_set_filter_clause(&other_matchers)?;
+
+        let sql_with_family = format!(
+            "SELECT mi.label_set_id, mf.name \
+             FROM metric_instance mi \
+             JOIN metric_family mf ON mf.id = mi.family_id \
+             WHERE mi.family_id = ?1 \
+             {label_set_filter} \
+             ORDER BY mi.label_set_id"
+        );
+        let sql_no_family = format!(
+            "SELECT mi.label_set_id, mf.name \
+             FROM metric_instance mi \
+             JOIN metric_family mf ON mf.id = mi.family_id \
+             WHERE 1=1 \
+             {label_set_filter} \
+             ORDER BY mi.label_set_id"
+        );
+
+        let (sql, has_family) = match &resolved {
+            Some(_) => (sql_with_family, true),
+            None => (sql_no_family, false),
+        };
+
+        let mut params: Vec<Value> = Vec::new();
+        if let Some(r) = &resolved {
+            params.push(Value::Integer(r.family_id));
+        }
+        for m in &other_matchers {
+            params.push(Value::Text(m.label.clone()));
+            params.push(Value::Text(m.value.clone()));
+        }
+
+        // Resolve label_set_id → labels.
+        let mut stmt = conn.prepare(&sql)
+            .map_err(|e| DataSourceError::new(format!("prepare series: {e}")))?;
+        let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        }).map_err(|e| DataSourceError::new(format!("query series: {e}")))?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            let (set_id, family_name) = row
+                .map_err(|e| DataSourceError::new(format!("decode series row: {e}")))?;
+            let mut labels = materialize_label_set(&conn, set_id)?;
+            // Inject __name__ so callers can reconstruct the
+            // selector verbatim.
+            labels.insert(0, ("__name__".into(), family_name));
+            out.push(labels);
+        }
+        let _ = has_family; // suppress unused-var lint
+        Ok(out)
+    }
+
+    fn exemplars(
+        &self,
+        matchers: &[Matcher],
+        time_range: Option<(i64, i64)>,
+    ) -> Result<Vec<ExemplarPoint>, DataSourceError> {
+        // Translate matchers into the same instance-id
+        // selection `series` uses, then JOIN onto exemplar
+        // rows on the (instance_id, sample_timestamp_ms)
+        // pair-key.
+        let conn = self.conn.lock()
+            .map_err(|_| DataSourceError::new("sqlite mutex poisoned"))?;
+
+        let name_matcher = matchers.iter().find(|m| m.label == "__name__");
+        let resolved = match name_matcher.map(|m| m.op) {
+            Some(MatcherOp::Eq) => {
+                resolve_family(&conn, &name_matcher.unwrap().value)?
+            }
+            Some(_) => {
+                return Err(DataSourceError::new(
+                    "non-Eq match on __name__ not supported by sqlite catalog yet",
+                ));
+            }
+            None => None,
+        };
+        let other_matchers: Vec<&Matcher> = matchers.iter()
+            .filter(|m| m.label != "__name__")
+            .collect();
+        let label_set_filter = label_set_filter_clause(&other_matchers)?;
+
+        let (start_ms, end_ms) = time_range.unwrap_or((i64::MIN, i64::MAX));
+
+        let sql_with_family = format!(
+            "SELECT mi.id, mi.label_set_id, mf.name, \
+                    e.sample_timestamp_ms, e.value, \
+                    e.timestamp_ms, e.labels_spec \
+             FROM exemplar e \
+             JOIN metric_instance mi ON mi.id = e.instance_id \
+             JOIN metric_family mf ON mf.id = mi.family_id \
+             WHERE mi.family_id = ?1 \
+               AND e.sample_timestamp_ms >= ?2 \
+               AND e.sample_timestamp_ms <= ?3 \
+               {label_set_filter} \
+             ORDER BY e.sample_timestamp_ms"
+        );
+        let sql_no_family = format!(
+            "SELECT mi.id, mi.label_set_id, mf.name, \
+                    e.sample_timestamp_ms, e.value, \
+                    e.timestamp_ms, e.labels_spec \
+             FROM exemplar e \
+             JOIN metric_instance mi ON mi.id = e.instance_id \
+             JOIN metric_family mf ON mf.id = mi.family_id \
+             WHERE e.sample_timestamp_ms >= ?1 \
+               AND e.sample_timestamp_ms <= ?2 \
+               {label_set_filter} \
+             ORDER BY e.sample_timestamp_ms"
+        );
+
+        let mut params: Vec<Value> = Vec::new();
+        let sql = match &resolved {
+            Some(r) => {
+                params.push(Value::Integer(r.family_id));
+                params.push(Value::Integer(start_ms));
+                params.push(Value::Integer(end_ms));
+                sql_with_family
+            }
+            None => {
+                params.push(Value::Integer(start_ms));
+                params.push(Value::Integer(end_ms));
+                sql_no_family
+            }
+        };
+        for m in &other_matchers {
+            params.push(Value::Text(m.label.clone()));
+            params.push(Value::Text(m.value.clone()));
+        }
+
+        let mut stmt = conn.prepare(&sql)
+            .map_err(|e| DataSourceError::new(format!("prepare exemplars: {e}")))?;
+        let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
+            Ok((
+                r.get::<_, i64>(1)?, // label_set_id
+                r.get::<_, String>(2)?, // family name
+                r.get::<_, i64>(3)?, // sample_timestamp_ms
+                r.get::<_, f64>(4)?, // value
+                r.get::<_, Option<i64>>(5)?, // timestamp_ms
+                r.get::<_, String>(6)?, // labels_spec
+            ))
+        }).map_err(|e| DataSourceError::new(format!("query exemplars: {e}")))?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            let (set_id, fname, sample_ts, value, ts, labels_spec) = row
+                .map_err(|e| DataSourceError::new(format!("decode exemplar: {e}")))?;
+            let mut series = materialize_label_set(&conn, set_id)?;
+            series.insert(0, ("__name__".into(), fname));
+            let labels = parse_labels_spec(&labels_spec);
+            out.push(ExemplarPoint {
+                series,
+                sample_timestamp_ms: sample_ts,
+                value,
+                timestamp_ms: ts,
+                labels,
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// Parse the `key="value",key="value"` spec encoding back
+/// into a label list. Inverse of the writer's spec
+/// formatter. Tolerant of trailing whitespace / empty input.
+fn parse_labels_spec(spec: &str) -> Vec<(String, String)> {
+    let s = spec.trim();
+    if s.is_empty() { return Vec::new(); }
+    // Manual tokenizer — quoted values may contain commas,
+    // which serde_json would parse cleanly but we don't
+    // want a JSON dep on this read path. Two-state walker.
+    let mut out = Vec::new();
+    let mut cur_key = String::new();
+    let mut cur_val = String::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Read key up to '='.
+        while i < bytes.len() && bytes[i] != b'=' {
+            cur_key.push(bytes[i] as char);
+            i += 1;
+        }
+        if i >= bytes.len() { break; }
+        i += 1; // consume '='
+        // Optional quote.
+        let quoted = i < bytes.len() && bytes[i] == b'"';
+        if quoted { i += 1; }
+        while i < bytes.len() {
+            if quoted {
+                if bytes[i] == b'"' { i += 1; break; }
+            } else if bytes[i] == b',' {
+                break;
+            }
+            cur_val.push(bytes[i] as char);
+            i += 1;
+        }
+        out.push((
+            cur_key.trim().to_string(),
+            cur_val.clone(),
+        ));
+        cur_key.clear();
+        cur_val.clear();
+        // Skip optional ',' and any whitespace.
+        while i < bytes.len() && (bytes[i] == b',' || bytes[i].is_ascii_whitespace()) {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Helper: read every (key, value) entry in `label_set_id`'s
+/// label set into a sorted Vec. Mirrors the `materialize_series`
+/// helper but returns just the labels, no samples.
+fn materialize_label_set(
+    conn: &Connection,
+    label_set_id: i64,
+) -> Result<Vec<(String, String)>, DataSourceError> {
+    let mut stmt = conn.prepare(
+        "SELECT lk.key, lv.value \
+         FROM label_set_entry lse \
+         JOIN label_key lk ON lk.id = lse.key_id \
+         JOIN label_value lv ON lv.id = lse.value_id \
+         WHERE lse.set_id = ?1 \
+         ORDER BY lk.key",
+    ).map_err(|e| DataSourceError::new(format!("prepare label set: {e}")))?;
+    let rows = stmt.query_map([label_set_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    }).map_err(|e| DataSourceError::new(format!("query label set: {e}")))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| DataSourceError::new(format!("decode label entry: {e}")))?);
+    }
+    Ok(out)
+}
+
 /// Lookup result for `__name__` resolution.
 struct ResolvedName {
     family_id: i64,
@@ -282,14 +725,44 @@ fn lookup_family(conn: &Connection, name: &str)
 /// the user explicitly named a stat.
 fn default_column_for_type(family_type: &str) -> &'static str {
     match family_type {
+        // Counters: cumulative observation total.
         "counter" => "count",
+        // Gauges: instantaneous reading.
         "gauge"   => "mean",
-        // Summaries with no stat suffix — return the count
-        // by convention. Users typically want a specific
-        // stat (`_p99` etc.); if they ask for the bare name
-        // they get the observation count.
+        // Summaries: bare name returns observation count;
+        // suffixes route to specific stat columns
+        // (`_sum` → sum, `_p99` → p99, etc.).
         "summary" => "count",
-        _ => "mean",  // Defensive fallback for unknown types.
+        // Histograms (bucketed): bare name returns the
+        // cumulative count column. Bucket samples are
+        // distinguished via the `le` label, not via the
+        // metric name; selectors typically look like
+        // `latency_bucket{le="0.5"}`. The `_bucket` suffix
+        // resolves to the same `count` column, while
+        // `_sum` and `_count` siblings resolve through the
+        // STAT_SUFFIXES table.
+        "histogram" => "count",
+        // GaugeHistogram: identical schema shape to
+        // Histogram; the type label tells consumers
+        // (metricsql evaluator) to allow non-monotonic
+        // buckets.
+        "gaugehistogram" => "count",
+        // Info: always-1 metric whose data lives in its
+        // labels. Value column convention: `count = 1`.
+        // Bare-name queries return the constant 1; the
+        // labels carry the descriptive info.
+        "info" => "count",
+        // StateSet: one series per state, value 0 or 1
+        // indicating whether the state is active. Stored
+        // in the `mean` column (gauge convention).
+        "stateset" => "mean",
+        // Unknown / OpenMetrics fallback: treat as gauge
+        // (mean column). Defensive — any type tag we don't
+        // explicitly recognise returns the mean column so
+        // the query at least produces something rather
+        // than empty.
+        "unknown" => "mean",
+        _ => "mean",  // Same fallback for non-spec types.
     }
 }
 
@@ -765,5 +1238,350 @@ mod tests {
         assert_eq!(got[0].samples[0].value, 10.0);
         assert_eq!(lookup(&got[1], "zone"), Some("z2"));
         assert_eq!(got[1].samples[0].value, 20.0);
+    }
+
+    // ── MetricCatalog impl tests ─────────────────────────────
+
+    use crate::catalog::{MetricCatalog, MetricType};
+
+    fn make_catalog_fixture() -> SqliteDataSource {
+        let conn = make_schema();
+        let unit_help = |name: &str, ty: &str, unit: Option<&str>, help: Option<&str>| {
+            conn.execute(
+                "INSERT INTO metric_family (name, type, unit, help) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![name, ty, unit, help],
+            ).unwrap();
+        };
+        unit_help("ops_total",   "counter",   None,            Some("operations completed"));
+        unit_help("cpu_load",    "gauge",     Some("ratio"),   None);
+        unit_help("latency",     "histogram", Some("seconds"), Some("op latency"));
+        // A separate instance per family so we have label data.
+        let _ = make_instance(&conn, "ops_total", "counter", &[("phase", "setup")]);
+        let _ = make_instance(&conn, "ops_total", "counter", &[("phase", "run")]);
+        let _ = make_instance(&conn, "cpu_load",  "gauge",   &[("zone", "z1")]);
+        let _ = make_instance(&conn, "cpu_load",  "gauge",   &[("zone", "z2")]);
+        SqliteDataSource::from_connection(conn).unwrap()
+    }
+
+    #[test]
+    fn catalog_metric_families_returns_full_metadata() {
+        let ds = make_catalog_fixture();
+        let fams = ds.metric_families().unwrap();
+        let by_name: std::collections::HashMap<String, _> =
+            fams.into_iter().map(|f| (f.name.clone(), f)).collect();
+
+        let counter = by_name.get("ops_total").unwrap();
+        assert_eq!(counter.ty, MetricType::Counter);
+        assert_eq!(counter.unit, None);
+        assert_eq!(counter.help.as_deref(), Some("operations completed"));
+
+        let gauge = by_name.get("cpu_load").unwrap();
+        assert_eq!(gauge.ty, MetricType::Gauge);
+        assert_eq!(gauge.unit.as_deref(), Some("ratio"));
+
+        let hist = by_name.get("latency").unwrap();
+        assert_eq!(hist.ty, MetricType::Histogram);
+        assert_eq!(hist.unit.as_deref(), Some("seconds"));
+        assert_eq!(hist.help.as_deref(), Some("op latency"));
+    }
+
+    #[test]
+    fn catalog_label_keys_global_and_per_family() {
+        let ds = make_catalog_fixture();
+        // Global view: every observed key.
+        let mut all = ds.label_keys(None).unwrap();
+        all.sort();
+        assert!(all.contains(&"phase".to_string()));
+        assert!(all.contains(&"zone".to_string()));
+
+        // Per-family restriction.
+        let ops_keys = ds.label_keys(Some("ops_total")).unwrap();
+        assert_eq!(ops_keys, vec!["phase".to_string()]);
+        let cpu_keys = ds.label_keys(Some("cpu_load")).unwrap();
+        assert_eq!(cpu_keys, vec!["zone".to_string()]);
+        let unknown = ds.label_keys(Some("nope")).unwrap();
+        assert!(unknown.is_empty());
+    }
+
+    #[test]
+    fn catalog_label_values_global_and_per_family() {
+        let ds = make_catalog_fixture();
+        let mut phases = ds.label_values("phase", None).unwrap();
+        phases.sort();
+        assert_eq!(phases, vec!["run".to_string(), "setup".to_string()]);
+
+        let mut zones = ds.label_values("zone", Some("cpu_load")).unwrap();
+        zones.sort();
+        assert_eq!(zones, vec!["z1".to_string(), "z2".to_string()]);
+
+        // Cross-family probe: zone isn't on ops_total.
+        let none = ds.label_values("zone", Some("ops_total")).unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn catalog_series_returns_label_sets_with_synthetic_name() {
+        let ds = make_catalog_fixture();
+        let m = vec![Matcher {
+            label: "__name__".into(),
+            op: MatcherOp::Eq,
+            value: "ops_total".into(),
+        }];
+        let mut got = ds.series(&m).unwrap();
+        got.sort_by(|a, b| {
+            // Sort by phase value for stable assertions.
+            let av = a.iter().find(|(k, _)| k == "phase").map(|(_, v)| v.as_str()).unwrap_or("");
+            let bv = b.iter().find(|(k, _)| k == "phase").map(|(_, v)| v.as_str()).unwrap_or("");
+            av.cmp(bv)
+        });
+        assert_eq!(got.len(), 2);
+        for ls in &got {
+            // Every series must carry the synthetic __name__.
+            assert!(ls.iter().any(|(k, v)| k == "__name__" && v == "ops_total"),
+                "series missing __name__: {ls:?}");
+        }
+        // First entry is the run phase (alphabetic).
+        assert!(got[0].iter().any(|(k, v)| k == "phase" && v == "run"));
+        assert!(got[1].iter().any(|(k, v)| k == "phase" && v == "setup"));
+    }
+
+    #[test]
+    fn catalog_series_no_name_matcher_returns_every_series() {
+        let ds = make_catalog_fixture();
+        // Empty matcher list returns every (family, label-set).
+        // Each family contributes 2 series in our fixture, so 4 total.
+        let got = ds.series(&[]).unwrap();
+        assert_eq!(got.len(), 4);
+    }
+
+    #[test]
+    fn catalog_metric_type_unknown_in_db_maps_to_unknown() {
+        // Manually insert a family with a non-standard type
+        // string. The catalog should surface it as Unknown
+        // rather than failing.
+        let conn = make_schema();
+        conn.execute(
+            "INSERT INTO metric_family (name, type) VALUES (?1, ?2)",
+            params!["weird", "untyped"]).unwrap();
+        let ds = SqliteDataSource::from_connection(conn).unwrap();
+        let fams = ds.metric_families().unwrap();
+        assert_eq!(fams.len(), 1);
+        assert_eq!(fams[0].ty, MetricType::Unknown);
+    }
+
+    // ── SRD-49: round-trip every OpenMetrics 1.0 type ──
+    //
+    // The catalog must surface each of the 8 OpenMetrics
+    // types correctly when stored under its canonical
+    // type-tag string. The writer-side `write_native_sample`
+    // API (in nbrs-metrics) is the production path; here we
+    // exercise the read side directly to keep the test
+    // self-contained.
+
+    fn insert_family_with_type(conn: &Connection, name: &str, ty: &str) {
+        conn.execute(
+            "INSERT INTO metric_family (name, type) VALUES (?1, ?2)",
+            params![name, ty]).unwrap();
+    }
+
+    #[test]
+    fn catalog_round_trip_histogram_type() {
+        let conn = make_schema();
+        insert_family_with_type(&conn, "latency", "histogram");
+        // One bucket instance per `le` boundary.
+        let _ = make_instance(&conn, "latency", "histogram", &[("le", "0.1")]);
+        let _ = make_instance(&conn, "latency", "histogram", &[("le", "0.5")]);
+        let _ = make_instance(&conn, "latency", "histogram", &[("le", "+Inf")]);
+        let ds = SqliteDataSource::from_connection(conn).unwrap();
+        let fams = ds.metric_families().unwrap();
+        assert_eq!(fams.len(), 1);
+        assert_eq!(fams[0].ty, MetricType::Histogram);
+        // Bucket boundaries surface as label values for `le`.
+        let mut le_values = ds.label_values("le", Some("latency")).unwrap();
+        le_values.sort();
+        assert_eq!(le_values, vec!["+Inf".to_string(), "0.1".to_string(), "0.5".to_string()]);
+    }
+
+    #[test]
+    fn catalog_round_trip_gauge_histogram_type() {
+        let conn = make_schema();
+        insert_family_with_type(&conn, "queue_size_buckets", "gaugehistogram");
+        let _ = make_instance(&conn, "queue_size_buckets", "gaugehistogram",
+            &[("le", "10")]);
+        let ds = SqliteDataSource::from_connection(conn).unwrap();
+        let fams = ds.metric_families().unwrap();
+        assert_eq!(fams[0].ty, MetricType::GaugeHistogram);
+    }
+
+    #[test]
+    fn catalog_round_trip_info_type() {
+        let conn = make_schema();
+        insert_family_with_type(&conn, "build_info", "info");
+        let _ = make_instance(&conn, "build_info", "info",
+            &[("version", "1.2.3"), ("commit", "abc")]);
+        let ds = SqliteDataSource::from_connection(conn).unwrap();
+        let fams = ds.metric_families().unwrap();
+        assert_eq!(fams[0].ty, MetricType::Info);
+        // Info types have a known label vocabulary; ensure the
+        // catalog surfaces them.
+        let mut keys = ds.label_keys(Some("build_info")).unwrap();
+        keys.sort();
+        assert_eq!(keys, vec!["commit".to_string(), "version".to_string()]);
+    }
+
+    #[test]
+    fn catalog_round_trip_stateset_type() {
+        let conn = make_schema();
+        insert_family_with_type(&conn, "feature_flags", "stateset");
+        // One instance per state name.
+        let _ = make_instance(&conn, "feature_flags", "stateset",
+            &[("feature", "alpha")]);
+        let _ = make_instance(&conn, "feature_flags", "stateset",
+            &[("feature", "beta")]);
+        let ds = SqliteDataSource::from_connection(conn).unwrap();
+        let fams = ds.metric_families().unwrap();
+        assert_eq!(fams[0].ty, MetricType::StateSet);
+        let mut features = ds.label_values("feature", Some("feature_flags")).unwrap();
+        features.sort();
+        assert_eq!(features, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn catalog_round_trip_summary_type() {
+        // Already tested implicitly via fetch_summary tests,
+        // but pin it for the SRD-49 round-trip matrix.
+        let conn = make_schema();
+        insert_family_with_type(&conn, "request_latency", "summary");
+        let _ = make_instance(&conn, "request_latency", "summary",
+            &[("phase", "run")]);
+        let ds = SqliteDataSource::from_connection(conn).unwrap();
+        assert_eq!(ds.metric_families().unwrap()[0].ty, MetricType::Summary);
+    }
+
+    #[test]
+    fn catalog_exemplars_round_trips() {
+        // Drive both writer and reader sides — write
+        // exemplars via raw SQL (the writer-side tests in
+        // nbrs-metrics exercise `write_exemplar` separately),
+        // then read them back through the catalog.
+        let conn = make_schema();
+        // Add the exemplar table the writer-side schema
+        // creates. The catalog reader expects this shape.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS exemplar (
+                id INTEGER PRIMARY KEY,
+                instance_id INTEGER NOT NULL,
+                sample_timestamp_ms INTEGER NOT NULL,
+                value REAL NOT NULL,
+                timestamp_ms INTEGER,
+                labels_spec TEXT NOT NULL
+            );"
+        ).unwrap();
+        insert_family_with_type(&conn, "ops_total", "counter");
+        let inst_id = make_instance(&conn, "ops_total", "counter",
+            &[("phase", "run")]);
+        // Exemplar 1: with timestamp + trace label.
+        conn.execute(
+            "INSERT INTO exemplar (instance_id, sample_timestamp_ms, value, timestamp_ms, labels_spec) \
+             VALUES (?1, 1000, 42.0, 1010, 'trace_id=\"abc\",span_id=\"def\"')",
+            params![inst_id],
+        ).unwrap();
+        // Exemplar 2: without timestamp.
+        conn.execute(
+            "INSERT INTO exemplar (instance_id, sample_timestamp_ms, value, timestamp_ms, labels_spec) \
+             VALUES (?1, 2000, 84.0, NULL, 'trace_id=\"xyz\"')",
+            params![inst_id],
+        ).unwrap();
+
+        let ds = SqliteDataSource::from_connection(conn).unwrap();
+        let m = vec![Matcher {
+            label: "__name__".into(),
+            op: MatcherOp::Eq,
+            value: "ops_total".into(),
+        }];
+        let got = ds.exemplars(&m, None).unwrap();
+        assert_eq!(got.len(), 2);
+        // Sorted by sample_timestamp_ms.
+        assert_eq!(got[0].sample_timestamp_ms, 1000);
+        assert_eq!(got[0].value, 42.0);
+        assert_eq!(got[0].timestamp_ms, Some(1010));
+        // Synthetic __name__ + the instance's labels.
+        assert!(got[0].series.iter().any(|(k, v)| k == "__name__" && v == "ops_total"));
+        assert!(got[0].series.iter().any(|(k, v)| k == "phase" && v == "run"));
+        // Exemplar's own labels parsed correctly.
+        assert!(got[0].labels.iter().any(|(k, v)| k == "trace_id" && v == "abc"));
+        assert!(got[0].labels.iter().any(|(k, v)| k == "span_id" && v == "def"));
+
+        assert_eq!(got[1].sample_timestamp_ms, 2000);
+        assert_eq!(got[1].timestamp_ms, None);
+        assert!(got[1].labels.iter().any(|(k, v)| k == "trace_id" && v == "xyz"));
+    }
+
+    #[test]
+    fn catalog_exemplars_time_range_filter() {
+        let conn = make_schema();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS exemplar (
+                id INTEGER PRIMARY KEY,
+                instance_id INTEGER NOT NULL,
+                sample_timestamp_ms INTEGER NOT NULL,
+                value REAL NOT NULL,
+                timestamp_ms INTEGER,
+                labels_spec TEXT NOT NULL
+            );"
+        ).unwrap();
+        insert_family_with_type(&conn, "ops_total", "counter");
+        let inst_id = make_instance(&conn, "ops_total", "counter", &[]);
+        for ts in [500, 1500, 2500, 3500] {
+            conn.execute(
+                "INSERT INTO exemplar (instance_id, sample_timestamp_ms, value, timestamp_ms, labels_spec) \
+                 VALUES (?1, ?2, 1.0, NULL, 'trace_id=\"t\"')",
+                params![inst_id, ts as i64],
+            ).unwrap();
+        }
+        let ds = SqliteDataSource::from_connection(conn).unwrap();
+        let m = vec![Matcher {
+            label: "__name__".into(),
+            op: MatcherOp::Eq,
+            value: "ops_total".into(),
+        }];
+        let in_window = ds.exemplars(&m, Some((1000, 3000))).unwrap();
+        assert_eq!(in_window.len(), 2,
+            "expected 1500 + 2500; got: {:?}",
+            in_window.iter().map(|e| e.sample_timestamp_ms).collect::<Vec<_>>());
+        assert_eq!(in_window[0].sample_timestamp_ms, 1500);
+        assert_eq!(in_window[1].sample_timestamp_ms, 2500);
+    }
+
+    #[test]
+    fn parse_labels_spec_handles_quoted_values() {
+        let lab = parse_labels_spec(r#"trace_id="abc",span_id="d e f""#);
+        assert_eq!(lab, vec![
+            ("trace_id".into(), "abc".into()),
+            ("span_id".into(), "d e f".into()),
+        ]);
+    }
+
+    #[test]
+    fn parse_labels_spec_handles_empty_input() {
+        assert_eq!(parse_labels_spec(""), Vec::<(String, String)>::new());
+        assert_eq!(parse_labels_spec("   "), Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn catalog_default_column_for_type_covers_all_eight_types() {
+        // Pin the column-routing convention from
+        // [`default_column_for_type`]. Each type has a
+        // canonical sample column the bare-name selector
+        // returns.
+        assert_eq!(default_column_for_type("counter"),         "count");
+        assert_eq!(default_column_for_type("gauge"),           "mean");
+        assert_eq!(default_column_for_type("summary"),         "count");
+        assert_eq!(default_column_for_type("histogram"),       "count");
+        assert_eq!(default_column_for_type("gaugehistogram"),  "count");
+        assert_eq!(default_column_for_type("info"),            "count");
+        assert_eq!(default_column_for_type("stateset"),        "mean");
+        assert_eq!(default_column_for_type("unknown"),         "mean");
     }
 }

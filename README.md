@@ -130,6 +130,22 @@ nbrs-tui          Terminal UI for live monitoring
 nbrs-web          Web dashboard with Axum + HTMX
 ```
 
+## Functional Areas
+
+Each of these areas has a distinctive design which has evolved from its nosqlbench form. This represents a capsule-form view of the user-facing elements which compose together to make a whole system.
+
+### GK Modules
+
+### Op Templates
+
+#### Op Synthesis
+
+### Scenarios
+
+### Phases
+
+
+
 ## License
 
 Apache-2.0

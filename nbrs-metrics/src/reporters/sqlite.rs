@@ -135,6 +135,26 @@ mod inner {
         }
 
         fn create_schema(&mut self) -> Result<(), String> {
+            // Migration step for older databases: add the
+            // created_ms column if it doesn't already exist.
+            // SQLite has no `ADD COLUMN IF NOT EXISTS` until
+            // 3.35; we probe pragma_table_info to check.
+            let has_created_ms: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sample_value') WHERE name = 'created_ms'",
+                [], |row| row.get(0),
+            ).unwrap_or(0);
+            if has_created_ms == 0 {
+                // Either the table doesn't exist yet (the
+                // CREATE below handles that) or it's an
+                // older schema. The ALTER fails harmlessly
+                // when the table doesn't exist; the CREATE
+                // below uses IF NOT EXISTS so the new shape
+                // wins.
+                let _ = self.conn.execute(
+                    "ALTER TABLE sample_value ADD COLUMN created_ms INTEGER",
+                    [],
+                );
+            }
             self.conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS metric_family (
                     id INTEGER PRIMARY KEY,
@@ -180,7 +200,59 @@ mod inner {
                     mean REAL,
                     stddev REAL,
                     p50 REAL, p75 REAL, p90 REAL, p95 REAL,
-                    p98 REAL, p99 REAL, p999 REAL
+                    p98 REAL, p99 REAL, p999 REAL,
+                    -- OpenMetrics §5.1 / §5.3 / §5.5: counters,
+                    -- histograms, summaries MAY carry a Created
+                    -- timestamp marking the series-start instant.
+                    -- Counter resets bump it. Stored per-sample
+                    -- (NULL when the producer didn't supply one)
+                    -- so the reader can surface the standard
+                    -- `<name>_created` virtual series.
+                    created_ms INTEGER
+                );
+                -- Add the column to existing databases that
+                -- predate it. SQLite ignores the ALTER if the
+                -- column is already present (within the same
+                -- run), and the IF NOT EXISTS dance below uses a
+                -- pragma_table_info probe to skip the ALTER on
+                -- DBs that already have it.
+                -- (PRAGMA-based migration runs once per open in
+                -- create_schema so existing dbs upgrade
+                -- on-the-fly without manual SQL.)
+                -- OpenMetrics §4.6.1 exemplars. Linked to a
+                -- specific sample observation by
+                -- (instance_id, sample_timestamp_ms). The
+                -- pair-not-FK link reflects the schema
+                -- reality — sample_value has no synthetic id;
+                -- writers MUST insert the sample row first
+                -- and then exemplar rows pointing at the
+                -- same (instance_id, timestamp_ms) tuple.
+                --
+                -- One row per exemplar; OpenMetrics 1.0
+                -- counter+histogram-bucket allow ≤ 1 per
+                -- sample, OpenMetrics 2.0 allows arbitrary
+                -- counts. The schema is forward-compatible
+                -- with both.
+                --
+                -- `labels_spec` is the same denormalized
+                -- shape as `metric_instance.spec` —
+                -- `key=\"value\",key=\"value\"` — for cheap
+                -- spec reconstruction without joining.
+                CREATE TABLE IF NOT EXISTS exemplar (
+                    id INTEGER PRIMARY KEY,
+                    instance_id INTEGER NOT NULL REFERENCES metric_instance(id),
+                    sample_timestamp_ms INTEGER NOT NULL,
+                    value REAL NOT NULL,
+                    -- Optional exemplar timestamp per spec
+                    -- (distinct from the sample timestamp).
+                    timestamp_ms INTEGER,
+                    -- Denormalized exemplar labels in
+                    -- spec-textual form (key=value pairs).
+                    -- §4.7: the serialized LabelSet MUST be
+                    -- <= 128 UTF-8 chars; validation lives
+                    -- at exposition time, the recording
+                    -- path here is permissive.
+                    labels_spec TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS session_metadata (
                     key TEXT PRIMARY KEY,
@@ -217,6 +289,14 @@ mod inner {
                 --   instances of `latency`\").
                 CREATE INDEX IF NOT EXISTS idx_metric_instance_family
                     ON metric_instance(family_id);
+                -- (exemplar.instance_id, sample_timestamp_ms):
+                --   the pair-key the sample → exemplars
+                --   lookup uses. Read-side query
+                --   `MetricCatalog::exemplars` filters by
+                --   instance + time-window which both this
+                --   index serves directly.
+                CREATE INDEX IF NOT EXISTS idx_exemplar_inst_ts
+                    ON exemplar(instance_id, sample_timestamp_ms);
                 -- SRD-63 §6.4: per-(slot, subject, readout, lod)
                 -- snapshot of the latest render for that tuple.
                 -- Insert-or-replace upsert keeps memory bounded.
@@ -425,10 +505,20 @@ mod inner {
                     let label_set_id = self.get_or_insert_label_set(labels);
                     let instance_id = self.get_or_insert_instance(family_id, label_set_id, name, labels);
 
+                    // OpenMetrics §5.1: counter MAY carry a
+                    // `created` instant (series-start). We
+                    // approximate by treating `Instant`'s offset
+                    // from the writer's start as a relative
+                    // ms value — exposition layer translates
+                    // to absolute Unix epoch.
+                    let created_ms = c.created.map(|t| {
+                        let elapsed = t.elapsed();
+                        now_ms - elapsed.as_millis() as i64
+                    });
                     self.conn.execute(
-                        "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count) \
-                         VALUES (?1, ?2, ?3, ?4)",
-                        params![instance_id, now_ms, interval_ms, c.total as i64],
+                        "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count, created_ms) \
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![instance_id, now_ms, interval_ms, c.total as i64, created_ms],
                     ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
                 }
                 MetricValue::Gauge(g) => {
@@ -463,19 +553,301 @@ mod inner {
                     let p99 = r.value_at_quantile(0.99) as f64;
                     let p999 = r.value_at_quantile(0.999) as f64;
 
+                    let created_ms = h.created.map(|t| {
+                        now_ms - t.elapsed().as_millis() as i64
+                    });
                     self.conn.execute(
                         "INSERT INTO sample_value \
                          (instance_id, timestamp_ms, interval_ms, count, sum, min, max, mean, stddev, \
-                          p50, p75, p90, p95, p98, p99, p999) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                          p50, p75, p90, p95, p98, p99, p999, created_ms) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                         params![
                             instance_id, now_ms, interval_ms, obs, sum, min, max, mean, stddev,
-                            p50, p75, p90, p95, p98, p99, p999
+                            p50, p75, p90, p95, p98, p99, p999, created_ms,
                         ],
                     ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
                 }
+                MetricValue::BucketedHistogram(h) => {
+                    // OpenMetrics §5.3 / §5.4: write one
+                    // sample_value row per bucket with the
+                    // `le` label distinguishing buckets, plus
+                    // sibling _sum / _count families. The
+                    // family_type tag follows the family's
+                    // declared MetricType (Histogram vs
+                    // GaugeHistogram).
+                    let family_type = match family.r#type() {
+                        MetricType::GaugeHistogram => "gaugehistogram",
+                        _ => "histogram",
+                    };
+                    let family_id = self.get_or_insert_family(name, family_type);
+                    for (le, count) in &h.buckets {
+                        let le_str = match le {
+                            crate::snapshot::BucketBound::Finite(v) => v.to_string(),
+                            crate::snapshot::BucketBound::PositiveInfinity => "+Inf".to_string(),
+                        };
+                        let bucket_labels = labels.with("le", le_str);
+                        let label_set_id = self.get_or_insert_label_set(&bucket_labels);
+                        let instance_id = self.get_or_insert_instance(
+                            family_id, label_set_id, name, &bucket_labels,
+                        );
+                        self.conn.execute(
+                            "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count) \
+                             VALUES (?1, ?2, ?3, ?4)",
+                            params![instance_id, now_ms, interval_ms, *count as i64],
+                        ).unwrap_or_else(|e| {
+                            crate::diag::warn(&format!("warning: bucket write failed: {e}"));
+                            0
+                        });
+                    }
+                    // Sibling _sum / _count families.
+                    if let Some(sum_value) = h.sum {
+                        let sum_id = self.get_or_insert_family(
+                            &format!("{name}_sum"), family_type);
+                        let label_set_id = self.get_or_insert_label_set(labels);
+                        let instance_id = self.get_or_insert_instance(
+                            sum_id, label_set_id, &format!("{name}_sum"), labels);
+                        self.conn.execute(
+                            "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, sum) \
+                             VALUES (?1, ?2, ?3, ?4)",
+                            params![instance_id, now_ms, interval_ms, sum_value],
+                        ).unwrap_or_else(|e| {
+                            crate::diag::warn(&format!("warning: _sum write failed: {e}"));
+                            0
+                        });
+                    }
+                    let count_id = self.get_or_insert_family(
+                        &format!("{name}_count"), family_type);
+                    let label_set_id = self.get_or_insert_label_set(labels);
+                    let instance_id = self.get_or_insert_instance(
+                        count_id, label_set_id, &format!("{name}_count"), labels);
+                    self.conn.execute(
+                        "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count) \
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![instance_id, now_ms, interval_ms, h.count as i64],
+                    ).unwrap_or_else(|e| {
+                        crate::diag::warn(&format!("warning: _count write failed: {e}"));
+                        0
+                    });
+                }
+                MetricValue::Info(_) => {
+                    // OpenMetrics §5.6: always-1 metric
+                    // whose data lives in the label set.
+                    let family_id = self.get_or_insert_family(name, "info");
+                    let label_set_id = self.get_or_insert_label_set(labels);
+                    let instance_id = self.get_or_insert_instance(
+                        family_id, label_set_id, name, labels);
+                    self.conn.execute(
+                        "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count) \
+                         VALUES (?1, ?2, ?3, 1)",
+                        params![instance_id, now_ms, interval_ms],
+                    ).unwrap_or_else(|e| {
+                        crate::diag::warn(&format!("warning: info write failed: {e}"));
+                        0
+                    });
+                }
+                MetricValue::StateSet(s) => {
+                    // OpenMetrics §5.7: one sample per state
+                    // (label-keyed by the family-name as
+                    // label-key per spec — using the family
+                    // name itself as the key is forbidden;
+                    // we use `state` as the label key by
+                    // convention).
+                    let family_id = self.get_or_insert_family(name, "stateset");
+                    for (state_name, active) in &s.states {
+                        let state_labels = labels.with("state", state_name.as_str());
+                        let label_set_id = self.get_or_insert_label_set(&state_labels);
+                        let instance_id = self.get_or_insert_instance(
+                            family_id, label_set_id, name, &state_labels);
+                        let v = if *active { 1.0 } else { 0.0 };
+                        self.conn.execute(
+                            "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, mean) \
+                             VALUES (?1, ?2, ?3, ?4)",
+                            params![instance_id, now_ms, interval_ms, v],
+                        ).unwrap_or_else(|e| {
+                            crate::diag::warn(&format!("warning: stateset write failed: {e}"));
+                            0
+                        });
+                    }
+                }
             }
             let _ = MetricType::Counter; // silence unused-import on the Counter path
+        }
+
+        /// Low-level native-sample write API for OpenMetrics
+        /// types beyond the [`MetricValue`] enum's current
+        /// coverage (Counter / Gauge / HDR-summary).
+        ///
+        /// External producers — or future code paths that
+        /// emit Histogram (bucketed), GaugeHistogram, Info,
+        /// or StateSet samples — call this directly with the
+        /// type tag and the populated columns. The
+        /// [`NativeSample`] struct mirrors the
+        /// `sample_value` row schema; populate the columns
+        /// the type needs and leave the rest `None`.
+        ///
+        /// Per [SRD-49](../../../docs/sysref/49_metricsql_supported_scope.md):
+        /// the storage convention per type is
+        ///
+        /// | Type            | Populated columns       |
+        /// |-----------------|-------------------------|
+        /// | counter         | count                   |
+        /// | gauge           | mean                    |
+        /// | summary         | count, sum, min, max, mean, stddev, p50–p999 |
+        /// | histogram       | count (cumulative ≤ `le` label) |
+        /// | gaugehistogram  | count (non-monotonic allowed) |
+        /// | info            | count = 1 (always)      |
+        /// | stateset        | mean ∈ {0.0, 1.0}       |
+        /// | unknown         | mean (defensive)        |
+        ///
+        /// Histogram bucket samples differentiate via the
+        /// `le` label on the metric_instance's label set,
+        /// not via a separate column. Cumulative `_sum` /
+        /// `_count` siblings are emitted as instances under
+        /// the same family with `le` absent (or as `_sum` /
+        /// `_count` family-name siblings — both shapes are
+        /// accepted by the catalog reader).
+        pub fn write_native_sample(
+            &mut self,
+            family_name: &str,
+            family_type: &str,
+            labels: &Labels,
+            sample: &NativeSample,
+        ) {
+            let family_id = self.get_or_insert_family(family_name, family_type);
+            let label_set_id = self.get_or_insert_label_set(labels);
+            let instance_id = self.get_or_insert_instance(
+                family_id, label_set_id, family_name, labels,
+            );
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            self.conn.execute(
+                "INSERT INTO sample_value \
+                 (instance_id, timestamp_ms, interval_ms, count, sum, min, max, mean, stddev, \
+                  p50, p75, p90, p95, p98, p99, p999, created_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                params![
+                    instance_id, now_ms, sample.interval_ms,
+                    sample.count, sample.sum, sample.min, sample.max,
+                    sample.mean, sample.stddev,
+                    sample.p50, sample.p75, sample.p90, sample.p95,
+                    sample.p98, sample.p99, sample.p999,
+                    sample.created_ms,
+                ],
+            ).unwrap_or_else(|e| {
+                crate::diag::warn(&format!(
+                    "warning: native-sample write failed: {e}",
+                ));
+                0
+            });
+        }
+    }
+
+    /// Sample-row payload for [`SqliteReporter::write_native_sample`].
+    /// Mirror of the `sample_value` schema row. Each column is
+    /// optional; populate the ones the type uses (see the
+    /// table on [`SqliteReporter::write_native_sample`]).
+    #[derive(Debug, Default, Clone)]
+    pub struct NativeSample {
+        /// Cadence interval in ms. `0` is acceptable for
+        /// one-shot info / stateset samples.
+        pub interval_ms: i64,
+        pub count: Option<i64>,
+        pub sum: Option<f64>,
+        pub min: Option<f64>,
+        pub max: Option<f64>,
+        pub mean: Option<f64>,
+        pub stddev: Option<f64>,
+        pub p50: Option<f64>,
+        pub p75: Option<f64>,
+        pub p90: Option<f64>,
+        pub p95: Option<f64>,
+        pub p98: Option<f64>,
+        pub p99: Option<f64>,
+        pub p999: Option<f64>,
+        /// OpenMetrics §5.1 / §5.3 / §5.5: series-start
+        /// timestamp. NULL when the producer doesn't track
+        /// it; the catalog reader exposes `<name>_created`
+        /// when populated.
+        pub created_ms: Option<i64>,
+    }
+
+    /// Exemplar payload per OpenMetrics §4.6.1. Attached to a
+    /// previously-written sample by [`SqliteReporter::write_exemplar`].
+    /// Carries the exemplar's value, optional timestamp, and
+    /// label set (trace ids, span ids, …) — the source-of-
+    /// observation envelope the spec describes.
+    ///
+    /// Per spec §4.7 the serialized exemplar LabelSet MUST be
+    /// ≤ 128 UTF-8 characters. Validation is recommended at
+    /// exposition time; the recording path here is permissive
+    /// to avoid silently dropping valuable diagnostic data.
+    #[derive(Debug, Default, Clone)]
+    pub struct ExemplarRow {
+        /// The single observed value the exemplar represents.
+        pub value: f64,
+        /// Optional exemplar timestamp (distinct from the
+        /// sample's timestamp).
+        pub timestamp_ms: Option<i64>,
+        /// Exemplar labels, e.g. `trace_id="abc",span_id="def"`.
+        pub labels: Labels,
+    }
+
+    impl SqliteReporter {
+        /// Attach `exemplar` to an existing sample row,
+        /// identified by `(family_name, family_type, labels,
+        /// sample_timestamp_ms)`. The (family + labels) tuple
+        /// resolves to a `metric_instance.id`; the (instance,
+        /// timestamp) pair anchors the exemplar to its
+        /// observation.
+        ///
+        /// **Caller-side ordering**: write the sample row
+        /// first via [`Self::write_native_sample`] (or the
+        /// existing `MetricValue` path), then call this
+        /// with the same identity tuple. The schema doesn't
+        /// enforce the pairing — exemplars whose anchor
+        /// timestamp doesn't match a real sample are
+        /// orphans, harmless, and just won't surface to
+        /// catalog readers (since the read query joins on
+        /// the timestamp).
+        ///
+        /// Multiple calls with the same identity append; the
+        /// schema permits 0..N exemplars per sample, so
+        /// OpenMetrics 2.0's relaxed cardinality is already
+        /// honoured.
+        pub fn write_exemplar(
+            &mut self,
+            family_name: &str,
+            family_type: &str,
+            instance_labels: &Labels,
+            sample_timestamp_ms: i64,
+            exemplar: &ExemplarRow,
+        ) {
+            let family_id = self.get_or_insert_family(family_name, family_type);
+            let label_set_id = self.get_or_insert_label_set(instance_labels);
+            let instance_id = self.get_or_insert_instance(
+                family_id, label_set_id, family_name, instance_labels,
+            );
+            let labels_spec = exemplar.labels.iter()
+                .map(|(k, v)| format!("{k}=\"{v}\""))
+                .collect::<Vec<_>>()
+                .join(",");
+            self.conn.execute(
+                "INSERT INTO exemplar \
+                 (instance_id, sample_timestamp_ms, value, timestamp_ms, labels_spec) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    instance_id, sample_timestamp_ms,
+                    exemplar.value, exemplar.timestamp_ms,
+                    labels_spec,
+                ],
+            ).unwrap_or_else(|e| {
+                crate::diag::warn(&format!(
+                    "warning: exemplar write failed: {e}",
+                ));
+                0
+            });
         }
     }
 
@@ -1722,13 +2094,153 @@ mod inner {
             r.print_summary(&config_agg);
             eprintln!("--- end ---");
         }
+
+        // ── SRD-49: native OpenMetrics-type writer support ──
+
+        #[test]
+        fn write_native_sample_round_trips_histogram_with_le_buckets() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            // Three bucket instances differing only on `le`.
+            for le in ["0.1", "0.5", "+Inf"] {
+                r.write_native_sample(
+                    "request_latency",
+                    "histogram",
+                    &Labels::of("phase", "run").with("le", le),
+                    &NativeSample {
+                        interval_ms: 1000,
+                        count: Some(42),
+                        ..NativeSample::default()
+                    },
+                );
+            }
+            // Sibling _sum and _count families.
+            r.write_native_sample(
+                "request_latency_sum", "histogram",
+                &Labels::of("phase", "run"),
+                &NativeSample { interval_ms: 1000, sum: Some(123.4), ..NativeSample::default() },
+            );
+            r.write_native_sample(
+                "request_latency_count", "histogram",
+                &Labels::of("phase", "run"),
+                &NativeSample { interval_ms: 1000, count: Some(100), ..NativeSample::default() },
+            );
+
+            // Verify via raw SQL — the read-side test in
+            // nbrs-metricsql exercises the catalog adapter
+            // separately.
+            let n_families: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM metric_family WHERE type = 'histogram'",
+                [], |row| row.get(0)).unwrap();
+            assert_eq!(n_families, 3,
+                "expected 3 histogram families: bucket, sum, count");
+
+            let n_bucket_instances: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM metric_instance mi \
+                 JOIN metric_family mf ON mf.id = mi.family_id \
+                 WHERE mf.name = 'request_latency'",
+                [], |row| row.get(0)).unwrap();
+            assert_eq!(n_bucket_instances, 3,
+                "expected one instance per `le` boundary");
+        }
+
+        #[test]
+        fn write_native_sample_round_trips_info_type() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            r.write_native_sample(
+                "build_info", "info",
+                &Labels::of("version", "1.2.3").with("commit", "abc123"),
+                &NativeSample { interval_ms: 0, count: Some(1), ..NativeSample::default() },
+            );
+            let ty: String = r.conn.query_row(
+                "SELECT type FROM metric_family WHERE name = 'build_info'",
+                [], |row| row.get(0)).unwrap();
+            assert_eq!(ty, "info");
+        }
+
+        #[test]
+        fn write_native_sample_round_trips_stateset_type() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            // Three states with active/inactive per-state samples.
+            for (state, on) in [("alpha", 1.0), ("beta", 0.0), ("gamma", 1.0)] {
+                r.write_native_sample(
+                    "feature_flags", "stateset",
+                    &Labels::of("feature", state),
+                    &NativeSample { interval_ms: 0, mean: Some(on), ..NativeSample::default() },
+                );
+            }
+            let n: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM metric_instance mi \
+                 JOIN metric_family mf ON mf.id = mi.family_id \
+                 WHERE mf.name = 'feature_flags'",
+                [], |row| row.get(0)).unwrap();
+            assert_eq!(n, 3, "one instance per state name");
+        }
+
+        #[test]
+        fn write_native_sample_round_trips_gauge_histogram_type() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            r.write_native_sample(
+                "queue_size_buckets", "gaugehistogram",
+                &Labels::of("le", "10"),
+                &NativeSample { interval_ms: 1000, count: Some(5), ..NativeSample::default() },
+            );
+            let ty: String = r.conn.query_row(
+                "SELECT type FROM metric_family WHERE name = 'queue_size_buckets'",
+                [], |row| row.get(0)).unwrap();
+            assert_eq!(ty, "gaugehistogram");
+        }
+
+        #[test]
+        fn write_native_sample_round_trips_unknown_type() {
+            let mut r = SqliteReporter::in_memory().unwrap();
+            // OpenMetrics 'unknown' is reserved for
+            // un-typed metrics; the writer accepts it.
+            r.write_native_sample(
+                "ad_hoc", "unknown",
+                &Labels::of("source", "external"),
+                &NativeSample { interval_ms: 1000, mean: Some(42.0), ..NativeSample::default() },
+            );
+            let ty: String = r.conn.query_row(
+                "SELECT type FROM metric_family WHERE name = 'ad_hoc'",
+                [], |row| row.get(0)).unwrap();
+            assert_eq!(ty, "unknown");
+        }
+
+        #[test]
+        fn write_native_sample_dedupes_family_and_instance() {
+            // Repeat writes against the same (family, type,
+            // labels) reuse the cached family_id and
+            // instance_id rather than creating duplicates.
+            let mut r = SqliteReporter::in_memory().unwrap();
+            for _ in 0..3 {
+                r.write_native_sample(
+                    "build_info", "info",
+                    &Labels::of("version", "1.2.3"),
+                    &NativeSample { interval_ms: 0, count: Some(1), ..NativeSample::default() },
+                );
+            }
+            let n_families: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM metric_family WHERE name = 'build_info'",
+                [], |row| row.get(0)).unwrap();
+            let n_instances: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM metric_instance mi \
+                 JOIN metric_family mf ON mf.id = mi.family_id \
+                 WHERE mf.name = 'build_info'",
+                [], |row| row.get(0)).unwrap();
+            let n_samples: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM sample_value",
+                [], |row| row.get(0)).unwrap();
+            assert_eq!(n_families, 1);
+            assert_eq!(n_instances, 1);
+            assert_eq!(n_samples, 3, "three sample rows on the single instance");
+        }
     }
 }
 
 #[cfg(feature = "sqlite")]
 pub use inner::SqliteReporter;
 #[cfg(feature = "sqlite")]
-pub use inner::{ReportConfig, ReportAggregate};
+pub use inner::{ReportConfig, ReportAggregate, NativeSample, ExemplarRow};
 
 /// Split a summary name into `(basename, format)`.
 ///

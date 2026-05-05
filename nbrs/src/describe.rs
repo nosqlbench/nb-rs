@@ -703,3 +703,35 @@ fn describe_gk_dag(args: &[String]) {
         Err(e) => eprintln!("error: {e}"),
     }
 }
+
+// ── cli_spec entry ─────────────────────────────────────────
+
+/// `nbrs describe <topic> …` — sub-topic dispatch is
+/// parser-internal (each topic has its own `parse_*_args`).
+/// raw_args=true: the spec advertises the command for
+/// completion+help; per-topic flag declarations remain inside
+/// `describe_command`.
+///
+/// **Open gap:** topics like `describe gk`, `describe adapter`
+/// could be modelled as nested `Command`s with their own
+/// flags. Future work would walk each topic's parser and
+/// lift its flag set into a Command subtree.
+pub fn spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
+    fn handle(p: ParsedCommand) -> Result<(), String> {
+        describe_command(&p.raw);
+        Ok(())
+    }
+    Command {
+        name: "describe",
+        help: "Documentation surface (`describe gk`, `describe adapter`, …).",
+        category: Category::Documentation,
+        level: Level::FullSurface,
+        flags: Vec::new(),
+        positionals: Vec::new(),
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: true,
+        completion_override: None,
+    }
+}

@@ -1156,3 +1156,29 @@ pub fn bench_command(args: &[String]) {
         print_comparison_table(&comparison);
     }
 }
+
+// ── cli_spec entry ─────────────────────────────────────────
+
+/// `nbrs bench <topic> …` — micro-benchmarks; topic-internal
+/// parser surface. raw_args=true to keep the existing
+/// per-topic flag handling. Per-topic specs are an open gap
+/// (see `describe::spec` doc).
+pub fn spec() -> crate::cli_spec::Command {
+    use crate::cli_spec::{Category, Command, Handler, Level, ParsedCommand};
+    fn handle(p: ParsedCommand) -> Result<(), String> {
+        bench_command(&p.raw);
+        Ok(())
+    }
+    Command {
+        name: "bench",
+        help: "Micro-benchmarks (`bench <topic>`).",
+        category: Category::Benchmark,
+        level: Level::FullSurface,
+        flags: Vec::new(),
+        positionals: Vec::new(),
+        subcommands: Vec::new(),
+        handler: Some(Handler::Sync(handle)),
+        raw_args: true,
+        completion_override: None,
+    }
+}

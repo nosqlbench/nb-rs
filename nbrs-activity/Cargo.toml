@@ -35,6 +35,11 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 indexmap = "2"
 pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 libc = "0.2"
+# Used by `report_anchor::resolve` to read scenario / phase
+# distinct values from the active session's metrics.db.
+# `bundled` feature pulls in the C source so we don't depend
+# on a system libsqlite3.
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 [dev-dependencies]
 nbrs-adapter-stdout = { path = "../adapters/stdout", version = "0.1.1" }

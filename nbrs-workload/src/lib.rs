@@ -79,3 +79,4 @@ pub mod bindpoints;
 pub mod tags;
 pub mod spectest;
 pub mod report;
+pub mod edit;

@@ -83,6 +83,7 @@ pub mod reporters;
 pub mod component;
 pub mod diag;
 pub mod snapshot;
+pub mod validation;
 pub mod cadence;
 pub mod cadence_reporter;
 pub mod metrics_query;

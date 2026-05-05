@@ -558,6 +558,57 @@ Reads the same query interface. The bar chart enumerates declared
 cadences via `cadence_window`, the "now" column via `now`, and an
 ad-hoc lookback (when surfaced in the UI) via `recent_window`.
 
+### Component lifecycle: `scope_close` flush
+
+A phase whose duration is **shorter than the smallest cadence
+interval** can finish between two cadence pulses, leaving every
+sample emitted by its instruments unflushed when the component
+drops at scenario teardown. Without intervention, those samples
+never reach the cadence stream — the instrument was the only
+thing holding them, and the next pulse fires after the
+component is gone.
+
+The runtime emits a **`scope_close`** event to the cadence
+reporter at component teardown (phase end, scenario end,
+op-dispenser drop). The event carries:
+
+- The component's logical name + effective labels.
+- A list of every instrument owned by the component.
+- A "partial window" timestamp marker.
+
+The reporter responds:
+
+1. Pulls the current delta from each named instrument
+   (without resetting future windows — the instrument is
+   ending, but the stream isn't, and other components in the
+   tree continue).
+2. Records the partial window as a snapshot annotated
+   `partial=true`.
+3. Folds the partial sample into the next full cadence window
+   when one closes. Aggregation per instrument kind:
+   - **Counter** — sum of partials in the window.
+   - **Gauge** — last `set()` value across partials in time
+     order.
+   - **Histogram** — HDR-style merge.
+
+This is the same aggregation the streaming-coalesce semantics
+(§"Streaming coalesce semantics" above) already perform within
+a single window for normal cadence-pulse-flushed samples;
+partial windows just carry the annotation so downstream tooling
+can distinguish them if needed.
+
+The flush is **generic** — every short component benefits, not
+just SRD-40b synthetic-metric phases. Synthetic phases are the
+sharpest test case (often very short, often with one cycle per
+cell), but a bursty for_each iteration emitting two cycles per
+sub-iteration also relies on this contract to avoid losing
+samples to the cadence-window boundary.
+
+After the flush, the component is free to drop. Its
+instruments' data lives in the stream; future window
+aggregations include the partial-annotated samples
+transparently.
+
 ---
 
 ## Snapshot data model — OpenMetrics-aligned

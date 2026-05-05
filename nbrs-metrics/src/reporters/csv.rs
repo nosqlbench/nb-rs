@@ -89,6 +89,37 @@ impl Reporter for CsvReporter {
                             crate::diag::warn(&format!("warning: CSV write failed for {name}: {e}"));
                         }
                     }
+                    MetricValue::BucketedHistogram(h) => {
+                        // One row per bucket: timestamp, le, count.
+                        let file = self.ensure_file(&name, "timestamp_ms,le,count");
+                        for (le, count) in &h.buckets {
+                            let le_str = match le {
+                                crate::snapshot::BucketBound::Finite(v) => v.to_string(),
+                                crate::snapshot::BucketBound::PositiveInfinity => "+Inf".to_string(),
+                            };
+                            if let Err(e) = writeln!(file, "{now_ms},{le_str},{count}") {
+                                crate::diag::warn(&format!("warning: CSV write failed for {name}: {e}"));
+                            }
+                        }
+                    }
+                    MetricValue::Info(_) => {
+                        // Info metrics carry data in labels;
+                        // write a single sentinel row so the
+                        // file exists.
+                        let file = self.ensure_file(&name, "timestamp_ms,value");
+                        if let Err(e) = writeln!(file, "{now_ms},1") {
+                            crate::diag::warn(&format!("warning: CSV write failed for {name}: {e}"));
+                        }
+                    }
+                    MetricValue::StateSet(s) => {
+                        let file = self.ensure_file(&name, "timestamp_ms,state,active");
+                        for (state_name, active) in &s.states {
+                            let v = if *active { 1 } else { 0 };
+                            if let Err(e) = writeln!(file, "{now_ms},{state_name},{v}") {
+                                crate::diag::warn(&format!("warning: CSV write failed for {name}: {e}"));
+                            }
+                        }
+                    }
                 }
             }
         }
