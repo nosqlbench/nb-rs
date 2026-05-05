@@ -7,19 +7,66 @@
 //!
 //! Each test runs `nbrs run` as a subprocess and checks the output.
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn nbrs() -> Command {
+/// Per-invocation session directory so concurrent test runs
+/// don't collide on `logs/default_<timestamp>`. cargo runs
+/// integration tests in parallel by default, and the wall-
+/// clock-second-grained default session name is too coarse
+/// to keep them apart.
+///
+/// We compute a unique path but DON'T create the directory —
+/// nbrs's session bootstrap will mkdir it. Pre-creating would
+/// trigger nbrs's "directory already contains artifacts"
+/// reuse-policy check.
+struct SessionDir {
+    path: PathBuf,
+}
+
+impl SessionDir {
+    fn new() -> Self {
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        // Nest each test's session under its own parent so
+        // nbrs's `purge_stale_sessions` (which scans the
+        // session-path's parent dir) can't see sibling
+        // tests' sessions.
+        let parent = std::env::temp_dir()
+            .join(format!("nbrs-workload-examples-{pid}-{nanos}"));
+        std::fs::create_dir_all(&parent).expect("create session parent");
+        let path = parent.join("session");
+        Self { path }
+    }
+
+    fn parent(&self) -> &Path {
+        self.path.parent().expect("session dir has parent")
+    }
+}
+
+impl Drop for SessionDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.parent());
+    }
+}
+
+fn nbrs(session: &SessionDir) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nbrs"));
     // Run from workspace root so workload paths resolve correctly
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     cmd.current_dir(workspace_root);
     cmd.arg("run");
+    cmd.arg("--session-path");
+    cmd.arg(&session.path);
     cmd
 }
 
 fn run_workload(workload: &str, extra_args: &[&str]) -> (String, String) {
-    let mut cmd = nbrs();
+    let session = SessionDir::new();
+    let mut cmd = nbrs(&session);
     cmd.arg(format!("workload={workload}"));
     for arg in extra_args {
         cmd.arg(arg);
@@ -31,7 +78,8 @@ fn run_workload(workload: &str, extra_args: &[&str]) -> (String, String) {
 }
 
 fn run_inline(op: &str, extra_args: &[&str]) -> (String, String) {
-    let mut cmd = nbrs();
+    let session = SessionDir::new();
+    let mut cmd = nbrs(&session);
     cmd.arg(format!("op={op}"));
     for arg in extra_args {
         cmd.arg(arg);
@@ -82,9 +130,11 @@ fn conditional_ops_skip_falsy() {
 #[test]
 fn feature_showcase_phased_execution() {
     let (stdout, stderr) = run_workload("examples/workloads/feature_showcase.yaml", &[]);
-    assert!(stderr.contains("phase: setup"), "should run setup phase");
-    assert!(stderr.contains("phase: load"), "should run load phase");
-    assert!(stderr.contains("phase: verify"), "should run verify phase");
+    // Phase-starting row is `[name] (coords): …` after the
+    // SRD-46 status-line redesign. Match the bracketed name.
+    assert!(stderr.contains("[setup]"), "should run setup phase, stderr: {stderr}");
+    assert!(stderr.contains("[load]"), "should run load phase, stderr: {stderr}");
+    assert!(stderr.contains("[verify]"), "should run verify phase, stderr: {stderr}");
     assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
     assert!(stdout.contains("CREATE KEYSPACE"), "should have DDL");
     assert!(stdout.contains("INSERT INTO"), "should have inserts");
@@ -97,9 +147,9 @@ fn feature_showcase_quick_scenario() {
         "examples/workloads/feature_showcase.yaml",
         &["scenario=quick"],
     );
-    assert!(stderr.contains("phase: setup"), "should run setup");
-    assert!(stderr.contains("phase: verify"), "should run verify");
-    assert!(!stderr.contains("phase: load"), "quick scenario should skip load");
+    assert!(stderr.contains("[setup]"), "should run setup, stderr: {stderr}");
+    assert!(stderr.contains("[verify]"), "should run verify, stderr: {stderr}");
+    assert!(!stderr.contains("[load]"), "quick scenario should skip load, stderr: {stderr}");
 }
 
 #[test]
@@ -167,10 +217,13 @@ fn inline_math_expression() {
 fn bare_file_invocation() {
     // nbrs <file.yaml> should work without 'run' subcommand
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let session = SessionDir::new();
     let output = Command::new(env!("CARGO_BIN_EXE_nbrs"))
         .current_dir(workspace_root)
         .arg("examples/workloads/visual/maze.yaml")
         .arg("cycles=3")
+        .arg("--session-path")
+        .arg(&session.path)
         .output()
         .expect("failed to run nbrs");
     let stdout = String::from_utf8_lossy(&output.stdout);

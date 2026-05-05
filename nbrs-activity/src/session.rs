@@ -416,6 +416,28 @@ pub fn resolve_session_dir(args: &[String]) -> SessionDirSpec {
     spec
 }
 
+/// Resolve the `--session` / `--session-path` / `--session-name`
+/// arguments to a session directory path that `metrics.db`
+/// would live under. Used by every read-side tool (`nbrs plot`,
+/// `nbrs report`, `nbrs metrics ...`, completion) so the same
+/// flag means the same thing everywhere.
+///
+/// Returns `None` when no session flag is on the line — the
+/// caller falls back to its own default (typically
+/// `logs/latest`).
+///
+/// **Unlike** [`apply_session_directory_at_startup`] this never
+/// mutates the filesystem (no `logs/latest` symlink rewrite,
+/// no purge). It's a pure path computation: read-side tools
+/// shouldn't have side effects on the active session symlink.
+pub fn read_session_dir(args: &[String]) -> Option<PathBuf> {
+    let spec = resolve_session_dir(args);
+    if spec.is_empty() || spec.needs_auto_id() {
+        return None;
+    }
+    spec.resolve("").map(|(p, _)| p)
+}
+
 /// Default for `--sessions-max`: keep the 10 most-recent
 /// sessions, purge older ones at startup.
 pub const DEFAULT_SESSIONS_MAX: usize = 10;
@@ -505,6 +527,18 @@ pub fn forecast_keep_purge(parent: &Path, keep_cap: usize) -> usize {
     (current + 1).saturating_sub(keep_cap)
 }
 
+/// `true` if `path` carries one of the signature artifacts an
+/// nbrs run writes — the gate the purge logic uses to avoid
+/// destroying unrelated directories that happen to share a
+/// parent with an explicit `--session-path`. Any one of
+/// `metrics.db`, `session.log`, or `checkpoint.json` is
+/// enough; the runtime writes at least one of them per
+/// session, so the test is robust across early-aborted runs.
+fn looks_like_session_dir(path: &Path) -> bool {
+    const SIGNATURES: &[&str] = &["metrics.db", "session.log", "checkpoint.json"];
+    SIGNATURES.iter().any(|s| path.join(s).exists())
+}
+
 /// Purge stale session directories under `parent` according to
 /// `max_sessions` (keep the latest N) and `shelflife` (drop
 /// anything older than this).
@@ -552,6 +586,16 @@ pub fn purge_stale_sessions(
             if let Some(target) = latest_target.as_ref()
                 && path == *target
             {
+                return None;
+            }
+            // Only consider directories that *look like* nbrs
+            // sessions — i.e. carry one of the signature
+            // artifacts the runtime writes. Without this, an
+            // explicit `--session-path /tmp/foo` would set
+            // `cleanup_parent = /tmp` and drag arbitrary
+            // unrelated dirs (snap.rootfs_*, systemd-private-*,
+            // …) into the purge set.
+            if !looks_like_session_dir(&path) {
                 return None;
             }
             let mtime = md.modified().ok()?;
@@ -643,27 +687,100 @@ pub fn apply_session_directory_at_startup(args: &[String]) {
     // false above; pass an empty placeholder for the contract.
     let Some((path, _id)) = spec.resolve("") else { return; };
     let logs = PathBuf::from("logs");
+    // Only touch `logs/` when the resolved session path lives
+    // under it. A `--session-path /tmp/x` (or any path the user
+    // redirected outside `logs/`) is an explicit opt-out:
+    // - The mkdir below would otherwise create a stray
+    //   `<cwd>/logs/` directory in test sandboxes / CI
+    //   working trees that don't want it (the
+    //   `feedback_tests_no_project_root` rule), and
+    // - hijacking `logs/latest` to point there would dangle
+    //   the moment the external dir is cleaned up — exactly
+    //   what test fixtures do when they wipe their own
+    //   tempdirs.
+    if !target_is_under(&logs, &path) {
+        return;
+    }
     if let Err(e) = std::fs::create_dir_all(&logs) {
         crate::observer::log(crate::observer::LogLevel::Warn, &format!(
             "warning: --session-dir startup hook: failed to create logs/: {e}",
         ));
         return;
     }
-    let target = if path.is_absolute() {
-        path.clone()
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&path))
-            .unwrap_or_else(|_| path.clone())
-    };
     let latest = logs.join("latest");
+    // Symlink target is computed RELATIVE to the link's parent
+    // (`logs/`) so the link survives directory moves and stays
+    // readable in `ls -la` output as `logs/latest -> foo_2026...`
+    // rather than `logs/latest -> /home/.../nb-rs/logs/foo_2026...`.
+    // See `relative_symlink_target` for the path-arithmetic.
+    let relative_target = relative_symlink_target(&latest, &path);
     let _ = std::fs::remove_file(&latest);
-    if let Err(e) = std::os::unix::fs::symlink(&target, &latest) {
+    if let Err(e) = std::os::unix::fs::symlink(&relative_target, &latest) {
         crate::observer::log(crate::observer::LogLevel::Warn, &format!(
             "warning: --session-dir: failed to update logs/latest → {}: {e}",
-            target.display(),
+            relative_target.display(),
         ));
     }
+}
+
+/// True when `target`'s absolute path is `logs_dir`'s absolute
+/// path or lies below it. Both paths are resolved against the
+/// current cwd if relative; canonicalize is avoided so this works
+/// for not-yet-created targets.
+pub(crate) fn target_is_under(logs_dir: &Path, target: &Path) -> bool {
+    let cwd = std::env::current_dir().ok();
+    let abs = |p: &Path| -> Option<PathBuf> {
+        if p.is_absolute() { Some(p.to_path_buf()) }
+        else { cwd.as_ref().map(|c| c.join(p)) }
+    };
+    match (abs(logs_dir), abs(target)) {
+        (Some(l), Some(t)) => t.starts_with(&l),
+        _ => false,
+    }
+}
+
+/// Compute a target string for a symlink at `link_path` that
+/// addresses `target` via a path relative to the link's parent
+/// directory. Falls back to the absolute target when neither
+/// path can be canonicalised (e.g. target doesn't exist yet,
+/// which is normal for `logs/latest -> <id>` at session-create
+/// time).
+///
+/// Examples:
+///   `logs/latest`, `logs/foo_20260504/`        → `foo_20260504`
+///   `logs/latest`, `target/test-tmp/sandbox/`  → `../target/test-tmp/sandbox`
+///   `logs/latest`, `/tmp/explore/`             → `/tmp/explore`  (no common root)
+pub(crate) fn relative_symlink_target(link_path: &Path, target: &Path) -> PathBuf {
+    let link_parent = link_path.parent().unwrap_or_else(|| Path::new("."));
+    // Resolve both sides to absolute paths to compute a relative
+    // route. `canonicalize` would also follow symlinks; we want
+    // logical absolutes so we use cwd-prefixing for the
+    // not-yet-existing target case.
+    let cwd = std::env::current_dir().ok();
+    let abs = |p: &Path| -> Option<PathBuf> {
+        if p.is_absolute() { Some(p.to_path_buf()) }
+        else { cwd.as_ref().map(|c| c.join(p)) }
+    };
+    let (Some(link_abs), Some(tgt_abs)) = (abs(link_parent), abs(target)) else {
+        return target.to_path_buf();
+    };
+    let link_comps: Vec<_> = link_abs.components().collect();
+    let tgt_comps: Vec<_>  = tgt_abs.components().collect();
+    let common = link_comps.iter().zip(tgt_comps.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    if common == 0 {
+        // Different roots (e.g. `/home/...` vs `/tmp/...`) —
+        // can't express as a relative path without more `..`s
+        // than is sensible. Fall back to absolute.
+        return tgt_abs;
+    }
+    let ups = link_comps.len() - common;
+    let mut rel = PathBuf::new();
+    for _ in 0..ups { rel.push(".."); }
+    for c in &tgt_comps[common..] { rel.push(c.as_os_str()); }
+    if rel.as_os_str().is_empty() { rel.push("."); }
+    rel
 }
 
 impl Session {
@@ -765,30 +882,41 @@ impl Session {
         // logs/session.log` or open `logs/metrics.db` without
         // chasing the timestamped session id.
         let logs = PathBuf::from("logs");
-        let _ = std::fs::create_dir_all(&logs);
-        let latest = logs.join("latest");
-        let _ = std::fs::remove_file(&latest);
-        let _ = std::os::unix::fs::symlink(
-            &latest_symlink_target(&output_dir, &logs, &id),
-            &latest,
-        );
-        for stale in [
-            "summary.md",
-            "flamegraph.svg",
-            "flamegraph-perf.svg",
-            "flamegraph-perf.md",
-            "tui.dump",
-        ] {
-            let _ = std::fs::remove_file(logs.join(stale));
-        }
-        for artifact in ["session.log", "metrics.db"] {
-            let link = logs.join(artifact);
-            let _ = std::fs::remove_file(&link);
-            // Relative target routes through the `latest`
-            // symlink so swapping sessions updates every artifact
-            // link in a single `latest` update.
-            let target = PathBuf::from("latest").join(artifact);
-            let _ = std::os::unix::fs::symlink(&target, &link);
+        // Only touch `logs/` when the session output dir is under
+        // it. An explicit `--session-path /tmp/x` (or any redirect
+        // outside `logs/`) is treated as opt-out:
+        // - The mkdir below would otherwise stamp a stray
+        //   `<cwd>/logs/` directory in test sandboxes / CI
+        //   working trees that don't want it (the
+        //   `feedback_tests_no_project_root` rule), and
+        // - `logs/latest` shouldn't get hijacked by test fixtures
+        //   or one-off `--session-path` runs.
+        if target_is_under(&logs, &output_dir) {
+            let _ = std::fs::create_dir_all(&logs);
+            let latest = logs.join("latest");
+            let _ = std::fs::remove_file(&latest);
+            let _ = std::os::unix::fs::symlink(
+                &latest_symlink_target(&output_dir, &logs, &id),
+                &latest,
+            );
+            for stale in [
+                "summary.md",
+                "flamegraph.svg",
+                "flamegraph-perf.svg",
+                "flamegraph-perf.md",
+                "tui.dump",
+            ] {
+                let _ = std::fs::remove_file(logs.join(stale));
+            }
+            for artifact in ["session.log", "metrics.db"] {
+                let link = logs.join(artifact);
+                let _ = std::fs::remove_file(&link);
+                // Relative target routes through the `latest`
+                // symlink so swapping sessions updates every artifact
+                // link in a single `latest` update.
+                let target = PathBuf::from("latest").join(artifact);
+                let _ = std::os::unix::fs::symlink(&target, &link);
+            }
         }
 
         let component = Component::root(
@@ -852,16 +980,21 @@ impl Session {
         // `tail -f logs/session.log` and `sqlite3 logs/metrics.db`
         // resolve to this resumed session's artifacts. Same
         // shape as Session::new — a no-op when the symlinks
-        // already point here from a prior run.
+        // already point here from a prior run. Skipped when the
+        // session lives outside `logs/` (see Session::new for
+        // rationale: one-off external session dirs shouldn't
+        // hijack the user's `logs/latest`).
         let logs = PathBuf::from("logs");
-        let latest = logs.join("latest");
-        let _ = std::fs::remove_file(&latest);
-        let _ = std::os::unix::fs::symlink(&id, &latest);
-        for artifact in ["session.log", "metrics.db"] {
-            let link = logs.join(artifact);
-            let _ = std::fs::remove_file(&link);
-            let target = PathBuf::from("latest").join(artifact);
-            let _ = std::os::unix::fs::symlink(&target, &link);
+        if target_is_under(&logs, &prior_session_dir) {
+            let latest = logs.join("latest");
+            let _ = std::fs::remove_file(&latest);
+            let _ = std::os::unix::fs::symlink(&id, &latest);
+            for artifact in ["session.log", "metrics.db"] {
+                let link = logs.join(artifact);
+                let _ = std::fs::remove_file(&link);
+                let target = PathBuf::from("latest").join(artifact);
+                let _ = std::os::unix::fs::symlink(&target, &link);
+            }
         }
 
         let component = Component::root(
@@ -928,22 +1061,18 @@ impl Session {
 }
 
 /// Format the current time as `YYYYMMDD_HHmmss`.
-/// Compute the symlink target string for `logs/latest`. When
-/// the session's `output_dir` lives directly under `logs/` we
-/// emit a relative target (`logs/latest -> {id}`) so the link
-/// survives directory moves. When `output_dir` lives outside
-/// `logs/` (env-driven absolute paths), we emit the absolute
-/// path so the link resolves regardless of cwd.
+/// Compute the symlink target string for `logs/latest`,
+/// always relative. For sessions under `logs/<id>/` the link
+/// resolves to a bare `{id}`; sessions outside `logs/` get an
+/// `../...` route up to a common ancestor. Relative targets
+/// keep the link portable across directory moves and readable
+/// in `ls -la` output.
 fn latest_symlink_target(output_dir: &Path, logs: &Path, id: &str) -> PathBuf {
     if output_dir.parent() == Some(logs) {
-        PathBuf::from(id)
-    } else if output_dir.is_absolute() {
-        output_dir.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(output_dir))
-            .unwrap_or_else(|_| output_dir.to_path_buf())
+        return PathBuf::from(id);
     }
+    let latest = logs.join("latest");
+    relative_symlink_target(&latest, output_dir)
 }
 
 fn format_timestamp() -> String {
@@ -1048,8 +1177,33 @@ mod tests {
         format!("__NBRS_TEST_{tag}_{n:x}")
     }
 
+    /// Clear every env var that `resolve_session_dir` reads, so a
+    /// `spec_*` test sees CLI-only inputs. Without this, a
+    /// concurrent test that sets `NBRS_SESSION_NAME` (or any
+    /// peer var) collides with this test's CLI flag, hits the
+    /// "configuration conflict" path in `resolve_flag`, and
+    /// calls `process::exit(2)` — killing the entire test
+    /// process and surfacing as an unrelated test failure.
+    /// Must be called under [`env_test_lock`] so the cleanup
+    /// holds for the duration of the spec resolution.
+    fn clear_session_env() {
+        // SAFETY: under env_test_lock, no other test thread is
+        // touching these vars.
+        unsafe {
+            std::env::remove_var("NBRS_SESSION");
+            std::env::remove_var("NBRS_SESSION_NAME");
+            std::env::remove_var("NBRS_SESSION_PATH");
+            std::env::remove_var("NBRS_SESSION_REUSE");
+            std::env::remove_var("NBRS_SESSION_KEEP");
+            std::env::remove_var("NBRS_SESSION_SHELFLIFE");
+            std::env::remove_var(SESSION_DIRECTORY_ENV);
+        }
+    }
+
     #[test]
     fn spec_session_path_flag_yields_basename_id() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec!["--session-path=/tmp/explicit".into()];
         let spec = resolve_session_dir(&args);
         let (path, id) = spec.resolve("auto-id").unwrap();
@@ -1059,6 +1213,8 @@ mod tests {
 
     #[test]
     fn spec_session_name_only_yields_logs_dir() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec!["--session-name=alpha".into()];
         let (path, id) = resolve_session_dir(&args).resolve("autogen").unwrap();
         assert_eq!(path.to_str(), Some("logs/alpha"));
@@ -1067,6 +1223,8 @@ mod tests {
 
     #[test]
     fn spec_session_path_token_replaced_with_name() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec![
             "--session-path=/data/SESSION_run".into(),
             "--session-name=alpha".into(),
@@ -1078,6 +1236,8 @@ mod tests {
 
     #[test]
     fn spec_session_path_token_falls_back_to_auto_id_when_no_name() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec!["--session-path=/data/SESSION_run".into()];
         let (path, id) = resolve_session_dir(&args).resolve("autogen").unwrap();
         assert_eq!(path.to_str(), Some("/data/autogen_run"));
@@ -1086,6 +1246,8 @@ mod tests {
 
     #[test]
     fn spec_space_form_session_path_flag() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec![
             "--session-path".into(),
             "/data/path".into(),
@@ -1139,18 +1301,24 @@ mod tests {
 
     #[test]
     fn spec_needs_auto_id_when_token_present() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec!["--session-path=/data/SESSION_x".into()];
         assert!(resolve_session_dir(&args).needs_auto_id());
     }
 
     #[test]
     fn spec_does_not_need_auto_id_when_path_is_concrete() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec!["--session-path=/data/specific".into()];
         assert!(!resolve_session_dir(&args).needs_auto_id());
     }
 
     #[test]
     fn spec_does_not_need_auto_id_with_explicit_name() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec![
             "--session-path=/data/SESSION_x".into(),
             "--session-name=alpha".into(),
@@ -1164,6 +1332,8 @@ mod tests {
 
     #[test]
     fn umbrella_dir_shortcut_sets_path() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec!["--session=dir:asldkfjsldfj".into()];
         let (path, id) = resolve_session_dir(&args).resolve("auto").unwrap();
         assert_eq!(path.to_str(), Some("asldkfjsldfj"));
@@ -1173,6 +1343,8 @@ mod tests {
 
     #[test]
     fn umbrella_dir_with_subpath_yields_basename_id() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec!["--session=dir:l2k3j4/drr".into()];
         let (path, id) = resolve_session_dir(&args).resolve("auto").unwrap();
         assert_eq!(path.to_str(), Some("l2k3j4/drr"));
@@ -1181,6 +1353,8 @@ mod tests {
 
     #[test]
     fn umbrella_full_kv_list() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec![
             "--session=keep:42,name:sessname42,path:sessions/dir/SESSION,reuse:resume".into()
         ];
@@ -1196,6 +1370,8 @@ mod tests {
 
     #[test]
     fn umbrella_bare_restart_token_sets_reuse() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec!["--session=restart,dir:/tmp/x".into()];
         let spec = resolve_session_dir(&args);
         assert_eq!(spec.reuse, SessionReuse::Restart);
@@ -1204,6 +1380,8 @@ mod tests {
 
     #[test]
     fn umbrella_bare_resume_token_sets_reuse() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec!["--session=resume,name:foo".into()];
         let spec = resolve_session_dir(&args);
         assert_eq!(spec.reuse, SessionReuse::Resume);
@@ -1212,6 +1390,8 @@ mod tests {
 
     #[test]
     fn umbrella_long_form_overrides_umbrella() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec![
             "--session=name:from-umbrella".into(),
             "--session-name=from-longform".into(),
@@ -1222,6 +1402,8 @@ mod tests {
 
     #[test]
     fn umbrella_unknown_key_logs_warn_but_keeps_rest() {
+        let _g = env_test_lock();
+        clear_session_env();
         let args = vec!["--session=name:foo,what:nope,reuse:restart".into()];
         let spec = resolve_session_dir(&args);
         // Unknown 'what:nope' was logged + skipped; recognized
