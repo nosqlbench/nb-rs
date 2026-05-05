@@ -356,25 +356,17 @@ capture leakage.
 
 ## Compilation Levels
 
-The current implementation uses Phase 1 (runtime interpreter with
-dynamic dispatch):
+The compiled DAG can run at one of three execution levels
+— P1 interpreter, P2 closures, P3 Cranelift JIT — selected
+automatically per subgraph based on node eligibility and
+projected payoff. Per-node costs, eligibility rules, the
+auto-selection heuristic, and the JIT call-boundary
+contract live in **SRD 16 (GK Engines)** and
+**SRD 16b (GK JIT Wiring)**.
 
-- `Box<dyn GkNode>` trait objects
-- `Value` enum for all intermediate values
-- ~70ns per node evaluation
-
-Higher compilation levels for eligible subgraphs:
-
-- **Phase 2 (closures)**: Flat `u64` buffers, closure steps,
-  ~4.5ns/node. Requires all-u64 subgraph.
-- **Phase 3 (JIT)**: Inline machine instructions, ~0.2ns/node.
-  Eliminates closure indirection.
-- **Hybrid**: Per-node optimal — JIT for u64 paths, interpreter
-  for string/complex nodes.
-
-Nodes declare P3 eligibility via `jit_eligible()` in their
-metadata. The compiler selects the highest available level per
-subgraph.
+This file (SRD 11) covers what *evaluation* is —
+program/state split, lifecycles, provenance — independent
+of which engine runs it.
 
 ---
 

@@ -58,7 +58,7 @@ GK bindings:
 
 Bind-point scanner walks the full op template (op fields + params),
 sees `{ground_truth}` inside `relevancy.expected`, and adds it to
-the kernel's required-outputs set (SRD 16 §"Auto-Extern Generation").
+the kernel's required-outputs set (SRD 13c §"Auto-Extern Generation").
     ↓
 ValidatingDispenser::fixture(template, &mut scope_fixture)
     → scope_fixture.register_pull("ground_truth")

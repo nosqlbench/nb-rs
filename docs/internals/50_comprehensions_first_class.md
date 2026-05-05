@@ -303,6 +303,6 @@ mechanical, but the call-site refactor needs care.
   the structural marker comprehensions emit.
 - [SRD 13b](../sysref/13b_gk_combination_modes.md) —
   semantics of for_combinations / for_each_union.
-- [SRD 16](../sysref/16_gk_scoping.md) — how scope
+- [SRD 13c](../sysref/13c_gk_scope_model.md) — how scope
   composition (`bind_outer_scope`, manifest extraction)
   interacts with what synthesis emits.

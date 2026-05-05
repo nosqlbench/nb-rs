@@ -25,9 +25,9 @@ these, the proposal is wrong, not the rule.
 
 | Rule | Where it's stated |
 |------|-------------------|
-| **GK kernels are the canonical state holder for scope, binding, and name resolution.** Multiple sources of resolvable values is the documented anti-pattern. | [SRD 16](sysref/16_gk_scoping.md), [SRD 18b](sysref/18b_scenario_tree_and_scheduler.md) |
+| **GK kernels are the canonical state holder for scope, binding, and name resolution.** Multiple sources of resolvable values is the documented anti-pattern. | [SRD 13c](sysref/13c_gk_scope_model.md), [SRD 18b](sysref/18b_scenario_tree_and_scheduler.md) |
 | **One scope per non-trivial scenario node.** Workload → Scenario → for_each → … → Phase. Iteration variables are scope outputs, not text substitutions. Leaf phases compile once. | [SRD 18b](sysref/18b_scenario_tree_and_scheduler.md) §"Iteration variables as scope outputs", §"M3 — per-scope kernel composition" |
-| **Auto-extern + `bind_outer_scope` is how layering works.** Inner kernel sees outer values as pre-populated input slots. Caller-side scope-tree walking for name resolution is wrong; the kernel encapsulates it. | [SRD 16](sysref/16_gk_scoping.md) §"How It Works: Plugging Graphs Together", §"Per-Scope Canonical Kernel Cache" |
+| **Auto-extern + `bind_outer_scope` is how layering works.** Inner kernel sees outer values as pre-populated input slots. Caller-side scope-tree walking for name resolution is wrong; the kernel encapsulates it. | [SRD 13c](sysref/13c_gk_scope_model.md) §"How It Works: Plugging Graphs Together", §"Per-Scope Canonical Kernel Cache" |
 | **Multi-clause `for_each` is a single-scope dependent tuple comprehension.** `"k in {k_values}, limit in {k_{k}_limits}"` is one scope; lex-order clause binding; clause N's spec sees clauses 0..N-1's values via interpolation against the scope's kernel. Total tuples = sum, not Cartesian. | [SRD 18b](sysref/18b_scenario_tree_and_scheduler.md) §"M3 — per-scope kernel composition" (M3.3) |
 | **Native types as the general rule.** Iter var types come from the spec's pre-evaluated value type — `u64` / `f64` / `bool` / `String`. JIT optimizes scalar fast paths; capability is not f64/u64-only. Conversion shadows for string-based accessors live at consumer boundaries, not at the kernel surface. | [SRD 18b](sysref/18b_scenario_tree_and_scheduler.md) §"M3 — per-scope kernel composition" (M3.2) |
 | **GK `Value` is type-flexible.** Str, Bool, U64, F64, VecF32, VecI32, … JIT optimizes scalar fast paths; capability is not f64/u64-only. | [SRD 10](sysref/10_gk_language.md), [SRD 11](sysref/11_gk_evaluation.md) |
@@ -47,19 +47,28 @@ should be preceded by re-reading the SRD in full.
 
 ### Scope, binding, composition, iteration
 
-- [SRD 16: GK Scope Model](sysref/16_gk_scoping.md) — `bind_outer_scope`, `scope_values`, auto-extern, manifest extraction, shared/final modifiers, the scope-composition contract.
+The composition family (13 / 13b / 13c) covers how GK
+programs combine; read in order if you're new to it.
+
+- [SRD 13: GK Modules](sysref/13_gk_modules.md) — file-based modules, inlining resolution, compiler diagnostic event stream.
+- [SRD 13b: GK Combination Modes](sysref/13b_gk_combination_modes.md) — taxonomy of four orthogonal modes: inline, scope composition, subgraph, reification. Read this before reaching for terminology.
+- [SRD 13c: GK Scope Model](sysref/13c_gk_scope_model.md) — the scope-composition mode in depth: `bind_outer_scope`, `scope_values`, auto-extern, manifest extraction, shared/final modifiers, `for_each` lifecycle.
 - [SRD 18b: Scenario Tree, Scope Hierarchy, Scheduler](sysref/18b_scenario_tree_and_scheduler.md) — one scope per scenario node, iteration vars as scope outputs, leaf-phase-compiles-once, pragma chain along the scope tree, scheduler abstraction with `schedule=<level0>/<level1>/...`.
 - [SRD 18c: Comprehension Syntax](sysref/18c_comprehension_syntax.md) — layered grammar of clause expressions: literal lists, ranges, named generators, `where` filter, SI suffixes, tuple LHS (parallel-iter + destructure), bucket/concat/interval LUT expansions.
 - [SRD 18d: Comprehension Traversal Order](sysref/18d_comprehension_traversal_order.md) — emission order of tuples: lex, diagonal, extrema-first, concentric shells, space-filling (Halton/Sobol/LHS), custom; composes with `where` filter; truncation as part of the ordering declaration.
-- [SRD 13b: GK Combination Modes](sysref/13b_gk_combination_modes.md) — for_combinations / for_each_union semantics; the multi-clause dependent tuple rules.
 
 ### GK kernel internals
 
-- [SRD 10: GK Language and Compilation](sysref/10_gk_language.md) — DSL, compiler pipeline, type system, GK as the unified runtime-state surface.
-- [SRD 11: GK Evaluation Model](sysref/11_gk_evaluation.md) — kernel/state split, input spaces, three lifecycles (compile-const / scope-init / dynamic), effectively-const classification, init-binding contract (Plan A compile-time + Plan B scope-activation checks), constant folding.
-- [SRD 12: GK Standard Library](sysref/12_gk_stdlib.md) — node catalog with type signatures.
-- [SRD 16: GK Engines](sysref/16_gk_engines.md) (note: file name collision with scope doc — distinct numbering convention) — provenance push/pull, engine variants, auto-selection.
-- [SRD 16b: GK JIT Wiring](sysref/16_gk_jit.md) — Cranelift boundary, `invoke_with_catch`, setjmp/longjmp.
+The language / evaluation / stdlib triplet (10 / 11 / 12)
+specifies the kernel itself; the engines pair (16 / 16b)
+specifies how the kernel runs.
+
+- [SRD 10: GK Language and Compilation](sysref/10_gk_language.md) — DSL syntax, compiler pipeline, type system, op-level bindings, cursor declarations, GK as the unified runtime-state surface.
+- [SRD 11: GK Evaluation Model](sysref/11_gk_evaluation.md) — kernel/state split, input spaces, three lifecycles (compile-const / scope-init / dynamic), effectively-const classification, provenance-based invalidation, init-binding contract.
+- [SRD 12: GK Standard Library](sysref/12_gk_stdlib.md) — node catalog with type signatures, P3 JIT eligibility, fusion patterns.
+- [SRD 14: GK Config Expressions](sysref/14_gk_config_expressions.md) — `{...}` form for init-time constants in activity config.
+- [SRD 16: GK Engines](sysref/16_gk_engines.md) — compilation levels P1/P2/P3, provenance push/pull, engine variants, auto-selection.
+- [SRD 16b: GK JIT Wiring](sysref/16b_gk_jit.md) — Cranelift boundary, `invoke_with_catch`, setjmp/longjmp.
 
 ### Workload model and parameters
 

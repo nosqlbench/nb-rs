@@ -89,7 +89,7 @@ This violates the GK design contract:
   per cycle. A node whose only inputs are those externs should
   evaluate exactly *once per iteration* and never again until
   the externs change.
-- **SRD 16 §"Implementation via Existing Mechanisms"** describes
+- **SRD 13c §"Implementation via Existing Mechanisms"** describes
   scope-bound externs as constants flowing into the inner kernel
   — values to be carried, not work to be redone.
 - **SRD 18b §"Iteration variables as scope outputs"** mandates

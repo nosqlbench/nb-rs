@@ -102,7 +102,7 @@ scope's `PragmaSet` and the inner scope's `PragmaSet` disagree.
 Module inlining (mode 1) does not surface conflicts — it's
 additive within one kernel.
 
-See SRD 16 §"GK Scope Model" for the mechanism, and the workload
+See SRD 13c §"GK Scope Model" for the mechanism, and the workload
 side in `nbrs-activity` for the runner that actually wires scopes.
 
 ---

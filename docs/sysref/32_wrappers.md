@@ -18,7 +18,7 @@ phase activation, before the first dynamic pull.)
 ### Principle
 
 The GK kernel is the single canonical state holder for scope, binding,
-and name resolution (SRD 16 §"Architectural rules"). Wrappers must
+and name resolution (SRD 13c §"Architectural rules"). Wrappers must
 not gain access to GK values via a side channel — no top-level
 coordinator may "manually notate" name dependencies on a wrapper's
 behalf, and no wrapper may shop for values through `ResolvedFields`
@@ -56,7 +56,7 @@ impl ScopeFixture {
     /// (extern slots, capture inputs, coordinates). Returns a
     /// memoized handle. The program must already know the name —
     /// bind-point scanning over the *whole* op template (op fields
-    /// + params) is the GK compiler's responsibility (SRD 16
+    /// + params) is the GK compiler's responsibility (SRD 13c
     /// §"Auto-Extern Generation"; SRD 31 §"Init-Time Pipeline").
     /// An unknown name here means the consumer is reading something
     /// the compiler has not provisioned — that is a workload bug,

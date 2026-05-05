@@ -1,8 +1,13 @@
-# 13: GK Modules and Composition
+# 13: GK Modules
 
-GK modules enable reusable subgraphs and kernel composition.
-The compiler diagnostic event stream provides full visibility
-into the compilation process.
+File-based GK modules: how reusable `.gk` source files are
+discovered, inlined, and tracked through the compiler's
+diagnostic event stream.
+
+> Composition mechanics — how modules combine with the host
+> program and with other GK kernels — live in
+> [SRD 13b: GK Combination Modes](13b_gk_combination_modes.md).
+> This file covers only the module-as-source-file system.
 
 ---
 
@@ -37,6 +42,13 @@ use "user_generator.gk"
 full_name := weighted_strings(hash(cycle), "names.csv")
 ```
 
+The combined program is a single DAG: shared input
+namespace, merged output map, dead-code elimination pruning
+unreferenced bindings, one topological sort across the
+merged result. This is the **inline** combination mode (mode
+1 in SRD 13b's taxonomy); the module's nodes become
+indistinguishable from the host's once compiled.
+
 ### Resolution Chain
 
 Module files are resolved in order:
@@ -45,41 +57,24 @@ Module files are resolved in order:
 3. Bundled stdlib (compiled into `nbrs-variates`)
 4. Error if not found
 
----
+### Strict Mode
 
-## Kernel Composition
+Modules can opt into strict compilation:
+- All inputs must be declared explicitly
+- All function arguments must be named (no positional)
+- Unresolved references are errors, not warnings
 
-GK kernels compose at two levels:
-
-### Compile-Const → Dynamic Staging
-
-Compile-const values from one evaluation feed into dynamic
-computation as folded constants (see [SRD 11](11_gk_evaluation.md)
-§"Three Evaluation Lifecycles"):
-
-```
-// These evaluate at compile-const time (no input dependency):
-dim := vector_dim("glove-25-angular")
-train_count := vector_count("glove-25-angular")
-
-// This uses dim as a baked-in constant at cycle time:
-vector := vector_at(cycle, "glove-25-angular")
-// dim was folded → vector_at sees a literal, not a node output
-```
-
-### Module Embedding
-
-Multiple `.gk` files merge into a single program:
-- Shared input namespace
-- Merged output map
-- Dead code elimination prunes unreferenced bindings
-- Single topological sort across the merged DAG
+Strict mode is for library modules intended for reuse. Workload
+bindings default to relaxed mode for convenience. See SRD 15
+for the full strict-mode contract.
 
 ---
 
 ## Compiler Diagnostic Event Stream
 
-The compiler emits structured events explaining each step:
+The compiler emits structured events explaining each step
+of compilation. This is the canonical introspection surface
+for "why did the compiler do that?" questions.
 
 ```rust
 pub enum CompileEvent {
@@ -112,15 +107,3 @@ $ nbrs bench --explain "hash(cycle)" cycles=1
 [output]    hash  → selected as program output
 [compiled]  1 node, 1 output, 0 constants folded
 ```
-
----
-
-## Strict Mode
-
-Modules can opt into strict compilation:
-- All inputs must be declared explicitly
-- All function arguments must be named (no positional)
-- Unresolved references are errors, not warnings
-
-Strict mode is for library modules intended for reuse. Workload
-bindings default to relaxed mode for convenience.

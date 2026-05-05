@@ -24,14 +24,16 @@ explains the design intent behind it.
 
 | # | Document | Scope |
 |---|----------|-------|
-| 10 | [GK Language and Compilation](10_gk_language.md) | DSL syntax, compiler pipeline, node wiring, type system, **GK as the unified access surface for runtime state** |
-| 11 | [GK Evaluation Model](11_gk_evaluation.md) | Kernel/state split, input spaces, init vs cycle, constant folding |
+| 10 | [GK Language and Compilation](10_gk_language.md) | DSL syntax, compiler pipeline, node wiring, type system, op-level bindings, cursor declarations, **GK as the unified access surface for runtime state** |
+| 11 | [GK Evaluation Model](11_gk_evaluation.md) | Kernel/state split, input spaces, three lifecycles (compile-const / scope-init / dynamic), provenance-based invalidation, init-binding contract |
 | 12 | [GK Standard Library](12_gk_stdlib.md) | Node catalog, type signatures, P3 JIT eligibility, runtime context nodes |
-| 13 | [GK Modules and Composition](13_gk_modules.md) | Module imports, kernel composition, diagnostic event stream |
-| 14 | [GK Config Expressions](14_gk_config_expressions.md) | Init-time constants flowing into activity config |
+| 13 | [GK Modules](13_gk_modules.md) | File-based modules, inlining resolution, compiler diagnostic event stream |
+| 13b | [GK Combination Modes](13b_gk_combination_modes.md) | Four-mode taxonomy: inline, scope composition, subgraph, reification |
+| 13c | [GK Scope Model](13c_gk_scope_model.md) | Scope hierarchy, visibility / mutability rules, `for_each` lifecycle, auto-extern composition, the scope-composition mode in depth |
+| 14 | [GK Config Expressions](14_gk_config_expressions.md) | `{...}` form: init-time constants flowing into activity config |
 | 15 | [Strict Mode](15_strict_mode.md) | Compile-time enforcement: config wire promotion, explicit declarations, no silent coercions |
-| 16 | [GK Engines](16_gk_engines.md) | Compilation levels, provenance push/pull, engine variants, auto-selection heuristic |
-| 16b | [GK JIT Wiring](16_gk_jit.md) | Cranelift ↔ Rust call boundary, setjmp/longjmp for catchable predicate violations, hybrid-kernel wrapping, `invoke_with_catch` contract |
+| 16 | [GK Engines](16_gk_engines.md) | Compilation levels P1/P2/P3, provenance push/pull, engine variants, auto-selection heuristic |
+| 16b | [GK JIT Wiring](16b_gk_jit.md) | Cranelift ↔ Rust call boundary, setjmp/longjmp for catchable predicate violations, hybrid-kernel wrapping, `invoke_with_catch` contract |
 
 ### 3. Workload Specification (nbrs-workload)
 
@@ -85,6 +87,7 @@ explains the design intent behind it.
 | 60 | [CLI Structure](60_cli.md) | Command tree, completions, workload discovery, bench command |
 | 61 | [Single Binary, Feature-Gated Drivers](61_personas.md) | nbrs binary, Cargo features, adapter selection, future drivers |
 | 62 | [TUI Layout](62_tui_layout.md) | Tree-centric layout, per-phase detail blocks, dynamic Focus LOD, 120-col baseline |
+| 63 | [Status Readout Templates](63_status_readouts.md) *(DRAFT)* | Component-based template engine for status / summary lines, pre-baked render-step lists, compactness levels, layout ↔ content separation |
 
 ---
 

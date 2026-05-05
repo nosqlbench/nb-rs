@@ -21,7 +21,7 @@ output to keep them visible to children. Boilerplate and noisy.
 
 **Why deferred:** the semantics shift "constants" to also mean
 "current input values," which is a meaningful API change. Worth
-its own design discussion against SRD-16. Today's M3 workaround
+its own design discussion against SRD 13c. Today's M3 workaround
 is to either (a) re-export at each scope or (b) call
 `bind_outer_scope` from multiple ancestors at scope construction.
 
@@ -70,7 +70,7 @@ have to try both.
 **Possible extension:** `get_value(name) -> Option<&Value>` that
 checks outputs first (own bindings shadow inherited), then
 inputs (inherited extern values). Mirrors the shadowing rule
-SRD-16 §"Visibility Rules" already commits to.
+SRD 13c §"Visibility Rules" already commits to.
 
 **Why deferred:** trivial helper; M3.5 (interpolation migration)
 can call both methods in sequence without API change. Worth
@@ -88,7 +88,7 @@ per-iteration phase execution.
 (`comprehension_select(values, idx)`-style). Cycle-time iteration
 within a phase and scenario-time iteration across phases would
 share the same primitive. Extends the GK language meaningfully
-(SRD-10 / SRD-12 / SRD-16 revisions).
+(SRD-10 / SRD-12 / SRD-13c revisions).
 
 **Why deferred:** explicitly scoped out of M3 by the user (see
 session notes). The dependent-tuple case (`{k_{k}_limits}`)

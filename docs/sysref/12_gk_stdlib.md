@@ -229,7 +229,7 @@ cycle time for live reads). Violations at cycle time surface as
 `panic!` regardless of compilation level (P1 interpreter, P2
 closure, P3 JIT); the JIT path reaches that same observable
 behavior through a setjmp/longjmp shim documented in
-[SRD 16b GK JIT Wiring](16_gk_jit.md).
+[SRD 16b GK JIT Wiring](16b_gk_jit.md).
 
 ### Vectordata Integration (feature-gated)
 

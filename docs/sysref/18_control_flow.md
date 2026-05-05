@@ -33,7 +33,7 @@ nestable control flow constructs at any level of the scenario tree.
    - Scenario level (wrapping phases)
    - Phase level (on the phase's `for_each` field)
    - Op level (future: wrapping individual ops within a stanza)
-   The GK scope model (sysref 16) handles variable resolution
+   The GK scope model (SRD 13c) handles variable resolution
    at every level.
 
 ---

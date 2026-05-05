@@ -127,7 +127,7 @@ Workload scope               (PragmaSet { ... }, GkProgram_workload)
 `P` is compiled *once*. Its extern inputs `x` and `y` are
 populated by the enclosing `for_each` scopes' current iteration
 values. The kernel doesn't recompile across iterations — it
-re-runs with new extern values, which is exactly the SRD 16
+re-runs with new extern values, which is exactly the SRD 13c
 contract.
 
 ---
@@ -594,7 +594,7 @@ Phases:
      `{name}` lookups query `get_constant` then `get_input`
      on the single kernel; no walking, no parallel
      mechanism. Inner shadows outer per
-     SRD-16 §"Visibility Rules: Shadowing".
+     SRD 13c §"Visibility Rules: Shadowing".
   4. Evaluates via `eval_const_expr` (or comma-split with
      per-element type detection) to a typed `Vec<Value>`.
   5. For each value, recurses to clause N+1 — under the
@@ -660,7 +660,7 @@ Phases:
   interpolation site now has a kernel handy and goes through
   `interpolate_via_kernel` (`get_constant` / `get_input` on
   the same kernel; inner shadows outer per
-  SRD-16 §"Visibility Rules: Shadowing"). Dead
+  SRD 13c §"Visibility Rules: Shadowing"). Dead
   `resolve_for_each` and the `phase_iterations` legacy loop
   retired alongside.
 
@@ -760,7 +760,7 @@ of the parent kernel state at scope entry, and sibling
 iterations are independent (or concurrent under `schedule=`).
 It's **wrong for `DoLoopComprehension`** when the condition
 depends on `shared` state that children mutate per iteration —
-SRD-16 §"Shared Mutable" says iteration N's children's writes
+SRD 13c §"Shared Mutable" says iteration N's children's writes
 must be observable to iteration N+1's condition evaluation. The
 current draining pre-computes the entire counter sequence
 before any child runs, so condition flips driven by child
@@ -770,7 +770,7 @@ effects can't terminate the loop.
 
 A do-loop is **one logical context** evaluated repeatedly. It's
 not a set of independent sub-spaces (those are tuple
-comprehensions). Per SRD-16's "GK kernels are the canonical
+comprehensions). Per SRD-13c's "GK kernels are the canonical
 state holder" axiom, that means **one kernel for the whole
 loop's duration**. M3.4's kernel-per-branch instancing rule
 applies to logical subspaces — concurrent siblings, dependent
@@ -785,7 +785,7 @@ So:
   time; `bind_outer_scope` from this kernel into children's
   scopes feeds them the live state.
 - **Shared write-back is built into GK's sub-context API**, not
-  a runner-side helper. SRD-16 §"Mutability Rules: Shared
+  a runner-side helper. SRD 13c §"Mutability Rules: Shared
   Mutable" already commits to this:
   > the runner maps `error_budget` to a shared input slot.
   > `set_input()` on the inner state writes through to the
@@ -864,7 +864,7 @@ performance constraint.
 
 ##### Loop-scope semantics interaction
 
-SRD-16 §"Scope Lifecycle for for_each" describes
+SRD 13c §"Scope Lifecycle for for_each" describes
 `loop_scope: clean | inherit` and `iter_scope: clean | inherit`
 knobs. With the shared-kernel-for-the-whole-loop model, these
 collapse cleanly:
@@ -879,7 +879,7 @@ collapse cleanly:
 ##### What this depends on
 
 The clean version of this design is contingent on GK's sub-
-context API delivering the SRD-16 contract — `set_input` on
+context API delivering the SRD 13c contract — `set_input` on
 inner kernels with `shared`-modifier wires writes through to
 the outer kernel's state. If that's not yet implemented in GK
 proper, this milestone is split:
@@ -887,7 +887,7 @@ proper, this milestone is split:
 1. **GK side**: implement `bind_outer_scope` such that subsequent
    `set_input` on the inner kernel for `shared`-modifier wires
    propagates to the outer kernel's slot. Subject to its own
-   SRD-16 review.
+   SRD 13c review.
 2. **Runner side**: do-loop dispatcher uses one persistent
    kernel across iterations as described above. Trivially short
    once (1) is in place.

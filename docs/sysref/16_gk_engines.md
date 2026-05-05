@@ -11,7 +11,7 @@ The *which level gets picked and why* is this document. The
 *how a Phase-3 kernel plugs into the runtime* — specifically
 the Cranelift ↔ Rust call boundary and the setjmp/longjmp shim
 that lets predicate violations surface as catchable panics —
-lives in [SRD 16b GK JIT Wiring](16_gk_jit.md).
+lives in [SRD 16b GK JIT Wiring](16b_gk_jit.md).
 
 ---
 

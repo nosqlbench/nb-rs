@@ -418,30 +418,24 @@ prefix `!` to `u64_not`.
 
 ## Const Expression Syntax
 
-Braces in binding values trigger compile-time evaluation.
-Three equivalent forms:
+Braces in binding values trigger compile-time evaluation:
 
 ```
-// Implicit: bare braces around an expression
-dim := {vector_dim("glove-25-angular")}
-
-// Explicit open form
-dim := {:=vector_dim("glove-25-angular")}
-
-// Explicit bracketed form
-dim := {:=vector_dim("glove-25-angular"):=}
+dim := {vector_dim("glove-25-angular")}    // implicit
+dim := {:=vector_dim("...")}              // explicit-open
+dim := {:=vector_dim("..."):=}            // explicit-bracketed
 ```
 
-Resolution order for `{expr}`:
-1. Named binding — if `expr` matches a declared binding name,
-   wire to that binding's output.
-2. Const expression eval — evaluate `expr` at compile time
-   (compile-const fold per SRD 11). Result becomes a `ConstNode`.
-3. Error — if neither succeeds, compilation fails with a
-   diagnostic describing the unresolved reference.
+Resolution: named-binding lookup first, then const-eval
+fallback (per SRD 11's compile-const lifecycle), then
+error. The explicit `{:=...}` forms bypass the binding
+lookup and force const evaluation.
 
-The explicit `{:=...}` forms bypass step 1 and force const
-expression evaluation regardless of name shadowing.
+The same `{...}` form is what activity config fields parse
+— the syntax is shared across the DSL and the YAML config
+surface. See **SRD 14 (GK Config Expressions)** for the
+full resolution-order spec, type-coercion rules, and
+parameter-substitution interaction.
 
 ---
 
@@ -667,69 +661,32 @@ mechanisms and when the optimization pays for itself.
 
 ---
 
-## GK Scoping Model
+## GK Scope Model
 
-GK programs exist within a scope hierarchy. Each scope level
-can define bindings, and inner scopes inherit from and override
-outer scopes.
+GK programs exist within a scope hierarchy formed by the
+scenario tree (workload root, phases, `for_each` iterations,
+scope groups). Each scope is a self-contained kernel that
+sees its outer scopes' values via auto-generated `extern`
+input slots. The full model — scope hierarchy, visibility
+and mutability rules, lifecycle configuration
+(`loop_scope` / `iter_scope`), and the auto-extern
+composition mechanism — is specified in **SRD 13c (GK
+Scope Model)**.
 
-### Scope Levels
+This file covers only the language-level surface that
+intersects scopes:
 
-GK scopes are created at **lifecycle boundaries** — activities
-and phases — not at arbitrary iteration points. A new GK scope
-means a new compiled kernel, new state, new constant folding.
-This is justified only when a long-lived process is launched.
+- [`bindings:` blocks at op level](#op-level-bindings) are
+  syntactic sugar; they merge into the enclosing scope's
+  DAG rather than creating a new scope.
+- [`cursor` declarations](#cursor-declarations) define
+  named position trackers used inside any scope.
 
-```
-Workload scope (outermost)
-  │
-  │  bindings: |
-  │    inputs := (cycle)
-  │    dim := vector_dim("{dataset}")
-  │    base_count := vector_count("{dataset}")
-  │
-  └── Phase scope (one per phase in the scenario)
-        │
-        │  Each phase is a lifecycle boundary — it launches
-        │  its own Activity with its own fiber pool, cycle
-        │  counter, and metrics. A phase MAY declare its own
-        │  bindings that replace the workload bindings.
-        │
-        │  bindings: |
-        │    id := format_u64(cycle, 10)
-        │    train_vector := vector_at(cycle, "{dataset}")
-        │
-        └── Cycle evaluation (per-fiber, NOT a new GK scope)
-              set_input(0, cycle)
-              pull("train_vector") → [0.12, 0.34, ...]
-```
+For everything else (when scopes are created, how outer
+values flow in, what `shared` / `final` / `volatile` mean
+across the hierarchy, the `for_each` lifecycle), see SRD 13c.
 
-A `for_each` phase expands into multiple sequential phase
-executions. Each expansion is a full phase lifecycle — its own
-Activity, its own kernel, its own cycle counter. This is not
-"nested" scoping in the closure sense; it is sequential
-instantiation of phase lifecycles with different parameters.
-
-### When GK Scopes Are Created
-
-| Event | New GK scope? | Reason |
-|-------|---------------|--------|
-| Workload start | Yes | Root scope, compiled once |
-| Phase start | Yes, if phase has own `bindings:` | Phase is a lifecycle boundary |
-| Phase start (no own bindings) | No — uses workload kernel | No new lifecycle constants needed |
-| `for_each` iteration | Yes | Each iteration is a separate phase lifecycle with different constants |
-| Cycle within a phase | No | Cycles are evaluations within an existing scope |
-| Stanza within a phase | No | Stanzas are groups of cycles |
-| Op within a stanza | No | Ops share the phase's kernel |
-
-GK scopes are **never** created for:
-- Individual cycle evaluations
-- Per-op dispatch
-- Retry attempts
-- Conditional skips
-- Op-level `bindings:` blocks (see below)
-
-### Op-Level Bindings
+## Op-Level Bindings
 
 Ops may declare their own `bindings:` block as syntactic
 convenience — a way to define bindings close to the op that
@@ -758,162 +715,8 @@ only reference the enclosing scope's bindings or its own.
 Cross-op coupling via bindings is a code smell — promote the
 shared binding to the enclosing scope instead.
 
-### Scope Assembly: Auto-Extern Composition
 
-GK scopes use **auto-extern composition** — the inner scope
-is compiled as its own small kernel with `extern` input
-declarations for names inherited from the outer scope. There
-is no source text duplication, no runtime delegation chain.
-
-See **sysref 16** for the complete scope model specification.
-
-This is a critical mechanical distinction:
-
-- **Auto-extern composition** (used): The outer kernel is
-  compiled and constant-folded. The runner extracts its output
-  manifest (names + types + modifiers). When compiling an inner
-  scope, any name referenced but not defined is looked up in the
-  outer manifest. If found, it becomes an `extern` input on the
-  inner kernel. The runner copies folded constant values from
-  the outer state into the inner state's input slots at scope
-  creation time. The inner kernel is small — only its own nodes.
-
-- **Delegation** (NOT used): Would require the inner kernel
-  to hold a reference to the outer kernel and resolve names
-  upward at evaluation time. This breaks constant folding
-  (the inner kernel can't fold what it can't see at compile
-  time) and complicates provenance tracking.
-
-- **Flattening** (NOT used): Would duplicate the outer scope's
-  source text into every inner scope, causing redundant
-  compilation and node instantiation.
-
-The assembly process for each scope level:
-
-```
-Workload scope:
-  source = workload bindings text
-  Compiled once. Outputs form the outer manifest.
-
-Phase scope (with own bindings):
-  source = phase bindings text + auto-generated extern declarations
-  Names from the outer manifest that are referenced but not
-  defined in the phase bindings become extern inputs.
-  The runner copies outer constant values into the inner kernel.
-
-Phase scope (no own bindings):
-  Uses the workload kernel directly — no recompilation.
-
-for_each iteration:
-  Iteration variables are declared as `extern` ports on the
-  phase scope (auto-added by `add_iteration_var`); the GK
-  source contains identifier references, not text-substituted
-  values. The compiled kernel is iter-invariant — same
-  `Arc<GkProgram>` reused for every iteration. Per-iteration
-  values flow through `GkState`: the runner copies each
-  iteration's bound value into the kernel's input slot before
-  the cycle body runs. Op field strings (`stmt:`, `raw:`,
-  `prepared:`) carry `{var}` placeholders that are resolved
-  per cycle from `ResolvedFields`, so they pick up the same
-  per-iteration values without recompilation.
-```
-
-### Inheritance Rules
-
-1. **Workload bindings** are the base. The workload kernel is
-   compiled first. Its outputs form the outer manifest.
-
-2. **Phase bindings** (`bindings:` on a phase) define the
-   inner scope. Names from the outer manifest that are
-   referenced in the phase ops but not defined in the phase
-   bindings become auto-generated `extern` inputs on the
-   inner kernel. The runner wires outer constant values into
-   these inputs at phase start.
-
-3. **Shadowing**: if a phase binding defines a name that
-   exists in the outer manifest, the phase definition wins
-   (the outer name is not auto-externed). Exception: `final`
-   bindings in the outer scope cannot be shadowed — attempting
-   to redefine them is a compile error.
-
-4. **Phases without own bindings** use the workload kernel
-   directly. No recompilation, no overhead.
-
-5. **for_each iteration variables** are bound through the
-   wire mechanism, not by text substitution. Each
-   `for_each var in …` scope auto-declares `var` as an
-   `extern` port on the enclosing phase's scope. References to
-   `var` in the phase's GK source — including those that
-   appear inside string literals via interpolation
-   (`vector_dim("{dataset}:{var}")`) — resolve to that extern.
-   Op field values (`stmt:`, `raw:`, `prepared:`) carry
-   workload-style `{var}` placeholders that are resolved per
-   cycle from `ResolvedFields`. The phase's `cycles:` config
-   expression is evaluated against the iteration's bound
-   values via the same wire mechanism.
-
-6. **One compiled kernel per phase scope**, not per iteration.
-   The kernel is iter-invariant; per-iteration values flow
-   through `GkState`. Init-time constants that depend on
-   iteration variables (`vector_count("{dataset}:{profile}")`)
-   resolve through dataset function nodes that read their
-   `source` input wire and look up the underlying data via the
-   global cache on first eval per spec.
-
-### Binding Modifiers
-
-Bindings can carry one or more wire-coloring modifiers before
-the binding name. Modifiers may appear in any order; the parser
-collects them as a flag set. The currently-recognised modifiers
-form a single closed enum (`WireModifier` in
-`nbrs-variates/src/dsl/ast.rs`) — adding a new modifier means
-adding one variant + one bit assignment + one parser arm; no
-downstream consumer churn beyond the call sites that ask "is
-this modifier set?".
-
-```
-shared counter := hash(cycle)         # mutable across iteration boundaries
-final dim := 128                      # immutable; cannot be shadowed
-shared init budget = 100              # combined: shared + scope-init
-volatile threshold := f(...)          # value excluded from hash_const
-shared volatile counter := 0          # mutable + identity-invisible
-```
-
-- **`shared`**: the runner propagates the value back to the
-  outer scope after a `for_each` loop completes. Subsequent
-  phases see the updated value.
-
-- **`final`**: inner scopes cannot redefine this name.
-  The runner enforces this at compile time when generating
-  auto-extern declarations.
-
-- **`volatile`** *(SRD-44)*: marks the wire as non-deterministic
-  for `hash_const` purposes — its value is excluded from the
-  const-folded identity hash that the resume planner uses.
-  The author is signalling "this looks foldable but treat the
-  value as opaque." Also suppresses the strict-mode
-  "non-deterministic node" warning for the immediate source
-  node when it has empty wiring (the keyword IS the
-  acknowledgment).
-
-**Invalid combinations:**
-
-- `final` + `volatile` → rejected at parse time. `final` folds
-  the value into a const slot at compile/init time; `volatile`
-  excludes it from const-fold. The two contradict directly.
-
-All other combinations (`final shared`, `shared volatile`) are
-valid and supported.
-
-**Tagging is consistent across binding kinds.** `init` and
-`extern` are separate AST node types because their right-hand-
-side contracts differ (init takes `=` not `:=`; extern declares
-a port with type + default). But the wire-coloring modifier set
-is shared — `volatile init x = 0` and `volatile y := f(...)`
-both attach the same `BindingModifier { is_volatile: true }`
-to the binding's wire identity.
-
-### Cursor Declaration
+## Cursor Declarations
 
 A cursor is a named `u64` position tracker that drives data
 access. The `cursor` keyword declares a cursor and wires it
@@ -1092,127 +895,3 @@ automatic cycle count derivation and progress reporting.
 - `range(start, end)` — finite ordinal sequence (replaces `cycles:`)
 - `dataset_source(spec, facet)` — dataset vectors, queries, metadata
 
-### Scope Configuration
-
-`for_each` phases support two scope knobs:
-
-```yaml
-phases:
-  rampup:
-    for_each: "pname in ..."
-    loop_scope: clean       # clean (default) | inherit
-    iter_scope: inherit     # inherit (default for for_each) | clean
-```
-
-- **`loop_scope`**: how the loop is seeded from the outer scope.
-  `clean` = original workload snapshot. `inherit` = current
-  outer state (includes shared mutations from prior phases).
-
-- **`iter_scope`**: how each iteration is seeded from the loop
-  scope. `inherit` = iterations see each other's state (default
-  for for_each). `clean` = fully isolated iterations.
-
-See **sysref 16** for the complete scope lifecycle specification.
-
-### for_each Syntax
-
-```yaml
-phases:
-  rampup:
-    for_each: "pname in matching_profiles('{dataset}', '{prefix}')"
-    cycles: "{vector_count('{dataset}:{pname}')}"
-    bindings: |
-      inputs := (cycle)
-      train_vector := vector_at(cycle, "{dataset}:{pname}")
-    ops:
-      insert:
-        prepared: "INSERT INTO t.vec_{pname} VALUES ('{id}', {train_vector})"
-```
-
-The `for_each` expression is evaluated as a GK const expression
-after workload param substitution. It must produce a
-comma-separated string. Each element becomes one iteration.
-
-### Compilation Flow with for_each
-
-```
-1. Parse workload YAML
-2. Compile workload-level GK (Phase 1-3 pipeline)
-   → shared kernel for non-for_each phases
-   → extract outer manifest (names, types, modifiers)
-   → snapshot outer_scope_values (folded constants)
-3. For each phase in scenario:
-   a. If no for_each and no own bindings → use shared kernel
-   b. If own bindings → auto-extern composition, compile phase
-      kernel (cached on the scope-tree node; reused across
-      every iteration).
-   c. If for_each:
-      i.   Evaluate for_each expression via eval_const_expr
-      ii.  Split result on commas → iteration list
-      iii. Each iteration variable is auto-declared as an
-           `extern` port on the phase scope (typed from the
-           value: numeric → u64/f64, otherwise String).
-      iv.  Compile the phase kernel once; cache on the
-           scope-tree node for reuse across all iterations.
-      v.   For each iteration value:
-           - Set the corresponding extern input on the kernel
-             state to the iteration's bound value.
-           - Resolve per-iteration cycles from kernel constants
-             (cycles expressions read from the same wires).
-           - Run phase with the shared kernel, fresh state.
-      vi.  After loop: write-back shared outputs to
-           outer_scope_values.
-```
-
-### Phase Lifecycle Isolation
-
-Each phase execution (including each `for_each` iteration) is
-a complete Activity lifecycle:
-
-- **Own GK kernel**: compiled from phase bindings (or workload
-  bindings if no phase-level override)
-- **Own cycle counter**: starts at 0
-- **Own fiber pool**: created fresh
-- **Own metrics**: activity name includes the iteration label
-  (e.g., `rampup (pname=label-1)`)
-- **Own error handler**: errors don't carry between phases
-
-Captures do NOT flow between phases. Each phase is a
-self-contained activity execution. State flows between phases
-only through the database (or other external system), or via
-`shared` variable write-back (see sysref 16).
-
-### Design Rationale
-
-**Why structural variables require per-iteration compilation?**
-
-GK bindings like `vector_at(cycle, "example:label-1")` need the
-dataset source at node construction time — the node opens a file
-handle, loads metadata, and preallocates buffers. This is
-scope-init work (SRD 11) that can't be deferred to per-cycle
-evaluation. Structural variable
-substitution before compilation ensures the source string is a
-literal that the node constructor can act on.
-
-Different profiles may have different vector counts, dimensions,
-or available facets. A shared kernel would need to handle all
-profiles simultaneously, which breaks the "one cycle = one vector
-ordinal" invariant. Per-iteration compilation keeps the cycle
-semantics clean: cycle 0 is always the first vector in THIS
-profile, not an offset into a global index.
-
-**Why parametric variables skip recompilation?**
-
-When the for_each variable only appears in op field strings
-(e.g., table names in SQL templates), no GK nodes change
-between iterations. The DAG topology is identical. The runner
-detects this automatically and reuses the outer kernel, avoiding
-unnecessary recompilation for simple iteration patterns like
-iterating over table names or keyspaces.
-
-**Why not merge phase bindings with workload bindings?**
-
-Merging creates ambiguity about which definition wins. Replacement
-is explicit — if you need workload bindings in a phase, include
-them. This makes each phase's GK program self-contained and
-readable without tracing inheritance chains.

@@ -1,8 +1,12 @@
-# 16: GK Scope Model
+# 13c: GK Scope Model
 
 How GK kernels compose across lifecycle boundaries (phases,
-for_each iterations) with visibility, mutability, and isolation
-rules.
+`for_each` iterations, scope groups) with visibility,
+mutability, and isolation rules. Subordinate to SRD 13b
+(GK Combination Modes) — this is the in-depth specification
+of the **scope-composition** mode (#2 of the four modes).
+Read 13b first if you're unsure which composition mode
+applies to your situation.
 
 ---
 
@@ -789,3 +793,64 @@ Anything that adds *more* surface area in the meantime
 (e.g., a new method that returns `Option<Value>` for
 "computed values" alongside the existing two) makes this
 worse, not better.
+
+
+## Design Rationale
+
+Why these mechanics, given the alternatives.
+
+**Why structural variables require per-iteration compilation?**
+
+GK bindings like `vector_at(cycle, "example:label-1")` need
+the dataset source at node construction time — the node
+opens a file handle, loads metadata, and preallocates
+buffers. This is scope-init work (SRD 11) that can't be
+deferred to per-cycle evaluation. Structural variable
+substitution before compilation ensures the source string
+is a literal that the node constructor can act on.
+
+Different profiles may have different vector counts,
+dimensions, or available facets. A shared kernel would
+need to handle all profiles simultaneously, which breaks
+the "one cycle = one vector ordinal" invariant.
+Per-iteration compilation keeps the cycle semantics clean:
+cycle 0 is always the first vector in THIS profile, not an
+offset into a global index.
+
+**Why parametric variables skip recompilation?**
+
+When the `for_each` variable only appears in op field
+strings (e.g., table names in SQL templates), no GK nodes
+change between iterations. The DAG topology is identical.
+The runner detects this automatically (`Structural vs
+Parametric Detection`, above) and reuses the outer kernel,
+avoiding unnecessary recompilation for simple iteration
+patterns like iterating over table names or keyspaces.
+
+**Why not merge phase bindings with workload bindings?**
+
+Merging creates ambiguity about which definition wins.
+Replacement is explicit — if you need workload bindings in
+a phase, include them. This makes each phase's GK program
+self-contained and readable without tracing inheritance
+chains.
+
+**Why auto-extern instead of delegation or flattening?**
+
+Three rejected designs:
+
+- **Delegation** — inner kernel holds a reference to the
+  outer kernel and resolves names upward at evaluation
+  time. Breaks constant folding (the inner kernel can't
+  fold what it can't see at compile time) and complicates
+  provenance tracking.
+- **Flattening** — duplicate the outer scope's source text
+  into every inner scope. Causes redundant compilation and
+  node instantiation; makes the per-scope kernel cache
+  pointless.
+- **Auto-extern** (used) — outer kernel is compiled and
+  constant-folded; output manifest exposes names + types +
+  modifiers; inner scope's references to undefined names
+  become `extern` ports populated by the runner at scope
+  creation. Inner kernel stays small (only its own nodes);
+  cache friendliness preserved; provenance is local.

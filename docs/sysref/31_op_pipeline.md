@@ -11,7 +11,7 @@ compilation, dispenser creation, wrapping, and per-cycle execution.
 ParsedOp[]
   │
   ├── Compile GK bindings ──▶ GkKernel ──▶ GkProgram (Arc)
-  │     (scans op fields AND params for {name} references — see SRD 16
+  │     (scans op fields AND params for {name} references — see SRD 13c
   │      §"Auto-Extern Generation"; bind point scanner already walks
   │      the full template, so the kernel knows every name referenced
   │      by any consumer)
@@ -122,7 +122,7 @@ load-bearing and should be preserved by any future merge.
 `extra_bindings` side channel — formerly threaded from the
 activity layer into a single `ResolvedFields` for both adapter
 and wrapper reads — are removed by slice α.4. The two-plan
-shape above replaces them. SRD-16 §"Open Design Issue" has
+shape above replaces them. SRD 13c §"Open Design Issue" has
 related context on the kernel's read-API consolidation;
 `PullPlan` here sits *above* the kernel's `lookup` and is
 agnostic to the kernel's internal storage-strategy split.

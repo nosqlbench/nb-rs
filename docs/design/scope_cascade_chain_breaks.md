@@ -1,6 +1,6 @@
 # Diagnostic memo: scope-cascade chain breaks
 
-Background for the SRD-16 / SRD-18b cascade fixes landed during the
+Background for the SRD 13c / SRD-18b cascade fixes landed during the
 2026-04-30 CQL vector workload bring-up. Captured here so future
 me — or anyone debugging "name visible at parent, missing at
 child" issues — has the failure shapes and the structural fixes
