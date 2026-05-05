@@ -33,6 +33,20 @@ use nbrs_workload::model::{ScenarioNode, WorkloadPhase};
 #[derive(Clone)]
 pub struct ExecCtx {
     pub phases: HashMap<String, WorkloadPhase>,
+    /// Workload-level `readouts:` bindings (SRD-63 §5).
+    /// Threaded through ActivityConfig at phase construction
+    /// so each activity-init step builds a binder seeded
+    /// with the configured slot bindings on top of the
+    /// built-in defaults.
+    pub workload_readouts: nbrs_workload::model::ReadoutsBindings,
+    /// CLI `--readout=<body>` override (SRD-63 §8 / Push 8).
+    /// When `Some`, replaces the workload's `on_update`
+    /// binding for the duration of this run. Either a
+    /// known readout name (`phase_status`, `trace`, etc.)
+    /// or a literal body string (parsed by the body
+    /// grammar). `None` falls through to the workload
+    /// binding.
+    pub cli_readout_override: Option<String>,
     pub workload_params: HashMap<String, String>,
     pub program: Arc<nbrs_variates::kernel::GkProgram>,
     pub gk_lib_paths: Vec<PathBuf>,
@@ -236,21 +250,78 @@ async fn run_siblings_concurrently(
     limit: crate::scheduler::ConcurrencyLimit,
 ) -> Result<(), String> {
     use crate::scheduler::ConcurrencyLimit;
+
+    // Stable-order preview before spawning. Concurrent phases
+    // race each other to the per-phase log entry, so without
+    // this announcement the user sees `[2/2] phase 'right'`
+    // before `[1/2] phase 'left'` (or the other way around)
+    // depending on which task's `phase_starting` fires first.
+    // Emit a single ordered line up-front so operators always
+    // see the dispatch in declaration order, even if the per-
+    // phase headers interleave below.
+    let scheduled_phases: Vec<(usize, String)> = nodes.iter()
+        .filter_map(|node| match node {
+            ScenarioNode::Phase(name) => Some(name.clone()),
+            _ => None,
+        })
+        .filter_map(|name| {
+            crate::scene_tree::current()
+                .and_then(|t| t.dfs_phases()
+                    .find(|n| n.name == name)
+                    .and_then(|n| n.seq).map(|seq| (seq, name.clone())))
+        })
+        .collect();
+    if !scheduled_phases.is_empty() {
+        let limit_disp = match limit {
+            ConcurrencyLimit::Bounded(n) => format!("limit={n}"),
+            ConcurrencyLimit::Unlimited => "limit=*".to_string(),
+            ConcurrencyLimit::Serial => unreachable!(),
+        };
+        let total = crate::scene_tree::current()
+            .map(|t| t.total_phases())
+            .unwrap_or(scheduled_phases.len());
+        let listing: Vec<String> = scheduled_phases.iter()
+            .map(|(seq, name)| format!("[{seq}/{total}] {name}"))
+            .collect();
+        crate::diag!(crate::observer::LogLevel::Info,
+            "concurrent dispatch ({limit_disp}): {}", listing.join(", "));
+    }
+
     let sem: Option<Arc<tokio::sync::Semaphore>> = match limit {
         ConcurrencyLimit::Bounded(n) => Some(Arc::new(tokio::sync::Semaphore::new(n as usize))),
         ConcurrencyLimit::Unlimited => None,
         ConcurrencyLimit::Serial => unreachable!("serial handled by caller"),
     };
+    // Dispatch is serialised on the deterministic
+    // declaration-order of scenario nodes; execution is
+    // concurrent. The permit acquire happens HERE in the
+    // dispatcher loop (not inside the spawned task), so:
+    //
+    //   - With `Bounded(N)`: at most N tasks in-flight; the
+    //     loop blocks before spawning the (N+1)th until one of
+    //     the live ones completes (releases its permit). The
+    //     (N+1)th is then the next-in-declaration-order
+    //     scenario node.
+    //   - With `Unlimited`: no semaphore — spawn order is
+    //     declaration order, which is what the user-visible
+    //     dispatch order needs to be regardless of how the
+    //     tokio runtime schedules the spawned tasks.
+    //   - With `Serial`: the caller already routed to the
+    //     non-concurrent loop above; we never reach here.
     let mut set = tokio::task::JoinSet::new();
     for node in nodes {
+        let permit = match sem.as_ref() {
+            Some(s) => Some(s.clone().acquire_owned().await
+                .map_err(|e| e.to_string())?),
+            None => None,
+        };
         let node = node.clone();
         let mut task_ctx = ctx.clone();
-        let sem = sem.clone();
         set.spawn(async move {
-            let _permit = match sem {
-                Some(s) => Some(s.acquire_owned().await.map_err(|e| e.to_string())?),
-                None => None,
-            };
+            // Permit moves into the task; dropped when the
+            // task body returns, freeing a slot for the next
+            // dispatch iteration above.
+            let _permit = permit;
             execute_node(&mut task_ctx, &node, depth).await
         });
     }
@@ -444,13 +515,27 @@ fn execute_node<'a>(
             }
             ScenarioNode::DoWhile { condition, counter, children } => {
                 crate::diag!(crate::observer::LogLevel::Debug, "=== do_while: {condition} ===");
-                run_do_loop(ctx, condition, counter.as_deref(), false,
-                    children, depth + 1).await?;
+                fire_scope_lifecycle(
+                    ctx, crate::readouts::Event::ScopeStart,
+                    &format!("do_while {condition}"), depth);
+                let r = run_do_loop(ctx, condition, counter.as_deref(), false,
+                    children, depth + 1).await;
+                fire_scope_lifecycle(
+                    ctx, crate::readouts::Event::ScopeEnd,
+                    &format!("do_while {condition}"), depth);
+                r?;
             }
             ScenarioNode::DoUntil { condition, counter, children } => {
                 crate::diag!(crate::observer::LogLevel::Debug, "=== do_until: {condition} ===");
-                run_do_loop(ctx, condition, counter.as_deref(), true,
-                    children, depth + 1).await?;
+                fire_scope_lifecycle(
+                    ctx, crate::readouts::Event::ScopeStart,
+                    &format!("do_until {condition}"), depth);
+                let r = run_do_loop(ctx, condition, counter.as_deref(), true,
+                    children, depth + 1).await;
+                fire_scope_lifecycle(
+                    ctx, crate::readouts::Event::ScopeEnd,
+                    &format!("do_until {condition}"), depth);
+                r?;
             }
         }
         Ok(())
@@ -619,7 +704,6 @@ fn dispatch_comprehension<'a>(
             ConcurrencyLimit::Unlimited => None,
             ConcurrencyLimit::Serial => unreachable!("handled by serial branch"),
         };
-        let mut set = tokio::task::JoinSet::new();
         // The TerminalAction borrows from the caller's slice;
         // for spawning into 'static futures, materialize into an
         // owned form. Children slice → owned Vec; Phase name →
@@ -629,15 +713,25 @@ fn dispatch_comprehension<'a>(
             TerminalAction::Phase(name) => OwnedTerminal::Phase(name.to_string()),
         };
 
+        // Permit acquired in the dispatcher loop, not the
+        // spawned task — see the matching comment in
+        // `run_siblings_concurrently`. Bounded(N) caps in-flight
+        // count and blocks the (N+1)th iteration's dispatch
+        // until a permit frees up; Unlimited spawns all in
+        // declaration order with no waiting. Either way the
+        // order in which iterations are LOFTED for execution
+        // is the deterministic comprehension-step order.
+        let mut set = tokio::task::JoinSet::new();
         for step in steps {
+            let permit = match sem.as_ref() {
+                Some(s) => Some(s.clone().acquire_owned().await
+                    .map_err(|e| e.to_string())?),
+                None => None,
+            };
             let mut task_ctx = ctx.clone();
             let owned_terminal = owned_terminal.clone();
-            let sem = sem.clone();
             set.spawn(async move {
-                let _permit = match sem {
-                    Some(s) => Some(s.acquire_owned().await.map_err(|e| e.to_string())?),
-                    None => None,
-                };
+                let _permit = permit;
                 let terminal = owned_terminal.borrow();
                 run_one_iteration(&mut task_ctx, &step, &terminal, depth).await
             });
@@ -695,6 +789,39 @@ fn dispatch_comprehension<'a>(
 /// counter (`do_while: counter < 100`) work today; conditions
 /// that depend on `shared`-modifier state mutated by children
 /// are still pending.
+/// Fire a scope lifecycle event (ScopeStart / ScopeEnd)
+/// for a non-iteration scope group (do_while / do_until).
+/// Subject id is the scope's spec text so the snapshot
+/// store distinguishes nested loops.
+fn fire_scope_lifecycle(
+    ctx: &ExecCtx,
+    event: crate::readouts::Event,
+    spec: &str,
+    depth: usize,
+) {
+    let depth_indent = "  ".repeat(depth.saturating_sub(1));
+    let display_labels: String = {
+        let parent_coords: Vec<_> = ctx.current_parent_kernel.as_ref()
+            .map(|k| k.scope_coordinates().iter().rev().cloned().collect())
+            .unwrap_or_default();
+        nbrs_variates::kernel::format_scope_coordinate_path(&parent_coords)
+    };
+    let scope_ctx = crate::readout_context::LifecycleContext {
+        event,
+        subject_name: spec.to_string(),
+        subject_labels: display_labels,
+        depth_indent,
+        use_color: crate::observer::use_color(),
+    };
+    crate::readout_context::fire_lifecycle(
+        event,
+        &ctx.workload_readouts,
+        None,
+        &scope_ctx,
+        Some(&ctx.sqlite_reporter),
+    );
+}
+
 async fn run_do_loop(
     ctx: &mut ExecCtx,
     condition: &str,
@@ -832,6 +959,38 @@ async fn run_one_iteration(
         ctx.push_label(var, &value.to_display_string());
     }
 
+    // SRD-63 Push 9a: fire `Event::EachStart` for this
+    // iteration. Bindings carry the iteration tuple
+    // (e.g. `(profile, alpha)`); the scope subject id is
+    // the binding tuple as a sortable string. Subject
+    // labels are the root-first display form a workload-
+    // bound `scope_header` would render against.
+    let iter_label = step.bindings.iter()
+        .map(|(k, v)| format!("{k}={}", v.to_display_string()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let display_labels: String = {
+        let parent_coords: Vec<_> = ctx.current_parent_kernel.as_ref()
+            .map(|k| k.scope_coordinates().iter().rev().cloned().collect())
+            .unwrap_or_default();
+        nbrs_variates::kernel::format_scope_coordinate_path(&parent_coords)
+    };
+    let depth_indent = "  ".repeat(depth.saturating_sub(1));
+    let each_ctx = crate::readout_context::LifecycleContext {
+        event: crate::readouts::Event::EachStart,
+        subject_name: iter_label.clone(),
+        subject_labels: display_labels.clone(),
+        depth_indent: depth_indent.clone(),
+        use_color: crate::observer::use_color(),
+    };
+    crate::readout_context::fire_lifecycle(
+        crate::readouts::Event::EachStart,
+        &ctx.workload_readouts,
+        None,
+        &each_ctx,
+        Some(&ctx.sqlite_reporter),
+    );
+
     // Children downstream consume iter-var values via
     // `ctx.current_parent_kernel` (set above), no separate
     // HashMap parameter.
@@ -843,6 +1002,27 @@ async fn run_one_iteration(
             run_phase(ctx, name).await
         }
     };
+
+    // SRD-63 Push 9a: fire `Event::EachEnd` after the
+    // iteration body returns (success or failure — the
+    // scope did still complete its iteration step). The
+    // ctx.subject_id() matches the start fire's so the
+    // snapshot store collapses both into the latest
+    // end-render.
+    let each_end_ctx = crate::readout_context::LifecycleContext {
+        event: crate::readouts::Event::EachEnd,
+        subject_name: iter_label,
+        subject_labels: display_labels,
+        depth_indent,
+        use_color: crate::observer::use_color(),
+    };
+    crate::readout_context::fire_lifecycle(
+        crate::readouts::Event::EachEnd,
+        &ctx.workload_readouts,
+        None,
+        &each_end_ctx,
+        Some(&ctx.sqlite_reporter),
+    );
 
     for _ in &step.bindings { ctx.pop_label(); }
     ctx.current_parent_kernel = prior_parent;
@@ -1401,6 +1581,41 @@ async fn run_phase(
     });
     ctx.observer.phase_starting(phase_name, &phase_labels,
         stanza_len, progress_extent, phase_concurrency);
+
+    // SRD-63 Push 9a: fire `Event::PhaseStart` once per
+    // phase, right after `set_phase_running` so any
+    // bound `phase_starting` readout sees the same
+    // scene-tree state the post-fire activity will. The
+    // built-in default is empty (no opt-in pre-phase
+    // line by default — Push 2's deletion stays in
+    // effect); workloads that want it back bind
+    // `on_phase_start: phase_starting` (or any custom
+    // body).
+    {
+        // Display labels: root-first reversed coords —
+        // matches the form `phase_done` already uses.
+        let display_labels: String = {
+            let parent_coords: Vec<_> = ctx.current_parent_kernel.as_ref()
+                .map(|k| k.scope_coordinates().iter().rev().cloned().collect())
+                .unwrap_or_default();
+            nbrs_variates::kernel::format_scope_coordinate_path(&parent_coords)
+        };
+        let depth_indent = crate::scene_tree::running_phase_indent();
+        let phase_ctx = crate::readout_context::LifecycleContext {
+            event: crate::readouts::Event::PhaseStart,
+            subject_name: phase_name.to_string(),
+            subject_labels: display_labels.clone(),
+            depth_indent,
+            use_color: crate::observer::use_color(),
+        };
+        crate::readout_context::fire_lifecycle(
+            crate::readouts::Event::PhaseStart,
+            &ctx.workload_readouts,
+            None,
+            &phase_ctx,
+            Some(&ctx.sqlite_reporter),
+        );
+    }
     if let Some(writer) = ctx.checkpoint_writer.clone() {
         let identity = phase_identity_for(phase_name, &phase_labels);
         // Stamp the writer's entry with this phase's
@@ -1489,6 +1704,28 @@ async fn run_phase(
                 Arc::new(std::sync::atomic::AtomicBool::new(
                     ctx.observer.suppresses_stderr()))
             }),
+        status_metrics: phase.status_metrics.clone(),
+        // Root-first display labels + pre-map seq for the ✓ DONE
+        // summary line. `phase_labels` (above, leaf-first) stays
+        // canonical for observer event-matching; this field is
+        // display-only — reversed so outer scopes lead, mirroring
+        // the per-phase header format the terminal observer used
+        // to emit on phase-start.
+        phase_labels: {
+            let parent_coords: Vec<_> = ctx.current_parent_kernel.as_ref()
+                .map(|k| k.scope_coordinates().iter().rev().cloned().collect())
+                .unwrap_or_default();
+            nbrs_variates::kernel::format_scope_coordinate_path(&parent_coords)
+        },
+        phase_seq: crate::scene_tree::current()
+            .and_then(|t| t.find_phase(phase_name, &phase_labels,
+                Some(&crate::scene_tree::PhaseStatus::Running))
+                .and_then(|id| t.nodes.get(id).map(|n| n.seq))
+                .flatten()
+                .map(|s| (s, t.total_phases()))),
+        readouts: ctx.workload_readouts.clone(),
+        cli_readout_override: ctx.cli_readout_override.clone(),
+        snapshot_writer: Some(ctx.sqlite_reporter.clone()),
     };
 
     let phase_driver_owned = phase.adapter.clone().unwrap_or_else(|| ctx.driver.clone());
@@ -1831,27 +2068,13 @@ async fn run_phase(
     }
 
     // Indent the completion line by scope depth so
-    // tui=terminal logs read as a hierarchic walk: scope
-    // headers + phase startup + activity end-of-run lines
-    // + this completion line all share the same indent
-    // basis. The striated `(coord)` suffix is dropped
-    // because the scope headers above the phase row already
-    // carry the coordinate context — repeating it on every
-    // start/complete line is the "duplicitous" output the
-    // tui=terminal cleanup explicitly removed.
-    let depth_indent = crate::scene_tree::current()
-        .and_then(|t| t.find_phase(phase_name, &phase_labels,
-            Some(&crate::scene_tree::PhaseStatus::Running))
-            .and_then(|id| t.nodes.get(id).map(|n| n.depth.saturating_sub(1))))
-        .map(|d| "  ".repeat(d))
-        .unwrap_or_default();
-    let color = crate::observer::use_color();
-    let bold = color.then(|| "\x1b[1m").unwrap_or("");
-    let green = color.then(|| "\x1b[32m").unwrap_or("");
-    let dim = color.then(|| "\x1b[2m").unwrap_or("");
-    let reset = color.then(|| "\x1b[0m").unwrap_or("");
-    crate::diag!(crate::observer::LogLevel::Info,
-        "{depth_indent}phase '{bold}{phase_name}{reset}' {green}complete{reset} {dim}({phase_duration:.2}s){reset}");
+    // No `phase 'X' complete (Ns)` log line — the activity-level
+    // DONE summary (✓ + stats line in `activity.rs`) is the single
+    // canonical completion marker. Emitting both produced
+    // duplicate end-of-phase output; the activity line carries
+    // the throughput / ok-rate / errors detail the user needs,
+    // while the phase identity and coords are already on the
+    // phase-starting row directly above.
     ctx.observer.phase_completed(phase_name, &phase_labels, phase_duration);
     crate::scene_tree::with_global_mut(|t| {
         t.set_phase_completed(phase_name, &phase_labels, phase_duration);

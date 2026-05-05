@@ -58,6 +58,97 @@ pub struct Workload {
     /// validator decide how to surface them.
     #[serde(default, skip_serializing)]
     pub report_warnings: Vec<String>,
+    /// Workload-wide default for the per-phase
+    /// [`WorkloadPhase::status_metrics`] field. Phases that don't
+    /// declare their own `status_metrics:` inherit this list.
+    /// Supports glob-style patterns (`recall*`, `latency*`) so a
+    /// single doc-root entry can emphasize a metric family across
+    /// every phase that produces it.
+    ///
+    /// Empty (default) → no metrics tail anywhere; per-phase
+    /// declarations are still honoured.
+    #[serde(default)]
+    pub status_metrics: Vec<String>,
+    /// Resolved `readouts:` block bindings (SRD-63 §5).
+    /// One entry per event slot the workload bound; the
+    /// runtime binder reads this map and dispatches at fire
+    /// time. Empty (default) → all slots fall back to the
+    /// hard-coded built-ins activity.rs uses today.
+    ///
+    /// Each value is a list of literal body strings — one
+    /// per readout invocation in the slot. The body strings
+    /// haven't been parsed against the readout grammar yet;
+    /// that happens at activity-init time once the workload
+    /// kernel is in place. Push 3 ships the data shape
+    /// only; Push 4 wires resolved layered overrides
+    /// (CLI / extends).
+    #[serde(default)]
+    pub readouts: ReadoutsBindings,
+}
+
+/// Per-event-slot list of readout body strings declared in
+/// the workload's `readouts:` block. See SRD-63 §5.0 for
+/// the three legal forms.
+///
+/// The lower-case slot keys here mirror the
+/// [`Event::slot_name`] return values
+/// (`on_phase_end`, `on_update`, …) so workload yaml
+/// uses the same vocabulary the design doc uses.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReadoutsBindings {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_session_start: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_session_end: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_phase_start: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_phase_end: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_each_start: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_each_end: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_scope_start: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_scope_end: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on_update: Vec<String>,
+}
+
+impl ReadoutsBindings {
+    /// True when no slot has any binding. Workloads in
+    /// this state fall through to the built-in defaults
+    /// activity.rs uses today.
+    pub fn is_empty(&self) -> bool {
+        self.on_session_start.is_empty()
+            && self.on_session_end.is_empty()
+            && self.on_phase_start.is_empty()
+            && self.on_phase_end.is_empty()
+            && self.on_each_start.is_empty()
+            && self.on_each_end.is_empty()
+            && self.on_scope_start.is_empty()
+            && self.on_scope_end.is_empty()
+            && self.on_update.is_empty()
+    }
+
+    /// Look up a slot's body list by its `slot_name` (e.g.
+    /// `"on_update"`). Returns an empty slice when the
+    /// slot has no bindings.
+    pub fn get(&self, slot_name: &str) -> &[String] {
+        match slot_name {
+            "on_session_start" => &self.on_session_start,
+            "on_session_end"   => &self.on_session_end,
+            "on_phase_start"   => &self.on_phase_start,
+            "on_phase_end"     => &self.on_phase_end,
+            "on_each_start"    => &self.on_each_start,
+            "on_each_end"      => &self.on_each_end,
+            "on_scope_start"   => &self.on_scope_start,
+            "on_scope_end"     => &self.on_scope_end,
+            "on_update"        => &self.on_update,
+            _ => &[],
+        }
+    }
 }
 
 /// Parsed summary report configuration.
@@ -88,6 +179,19 @@ pub struct SummaryConfig {
     pub show_details: bool,
     /// Raw source string for diagnostics and future GK template detection.
     pub raw: String,
+    /// SRD-46 v2: native MetricsQL columns. When non-empty,
+    /// `summary_command` routes through the metricsql renderer
+    /// instead of the legacy SQL builder. Each entry is
+    /// `(column_name, metricsql_expression)`. Anonymous
+    /// single-column form (`query: <expr>`) lands as
+    /// `("value", expr)`.
+    pub metricsql_columns: Vec<(String, String)>,
+    /// Label key the metricsql results are grouped on (becomes
+    /// the leftmost column of the rendered table). When empty
+    /// AND `metricsql_columns` is non-empty, the renderer falls
+    /// back to a single un-grouped row showing the average value
+    /// across all returned series.
+    pub group_by: String,
 }
 
 /// An aggregate expression: either
@@ -161,10 +265,50 @@ impl SummaryConfig {
         let mut row_filters = Vec::new();
         let mut aggregates = Vec::new();
         let mut show_details = true;
+        let mut metricsql_columns: Vec<(String, String)> = Vec::new();
+        let mut group_by = String::new();
 
         // Strip `#` line comments before parsing (SRD-46:
         // report/plot/table bodies all support `#` comments).
         let cleaned = strip_hash_line_comments(raw);
+
+        // SRD-46 v2 line-pass: native-form directives
+        // (`query: <expr>`, `query <col>: <expr>`, `group_by: <key>`).
+        // Pulled out before the legacy `;`-separator pass so a
+        // metricsql expression containing `;` (rare but legal)
+        // doesn't get sliced apart, and so legacy and native
+        // forms can coexist during migration.
+        let mut residual_lines: Vec<String> = Vec::new();
+        for line in cleaned.lines().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(rest) = line.strip_prefix("group_by:").map(str::trim)
+                .or_else(|| line.strip_prefix("group-by:").map(str::trim))
+            {
+                group_by = rest.to_string();
+                continue;
+            }
+            // `query <col>: <expr>` (multi-column, named) or
+            // `query: <expr>` (single anonymous column).
+            if let Some(rest) = line.strip_prefix("query") {
+                let rest = rest.trim_start();
+                if let Some(after_colon) = rest.strip_prefix(':') {
+                    metricsql_columns.push(("value".to_string(), after_colon.trim().to_string()));
+                    continue;
+                }
+                // `query <col>: <expr>` form — the next colon
+                // terminates the column name.
+                if let Some(colon_idx) = rest.find(':') {
+                    let col = rest[..colon_idx].trim().to_string();
+                    let expr = rest[colon_idx + 1..].trim().to_string();
+                    if !col.is_empty() && !expr.is_empty() {
+                        metricsql_columns.push((col, expr));
+                        continue;
+                    }
+                }
+            }
+            residual_lines.push(line.to_string());
+        }
+        let cleaned: String = residual_lines.join(";");
+
         for directive in cleaned.split(';').map(str::trim).filter(|s| !s.is_empty()) {
             if directive == "details=hide" {
                 show_details = false;
@@ -189,7 +333,12 @@ impl SummaryConfig {
             }
         }
 
-        SummaryConfig { columns, row_filters, aggregates, show_details, raw: raw.to_string() }
+        SummaryConfig {
+            columns, row_filters, aggregates, show_details,
+            raw: raw.to_string(),
+            metricsql_columns,
+            group_by,
+        }
     }
 
     /// Try to parse an aggregate directive in either form:
@@ -363,6 +512,26 @@ pub struct WorkloadPhase {
     /// full mapping).
     #[serde(default)]
     pub checkpoint: Option<Checkpoint>,
+    /// Names of metrics to surface on the inline progress line
+    /// and the per-phase ✓ DONE summary. Empty (default) → no
+    /// extra metrics shown; the status line carries only the
+    /// universal counters (pct, throughput, ok-rate, errors,
+    /// retries, concurrency, duration).
+    ///
+    /// Each name is matched against the live relevancy
+    /// aggregates (`recall_at_10`, `precision_at_10`, …) by exact
+    /// equality. Workloads that compute custom relevancy metrics
+    /// list the names they want emphasized; nothing is presumed
+    /// to be present.
+    ///
+    /// Example:
+    /// ```yaml
+    /// phases:
+    ///   ann_query:
+    ///     status_metrics: [recall_at_10]
+    /// ```
+    #[serde(default)]
+    pub status_metrics: Vec<String>,
 }
 
 /// Per-phase checkpoint declaration. Three legal forms in YAML:

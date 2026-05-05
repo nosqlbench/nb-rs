@@ -51,6 +51,44 @@ pub struct ActivityConfig {
     /// activity construction, so post-dismissal there'd be no
     /// progress display at all.
     pub suppress_status_line: Arc<std::sync::atomic::AtomicBool>,
+    /// Names of relevancy / live aggregate metrics to surface on
+    /// the inline progress line and the per-phase ✓ DONE summary.
+    /// Empty → no extra metrics are shown (status line carries
+    /// only the universal counters). Set per-phase via the YAML
+    /// `status_metrics: [name]` field; workload-level phases that
+    /// compute relevancy must opt in explicitly — nothing is
+    /// presumed to be present.
+    pub status_metrics: Vec<String>,
+    /// Full root-first coordinate label (e.g.
+    /// `(profile=label_00), (bucket=1, kind=READ)`) for this
+    /// phase's iteration. Used by the ✓ DONE summary line to
+    /// show the same identity the per-phase header would carry,
+    /// so the completed-status line stands alone — no separate
+    /// phase-starting row needed.
+    pub phase_labels: String,
+    /// Pre-map sequence number `[N/total]` for this phase. Same
+    /// numbering the TUI tree row and post-run summary use.
+    /// `None` ⇒ inline-CLI form / pre-map didn't produce a seq.
+    pub phase_seq: Option<(usize, usize)>,
+    /// Resolved `readouts:` slot bindings from the workload
+    /// (SRD-63 §5). Empty → all slots fall through to the
+    /// hard-coded built-in defaults (`phase_done` at
+    /// `on_phase_end`, `phase_status` at `on_update`).
+    pub readouts: nbrs_workload::model::ReadoutsBindings,
+    /// CLI `--readout=<body>` override (SRD-63 §8).
+    /// Applies to the `on_update` slot only; replaces
+    /// (or with `+` prefix, appends to) whatever the
+    /// workload + default path resolved.
+    pub cli_readout_override: Option<String>,
+    /// Per-session SQLite writer. Used by Push 6's snapshot
+    /// store — every binder.fire captures its rendered
+    /// output via `upsert_readout_snapshot` so replay /
+    /// scrollback can reproduce the line later. `None`
+    /// means snapshot capture is skipped (no session db
+    /// — short test fixtures, in-memory sessions).
+    pub snapshot_writer: Option<
+        Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
+    >,
 }
 
 impl Default for ActivityConfig {
@@ -66,6 +104,12 @@ impl Default for ActivityConfig {
             stanza_concurrency: 1,
             source_factory: None,
             suppress_status_line: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            status_metrics: Vec::new(),
+            phase_labels: String::new(),
+            phase_seq: None,
+            readouts: nbrs_workload::model::ReadoutsBindings::default(),
+            cli_readout_override: None,
+            snapshot_writer: None,
         }
     }
 }
@@ -237,6 +281,58 @@ impl ActivityMetrics {
             if let Some(ref vms) = *guard {
                 for vm in vms.iter() {
                     out.extend(vm.live_snapshot());
+                }
+            }
+        }
+        out
+    }
+
+    /// Collect every status-line value whose name matches one of
+    /// `patterns`. Patterns are glob-style (`*` for any run of
+    /// characters, `?` for a single character; literal otherwise),
+    /// matched against the canonical names below. Returns formatted
+    /// ` name:value` strings ready to concatenate into the inline
+    /// progress / DONE summary line, in pattern declaration order
+    /// with duplicates suppressed.
+    ///
+    /// Supported metric families:
+    /// - **Relevancy aggregates** — one entry per registered
+    ///   `relevancy.functions:` (e.g. `recall_at_10`,
+    ///   `precision_at_10`). Value: `total_mean × 100` as a percent.
+    /// - **Latency** — `latency_p50`, `latency_p99`, `latency_max`,
+    ///   `latency_mean`, sourced from `service_time` (the per-op
+    ///   timer, exclusive of wait time). Value: auto-scaled
+    ///   duration via [`nbrs_metrics::reporters::summary::format_duration`].
+    pub fn collect_status_values(&self, patterns: &[String]) -> Vec<String> {
+        if patterns.is_empty() {
+            return Vec::new();
+        }
+        // Build the candidate list once. Order is stable so
+        // pattern ordering, not iteration order, drives the
+        // output sequence.
+        let mut candidates: Vec<(String, String)> = Vec::new();
+        for live in self.collect_relevancy_live() {
+            candidates.push((
+                live.name,
+                format!("{:.2}%", live.total_mean * 100.0),
+            ));
+        }
+        let snap = self.service_time.peek_snapshot();
+        let h = &snap.histogram;
+        if h.len() > 0 {
+            let fmt = nbrs_metrics::reporters::summary::format_duration;
+            candidates.push(("latency_p50".to_string(),  fmt(h.value_at_quantile(0.50) as f64)));
+            candidates.push(("latency_p99".to_string(),  fmt(h.value_at_quantile(0.99) as f64)));
+            candidates.push(("latency_max".to_string(),  fmt(h.max() as f64)));
+            candidates.push(("latency_mean".to_string(), fmt(h.mean())));
+        }
+        let mut out: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for pat in patterns {
+            for (name, val) in &candidates {
+                if !seen.contains(name.as_str()) && glob_match(pat, name) {
+                    seen.insert(name.clone());
+                    out.push(format!(" {name}:{val}"));
                 }
             }
         }
@@ -992,10 +1088,40 @@ impl Activity {
             let activity_name_progress = activity_name.clone();
             let cursor_name_progress = cursor_name.clone();
             let activity_concurrency = activity.config.concurrency;
+            let status_metrics = activity.config.status_metrics.clone();
+            // Build the on_update binder once at spawn time:
+            // workload's `on_update:` overrides if any, else
+            // the default `phase_status` body. This is the
+            // SRD-63 §7 binding layer landing — every refresh
+            // tick fires through the binder rather than
+            // calling the readout directly.
+            let phase_status_default = {
+                let readout = crate::readouts::Registry::lookup("phase_status")
+                    .expect("phase_status registered");
+                crate::readouts::BakedBody::from_single(
+                    readout, crate::readouts::Lod::Labeled,
+                )
+            };
+            let update_binder = match crate::readouts::binder::build_event_binder_with_cli(
+                &activity.config.readouts,
+                crate::readouts::Event::Update,
+                phase_status_default,
+                activity.config.cli_readout_override.as_deref(),
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    crate::diag!(crate::observer::LogLevel::Error,
+                        "readouts: failed to bind on_update — {e}");
+                    return false;
+                }
+            };
+            let snapshot_writer_for_thread = activity.config.snapshot_writer.clone();
             std::thread::spawn(move || {
                 let activity_name = activity_name_progress;
                 let cursor_name = cursor_name_progress;
+                let snapshot_writer = snapshot_writer_for_thread;
                 let mut tick: u64 = 0;
+                let mut binder = update_binder;
                 while flag.load(Ordering::Relaxed) {
                     std::thread::sleep(Duration::from_millis(500));
                     if !flag.load(Ordering::Relaxed) { break; }
@@ -1007,166 +1133,40 @@ impl Activity {
                         // Re-check next tick.
                         continue;
                     }
-                    // Progress counters — all derived from ops_started/ops_finished
-                    // so pending + active + complete = total_extent exactly.
-                    let started = progress_metrics.ops_started.load(Ordering::Relaxed);
-                    let finished = progress_metrics.ops_finished.load(Ordering::Relaxed);
-                    let active = started.saturating_sub(finished);
-                    let completed = finished;
-                    let pending = total_extent.saturating_sub(started);
-                    let pct = if total_extent > 0 {
-                        started as f64 * 100.0 / total_extent as f64
-                    } else {
-                        0.0
-                    };
-                    let elapsed = start_time.elapsed().as_secs_f64();
-                    let rate = if elapsed > 0.0 { finished as f64 / elapsed } else { 0.0 };
-                    let rate_str = if rate >= 1_000_000.0 {
-                        format!("{:.1}M/s", rate / 1_000_000.0)
-                    } else if rate >= 1_000.0 {
-                        format!("{:.1}K/s", rate / 1_000.0)
-                    } else {
-                        format!("{:.0}/s", rate)
-                    };
-                    // ok% and errors use op counts (cycles_total), not source items
-                    let ops_completed = progress_metrics.cycles_completed();
-                    let successes = progress_metrics.successes_total.get();
-                    let ok_pct = if ops_completed > 0 {
-                        successes as f64 * 100.0 / ops_completed as f64
-                    } else {
-                        100.0
-                    };
-                    let errors = progress_metrics.errors_total.get();
-                    let failed_ops = ops_completed.saturating_sub(successes).saturating_sub(
-                        progress_metrics.skips_total.get());
-                    let retries = errors.saturating_sub(failed_ops);
-                    // Collect adapter-specific status counters (e.g., rows/s).
-                    // Uses status_counters() which reads cumulative atomics
-                    // without draining the delta timer pipeline.
-                    let mut adapter_status = String::new();
-                    if let Some(ref disps) = *progress_metrics.dispensers.lock().unwrap_or_else(|e| e.into_inner()) {
-                        for disp in disps.iter() {
-                            for (name, total) in disp.status_counters() {
-                                let item_rate = if elapsed > 0.0 {
-                                    total as f64 / elapsed
-                                } else { 0.0 };
-                                let rate_str = if item_rate >= 1_000_000.0 {
-                                    format!("{:.1}M", item_rate / 1_000_000.0)
-                                } else if item_rate >= 1_000.0 {
-                                    format!("{:.1}K", item_rate / 1_000.0)
-                                } else {
-                                    format!("{:.0}", item_rate)
-                                };
-                                adapter_status.push_str(&format!(" {name}:{rate_str}/s"));
-                            }
-                        }
-                    }
-                    // Compute avg rows/batch from adapter counters
-                    let stanzas = progress_metrics.stanzas_total.get();
-                    let mut batch_info = String::new();
-                    if stanzas > 0 {
-                        if let Some(ref disps) = *progress_metrics.dispensers.lock().unwrap_or_else(|e| e.into_inner()) {
-                            for disp in disps.iter() {
-                                for (name, total) in disp.status_counters() {
-                                    if name == "rows_inserted" && total > stanzas {
-                                        let avg = total as f64 / stanzas as f64;
-                                        batch_info = format!(" rows/batch:{avg:.1}");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    let concurrency = activity_concurrency;
-                    // Inline recall aggregates (recall@10 etc.) as a
-                    // key metric when the workload declares relevancy.
-                    // Rendered as percent — relevancy values are
-                    // fractions in [0, 1] and operators read these
-                    // visually, not numerically.
-                    let mut relevancy_str = String::new();
-                    for live in progress_metrics.collect_relevancy_live() {
-                        relevancy_str.push_str(&format!(
-                            " {}:{:.2}%",
-                            live.name,
-                            live.total_mean * 100.0,
-                        ));
-                    }
-                    // Pre-map sequence prefix `[N/total]` and
-                    // scope-tree depth — both looked up in the
-                    // same single tree-walk so the status line
-                    // carries the same numbering the TUI tree
-                    // row and post-run summary use, plus an
-                    // indent matching the phase's nesting depth
-                    // (SRD 18b §"Iteration variables as scope
-                    // outputs"). The indent is the visual cue
-                    // for "where in the scope hierarchy this
-                    // running phase sits" without re-emitting
-                    // the ancestor scope chain on every tick.
-                    let (seq_prefix, depth_indent) = crate::scene_tree::current()
-                        .and_then(|t| {
-                            // Activity name has the leaf coord
-                            // appended; the scene-tree phase
-                            // node was registered by phase_name
-                            // alone — match the prefix before
-                            // the first `(`.
-                            let bare_name = activity_name
-                                .split_once(" (")
-                                .map(|(n, _)| n)
-                                .unwrap_or(&activity_name);
-                            let node = t.dfs_phases()
-                                .find(|n| n.name == bare_name
-                                    && matches!(n.status,
-                                        crate::scene_tree::PhaseStatus::Running))?
-                                .clone();
-                            let seq = node.seq?;
-                            // SceneNode depth counts the synthetic
-                            // root as 1; subtract so top-level
-                            // entries land at depth 0 (matches
-                            // the TUI / post-run summary indent
-                            // basis).
-                            let depth = node.depth.saturating_sub(1);
-                            Some((
-                                format!("[{seq}/{}] ", t.total_phases()),
-                                "  ".repeat(depth),
-                            ))
-                        })
-                        .unwrap_or_default();
-                    let _ = (pending, active, completed);
-                    // Visual progress affordances:
-                    // - Braille spinner glyph (cycles every tick)
-                    //   that flips to a green ✓ on terminal-state
-                    //   completion (the activity-end DONE summary
-                    //   carries the check, not this in-place line).
-                    // - 10-char braille completion bar driven by
-                    //   `pct` — 80 sub-levels via per-char dot
-                    //   patterns, so the bar fills smoothly on
-                    //   long phases without flicker.
-                    // - ETA computed from rate × remaining work,
-                    //   formatted as `Ns` / `NmMMs` / `NhMMm`.
-                    //   Shown only when total_extent > 0 AND rate
-                    //   > 0; otherwise omitted (better blank than
-                    //   misleadingly-precise on a stalled
-                    //   activity).
-                    let color = crate::observer::use_color();
-                    let cyan = color.then(|| "\x1b[36m").unwrap_or("");
-                    let dim = color.then(|| "\x1b[2m").unwrap_or("");
-                    let reset = color.then(|| "\x1b[0m").unwrap_or("");
-                    let spinner = spinner_frame(tick);
-                    let bar = if total_extent > 0 {
-                        format!(" {dim}{}{reset}", braille_bar(pct, 10))
-                    } else {
-                        String::new()
-                    };
-                    let eta = if total_extent > 0 && rate > 0.0 {
-                        let remaining = total_extent.saturating_sub(finished) as f64;
-                        format!(" {dim}ETA {}{reset}", format_eta(remaining / rate))
-                    } else {
-                        String::new()
-                    };
-                    let line = format!(
-                        "{depth_indent}{cyan}{spinner}{reset}{bar} {seq_prefix}{activity_name} {pct:.0}% {rate_str} ok:{ok_pct:.0}% e:{errors} r:{retries} c:{concurrency}{adapter_status}{batch_info}{relevancy_str}{eta}"
+                    // Snapshot the per-tick context, hand it
+                    // to the binder; the binder walks its
+                    // resolved bodies in declaration order
+                    // and writes into the StringSink.
+                    let ctx = crate::readout_context::build_inline_refresh_context(
+                        &progress_metrics,
+                        &activity_name,
+                        activity_concurrency,
+                        total_extent,
+                        start_time.elapsed().as_secs_f64(),
+                        tick,
+                        &status_metrics,
+                    );
+                    use crate::readouts::ReadoutBinder;
+                    let mut sink = crate::readouts::StringSink::with_capacity(192);
+                    binder.fire(crate::readouts::Event::Update, &ctx, &mut sink);
+                    let rendered = sink.take();
+                    // Push 6: capture the latest on_update
+                    // render to the snapshot store. PK collapses
+                    // ticks to the most recent — the inline
+                    // thread fires often, but only the last
+                    // render survives in `readout_snapshots`.
+                    use crate::readouts::ReadoutContext;
+                    crate::readouts::snapshot::capture(
+                        snapshot_writer.as_ref(),
+                        crate::readouts::Event::Update.slot_name(),
+                        crate::readouts::Event::Update.subject_kind().as_str(),
+                        &ctx.subject_id(),
+                        "binder",
+                        crate::readouts::snapshot::lod_str(crate::readouts::Lod::Labeled),
+                        &rendered,
                     );
                     let cols = terminal_cols().unwrap_or(200);
-                    let truncated = truncate_to_width(&line, cols.saturating_sub(1));
+                    let truncated = truncate_to_width(&rendered, cols.saturating_sub(1));
                     eprint!("\r\x1b[K{truncated}");
                     let _ = cursor_name; // retained for log-file detail; status line stays compact
                 }
@@ -1334,65 +1334,177 @@ impl Activity {
         crate::diag!(crate::observer::LogLevel::Debug,
             "activity '{}': all fibers drained", activity.config.name);
 
-        // Print final completion line. Honors the live
-        // suppression flag — if the TUI is still displaying we
-        // skip; if it dismissed mid-run we emit. The other
-        // guards remain static (TTY presence, source extent,
-        // adapter type) since those don't change during a run.
-        if is_stderr_tty && total_extent > 1000 && !suppress_progress
+        // Final completion line — always emitted (one per phase),
+        // not gated on TTY/extent. Replaces the old executor-side
+        // `phase 'X' complete (Ns)` line. Honors the live
+        // `suppress_status_line` flag (TUI takes over rendering)
+        // and the global `suppress_progress` (e.g. CI / `--quiet`).
+        if !suppress_progress
             && !activity.config.suppress_status_line.load(Ordering::Relaxed)
         {
+            // Counter snapshots — the readout recomputes
+            // pct / rate / ok_pct from these primitives, so
+            // we don't pre-format them here. Retries are
+            // derived per the existing convention (errors
+            // minus the skips-adjusted failed-op count).
             let consumed = activity.source_factory.global_consumed();
             let ops_completed = activity.metrics.cycles_completed();
             let successes = activity.metrics.successes_total.get();
             let errors = activity.metrics.errors_total.get();
-            let ok_pct = if ops_completed > 0 { successes as f64 * 100.0 / ops_completed as f64 } else { 100.0 };
             let elapsed = start_time.elapsed().as_secs_f64();
-            let rate = if elapsed > 0.0 { consumed as f64 / elapsed } else { 0.0 };
-            let rate_str = if rate >= 1_000_000.0 {
-                format!("{:.1}M/s", rate / 1_000_000.0)
-            } else if rate >= 1_000.0 {
-                format!("{:.1}K/s", rate / 1_000.0)
-            } else {
-                format!("{:.0}/s", rate)
-            };
             let failed_ops = ops_completed.saturating_sub(successes).saturating_sub(
                 activity.metrics.skips_total.get());
             let retries = errors.saturating_sub(failed_ops);
-            // Terminal: clear the in-place progress line and
-            // print the final DONE summary on its own line. The
-            // `\r\x1b[K` is load-bearing — the progress thread
-            // has been overwriting a single line via `\r`, and
-            // a plain `eprintln!` here would leave the partial
-            // progress as visual cruft above the DONE line.
-            eprint!("\r\x1b[K");
-            // Logging plane: same content through `observer::log`
-            // so the session.log file captures the DONE summary
-            // alongside everything else.
+            // Concurrency (fiber count) — the `c:N` tail mirrors
+            // the live progress line so a completed phase reads
+            // with the same shape as a running one.
+            let concurrency = activity.config.concurrency;
+            // Workload-emphasized metrics — same resolver as the
+            // inline progress line, glob-matched against the
+            // declared `status_metrics: [...]`. Empty list ⇒ no
+            // metrics tail; nothing is presumed to be present.
+            let relevancy_str: String = activity.metrics
+                .collect_status_values(&activity.config.status_metrics)
+                .concat();
+            // Clear the in-place progress line ONLY when the
+            // inline progress thread was actually rendering — the
+            // spawn site at line ~980 gates on
+            // `is_stderr_tty && total_extent > 1000`. Without
+            // those conditions there's nothing to clear and the
+            // `\r\x1b[K` would just spurt control codes in
+            // pipelined output.
+            let inline_was_rendering = is_stderr_tty && total_extent > 1000 && !suppress_progress;
+            if inline_was_rendering {
+                eprint!("\r\x1b[K");
+            }
+            // Render the ✓ DONE line via the readout engine.
+            // SRD-63 / Push 1: the previous inline `format!()`
+            // is now `phase_done.render()` driven by an
+            // `ActivityReadoutContext` snapshot of the values
+            // gathered above. Output is byte-equivalent.
+            let phase_name_bare = activity.config.name.split_once(" (")
+                .map(|(n, _)| n.to_string())
+                .unwrap_or_else(|| activity.config.name.clone());
+            let ctx = crate::readout_context::ActivityReadoutContext {
+                phase_name: phase_name_bare,
+                phase_seq: activity.config.phase_seq,
+                phase_labels: activity.config.phase_labels.clone(),
+                cycles_completed: ops_completed,
+                cycles_total: total_extent,
+                ops_ok: successes,
+                errors,
+                retries,
+                concurrency,
+                elapsed_secs: elapsed,
+                consumed,
+                status_metric_chips: relevancy_str,
+                depth_indent: crate::scene_tree::running_phase_indent(),
+                use_color: crate::observer::use_color(),
+            };
+            // SRD-63 §6.2 / Push 9c: synthesise one final
+            // `on_update` tick before the DONE summary. The
+            // inline thread (if running) fires every 500 ms
+            // and may have missed the last 100-499 ms of
+            // counter changes — and for short phases under
+            // the TTY/extent threshold it never spawned at
+            // all. This guarantees the snapshot store sees
+            // the phase's end-of-life on_update render
+            // matching what the user would have seen if the
+            // refresh tick had aligned exactly with phase
+            // termination.
             //
-            // Indented by scope depth so the line nests under the
-            // phase startup row (which the LogOnlyObserver
-            // already emits at the same depth). The cursor name
-            // (`cursor=q`) is dropped — it's a workload-internal
-            // detail, not user-facing — and the activity_name's
-            // leaf coord is sufficient to disambiguate concurrent
-            // phases sharing a name.
-            let depth_indent = crate::scene_tree::running_phase_indent();
-            let color = crate::observer::use_color();
-            let dim = color.then(|| "\x1b[2m").unwrap_or("");
-            let yellow = color.then(|| "\x1b[33m").unwrap_or("");
-            let green = color.then(|| "\x1b[32m").unwrap_or("");
-            let reset = color.then(|| "\x1b[0m").unwrap_or("");
-            // Throughput / ok-rate / error counters, with the
-            // dim items-count tail. Yellow on error / retry
-            // counts when non-zero; otherwise dim. Leading ✓
-            // replaces the in-place spinner glyph from the
-            // progress thread above — same line position, same
-            // visual rhythm, but signals "activity reached its
-            // terminal cycle" at a glance.
-            let err_color = if errors > 0 || retries > 0 { yellow } else { dim };
-            crate::diag!(crate::observer::LogLevel::Info,
-                "{depth_indent}{green}✓{reset} {activity_name} {rate_str} ok:{ok_pct:.1}% {err_color}e:{errors} r:{retries}{reset} {dim}({consumed} items){reset}");
+            // Renders silently (no eprint) — the DONE line
+            // immediately following carries the visible
+            // ✓ summary; we just want the snapshot row to
+            // reflect end-state.
+            {
+                let final_ctx = crate::readout_context::build_inline_refresh_context(
+                    &activity.metrics,
+                    &activity.config.name,
+                    activity.config.concurrency,
+                    total_extent,
+                    elapsed,
+                    u64::MAX,  // sentinel: spinner frame doesn't matter at end-of-phase
+                    &activity.config.status_metrics,
+                );
+                let phase_status_default = {
+                    let readout = crate::readouts::Registry::lookup("phase_status")
+                        .expect("phase_status registered");
+                    crate::readouts::BakedBody::from_single(
+                        readout, crate::readouts::Lod::Labeled,
+                    )
+                };
+                if let Ok(mut binder) = crate::readouts::binder::build_event_binder_with_cli(
+                    &activity.config.readouts,
+                    crate::readouts::Event::Update,
+                    phase_status_default,
+                    activity.config.cli_readout_override.as_deref(),
+                ) {
+                    use crate::readouts::ReadoutBinder;
+                    use crate::readouts::ReadoutContext;
+                    let mut sink = crate::readouts::StringSink::with_capacity(192);
+                    binder.fire(crate::readouts::Event::Update, &final_ctx, &mut sink);
+                    let rendered_final = sink.take();
+                    crate::readouts::snapshot::capture(
+                        activity.config.snapshot_writer.as_ref(),
+                        crate::readouts::Event::Update.slot_name(),
+                        crate::readouts::Event::Update.subject_kind().as_str(),
+                        &final_ctx.subject_id(),
+                        "binder",
+                        crate::readouts::snapshot::lod_str(crate::readouts::Lod::Labeled),
+                        &rendered_final,
+                    );
+                }
+            }
+
+            // Build a one-shot binder for `on_phase_end`:
+            // workload's `on_phase_end:` overrides if any,
+            // else the default `phase_done` body. Same
+            // SRD-63 §7 binding-layer pattern as the inline
+            // status thread above.
+            let phase_done_default = {
+                let readout = crate::readouts::Registry::lookup("phase_done")
+                    .expect("phase_done registered");
+                crate::readouts::BakedBody::from_single(
+                    readout, crate::readouts::Lod::Labeled,
+                )
+            };
+            let rendered = match crate::readouts::build_event_binder(
+                &activity.config.readouts,
+                crate::readouts::Event::PhaseEnd,
+                phase_done_default,
+            ) {
+                Ok(mut binder) => {
+                    use crate::readouts::ReadoutBinder;
+                    let mut sink = crate::readouts::StringSink::with_capacity(160);
+                    binder.fire(crate::readouts::Event::PhaseEnd, &ctx, &mut sink);
+                    sink.take()
+                }
+                Err(e) => {
+                    crate::diag!(crate::observer::LogLevel::Error,
+                        "readouts: failed to bind on_phase_end — {e}");
+                    String::new()
+                }
+            };
+            // Push 6: capture the on_phase_end render to the
+            // snapshot store. The DONE line is the canonical
+            // "what the operator saw at completion" — replay
+            // returns it byte-for-byte.
+            if !rendered.is_empty() {
+                use crate::readouts::ReadoutContext;
+                crate::readouts::snapshot::capture(
+                    activity.config.snapshot_writer.as_ref(),
+                    crate::readouts::Event::PhaseEnd.slot_name(),
+                    crate::readouts::Event::PhaseEnd.subject_kind().as_str(),
+                    &ctx.subject_id(),
+                    "binder",
+                    crate::readouts::snapshot::lod_str(crate::readouts::Lod::Labeled),
+                    &rendered,
+                );
+            }
+            if !rendered.is_empty() {
+                crate::diag!(crate::observer::LogLevel::Info, "{}", rendered);
+            }
         }
 
         // Signal the progress thread to stop.
@@ -1456,7 +1568,7 @@ impl Activity {
                         );
                         for (stat, val) in [("mean", mean), ("p50", p50), ("p99", p99), ("min", min), ("max", max)] {
                             final_snapshot.insert_gauge(
-                                format!("{name}.{stat}"),
+                                format!("{name}_{stat}"),
                                 activity_labels.with("n", &n.to_string()),
                                 val,
                                 now,
@@ -1726,67 +1838,37 @@ fn terminal_cols() -> Option<usize> {
     Some(ws.ws_col as usize)
 }
 
-/// Inline-status spinner glyph — the standard 10-frame braille
-/// spinner cycle. Picks a frame deterministically from `tick %
-/// 10` so the in-place rewrite at `\r\x1b[K{spinner} …` looks
-/// like a smooth animation as long as the progress thread fires
-/// at a steady cadence.
-fn spinner_frame(tick: u64) -> char {
-    static FRAMES: [char; 10] = [
-        '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏',
-    ];
-    FRAMES[(tick as usize) % FRAMES.len()]
+/// Glob-style match: `*` matches zero or more characters, `?`
+/// matches exactly one character, every other byte must match
+/// literally. Recursive — adequate for the short patterns
+/// `status_metrics:` accepts (`recall*`, `latency_p99`, etc.).
+/// Trades worst-case quadratic time for simplicity; the
+/// candidate set is also tiny (low single-digit count of metric
+/// names per phase).
+fn glob_match(pattern: &str, candidate: &str) -> bool {
+    glob_match_bytes(pattern.as_bytes(), candidate.as_bytes())
 }
 
-/// 10-character braille completion bar. `pct` is clamped to
-/// [0, 100]; each of the 10 chars represents 10 percentage
-/// points, with 8 within-char sub-levels via the standard
-/// bottom-up braille fill pattern (so the bar fills smoothly
-/// at ~1.25-percent resolution).
-fn braille_bar(pct: f64, width: usize) -> String {
-    static FILL: [char; 9] = [
-        '\u{2800}', // ⠀  empty
-        '\u{2840}', // ⡀  +dot 7
-        '\u{28C0}', // ⣀  +dot 8
-        '\u{28C4}', // ⣄  +dot 3
-        '\u{28E4}', // ⣤  +dot 6
-        '\u{28E6}', // ⣦  +dot 2
-        '\u{28F6}', // ⣶  +dot 5
-        '\u{28F7}', // ⣷  +dot 1
-        '\u{28FF}', // ⣿  full (+dot 4)
-    ];
-    if width == 0 { return String::new(); }
-    let bounded = pct.clamp(0.0, 100.0);
-    let total = (bounded / 100.0 * (width as f64) * 8.0).round() as usize;
-    let total = total.min(width * 8);
-    let full = total / 8;
-    let part = total % 8;
-    let mut s = String::with_capacity(width * 3);
-    for _ in 0..full { s.push(FILL[8]); }
-    if full < width {
-        s.push(FILL[part]);
-        for _ in (full + 1)..width { s.push(FILL[0]); }
+fn glob_match_bytes(pat: &[u8], s: &[u8]) -> bool {
+    match (pat.first(), s.first()) {
+        (None, None) => true,
+        (Some(b'*'), _) => {
+            // zero-or-more: try consuming nothing OR consume one
+            // char of input and re-attempt.
+            glob_match_bytes(&pat[1..], s)
+                || (!s.is_empty() && glob_match_bytes(pat, &s[1..]))
+        }
+        (Some(b'?'), Some(_)) => glob_match_bytes(&pat[1..], &s[1..]),
+        (Some(p), Some(c)) if p == c => glob_match_bytes(&pat[1..], &s[1..]),
+        _ => false,
     }
-    s
 }
 
-/// Format a remaining-time ETA. Compact ladder: under a minute
-/// → `Ns`; under an hour → `NmMMs`; otherwise → `NhMMm`. Returns
-/// `—` for non-finite or negative inputs (rate stalled, etc.) so
-/// the in-place status line never lies about timing.
-fn format_eta(remaining_secs: f64) -> String {
-    if !remaining_secs.is_finite() || remaining_secs < 0.0 {
-        return "—".to_string();
-    }
-    let secs = remaining_secs.round() as u64;
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m{:02}s", secs / 60, secs % 60)
-    } else {
-        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
-    }
-}
+// `spinner_frame`, `braille_bar`, `format_eta` moved to
+// `crate::readouts::format` in Push 2 — the readouts that
+// consume them now own the helpers. `truncate_to_width`
+// stays here (it's a surface-level width-clamp concern,
+// not a readout concern).
 
 /// Truncate `s` to at most `max_cols` *visible* columns,
 /// appending an ellipsis when truncation actually elides

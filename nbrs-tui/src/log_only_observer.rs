@@ -37,6 +37,40 @@ use nbrs_metrics::snapshot::MetricSet;
 use parking_lot::Mutex;
 
 use crate::frame_broker::FrameBroker;
+
+/// Per-row context for the live mid-run scope-ancestor
+/// walker. Carries just the scope's display name and the
+/// surface's color setting so the `scope_header` readout
+/// can render the cyan-bullet + italic-name byte sequence
+/// without each emit site rebuilding it. SRD-63 Push 8c.
+struct ScopeAncestorContext {
+    name: String,
+    use_color: bool,
+}
+
+impl nbrs_activity::readouts::ReadoutContext for ScopeAncestorContext {
+    fn subject_name(&self) -> &str { &self.name }
+    fn subject_seq(&self) -> Option<(usize, usize)> { None }
+    fn subject_labels(&self) -> &str { "" }
+    fn cycles_completed(&self) -> u64 { 0 }
+    fn cycles_total(&self) -> u64 { 0 }
+    fn ops_ok(&self) -> u64 { 0 }
+    fn errors(&self) -> u64 { 0 }
+    fn retries(&self) -> u64 { 0 }
+    fn concurrency(&self) -> usize { 0 }
+    fn elapsed_secs(&self) -> f64 { 0.0 }
+    fn consumed(&self) -> u64 { 0 }
+    fn status_metric_chips(&self) -> String { String::new() }
+    fn depth_indent(&self) -> &str { "" }
+    fn use_color(&self) -> bool { self.use_color }
+    fn event(&self) -> nbrs_activity::readouts::Event {
+        // Live mid-run scope-ancestor walker fires the
+        // scope_header readout at the same boundary that
+        // `Event::EachStart` would fire it at — replay the
+        // live render path against historical state.
+        nbrs_activity::readouts::Event::EachStart
+    }
+}
 use crate::run_state_actor::{RunStateCmd, RunStateHandle};
 use crate::state::LogSeverity;
 
@@ -249,12 +283,15 @@ impl RunObserver for LogOnlyObserver {
             Some(t) => t,
             None => {
                 // Pre-map didn't run (or the resume planner
-                // hasn't published yet). Fall back to a flat
-                // line — same shape the legacy observer used,
-                // just without the scope hierarchy.
-                nbrs_activity::observer::log(LogLevel::Info,
-                    &format!("phase '{bold}{name}{reset}'{}: {op_templates} {template_word}, {total_cycles} {cycle_word}, concurrency={concurrency}",
-                        if labels.is_empty() { String::new() } else { format!(" {labels}") }));
+                // hasn't published yet). Without a scene tree we
+                // also have no scope-ancestor headers to emit,
+                // so this branch becomes a true no-op — the
+                // condensed ✓ line from `nbrs-activity::activity`
+                // is the sole per-phase log entry, same as the
+                // hierarchic path below.
+                let _ = (op_templates, total_cycles, concurrency,
+                         template_word, cycle_word, name, labels,
+                         bold, color);
                 return;
             }
         };
@@ -298,26 +335,51 @@ impl RunObserver for LogOnlyObserver {
         let common_prefix = last_chain.iter().zip(ancestor_chain.iter())
             .take_while(|(a, b)| a == b)
             .count();
+        // Push 8c: scope-ancestor headers route through
+        // the `scope_header` readout so the same
+        // formatter drives both the live mid-run walk
+        // here and the post-run summary tree walk in
+        // `nbrs-tui::observer`. The depth-based indent
+        // chrome is the surface's job per SRD-63 §10.
         for new_id in &ancestor_chain[common_prefix..] {
             if let Some(scope) = tree.nodes.get(*new_id) {
                 let depth = scope.depth.saturating_sub(1);
                 let indent = "  ".repeat(depth);
+                let mut s_buf = String::with_capacity(64);
+                {
+                    use nbrs_activity::readouts as ro;
+                    let mut buf = ro::buf::StringBuf::new(&mut s_buf);
+                    use ro::Readout;
+                    let ctx = ScopeAncestorContext {
+                        name: scope.name.clone(),
+                        use_color: nbrs_activity::observer::use_color(),
+                    };
+                    ro::builtins::scope_header::ScopeHeader.render(
+                        &ctx,
+                        ro::Lod::Labeled,
+                        ro::ContentMode::Value,
+                        &ro::ReadoutOptions::new(),
+                        &mut buf,
+                    );
+                }
+                let _ = (cyan, italic);
                 nbrs_activity::observer::log(LogLevel::Info,
-                    &format!("{indent}{cyan}·{reset} {italic}{}{reset}", scope.name));
+                    &format!("{indent}{s_buf}"));
             }
         }
         *guard = Some(ancestor_chain);
         drop(guard);
 
-        // Phase row. The scope headers above carry the
-        // coordinate context, so the row itself drops the
-        // striated coord suffix — just `[N/total] phase 'X':
-        // …`. The legacy `(coord, …)` suffix is preserved only
-        // when scene-tree lookup failed (no hierarchy to lean
-        // on), in the early-return branch above.
-        let phase_indent = "  ".repeat(phase_depth);
-        nbrs_activity::observer::log(LogLevel::Info,
-            &format!("{phase_indent}{seq}phase '{bold}{name}{reset}': {op_templates} {template_word}, {total_cycles} {cycle_word}, concurrency={concurrency}"));
+        // No phase-starting detail row. The condensed completed-
+        // phase line emitted by `nbrs-activity::activity` (the
+        // ✓ DONE summary, single line carrying identity + stats
+        // + duration) is now the only per-phase log entry. Scope
+        // ancestor headers above this point still emit, so the
+        // hierarchic walk reads the same on its way down — only
+        // the redundant "[N/total] [name] (coords): …" preview
+        // is dropped (its info is fully captured by the ✓ line).
+        let _ = (phase_depth, op_templates, total_cycles,
+                 concurrency, template_word, cycle_word, seq, labels);
     }
 
     fn phase_completed(&self, name: &str, labels: &str, duration_secs: f64) {

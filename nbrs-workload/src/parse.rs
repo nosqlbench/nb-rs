@@ -55,7 +55,7 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     }
 
     // Stage 5: Parse phases
-    let (phases, phase_order) = parse_phases(obj.get("phases"), &doc_bindings, &doc_params, &doc_tags)?;
+    let (mut phases, phase_order) = parse_phases(obj.get("phases"), &doc_bindings, &doc_params, &doc_tags)?;
 
     // Stage 6: Auto-tag all ops (top-level and phase inline ops)
     for op in &mut all_ops {
@@ -165,7 +165,159 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         }
     }
 
-    Ok(Workload { description, scenarios, ops: all_ops, bindings: doc_bindings, params: resolved_params, phases, phase_order, declared_params, report, report_warnings })
+    // Doc-root `status_metrics:` — workload-wide default that
+    // any phase without its own `status_metrics:` inherits.
+    // Same accept-list shapes as the per-phase parser: list of
+    // strings, single string, or comma-separated string.
+    let doc_status_metrics: Vec<String> = match obj.get("status_metrics") {
+        None => Vec::new(),
+        Some(JVal::Array(items)) => items.iter()
+            .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Some(JVal::String(s)) => s.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect(),
+        Some(other) => return Err(format!(
+            "status_metrics: must be a list of names/patterns, a \
+             comma-separated string, or omitted; got {other:?}"
+        )),
+    };
+    if !doc_status_metrics.is_empty() {
+        for phase in phases.values_mut() {
+            if phase.status_metrics.is_empty() {
+                phase.status_metrics = doc_status_metrics.clone();
+            }
+        }
+    }
+
+    // Doc-root `readouts:` block (SRD-63 §5.0). Three
+    // accepted shapes:
+    //   A. Single scalar string  → bound at on_update.
+    //   B. Mapping of slot → name | body string.
+    //   C. Mapping of slot → list of (name | body) strings.
+    // The slot keys must match the lower-cased
+    // Event::slot_name values (`on_update`, `on_phase_end`, …).
+    // Inline body strings keep their full text — the
+    // body-grammar parser in nbrs-activity::readouts::parse
+    // bakes them at activity-init time.
+    let readouts = parse_readouts_block(obj.get("readouts"))?;
+
+    Ok(Workload {
+        description, scenarios, ops: all_ops, bindings: doc_bindings,
+        params: resolved_params, phases, phase_order, declared_params,
+        report, report_warnings,
+        status_metrics: doc_status_metrics,
+        readouts,
+    })
+}
+
+/// Parse the workload's `readouts:` block per SRD-63 §5.0.
+/// Returns the populated bindings struct or a load-time
+/// error.
+fn parse_readouts_block(value: Option<&JVal>) -> Result<crate::model::ReadoutsBindings, String> {
+    use crate::model::ReadoutsBindings;
+    let mut out = ReadoutsBindings::default();
+    let Some(value) = value else {
+        return Ok(out);
+    };
+
+    // Form A — scalar shorthand for `on_update`.
+    if let JVal::String(s) = value {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Ok(out);
+        }
+        out.on_update.push(trimmed.to_string());
+        return Ok(out);
+    }
+
+    // Forms B / C — mapping with slot keys.
+    let JVal::Object(map) = value else {
+        return Err(format!(
+            "readouts: must be a scalar (sugar for on_update) or a mapping \
+             of slot name → readout body; got {value:?}"
+        ));
+    };
+    for (key, val) in map {
+        let bodies: Vec<String> = match val {
+            JVal::String(s) => vec![s.trim().to_string()],
+            JVal::Array(items) => items.iter()
+                .map(|item| match item {
+                    JVal::String(s) => Ok(s.trim().to_string()),
+                    other => Err(format!(
+                        "readouts.{key}: list entries must be strings; got {other:?}"
+                    )),
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            JVal::Null => continue,
+            other => return Err(format!(
+                "readouts.{key}: must be a string or list of strings; got {other:?}"
+            )),
+        };
+        let bodies: Vec<String> = bodies.into_iter()
+            .filter(|s| !s.is_empty())
+            .collect();
+        // Wildcard expansion (SRD-63 §4.1.1). The yaml key
+        // can match a family rather than a single slot:
+        //   `each_*`    → on_each_start + on_each_end
+        //   `phase_*`   → on_phase_start + on_phase_end
+        //   `scope_*`   → on_scope_start + on_scope_end
+        //   `session_*` → on_session_start + on_session_end
+        //   `*`         → every slot
+        // Wildcard bindings are duplicated into each
+        // matching slot so the binder's resolution doesn't
+        // need a separate wildcard list. Render order:
+        // explicit bindings first in declaration order
+        // (handled by parser top-down), then any wildcard
+        // expansions appended.
+        let target_slots: Vec<&str> = match key.as_str() {
+            "on_session_start" => vec!["on_session_start"],
+            "on_session_end"   => vec!["on_session_end"],
+            "on_phase_start"   => vec!["on_phase_start"],
+            "on_phase_end"     => vec!["on_phase_end"],
+            "on_each_start"    => vec!["on_each_start"],
+            "on_each_end"      => vec!["on_each_end"],
+            "on_scope_start"   => vec!["on_scope_start"],
+            "on_scope_end"     => vec!["on_scope_end"],
+            "on_update"        => vec!["on_update"],
+            "session_*"        => vec!["on_session_start", "on_session_end"],
+            "phase_*"          => vec!["on_phase_start",   "on_phase_end"],
+            "each_*"           => vec!["on_each_start",    "on_each_end"],
+            "scope_*"          => vec!["on_scope_start",   "on_scope_end"],
+            "*"                => vec![
+                "on_session_start", "on_session_end",
+                "on_phase_start",   "on_phase_end",
+                "on_each_start",    "on_each_end",
+                "on_scope_start",   "on_scope_end",
+                "on_update",
+            ],
+            other => return Err(format!(
+                "readouts: unknown slot '{other}'. Known: \
+                 on_session_start/end, on_phase_start/end, \
+                 on_each_start/end, on_scope_start/end, on_update; \
+                 wildcards: each_*, phase_*, scope_*, session_*, *"
+            )),
+        };
+        for slot in target_slots {
+            let target: &mut Vec<String> = match slot {
+                "on_session_start" => &mut out.on_session_start,
+                "on_session_end"   => &mut out.on_session_end,
+                "on_phase_start"   => &mut out.on_phase_start,
+                "on_phase_end"     => &mut out.on_phase_end,
+                "on_each_start"    => &mut out.on_each_start,
+                "on_each_end"      => &mut out.on_each_end,
+                "on_scope_start"   => &mut out.on_scope_start,
+                "on_scope_end"     => &mut out.on_scope_end,
+                "on_update"        => &mut out.on_update,
+                _ => unreachable!(),
+            };
+            target.extend(bodies.iter().cloned());
+        }
+    }
+    Ok(out)
 }
 
 /// Walk a scenario tree and collect names of phases declared
@@ -730,6 +882,28 @@ fn parse_phases(
             .transpose()
             .map_err(|e| format!("phase '{phase_name}' checkpoint: {e}"))?;
 
+        // `status_metrics:` — names of relevancy aggregates to
+        // surface on the inline progress line and the per-phase
+        // ✓ DONE summary. Accepts a YAML list (`[name, name]`),
+        // a single string, or a comma-separated string. Empty /
+        // absent → no metrics tail (nothing presumed present).
+        let status_metrics: Vec<String> = match phase_obj.get("status_metrics") {
+            None => Vec::new(),
+            Some(JVal::Array(items)) => items.iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect(),
+            Some(JVal::String(s)) => s.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect(),
+            Some(other) => return Err(format!(
+                "phase '{phase_name}' status_metrics: must be a list of metric \
+                 names, a comma-separated string, or omitted; got {other:?}"
+            )),
+        };
+
         phases.insert(phase_name.clone(), WorkloadPhase {
             cycles,
             concurrency,
@@ -742,6 +916,7 @@ fn parse_phases(
             loop_scope,
             iter_scope,
             checkpoint,
+            status_metrics,
         });
         phase_order.push(phase_name.clone());
     }
@@ -1241,6 +1416,111 @@ fn merge_value_maps(parent: &HashMap<String, JVal>, child: &HashMap<String, JVal
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readouts_block_form_a_scalar_binds_on_update() {
+        let workload: serde_yaml::Value = serde_yaml::from_str(
+            r#"readouts: phase_status"#
+        ).unwrap();
+        let json = serde_json::to_value(&workload).unwrap();
+        let r = parse_readouts_block(json.get("readouts")).unwrap();
+        assert_eq!(r.on_update, vec!["phase_status".to_string()]);
+        assert!(r.on_phase_end.is_empty());
+    }
+
+    #[test]
+    fn readouts_block_form_b_mapping_binds_explicit_slots() {
+        let yaml = serde_yaml::from_str::<serde_yaml::Value>(
+            r#"
+readouts:
+  on_phase_end: phase_done
+  on_update: "phase_status lod=compact"
+"#).unwrap();
+        let json = serde_json::to_value(&yaml).unwrap();
+        let r = parse_readouts_block(json.get("readouts")).unwrap();
+        assert_eq!(r.on_phase_end, vec!["phase_done".to_string()]);
+        assert_eq!(r.on_update, vec!["phase_status lod=compact".to_string()]);
+    }
+
+    #[test]
+    fn readouts_block_form_c_list_composes() {
+        let yaml = serde_yaml::from_str::<serde_yaml::Value>(
+            r#"
+readouts:
+  on_phase_end:
+    - phase_done
+    - phase_failure_hint
+"#).unwrap();
+        let json = serde_json::to_value(&yaml).unwrap();
+        let r = parse_readouts_block(json.get("readouts")).unwrap();
+        assert_eq!(r.on_phase_end, vec![
+            "phase_done".to_string(),
+            "phase_failure_hint".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn readouts_block_each_wildcard_expands() {
+        let yaml = serde_yaml::from_str::<serde_yaml::Value>(
+            r#"
+readouts:
+  each_*: scope_bracket
+"#).unwrap();
+        let json = serde_json::to_value(&yaml).unwrap();
+        let r = parse_readouts_block(json.get("readouts")).unwrap();
+        assert_eq!(r.on_each_start, vec!["scope_bracket".to_string()]);
+        assert_eq!(r.on_each_end,   vec!["scope_bracket".to_string()]);
+        // Other slots untouched.
+        assert!(r.on_phase_end.is_empty());
+        assert!(r.on_update.is_empty());
+    }
+
+    #[test]
+    fn readouts_block_phase_wildcard_expands() {
+        let yaml = serde_yaml::from_str::<serde_yaml::Value>(
+            r#"
+readouts:
+  phase_*: trace
+"#).unwrap();
+        let json = serde_json::to_value(&yaml).unwrap();
+        let r = parse_readouts_block(json.get("readouts")).unwrap();
+        assert_eq!(r.on_phase_start, vec!["trace".to_string()]);
+        assert_eq!(r.on_phase_end,   vec!["trace".to_string()]);
+        assert!(r.on_each_start.is_empty());
+    }
+
+    #[test]
+    fn readouts_block_universal_wildcard_expands_to_all() {
+        let yaml = serde_yaml::from_str::<serde_yaml::Value>(
+            r#"
+readouts:
+  "*": trace
+"#).unwrap();
+        let json = serde_json::to_value(&yaml).unwrap();
+        let r = parse_readouts_block(json.get("readouts")).unwrap();
+        for slot in [
+            &r.on_session_start, &r.on_session_end,
+            &r.on_phase_start,   &r.on_phase_end,
+            &r.on_each_start,    &r.on_each_end,
+            &r.on_scope_start,   &r.on_scope_end,
+            &r.on_update,
+        ] {
+            assert_eq!(slot, &vec!["trace".to_string()]);
+        }
+    }
+
+    #[test]
+    fn readouts_block_unknown_slot_is_error() {
+        let yaml = serde_yaml::from_str::<serde_yaml::Value>(
+            r#"
+readouts:
+  on_unknown: phase_done
+"#).unwrap();
+        let json = serde_json::to_value(&yaml).unwrap();
+        let err = parse_readouts_block(json.get("readouts")).unwrap_err();
+        assert!(err.contains("unknown slot 'on_unknown'"),
+            "wrong message: {err}");
+    }
 
     #[test]
     fn parse_single_string_op() {

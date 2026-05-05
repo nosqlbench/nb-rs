@@ -48,6 +48,101 @@ use crate::reporter::TuiReporter;
 use crate::run_state_actor::{RunStateCmd, RunStateHandle};
 use crate::state::{EntryKind, LogEntry, LogSeverity, PhaseEntry, PhaseStatus, RunState};
 
+use nbrs_activity::readouts as ro;
+
+/// Per-row `ReadoutContext` for the post-run summary's
+/// `[ok] [N/total] name 0.02s` lines. Routes through the
+/// SRD-63 `phase_summary` readout so the marker / sequence
+/// / duration formatting lives in one place. The call
+/// site (the post-run summary tree walk in
+/// [`emit_run_summary`]) supplies the depth-based indent
+/// — the readout doesn't know about the surrounding
+/// chrome.
+struct SummaryRowContext {
+    name: String,
+    labels: String,
+    seq: Option<(usize, usize)>,
+    duration_secs: f64,
+    state: ro::LifecycleState,
+}
+
+/// Per-row `ReadoutContext` for scope-header rows in the
+/// post-run summary tree walk and the focused-error
+/// inset's scope ancestors. Routes through the SRD-63
+/// `scope_header` readout so the bullet + italic
+/// formatter lives alongside the rest of the engine
+/// (Push 8c).
+struct ScopeRowContext {
+    name: String,
+    use_color: bool,
+}
+
+impl ScopeRowContext {
+    fn new(name: &str, use_color: bool) -> Self {
+        Self { name: name.to_string(), use_color }
+    }
+}
+
+impl ro::ReadoutContext for ScopeRowContext {
+    fn subject_name(&self) -> &str { &self.name }
+    fn subject_seq(&self) -> Option<(usize, usize)> { None }
+    fn subject_labels(&self) -> &str { "" }
+    fn cycles_completed(&self) -> u64 { 0 }
+    fn cycles_total(&self) -> u64 { 0 }
+    fn ops_ok(&self) -> u64 { 0 }
+    fn errors(&self) -> u64 { 0 }
+    fn retries(&self) -> u64 { 0 }
+    fn concurrency(&self) -> usize { 0 }
+    fn elapsed_secs(&self) -> f64 { 0.0 }
+    fn consumed(&self) -> u64 { 0 }
+    fn status_metric_chips(&self) -> String { String::new() }
+    fn depth_indent(&self) -> &str { "" }
+    fn use_color(&self) -> bool { self.use_color }
+    fn event(&self) -> ro::Event { ro::Event::EachStart }
+}
+
+/// `ReadoutContext` for the post-run summary's session-scope
+/// readouts (`session_banner` for the opening line,
+/// `session_summary` for the `phases: …` rollup). Carries the
+/// scenario / workload identity and the per-status phase
+/// counts; everything else falls through to the trait
+/// defaults.
+struct SessionSummaryContext {
+    scenario_name: String,
+    workload_file: String,
+    completed: usize,
+    failed: usize,
+    pending: usize,
+    total: usize,
+    /// SRD-63 Push 9h: truncated-phase count for the
+    /// `truncated_phases` readout. Set after the per-phase
+    /// loop counts how many entries the post-failure tail
+    /// trim dropped; zero when no truncation occurred.
+    truncated: std::cell::Cell<usize>,
+}
+
+impl ro::ReadoutContext for SessionSummaryContext {
+    fn subject_name(&self) -> &str { "session" }
+    fn subject_id(&self) -> String { "session".to_string() }
+    fn event(&self) -> ro::Event { ro::Event::SessionEnd }
+    fn session_scenario_name(&self) -> &str { &self.scenario_name }
+    fn session_workload_file(&self) -> &str { &self.workload_file }
+    fn session_phases_completed(&self) -> usize { self.completed }
+    fn session_phases_failed(&self) -> usize { self.failed }
+    fn session_phases_pending(&self) -> usize { self.pending }
+    fn session_phases_total(&self) -> usize { self.total }
+    fn session_phases_truncated(&self) -> usize { self.truncated.get() }
+}
+
+impl ro::ReadoutContext for SummaryRowContext {
+    fn subject_name(&self) -> &str { &self.name }
+    fn subject_seq(&self) -> Option<(usize, usize)> { self.seq }
+    fn subject_labels(&self) -> &str { &self.labels }
+    fn elapsed_secs(&self) -> f64 { self.duration_secs }
+    fn event(&self) -> ro::Event { ro::Event::PhaseEnd }
+    fn subject_state(&self) -> ro::LifecycleState { self.state.clone() }
+}
+
 /// Convert a TUI-side [`LogSeverity`] back to the activity-side
 /// [`nbrs_activity::observer::LogLevel`] for comparison against
 /// [`TuiObserver::min_level`]. The two enums carry the same four
@@ -211,12 +306,19 @@ impl nbrs_activity::observer::RunObserver for TuiObserver {
         });
         // Route the human-readable line through the canonical
         // event channel so it lands in `session.log` even when
-        // the TUI is suppressing stderr.
+        // the TUI is suppressing stderr. Same `[name] (root-first
+        // coords): …` shape the terminal-mode observer emits, so
+        // the archived log reads identically to stderr.
         let template_word = if op_templates == 1 { "op template" } else { "op templates" };
         let cycle_word = if total_cycles == 1 { "cycle" } else { "cycles" };
+        let coords_part = if labels.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", crate::widgets::coords_root_first(labels))
+        };
         nbrs_activity::observer::log(
             nbrs_activity::observer::LogLevel::Info,
-            &format!("phase '{name}': {op_templates} {template_word}, {total_cycles} {cycle_word}, concurrency={concurrency}"));
+            &format!("[{name}]{coords_part}: {op_templates} {template_word}, {total_cycles} {cycle_word}, concurrency={concurrency}"));
     }
 
     fn phase_completed(&self, name: &str, labels: &str, duration_secs: f64) {
@@ -331,28 +433,73 @@ pub fn print_post_run_summary(
     let s: &RunState = &s;
 
     eprintln!();
-    eprintln!("session: {} ({})", s.scenario_name, s.workload_file);
-    eprintln!("logs:    logs/latest/");
 
     // Count phases only (scope headers are visual, not
     // executable).
     let phases_only: Vec<&PhaseEntry> = s.phases.iter()
         .filter(|p| p.kind == EntryKind::Phase)
         .collect();
+    let completed = phases_only.iter().filter(|p| {
+        matches!(p.status, PhaseStatus::Completed)
+    }).count();
+    let failed = phases_only.iter().filter(|p| {
+        matches!(p.status, PhaseStatus::Failed(_))
+    }).count();
+    let pending = phases_only.iter().filter(|p| {
+        matches!(p.status, PhaseStatus::Pending)
+    }).count();
+
+    // SRD-63 Push 9d: route the opening banner + the
+    // `phases:  X completed, Y failed, …` rollup through
+    // the readout engine. Both share one
+    // `SessionSummaryContext` so the totals and identity
+    // accessors agree.
+    let session_ctx = SessionSummaryContext {
+        scenario_name: s.scenario_name.clone(),
+        workload_file: s.workload_file.clone(),
+        completed,
+        failed,
+        pending,
+        total: phases_only.len(),
+        // Filled in by the per-phase loop below as it
+        // counts entries dropped from the post-failure
+        // tail trim. The `truncated_phases` readout reads
+        // this after the loop completes.
+        truncated: std::cell::Cell::new(0),
+    };
+    {
+        let mut s_buf = String::with_capacity(96);
+        let mut buf = ro::buf::StringBuf::new(&mut s_buf);
+        use ro::Readout;
+        ro::builtins::session_banner::SessionBanner.render(
+            &session_ctx,
+            ro::Lod::Labeled,
+            ro::ContentMode::Value,
+            &ro::ReadoutOptions::new(),
+            &mut buf,
+        );
+        if !s_buf.is_empty() {
+            eprintln!("{s_buf}");
+        }
+    }
+    eprintln!("logs:    logs/latest/");
+
     if phases_only.is_empty() {
         eprintln!("phases:  none executed");
     } else {
-        let completed = phases_only.iter().filter(|p| {
-            matches!(p.status, PhaseStatus::Completed)
-        }).count();
-        let failed = phases_only.iter().filter(|p| {
-            matches!(p.status, PhaseStatus::Failed(_))
-        }).count();
-        let pending = phases_only.iter().filter(|p| {
-            matches!(p.status, PhaseStatus::Pending)
-        }).count();
-        eprintln!("phases:  {} completed, {} failed, {} not run (of {} total)",
-            completed, failed, pending, phases_only.len());
+        let mut s_buf = String::with_capacity(96);
+        {
+            let mut buf = ro::buf::StringBuf::new(&mut s_buf);
+            use ro::Readout;
+            ro::builtins::session_summary::SessionSummary.render(
+                &session_ctx,
+                ro::Lod::Labeled,
+                ro::ContentMode::Value,
+                &ro::ReadoutOptions::new(),
+                &mut buf,
+            );
+        }
+        eprintln!("{s_buf}");
 
         // When there's a failure, printing every pending phase
         // after it gives screens of noise. Trim the tail: show
@@ -389,43 +536,65 @@ pub fn print_post_run_summary(
                 // store their descriptor (e.g. `for_each k=10`,
                 // `for_combinations [k, limit]`) in `name`; the
                 // `labels` field is reserved for phase identity.
-                eprintln!("  {indent}· {}", phase.name);
+                // Push 8c routes through the `scope_header`
+                // readout so the formatter (cyan bullet +
+                // italic name) lives in one place, shared
+                // with the live mid-run scope walker in
+                // `log_only_observer`.
+                let mut s_buf = String::with_capacity(64);
+                {
+                    let mut buf = ro::buf::StringBuf::new(&mut s_buf);
+                    use ro::Readout;
+                    ro::builtins::scope_header::ScopeHeader.render(
+                        &ScopeRowContext::new(&phase.name, false),
+                        ro::Lod::Labeled,
+                        ro::ContentMode::Value,
+                        &ro::ReadoutOptions::new(),
+                        &mut buf,
+                    );
+                }
+                eprintln!("  {indent}{s_buf}");
                 continue;
             }
-            let (marker, status_str) = match &phase.status {
-                PhaseStatus::Completed => ("[ok]", String::new()),
-                PhaseStatus::Running => ("[..]", " (still running)".into()),
-                PhaseStatus::Pending => ("[  ]", " (not run)".into()),
-                PhaseStatus::Failed(err) => ("[!!]", format!(" ({err})")),
-            };
-            // Phase rows omit the structural-identity `labels`
-            // string here: every coord on the path is already
-            // visible in the indented chain of scope headers
-            // immediately above this row, so repeating the full
-            // striated tuple on every phase produces the
-            // "cartesian wall" the SceneTree was built to
-            // replace.
+            // SRD-63 Push 8b: route the per-phase summary
+            // line through the `phase_summary` readout
+            // instead of hand-rolling the marker / seq /
+            // duration formatting here. Same byte output —
+            // the readout's branches on `subject_state`
+            // produce identical text — but the indent
+            // chrome (`"  {indent}"` prefix) stays the
+            // surface's job.
             //
-            // Zero-duration completions (the dryrun=phase
-            // sentinel — see `executor::run_phase`'s early-
-            // return) render without the " 0.00s" suffix; the
-            // dry-run plan view stays clean rather than
-            // peppered with `0.00s` after every line.
-            let dur = phase.duration_secs
-                .filter(|d| *d > 0.0)
-                .map(|d| format!(" {d:.2}s"))
-                .unwrap_or_default();
-            // Pre-map `[N/total]` prefix mirrors the live TUI's
-            // header counter so a post-run reader can scan the
-            // summary and a screenshot of the running TUI side-
-            // by-side without reconciling two different
-            // numbering schemes.
+            // Zero-duration completions (the `dryrun=phase`
+            // sentinel — see executor::run_phase's
+            // early-return) render without the " 0.00s"
+            // suffix; the dry-run plan view stays clean.
             let total = phases_only.len();
-            let seq_prefix = phase.seq
-                .map(|s| format!("[{s}/{total}] "))
-                .unwrap_or_default();
-            eprintln!("  {indent}{marker} {seq_prefix}{}{dur}{status_str}",
-                phase.name);
+            let ctx = SummaryRowContext {
+                name: phase.name.clone(),
+                labels: phase.labels.clone(),
+                seq: phase.seq.map(|s| (s, total)),
+                duration_secs: phase.duration_secs.unwrap_or(0.0),
+                state: match &phase.status {
+                    PhaseStatus::Completed   => ro::LifecycleState::Completed,
+                    PhaseStatus::Running     => ro::LifecycleState::Running,
+                    PhaseStatus::Pending     => ro::LifecycleState::Pending,
+                    PhaseStatus::Failed(err) => ro::LifecycleState::Failed(err.clone()),
+                },
+            };
+            let mut s_buf = String::with_capacity(64);
+            {
+                let mut buf = ro::buf::StringBuf::new(&mut s_buf);
+                use ro::Readout;
+                ro::builtins::phase_summary::PhaseSummary.render(
+                    &ctx,
+                    ro::Lod::Labeled,
+                    ro::ContentMode::Value,
+                    &ro::ReadoutOptions::new(),
+                    &mut buf,
+                );
+            }
+            eprintln!("  {indent}{s_buf}");
 
             if let Some(fi) = last_failed {
                 if i > fi {
@@ -434,10 +603,30 @@ pub fn print_post_run_summary(
             }
         }
 
-        if truncated_phases > 0 {
-            eprintln!("  (... and {truncated_phases} more phase{} not listed)",
-                if truncated_phases == 1 { "" } else { "s" });
-            eprintln!("  tip: run with dryrun=phase to see the full plan");
+        // SRD-63 Push 9h: route the post-failure tail-trim
+        // rollup through the `truncated_phases` readout.
+        // Stamps the count onto the session ctx and fires;
+        // the readout returns zero bytes when count == 0,
+        // so no `if` guard is needed at the call site.
+        session_ctx.truncated.set(truncated_phases);
+        let mut s_buf = String::with_capacity(128);
+        {
+            let mut buf = ro::buf::StringBuf::new(&mut s_buf);
+            use ro::Readout;
+            ro::builtins::truncated_phases::TruncatedPhases.render(
+                &session_ctx,
+                ro::Lod::Labeled,
+                ro::ContentMode::Value,
+                &ro::ReadoutOptions::new(),
+                &mut buf,
+            );
+        }
+        if !s_buf.is_empty() {
+            // Match the prior emission's two-space indent
+            // for alignment with the per-phase rows above.
+            for line in s_buf.lines() {
+                eprintln!("  {line}");
+            }
         }
     }
 
@@ -461,25 +650,59 @@ pub fn print_post_run_summary(
                 // `for_each k=10`); `labels` carries the
                 // structural-identity coord-path string and is
                 // always empty for Scope entries.
-                eprintln!("  {indent}· {}", scope.name);
+                // Push 8c: route through `scope_header`
+                // readout — same formatter as the post-run
+                // summary above.
+                let mut s_buf = String::with_capacity(64);
+                {
+                    let mut buf = ro::buf::StringBuf::new(&mut s_buf);
+                    use ro::Readout;
+                    ro::builtins::scope_header::ScopeHeader.render(
+                        &ScopeRowContext::new(&scope.name, false),
+                        ro::Lod::Labeled,
+                        ro::ContentMode::Value,
+                        &ro::ReadoutOptions::new(),
+                        &mut buf,
+                    );
+                }
+                eprintln!("  {indent}{s_buf}");
             }
             let indent = "  ".repeat(phase.depth);
-            // For the failure context, surface the leaf coord
-            // path on the phase row (the structural-identity
-            // string carries the iteration tuple) so a single
-            // failed-phase block in `failures:` is self-
-            // contained — the reader doesn't have to scroll up
-            // to recover the iteration that failed.
-            let labels = if phase.labels.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", phase.labels)
-            };
-            let err_text = match &phase.status {
-                PhaseStatus::Failed(err) => format!(" ({err})"),
+            // SRD-63 Push 9e: route the failed-phase inset
+            // through `phase_summary` with `show_labels=true`
+            // so the leaf-coord path lands on the failure
+            // line itself. The reader doesn't have to scroll
+            // up to recover which iteration failed; the
+            // failure block is self-contained. Output
+            // matches the prior direct eprintln byte-for-
+            // byte: `[!!] {name} ({labels}) ({err})` with
+            // labels omitted when empty.
+            let err = match &phase.status {
+                PhaseStatus::Failed(e) => e.clone(),
                 _ => String::new(),
             };
-            eprintln!("  {indent}[!!] {}{labels}{err_text}", phase.name);
+            let ctx = SummaryRowContext {
+                name: phase.name.clone(),
+                labels: phase.labels.clone(),
+                seq: None,
+                duration_secs: 0.0,
+                state: ro::LifecycleState::Failed(err),
+            };
+            let mut s_buf = String::with_capacity(96);
+            {
+                let mut buf = ro::buf::StringBuf::new(&mut s_buf);
+                let mut opts = ro::ReadoutOptions::new();
+                opts.set("show_labels", ro::OptionValue::Bool(true));
+                use ro::Readout;
+                ro::builtins::phase_summary::PhaseSummary.render(
+                    &ctx,
+                    ro::Lod::Labeled,
+                    ro::ContentMode::Value,
+                    &opts,
+                    &mut buf,
+                );
+            }
+            eprintln!("  {indent}{s_buf}");
         }
     }
 

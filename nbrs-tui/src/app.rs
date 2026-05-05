@@ -262,6 +262,29 @@ pub struct App {
     /// §"Display and Diagnostic Decoupling" carries the broader
     /// ArcSwap / actor model this builds on.
     frame_sync: crate::run_state_actor::FrameSync,
+    /// SRD-63 Push 5b: stateful readout binder for the TUI
+    /// surface. Carries focus index per slot, per-(slot,
+    /// body) LOD overrides, and the held-key
+    /// content-mode-toggle flag. Tab / Shift-Tab cycle focus;
+    /// `+` / `-` cycle the focused body's LOD; `\` toggles
+    /// the explanation overlay (ContentMode::Explanation
+    /// while held).
+    ///
+    /// Bindings are seeded from the workload's `readouts:`
+    /// block + the per-event built-in defaults; the binder
+    /// state is preserved across event fires so cycling
+    /// focus or LOD on one phase doesn't reset when the
+    /// next refresh arrives.
+    ///
+    /// Wrapped in `RefCell` so render paths that take
+    /// `&self` can fire the binder; the App is single-
+    /// threaded so a runtime borrow check is safe.
+    readout_binder: std::cell::RefCell<nbrs_activity::readouts::TuiReadoutBinder>,
+    /// Monotonic frame counter — passed to the readout
+    /// engine as the `refresh_tick` so animated readouts
+    /// (the spinner glyph in `phase_status`) advance
+    /// frame-by-frame.
+    frame_tick: std::cell::Cell<u64>,
 }
 
 /// Inline control-edit prompt state. Populated when the user
@@ -574,6 +597,10 @@ impl App {
             metrics_query,
             edit_prompt: None,
             frame_sync,
+            readout_binder: std::cell::RefCell::new(
+                nbrs_activity::readouts::TuiReadoutBinder::new(),
+            ),
+            frame_tick: std::cell::Cell::new(0),
         }
     }
 
@@ -969,6 +996,28 @@ impl App {
                             KeyCode::Right => self.tree_right_arrow(),
                             KeyCode::Enter => self.toggle_tree_expansion(),
                             KeyCode::Char(' ') => self.reset_tree_to_active(),
+                            // SRD-63 Push 5b: readout-binder
+                            // navigation. Tab cycles focus
+                            // forward through the readouts in
+                            // the most-recently-fired event slot;
+                            // Shift-Tab cycles backward; +/-
+                            // cycle the focused body's LOD.
+                            KeyCode::Tab     => self.cycle_readout_focus_next(),
+                            KeyCode::BackTab => self.cycle_readout_focus_prev(),
+                            KeyCode::Char('+') => self.cycle_readout_lod_up(),
+                            KeyCode::Char('-') => self.cycle_readout_lod_down(),
+                            // SRD-63 Push 7b: explanation overlay
+                            // toggle. crossterm's standard polling
+                            // doesn't reliably surface key-release,
+                            // so the held-key behavior from the
+                            // SRD is approximated with a press-
+                            // toggle: tap `\` to flip into
+                            // explanation mode, tap again to
+                            // flip back. Visible in the binder
+                            // via `overlay_held()`; readouts
+                            // render with `ContentMode::Explanation`
+                            // while the flag is set.
+                            KeyCode::Char('\\') => self.toggle_readout_overlay(),
                             _ => {}
                         }
                     }
@@ -1682,6 +1731,22 @@ impl App {
     ) -> Vec<Line<'static>> {
         let mut out: Vec<Line<'static>> = Vec::new();
 
+        // SRD-63 Push 5b: route the headline status row through
+        // the readout engine. `phase_status` for live phases
+        // (binder.fire under Event::Update; ContentMode flips
+        // to Explanation when the `\` overlay-toggle is active);
+        // `phase_done` / `phase_summary` for terminal states.
+        // Tab / Shift-Tab cycle focus through bound bodies; +
+        // / - cycle the focused body's LOD. The binder's per-
+        // (slot, body) state persists across frames so the
+        // operator's selection survives every refresh.
+        let refresh_tick = self.frame_tick.get();
+        let (readout_lines, _evt) = crate::readout_panel::render_phase_readouts(
+            &mut self.readout_binder.borrow_mut(),
+            phase, live, refresh_tick,
+        );
+        out.extend(readout_lines);
+
         // Status line — duplicates the parent row but gives us a first
         // detail line when a phase has no summary yet (pending).
         let status_text = match &phase.status {
@@ -2048,6 +2113,10 @@ impl App {
     /// observer updates keep flowing into `self.run_state` — they
     /// just don't affect the rendered frame until the user resumes.
     pub fn draw(&self, frame: &mut Frame) {
+        // Advance the frame tick before any render reads it —
+        // the readout engine's `phase_status` spinner uses it
+        // to cycle Braille frames at the TUI's tick rate.
+        self.frame_tick.set(self.frame_tick.get().wrapping_add(1));
         // Prefer the frozen snapshot when paused. Otherwise load
         // the live snapshot — a single atomic op that cannot
         // wait on any writer (SRD-02 §"Display and Diagnostic
@@ -2743,14 +2812,14 @@ impl App {
             1 => {
                 let p = running[0];
                 let seq_prefix = match (p.seq, total) {
-                    (Some(s), t) if t > 0 => format!("[{s}/{t}] "),
+                    (Some(s), t) if t > 0 => format!("[{s}/{t}] ",),
                     _ => String::new(),
                 };
-                if p.labels.is_empty() {
-                    format!(" Phase: {seq_prefix}{} ", p.name)
-                } else {
-                    format!(" Phase: {seq_prefix}{} ({}) ", p.name, p.labels)
-                }
+                // Phase name + coordinates appear on the per-phase
+                // header line in the body (`[name] (coords)` in
+                // blue + yellow). The title carries only the
+                // optional seq counter so it stays narrow.
+                format!(" Phase {seq_prefix}")
             }
             n => format!(" Phases: {n} running "),
         };
@@ -2789,22 +2858,44 @@ impl App {
             ]));
         } else {
             for (i, phase) in running.iter().enumerate() {
-                // Multi-phase: separator + header between detail blocks.
+                // Blank-line separator between multiple running
+                // phases — the per-phase header line below carries
+                // the name (in blue) and coords (in yellow) so the
+                // separator-with-name dash row is no longer needed.
                 if i > 0 {
                     lines.push(Line::from(""));
-                    let seq_prefix = match (phase.seq, total) {
-                        (Some(s), t) if t > 0 => format!("[{s}/{t}] "),
-                        _ => String::new(),
-                    };
-                    let sep_text = if phase.labels.is_empty() {
-                        format!("── {seq_prefix}{} ──", phase.name)
-                    } else {
-                        format!("── {seq_prefix}{} ({}) ──", phase.name, phase.labels)
-                    };
-                    lines.push(Line::from(Span::styled(
-                        sep_text, Style::default().fg(colors::DIM).italic(),
-                    )));
                 }
+                // `[name] (root-first coords)` header line — phase
+                // name in blue, coordinate tuple stack in yellow,
+                // coordinates reordered root-first so outer scopes
+                // lead. Combines the previous separate name-title
+                // row and standalone-coords row into a single
+                // scannable line that mirrors the terminal-mode
+                // observer's phase row.
+                let seq_prefix = match (phase.seq, total) {
+                    (Some(s), t) if t > 0 => format!("[{s}/{t}] "),
+                    _ => String::new(),
+                };
+                let mut header_spans = vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        seq_prefix,
+                        Style::default().fg(colors::DIM),
+                    ),
+                    Span::styled(
+                        format!("[{}]", phase.name),
+                        Style::default().fg(colors::LOG_INFO).bold(),
+                    ),
+                ];
+                if !phase.labels.is_empty() {
+                    let root_first = crate::widgets::coords_root_first(&phase.labels);
+                    header_spans.push(Span::raw(" "));
+                    header_spans.push(Span::styled(
+                        root_first,
+                        Style::default().fg(colors::PHASE_RUNNING_TINT).bold(),
+                    ));
+                }
+                lines.push(Line::from(header_spans));
                 let live = state.active_phase(&phase.name, &phase.labels);
                 for detail_line in self.format_phase_detail_with_live(phase, live) {
                     lines.push(detail_line);
@@ -2899,7 +2990,61 @@ impl App {
         };
     }
 
+    // ── SRD-63 Push 5b/7b: readout-binder navigation ──────
+
+    /// Cycle focus forward through the readouts bound to
+    /// the most-recently-fired event slot. Public for the
+    /// `Tab` keybind. No-op when the binder hasn't fired
+    /// yet (no slot context).
+    pub fn cycle_readout_focus_next(&mut self) {
+        use nbrs_activity::readouts::{BinderKey, ReadoutBinder};
+        self.readout_binder.borrow_mut().on_key(BinderKey::CycleFocusNext);
+    }
+
+    /// Cycle focus backward through the most-recent slot's
+    /// readouts. Bound to Shift-Tab.
+    pub fn cycle_readout_focus_prev(&mut self) {
+        use nbrs_activity::readouts::{BinderKey, ReadoutBinder};
+        self.readout_binder.borrow_mut().on_key(BinderKey::CycleFocusPrev);
+    }
+
+    /// Cycle the focused readout's LOD up
+    /// (compact → labeled → expanded → compact). Bound to
+    /// `+`. No-op when no readout is focused.
+    pub fn cycle_readout_lod_up(&mut self) {
+        use nbrs_activity::readouts::{BinderKey, ReadoutBinder};
+        self.readout_binder.borrow_mut().on_key(BinderKey::CycleLodUp);
+    }
+
+    /// Cycle the focused readout's LOD down. Bound to `-`.
+    pub fn cycle_readout_lod_down(&mut self) {
+        use nbrs_activity::readouts::{BinderKey, ReadoutBinder};
+        self.readout_binder.borrow_mut().on_key(BinderKey::CycleLodDown);
+    }
+
+    /// Toggle the explanation-overlay flag. While set, every
+    /// readout fire emits `ContentMode::Explanation` instead
+    /// of `Value`. Bound to `\`. The held-key semantics from
+    /// SRD-63 are approximated as a press-toggle because
+    /// crossterm's standard polling doesn't surface key-
+    /// release reliably.
+    pub fn toggle_readout_overlay(&mut self) {
+        use nbrs_activity::readouts::{BinderKey, ReadoutBinder};
+        let mut b = self.readout_binder.borrow_mut();
+        let now = !b.overlay_held();
+        b.on_key(BinderKey::OverlayHeld(now));
+    }
+
+    /// Whether the explanation overlay is currently active.
+    /// Surface code (footer, panel render path) reads this
+    /// to render an indicator and to pass the right
+    /// `ContentMode` when firing the binder.
+    pub fn readout_overlay_active(&self) -> bool {
+        self.readout_binder.borrow().overlay_held()
+    }
+
     fn draw_footer(&self, frame: &mut Frame, area: Rect) {
+        let overlay = if self.readout_overlay_active() { " 📖 explain" } else { "" };
         let line = Line::from(vec![
             Span::styled(" q", Style::default().fg(colors::EMPHASIS).bold()),
             Span::styled(": quit  ", Style::default().fg(colors::DIM)),
@@ -2911,6 +3056,13 @@ impl App {
             Span::styled(": expand  ", Style::default().fg(colors::DIM)),
             Span::styled("␣", Style::default().fg(colors::EMPHASIS).bold()),
             Span::styled(": track active  ", Style::default().fg(colors::DIM)),
+            // SRD-63 Push 5b/7b readout-binder navigation:
+            Span::styled("⇥", Style::default().fg(colors::EMPHASIS).bold()),
+            Span::styled(": readout focus  ", Style::default().fg(colors::DIM)),
+            Span::styled("+/-", Style::default().fg(colors::EMPHASIS).bold()),
+            Span::styled(": readout LOD  ", Style::default().fg(colors::DIM)),
+            Span::styled("\\", Style::default().fg(colors::EMPHASIS).bold()),
+            Span::styled(": explain  ", Style::default().fg(colors::DIM)),
             Span::styled("?", Style::default().fg(colors::EMPHASIS).bold()),
             Span::styled(": help  ", Style::default().fg(colors::DIM)),
             Span::styled("esc", Style::default().fg(colors::EMPHASIS).bold()),
@@ -2920,7 +3072,8 @@ impl App {
             Span::styled("p", Style::default().fg(colors::EMPHASIS).bold()),
             Span::styled(": pause  ", Style::default().fg(colors::DIM)),
             Span::styled("P", Style::default().fg(colors::EMPHASIS).bold()),
-            Span::styled(": dump  ", Style::default().fg(colors::DIM)),
+            Span::styled(": dump", Style::default().fg(colors::DIM)),
+            Span::styled(overlay, Style::default().fg(colors::EMPHASIS).bold()),
         ]);
         frame.render_widget(Paragraph::new(line), area);
     }

@@ -216,9 +216,92 @@ mod inner {
                 --   the family side is known (e.g. \"all
                 --   instances of `latency`\").
                 CREATE INDEX IF NOT EXISTS idx_metric_instance_family
-                    ON metric_instance(family_id);"
+                    ON metric_instance(family_id);
+                -- SRD-63 §6.4: per-(slot, subject, readout, lod)
+                -- snapshot of the latest render for that tuple.
+                -- Insert-or-replace upsert keeps memory bounded.
+                -- The body is stored both with ANSI escapes
+                -- (so live tooling can reproduce styling) and
+                -- as a stripped fallback for grep / structured
+                -- consumers.
+                CREATE TABLE IF NOT EXISTS readout_snapshots (
+                    slot TEXT NOT NULL,
+                    subject_kind TEXT NOT NULL,
+                    subject_id TEXT NOT NULL,
+                    readout_name TEXT NOT NULL,
+                    lod TEXT NOT NULL,
+                    rendered_at INTEGER NOT NULL,
+                    body_ansi BLOB,
+                    body_plain TEXT NOT NULL,
+                    PRIMARY KEY (slot, subject_kind, subject_id, readout_name, lod)
+                );"
             ).map_err(|e| format!("schema creation failed: {e}"))?;
             Ok(())
+        }
+
+        /// Upsert a readout snapshot. Latest render per
+        /// `(slot, subject_kind, subject_id, readout_name, lod)`
+        /// wins; the table holds at most one row per tuple.
+        /// Errors are logged but not propagated — snapshot
+        /// retention is a best-effort surface that must never
+        /// block the run.
+        pub fn upsert_readout_snapshot(
+            &mut self,
+            slot: &str,
+            subject_kind: &str,
+            subject_id: &str,
+            readout_name: &str,
+            lod: &str,
+            rendered_at_nanos: i64,
+            body_ansi: Option<&[u8]>,
+            body_plain: &str,
+        ) {
+            let r = self.conn.execute(
+                "INSERT OR REPLACE INTO readout_snapshots \
+                 (slot, subject_kind, subject_id, readout_name, lod, \
+                  rendered_at, body_ansi, body_plain) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    slot, subject_kind, subject_id, readout_name, lod,
+                    rendered_at_nanos, body_ansi, body_plain,
+                ],
+            );
+            if let Err(e) = r {
+                crate::diag::warn(&format!(
+                    "warning: readout snapshot upsert failed: {e}"
+                ));
+            }
+        }
+
+        /// Read every snapshot from the session, ordered by
+        /// (slot, subject_kind, subject_id, readout_name) so
+        /// scrollback / replay see a stable sequence.
+        pub fn read_readout_snapshots(&self) -> Vec<ReadoutSnapshotRow> {
+            let mut stmt = match self.conn.prepare(
+                "SELECT slot, subject_kind, subject_id, readout_name, lod, \
+                        rendered_at, body_ansi, body_plain \
+                 FROM readout_snapshots \
+                 ORDER BY rendered_at, slot, subject_kind, subject_id, readout_name"
+            ) {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+            let rows = stmt.query_map([], |row| {
+                Ok(ReadoutSnapshotRow {
+                    slot:          row.get(0)?,
+                    subject_kind:  row.get(1)?,
+                    subject_id:    row.get(2)?,
+                    readout_name:  row.get(3)?,
+                    lod:           row.get(4)?,
+                    rendered_at:   row.get(5)?,
+                    body_ansi:     row.get(6)?,
+                    body_plain:    row.get(7)?,
+                })
+            });
+            match rows {
+                Ok(iter) => iter.filter_map(Result::ok).collect(),
+                Err(_) => Vec::new(),
+            }
         }
 
         fn get_or_insert_family(&mut self, name: &str, typ: &str) -> i64 {
@@ -401,6 +484,22 @@ mod inner {
     /// This is the nbrs-metrics–local mirror of the workload-level
     /// `SummaryConfig`. The runner converts one to the other so that
     /// nbrs-metrics does not depend on nbrs-workload.
+    /// One row from `readout_snapshots`. Returned by
+    /// [`SqliteReporter::read_readout_snapshots`]. Used by
+    /// `nbrs replay` and by the future TUI scrollback that
+    /// re-shows a completed phase's last live render.
+    #[derive(Debug, Clone)]
+    pub struct ReadoutSnapshotRow {
+        pub slot: String,
+        pub subject_kind: String,
+        pub subject_id: String,
+        pub readout_name: String,
+        pub lod: String,
+        pub rendered_at: i64,
+        pub body_ansi: Option<Vec<u8>>,
+        pub body_plain: String,
+    }
+
     pub struct ReportConfig {
         /// Gauge column filter patterns. Empty = show all.
         pub columns: Vec<String>,
@@ -523,7 +622,7 @@ mod inner {
                         None => continue,
                     };
                     let body: String = lines
-                        .filter(|l| !l.starts_with("label "))
+                        .filter(|l| !l.starts_with("label ") && !l.starts_with("target "))
                         .collect::<Vec<_>>().join("\n");
                     out.push((name, body));
                 }
@@ -726,8 +825,8 @@ mod inner {
                     .filter_map(|(spec, val)| {
                         let name = spec.split('{').next().unwrap_or(&spec);
                         // Only collect .mean variants, strip the suffix
-                        if !name.ends_with(".mean") { return None; }
-                        let short = name.strip_suffix(".mean").unwrap_or(name);
+                        if !name.ends_with("_mean") { return None; }
+                        let short = name.strip_suffix("_mean").unwrap_or(name);
                         if seen.contains(short) { return None; }
                         seen.insert(short.to_string());
                         Some((short.to_string(), val))
@@ -779,7 +878,7 @@ mod inner {
         latency_p50_ns: Option<f64>,
         latency_p99_ns: Option<f64>,
         latency_mean_ns: Option<f64>,
-        /// Gauge values keyed by short name (e.g. "recall@10").
+        /// Gauge values keyed by short name (e.g. "recall_at_10").
         gauges: Vec<(String, f64)>,
     }
 
@@ -1248,6 +1347,67 @@ mod inner {
         use super::*;
         use std::time::{Duration, Instant};
 
+        #[test]
+        fn readout_snapshot_round_trip_byte_equal() {
+            let mut r = super::SqliteReporter::in_memory().unwrap();
+            let ansi: &[u8] = "\x1b[34m[setup]\x1b[0m 100% \x1b[32m✓\x1b[0m".as_bytes();
+            let plain = "[setup] 100% ✓";
+            r.upsert_readout_snapshot(
+                "on_phase_end", "phase", "setup#1", "phase_done", "labeled",
+                1_000_000_000, Some(ansi), plain,
+            );
+            let rows = r.read_readout_snapshots();
+            assert_eq!(rows.len(), 1);
+            let row = &rows[0];
+            assert_eq!(row.slot,         "on_phase_end");
+            assert_eq!(row.subject_kind, "phase");
+            assert_eq!(row.subject_id,   "setup#1");
+            assert_eq!(row.readout_name, "phase_done");
+            assert_eq!(row.lod,          "labeled");
+            assert_eq!(row.rendered_at,  1_000_000_000);
+            assert_eq!(row.body_ansi.as_deref(), Some(ansi));
+            assert_eq!(row.body_plain,   plain);
+        }
+
+        #[test]
+        fn readout_snapshot_upsert_keeps_latest_per_pk() {
+            let mut r = super::SqliteReporter::in_memory().unwrap();
+            // Two upserts with the same primary key — second
+            // wins (latest body, latest timestamp).
+            r.upsert_readout_snapshot(
+                "on_phase_end", "phase", "setup", "phase_done", "labeled",
+                1_000, None, "first",
+            );
+            r.upsert_readout_snapshot(
+                "on_phase_end", "phase", "setup", "phase_done", "labeled",
+                2_000, None, "second",
+            );
+            let rows = r.read_readout_snapshots();
+            assert_eq!(rows.len(), 1, "PK collision should overwrite, not duplicate");
+            assert_eq!(rows[0].body_plain, "second");
+            assert_eq!(rows[0].rendered_at, 2_000);
+        }
+
+        #[test]
+        fn readout_snapshot_distinct_pk_components_keep_separate_rows() {
+            let mut r = super::SqliteReporter::in_memory().unwrap();
+            // Same readout, different LOD → separate rows.
+            r.upsert_readout_snapshot(
+                "on_phase_end", "phase", "setup", "phase_done", "compact",
+                1_000, None, "compact form",
+            );
+            r.upsert_readout_snapshot(
+                "on_phase_end", "phase", "setup", "phase_done", "labeled",
+                1_000, None, "labeled form",
+            );
+            // Same readout, same LOD, different subject → separate.
+            r.upsert_readout_snapshot(
+                "on_phase_end", "phase", "load", "phase_done", "labeled",
+                1_000, None, "load form",
+            );
+            assert_eq!(r.read_readout_snapshots().len(), 3);
+        }
+
         fn build_activity_row(activity: &str, gauges: &[(&str, f64)]) -> super::ActivityRow {
             super::ActivityRow {
                 activity: activity.to_string(),
@@ -1266,19 +1426,19 @@ mod inner {
             // values 0.91 / 0.92 / 0.93. Single-key filter on
             // profile~label keeps all three; mean = 0.92 exactly.
             let rows = vec![
-                build_activity_row("profile=label_01", &[("recall@10", 0.91)]),
-                build_activity_row("profile=label_02", &[("recall@10", 0.92)]),
-                build_activity_row("profile=label_03", &[("recall@10", 0.93)]),
+                build_activity_row("profile=label_01", &[("recall_at_10", 0.91)]),
+                build_activity_row("profile=label_02", &[("recall_at_10", 0.92)]),
+                build_activity_row("profile=label_03", &[("recall_at_10", 0.93)]),
             ];
             let agg = ReportAggregate {
                 function: "mean".into(),
-                column_pattern: "recall@10".into(),
+                column_pattern: "recall_at_10".into(),
                 label_key: "profile".into(),
                 label_pattern: "label".into(),
                 group_by: Vec::new(),
             };
             let result = compute_aggregates(
-                &[agg], &rows, false, &["recall@10".to_string()],
+                &[agg], &rows, false, &["recall_at_10".to_string()],
             );
             assert_eq!(result.len(), 1);
             // Cells: [label, "-", "-", "0.9200"] (no latency)
@@ -1294,32 +1454,32 @@ mod inner {
             let rows = vec![
                 build_activity_row(
                     "k=10, optimize_for=RECALL, profile=label_01",
-                    &[("recall@10", 0.90)]),
+                    &[("recall_at_10", 0.90)]),
                 build_activity_row(
                     "k=10, optimize_for=RECALL, profile=label_02",
-                    &[("recall@10", 0.92)]),
+                    &[("recall_at_10", 0.92)]),
                 build_activity_row(
                     "k=10, optimize_for=RECALL, profile=label_03",
-                    &[("recall@10", 0.94)]),
+                    &[("recall_at_10", 0.94)]),
                 build_activity_row(
                     "k=10, optimize_for=LATENCY, profile=label_01",
-                    &[("recall@10", 0.70)]),
+                    &[("recall_at_10", 0.70)]),
                 build_activity_row(
                     "k=10, optimize_for=LATENCY, profile=label_02",
-                    &[("recall@10", 0.74)]),
+                    &[("recall_at_10", 0.74)]),
                 build_activity_row(
                     "k=10, optimize_for=LATENCY, profile=label_03",
-                    &[("recall@10", 0.78)]),
+                    &[("recall_at_10", 0.78)]),
             ];
             let agg = ReportAggregate {
                 function: "mean".into(),
-                column_pattern: "recall@10".into(),
+                column_pattern: "recall_at_10".into(),
                 label_key: String::new(),
                 label_pattern: String::new(),
                 group_by: vec!["k".into(), "optimize_for".into()],
             };
             let result = compute_aggregates(
-                &[agg], &rows, false, &["recall@10".to_string()],
+                &[agg], &rows, false, &["recall_at_10".to_string()],
             );
             assert_eq!(result.len(), 2);
             // BTreeMap orders alphabetically by tuple key —
@@ -1519,19 +1679,19 @@ mod inner {
 
             // Gauges: recall for all search phases
             let mut gauges = MetricSet::new(interval);
-            gauges.insert_gauge("recall@10.mean",
+            gauges.insert_gauge("recall_at_10_mean",
                 Labels::of("session", "test").with("profile", "label_00").with("k", "10")
                     .with("phase", "search_pre_compaction").with("n", "100"),
                 0.8410, now);
-            gauges.insert_gauge("recall@100.mean",
+            gauges.insert_gauge("recall_at_100_mean",
                 Labels::of("session", "test").with("profile", "label_00").with("k", "100")
                     .with("phase", "search_pre_compaction").with("n", "100"),
                 0.9837, now);
-            gauges.insert_gauge("recall@10.mean",
+            gauges.insert_gauge("recall_at_10_mean",
                 Labels::of("session", "test").with("profile", "label_00").with("k", "10")
                     .with("phase", "search_post_compaction").with("n", "100"),
                 0.8410, now);
-            gauges.insert_gauge("recall@100.mean",
+            gauges.insert_gauge("recall_at_100_mean",
                 Labels::of("session", "test").with("profile", "label_00").with("k", "100")
                     .with("phase", "search_post_compaction").with("n", "100"),
                 0.9837, now);

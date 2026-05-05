@@ -217,6 +217,7 @@ fn dispatch(
         "set" => render_set(tail, runtime),
         "metrics" => render_metrics(),
         "metric" => render_metric(tail),
+        "readout" => render_readout(&state.load(), tail),
         other => format!("ERR unknown command '{other}' — try `help`"),
     }
 }
@@ -236,6 +237,7 @@ const COMMAND_NAMES: &[&str] = &[
     "set",
     "metrics",
     "metric",
+    "readout",
 ];
 
 fn render_help() -> String {
@@ -257,6 +259,9 @@ fn render_help() -> String {
         ("metrics",   "list every (family, labels) pair in the live tree"),
         ("metric <selector>",
                       "read matching metric instance(s) — Prometheus-style selector"),
+        ("readout [name]",
+                      "render the SRD-63 readout of the given name (default `phase_status`) \
+                       against the latest active phase; ANSI-stripped plain text"),
     ];
     for (name, descr) in lines {
         s.push_str(&format!("  {:<36} {}\n", name, descr));
@@ -741,6 +746,69 @@ fn is_latency_family(family: &str) -> bool {
     f.contains("time") || f.contains("latency")
 }
 
+/// Render an SRD-63 readout against the latest active phase
+/// (or, if none is running, the most recently completed
+/// phase). Default readout is `phase_status`. ANSI escapes
+/// are stripped — the inspector socket is plain text.
+///
+/// Inspector is a read-only out-of-band surface; this
+/// command is the canonical way for tooling / scripts to
+/// scrape the same status the TUI shows, without parsing
+/// terminal output.
+fn render_readout(state: &RunState, tail: &str) -> String {
+    use nbrs_activity::readouts as ro;
+    use ro::ReadoutContext;
+
+    let name = if tail.is_empty() { "phase_status" } else { tail.trim() };
+    let Some(handle) = ro::Registry::lookup(name) else {
+        let known = ro::Registry::all_names().join(", ");
+        return format!("ERR unknown readout '{name}' — known: {known}\n");
+    };
+
+    // Pick a context: prefer the first active phase; else
+    // the most recently completed phase.
+    let active = state.first_active().cloned();
+    let phase = state.phases.iter()
+        .rev()
+        .find(|p| p.kind == crate::state::EntryKind::Phase
+            && (matches!(p.status, crate::state::PhaseStatus::Running)
+                || active.is_some()
+                || matches!(p.status, crate::state::PhaseStatus::Completed)))
+        .cloned();
+    let Some(phase) = phase else {
+        return format!("(no phase to render `{name}` against)\n");
+    };
+
+    let ctx_box: Box<dyn ReadoutContext> = if let Some(a) = active {
+        Box::new(crate::readout_panel::PhaseRowContext::live(&phase, &a, 0))
+    } else {
+        Box::new(crate::readout_panel::PhaseRowContext::terminal(&phase))
+    };
+
+    // Fire the readout directly (no binder — the inspector
+    // wants the raw render, not the user's TUI-side focus
+    // overrides).
+    let mut sink_buf = String::new();
+    {
+        let mut buf = ro::buf::StringBuf::new(&mut sink_buf);
+        handle.render(
+            &*ctx_box,
+            ro::Lod::Labeled,
+            ro::ContentMode::Value,
+            &ro::ReadoutOptions::new(),
+            &mut buf,
+        );
+    }
+    let plain = ro::snapshot::strip_ansi(&sink_buf);
+    if plain.is_empty() {
+        format!("(readout `{name}` produced no output for current phase state)\n")
+    } else if plain.ends_with('\n') {
+        plain
+    } else {
+        format!("{plain}\n")
+    }
+}
+
 // Silence unused-import linting from the always-held Arc when
 // the file is read in isolation.
 #[allow(dead_code)]
@@ -812,5 +880,30 @@ mod tests {
         assert!(is_latency_family("response_time"));
         assert!(!is_latency_family("cycles"));
         assert!(!is_latency_family("errors"));
+    }
+
+    /// Push 8d: the `readout` command rejects an unknown
+    /// readout name with an ERR + the list of registered
+    /// names.
+    #[test]
+    fn readout_unknown_name_returns_err_with_known_list() {
+        let state = RunState::new("test.yaml", "fake", "stdout");
+        let out = render_readout(&state, "not_a_real_readout");
+        assert!(out.starts_with("ERR unknown readout"),
+            "unexpected output: {out}");
+        assert!(out.contains("phase_status"),
+            "should list known names: {out}");
+    }
+
+    /// With no phase to render against, the command returns
+    /// a placeholder line instead of empty output. Avoids
+    /// the inspector returning a blank reply that scripts
+    /// can't distinguish from a transport error.
+    #[test]
+    fn readout_with_no_phase_returns_placeholder() {
+        let state = RunState::new("test.yaml", "fake", "stdout");
+        let out = render_readout(&state, "phase_done");
+        assert!(out.contains("no phase"),
+            "expected placeholder, got: {out}");
     }
 }

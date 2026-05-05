@@ -35,6 +35,11 @@ pub const KNOWN_PARAMS: &[&str] = &[
     "latency-cadences", "latency_cadences",
     "jobname", "instance", "prompush_apikeyfile",
     "resume", "resume_latest", "force_retry_failed",
+    // SRD-N concurrent scheduler — `schedule=*` (unbounded
+    // sibling overlap) or `schedule=N` (bounded). Consumed at
+    // line 1439 below; without it on this allow-list the
+    // workload-param validator rejects the CLI form.
+    "schedule",
 ];
 
 /// Convert the workload-model `SummaryConfig` (parsed from the
@@ -479,6 +484,14 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     let phases = workload.phases;
     let phase_order = workload.phase_order;
     let scenarios = workload.scenarios;
+    let workload_readouts = workload.readouts.clone();
+    // SRD-63 §8 / Push 8: extract the CLI `--readout=<body>`
+    // override before any binder is built. Resolved through
+    // the same `resolve_flag` helper as `--session-path`,
+    // so it picks up the matching `NBRS_READOUT` env var
+    // when set. `None` ⇒ workload bindings + builtin
+    // defaults run unchanged.
+    let cli_readout_override = crate::session::resolve_flag(&args[..], "--readout");
     // Unified report block (SRD-46). Tables auto-render at
     // end-of-run; plot specs persist into the session db so
     // post-hoc `nbrs report ...` can replay them. Empty
@@ -681,6 +694,29 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             "warning: SQLite metrics disabled: {e}"))
         .ok();
     let sqlite_reporter = std::sync::Arc::new(std::sync::Mutex::new(sqlite_reporter));
+
+    // SRD-63 Push 9a: fire `Event::SessionStart` once at the
+    // workload root. Workloads bind structural rows to
+    // this slot via `readouts: { on_session_start: … }`;
+    // unbound slots stay quiet (no built-in default
+    // emission today). Fires whether the run takes the
+    // phased or single-activity branch below.
+    {
+        let session_ctx = crate::readout_context::LifecycleContext {
+            event: crate::readouts::Event::SessionStart,
+            subject_name: session.id.clone(),
+            subject_labels: String::new(),
+            depth_indent: String::new(),
+            use_color: crate::observer::use_color(),
+        };
+        crate::readout_context::fire_lifecycle(
+            crate::readouts::Event::SessionStart,
+            &workload_readouts,
+            None,
+            &session_ctx,
+            Some(&sqlite_reporter),
+        );
+    }
 
     // Merge all ops for param expansion and GK compilation.
     let _num_top_level_ops = ops.len();
@@ -1443,6 +1479,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             });
             let mut exec_ctx = crate::executor::ExecCtx {
                 phases: phases.clone(),
+                workload_readouts: workload_readouts.clone(),
+                cli_readout_override: cli_readout_override.clone(),
                 workload_params: workload_params.clone(),
                 program: program.clone(),
                 gk_lib_paths: gk_lib_paths.clone(),
@@ -1554,6 +1592,25 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     Arc::new(std::sync::atomic::AtomicBool::new(
                         observer.suppresses_stderr()))
                 }),
+            // Inline single-op CLI form has no `phases:` block to
+            // declare status metrics — leave empty. Workloads that
+            // want emphasized metrics declare them per-phase.
+            status_metrics: Vec::new(),
+            // Inline form has no scope coords / pre-map seq.
+            phase_labels: String::new(),
+            phase_seq: None,
+            // Inline form has no `readouts:` block; built-ins
+            // run with no overrides.
+            readouts: nbrs_workload::model::ReadoutsBindings::default(),
+            // The inline form may still pick up a CLI
+            // `--readout` override even though there's no
+            // workload-side binding to layer with.
+            cli_readout_override: crate::session::resolve_flag(&args[..], "--readout"),
+            // Inline form: snapshot capture only when the
+            // session has a sqlite writer; the runner's
+            // single-activity path holds it under the same
+            // Arc.
+            snapshot_writer: Some(sqlite_reporter.clone()),
         };
 
         let adapter = create_adapter(&driver, &merged_params, dry_run).await?;
@@ -1642,6 +1699,27 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // short phases (e.g. ann_query under a 30s cadence) contribute no
     // rows because their data is still sitting in an unclosed window.
     cadence_reporter.shutdown();
+
+    // SRD-63 Push 9a: fire `Event::SessionEnd` once after
+    // the cadence shutdown but before `run_finished()`.
+    // Both branches (phased + single-activity) converge
+    // here, so a single fire covers every run shape.
+    {
+        let session_ctx = crate::readout_context::LifecycleContext {
+            event: crate::readouts::Event::SessionEnd,
+            subject_name: session.id.clone(),
+            subject_labels: String::new(),
+            depth_indent: String::new(),
+            use_color: crate::observer::use_color(),
+        };
+        crate::readout_context::fire_lifecycle(
+            crate::readouts::Event::SessionEnd,
+            &workload_readouts,
+            None,
+            &session_ctx,
+            Some(&sqlite_reporter),
+        );
+    }
 
     observer.run_finished();
 
@@ -1795,8 +1873,20 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
 /// Point per-file symlinks under `logs/` at the latest session's
 /// artifacts. Silently skips files that don't exist (e.g. summary.md
 /// when no `summary:` was declared). Replaces any existing symlink.
+///
+/// Targets route through `logs/latest` (which `Session::new` points
+/// at the actual session dir) so the convenience links stay
+/// consistent with `latest`. Skipped entirely when the session
+/// lives outside `logs/` — `--session-path /tmp/x` is an explicit
+/// redirect and shouldn't hijack the user's `logs/` symlinks.
 fn refresh_latest_file_links(session: &crate::session::Session) {
     let logs_dir = std::path::Path::new("logs");
+    // Mirror the gate in `Session::new` — keep these convenience
+    // links and `logs/latest` synchronized: either both update or
+    // neither does.
+    if !crate::session::target_is_under(logs_dir, &session.output_dir) {
+        return;
+    }
     for file in ["metrics.db", "summary.md", "session.log"] {
         let target = session.output_dir.join(file);
         if !target.exists() { continue; }
@@ -1805,9 +1895,7 @@ fn refresh_latest_file_links(session: &crate::session::Session) {
         // recreate the link. If this fails because nothing's there,
         // that's fine.
         let _ = std::fs::remove_file(&link);
-        // Link targets are relative to logs/ so the symlink survives
-        // directory moves — `{session_id}/{file}` under logs/.
-        let rel_target = std::path::Path::new(&session.id).join(file);
+        let rel_target = std::path::Path::new("latest").join(file);
         if let Err(e) = std::os::unix::fs::symlink(&rel_target, &link) {
             crate::diag!(crate::observer::LogLevel::Warn,
                 "warning: failed to link {} → {}: {e}",
@@ -2201,8 +2289,21 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
                 scan_param_refs(s, refs);
             }
         }
-        if let Some(s) = &op.condition { scan_param_refs(s, refs); }
-        if let Some(s) = &op.delay { scan_param_refs(s, refs); }
+        // `if:` and `delay:` accept either `{name}` placeholders
+        // (caught by `scan_param_refs`) or bare wire names like
+        // `delay: think_time`. Walk both shapes — the bare-ident
+        // pass mirrors what `scope.rs` Step 3/6 do for the same
+        // fields, so a workload param consumed only via a bare
+        // delay/condition reference doesn't trip the unused-param
+        // validator.
+        if let Some(s) = &op.condition {
+            scan_param_refs(s, refs);
+            scan_expression_idents(s, &mut refs.direct);
+        }
+        if let Some(s) = &op.delay {
+            scan_param_refs(s, refs);
+            scan_expression_idents(s, &mut refs.direct);
+        }
         // `params:` values can be strings, numbers, nested
         // maps (e.g. `relevancy: { actual: key, expected: …}`).
         // Walk the JSON recursively so anything stringy gets
@@ -2211,7 +2312,20 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
             scan_json_for_refs(v, refs);
         }
         match &op.bindings {
-            nbrs_workload::model::BindingsDef::GkSource(s) => scan_param_refs(s, refs),
+            nbrs_workload::model::BindingsDef::GkSource(s) => {
+                // Two reference shapes inside GK source:
+                //   - `{name}` placeholders inside string literals
+                //     (resolved by GK string-interpolation against
+                //     `final` bindings),
+                //   - bare identifier references in GK expressions
+                //     (e.g. `row := char_buf(..., cols)` — `cols`
+                //     resolves directly to its `final` binding).
+                // The unused-param validator must recognise both
+                // or it falsely flags params that the workload
+                // legitimately consumes via the bare path.
+                scan_param_refs(s, refs);
+                scan_expression_idents(s, &mut refs.direct);
+            }
             nbrs_workload::model::BindingsDef::Map(m) => {
                 for v in m.values() { scan_param_refs(v, refs); }
             }
@@ -2439,6 +2553,12 @@ pub fn parse_params(args: &[String]) -> HashMap<String, String> {
         // Per-key long-form flags.
         "--session-name", "--session-path", "--session-reuse",
         "--session-keep", "--session-shelflife",
+        // SRD-63 §8: `--readout=<body>` overrides the
+        // workload's `on_update` binding for the run.
+        // Resolved by `crate::session::resolve_flag` at
+        // runner-init; consumed here so the value
+        // doesn't bleed into the workload params map.
+        "--readout",
     ];
     let mut params = HashMap::new();
     let mut iter = args.iter().peekable();
