@@ -52,7 +52,7 @@ pub mod synthesis;
 pub mod order;
 pub mod iteration;
 
-pub use ast::{Clause, Comprehension, ComprehensionMode, ShellOrigin, TraversalOrder};
+pub use ast::{Clause, ClauseSource, Comprehension, ComprehensionMode, ShellOrigin, Subspace, TraversalOrder, ZipMode};
 pub use iteration::{iterate_scope, IterationStep, ScopeIterations};
 pub use parse::{
     comprehension_from_subspaces, parse_clause, parse_clause_list,

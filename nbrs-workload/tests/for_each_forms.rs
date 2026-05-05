@@ -47,8 +47,8 @@ scenarios:
         panic!("expected Cartesian, got {:?}", comprehension.mode);
     };
     assert_eq!(clauses.len(), 1);
-    assert_eq!(clauses[0].var, "x");
-    assert_eq!(clauses[0].expr, "1,2,3");
+    assert_eq!(clauses[0].var(), "x");
+    assert_eq!(clauses[0].expr(), "1,2,3");
 }
 
 #[test]
@@ -68,8 +68,8 @@ scenarios:
         panic!("expected Cartesian, got {:?}", comprehension.mode);
     };
     assert_eq!(clauses.len(), 2);
-    assert_eq!(clauses[0].var, "x");
-    assert_eq!(clauses[1].var, "y");
+    assert_eq!(clauses[0].var(), "x");
+    assert_eq!(clauses[1].var(), "y");
 }
 
 #[test]
@@ -91,10 +91,10 @@ scenarios:
         panic!("expected Union, got {:?}", comprehension.mode);
     };
     assert_eq!(subspaces.len(), 2);
-    assert_eq!(subspaces[0][0].var, "x");
-    assert_eq!(subspaces[0][0].expr, "1");
-    assert_eq!(subspaces[1][0].var, "x");
-    assert_eq!(subspaces[1][0].expr, "2");
+    assert_eq!(subspaces[0][0].var(), "x");
+    assert_eq!(subspaces[0][0].expr(), "1");
+    assert_eq!(subspaces[1][0].var(), "x");
+    assert_eq!(subspaces[1][0].expr(), "2");
 }
 
 #[test]
@@ -116,8 +116,8 @@ scenarios:
         panic!("expected Cartesian, got {:?}", comprehension.mode);
     };
     assert_eq!(clauses.len(), 2);
-    assert_eq!(clauses[0].var, "x");
-    assert_eq!(clauses[1].var, "y");
+    assert_eq!(clauses[0].var(), "x");
+    assert_eq!(clauses[1].var(), "y");
 }
 
 #[test]
@@ -141,8 +141,8 @@ scenarios:
         panic!("expected Union, got {:?}", comprehension.mode);
     };
     assert_eq!(subspaces.len(), 2);
-    assert_eq!(subspaces[0][0].expr, "1");
-    assert_eq!(subspaces[1][0].expr, "2");
+    assert_eq!(subspaces[0][0].expr(), "1");
+    assert_eq!(subspaces[1][0].expr(), "2");
 }
 
 #[test]
@@ -167,11 +167,11 @@ scenarios:
     };
     assert_eq!(subspaces.len(), 2);
     assert_eq!(subspaces[0].len(), 2);
-    assert_eq!(subspaces[0][0].var, "k");
-    assert_eq!(subspaces[0][0].expr, "10");
-    assert_eq!(subspaces[0][1].var, "limit");
-    assert_eq!(subspaces[0][1].expr, "10,20,30");
-    assert_eq!(subspaces[1][0].expr, "100");
+    assert_eq!(subspaces[0][0].var(), "k");
+    assert_eq!(subspaces[0][0].expr(), "10");
+    assert_eq!(subspaces[0][1].var(), "limit");
+    assert_eq!(subspaces[0][1].expr(), "10,20,30");
+    assert_eq!(subspaces[1][0].expr(), "100");
 }
 
 #[test]
@@ -192,9 +192,9 @@ scenarios:
         panic!("expected Cartesian, got {:?}", comprehension.mode);
     };
     assert_eq!(clauses.len(), 3);
-    assert_eq!(clauses[0].var, "x");
-    assert_eq!(clauses[1].var, "y");
-    assert_eq!(clauses[2].var, "z");
+    assert_eq!(clauses[0].var(), "x");
+    assert_eq!(clauses[1].var(), "y");
+    assert_eq!(clauses[2].var(), "z");
 }
 
 #[test]
@@ -255,6 +255,95 @@ scenarios:
         panic!("expected Cartesian, got {:?}", comprehension.mode);
     };
     assert_eq!(clauses.len(), 1);
-    assert!(clauses[0].expr.contains("matching_profiles"), "got: {}", clauses[0].expr);
-    assert!(clauses[0].expr.contains(","));
+    assert!(clauses[0].expr().contains("matching_profiles"), "got: {}", clauses[0].expr());
+    assert!(clauses[0].expr().contains(","));
+}
+
+// ---- Layer 7a parallel-iter through the YAML parser --------
+
+#[test]
+fn parallel_iter_string_form_round_trips_through_yaml() {
+    // `(a, b) in (e1, e2)` survives the workload-YAML →
+    // ScenarioNode → Comprehension path with a Parallel
+    // ClauseSource and Strict zip mode.
+    //
+    // Each parallel-group expression is *one* expression
+    // yielding a list — function-call form (`fib(8)`) or
+    // generator form (`pow2(6)`) avoids the comma-splitting
+    // ambiguity that bare `1,2,3` literal lists hit at the
+    // RHS-paren-group level.
+    use nbrs_variates::comprehension::{ClauseSource, ZipMode};
+    let yaml = format!(r#"
+scenarios:
+  s:
+    - for_each: "(x, y) in (fib(5), pow2(5))"
+      phases: [p]
+{PHASES}
+"#);
+    let node = first_scenario_node(&yaml);
+    let ScenarioNode::Comprehension { comprehension, .. } = node else {
+        panic!("expected Comprehension");
+    };
+    let ComprehensionMode::Cartesian(clauses) = &comprehension.mode else {
+        panic!("expected Cartesian, got {:?}", comprehension.mode);
+    };
+    assert_eq!(clauses.len(), 1);
+    assert!(clauses[0].is_parallel());
+    assert_eq!(clauses[0].vars, vec!["x".to_string(), "y".to_string()]);
+    match &clauses[0].source {
+        ClauseSource::Parallel { mode, exprs } => {
+            assert_eq!(*mode, ZipMode::Strict);
+            assert_eq!(exprs, &vec!["fib(5)".to_string(), "pow2(5)".to_string()]);
+        }
+        _ => panic!("expected Parallel source"),
+    }
+}
+
+#[test]
+fn parallel_iter_zip_truncate_round_trips_through_yaml() {
+    use nbrs_variates::comprehension::{ClauseSource, ZipMode};
+    let yaml = format!(r#"
+scenarios:
+  s:
+    - for_each: "(x, y) in zip_truncate(fib(5), pow2(3))"
+      phases: [p]
+{PHASES}
+"#);
+    let node = first_scenario_node(&yaml);
+    let ScenarioNode::Comprehension { comprehension, .. } = node else {
+        panic!("expected Comprehension");
+    };
+    let ComprehensionMode::Cartesian(clauses) = &comprehension.mode else {
+        panic!("expected Cartesian, got {:?}", comprehension.mode);
+    };
+    match &clauses[0].source {
+        ClauseSource::Parallel { mode, .. } => {
+            assert_eq!(*mode, ZipMode::Truncate);
+        }
+        _ => panic!("expected Parallel source"),
+    }
+}
+
+#[test]
+fn parallel_iter_mixed_with_single_clause_round_trips() {
+    // `(x, y) in (...), z in zs` — parallel group is one
+    // clause, z is another. Cartesian over both.
+    let yaml = format!(r#"
+scenarios:
+  s:
+    - for_each: "(x, y) in (fib(4), pow2(4)), z in 1..3"
+      phases: [p]
+{PHASES}
+"#);
+    let node = first_scenario_node(&yaml);
+    let ScenarioNode::Comprehension { comprehension, .. } = node else {
+        panic!("expected Comprehension");
+    };
+    let ComprehensionMode::Cartesian(clauses) = &comprehension.mode else {
+        panic!("expected Cartesian, got {:?}", comprehension.mode);
+    };
+    assert_eq!(clauses.len(), 2);
+    assert!(clauses[0].is_parallel());
+    assert!(!clauses[1].is_parallel());
+    assert_eq!(clauses[1].var(), "z");
 }

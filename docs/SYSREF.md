@@ -56,6 +56,7 @@ programs combine; read in order if you're new to it.
 - [SRD 18b: Scenario Tree, Scope Hierarchy, Scheduler](sysref/18b_scenario_tree_and_scheduler.md) — one scope per scenario node, iteration vars as scope outputs, leaf-phase-compiles-once, pragma chain along the scope tree, scheduler abstraction with `schedule=<level0>/<level1>/...`.
 - [SRD 18c: Comprehension Syntax](sysref/18c_comprehension_syntax.md) — layered grammar of clause expressions: literal lists, ranges, named generators, `where` filter, SI suffixes, tuple LHS (parallel-iter + destructure), bucket/concat/interval LUT expansions.
 - [SRD 18d: Comprehension Traversal Order](sysref/18d_comprehension_traversal_order.md) — emission order of tuples: lex, diagonal, extrema-first, concentric shells, space-filling (Halton/Sobol/LHS), custom; composes with `where` filter; truncation as part of the ordering declaration.
+- [SRD 18e: Comprehension Canonical Reference](sysref/18e_comprehension_canonical_reference.md) — the implementer contract: full AST in one place, Cartesian/Union detection, coordinate-set contract, index-space ordering rule, Union+non-lex rejection, `where` predicate semantics, Layer 7 extension path with `Value::Tuple` dependency. Read after 18c/18d, before writing or auditing comprehension code.
 
 ### GK kernel internals
 

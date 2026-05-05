@@ -29,21 +29,192 @@
 
 use std::collections::HashMap;
 
-use super::ast::{Clause, Comprehension, ShellOrigin, TraversalOrder};
+use super::ast::{Clause, Comprehension, ShellOrigin, TraversalOrder, ZipMode};
 
-/// Parse a single `var in expr` clause.
+/// Parse a single clause.
+///
+/// Two shapes are recognised:
+///
+/// - **Single-var** (Layers 1–6): `var in expr`. The lone
+///   variable on the LHS binds successive values from the
+///   single source on the RHS. This is the historical shape
+///   and remains the common case.
+/// - **Parallel-iter** (SRD-18c Layer 7a): `(a, b, …) in
+///   (e1, e2, …)`. Each variable on the LHS binds the
+///   corresponding source on the RHS; the sources advance in
+///   lockstep ("zip"). Length-mismatch across the group is a
+///   strict-mode error at scope-init.
 ///
 /// Returns `Err` for malformed input — the caller decides
 /// whether to keep going with whatever did parse cleanly. The
 /// error message names the clause text so it's surfaceable as
 /// a diagnostic.
 pub fn parse_clause(s: &str) -> Result<Clause, String> {
-    let parts: Vec<&str> = s.splitn(2, " in ").collect();
-    if parts.len() == 2 {
-        Ok(Clause::new(parts[0].trim(), parts[1].trim()))
-    } else {
-        Err(format!("invalid for_each clause: '{s}' (expected 'var in expr')"))
+    // Find the first top-paren-depth-0 ` in ` separator. The
+    // LHS may be a parenthesised group `(a, b)` whose internal
+    // commas are at depth ≥ 1; the RHS likewise. Walking with
+    // depth-aware lookahead is the only reliable split.
+    let bytes = s.as_bytes();
+    let mut depth: i32 = 0;
+    let mut i: usize = 0;
+    while i + 4 <= bytes.len() {
+        let ch = bytes[i];
+        match ch {
+            b'(' | b'[' | b'{' => { depth += 1; i += 1; }
+            b')' | b']' | b'}' => { depth -= 1; i += 1; }
+            b' ' if depth == 0
+                && bytes.get(i + 1) == Some(&b'i')
+                && bytes.get(i + 2) == Some(&b'n')
+                && bytes.get(i + 3) == Some(&b' ') =>
+            {
+                let lhs = s[..i].trim();
+                let rhs = s[i + 4..].trim();
+                return parse_clause_from_sides(lhs, rhs, s);
+            }
+            _ => { i += 1; }
+        }
     }
+    Err(format!("invalid for_each clause: '{s}' (expected 'var in expr')"))
+}
+
+/// Build a `Clause` from already-split `lhs` and `rhs` text.
+///
+/// LHS shape decides single-var vs parallel-iter:
+/// - `var` (bare identifier) → single-var clause.
+/// - `(a, b, ...)` → parallel-iter clause.
+///
+/// For parallel-iter, RHS is one of three forms (see
+/// [`ZipMode`]):
+/// - `(e1, e2, ...)` — strict zip (default).
+/// - `zip_truncate(e1, e2, ...)` — truncate to shortest.
+/// - `zip_cycle(e1, e2, ...)` — cycle to longest.
+///
+/// `whole` is only used to enrich error messages.
+fn parse_clause_from_sides(lhs: &str, rhs: &str, whole: &str) -> Result<Clause, String> {
+    let lhs_paren = is_paren_wrapped(lhs);
+    let (rhs_inner, mode) = match strip_zip_mode_prefix(rhs) {
+        Some((inner, m)) => (inner, m),
+        None => (rhs.to_string(), ZipMode::Strict),
+    };
+    let rhs_paren = is_paren_wrapped(&rhs_inner);
+    let rhs_explicit_paren = mode != ZipMode::Strict || rhs_paren;
+    if lhs_paren || rhs_explicit_paren {
+        if !(lhs_paren && rhs_explicit_paren) {
+            return Err(format!(
+                "parallel-iter clause '{whole}' requires parentheses on both sides \
+                 (e.g. '(a, b) in (e1, e2)' or '(a, b) in zip_truncate(e1, e2)')"
+            ));
+        }
+        let vars = split_paren_group(lhs);
+        // For zip_truncate(...) / zip_cycle(...), `rhs_inner`
+        // is the parenthesised arg list and parses identically
+        // to the bare `(e1, e2)` form.
+        let exprs = split_paren_group(&rhs_inner);
+        for v in &vars {
+            if !is_simple_ident(v) {
+                return Err(format!(
+                    "parallel-iter clause '{whole}': '{v}' is not a valid variable name"
+                ));
+            }
+        }
+        if vars.len() < 2 {
+            return Err(format!(
+                "parallel-iter clause '{whole}' requires ≥ 2 variables \
+                 (use 'var in expr' for the single-var form)"
+            ));
+        }
+        if vars.len() != exprs.len() {
+            return Err(format!(
+                "parallel-iter clause '{whole}': {} variables but {} expressions",
+                vars.len(), exprs.len()
+            ));
+        }
+        Ok(Clause::parallel_with_mode(mode, vars, exprs))
+    } else {
+        Ok(Clause::new(lhs, rhs))
+    }
+}
+
+/// Strip a leading `zip_truncate(...)` / `zip_cycle(...)`
+/// wrapper from `rhs` and return `(inner, mode)` where `inner`
+/// is the parenthesised argument list (still wrapped in
+/// parens) and `mode` is the corresponding [`ZipMode`].
+/// Returns `None` if `rhs` isn't a recognised zip-mode form.
+fn strip_zip_mode_prefix(rhs: &str) -> Option<(String, ZipMode)> {
+    for (prefix, mode) in [
+        ("zip_truncate", ZipMode::Truncate),
+        ("zip_cycle",    ZipMode::Cycle),
+    ] {
+        if let Some(rest) = rhs.strip_prefix(prefix) {
+            let trimmed = rest.trim_start();
+            if trimmed.starts_with('(') && is_paren_wrapped(trimmed) {
+                return Some((trimmed.to_string(), mode));
+            }
+        }
+    }
+    None
+}
+
+/// True if `s` starts with `(` and the matching close-paren is
+/// the final character (no trailing text). Whitespace inside is
+/// fine; whitespace outside is the caller's job to trim.
+fn is_paren_wrapped(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.first() != Some(&b'(') || bytes.last() != Some(&b')') {
+        return false;
+    }
+    let mut depth: i32 = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i == bytes.len() - 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Split a `(a, b, c)` group on its top-paren-depth-1 commas.
+/// Caller must ensure the input passes [`is_paren_wrapped`].
+fn split_paren_group(s: &str) -> Vec<String> {
+    let inner = &s[1..s.len() - 1];
+    let bytes = inner.as_bytes();
+    let mut parts: Vec<String> = Vec::new();
+    let mut start: usize = 0;
+    let mut depth: i32 = 0;
+    let mut i: usize = 0;
+    while i < bytes.len() {
+        let ch = bytes[i];
+        match ch {
+            b'(' | b'[' | b'{' => { depth += 1; i += 1; }
+            b')' | b']' | b'}' => { depth -= 1; i += 1; }
+            b',' if depth == 0 => {
+                parts.push(inner[start..i].trim().to_string());
+                start = i + 1;
+                i += 1;
+            }
+            _ => { i += 1; }
+        }
+    }
+    let tail = inner[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail.to_string());
+    }
+    parts
+}
+
+fn is_simple_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Parse the full GK comprehension text grammar:
@@ -88,7 +259,21 @@ pub fn parse_comprehension_text(text: &str) -> Result<Comprehension, String> {
     if let Some(spec) = order_text {
         comp = comp.with_order(parse_order_spec(&spec)?);
     }
+    // Single-source invariant check: structural shape +
+    // index-space-ordering vs. Union compatibility.
+    comp.validate().map_err(|errs| errs.join("; "))?;
     Ok(comp)
+}
+
+/// Backward-compat shim — call [`Comprehension::validate`]
+/// instead. Kept so external `nbrs-workload` callers don't
+/// need a same-day update; will be retired once those move.
+#[deprecated(note = "use Comprehension::validate() — single source of truth for AST invariants")]
+pub fn validate_order_for_mode(
+    mode: &super::ast::ComprehensionMode,
+    order: &Option<TraversalOrder>,
+) -> Result<(), String> {
+    super::ast::check_order_for_mode(mode, order)
 }
 
 /// Parse an order spec string into a [`TraversalOrder`].
@@ -384,7 +569,9 @@ pub fn comprehension_from_subspaces(subspaces: Vec<Vec<Clause>>) -> Comprehensio
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for set in &subspaces {
         for clause in set {
-            *counts.entry(clause.var.as_str()).or_insert(0) += 1;
+            for v in &clause.vars {
+                *counts.entry(v.as_str()).or_insert(0) += 1;
+            }
         }
     }
     let any_repeat = counts.values().any(|c| *c > 1);
@@ -441,11 +628,35 @@ pub fn split_respecting_parens(s: &str) -> Vec<String> {
     parts
 }
 
-/// True if `tail` begins (after optional whitespace) with an
-/// identifier followed by ` in `. Used by
-/// [`split_respecting_parens`] to recognise a clause boundary.
+/// True if `tail` begins (after optional whitespace) with
+/// either:
+/// - an identifier followed by ` in ` (single-var clause), or
+/// - a `(<ident>, <ident>, ...)` group followed by ` in `
+///   (parallel-iter clause, SRD-18c Layer 7a).
+///
+/// Used by [`split_respecting_parens`] to recognise a clause
+/// boundary.
 fn is_clause_boundary(tail: &str) -> bool {
     let trimmed = tail.trim_start();
+    if trimmed.starts_with('(') {
+        // Parallel-iter LHS: walk to matching close-paren.
+        let bytes = trimmed.as_bytes();
+        let mut depth: i32 = 0;
+        for (i, &b) in bytes.iter().enumerate() {
+            match b {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let after = &trimmed[i + 1..];
+                        return after.starts_with(" in ");
+                    }
+                }
+                _ => {}
+            }
+        }
+        return false;
+    }
     let mut ident_end = 0;
     for (i, c) in trimmed.char_indices() {
         if i == 0 {
@@ -468,8 +679,8 @@ mod tests {
     #[test]
     fn parse_single_clause() {
         let c = parse_clause("k in {k_values}").unwrap();
-        assert_eq!(c.var, "k");
-        assert_eq!(c.expr, "{k_values}");
+        assert_eq!(c.var(), "k");
+        assert_eq!(c.expr(), "{k_values}");
     }
 
     #[test]
@@ -510,8 +721,8 @@ mod tests {
     fn parse_clause_list_distinct_names() {
         let clauses = parse_clause_list("k in {k_values}, limit in {k_{k}_limits}").unwrap();
         assert_eq!(clauses.len(), 2);
-        assert_eq!(clauses[0].var, "k");
-        assert_eq!(clauses[1].var, "limit");
+        assert_eq!(clauses[0].var(), "k");
+        assert_eq!(clauses[1].var(), "limit");
     }
 
     #[test]
@@ -521,8 +732,8 @@ mod tests {
             "profile in matching_profiles('{dataset}', '{prefix}')"
         ).unwrap();
         assert_eq!(clauses.len(), 1);
-        assert_eq!(clauses[0].var, "profile");
-        assert_eq!(clauses[0].expr,
+        assert_eq!(clauses[0].var(), "profile");
+        assert_eq!(clauses[0].expr(),
             "matching_profiles('{dataset}', '{prefix}')");
     }
 
@@ -725,5 +936,278 @@ mod tests {
         let c = comprehension_from_subspaces(subspaces);
         assert!(c.is_union());
         assert_eq!(c.coordinate_names(), vec!["k"]);
+    }
+
+    // ── SRD-18e Push 10: Union + non-lex ordering rejection ──
+
+    #[test]
+    fn union_plus_extrema_is_rejected() {
+        let err = parse_comprehension_text(
+            "k in 10, k in 100 order extrema/1"
+        ).unwrap_err();
+        assert!(err.contains("'extrema'") && err.contains("Union"),
+            "wrong message: {err}");
+        assert!(err.contains("Cartesian") || err.contains("lex"),
+            "should hint at remedy: {err}");
+    }
+
+    #[test]
+    fn union_plus_halton_is_rejected() {
+        let err = parse_comprehension_text(
+            "k in 10, l in 100, k in 200, l in 400 order halton/64"
+        ).unwrap_err();
+        assert!(err.contains("'halton'") && err.contains("Union"), "{err}");
+    }
+
+    #[test]
+    fn union_plus_shells_is_rejected() {
+        let err = parse_comprehension_text(
+            "k in 10, k in 100 order shells/2"
+        ).unwrap_err();
+        assert!(err.contains("'shells'") && err.contains("Union"), "{err}");
+    }
+
+    #[test]
+    fn union_plus_lex_is_accepted() {
+        // lex is a stable enumeration order with no
+        // geometric reasoning — works fine on Union.
+        let comp = parse_comprehension_text(
+            "k in 10, k in 100 order lex"
+        ).unwrap();
+        assert!(comp.is_union());
+        assert!(matches!(comp.order, Some(TraversalOrder::Lex { count: None })));
+    }
+
+    #[test]
+    fn union_plus_custom_is_accepted() {
+        // custom is the escape hatch — the user's function
+        // decides what ordering means for their Union shape.
+        let comp = parse_comprehension_text(
+            "k in 10, k in 100 order custom(my_fn)"
+        ).unwrap();
+        assert!(comp.is_union());
+        assert!(matches!(comp.order, Some(TraversalOrder::Custom { .. })));
+    }
+
+    #[test]
+    fn cartesian_plus_extrema_remains_valid() {
+        // The rejection is Union-specific; Cartesian +
+        // index-space orderings have always been valid.
+        let comp = parse_comprehension_text(
+            "k in 1..10, l in 1..10 order extrema/1"
+        ).unwrap();
+        assert!(comp.is_cartesian());
+        assert!(matches!(comp.order, Some(TraversalOrder::Extrema { strata: Some(1) })));
+    }
+
+    #[test]
+    fn validate_rejects_each_index_space_strategy_on_union() {
+        // Routes through Comprehension::validate (the canonical
+        // invariant entry point) — verifies every named
+        // index-space strategy is named in the error.
+        for (label, ord) in [
+            ("reverse_lex",  TraversalOrder::ReverseLex   { count: None }),
+            ("diagonal",     TraversalOrder::Diagonal     { count: None }),
+            ("antidiagonal", TraversalOrder::Antidiagonal { count: None }),
+            ("extrema",      TraversalOrder::Extrema      { strata: None }),
+            ("shells",       TraversalOrder::Shells {
+                origin: ShellOrigin::Outer, depth: None }),
+            ("halton",       TraversalOrder::Halton       { count: None }),
+            ("sobol",        TraversalOrder::Sobol        { count: None }),
+            ("lhs",          TraversalOrder::Lhs          { count: None, seed: None }),
+        ] {
+            let comp = Comprehension::union(vec![
+                vec![Clause::new("k", "10")],
+                vec![Clause::new("k", "20")],
+            ]).with_order(ord);
+            let errs = comp.validate().unwrap_err();
+            assert!(errs.iter().any(|e| e.contains(label)),
+                "{label}: error should name the strategy: {errs:?}");
+        }
+    }
+
+    // ---- Push 2: Layer 7a parallel-iter clauses --------------
+
+    #[test]
+    fn parse_clause_parallel_two_vars() {
+        let c = parse_clause("(x, y) in (1..10, 100..1000..100)").unwrap();
+        assert!(c.is_parallel());
+        assert_eq!(c.vars, vec!["x".to_string(), "y".to_string()]);
+        match &c.source {
+            super::super::ast::ClauseSource::Parallel { exprs, .. } => {
+                assert_eq!(exprs, &vec!["1..10".to_string(), "100..1000..100".to_string()]);
+            }
+            _ => panic!("expected Parallel source"),
+        }
+    }
+
+    #[test]
+    fn parse_clause_parallel_three_vars() {
+        let c = parse_clause("(a, b, c) in (1..3, 10..30..10, 100..300..100)").unwrap();
+        assert!(c.is_parallel());
+        assert_eq!(c.vars, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn parse_clause_parallel_with_function_call_rhs() {
+        // Nested parens inside the parallel-RHS group must not
+        // confuse the splitter — the comma between fib(8) and
+        // pow2(8) is at depth 1.
+        let c = parse_clause("(x, y) in (fib(8), pow2(8))").unwrap();
+        assert!(c.is_parallel());
+        match &c.source {
+            super::super::ast::ClauseSource::Parallel { exprs, .. } => {
+                assert_eq!(exprs, &vec!["fib(8)".to_string(), "pow2(8)".to_string()]);
+            }
+            _ => panic!("expected Parallel source"),
+        }
+    }
+
+    #[test]
+    fn parse_clause_paren_only_one_side_is_rejected() {
+        let err = parse_clause("(x, y) in 1..10").unwrap_err();
+        assert!(err.contains("parentheses on both sides"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_clause_parallel_count_mismatch_is_rejected() {
+        let err = parse_clause("(x, y, z) in (1..10, 1..20)").unwrap_err();
+        assert!(err.contains("3 variables but 2 expressions"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_clause_parallel_single_var_is_rejected() {
+        // `(x) in (1..10)` is malformed parallel-iter (≥ 2 vars
+        // required); use the single-var form instead.
+        let err = parse_clause("(x) in (1..10)").unwrap_err();
+        assert!(err.contains("≥ 2 variables"), "got: {err}");
+    }
+
+    #[test]
+    fn split_respects_parallel_clause_boundaries() {
+        // A parallel-iter clause followed by a single-var clause
+        // — the boundary detector must accept `(<ident>, ...) in `
+        // as the start of a new clause.
+        let s = "(x, y) in (1..2, 10..20..10), z in 100..200..100";
+        let parts = split_respecting_parens(s);
+        assert_eq!(parts.len(), 2);
+    }
+
+    #[test]
+    fn parse_clause_list_mixed_parallel_and_single() {
+        let clauses = parse_clause_list(
+            "(x, y) in (1..2, 10..20..10), z in 100..200..100"
+        ).unwrap();
+        assert_eq!(clauses.len(), 2);
+        assert!(clauses[0].is_parallel());
+        assert!(!clauses[1].is_parallel());
+        assert_eq!(clauses[1].var(), "z");
+    }
+
+    #[test]
+    fn parse_clause_parallel_invalid_var_name_is_rejected() {
+        let err = parse_clause("(x, 9b) in (1..10, 1..10)").unwrap_err();
+        assert!(err.contains("not a valid variable name"), "got: {err}");
+    }
+
+    // ---- Round-trip: Display → parse → equal AST ------------
+
+    fn roundtrip_clause(c: Clause) {
+        let text = c.to_string();
+        let reparsed = parse_clause(&text)
+            .unwrap_or_else(|e| panic!("re-parse failed for '{text}': {e}"));
+        assert_eq!(c, reparsed,
+            "round-trip diverged: original={c:?}\n  text='{text}'\n  reparsed={reparsed:?}");
+    }
+
+    #[test]
+    fn round_trip_single_var_clause() {
+        roundtrip_clause(Clause::new("k", "1..10"));
+        roundtrip_clause(Clause::new("limit", "fib(8)"));
+    }
+
+    #[test]
+    fn round_trip_parallel_strict() {
+        use super::super::ast::ZipMode;
+        roundtrip_clause(Clause::parallel(["x", "y"], ["fib(8)", "pow2(8)"]));
+        roundtrip_clause(Clause::parallel_with_mode(
+            ZipMode::Strict, ["a", "b", "c"], ["1..3", "10..30..10", "100..300..100"]
+        ));
+    }
+
+    #[test]
+    fn round_trip_parallel_truncate_and_cycle() {
+        use super::super::ast::ZipMode;
+        roundtrip_clause(Clause::parallel_with_mode(
+            ZipMode::Truncate, ["x", "y"], ["fib(8)", "pow2(4)"]
+        ));
+        roundtrip_clause(Clause::parallel_with_mode(
+            ZipMode::Cycle, ["x", "y"], ["fib(4)", "pow2(8)"]
+        ));
+    }
+
+    fn roundtrip_comprehension_text(text: &str) {
+        let parsed = parse_comprehension_text(text)
+            .unwrap_or_else(|e| panic!("parse failed for '{text}': {e}"));
+        let rendered = parsed.to_string();
+        let reparsed = parse_comprehension_text(&rendered)
+            .unwrap_or_else(|e| panic!("re-parse failed for '{rendered}' (from '{text}'): {e}"));
+        assert_eq!(parsed, reparsed,
+            "round-trip diverged for '{text}':\n  rendered='{rendered}'");
+    }
+
+    #[test]
+    fn round_trip_cartesian_comprehension() {
+        roundtrip_comprehension_text("k in 1..10");
+        roundtrip_comprehension_text("k in 1..10, limit in fib(8)");
+        roundtrip_comprehension_text("k in 1..10 where {k} > 3");
+        roundtrip_comprehension_text("k in 1..10 order extrema/2");
+        roundtrip_comprehension_text("k in 1..10, l in 1..10 where {k} != {l} order extrema/1");
+    }
+
+    #[test]
+    fn round_trip_parallel_iter_through_full_comprehension_text() {
+        roundtrip_comprehension_text("(x, y) in (fib(5), pow2(5))");
+        roundtrip_comprehension_text("(x, y) in zip_truncate(fib(8), pow2(4))");
+        roundtrip_comprehension_text(
+            "(x, y) in (fib(4), pow2(4)), z in 1..3 order extrema/1"
+        );
+    }
+
+    #[test]
+    fn parse_clause_parallel_zip_truncate_mode() {
+        use super::super::ast::{ClauseSource, ZipMode};
+        let c = parse_clause("(x, y) in zip_truncate(1..10, fib(8))").unwrap();
+        match &c.source {
+            ClauseSource::Parallel { mode, exprs } => {
+                assert_eq!(*mode, ZipMode::Truncate);
+                assert_eq!(exprs, &vec!["1..10".to_string(), "fib(8)".to_string()]);
+            }
+            _ => panic!("expected Parallel source, got {:?}", c.source),
+        }
+    }
+
+    #[test]
+    fn parse_clause_parallel_zip_cycle_mode() {
+        use super::super::ast::{ClauseSource, ZipMode};
+        let c = parse_clause("(x, y) in zip_cycle(1..10, 100..1000..100)").unwrap();
+        match &c.source {
+            ClauseSource::Parallel { mode, .. } => {
+                assert_eq!(*mode, ZipMode::Cycle);
+            }
+            _ => panic!("expected Parallel source"),
+        }
+    }
+
+    #[test]
+    fn parse_clause_parallel_default_mode_is_strict() {
+        use super::super::ast::{ClauseSource, ZipMode};
+        let c = parse_clause("(x, y) in (1..10, 100..1000..100)").unwrap();
+        match &c.source {
+            ClauseSource::Parallel { mode, .. } => {
+                assert_eq!(*mode, ZipMode::Strict);
+            }
+            _ => panic!("expected Parallel source"),
+        }
     }
 }

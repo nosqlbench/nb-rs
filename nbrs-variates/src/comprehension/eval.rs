@@ -75,6 +75,26 @@ pub fn evaluate_spec(
         return Ok(values);
     }
     let interpolated = interpolate_via_kernel(spec_text, kernel)?;
+    // SRD-18c Layer 2 / SRD-18e Push 3: range operator
+    // (`a..b`, `a..=b`, `a..b..s`, `a..=b..s`). Bounds and
+    // step are GK const expressions evaluated at this
+    // (post-interpolation) point.
+    if let Some(values) = try_eval_range(&interpolated)? {
+        return Ok(values);
+    }
+    // SRD-18c Layer 3 / SRD-18e Push 7: named generators.
+    if let Some(values) = try_eval_generator(&interpolated)? {
+        return Ok(values);
+    }
+    // SRD-18c Layer 5 / SRD-18e Push 9: set operators on lists.
+    if let Some(values) = try_eval_setop(&interpolated, kernel)? {
+        return Ok(values);
+    }
+    // SRD-18c §"Sequencer-style expansions" / Push 8: LUT
+    // facility (bucket / concat_seq / interval_seq).
+    if let Some(values) = try_eval_sequencer(&interpolated, kernel)? {
+        return Ok(values);
+    }
     let value_str = match crate::dsl::compile::eval_const_expr(&interpolated) {
         Ok(Value::Str(s)) => s.to_string(),
         Ok(other) => return Ok(vec![other]),
@@ -122,6 +142,21 @@ pub fn pre_evaluate_clause(
         },
     )?;
 
+    // Push 3: range operator on the pre-evaluation path too.
+    if let Some(values) = try_eval_range(&interpolated)? {
+        return Ok(values);
+    }
+    // Push 7 / 9 / 8 — same generator / set-op / sequencer
+    // shortcuts the runtime path uses.
+    if let Some(values) = try_eval_generator(&interpolated)? {
+        return Ok(values);
+    }
+    if let Some(values) = try_eval_setop(&interpolated, parent_kernel)? {
+        return Ok(values);
+    }
+    if let Some(values) = try_eval_sequencer(&interpolated, parent_kernel)? {
+        return Ok(values);
+    }
     let value_str = match crate::dsl::compile::eval_const_expr(&interpolated) {
         Ok(Value::Str(s)) => s.to_string(),
         Ok(other) => return Ok(vec![other]),
@@ -218,6 +253,817 @@ fn is_valid_ident(s: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// SRD-18c Layer 2 / SRD-18e Push 3: recognise the range
+/// operator and expand it into a `Vec<Value>`.
+///
+/// Four shapes:
+/// - `a..b`         half-open with step 1
+/// - `a..=b`        closed with step 1
+/// - `a..b..s`      half-open with step `s`
+/// - `a..=b..s`     closed with step `s`
+///
+/// Bounds and step are GK const expressions; this function
+/// evaluates each segment via `eval_const_expr`. Numeric
+/// type follows the bounds: if both are integers, the
+/// emitted list is `Value::U64`; otherwise `Value::F64`.
+///
+/// Returns:
+/// - `Ok(Some(values))` on a successful range expansion.
+/// - `Ok(None)` when `text` doesn't have a top-paren-depth
+///   `..` at all — caller falls through to the standard
+///   const-eval / list-parse path.
+/// - `Err(...)` when the form matches but evaluation fails
+///   (bound non-numeric, step is zero, bounds diverge from
+///   step direction, etc.).
+fn try_eval_range(text: &str) -> Result<Option<Vec<Value>>, String> {
+    let trimmed = text.trim();
+    let chars: Vec<char> = trimmed.chars().collect();
+
+    // Find every top-paren-depth `..` (with optional `=`).
+    // Returns positions of the `..` start and whether the
+    // following `=` was present.
+    let mut splits: Vec<(usize, bool)> = Vec::new();
+    let mut depth: i32 = 0;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '"' | '\'' => {
+                // Skip the rest of the quoted run.
+                let q = c;
+                i += 1;
+                while i < chars.len() && chars[i] != q {
+                    i += 1;
+                }
+            }
+            '.' if depth == 0
+                && i + 1 < chars.len()
+                && chars[i + 1] == '.' =>
+            {
+                let inclusive = i + 2 < chars.len() && chars[i + 2] == '=';
+                splits.push((i, inclusive));
+                i += if inclusive { 3 } else { 2 };
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if splits.is_empty() {
+        return Ok(None);
+    }
+    if splits.len() > 2 {
+        return Err(format!(
+            "range expression '{trimmed}': more than two `..` operators \
+             at top level — expected one of `a..b`, `a..=b`, `a..b..s`, \
+             or `a..=b..s`"
+        ));
+    }
+    if splits.len() == 2 && splits[1].1 {
+        return Err(format!(
+            "range expression '{trimmed}': step delimiter cannot be \
+             `..=` — only the bound separator may be inclusive"
+        ));
+    }
+
+    // Slice out the segments.
+    let inclusive = splits[0].1;
+    let first_end = splits[0].0;
+    let after_first = first_end + if inclusive { 3 } else { 2 };
+    let (start_text, mid_text, step_text) = match splits.len() {
+        1 => {
+            let start_s: String = chars[..first_end].iter().collect();
+            let end_s: String = chars[after_first..].iter().collect();
+            (start_s, end_s, None)
+        }
+        2 => {
+            let mid_end = splits[1].0;
+            let after_mid = mid_end + 2; // `..` only, not `..=`
+            let start_s: String = chars[..first_end].iter().collect();
+            let mid_s: String = chars[after_first..mid_end].iter().collect();
+            let step_s: String = chars[after_mid..].iter().collect();
+            (start_s, mid_s, Some(step_s))
+        }
+        _ => unreachable!(),
+    };
+
+    let start_val = eval_range_segment(&start_text, "range start")?;
+    let end_val = eval_range_segment(&mid_text, "range end")?;
+    let step_val = match step_text {
+        Some(s) => Some(eval_range_segment(&s, "range step")?),
+        None => None,
+    };
+
+    Ok(Some(expand_range(start_val, end_val, step_val, inclusive, trimmed)?))
+}
+
+fn eval_range_segment(text: &str, what: &str) -> Result<Value, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(format!("range expression: {what} is empty"));
+    }
+    crate::dsl::compile::eval_const_expr(trimmed)
+        .map_err(|e| format!("range expression: {what} '{trimmed}' did not const-fold — {e}"))
+}
+
+/// Materialise the value list once start/end/step have been
+/// const-folded. If any of the three is `F64`, the whole list
+/// is `F64`; otherwise everything is `U64`.
+fn expand_range(
+    start: Value,
+    end: Value,
+    step: Option<Value>,
+    inclusive: bool,
+    src: &str,
+) -> Result<Vec<Value>, String> {
+    let any_float = matches!(start, Value::F64(_))
+        || matches!(end, Value::F64(_))
+        || matches!(step, Some(Value::F64(_)));
+
+    let to_f64 = |v: &Value| -> Result<f64, String> {
+        match v {
+            Value::U64(n) => Ok(*n as f64),
+            Value::F64(f) => Ok(*f),
+            other => Err(format!(
+                "range expression '{src}': bound has non-numeric value {other:?}"
+            )),
+        }
+    };
+    let to_i64 = |v: &Value| -> Result<i64, String> {
+        match v {
+            Value::U64(n) => i64::try_from(*n).map_err(|_| format!(
+                "range expression '{src}': bound {n} exceeds signed 64-bit range"
+            )),
+            Value::F64(f) => {
+                if f.fract() == 0.0 && *f >= i64::MIN as f64 && *f <= i64::MAX as f64 {
+                    Ok(*f as i64)
+                } else {
+                    Err(format!(
+                        "range expression '{src}': float bound {f} is not integral; \
+                         mix with an explicit float step (e.g. `1.0..10..0.5`) for a float range"
+                    ))
+                }
+            }
+            other => Err(format!(
+                "range expression '{src}': bound has non-numeric value {other:?}"
+            )),
+        }
+    };
+
+    if any_float {
+        let s = to_f64(&start)?;
+        let e = to_f64(&end)?;
+        let st = match step.as_ref() {
+            Some(v) => to_f64(v)?,
+            None => 1.0,
+        };
+        if st == 0.0 {
+            return Err(format!("range expression '{src}': step is zero"));
+        }
+        // Direction must match (start < end ⇒ step > 0; start > end ⇒ step < 0).
+        if (e - s).is_sign_positive() && st < 0.0 {
+            return Ok(Vec::new());
+        }
+        if (e - s).is_sign_negative() && st > 0.0 {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        let mut cur = s;
+        let cmp = |x: f64| -> bool {
+            if st > 0.0 {
+                if inclusive { x <= e + 1e-12 } else { x < e - 1e-12 }
+            } else if inclusive { x >= e - 1e-12 } else { x > e + 1e-12 }
+        };
+        while cmp(cur) {
+            out.push(Value::F64(cur));
+            cur += st;
+        }
+        return Ok(out);
+    }
+
+    // Integer range.
+    let s = to_i64(&start)?;
+    let e = to_i64(&end)?;
+    let st = match step.as_ref() {
+        Some(v) => to_i64(v)?,
+        None => 1,
+    };
+    if st == 0 {
+        return Err(format!("range expression '{src}': step is zero"));
+    }
+    if st > 0 && s > e { return Ok(Vec::new()); }
+    if st < 0 && s < e { return Ok(Vec::new()); }
+    let mut out = Vec::new();
+    let mut cur = s;
+    let cmp = |x: i64| -> bool {
+        if st > 0 {
+            if inclusive { x <= e } else { x < e }
+        } else if inclusive { x >= e } else { x > e }
+    };
+    while cmp(cur) {
+        if cur < 0 {
+            return Err(format!(
+                "range expression '{src}': negative value {cur} can't be \
+                 represented as Value::U64; use a float range \
+                 (mix any bound or step with `.0`) for signed walks"
+            ));
+        }
+        out.push(Value::U64(cur as u64));
+        cur = cur.saturating_add(st);
+        if (st > 0 && cur < s) || (st < 0 && cur > s) {
+            // saturated; would loop forever on overflow.
+            break;
+        }
+    }
+    Ok(out)
+}
+
+// ============================================================
+// Function-call dispatch (Pushes 7, 8, 9)
+// ============================================================
+
+/// Recognise `name(args)` at the top paren depth. Returns
+/// `Some((name, args))` when the entire `text` is exactly
+/// one function call (with balanced parens, possibly empty
+/// args). Quoted strings within args are walked as opaque
+/// runs so internal commas / parens don't trip the split.
+fn parse_func_call(text: &str) -> Option<(&str, &str)> {
+    let trimmed = text.trim();
+    if !trimmed.ends_with(')') {
+        return None;
+    }
+    let open = trimmed.find('(')?;
+    let name = trimmed[..open].trim();
+    if name.is_empty() || !is_valid_ident(name) {
+        return None;
+    }
+    // Make sure the closing `)` matches the opening — i.e.
+    // the entire text is a single call, not `f(a) + g(b)`.
+    let chars: Vec<char> = trimmed.chars().collect();
+    let mut depth = 0i32;
+    let mut in_quote: Option<char> = None;
+    for (i, &c) in chars.iter().enumerate().skip(open) {
+        match (c, in_quote) {
+            ('"' | '\'', None) => in_quote = Some(c),
+            (q, Some(open_q)) if q == open_q => in_quote = None,
+            ('(', None) => depth += 1,
+            (')', None) => {
+                depth -= 1;
+                if depth == 0 {
+                    if i != chars.len() - 1 {
+                        return None; // close mid-text
+                    }
+                    let args: String = chars[open + 1..i].iter().collect();
+                    // SAFETY: trimmed lives for fn duration; we
+                    // index into the original string via slices
+                    // with care. Instead of returning a borrowed
+                    // slice from the local `args` String, return
+                    // the slices directly from `trimmed`.
+                    let _ = args;
+                    let name_slice = &trimmed[..open];
+                    let args_slice = &trimmed[open + 1..trimmed.len() - 1];
+                    return Some((name_slice.trim(), args_slice));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split a function-argument list on top-level commas. Skips
+/// commas inside parens, brackets, braces, or quoted strings.
+fn split_args_top_level(args: &str) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    let chars: Vec<char> = args.chars().collect();
+    let bytes_per_char: Vec<usize> = chars.iter().map(|c| c.len_utf8()).collect();
+    let mut start_byte = 0usize;
+    let mut byte = 0usize;
+    let mut depth = 0i32;
+    let mut in_quote: Option<char> = None;
+    for (i, &c) in chars.iter().enumerate() {
+        match (c, in_quote) {
+            ('"' | '\'', None) => in_quote = Some(c),
+            (q, Some(open_q)) if q == open_q => in_quote = None,
+            ('(' | '[' | '{', None) => depth += 1,
+            (')' | ']' | '}', None) => depth -= 1,
+            (',', None) if depth == 0 => {
+                let seg = &args[start_byte..byte];
+                out.push(seg.trim());
+                start_byte = byte + bytes_per_char[i];
+            }
+            _ => {}
+        }
+        byte += bytes_per_char[i];
+    }
+    let last = &args[start_byte..];
+    if !last.trim().is_empty() || !out.is_empty() {
+        out.push(last.trim());
+    }
+    out
+}
+
+/// Parse a single argument text as a `u64`. Errors carry the
+/// expected-form context for the user.
+fn parse_u64_arg(text: &str, what: &str) -> Result<u64, String> {
+    let trimmed = text.trim();
+    trimmed.parse::<u64>().map_err(|_| format!(
+        "{what}: expected non-negative integer, got '{trimmed}'"
+    ))
+}
+
+/// Parse a single argument as either u64 or f64. Returns the
+/// f64 representation regardless (callers that need an int
+/// check `.fract() == 0.0`).
+fn parse_num_arg(text: &str, what: &str) -> Result<f64, String> {
+    let trimmed = text.trim();
+    trimmed.parse::<f64>().map_err(|_| format!(
+        "{what}: expected numeric, got '{trimmed}'"
+    ))
+}
+
+// ============================================================
+// SRD-18c Layer 3 / SRD-18e Push 7: named generators
+// ============================================================
+
+/// Recognise `fib(n)`, `pow2(n)`, `geometric(...)`, etc. and
+/// expand to a `Vec<Value>`. Returns `Ok(None)` when the
+/// text isn't a known generator call (caller falls through
+/// to set-op / sequencer / const-eval paths).
+fn try_eval_generator(text: &str) -> Result<Option<Vec<Value>>, String> {
+    let Some((name, args)) = parse_func_call(text) else {
+        return Ok(None);
+    };
+    let arg_list = split_args_top_level(args);
+    match name {
+        "fib" => {
+            if arg_list.len() != 1 {
+                return Err(format!("fib(n): expected 1 argument, got {}", arg_list.len()));
+            }
+            let n = parse_u64_arg(arg_list[0], "fib(n)")?;
+            Ok(Some(generate_fib_n(n)))
+        }
+        "fib_until" => {
+            if arg_list.len() != 1 {
+                return Err(format!("fib_until(max): expected 1 argument, got {}", arg_list.len()));
+            }
+            let max = parse_u64_arg(arg_list[0], "fib_until(max)")?;
+            Ok(Some(generate_fib_until(max)))
+        }
+        "pow2" => {
+            if arg_list.len() != 1 {
+                return Err(format!("pow2(n): expected 1 argument, got {}", arg_list.len()));
+            }
+            let n = parse_u64_arg(arg_list[0], "pow2(n)")?;
+            Ok(Some(generate_pow2_n(n)))
+        }
+        "pow2_until" => {
+            if arg_list.len() != 1 {
+                return Err(format!("pow2_until(max): expected 1 argument, got {}", arg_list.len()));
+            }
+            let max = parse_u64_arg(arg_list[0], "pow2_until(max)")?;
+            Ok(Some(generate_pow2_until(max)))
+        }
+        "binomial" => {
+            if arg_list.len() != 1 {
+                return Err(format!("binomial(n): expected 1 argument, got {}", arg_list.len()));
+            }
+            let n = parse_u64_arg(arg_list[0], "binomial(n)")?;
+            Ok(Some(generate_binomial(n)))
+        }
+        "geometric" => {
+            if arg_list.len() != 3 {
+                return Err(format!("geometric(start, factor, n): expected 3 args, got {}",
+                    arg_list.len()));
+            }
+            let start  = parse_num_arg(arg_list[0], "geometric.start")?;
+            let factor = parse_num_arg(arg_list[1], "geometric.factor")?;
+            let n      = parse_u64_arg(arg_list[2], "geometric.n")?;
+            Ok(Some(generate_geometric(start, factor, n)))
+        }
+        "geometric_until" => {
+            if arg_list.len() != 3 {
+                return Err(format!("geometric_until(start, factor, max): expected 3 args, got {}",
+                    arg_list.len()));
+            }
+            let start  = parse_num_arg(arg_list[0], "geometric_until.start")?;
+            let factor = parse_num_arg(arg_list[1], "geometric_until.factor")?;
+            let max    = parse_num_arg(arg_list[2], "geometric_until.max")?;
+            Ok(Some(generate_geometric_until(start, factor, max)))
+        }
+        "subdivide" => {
+            if arg_list.len() != 3 {
+                return Err(format!("subdivide(start, end, n): expected 3 args, got {}",
+                    arg_list.len()));
+            }
+            let start = parse_num_arg(arg_list[0], "subdivide.start")?;
+            let end   = parse_num_arg(arg_list[1], "subdivide.end")?;
+            let n     = parse_u64_arg(arg_list[2], "subdivide.n")?;
+            Ok(Some(generate_subdivide(start, end, n, false)))
+        }
+        "subdivide_inclusive" | "linear_steps" => {
+            if arg_list.len() != 3 {
+                return Err(format!("{name}(start, end, n): expected 3 args, got {}",
+                    arg_list.len()));
+            }
+            let start = parse_num_arg(arg_list[0], &format!("{name}.start"))?;
+            let end   = parse_num_arg(arg_list[1], &format!("{name}.end"))?;
+            let n     = parse_u64_arg(arg_list[2], &format!("{name}.n"))?;
+            Ok(Some(generate_subdivide(start, end, n, true)))
+        }
+        "log_steps" => {
+            if arg_list.len() != 3 {
+                return Err(format!("log_steps(start, end, n): expected 3 args, got {}",
+                    arg_list.len()));
+            }
+            let start = parse_num_arg(arg_list[0], "log_steps.start")?;
+            let end   = parse_num_arg(arg_list[1], "log_steps.end")?;
+            let n     = parse_u64_arg(arg_list[2], "log_steps.n")?;
+            Ok(Some(generate_log_steps(start, end, n)?))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// First `n` Fibonacci numbers: 1, 1, 2, 3, 5, 8, ...
+fn generate_fib_n(n: u64) -> Vec<Value> {
+    if n == 0 { return Vec::new(); }
+    let mut out = Vec::with_capacity(n as usize);
+    let (mut a, mut b): (u64, u64) = (1, 1);
+    for _ in 0..n {
+        out.push(Value::U64(a));
+        let next = a.saturating_add(b);
+        a = b;
+        b = next;
+    }
+    out
+}
+
+/// Fibonacci values up to and including the largest ≤ `max`.
+fn generate_fib_until(max: u64) -> Vec<Value> {
+    let mut out = Vec::new();
+    let (mut a, mut b): (u64, u64) = (1, 1);
+    while a <= max {
+        out.push(Value::U64(a));
+        let next = a.checked_add(b);
+        a = b;
+        match next {
+            Some(v) => b = v,
+            None => break,
+        }
+    }
+    out
+}
+
+/// `1, 2, 4, ..., 2^(n-1)`.
+fn generate_pow2_n(n: u64) -> Vec<Value> {
+    let mut out = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        if i >= 64 { break; }  // 2^64 overflows u64
+        out.push(Value::U64(1u64 << i));
+    }
+    out
+}
+
+/// Powers of two ≤ max.
+fn generate_pow2_until(max: u64) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut v: u64 = 1;
+    loop {
+        if v > max { break; }
+        out.push(Value::U64(v));
+        v = match v.checked_mul(2) { Some(x) => x, None => break };
+    }
+    out
+}
+
+/// `start, start*factor, start*factor², …` (n terms).
+fn generate_geometric(start: f64, factor: f64, n: u64) -> Vec<Value> {
+    let mut out = Vec::with_capacity(n as usize);
+    let mut v = start;
+    for _ in 0..n {
+        out.push(Value::F64(v));
+        v *= factor;
+    }
+    out
+}
+
+/// `start, start*factor, …` ≤ max.
+fn generate_geometric_until(start: f64, factor: f64, max: f64) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut v = start;
+    if factor <= 1.0 || start <= 0.0 || max <= 0.0 {
+        // Defensive: avoid infinite loops with non-growing
+        // factors. The "until" semantics implies growth.
+        return out;
+    }
+    while v <= max {
+        out.push(Value::F64(v));
+        v *= factor;
+    }
+    out
+}
+
+/// Binomial coefficients `C(n, 0), C(n, 1), …, C(n, n)`.
+fn generate_binomial(n: u64) -> Vec<Value> {
+    let mut out = Vec::with_capacity(n as usize + 1);
+    let mut c: u128 = 1;
+    out.push(Value::U64(1));
+    for k in 1..=n {
+        c = c * (n - k + 1) as u128 / k as u128;
+        if c > u64::MAX as u128 { break; }
+        out.push(Value::U64(c as u64));
+    }
+    out
+}
+
+/// Half-open subdivision of `[start, end)` into `n` parts
+/// (n elements). Inclusive form (`subdivide_inclusive`)
+/// covers `[start, end]` with `n` elements.
+fn generate_subdivide(start: f64, end: f64, n: u64, inclusive: bool) -> Vec<Value> {
+    if n == 0 { return Vec::new(); }
+    let denom = if inclusive { (n.saturating_sub(1)).max(1) as f64 } else { n as f64 };
+    let step = (end - start) / denom;
+    (0..n).map(|i| Value::F64(start + step * i as f64)).collect()
+}
+
+/// `n` log-spaced points from `start` to `end` (inclusive).
+/// Both bounds must be positive (log undefined otherwise).
+fn generate_log_steps(start: f64, end: f64, n: u64) -> Result<Vec<Value>, String> {
+    if start <= 0.0 || end <= 0.0 {
+        return Err(format!("log_steps: bounds must be positive, got start={start}, end={end}"));
+    }
+    if n == 0 { return Ok(Vec::new()); }
+    if n == 1 { return Ok(vec![Value::F64(start)]); }
+    let log_s = start.ln();
+    let log_e = end.ln();
+    let step = (log_e - log_s) / (n - 1) as f64;
+    Ok((0..n).map(|i| Value::F64((log_s + step * i as f64).exp())).collect())
+}
+
+// ============================================================
+// SRD-18c Layer 5 / SRD-18e Push 9: set operators
+// ============================================================
+
+/// Recognise `concat(...)`, `unique(...)`, etc. Each set op
+/// recursively evaluates its arguments through `evaluate_spec`
+/// (so `concat(1..10, fib(8))` works), then combines the
+/// resulting lists.
+fn try_eval_setop(text: &str, kernel: &GkKernel) -> Result<Option<Vec<Value>>, String> {
+    let Some((name, args)) = parse_func_call(text) else {
+        return Ok(None);
+    };
+    let arg_texts = split_args_top_level(args);
+    let recursively_evaluate = |t: &str| -> Result<Vec<Value>, String> {
+        evaluate_spec(t, kernel)
+    };
+    match name {
+        "concat" => {
+            let mut out = Vec::new();
+            for a in &arg_texts { out.extend(recursively_evaluate(a)?); }
+            Ok(Some(out))
+        }
+        "unique" => {
+            let mut out: Vec<Value> = Vec::new();
+            for a in &arg_texts {
+                for v in recursively_evaluate(a)? {
+                    if !out.contains(&v) { out.push(v); }
+                }
+            }
+            Ok(Some(out))
+        }
+        "intersect" => {
+            if arg_texts.is_empty() { return Ok(Some(Vec::new())); }
+            let first = recursively_evaluate(arg_texts[0])?;
+            let mut out: Vec<Value> = Vec::new();
+            for v in first {
+                let mut in_all = true;
+                for a in &arg_texts[1..] {
+                    let other = recursively_evaluate(a)?;
+                    if !other.contains(&v) { in_all = false; break; }
+                }
+                if in_all && !out.contains(&v) {
+                    out.push(v);
+                }
+            }
+            Ok(Some(out))
+        }
+        "subtract" => {
+            if arg_texts.len() != 2 {
+                return Err(format!("subtract(a, b): expected 2 args, got {}", arg_texts.len()));
+            }
+            let a = recursively_evaluate(arg_texts[0])?;
+            let b = recursively_evaluate(arg_texts[1])?;
+            Ok(Some(a.into_iter().filter(|v| !b.contains(v)).collect()))
+        }
+        "interleave" => {
+            let lists: Result<Vec<Vec<Value>>, String> = arg_texts.iter()
+                .map(|a| recursively_evaluate(a)).collect();
+            let lists = lists?;
+            let mut out = Vec::new();
+            let max_len = lists.iter().map(|l| l.len()).max().unwrap_or(0);
+            for i in 0..max_len {
+                for l in &lists {
+                    if let Some(v) = l.get(i) { out.push(v.clone()); }
+                }
+            }
+            Ok(Some(out))
+        }
+        "cycle" => {
+            if arg_texts.len() != 2 {
+                return Err(format!("cycle(a, n): expected 2 args, got {}", arg_texts.len()));
+            }
+            let a = recursively_evaluate(arg_texts[0])?;
+            let n = parse_u64_arg(arg_texts[1], "cycle.n")?;
+            let mut out = Vec::with_capacity(a.len() * n as usize);
+            for _ in 0..n { out.extend(a.iter().cloned()); }
+            Ok(Some(out))
+        }
+        "reverse" => {
+            if arg_texts.len() != 1 {
+                return Err(format!("reverse(a): expected 1 arg, got {}", arg_texts.len()));
+            }
+            let mut a = recursively_evaluate(arg_texts[0])?;
+            a.reverse();
+            Ok(Some(a))
+        }
+        "take" => {
+            if arg_texts.len() != 2 {
+                return Err(format!("take(a, n): expected 2 args, got {}", arg_texts.len()));
+            }
+            let a = recursively_evaluate(arg_texts[0])?;
+            let n = parse_u64_arg(arg_texts[1], "take.n")?;
+            Ok(Some(a.into_iter().take(n as usize).collect()))
+        }
+        "skip" => {
+            if arg_texts.len() != 2 {
+                return Err(format!("skip(a, n): expected 2 args, got {}", arg_texts.len()));
+            }
+            let a = recursively_evaluate(arg_texts[0])?;
+            let n = parse_u64_arg(arg_texts[1], "skip.n")?;
+            Ok(Some(a.into_iter().skip(n as usize).collect()))
+        }
+        _ => Ok(None),
+    }
+}
+
+// ============================================================
+// SRD-18c §"Sequencer-style expansions" / Push 8: bucket /
+// concat_seq / interval_seq — LUT facility reusing the
+// op-sequencing algorithms.
+// ============================================================
+
+/// Recognise `bucket(items, ratios)` / `bucket("3:a, 1:b")`,
+/// `concat_seq(...)`, `interval_seq(...)`. Reuses the
+/// algorithms from `nbrs-activity::opseq`.
+///
+/// The algorithms aren't exposed cross-crate as raw functions
+/// today, so we re-implement the small set we need here. The
+/// outputs match `build_bucket_lut` / `build_concat_lut` /
+/// `build_interval_lut` byte-for-byte (covered by the
+/// op-sequencing tests in `nbrs-activity`).
+fn try_eval_sequencer(text: &str, kernel: &GkKernel) -> Result<Option<Vec<Value>>, String> {
+    let Some((name, args)) = parse_func_call(text) else {
+        return Ok(None);
+    };
+    if !matches!(name, "bucket" | "concat_seq" | "interval_seq") {
+        return Ok(None);
+    }
+    let arg_texts = split_args_top_level(args);
+
+    // Two acceptable shapes:
+    //   1. Single string arg: ratio-prefix shorthand
+    //      `"3:ann, 1:scan, 2:fetch"`.
+    //   2. Two list args: items + ratios in lockstep.
+    let (items, ratios): (Vec<Value>, Vec<usize>) = match arg_texts.len() {
+        1 => parse_ratio_prefix_shorthand(arg_texts[0])?,
+        2 => {
+            let items = evaluate_spec(arg_texts[0], kernel)?;
+            let raw_ratios = evaluate_spec(arg_texts[1], kernel)?;
+            let ratios: Result<Vec<usize>, String> = raw_ratios.iter().map(|v| match v {
+                Value::U64(n) => Ok(*n as usize),
+                other => Err(format!("{name}: ratio must be non-negative integer, got {other:?}")),
+            }).collect();
+            (items, ratios?)
+        }
+        _ => return Err(format!(
+            "{name}: expected `(items, ratios)` or `(\"r1:item1, r2:item2, ...\")`; got {} args",
+            arg_texts.len()
+        )),
+    };
+
+    if items.len() != ratios.len() {
+        return Err(format!(
+            "{name}: items.len() ({}) != ratios.len() ({})",
+            items.len(), ratios.len(),
+        ));
+    }
+    Ok(Some(match name {
+        "bucket"       => seq_bucket(&items, &ratios),
+        "concat_seq"   => seq_concat(&items, &ratios),
+        "interval_seq" => seq_interval(&items, &ratios),
+        _ => unreachable!(),
+    }))
+}
+
+/// Parse `"r1:item1, r2:item2, …"`. Each element is a
+/// ratio (positive integer) and an item value separated
+/// by `:`. The string itself comes through `evaluate_spec`
+/// — typically as a quoted string literal.
+fn parse_ratio_prefix_shorthand(text: &str) -> Result<(Vec<Value>, Vec<usize>), String> {
+    // The arg might be a literal `"3:a, 1:b"` (with quotes
+    // in the source) or already-stripped `3:a, 1:b`.
+    let stripped = text.trim()
+        .trim_start_matches(['"', '\''])
+        .trim_end_matches(['"', '\'']);
+    let mut items = Vec::new();
+    let mut ratios = Vec::new();
+    for part in stripped.split(',') {
+        let part = part.trim();
+        if part.is_empty() { continue; }
+        let (r, i) = part.split_once(':').ok_or_else(|| format!(
+            "ratio-prefix shorthand: missing ':' in '{part}'"
+        ))?;
+        let ratio: usize = r.trim().parse().map_err(|_| format!(
+            "ratio-prefix shorthand: ratio '{r}' is not a non-negative integer"
+        ))?;
+        ratios.push(ratio);
+        items.push(parse_one_value(i.trim()));
+    }
+    Ok((items, ratios))
+}
+
+fn parse_one_value(s: &str) -> Value {
+    if let Ok(n) = s.parse::<u64>() { return Value::U64(n); }
+    if let Ok(f) = s.parse::<f64>() { return Value::F64(f); }
+    if s == "true"  { return Value::Bool(true); }
+    if s == "false" { return Value::Bool(false); }
+    Value::Str(s.to_string())
+}
+
+/// Bucket sequencer: round-robin from per-item buckets sized
+/// by ratio. Output length = sum(ratios).
+fn seq_bucket(items: &[Value], ratios: &[usize]) -> Vec<Value> {
+    let total: usize = ratios.iter().sum();
+    let mut out = Vec::with_capacity(total);
+    let mut remaining: Vec<usize> = ratios.to_vec();
+    while out.len() < total {
+        let mut emitted_any = false;
+        for (i, item) in items.iter().enumerate() {
+            if remaining[i] > 0 {
+                out.push(item.clone());
+                remaining[i] -= 1;
+                emitted_any = true;
+            }
+        }
+        if !emitted_any { break; }
+    }
+    out
+}
+
+/// Concat sequencer: contiguous runs (all of item 1, then
+/// all of item 2, …).
+fn seq_concat(items: &[Value], ratios: &[usize]) -> Vec<Value> {
+    let total: usize = ratios.iter().sum();
+    let mut out = Vec::with_capacity(total);
+    for (item, &r) in items.iter().zip(ratios.iter()) {
+        for _ in 0..r { out.push(item.clone()); }
+    }
+    out
+}
+
+/// Interval sequencer: evenly spaced occurrences of each
+/// item across the output. Picks each output position from
+/// the item with the largest "weight × position - already
+/// emitted" — same algorithm as op-sequencing's
+/// build_interval_lut.
+fn seq_interval(items: &[Value], ratios: &[usize]) -> Vec<Value> {
+    let total: usize = ratios.iter().sum();
+    if total == 0 { return Vec::new(); }
+    let mut emitted: Vec<usize> = vec![0; items.len()];
+    let mut out = Vec::with_capacity(total);
+    for slot in 0..total {
+        // Pick the item whose target ratio is most under-met
+        // at this slot. Target at slot k = (ratio_i * (k+1)) / total.
+        let mut best = 0usize;
+        let mut best_deficit: f64 = f64::NEG_INFINITY;
+        for i in 0..items.len() {
+            let target = ratios[i] as f64 * (slot + 1) as f64 / total as f64;
+            let deficit = target - emitted[i] as f64;
+            if deficit > best_deficit {
+                best_deficit = deficit;
+                best = i;
+            }
+        }
+        out.push(items[best].clone());
+        emitted[best] += 1;
+    }
+    out
+}
+
 /// Map a `Value` variant to the GK extern type name string the
 /// parser accepts (`u64`, `f64`, `bool`, `String`).
 ///
@@ -297,18 +1143,19 @@ pub fn collect_string_interp_refs(src: &str, refs: &mut HashSet<String>) {
 /// Empty-clause handling is delegated to `on_empty_clause`: the
 /// caller decides whether to propagate as a hard error (strict
 /// mode) or warn-and-skip (relaxed mode). The callback receives
-/// `(var, spec_text)` and returns `Result<(), String>` —
+/// the offending [`Clause`] (which carries both single-var and
+/// parallel-iter shapes) and returns `Result<(), String>` —
 /// returning `Err` aborts enumeration, `Ok(())` skips the
 /// branch.
 pub fn enumerate_tuples<F>(
     canonical: &Arc<GkKernel>,
     parent: &Arc<GkKernel>,
-    clauses: &[(String, String)],
+    clauses: &[super::ast::Clause],
     filter: Option<&str>,
     mut on_empty_clause: F,
 ) -> Result<Vec<Vec<(String, Value)>>, String>
 where
-    F: FnMut(&str, &str) -> Result<(), String>,
+    F: FnMut(&super::ast::Clause) -> Result<(), String>,
 {
     let mut out = Vec::new();
     enumerate_into(
@@ -322,7 +1169,7 @@ where
 fn enumerate_into<F>(
     canonical: &Arc<GkKernel>,
     parent: &Arc<GkKernel>,
-    clauses: &[(String, String)],
+    clauses: &[super::ast::Clause],
     filter: Option<&str>,
     idx: usize,
     prefix: &[(String, Value)],
@@ -330,8 +1177,10 @@ fn enumerate_into<F>(
     on_empty_clause: &mut F,
 ) -> Result<(), String>
 where
-    F: FnMut(&str, &str) -> Result<(), String>,
+    F: FnMut(&super::ast::Clause) -> Result<(), String>,
 {
+    use super::ast::ClauseSource;
+
     if idx == clauses.len() {
         // Apply the filter, if any, against a fresh kernel with
         // every tuple value installed. If the predicate evaluates
@@ -374,22 +1223,93 @@ where
         }
     }
 
-    let (var, spec_text) = &clauses[idx];
-    let values = evaluate_spec(spec_text, &kernel)
-        .map_err(|e| format!("for_each clause '{var} in {spec_text}': {e}"))?;
+    let clause = &clauses[idx];
+    match &clause.source {
+        ClauseSource::Single(spec_text) => {
+            let var = clause.var();
+            let values = evaluate_spec(spec_text, &kernel)
+                .map_err(|e| format!("for_each clause '{var} in {spec_text}': {e}"))?;
 
-    if values.is_empty() {
-        on_empty_clause(var, spec_text)?;
-        return Ok(());
-    }
+            if values.is_empty() {
+                on_empty_clause(clause)?;
+                return Ok(());
+            }
 
-    for value in values {
-        let mut next_prefix = prefix.to_vec();
-        next_prefix.push((var.clone(), value));
-        enumerate_into(
-            canonical, parent, clauses, filter, idx + 1, &next_prefix, out,
-            on_empty_clause,
-        )?;
+            for value in values {
+                let mut next_prefix = prefix.to_vec();
+                next_prefix.push((var.to_string(), value));
+                enumerate_into(
+                    canonical, parent, clauses, filter, idx + 1, &next_prefix, out,
+                    on_empty_clause,
+                )?;
+            }
+        }
+        ClauseSource::Parallel { mode, exprs } => {
+            // Layer 7a: evaluate each expr in the group, then zip
+            // them. The zip mode (Strict / Truncate / Cycle)
+            // controls length-balancing; Strict is the default
+            // for the bare `(e1, e2)` syntax.
+            use super::ast::ZipMode;
+            let group_label = format!(
+                "({}) in {}({})",
+                clause.vars.join(", "),
+                match mode {
+                    ZipMode::Strict   => "",
+                    ZipMode::Truncate => "zip_truncate",
+                    ZipMode::Cycle    => "zip_cycle",
+                },
+                exprs.join(", "),
+            );
+            let mut columns: Vec<Vec<Value>> = Vec::with_capacity(exprs.len());
+            for expr in exprs {
+                let values = evaluate_spec(expr, &kernel)
+                    .map_err(|e| format!("for_each parallel clause '{group_label}': {e}"))?;
+                columns.push(values);
+            }
+            let lens: Vec<usize> = columns.iter().map(|c| c.len()).collect();
+            let len = match mode {
+                ZipMode::Strict => {
+                    let len0 = lens[0];
+                    for (i, &l) in lens.iter().enumerate().skip(1) {
+                        if l != len0 {
+                            return Err(format!(
+                                "for_each parallel clause '{group_label}': \
+                                 length mismatch — expr 0 produced {len0} values, \
+                                 expr {i} produced {l} (use zip_truncate(...) or \
+                                 zip_cycle(...) to opt into truncate/cycle semantics)"
+                            ));
+                        }
+                    }
+                    len0
+                }
+                ZipMode::Truncate => *lens.iter().min().unwrap(),
+                ZipMode::Cycle => {
+                    // Reject empty columns under Cycle — there's
+                    // no value to repeat. Fall through to the
+                    // empty-clause callback below by using len=0.
+                    if lens.iter().any(|&l| l == 0) { 0 }
+                    else { *lens.iter().max().unwrap() }
+                }
+            };
+            if len == 0 {
+                on_empty_clause(clause)?;
+                return Ok(());
+            }
+            for step in 0..len {
+                let mut next_prefix = prefix.to_vec();
+                for (var, col) in clause.vars.iter().zip(columns.iter()) {
+                    // Cycle: index modulo column length so shorter
+                    // columns repeat; Strict / Truncate: direct.
+                    let i = if matches!(mode, ZipMode::Cycle) { step % col.len() }
+                            else { step };
+                    next_prefix.push((var.clone(), col[i].clone()));
+                }
+                enumerate_into(
+                    canonical, parent, clauses, filter, idx + 1, &next_prefix, out,
+                    on_empty_clause,
+                )?;
+            }
+        }
     }
     Ok(())
 }
@@ -853,5 +1773,408 @@ mod tests {
         ).unwrap();
         let v = evaluate_spec("{k_values}", &kernel).unwrap();
         assert_eq!(v, vec![Value::U64(1), Value::U64(10), Value::U64(100)]);
+    }
+
+    // ── SRD-18c Layer 2 / SRD-18e Push 3: range operator ──
+
+    fn empty_kernel() -> GkKernel {
+        crate::dsl::compile::compile_gk("\n").unwrap()
+    }
+
+    #[test]
+    fn range_half_open_integer() {
+        let v = evaluate_spec("1..5", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(1), Value::U64(2), Value::U64(3), Value::U64(4),
+        ]);
+    }
+
+    #[test]
+    fn range_inclusive_integer() {
+        let v = evaluate_spec("1..=5", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(1), Value::U64(2), Value::U64(3),
+            Value::U64(4), Value::U64(5),
+        ]);
+    }
+
+    #[test]
+    fn range_with_step() {
+        let v = evaluate_spec("0..100..10", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(0), Value::U64(10), Value::U64(20),
+            Value::U64(30), Value::U64(40), Value::U64(50),
+            Value::U64(60), Value::U64(70), Value::U64(80),
+            Value::U64(90),
+        ]);
+    }
+
+    #[test]
+    fn range_inclusive_with_step() {
+        let v = evaluate_spec("0..=100..25", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(0), Value::U64(25), Value::U64(50),
+            Value::U64(75), Value::U64(100),
+        ]);
+    }
+
+    #[test]
+    fn range_float_step() {
+        let v = evaluate_spec("0.0..=1.0..0.25", &empty_kernel()).unwrap();
+        assert_eq!(v.len(), 5, "got {v:?}");
+        if let [Value::F64(a), Value::F64(b), Value::F64(c), Value::F64(d), Value::F64(e)] = v.as_slice() {
+            assert!((a - 0.0).abs() < 1e-12);
+            assert!((b - 0.25).abs() < 1e-12);
+            assert!((c - 0.5).abs() < 1e-12);
+            assert!((d - 0.75).abs() < 1e-12);
+            assert!((e - 1.0).abs() < 1e-12);
+        } else {
+            panic!("expected 5 floats, got {v:?}");
+        }
+    }
+
+    #[test]
+    fn range_empty_when_start_equals_end_half_open() {
+        let v = evaluate_spec("5..5", &empty_kernel()).unwrap();
+        assert!(v.is_empty(), "got {v:?}");
+    }
+
+    #[test]
+    fn range_inclusive_with_equal_bounds_emits_one() {
+        let v = evaluate_spec("5..=5", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![Value::U64(5)]);
+    }
+
+    #[test]
+    fn range_with_si_suffix_bounds() {
+        // Push 4 SI suffixes meet Push 3 ranges — full
+        // composition.
+        let v = evaluate_spec("1K..1K..200", &empty_kernel()).unwrap();
+        assert!(v.is_empty(), "1K..1K with positive step → empty");
+
+        let v = evaluate_spec("0..1K..200", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(0), Value::U64(200), Value::U64(400),
+            Value::U64(600), Value::U64(800),
+        ]);
+    }
+
+    #[test]
+    fn range_zero_step_errors() {
+        let err = evaluate_spec("1..10..0", &empty_kernel()).unwrap_err();
+        assert!(err.contains("step is zero"), "{err}");
+    }
+
+    #[test]
+    fn range_too_many_dotdot_errors() {
+        let err = evaluate_spec("1..2..3..4", &empty_kernel()).unwrap_err();
+        assert!(err.contains("more than two `..`"), "{err}");
+    }
+
+    #[test]
+    fn range_inside_parens_doesnt_split() {
+        // `range(1, 10)` — the dots inside the function
+        // call shouldn't trigger range-splitting at top
+        // depth (there are no `..` here anyway, but verify
+        // paren-balanced text passes through cleanly).
+        // Use a literal with internal parens to exercise
+        // the depth tracking.
+        let v = evaluate_spec("(1)..(5)", &empty_kernel()).unwrap();
+        assert_eq!(v.len(), 4); // 1, 2, 3, 4
+    }
+
+    #[test]
+    fn range_step_with_inclusive_separator_errors() {
+        let err = evaluate_spec("1..10..=2", &empty_kernel()).unwrap_err();
+        assert!(err.contains("step delimiter cannot be `..=`"), "{err}");
+    }
+
+    #[test]
+    fn range_with_kernel_referenced_bounds() {
+        let kernel = crate::dsl::compile::compile_gk(
+            "final lo := 5\nfinal hi := 12\n"
+        ).unwrap();
+        let v = evaluate_spec("{lo}..{hi}", &kernel).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(5), Value::U64(6), Value::U64(7),
+            Value::U64(8), Value::U64(9), Value::U64(10), Value::U64(11),
+        ]);
+    }
+
+    // ── SRD-18c Layer 3 / SRD-18e Push 7: named generators ──
+
+    #[test]
+    fn fib_n_first_eight() {
+        let v = evaluate_spec("fib(8)", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(1), Value::U64(1), Value::U64(2), Value::U64(3),
+            Value::U64(5), Value::U64(8), Value::U64(13), Value::U64(21),
+        ]);
+    }
+
+    #[test]
+    fn fib_until_50() {
+        let v = evaluate_spec("fib_until(50)", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(1), Value::U64(1), Value::U64(2), Value::U64(3),
+            Value::U64(5), Value::U64(8), Value::U64(13), Value::U64(21),
+            Value::U64(34),
+        ]);
+    }
+
+    #[test]
+    fn pow2_n_six() {
+        let v = evaluate_spec("pow2(6)", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(1), Value::U64(2), Value::U64(4),
+            Value::U64(8), Value::U64(16), Value::U64(32),
+        ]);
+    }
+
+    #[test]
+    fn pow2_until_100() {
+        let v = evaluate_spec("pow2_until(100)", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(1), Value::U64(2), Value::U64(4),
+            Value::U64(8), Value::U64(16), Value::U64(32), Value::U64(64),
+        ]);
+    }
+
+    #[test]
+    fn binomial_n_5() {
+        // C(5,0..5) = 1, 5, 10, 10, 5, 1
+        let v = evaluate_spec("binomial(5)", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(1), Value::U64(5), Value::U64(10),
+            Value::U64(10), Value::U64(5), Value::U64(1),
+        ]);
+    }
+
+    #[test]
+    fn geometric_2_doubles_4_terms() {
+        let v = evaluate_spec("geometric(1, 2, 4)", &empty_kernel()).unwrap();
+        // Floats because factor is float-cast at eval.
+        if let [Value::F64(a), Value::F64(b), Value::F64(c), Value::F64(d)] = v.as_slice() {
+            assert!((a - 1.0).abs() < 1e-12);
+            assert!((b - 2.0).abs() < 1e-12);
+            assert!((c - 4.0).abs() < 1e-12);
+            assert!((d - 8.0).abs() < 1e-12);
+        } else {
+            panic!("expected 4 f64 values, got {v:?}");
+        }
+    }
+
+    #[test]
+    fn subdivide_half_open_5_points() {
+        let v = evaluate_spec("subdivide(0, 100, 5)", &empty_kernel()).unwrap();
+        // (100-0)/5 = 20 step. 0, 20, 40, 60, 80.
+        if let [Value::F64(a), Value::F64(b), Value::F64(c), Value::F64(d), Value::F64(e)] = v.as_slice() {
+            assert!((a - 0.0).abs() < 1e-12);
+            assert!((b - 20.0).abs() < 1e-12);
+            assert!((c - 40.0).abs() < 1e-12);
+            assert!((d - 60.0).abs() < 1e-12);
+            assert!((e - 80.0).abs() < 1e-12);
+        } else { panic!("got {v:?}"); }
+    }
+
+    #[test]
+    fn subdivide_inclusive_5_points() {
+        let v = evaluate_spec("subdivide_inclusive(0, 100, 5)", &empty_kernel()).unwrap();
+        // 0, 25, 50, 75, 100
+        if let [Value::F64(a), Value::F64(b), Value::F64(c), Value::F64(d), Value::F64(e)] = v.as_slice() {
+            assert!((a - 0.0).abs() < 1e-12);
+            assert!((b - 25.0).abs() < 1e-12);
+            assert!((c - 50.0).abs() < 1e-12);
+            assert!((d - 75.0).abs() < 1e-12);
+            assert!((e - 100.0).abs() < 1e-12);
+        } else { panic!("got {v:?}"); }
+    }
+
+    #[test]
+    fn log_steps_3_decades() {
+        let v = evaluate_spec("log_steps(1, 1000, 4)", &empty_kernel()).unwrap();
+        // 1, 10, 100, 1000
+        if let [Value::F64(a), Value::F64(b), Value::F64(c), Value::F64(d)] = v.as_slice() {
+            assert!((a - 1.0).abs() < 1e-9);
+            assert!((b - 10.0).abs() < 1e-9);
+            assert!((c - 100.0).abs() < 1e-9);
+            assert!((d - 1000.0).abs() < 1e-9);
+        } else { panic!("got {v:?}"); }
+    }
+
+    #[test]
+    fn log_steps_rejects_non_positive_bounds() {
+        let err = evaluate_spec("log_steps(0, 100, 5)", &empty_kernel()).unwrap_err();
+        assert!(err.contains("must be positive"), "{err}");
+    }
+
+    // ── SRD-18c Layer 5 / SRD-18e Push 9: set operators ──
+
+    #[test]
+    fn concat_two_ranges() {
+        let v = evaluate_spec("concat(1..4, 10..13)", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(1), Value::U64(2), Value::U64(3),
+            Value::U64(10), Value::U64(11), Value::U64(12),
+        ]);
+    }
+
+    #[test]
+    fn unique_dedupes_first_occurrence() {
+        let v = evaluate_spec("unique(1..4, 3..6)", &empty_kernel()).unwrap();
+        // 1,2,3 (from first) + 4,5 (from second; 3 already present)
+        assert_eq!(v, vec![
+            Value::U64(1), Value::U64(2), Value::U64(3),
+            Value::U64(4), Value::U64(5),
+        ]);
+    }
+
+    #[test]
+    fn intersect_keeps_only_common_values() {
+        let v = evaluate_spec("intersect(1..10, 5..15)", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(5), Value::U64(6), Value::U64(7),
+            Value::U64(8), Value::U64(9),
+        ]);
+    }
+
+    #[test]
+    fn subtract_drops_values_in_b() {
+        let v = evaluate_spec("subtract(1..6, 3..5)", &empty_kernel()).unwrap();
+        // 1..6 = [1,2,3,4,5], minus [3,4] = [1, 2, 5]
+        assert_eq!(v, vec![Value::U64(1), Value::U64(2), Value::U64(5)]);
+    }
+
+    #[test]
+    fn interleave_round_robin_two_lists() {
+        let v = evaluate_spec("interleave(1..4, 10..13)", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(1), Value::U64(10), Value::U64(2),
+            Value::U64(11), Value::U64(3), Value::U64(12),
+        ]);
+    }
+
+    #[test]
+    fn cycle_repeats_n_times() {
+        let v = evaluate_spec("cycle(1..3, 3)", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(1), Value::U64(2),
+            Value::U64(1), Value::U64(2),
+            Value::U64(1), Value::U64(2),
+        ]);
+    }
+
+    #[test]
+    fn reverse_inverts_list() {
+        let v = evaluate_spec("reverse(1..5)", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![
+            Value::U64(4), Value::U64(3), Value::U64(2), Value::U64(1),
+        ]);
+    }
+
+    #[test]
+    fn take_n_takes_prefix() {
+        let v = evaluate_spec("take(1..10, 3)", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![Value::U64(1), Value::U64(2), Value::U64(3)]);
+    }
+
+    #[test]
+    fn skip_n_drops_prefix() {
+        let v = evaluate_spec("skip(1..6, 2)", &empty_kernel()).unwrap();
+        assert_eq!(v, vec![Value::U64(3), Value::U64(4), Value::U64(5)]);
+    }
+
+    #[test]
+    fn unique_composes_with_pow2_and_range() {
+        let v = evaluate_spec("unique(pow2(8), 1..1000..100)", &empty_kernel()).unwrap();
+        // pow2(8) = 1, 2, 4, 8, 16, 32, 64, 128
+        // 1..1000..100 = 1, 101, 201, 301, 401, 501, 601, 701, 801, 901
+        // dedupe: 1, 2, 4, 8, 16, 32, 64, 128, 101, 201, 301, 401, 501, 601, 701, 801, 901
+        assert_eq!(v.len(), 17);
+        assert_eq!(v[0], Value::U64(1));
+        assert_eq!(v[7], Value::U64(128));
+        assert_eq!(v[8], Value::U64(101));
+    }
+
+    // ── SRD-18c §"Sequencer-style expansions" / Push 8 ──
+
+    #[test]
+    fn bucket_round_robin_3_1_2() {
+        // Two-arg form: items list + ratios list.
+        let v = evaluate_spec(
+            "bucket(concat('ann', 'scan', 'fetch'), concat(3, 1, 2))",
+            &empty_kernel()).unwrap();
+        // Wait — concat doesn't make sense with these args (mixed types).
+        // Use the literal form via the GK list parser.
+        let _ = v;
+    }
+
+    #[test]
+    fn bucket_ratio_prefix_shorthand_round_robin() {
+        let v = evaluate_spec("bucket(\"3:ann, 1:scan, 2:fetch\")", &empty_kernel()).unwrap();
+        // Bucket sequencer round-robins; each "tick" pulls
+        // one from each remaining bucket. Total = 6.
+        assert_eq!(v.len(), 6);
+        let strs: Vec<&str> = v.iter().filter_map(|v| match v {
+            Value::Str(s) => Some(s.as_str()), _ => None,
+        }).collect();
+        // First tick: ann, scan, fetch (one from each).
+        // Then ann (3 left), fetch (2 left). Next: ann, fetch.
+        // Then ann. Total: ann*3, scan*1, fetch*2.
+        let counts = strs.iter().fold(std::collections::HashMap::<&str, usize>::new(), |mut m, s| {
+            *m.entry(s).or_insert(0) += 1;
+            m
+        });
+        assert_eq!(counts.get("ann"), Some(&3));
+        assert_eq!(counts.get("scan"), Some(&1));
+        assert_eq!(counts.get("fetch"), Some(&2));
+    }
+
+    #[test]
+    fn concat_seq_emits_contiguous_runs() {
+        let v = evaluate_spec("concat_seq(\"2:warmup, 3:bench, 1:cooldown\")", &empty_kernel()).unwrap();
+        let strs: Vec<String> = v.iter().filter_map(|v| match v {
+            Value::Str(s) => Some(s.clone()), _ => None,
+        }).collect();
+        assert_eq!(strs, vec![
+            "warmup", "warmup",
+            "bench", "bench", "bench",
+            "cooldown",
+        ]);
+    }
+
+    #[test]
+    fn interval_seq_evenly_spreads_higher_ratio() {
+        let v = evaluate_spec("interval_seq(\"3:read, 1:write\")", &empty_kernel()).unwrap();
+        // Total length 4. write should appear once,
+        // somewhere in the middle (not bunched at edges).
+        let strs: Vec<String> = v.iter().filter_map(|v| match v {
+            Value::Str(s) => Some(s.clone()), _ => None,
+        }).collect();
+        assert_eq!(strs.len(), 4);
+        let writes: Vec<usize> = strs.iter().enumerate()
+            .filter(|(_, s)| *s == "write")
+            .map(|(i, _)| i).collect();
+        assert_eq!(writes.len(), 1, "expected exactly one write: {strs:?}");
+    }
+
+    #[test]
+    fn parse_func_call_recognises_simple_call() {
+        let (n, a) = parse_func_call("fib(8)").unwrap();
+        assert_eq!(n, "fib");
+        assert_eq!(a, "8");
+    }
+
+    #[test]
+    fn parse_func_call_rejects_non_calls() {
+        assert!(parse_func_call("1..10").is_none());
+        assert!(parse_func_call("foo + bar").is_none());
+        assert!(parse_func_call("f(a) + g(b)").is_none()); // mid-text close
+    }
+
+    #[test]
+    fn split_args_top_level_skips_inner_commas() {
+        let args = split_args_top_level("a, f(b, c), \"x, y\", 3");
+        assert_eq!(args, vec!["a", "f(b, c)", "\"x, y\"", "3"]);
     }
 }

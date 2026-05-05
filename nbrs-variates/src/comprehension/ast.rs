@@ -51,31 +51,216 @@
 //! 1:1 structural mapping rather than a string-parse
 //! round-trip.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
-/// One clause of a comprehension: a variable and the
-/// expression whose value list it iterates over.
+/// One clause of a comprehension: one or more variable
+/// names paired with their source expression(s).
 ///
-/// `var` is the name bound on each iteration (becomes a
-/// scope coordinate). `expr` is the textual source — typically
-/// a `{name}` reference to a workload parameter or a literal
-/// comma list (`"1,10,100"`), but any GK-evaluable expression
-/// works; the evaluator (Phase C) interpolates parent-scope
-/// names against a sub-kernel and parses the result.
+/// **Single-var clause** (the common case): one variable
+/// binds successive values from one source list.
+/// `Clause::new("k", "1..10")` is the construction shortcut.
 ///
-/// String fields are owned because the AST gets stored on
-/// long-lived scope-tree / scenario-tree nodes; sharing
+/// **Parallel clause** (SRD-18c Layer 7a): multiple
+/// variables advance in lockstep ("zip") from multiple
+/// source expressions. `Clause::parallel(["x", "y"],
+/// ["1..10", "100..1000..100"])` builds the parallel form.
+///
+/// The string fields are owned because the AST gets stored
+/// on long-lived scope-tree / scenario-tree nodes; sharing
 /// references back into the source text would force
 /// lifetimes through every consumer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Clause {
-    pub var: String,
-    pub expr: String,
+    pub vars: Vec<String>,
+    pub source: ClauseSource,
+}
+
+/// A clause's source of values. See [`Clause`] for context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ClauseSource {
+    /// A single expression yielding `Vec<Value>`. Length
+    /// of the value list matches the iteration cardinality.
+    /// `vars.len()` is 1 for the single-var common case;
+    /// `vars.len() > 1` would mean destructure form (Layer
+    /// 7b, gated on `Value::Tuple`).
+    Single(String),
+    /// One expression per var; the sources zip in lockstep.
+    /// `vars.len() == exprs.len() ≥ 2`. Length policy is
+    /// controlled by [`ZipMode`]: strict (default) errors
+    /// on mismatch, truncate cuts to the shortest, cycle
+    /// repeats shorter sources to the longest.
+    Parallel { mode: ZipMode, exprs: Vec<String> },
+}
+
+/// Length-policy for parallel-iter clauses (SRD-18c Layer 7a).
+///
+/// Authored as the RHS form: bare parens `(e1, e2)` = strict;
+/// `zip_truncate(e1, e2)` = truncate; `zip_cycle(e1, e2)` =
+/// cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ZipMode {
+    /// Every expression must produce the same number of
+    /// values. Mismatch is an error at iteration time.
+    /// Default for the bare `(e1, e2)` syntax.
+    #[default]
+    Strict,
+    /// Truncate every expression to the length of the
+    /// shortest. The user opts in via `zip_truncate(...)`.
+    Truncate,
+    /// Cycle shorter expressions to match the longest. The
+    /// user opts in via `zip_cycle(...)`.
+    Cycle,
 }
 
 impl Clause {
+    /// Single-var construction: `Clause::new("k", "1..10")`.
+    /// Backward-compatible with the pre-Layer-7a shape — every
+    /// existing call site works unchanged.
     pub fn new(var: impl Into<String>, expr: impl Into<String>) -> Self {
-        Self { var: var.into(), expr: expr.into() }
+        Self {
+            vars: vec![var.into()],
+            source: ClauseSource::Single(expr.into()),
+        }
+    }
+
+    /// Parallel-iter construction (SRD-18c Layer 7a):
+    /// `Clause::parallel(["x", "y"], ["1..10", "fib(8)"])`.
+    /// Defaults to [`ZipMode::Strict`] — length mismatch
+    /// across the parallel group is an iteration-time error.
+    /// Use [`Clause::parallel_with_mode`] to opt into
+    /// truncate / cycle.
+    ///
+    /// Length mismatch between `vars` and `exprs` is a
+    /// programming error and panics — the parser's input
+    /// validation should catch malformed user input before
+    /// it reaches this constructor.
+    pub fn parallel(
+        vars: impl IntoIterator<Item = impl Into<String>>,
+        exprs: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        Self::parallel_with_mode(ZipMode::Strict, vars, exprs)
+    }
+
+    /// Parallel-iter construction with explicit zip mode.
+    /// See [`ZipMode`].
+    pub fn parallel_with_mode(
+        mode: ZipMode,
+        vars: impl IntoIterator<Item = impl Into<String>>,
+        exprs: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        let vars: Vec<String> = vars.into_iter().map(Into::into).collect();
+        let exprs: Vec<String> = exprs.into_iter().map(Into::into).collect();
+        assert_eq!(vars.len(), exprs.len(),
+            "Clause::parallel: vars and exprs must have equal length");
+        assert!(vars.len() >= 2,
+            "Clause::parallel: parallel form requires ≥ 2 variables (use Clause::new for single-var)");
+        Self { vars, source: ClauseSource::Parallel { mode, exprs } }
+    }
+
+    /// Single-var convenience: returns the lone variable
+    /// name when the clause is single-var. `None` for
+    /// parallel-iter forms — those have multiple names.
+    pub fn single_var(&self) -> Option<&str> {
+        if self.vars.len() == 1 { Some(&self.vars[0]) } else { None }
+    }
+
+    /// Single-source convenience: returns the lone source
+    /// expression when the clause uses `ClauseSource::Single`.
+    /// `None` for parallel forms.
+    pub fn single_expr(&self) -> Option<&str> {
+        match &self.source {
+            ClauseSource::Single(s) => Some(s),
+            ClauseSource::Parallel { .. } => None,
+        }
+    }
+
+    /// True for parallel-iter clauses (Layer 7a).
+    pub fn is_parallel(&self) -> bool {
+        matches!(self.source, ClauseSource::Parallel { .. })
+    }
+
+    /// Backward-compat accessor: returns the first variable
+    /// name regardless of clause shape. Single-var clauses
+    /// have `vars.len() == 1`; parallel clauses have ≥ 2.
+    /// Most existing callers operate on single-var clauses
+    /// and treat parallel forms as either-or — those should
+    /// migrate to `single_var()` for explicit handling.
+    pub fn first_var(&self) -> &str {
+        &self.vars[0]
+    }
+
+    /// Convenience for single-var clauses (the historical
+    /// common case): the lone variable name. For parallel
+    /// clauses, returns the first variable's name. Most
+    /// existing call sites treat clauses as single-var; this
+    /// keeps them working with a one-line `c.var` →
+    /// `c.var()` migration.
+    pub fn var(&self) -> &str {
+        &self.vars[0]
+    }
+
+    /// Convenience for single-source clauses: the lone
+    /// source-expression text. For parallel clauses, returns
+    /// the first expression — single-var-assuming callers
+    /// see the same shape they did before Layer 7a.
+    pub fn expr(&self) -> &str {
+        match &self.source {
+            ClauseSource::Single(s) => s,
+            ClauseSource::Parallel { exprs, .. } => &exprs[0],
+        }
+    }
+
+    /// Flatten this clause to its scalar `(var, expr)` pairs.
+    ///
+    /// - **Single-var** (`vars = [v]`, `Single(s)`): returns
+    ///   `[(v, s)]`.
+    /// - **Parallel-iter** (`vars = [v0, v1, ...]`,
+    ///   `Parallel { exprs: [e0, e1, ...], .. }`): returns
+    ///   `[(v0, e0), (v1, e1), ...]`.
+    ///
+    /// One canonical place to expand the var↔expr mapping —
+    /// previously open-coded at three callers (synthesis
+    /// representative-vars expansion, runner canonical-input
+    /// declaration, runner param-ref scan).
+    pub fn scalar_bindings(&self) -> Vec<(&str, &str)> {
+        match &self.source {
+            ClauseSource::Single(s) => {
+                self.vars.iter().map(|v| (v.as_str(), s.as_str())).collect()
+            }
+            ClauseSource::Parallel { exprs, .. } => {
+                self.vars.iter().zip(exprs.iter())
+                    .map(|(v, e)| (v.as_str(), e.as_str()))
+                    .collect()
+            }
+        }
+    }
+}
+
+/// Canonical text rendering of a clause:
+/// - Single-var: `var in expr`.
+/// - Parallel-iter: `(a, b) in (e1, e2)` for [`ZipMode::Strict`],
+///   `zip_truncate(...)` / `zip_cycle(...)` for the other modes.
+///
+/// `parse_clause(&clause.to_string())` round-trips back to the
+/// same AST.
+impl fmt::Display for Clause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.source {
+            ClauseSource::Single(s) => write!(f, "{} in {}", self.vars[0], s),
+            ClauseSource::Parallel { mode, exprs } => {
+                write!(f, "({}) in ", self.vars.join(", "))?;
+                let inner = exprs.join(", ");
+                match mode {
+                    ZipMode::Strict   => write!(f, "({inner})"),
+                    ZipMode::Truncate => write!(f, "zip_truncate({inner})"),
+                    ZipMode::Cycle    => write!(f, "zip_cycle({inner})"),
+                }
+            }
+        }
     }
 }
 
@@ -89,13 +274,52 @@ pub enum ComprehensionMode {
     /// cross product. `Cartesian(vec![one_clause])` is the
     /// degenerate single-variable form (`for_each var in expr`).
     Cartesian(Vec<Clause>),
-    /// A list of sub-spaces. Each inner `Vec<Clause>` is one
-    /// sub-space (its own Cartesian list); iteration emits
-    /// each sub-space's product, concatenated in declaration
-    /// order. Variable names typically repeat across sub-spaces
-    /// so children see the same binding shape regardless of
-    /// which sub-space the current tuple came from.
-    Union(Vec<Vec<Clause>>),
+    /// A list of sub-spaces. Each [`Subspace`] is one Cartesian
+    /// list of clauses; iteration emits each sub-space's product,
+    /// concatenated in declaration order. Variable names typically
+    /// repeat across sub-spaces so children see the same binding
+    /// shape regardless of which sub-space the current tuple came
+    /// from.
+    Union(Vec<Subspace>),
+}
+
+/// One sub-space of a [`ComprehensionMode::Union`]: an ordered
+/// list of clauses whose Cartesian product is one chunk of the
+/// emitted tuple stream.
+///
+/// Wrapper struct (rather than a bare `Vec<Clause>`) so future
+/// per-subspace metadata — sub-filters, labels, ordering hints —
+/// can land additively without breaking match sites.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Subspace {
+    pub clauses: Vec<Clause>,
+}
+
+impl Subspace {
+    pub fn new(clauses: Vec<Clause>) -> Self { Self { clauses } }
+    pub fn is_empty(&self) -> bool { self.clauses.is_empty() }
+    pub fn len(&self) -> usize { self.clauses.len() }
+    pub fn iter(&self) -> std::slice::Iter<'_, Clause> { self.clauses.iter() }
+}
+
+impl<'a> IntoIterator for &'a Subspace {
+    type Item = &'a Clause;
+    type IntoIter = std::slice::Iter<'a, Clause>;
+    fn into_iter(self) -> Self::IntoIter { self.clauses.iter() }
+}
+
+impl From<Vec<Clause>> for Subspace {
+    fn from(clauses: Vec<Clause>) -> Self { Self { clauses } }
+}
+
+impl std::ops::Index<usize> for Subspace {
+    type Output = Clause;
+    fn index(&self, i: usize) -> &Clause { &self.clauses[i] }
+}
+
+impl std::ops::Deref for Subspace {
+    type Target = [Clause];
+    fn deref(&self) -> &[Clause] { &self.clauses }
 }
 
 /// Traversal order for emitted tuples. See SRD-18d.
@@ -205,6 +429,19 @@ impl Comprehension {
 
     pub fn union(subspaces: Vec<Vec<Clause>>) -> Self {
         Self {
+            mode: ComprehensionMode::Union(
+                subspaces.into_iter().map(Subspace::new).collect()
+            ),
+            filter: None,
+            order: None,
+        }
+    }
+
+    /// Construct a Union from already-wrapped [`Subspace`]
+    /// values. Use this when subspaces carry metadata; the
+    /// `union(...)` shorthand wraps bare `Vec<Clause>` lists.
+    pub fn union_from(subspaces: Vec<Subspace>) -> Self {
+        Self {
             mode: ComprehensionMode::Union(subspaces),
             filter: None,
             order: None,
@@ -242,8 +479,10 @@ impl Comprehension {
     pub fn coordinate_names(&self) -> Vec<&str> {
         let mut out: Vec<&str> = Vec::new();
         for clause in self.flat_clauses() {
-            if !out.iter().any(|n| *n == clause.var.as_str()) {
-                out.push(&clause.var);
+            for v in &clause.vars {
+                if !out.iter().any(|n| *n == v.as_str()) {
+                    out.push(v);
+                }
             }
         }
         out
@@ -262,7 +501,7 @@ impl Comprehension {
             ComprehensionMode::Union(subspaces) => {
                 let mut out = Vec::new();
                 for sub in subspaces {
-                    for clause in sub {
+                    for clause in &sub.clauses {
                         out.push(clause);
                     }
                 }
@@ -286,6 +525,176 @@ impl Comprehension {
 
     pub fn is_union(&self) -> bool {
         matches!(self.mode, ComprehensionMode::Union(_))
+    }
+
+    /// Validate the comprehension's static structure. Returns
+    /// the empty `Ok(())` if every invariant holds; otherwise
+    /// `Err(messages)` where each message names one violation.
+    ///
+    /// This is the **single** entry point for AST-shape
+    /// invariants — `parse_comprehension_text`,
+    /// workload-load, dryrun, and any future linter all route
+    /// through here so the rule set lives in exactly one place.
+    ///
+    /// Checks performed:
+    ///
+    /// 1. **Non-empty clause set.** Cartesian must have ≥ 1
+    ///    clause; Union must have ≥ 1 sub-space, each with
+    ///    ≥ 1 clause.
+    /// 2. **No coordinate-name collisions in Cartesian mode.**
+    ///    Every variable must be unique across the clause list
+    ///    (Cartesian product of two clauses with the same name
+    ///    is undefined). Union mode permits repeated names —
+    ///    that's the structural Union signal.
+    /// 3. **Order/mode compatibility.** Index-space orderings
+    ///    (reverse_lex, diagonal, antidiagonal, extrema,
+    ///    shells, halton, sobol, lhs) require a single
+    ///    Cartesian lattice — they're rejected on Union mode
+    ///    where there is no such lattice. `lex` and `custom`
+    ///    are accepted on both modes.
+    ///
+    /// Filter / parallel-iter length checks happen at iteration
+    /// time (they require evaluation, not just structure).
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors: Vec<String> = Vec::new();
+        match &self.mode {
+            ComprehensionMode::Cartesian(clauses) => {
+                if clauses.is_empty() {
+                    errors.push("Cartesian comprehension has no clauses".to_string());
+                }
+                let mut seen: Vec<&str> = Vec::new();
+                for clause in clauses {
+                    for v in &clause.vars {
+                        if seen.iter().any(|n| *n == v.as_str()) {
+                            errors.push(format!(
+                                "Cartesian comprehension repeats variable name '{v}' \
+                                 — name collision across clauses (use Union mode for \
+                                 alternative sub-spaces with shared coordinate names)"
+                            ));
+                        } else {
+                            seen.push(v.as_str());
+                        }
+                    }
+                }
+            }
+            ComprehensionMode::Union(subspaces) => {
+                if subspaces.is_empty() {
+                    errors.push("Union comprehension has no sub-spaces".to_string());
+                }
+                for (i, sub) in subspaces.iter().enumerate() {
+                    if sub.is_empty() {
+                        errors.push(format!(
+                            "Union sub-space #{i} has no clauses"
+                        ));
+                    }
+                }
+            }
+        }
+        if let Err(e) = check_order_for_mode(&self.mode, &self.order) {
+            errors.push(e);
+        }
+        if errors.is_empty() { Ok(()) } else { Err(errors) }
+    }
+}
+
+/// Order/mode compatibility check used by
+/// [`Comprehension::validate`]. SRD-18e §"Union mode +
+/// non-lex orderings" specifies the rule: every
+/// index-space strategy (`reverse_lex`, `diagonal`,
+/// `antidiagonal`, `extrema`, `shells`, `halton`, `sobol`,
+/// `lhs`) requires a single Cartesian lattice. `lex` (no
+/// geometric reasoning) and `custom` (the user's function
+/// decides) remain valid for Union mode.
+pub(crate) fn check_order_for_mode(
+    mode: &ComprehensionMode,
+    order: &Option<TraversalOrder>,
+) -> Result<(), String> {
+    let ComprehensionMode::Union(_) = mode else { return Ok(()); };
+    let Some(order) = order else { return Ok(()); };
+    let strategy_name = match order {
+        TraversalOrder::Lex { .. } => return Ok(()),
+        TraversalOrder::Custom { .. } => return Ok(()),
+        TraversalOrder::ReverseLex { .. } => "reverse_lex",
+        TraversalOrder::Diagonal { .. } => "diagonal",
+        TraversalOrder::Antidiagonal { .. } => "antidiagonal",
+        TraversalOrder::Extrema { .. } => "extrema",
+        TraversalOrder::Shells { .. } => "shells",
+        TraversalOrder::Halton { .. } => "halton",
+        TraversalOrder::Sobol { .. } => "sobol",
+        TraversalOrder::Lhs { .. } => "lhs",
+    };
+    Err(format!(
+        "ordering '{strategy_name}' has no defined behavior on Union mode \
+         (no single Cartesian lattice). Use Cartesian mode, or pick \
+         'lex' / 'custom' which are well-defined on Union."
+    ))
+}
+
+/// Canonical text rendering of a comprehension:
+/// `<clauses> [where <filter>] [order <spec>]`.
+///
+/// Cartesian: clauses are joined by `, `. Union: each
+/// sub-space is rendered as a parenthesised clause group
+/// joined by ` | ` to make the sub-space boundaries visible
+/// (the textual short-form parser detects Union via
+/// repeated-name signal, but the explicit form is what
+/// `Display` emits to keep the round-trip semantics-preserving
+/// regardless of sub-space layout).
+impl fmt::Display for Comprehension {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.mode {
+            ComprehensionMode::Cartesian(clauses) => {
+                let parts: Vec<String> = clauses.iter().map(|c| c.to_string()).collect();
+                write!(f, "{}", parts.join(", "))?;
+            }
+            ComprehensionMode::Union(subspaces) => {
+                let parts: Vec<String> = subspaces.iter().map(|sub| {
+                    let inner: Vec<String> = sub.clauses.iter()
+                        .map(|c| c.to_string()).collect();
+                    inner.join(", ")
+                }).collect();
+                write!(f, "{}", parts.join(" | "))?;
+            }
+        }
+        if let Some(predicate) = &self.filter {
+            write!(f, " where {predicate}")?;
+        }
+        if let Some(order) = &self.order {
+            write!(f, " order {}", format_order(order))?;
+        }
+        Ok(())
+    }
+}
+
+/// Render a [`TraversalOrder`] as text matching
+/// [`crate::comprehension::parse::parse_order_spec`]'s
+/// accepted forms.
+fn format_order(order: &TraversalOrder) -> String {
+    fn count_suffix(n: Option<usize>) -> String {
+        n.map(|n| format!("/{n}")).unwrap_or_default()
+    }
+    match order {
+        TraversalOrder::Lex { count } => format!("lex{}", count_suffix(*count)),
+        TraversalOrder::ReverseLex { count } => format!("reverse_lex{}", count_suffix(*count)),
+        TraversalOrder::Diagonal { count } => format!("diagonal{}", count_suffix(*count)),
+        TraversalOrder::Antidiagonal { count } => format!("antidiagonal{}", count_suffix(*count)),
+        TraversalOrder::Extrema { strata } => format!("extrema{}", count_suffix(*strata)),
+        TraversalOrder::Shells { origin, depth } => {
+            let origin_part = match origin {
+                ShellOrigin::Outer => "",
+                ShellOrigin::Center => "/center",
+                ShellOrigin::Corner => "/corner",
+            };
+            format!("shells{}{}", origin_part, count_suffix(*depth))
+        }
+        TraversalOrder::Halton { count } => format!("halton{}", count_suffix(*count)),
+        TraversalOrder::Sobol { count } => format!("sobol{}", count_suffix(*count)),
+        TraversalOrder::Lhs { count, seed } => {
+            let mut s = format!("lhs{}", count_suffix(*count));
+            if let Some(k) = seed { s.push_str(&format!(" seed={k}")); }
+            s
+        }
+        TraversalOrder::Custom { function } => format!("custom({function})"),
     }
 }
 
@@ -341,5 +750,140 @@ mod tests {
             vec![Clause::new("b", "2")],
         ]);
         assert_eq!(c.coordinate_names(), vec!["a", "b"]);
+    }
+
+    // ---- Display contract ------------------------------------
+
+    #[test]
+    fn display_single_var_clause() {
+        let c = Clause::new("k", "1..10");
+        assert_eq!(c.to_string(), "k in 1..10");
+    }
+
+    #[test]
+    fn display_parallel_clause_strict() {
+        let c = Clause::parallel(["x", "y"], ["fib(8)", "pow2(8)"]);
+        assert_eq!(c.to_string(), "(x, y) in (fib(8), pow2(8))");
+    }
+
+    #[test]
+    fn display_parallel_clause_truncate() {
+        let c = Clause::parallel_with_mode(
+            ZipMode::Truncate, ["x", "y"], ["fib(8)", "pow2(4)"]
+        );
+        assert_eq!(c.to_string(), "(x, y) in zip_truncate(fib(8), pow2(4))");
+    }
+
+    #[test]
+    fn display_parallel_clause_cycle() {
+        let c = Clause::parallel_with_mode(
+            ZipMode::Cycle, ["x", "y"], ["1..4", "10..20..10"]
+        );
+        assert_eq!(c.to_string(), "(x, y) in zip_cycle(1..4, 10..20..10)");
+    }
+
+    #[test]
+    fn display_cartesian_comprehension() {
+        let c = Comprehension::cartesian(vec![
+            Clause::new("k", "1..10"),
+            Clause::new("limit", "10,20,30"),
+        ]);
+        assert_eq!(c.to_string(), "k in 1..10, limit in 10,20,30");
+    }
+
+    #[test]
+    fn display_comprehension_with_filter_and_order() {
+        let c = Comprehension::cartesian(vec![Clause::new("k", "1..10")])
+            .with_filter("{k} > 3")
+            .with_order(TraversalOrder::Extrema { strata: Some(2) });
+        assert_eq!(c.to_string(), "k in 1..10 where {k} > 3 order extrema/2");
+    }
+
+    // ---- Validate contract -----------------------------------
+
+    #[test]
+    fn validate_accepts_valid_cartesian() {
+        let c = Comprehension::cartesian(vec![
+            Clause::new("k", "1..10"),
+            Clause::new("limit", "10,20,30"),
+        ]);
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_valid_union() {
+        let c = Comprehension::union(vec![
+            vec![Clause::new("k", "10"), Clause::new("limit", "10,20")],
+            vec![Clause::new("k", "100"), Clause::new("limit", "100,200")],
+        ]);
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_empty_cartesian() {
+        let c = Comprehension::cartesian(vec![]);
+        let errs = c.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("no clauses")), "got: {errs:?}");
+    }
+
+    #[test]
+    fn validate_rejects_empty_union() {
+        let c = Comprehension::union(vec![]);
+        let errs = c.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("no sub-spaces")), "got: {errs:?}");
+    }
+
+    #[test]
+    fn validate_rejects_empty_subspace_inside_union() {
+        let c = Comprehension::union(vec![
+            vec![Clause::new("k", "10")],
+            vec![],  // empty sub-space
+        ]);
+        let errs = c.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("Union sub-space #1 has no clauses")),
+            "got: {errs:?}");
+    }
+
+    #[test]
+    fn validate_rejects_cartesian_name_collision() {
+        let c = Comprehension::cartesian(vec![
+            Clause::new("k", "10"),
+            Clause::new("k", "20"),  // same name in Cartesian
+        ]);
+        let errs = c.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("repeats variable name 'k'")),
+            "got: {errs:?}");
+    }
+
+    #[test]
+    fn validate_rejects_cartesian_collision_with_parallel_clause() {
+        let c = Comprehension::cartesian(vec![
+            Clause::parallel(["x", "y"], ["1..10", "10..100..10"]),
+            Clause::new("y", "100"),  // conflicts with parallel-group y
+        ]);
+        let errs = c.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("repeats variable name 'y'")),
+            "got: {errs:?}");
+    }
+
+    #[test]
+    fn validate_permits_repeated_names_across_union_subspaces() {
+        // Repeated `k` across sub-spaces is the structural Union
+        // signal — must NOT be rejected.
+        let c = Comprehension::union(vec![
+            vec![Clause::new("k", "10")],
+            vec![Clause::new("k", "100")],
+        ]);
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn display_union_uses_pipe_separator_per_subspace() {
+        let c = Comprehension::union(vec![
+            vec![Clause::new("k", "10"), Clause::new("limit", "10,20")],
+            vec![Clause::new("k", "100"), Clause::new("limit", "100,200")],
+        ]);
+        assert_eq!(c.to_string(),
+            "k in 10, limit in 10,20 | k in 100, limit in 100,200");
     }
 }

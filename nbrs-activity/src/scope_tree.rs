@@ -99,18 +99,18 @@ impl ScopeKind {
             ScopeKind::Scenario { name } => format!("scenario '{name}'"),
             ScopeKind::Comprehension { comprehension } => match &comprehension.mode {
                 ComprehensionMode::Cartesian(clauses) if clauses.len() == 1 => {
-                    format!("for_each {} in {}", clauses[0].var, clauses[0].expr)
+                    format!("for_each {} in {}", clauses[0].var(), clauses[0].expr())
                 }
                 ComprehensionMode::Cartesian(clauses) => {
                     let dims: Vec<String> = clauses.iter()
-                        .map(|c| format!("{} in {}", c.var, c.expr))
+                        .map(|c| format!("{} in {}", c.var(), c.expr()))
                         .collect();
                     format!("for_combinations [{}]", dims.join(", "))
                 }
                 ComprehensionMode::Union(subspaces) => {
                     let parts: Vec<String> = subspaces.iter().map(|set| {
                         let dims: Vec<String> = set.iter()
-                            .map(|c| format!("{} in {}", c.var, c.expr))
+                            .map(|c| format!("{} in {}", c.var(), c.expr()))
                             .collect();
                         format!("[{}]", dims.join(", "))
                     }).collect();
@@ -905,8 +905,7 @@ mod tests {
         // Build the for_each scope kernel as the runner would.
         let parent_manifest = crate::runner::extract_manifest(parent.program());
         let kernel = nbrs_variates::comprehension::synthesize_for_each_scope(
-            &["k".to_string()],
-            &["{k_values}".to_string()],
+            &[("k".to_string(), "{k_values}".to_string())],
             &parent_manifest,
             &parent,
             &std::collections::HashMap::new(),
@@ -964,8 +963,7 @@ mod tests {
         let parent_manifest = crate::runner::extract_manifest(parent.program());
 
         let kernel = nbrs_variates::comprehension::synthesize_for_each_scope(
-            &["k".to_string()],
-            &["{k_values}".to_string()],
+            &[("k".to_string(), "{k_values}".to_string())],
             &parent_manifest,
             &parent,
             &std::collections::HashMap::new(),
@@ -1006,8 +1004,10 @@ mod tests {
         let parent_manifest = crate::runner::extract_manifest(parent.program());
 
         let kernel = nbrs_variates::comprehension::synthesize_for_each_scope(
-            &["k".to_string(), "limit".to_string()],
-            &["{k_values}".to_string(), "{k_{k}_limits}".to_string()],
+            &[
+                ("k".to_string(),     "{k_values}".to_string()),
+                ("limit".to_string(), "{k_{k}_limits}".to_string()),
+            ],
             &parent_manifest,
             &parent,
             &std::collections::HashMap::new(),

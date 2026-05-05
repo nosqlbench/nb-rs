@@ -1159,9 +1159,11 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     let mut specs = Vec::new();
                     let mut seen = std::collections::HashSet::new();
                     for clause in comprehension.flat_clauses() {
-                        if seen.insert(clause.var.clone()) {
-                            vars.push(clause.var.clone());
-                            specs.push(clause.expr.clone());
+                        for (v, e) in clause.scalar_bindings() {
+                            if seen.insert(v.to_string()) {
+                                vars.push(v.to_string());
+                                specs.push(e.to_string());
+                            }
                         }
                     }
                     Some(InstallSpec::ForComprehension {
@@ -1244,9 +1246,10 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
 
             let result = match install_spec {
                 InstallSpec::ForComprehension { iter_vars, spec_exprs, .. } => {
+                    let bindings: Vec<(String, String)> = iter_vars.iter().cloned()
+                        .zip(spec_exprs.iter().cloned()).collect();
                     nbrs_variates::comprehension::synthesize_for_each_scope(
-                        &iter_vars,
-                        &spec_exprs,
+                        &bindings,
                         &parent_manifest,
                         &parent_kernel,
                         &workload_params,
@@ -2359,8 +2362,14 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
             match node {
                 nbrs_workload::model::ScenarioNode::Phase(_) => {}
                 nbrs_workload::model::ScenarioNode::Comprehension { comprehension, children } => {
+                    use nbrs_variates::comprehension::ClauseSource;
                     for clause in comprehension.flat_clauses() {
-                        scan_param_refs(&clause.expr, refs);
+                        match &clause.source {
+                            ClauseSource::Single(s) => scan_param_refs(s, refs),
+                            ClauseSource::Parallel { exprs, .. } => {
+                                for e in exprs { scan_param_refs(e, refs); }
+                            }
+                        }
                     }
                     scan_scenario_nodes(children, refs);
                 }
@@ -2446,10 +2455,10 @@ fn format_scenario_tree(nodes: &[nbrs_workload::model::ScenarioNode]) -> String 
             let inner = format_scenario_tree(children);
             match &comprehension.mode {
                 ComprehensionMode::Cartesian(clauses) if clauses.len() == 1 => {
-                    format!("for_each {}: [{inner}]", clauses[0].var)
+                    format!("for_each {}: [{inner}]", clauses[0].var())
                 }
                 ComprehensionMode::Cartesian(clauses) => {
-                    let vars: Vec<&str> = clauses.iter().map(|c| c.var.as_str()).collect();
+                    let vars: Vec<&str> = clauses.iter().map(|c| c.var()).collect();
                     format!("for_combinations [{}]: [{inner}]", vars.join(", "))
                 }
                 ComprehensionMode::Union(subspaces) => {

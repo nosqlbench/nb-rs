@@ -232,7 +232,9 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
             }
 
             // Check for float
+            let mut is_float = false;
             if pos < chars.len() && chars[pos] == '.' && pos + 1 < chars.len() && chars[pos + 1].is_ascii_digit() {
+                is_float = true;
                 pos += 1;
                 col += 1;
                 while pos < chars.len() && chars[pos].is_ascii_digit() {
@@ -252,12 +254,9 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                         col += 1;
                     }
                 }
-                let num: String = chars[start..pos].iter().collect();
-                let val: f64 = num.parse()
-                    .map_err(|e| format!("invalid float at line {}, col {}: {e}", span.line, span.col))?;
-                tokens.push(Token { kind: TokenKind::FloatLit(val), span });
             } else if pos < chars.len() && (chars[pos] == 'e' || chars[pos] == 'E') {
                 // Scientific notation without a decimal point: 1e10, 2E-3
+                is_float = true;
                 pos += 1;
                 col += 1;
                 if pos < chars.len() && (chars[pos] == '+' || chars[pos] == '-') {
@@ -268,16 +267,79 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                     pos += 1;
                     col += 1;
                 }
-                let num: String = chars[start..pos].iter().collect();
-                let val: f64 = num.parse()
+            }
+
+            // SRD-18c Layer 6 / SRD-18e Push 4: SI suffix
+            // literals. Suffix attaches to the just-lexed
+            // numeric literal when the next 1-2 chars form
+            // a known suffix AND the char after the suffix
+            // isn't an identifier-continuation character
+            // (so `Kilometers` stays a valid identifier
+            // following an unrelated `1`).
+            let suffix_consumed = match peek_si_suffix(&chars, pos) {
+                Some((multiplier, len, is_subunit)) => {
+                    pos += len;
+                    col += len;
+                    Some((multiplier, is_subunit))
+                }
+                None => None,
+            };
+
+            if is_float {
+                let num: String = chars[start..pos - suffix_len_consumed(suffix_consumed)]
+                    .iter().collect();
+                let mut val: f64 = num.parse()
                     .map_err(|e| format!("invalid float at line {}, col {}: {e}", span.line, span.col))?;
-                tokens.push(Token { kind: TokenKind::FloatLit(val), span });
+                if let Some((mult, is_sub)) = suffix_consumed {
+                    if is_sub {
+                        val /= mult as f64;
+                    } else {
+                        val *= mult as f64;
+                    }
+                }
+                // SI-promoted floats become U64 when the
+                // result is exactly integral (`1.5G` →
+                // 1_500_000_000 → U64) — matches SRD-18c
+                // §"Layer 6" type-resolution rule.
+                if suffix_consumed.is_some() && val.fract() == 0.0
+                    && val >= 0.0 && val <= u64::MAX as f64 {
+                    tokens.push(Token {
+                        kind: TokenKind::IntLit(val as u64),
+                        span,
+                    });
+                } else {
+                    tokens.push(Token { kind: TokenKind::FloatLit(val), span });
+                }
             } else {
                 // Skip trailing underscore separators in int literals
-                let num: String = chars[start..pos].iter().filter(|c| **c != '_').collect();
+                let num_end = pos - suffix_len_consumed(suffix_consumed);
+                let num: String = chars[start..num_end].iter()
+                    .filter(|c| **c != '_').collect();
                 let val: u64 = num.parse()
                     .map_err(|e| format!("invalid integer at line {}, col {}: {e}", span.line, span.col))?;
-                tokens.push(Token { kind: TokenKind::IntLit(val), span });
+                match suffix_consumed {
+                    Some((mult, true)) => {
+                        // Sub-unit suffix on integer →
+                        // float (`5m` = 0.005).
+                        let f = val as f64 / mult as f64;
+                        tokens.push(Token {
+                            kind: TokenKind::FloatLit(f),
+                            span,
+                        });
+                    }
+                    Some((mult, false)) => {
+                        let v = val.checked_mul(mult).ok_or_else(|| format!(
+                            "integer literal with SI suffix overflows u64 at line {}, col {}",
+                            span.line, span.col))?;
+                        tokens.push(Token {
+                            kind: TokenKind::IntLit(v),
+                            span,
+                        });
+                    }
+                    None => {
+                        tokens.push(Token { kind: TokenKind::IntLit(val), span });
+                    }
+                }
             }
             continue;
         }
@@ -419,6 +481,77 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
 
     tokens.push(Token { kind: TokenKind::Eof, span: Span { line, col } });
     Ok(tokens)
+}
+
+/// SRD-18c Layer 6 / SRD-18e Push 4: peek for an SI suffix
+/// at `pos`. Returns `Some((multiplier, len, is_subunit))`
+/// on a match, `None` otherwise.
+///
+/// Two-char binary suffixes (`Ki`, `Mi`, `Gi`, `Ti`, `Pi`)
+/// are checked first to avoid `K` greedy-eating the `K` of
+/// `Ki`. Decimal suffixes (`K`, `M`, `G`, `T`, `P`) and sub-
+/// unit suffixes (`m`, `u`, `n`) are length-1.
+///
+/// A match requires the char *after* the suffix to NOT be
+/// an identifier-continuation character — so `1Kilometers`
+/// stays as IntLit(1) + Ident("Kilometers"), not `1000000`.
+fn peek_si_suffix(chars: &[char], pos: usize) -> Option<(u64, usize, bool)> {
+    if pos >= chars.len() {
+        return None;
+    }
+    // Try 2-char binary suffixes first.
+    if pos + 1 < chars.len() && chars[pos + 1] == 'i' {
+        let mult = match chars[pos] {
+            'K' => 1u64 << 10,
+            'M' => 1u64 << 20,
+            'G' => 1u64 << 30,
+            'T' => 1u64 << 40,
+            'P' => 1u64 << 50,
+            _ => 0,
+        };
+        if mult > 0 {
+            // Check that the suffix isn't part of an identifier.
+            let next = chars.get(pos + 2);
+            if !next.is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_') {
+                return Some((mult, 2, false));
+            }
+        }
+    }
+    // 1-char decimal suffixes.
+    let (mult, is_subunit) = match chars[pos] {
+        'K' => (1_000u64, false),
+        'M' => (1_000_000u64, false),
+        'G' => (1_000_000_000u64, false),
+        'T' => (1_000_000_000_000u64, false),
+        'P' => (1_000_000_000_000_000u64, false),
+        'm' => (1_000u64, true),         // 10⁻³
+        'u' => (1_000_000u64, true),     // 10⁻⁶
+        'n' => (1_000_000_000u64, true), // 10⁻⁹
+        _ => return None,
+    };
+    let next = chars.get(pos + 1);
+    if !next.is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_') {
+        Some((mult, 1, is_subunit))
+    } else {
+        None
+    }
+}
+
+/// Length consumed for the SI suffix, or 0 when no suffix
+/// was applied. Used by the numeric-literal branch to
+/// recover the digit-only end-position when slicing the
+/// literal text out for parsing.
+fn suffix_len_consumed(suffix: Option<(u64, bool)>) -> usize {
+    match suffix {
+        // We applied either a 1-char or 2-char suffix; the
+        // caller only stored the multiplier and is_subunit
+        // pair, so we re-derive: binary multipliers (powers
+        // of 2 from 2^10 up) take 2 chars, others take 1.
+        Some((m, _)) => {
+            if m.is_power_of_two() && m >= (1 << 10) { 2 } else { 1 }
+        }
+        None => 0,
+    }
 }
 
 #[cfg(test)]
@@ -647,5 +780,113 @@ mod tests {
         assert!(matches!(tokens[1].kind, TokenKind::Slash));
         assert!(matches!(tokens[2].kind, TokenKind::Ident(ref s) if s == "b"));
         assert!(matches!(tokens[3].kind, TokenKind::Eof));
+    }
+
+    // ── SRD-18c Layer 6 / SRD-18e Push 4: SI suffixes ──
+
+    #[test]
+    fn lex_si_decimal_k_m_g_t_p() {
+        let tokens = lex("1K 1M 1G 1T 1P").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::IntLit(1_000)));
+        assert!(matches!(tokens[1].kind, TokenKind::IntLit(1_000_000)));
+        assert!(matches!(tokens[2].kind, TokenKind::IntLit(1_000_000_000)));
+        assert!(matches!(tokens[3].kind, TokenKind::IntLit(1_000_000_000_000)));
+        assert!(matches!(tokens[4].kind, TokenKind::IntLit(1_000_000_000_000_000)));
+    }
+
+    #[test]
+    fn lex_si_binary_ki_mi_gi_ti_pi() {
+        let tokens = lex("1Ki 1Mi 1Gi 1Ti 1Pi").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::IntLit(1024)));
+        assert!(matches!(tokens[1].kind, TokenKind::IntLit(1_048_576)));
+        assert!(matches!(tokens[2].kind, TokenKind::IntLit(1_073_741_824)));
+        assert!(matches!(tokens[3].kind, TokenKind::IntLit(1_099_511_627_776)));
+        assert!(matches!(tokens[4].kind, TokenKind::IntLit(1_125_899_906_842_624)));
+    }
+
+    #[test]
+    fn lex_si_subunit_m_u_n() {
+        // Sub-unit suffixes promote integer to float (5m = 0.005).
+        let tokens = lex("5m 5u 5n").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::FloatLit(v) if (v - 0.005).abs() < 1e-12));
+        assert!(matches!(tokens[1].kind, TokenKind::FloatLit(v) if (v - 0.000_005).abs() < 1e-15));
+        assert!(matches!(tokens[2].kind, TokenKind::FloatLit(v) if (v - 0.000_000_005).abs() < 1e-18));
+    }
+
+    #[test]
+    fn lex_si_float_base_with_decimal_suffix() {
+        // 1.5K = 1500, integral → IntLit per SRD-18c §"Layer 6"
+        let tokens = lex("1.5K").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::IntLit(1_500)),
+            "1.5K should be IntLit(1500), got {:?}", tokens[0].kind);
+    }
+
+    #[test]
+    fn lex_si_float_base_non_integral_stays_float() {
+        // 1.5G = 1_500_000_000.0 — integral → IntLit
+        // 1.5K = 1500 — integral → IntLit
+        // 1.25K = 1250 — integral → IntLit
+        // To force float: an irrational-result combination.
+        // 0.001K = 1.0 → still integral → IntLit. Hmm. Let's
+        // try a sub-unit float: 1.5m = 0.0015, non-integral.
+        let tokens = lex("1.5m").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::FloatLit(v) if (v - 0.0015).abs() < 1e-12));
+    }
+
+    #[test]
+    fn lex_si_kilometers_stays_identifier() {
+        // The K of `Kilometers` is followed by an
+        // identifier-cont char; suffix doesn't apply.
+        let tokens = lex("1 Kilometers").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::IntLit(1)));
+        assert!(matches!(tokens[1].kind, TokenKind::Ident(ref s) if s == "Kilometers"));
+    }
+
+    #[test]
+    fn lex_si_overflow_errors_loud() {
+        // 1P × 1000 doesn't overflow but multiplying by P
+        // a value already at u64::MAX/1000 + 1 would. Use
+        // a value that 1P would overflow: 100000P = 10^20 > u64::MAX.
+        let err = lex("100000P").unwrap_err();
+        assert!(err.contains("overflows u64"), "{err}");
+    }
+
+    #[test]
+    fn lex_si_in_range_expression() {
+        // SI literals work in range positions (SRD-18c
+        // example `1K..1M..100K`). The lexer doesn't know
+        // about ranges yet, but should produce the right
+        // numeric tokens.
+        let tokens = lex("1K..1M..100K").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::IntLit(1_000)));
+        // Token 1 is `..` (still parsed as Dot Dot in
+        // pre-Push-3 lexer, but the numeric values are right).
+        // We just verify the IntLits at positions 0, 3, 6.
+        // (Positions depend on how `..` is tokenized today;
+        // we walk the IntLits.)
+        let int_lits: Vec<u64> = tokens.iter().filter_map(|t| match &t.kind {
+            TokenKind::IntLit(v) => Some(*v),
+            _ => None,
+        }).collect();
+        assert_eq!(int_lits, vec![1_000, 1_000_000, 100_000]);
+    }
+
+    #[test]
+    fn lex_si_disambiguation_two_char_first() {
+        // `1Ki` should match the 2-char binary suffix, NOT
+        // 1-char `K` followed by `i` identifier.
+        let tokens = lex("1Ki").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::IntLit(1024)));
+        // No leftover identifier after the suffix.
+        assert!(matches!(tokens[1].kind, TokenKind::Eof));
+    }
+
+    #[test]
+    fn lex_si_followed_by_operator_applies_suffix() {
+        // `1K+5` — `K` followed by `+` (not ident-cont) → suffix applies.
+        let tokens = lex("1K+5").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::IntLit(1000)));
+        assert!(matches!(tokens[1].kind, TokenKind::Plus));
+        assert!(matches!(tokens[2].kind, TokenKind::IntLit(5)));
     }
 }

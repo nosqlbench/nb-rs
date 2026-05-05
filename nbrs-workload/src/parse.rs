@@ -433,7 +433,7 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                 //                                  → union (two
                 //                                    multi-clause
                 //                                    sub-spaces)
-                let sub_spaces: Vec<Vec<(String, String)>> = match for_each_val {
+                let sub_spaces: Vec<Vec<nbrs_variates::comprehension::Clause>> = match for_each_val {
                     JVal::String(spec) => {
                         // One sub-space per top-level clause —
                         // structural unit for the union case is
@@ -441,7 +441,7 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                         // express explicit grouping.
                         match parse_clause_list(spec) {
                             Ok(clauses) => clauses.into_iter()
-                                .map(|c| vec![(c.var, c.expr)])
+                                .map(|c| vec![c])
                                 .collect(),
                             Err(e) => {
                                 eprintln!("warning: {e}");
@@ -455,26 +455,28 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                         // within the entry, union across entries.
                         arr.iter().filter_map(|item| {
                             let s = item.as_str()?;
-                            let pairs: Vec<(String, String)> = match parse_clause_list(s) {
-                                Ok(clauses) => clauses.into_iter()
-                                    .map(|c| (c.var, c.expr))
-                                    .collect(),
+                            let clauses = match parse_clause_list(s) {
+                                Ok(clauses) => clauses,
                                 Err(e) => {
                                     eprintln!("warning: {e}");
                                     return None;
                                 }
                             };
-                            if pairs.is_empty() { None } else { Some(pairs) }
+                            if clauses.is_empty() { None } else { Some(clauses) }
                         }).collect()
                     }
                     JVal::Object(map) => {
                         // Map form is always a single sub-space
                         // (keys are unique, so no repetition is
-                        // expressible). Falls through to
-                        // cartesian below.
-                        vec![map.iter().map(|(k, v)| {
-                            (k.clone(), v.as_str().unwrap_or("").to_string())
-                        }).collect()]
+                        // expressible). Map keys can't represent
+                        // parallel-iter LHS tuples, so every entry
+                        // becomes a single-var clause.
+                        vec![map.iter().map(|(k, v)|
+                            nbrs_variates::comprehension::Clause::new(
+                                k.clone(),
+                                v.as_str().unwrap_or("").to_string(),
+                            )
+                        ).collect()]
                     }
                     _ => Vec::new(),
                 };
@@ -484,15 +486,10 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                 } else {
                     // Detection (Cartesian vs Union) lives in
                     // `comprehension_from_subspaces` — single
-                    // source of truth.
-                    let canonical_subspaces: Vec<Vec<nbrs_variates::comprehension::Clause>> =
-                        sub_spaces.into_iter().map(|set| {
-                            set.into_iter().map(|(v, e)|
-                                nbrs_variates::comprehension::Clause::new(v, e)
-                            ).collect()
-                        }).collect();
+                    // source of truth. Parallel-iter Clauses
+                    // pass through unchanged.
                     let mut comprehension = nbrs_variates::comprehension::comprehension_from_subspaces(
-                        canonical_subspaces,
+                        sub_spaces,
                     );
                     // Optional `where:` key carries a filter
                     // predicate evaluated per emitted tuple.
@@ -509,6 +506,13 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                                 Ok(o) => comprehension = comprehension.with_order(o),
                                 Err(e) => eprintln!("warning: order: {e}"),
                             }
+                        }
+                    }
+                    // Single-source invariant check — same
+                    // entry point parse_comprehension_text uses.
+                    if let Err(errs) = comprehension.validate() {
+                        for e in errs {
+                            eprintln!("warning: comprehension: {e}");
                         }
                     }
                     vec![ScenarioNode::Comprehension { comprehension, children }]
@@ -573,6 +577,11 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                     match parse_order_spec(s) {
                         Ok(o) => comprehension = comprehension.with_order(o),
                         Err(e) => eprintln!("warning: order: {e}"),
+                    }
+                }
+                if let Err(errs) = comprehension.validate() {
+                    for e in errs {
+                        eprintln!("warning: comprehension: {e}");
                     }
                 }
                 vec![ScenarioNode::Comprehension { comprehension, children }]
@@ -742,7 +751,7 @@ fn parse_combination_specs(val: &JVal) -> Vec<(String, String)> {
                 .filter_map(|item| {
                     let s = item.as_str()?;
                     match parse_clause(s) {
-                        Ok(c) => Some((c.var, c.expr)),
+                        Ok(c) => Some((c.var().to_string(), c.expr().to_string())),
                         Err(e) => {
                             eprintln!("warning: for_combinations: {e}");
                             None
@@ -757,7 +766,7 @@ fn parse_combination_specs(val: &JVal) -> Vec<(String, String)> {
         JVal::String(s) => {
             match parse_clause_list(s) {
                 Ok(clauses) => clauses.into_iter()
-                    .map(|c| (c.var, c.expr))
+                    .map(|c| (c.var().to_string(), c.expr().to_string()))
                     .collect(),
                 Err(e) => {
                     eprintln!("warning: for_combinations: {e}");

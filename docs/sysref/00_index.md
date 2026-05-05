@@ -43,6 +43,7 @@ explains the design intent behind it.
 | 18b | [Scenario Tree and Scheduler](18b_scenario_tree_and_scheduler.md) | Two-tree model, comprehension AST, kernel composition, find-by-comprehension lookup |
 | 18c | [Comprehension Syntax](18c_comprehension_syntax.md) | Layered grammar — literal lists, ranges, generators, `where` filter, SI suffixes, tuple LHS, sequencer-style LUT expansions |
 | 18d | [Comprehension Traversal Order](18d_comprehension_traversal_order.md) | Tuple emission order — lex, diagonal, extrema-first, concentric shells, low-discrepancy (Halton/Sobol/LHS), custom |
+| 18e | [Comprehension Canonical Reference](18e_comprehension_canonical_reference.md) | The contract: full AST, mode detection, coordinate-set, filter+order pipeline, index-space contract, Union+ordering rule, `where` semantics, Layer 7 extension path, per-strategy implementation status |
 | 20 | [Workload Model](20_workload_model.md) | YAML structure, ParsedOp, blocks, tags, normalization |
 | 21 | [Parameters and Bind Points](21_parameters.md) | Param resolution, bind point syntax, workload/CLI/env scoping |
 | 22 | [Op Sequencing](22_op_sequencing.md) | Stanza model, sequencer types, weighted ratios, cycle mapping |

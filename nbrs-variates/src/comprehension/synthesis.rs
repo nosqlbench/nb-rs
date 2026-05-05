@@ -78,8 +78,7 @@ use super::eval::{enumerate_tuples, pre_evaluate_clause, value_to_gk_type_name};
 /// evaluating children. See [`super::iterate`] for the
 /// one-call ergonomic that handles iteration plus binding.
 pub fn synthesize_for_each_scope(
-    iter_vars: &[String],
-    spec_exprs: &[String],
+    bindings: &[(String, String)],
     parent_manifest: &[ManifestEntry],
     parent_kernel: &GkKernel,
     workload_params: &HashMap<String, String>,
@@ -88,7 +87,14 @@ pub fn synthesize_for_each_scope(
     strict: bool,
     context: &str,
 ) -> Result<GkKernel, String> {
-    let referenced = collect_leaf_placeholders(spec_exprs);
+    // `bindings` is `[(var, spec_expr)]` per scalar variable.
+    // Parallel-iter clauses contribute one entry per
+    // `vars[i] = exprs[i]`; single-var clauses contribute one
+    // entry. Pairing the var with its spec eliminates the
+    // parallel-array hazard the previous signature carried.
+    let iter_vars: Vec<String> = bindings.iter().map(|(v, _)| v.clone()).collect();
+    let spec_exprs: Vec<String> = bindings.iter().map(|(_, e)| e.clone()).collect();
+    let referenced = collect_leaf_placeholders(&spec_exprs);
 
     let manifest_by_name: HashMap<&str, &ManifestEntry> =
         parent_manifest.iter().map(|e| (e.name.as_str(), e)).collect();
@@ -215,7 +221,7 @@ pub fn synthesize_for_each_scope(
     };
     for name in parent_program.output_names() {
         let owned = name.to_string();
-        if !cascade_external(&emitted_externs, iter_vars, &owned) { continue; }
+        if !cascade_external(&emitted_externs, &iter_vars, &owned) { continue; }
         let (node_idx, port_idx) = parent_program.resolve_output_by_index(
             parent_program.output_index(&owned).unwrap()
         );
@@ -226,7 +232,7 @@ pub fn synthesize_for_each_scope(
         inherited_names.push(owned);
     }
     for name in parent_program.input_names() {
-        if !cascade_external(&emitted_externs, iter_vars, &name) { continue; }
+        if !cascade_external(&emitted_externs, &iter_vars, &name) { continue; }
         let port_type = parent_program.input_port_type(&name)
             .unwrap_or(PortType::Str);
         let type_name = port_type_to_extern_name(port_type);
@@ -377,66 +383,65 @@ pub fn iterate(
     context: &str,
 ) -> Result<ComprehensionIter, String> {
     // Representative iter_vars + spec_exprs for synthesis.
-    // Cartesian: the flat clause list as authored.
+    // Cartesian: every (var, expr) pair from the flat clause
+    // list, expanded for parallel groups so each variable in
+    // the group contributes its own (name, expr) entry.
     // Union: dedup'd by var name with first-occurrence spec —
     // the synthesizer only consults specs for type detection,
     // and any sub-space's representative spec works.
     let representative: Vec<(String, String)> = match &comprehension.mode {
         ComprehensionMode::Cartesian(clauses) => {
-            clauses.iter().map(|c| (c.var.clone(), c.expr.clone())).collect()
+            clauses.iter()
+                .flat_map(|c| c.scalar_bindings())
+                .map(|(v, e)| (v.to_string(), e.to_string()))
+                .collect()
         }
         ComprehensionMode::Union(subspaces) => {
             let mut seen: HashSet<String> = HashSet::new();
             let mut out = Vec::new();
             for sub in subspaces {
-                for c in sub {
-                    if seen.insert(c.var.clone()) {
-                        out.push((c.var.clone(), c.expr.clone()));
+                for c in sub.iter() {
+                    for (v, e) in c.scalar_bindings() {
+                        if seen.insert(v.to_string()) {
+                            out.push((v.to_string(), e.to_string()));
+                        }
                     }
                 }
             }
             out
         }
     };
-    let iter_vars: Vec<String> = representative.iter().map(|(v, _)| v.clone()).collect();
-    let spec_exprs: Vec<String> = representative.iter().map(|(_, e)| e.clone()).collect();
-
     let parent_manifest = extract_manifest(parent.program());
     let canonical_kernel = synthesize_for_each_scope(
-        &iter_vars, &spec_exprs, &parent_manifest, parent,
+        &representative, &parent_manifest, parent,
         workload_params, gk_lib_paths, workload_dir, strict, context,
     )?;
     let canonical = Arc::new(canonical_kernel);
 
-    let strict_empty = |var: &str, spec_text: &str| -> Result<(), String> {
-        Err(format!(
-            "comprehension clause '{var} in {spec_text}' produced no values"
-        ))
+    let strict_empty = |clause: &super::ast::Clause| -> Result<(), String> {
+        Err(format!("comprehension clause '{clause}' produced no values"))
     };
 
     let filter = comprehension.filter.as_deref();
     let (mut tuples, clause_sizes): (Vec<Vec<(String, Value)>>, Vec<usize>) = match &comprehension.mode {
         ComprehensionMode::Cartesian(clauses) => {
-            let pairs: Vec<(String, String)> = clauses.iter()
-                .map(|c| (c.var.clone(), c.expr.clone())).collect();
-            // Compute per-clause sizes for the order layer.
+            // Compute per-axis cardinality for the order layer.
             // For Cartesian mode the canonical lattice cardinality
-            // equals the product of clause cardinalities.
-            let sizes = compute_clause_sizes(parent, &pairs, workload_params)?;
-            let tuples = enumerate_tuples(&canonical, parent, &pairs, filter, strict_empty)?;
+            // equals the product of axis cardinalities — a parallel
+            // group is *one* axis (zip-step count), not N.
+            let sizes = compute_clause_sizes(parent, clauses, workload_params)?;
+            let tuples = enumerate_tuples(&canonical, parent, clauses, filter, strict_empty)?;
             (tuples, sizes)
         }
         ComprehensionMode::Union(subspaces) => {
             let mut all = Vec::new();
             let mut max_sub_sizes: Vec<usize> = Vec::new();
             for sub in subspaces {
-                let pairs: Vec<(String, String)> = sub.iter()
-                    .map(|c| (c.var.clone(), c.expr.clone())).collect();
-                let sizes = compute_clause_sizes(parent, &pairs, workload_params)?;
+                let sizes = compute_clause_sizes(parent, sub, workload_params)?;
                 if sizes.iter().product::<usize>() > max_sub_sizes.iter().product::<usize>() {
                     max_sub_sizes = sizes;
                 }
-                let mut t = enumerate_tuples(&canonical, parent, &pairs, filter, strict_empty)?;
+                let mut t = enumerate_tuples(&canonical, parent, sub, filter, strict_empty)?;
                 all.append(&mut t);
             }
             (all, max_sub_sizes)
@@ -467,19 +472,57 @@ pub fn iterate(
 /// tuple count from `enumerate_tuples` is still authoritative
 /// for the order operation; sizes here just inform the
 /// geometric reasoning.
-fn compute_clause_sizes(
+/// Per-axis cardinality used as `clause_sizes` input to
+/// [`super::order::apply_order`]. Each clause contributes one
+/// axis; a parallel-iter clause is **one** axis (the zip step
+/// count under its [`super::ast::ZipMode`]), not N. See SRD-18e
+/// Push 2.
+///
+/// Made `pub(crate)` so the contract — "parallel group is one
+/// axis" — has a direct unit-test surface independent of the
+/// full iterate path.
+pub(crate) fn compute_clause_sizes(
     parent: &GkKernel,
-    clauses: &[(String, String)],
+    clauses: &[super::ast::Clause],
     workload_params: &HashMap<String, String>,
 ) -> Result<Vec<usize>, String> {
+    use super::ast::ClauseSource;
     let mut probes: HashMap<String, String> = HashMap::new();
     let mut sizes = Vec::with_capacity(clauses.len());
-    for (var, spec_text) in clauses {
-        let values = pre_evaluate_clause(spec_text, parent, workload_params, &probes)
-            .unwrap_or_default();
-        sizes.push(values.len().max(1));
-        if let Some(first) = values.into_iter().next() {
-            probes.insert(var.clone(), first.to_display_string());
+    for clause in clauses {
+        match &clause.source {
+            ClauseSource::Single(spec_text) => {
+                let values = pre_evaluate_clause(spec_text, parent, workload_params, &probes)
+                    .unwrap_or_default();
+                sizes.push(values.len().max(1));
+                if let Some(first) = values.into_iter().next() {
+                    probes.insert(clause.var().to_string(), first.to_display_string());
+                }
+            }
+            ClauseSource::Parallel { mode, exprs } => {
+                // Zip-axis cardinality depends on the zip mode:
+                // Strict / Truncate use min(len(expr_i)) (the
+                // strict case errors at iteration time if
+                // lengths actually differ); Cycle uses
+                // max(len(expr_i)).
+                use super::ast::ZipMode;
+                let mut lens: Vec<usize> = Vec::with_capacity(exprs.len());
+                for (var, expr) in clause.vars.iter().zip(exprs.iter()) {
+                    let values = pre_evaluate_clause(expr, parent, workload_params, &probes)
+                        .unwrap_or_default();
+                    lens.push(values.len());
+                    if let Some(first) = values.into_iter().next() {
+                        probes.insert(var.clone(), first.to_display_string());
+                    }
+                }
+                let card = match mode {
+                    ZipMode::Strict | ZipMode::Truncate =>
+                        lens.iter().copied().min().unwrap_or(1),
+                    ZipMode::Cycle =>
+                        lens.iter().copied().max().unwrap_or(1),
+                };
+                sizes.push(card.max(1));
+            }
         }
     }
     Ok(sizes)
@@ -874,5 +917,303 @@ mod tests {
         assert_eq!(format_workload_param_as_gk_literal("true"), "true");
         assert_eq!(format_workload_param_as_gk_literal("hello"), "\"hello\"");
         assert_eq!(format_workload_param_as_gk_literal("a\"b"), "\"a\\\"b\"");
+    }
+
+    // ---- Push 2: Layer 7a parallel-iter ----------------------
+
+    #[test]
+    fn iterate_parallel_zips_two_axes_in_lockstep() {
+        let parent = Arc::new(crate::dsl::compile::compile_gk(
+            "final xs := \"1, 2, 3\"\nfinal ys := \"10, 20, 30\"\n"
+        ).unwrap());
+        let comp = Comprehension::cartesian(vec![
+            Clause::parallel(["x", "y"], ["{xs}", "{ys}"]),
+        ]);
+        let iter = iterate(
+            &comp, &parent, &HashMap::new(),
+            Vec::new(), None, false, "test",
+        ).unwrap();
+        let yielded: Vec<(u64, u64)> = iter
+            .map(|child| (
+                child.lookup("x").unwrap().as_u64(),
+                child.lookup("y").unwrap().as_u64(),
+            ))
+            .collect();
+        // Lockstep: (1,10),(2,20),(3,30) — NOT a 3×3 product.
+        assert_eq!(yielded, vec![(1, 10), (2, 20), (3, 30)]);
+    }
+
+    #[test]
+    fn iterate_parallel_length_mismatch_errors() {
+        // Parallel-iter is strict-by-default for length: every
+        // expr in the group must produce the same number of
+        // values. This is independent of the `strict` flag,
+        // which controls empty-clause vs warn-and-skip policy.
+        let parent = Arc::new(crate::dsl::compile::compile_gk(
+            "final xs := \"1, 2, 3\"\nfinal ys := \"10, 20\"\n"
+        ).unwrap());
+        let comp = Comprehension::cartesian(vec![
+            Clause::parallel(["x", "y"], ["{xs}", "{ys}"]),
+        ]);
+        let err = match iterate(
+            &comp, &parent, &HashMap::new(),
+            Vec::new(), None, false, "test",
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("expected error, got Ok"),
+        };
+        assert!(err.contains("length mismatch"), "got: {err}");
+    }
+
+    #[test]
+    fn iterate_parallel_zip_truncate_cuts_to_shortest() {
+        use super::super::ast::ZipMode;
+        let parent = Arc::new(crate::dsl::compile::compile_gk(
+            "final xs := \"1, 2, 3, 4, 5\"\nfinal ys := \"10, 20, 30\"\n"
+        ).unwrap());
+        let comp = Comprehension::cartesian(vec![
+            Clause::parallel_with_mode(ZipMode::Truncate, ["x", "y"], ["{xs}", "{ys}"]),
+        ]);
+        let iter = iterate(
+            &comp, &parent, &HashMap::new(),
+            Vec::new(), None, false, "test",
+        ).unwrap();
+        let yielded: Vec<(u64, u64)> = iter
+            .map(|child| (
+                child.lookup("x").unwrap().as_u64(),
+                child.lookup("y").unwrap().as_u64(),
+            ))
+            .collect();
+        // ys has 3 values; xs gets truncated to match.
+        assert_eq!(yielded, vec![(1, 10), (2, 20), (3, 30)]);
+    }
+
+    #[test]
+    fn iterate_parallel_zip_cycle_repeats_shorter() {
+        use super::super::ast::ZipMode;
+        let parent = Arc::new(crate::dsl::compile::compile_gk(
+            "final xs := \"1, 2, 3, 4\"\nfinal ys := \"10, 20\"\n"
+        ).unwrap());
+        let comp = Comprehension::cartesian(vec![
+            Clause::parallel_with_mode(ZipMode::Cycle, ["x", "y"], ["{xs}", "{ys}"]),
+        ]);
+        let iter = iterate(
+            &comp, &parent, &HashMap::new(),
+            Vec::new(), None, false, "test",
+        ).unwrap();
+        let yielded: Vec<(u64, u64)> = iter
+            .map(|child| (
+                child.lookup("x").unwrap().as_u64(),
+                child.lookup("y").unwrap().as_u64(),
+            ))
+            .collect();
+        // xs has 4 values; ys cycles 10,20,10,20.
+        assert_eq!(yielded, vec![(1, 10), (2, 20), (3, 10), (4, 20)]);
+    }
+
+    // ---- compute_clause_sizes contract tests ----------------
+
+    #[test]
+    fn clause_sizes_parallel_strict_uses_min_len() {
+        let parent = Arc::new(crate::dsl::compile::compile_gk(
+            "final xs := \"1, 2, 3, 4, 5\"\nfinal ys := \"10, 20, 30\"\n"
+        ).unwrap());
+        let clauses = vec![
+            Clause::parallel(["x", "y"], ["{xs}", "{ys}"]),
+        ];
+        let sizes = compute_clause_sizes(&parent, &clauses, &HashMap::new()).unwrap();
+        // One axis, cardinality min(5, 3) = 3.
+        assert_eq!(sizes, vec![3]);
+    }
+
+    #[test]
+    fn clause_sizes_parallel_truncate_uses_min_len() {
+        use super::super::ast::ZipMode;
+        let parent = Arc::new(crate::dsl::compile::compile_gk(
+            "final xs := \"1, 2, 3, 4\"\nfinal ys := \"10, 20\"\n"
+        ).unwrap());
+        let clauses = vec![
+            Clause::parallel_with_mode(ZipMode::Truncate, ["x", "y"], ["{xs}", "{ys}"]),
+        ];
+        let sizes = compute_clause_sizes(&parent, &clauses, &HashMap::new()).unwrap();
+        assert_eq!(sizes, vec![2]);
+    }
+
+    #[test]
+    fn clause_sizes_parallel_cycle_uses_max_len() {
+        use super::super::ast::ZipMode;
+        let parent = Arc::new(crate::dsl::compile::compile_gk(
+            "final xs := \"1, 2, 3, 4\"\nfinal ys := \"10, 20\"\n"
+        ).unwrap());
+        let clauses = vec![
+            Clause::parallel_with_mode(ZipMode::Cycle, ["x", "y"], ["{xs}", "{ys}"]),
+        ];
+        let sizes = compute_clause_sizes(&parent, &clauses, &HashMap::new()).unwrap();
+        // Cycle = max(4, 2) = 4.
+        assert_eq!(sizes, vec![4]);
+    }
+
+    #[test]
+    fn clause_sizes_parallel_then_single_two_axes() {
+        let parent = Arc::new(crate::dsl::compile::compile_gk(
+            "final xs := \"1, 2, 3\"\nfinal ys := \"10, 20, 30\"\nfinal zs := \"100, 200\"\n"
+        ).unwrap());
+        let clauses = vec![
+            Clause::parallel(["x", "y"], ["{xs}", "{ys}"]),
+            Clause::new("z", "{zs}"),
+        ];
+        let sizes = compute_clause_sizes(&parent, &clauses, &HashMap::new()).unwrap();
+        // Parallel = one axis (3); z = second axis (2). NOT
+        // 3 axes — that would mean the parallel group leaked
+        // its internal vars into the lattice.
+        assert_eq!(sizes, vec![3, 2]);
+    }
+
+    // ---- Lex-default contract --------------------------------
+
+    #[test]
+    fn lex_default_emits_rightmost_varies_fastest() {
+        // `enumerate_tuples` is documented to emit Cartesian
+        // products in lex order with rightmost clause varying
+        // fastest. The whole `order:` layer assumes this — if
+        // it ever changed silently, halton/extrema/etc. would
+        // miscount lattice positions. This test pins the
+        // contract.
+        let parent = Arc::new(crate::dsl::compile::compile_gk(
+            "final xs := \"1, 2\"\nfinal ys := \"10, 20\"\nfinal zs := \"100, 200\"\n"
+        ).unwrap());
+        let comp = Comprehension::cartesian(vec![
+            Clause::new("x", "{xs}"),
+            Clause::new("y", "{ys}"),
+            Clause::new("z", "{zs}"),
+        ]);
+        let iter = iterate(
+            &comp, &parent, &HashMap::new(),
+            Vec::new(), None, false, "test",
+        ).unwrap();
+        let yielded: Vec<(u64, u64, u64)> = iter
+            .map(|child| (
+                child.lookup("x").unwrap().as_u64(),
+                child.lookup("y").unwrap().as_u64(),
+                child.lookup("z").unwrap().as_u64(),
+            ))
+            .collect();
+        // Expected: x outer, y middle, z innermost.
+        assert_eq!(yielded, vec![
+            (1, 10, 100), (1, 10, 200),
+            (1, 20, 100), (1, 20, 200),
+            (2, 10, 100), (2, 10, 200),
+            (2, 20, 100), (2, 20, 200),
+        ]);
+    }
+
+    #[test]
+    fn iterate_parallel_inside_union_subspace() {
+        // Union with two sub-spaces, each containing a
+        // parallel-iter clause. Sub-space 0 zips small values
+        // (3 steps), sub-space 1 zips big ones (2 steps).
+        // Result: 5 tuples = 3 + 2, each emitting both x and y
+        // bound from the corresponding sub-space's lockstep.
+        use super::super::ast::Subspace;
+        let parent = Arc::new(crate::dsl::compile::compile_gk(
+            concat!(
+                "final small_x := \"1, 2, 3\"\n",
+                "final small_y := \"10, 20, 30\"\n",
+                "final big_x := \"100, 200\"\n",
+                "final big_y := \"1000, 2000\"\n",
+            )
+        ).unwrap());
+        let comp = Comprehension::union_from(vec![
+            Subspace::new(vec![
+                Clause::parallel(["x", "y"], ["{small_x}", "{small_y}"]),
+            ]),
+            Subspace::new(vec![
+                Clause::parallel(["x", "y"], ["{big_x}", "{big_y}"]),
+            ]),
+        ]);
+        let iter = iterate(
+            &comp, &parent, &HashMap::new(),
+            Vec::new(), None, false, "test",
+        ).unwrap();
+        let yielded: Vec<(u64, u64)> = iter
+            .map(|child| (
+                child.lookup("x").unwrap().as_u64(),
+                child.lookup("y").unwrap().as_u64(),
+            ))
+            .collect();
+        assert_eq!(yielded, vec![
+            (1, 10), (2, 20), (3, 30),       // sub-space 0
+            (100, 1000), (200, 2000),         // sub-space 1
+        ]);
+    }
+
+    #[test]
+    fn iterate_parallel_with_extrema_ordering_treats_group_as_one_axis() {
+        // Two-axis lattice: parallel group `(x, y)` = 4 zip
+        // steps (one axis), `z` = 3 values (second axis). With
+        // `Extrema` ordering, the lattice is 4×3 and the
+        // first stratum (corners) covers the four coordinate
+        // extremes — proving the parallel group counts as one
+        // axis, not two. If parallel were two axes the lattice
+        // would be 4×4×3 with 8 corners.
+        use super::super::ast::TraversalOrder;
+        let parent = Arc::new(crate::dsl::compile::compile_gk(
+            "final xs := \"1, 2, 3, 4\"\nfinal ys := \"10, 20, 30, 40\"\nfinal zs := \"100, 200, 300\"\n"
+        ).unwrap());
+        let comp = Comprehension::cartesian(vec![
+            Clause::parallel(["x", "y"], ["{xs}", "{ys}"]),
+            Clause::new("z", "{zs}"),
+        ]).with_order(TraversalOrder::Extrema { strata: Some(1) });
+        let iter = iterate(
+            &comp, &parent, &HashMap::new(),
+            Vec::new(), None, false, "test",
+        ).unwrap();
+        let yielded: Vec<(u64, u64, u64)> = iter
+            .map(|child| (
+                child.lookup("x").unwrap().as_u64(),
+                child.lookup("y").unwrap().as_u64(),
+                child.lookup("z").unwrap().as_u64(),
+            ))
+            .collect();
+        // Strata=1 ⇒ corners only on the 2-axis (zip-step,
+        // z-step) lattice: 4 corners (2 axes × 2 endpoints).
+        // (1,10) and (4,40) are the parallel-group extremes;
+        // 100 and 300 are the z extremes.
+        assert_eq!(yielded.len(), 4, "got {yielded:?}");
+        let yielded_set: std::collections::HashSet<_> = yielded.into_iter().collect();
+        let expected: std::collections::HashSet<_> = vec![
+            (1, 10, 100), (1, 10, 300),
+            (4, 40, 100), (4, 40, 300),
+        ].into_iter().collect();
+        assert_eq!(yielded_set, expected);
+    }
+
+    #[test]
+    fn iterate_parallel_then_single_emits_cross_product_of_axes() {
+        // Parallel group `(x, y)` is one axis; `z` is another.
+        // Result is the 3-step zip × 2-step single = 6 tuples.
+        let parent = Arc::new(crate::dsl::compile::compile_gk(
+            "final xs := \"1, 2, 3\"\nfinal ys := \"10, 20, 30\"\nfinal zs := \"100, 200\"\n"
+        ).unwrap());
+        let comp = Comprehension::cartesian(vec![
+            Clause::parallel(["x", "y"], ["{xs}", "{ys}"]),
+            Clause::new("z", "{zs}"),
+        ]);
+        let iter = iterate(
+            &comp, &parent, &HashMap::new(),
+            Vec::new(), None, false, "test",
+        ).unwrap();
+        let yielded: Vec<(u64, u64, u64)> = iter
+            .map(|child| (
+                child.lookup("x").unwrap().as_u64(),
+                child.lookup("y").unwrap().as_u64(),
+                child.lookup("z").unwrap().as_u64(),
+            ))
+            .collect();
+        assert_eq!(yielded, vec![
+            (1, 10, 100), (1, 10, 200),
+            (2, 20, 100), (2, 20, 200),
+            (3, 30, 100), (3, 30, 200),
+        ]);
     }
 }

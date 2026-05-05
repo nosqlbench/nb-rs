@@ -139,14 +139,14 @@ pub fn iterate_scope<F>(
     canonical: &Arc<GkKernel>,
     parent: &Arc<GkKernel>,
     parent_coords: &[ScopeCoord],
-    clauses: &[(String, String)],
+    clauses: &[super::ast::Clause],
     filter: Option<&str>,
     order: Option<&TraversalOrder>,
     clause_sizes: &[usize],
     on_empty_clause: F,
 ) -> Result<ScopeIterations, String>
 where
-    F: FnMut(&str, &str) -> Result<(), String>,
+    F: FnMut(&super::ast::Clause) -> Result<(), String>,
 {
     let mut tuples = enumerate_tuples(canonical, parent, clauses, filter, on_empty_clause)?;
     if let Some(o) = order {

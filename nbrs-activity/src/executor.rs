@@ -409,7 +409,7 @@ fn execute_node<'a>(
                         .ok_or_else(|| format!(
                             "phase '{name}' for_each '{spec}': no installed ancestor kernel."
                         ))?;
-                    let clauses = vec![(var_parsed, expr_parsed)];
+                    let clauses = vec![nbrs_variates::comprehension::Clause::new(var_parsed, expr_parsed)];
                     let needle = spec.clone();
                     let parent_coords = ctx.current_parent_kernel.as_ref()
                         .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
@@ -448,16 +448,14 @@ fn execute_node<'a>(
                 let order = comprehension.order.as_ref();
                 match &comprehension.mode {
                     ComprehensionMode::Cartesian(clauses) => {
-                        let pairs: Vec<(String, String)> = clauses.iter()
-                            .map(|c| (c.var.clone(), c.expr.clone())).collect();
-                        let needle = pairs.first()
-                            .map(|(v, e)| format!("{v} in {e}"))
+                        let needle = clauses.first()
+                            .map(|c| format!("{} in {}", c.var(), c.expr()))
                             .unwrap_or_default();
                         let parent_coords = ctx.current_parent_kernel.as_ref()
                             .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
                             .unwrap_or_default();
                         let steps = runtime_iterate(
-                            ctx, &canonical, &parent, &parent_coords, &pairs, filter, order, None,
+                            ctx, &canonical, &parent, &parent_coords, clauses, filter, order, None,
                         ).map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?;
                         return dispatch_comprehension(
                             ctx, steps,
@@ -473,23 +471,21 @@ fn execute_node<'a>(
                         }
                         let total = subspaces.len();
                         for (i, sub) in subspaces.iter().enumerate() {
-                            let pairs: Vec<(String, String)> = sub.iter()
-                                .map(|c| (c.var.clone(), c.expr.clone())).collect();
                             if !ctx.quiet() {
                                 crate::diag!(crate::observer::LogLevel::Debug,
                                     "  sub-space {}/{}: [{}]",
                                     i + 1, total,
-                                    pairs.iter().map(|(v, e)| format!("{v} in {e}"))
+                                    sub.iter().map(|c| format!("{} in {}", c.var(), c.expr()))
                                         .collect::<Vec<_>>().join(", "));
                             }
-                            let needle = pairs.first()
-                                .map(|(v, e)| format!("{v} in {e}"))
+                            let needle = sub.first()
+                                .map(|c| format!("{} in {}", c.var(), c.expr()))
                                 .unwrap_or_default();
                             let parent_coords = ctx.current_parent_kernel.as_ref()
                                 .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
                                 .unwrap_or_default();
                             let steps = runtime_iterate(
-                                ctx, &canonical, &parent, &parent_coords, &pairs, filter, order,
+                                ctx, &canonical, &parent, &parent_coords, sub, filter, order,
                                 Some((i, total)),
                             ).map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?;
                             dispatch_comprehension(
@@ -577,23 +573,21 @@ fn runtime_iterate(
     canonical: &std::sync::Arc<nbrs_variates::kernel::GkKernel>,
     parent: &std::sync::Arc<nbrs_variates::kernel::GkKernel>,
     parent_coords: &[ScopeCoord],
-    clauses: &[(String, String)],
+    clauses: &[nbrs_variates::comprehension::Clause],
     filter: Option<&str>,
     order: Option<&nbrs_variates::comprehension::TraversalOrder>,
     union_context: Option<(usize, usize)>,
 ) -> Result<Vec<nbrs_variates::comprehension::IterationStep>, String> {
     let strict = ctx.strict;
     let quiet = ctx.quiet();
-    let on_empty = |var: &str, spec_text: &str| -> Result<(), String> {
+    let on_empty = |clause: &nbrs_variates::comprehension::Clause| -> Result<(), String> {
         let context_label = match union_context {
             Some((i, n)) => format!(
-                "for_each_union sub-space {}/{} clause '{var}'", i + 1, n,
+                "for_each_union sub-space {}/{} clause '{clause}'", i + 1, n,
             ),
-            None => format!("for_each clause '{var}'"),
+            None => format!("for_each clause '{clause}'"),
         };
-        let msg = format!(
-            "{context_label}: spec '{spec_text}' produced no values"
-        );
+        let msg = format!("{context_label}: produced no values");
         if strict { return Err(format!("strict: {msg}")); }
         if !quiet {
             crate::diag!(crate::observer::LogLevel::Warn, "warning: {msg}");
@@ -2228,10 +2222,11 @@ fn pre_map_recursive(
                     let canonical = scope_tree.nodes[scope_idx].cached_kernel.get();
                     let parent_kernel = effective_parent_kernel.cloned()
                         .or_else(|| scope_tree.nearest_installed_ancestor_kernel(scope_idx));
+                    let phase_clauses = vec![nbrs_variates::comprehension::Clause::new(var.clone(), expr.clone())];
                     let steps = match (canonical, parent_kernel.as_ref()) {
                         (Some(c), Some(p)) => premap_iterate(
                             c, p, parent_coords,
-                            &[(var.clone(), expr.clone())],
+                            &phase_clauses,
                             None, None, None, strict,
                         )?,
                         _ => Vec::new(),
@@ -2294,11 +2289,9 @@ fn pre_map_recursive(
 
                 match &comprehension.mode {
                     ComprehensionMode::Cartesian(clauses) if clauses.len() == 1 => {
-                        let pairs: Vec<(String, String)> = clauses.iter()
-                            .map(|c| (c.var.clone(), c.expr.clone())).collect();
                         let steps = match (canonical, parent_kernel.as_ref()) {
                             (Some(c), Some(p)) => premap_iterate(
-                                c, p, parent_coords, &pairs, filter, None, None, strict,
+                                c, p, parent_coords, clauses, filter, None, None, strict,
                             )?,
                             _ => Vec::new(),
                         };
@@ -2306,9 +2299,9 @@ fn pre_map_recursive(
                         // segment for the construct. All
                         // iteration scopes share this path.
                         let mut scope_path = parent_path.to_vec();
-                        scope_path.push(PathSegment::ForEach { var: clauses[0].var.clone() });
+                        scope_path.push(PathSegment::ForEach { var: clauses[0].var().to_string() });
                         let header = format!("for_each {} in {}",
-                            clauses[0].var, clauses[0].expr);
+                            clauses[0].var(), clauses[0].expr());
                         if steps.is_empty() {
                             let scope = tree.push(parent, NodeKind::Scope, header, "");
                             tree.set_own_names(scope, own_names.clone());
@@ -2331,13 +2324,11 @@ fn pre_map_recursive(
                         }
                     }
                     ComprehensionMode::Cartesian(clauses) => {
-                        let pairs: Vec<(String, String)> = clauses.iter()
-                            .map(|c| (c.var.clone(), c.expr.clone())).collect();
-                        let summary = clauses.iter().map(|c| c.var.as_str())
+                        let summary = clauses.iter().map(|c| c.var())
                             .collect::<Vec<_>>().join(", ");
                         let mut scope_path = parent_path.to_vec();
                         scope_path.push(PathSegment::ForCombinations {
-                            vars: clauses.iter().map(|c| c.var.clone()).collect(),
+                            vars: clauses.iter().map(|c| c.var().to_string()).collect(),
                         });
                         let scope = tree.push(parent, NodeKind::Scope,
                             format!("for_combinations [{summary}]"), "");
@@ -2345,7 +2336,7 @@ fn pre_map_recursive(
                         tree.set_yaml_path(scope, scope_path.clone());
                         let steps = match (canonical, parent_kernel.as_ref()) {
                             (Some(c), Some(p)) => premap_iterate(
-                                c, p, parent_coords, &pairs, filter, None, None, strict,
+                                c, p, parent_coords, clauses, filter, None, None, strict,
                             )?,
                             _ => Vec::new(),
                         };
@@ -2378,11 +2369,9 @@ fn pre_map_recursive(
                         tree.set_yaml_path(scope, scope_path.clone());
                         let total = subspaces.len();
                         for (i, sub) in subspaces.iter().enumerate() {
-                            let pairs: Vec<(String, String)> = sub.iter()
-                                .map(|c| (c.var.clone(), c.expr.clone())).collect();
                             let steps = match (canonical, parent_kernel.as_ref()) {
                                 (Some(c), Some(p)) => premap_iterate(
-                                    c, p, parent_coords, &pairs, filter, None,
+                                    c, p, parent_coords, sub, filter, None,
                                     Some((i, total)), strict,
                                 )?,
                                 _ => Vec::new(),
@@ -2494,22 +2483,20 @@ fn premap_iterate(
     canonical: &std::sync::Arc<GkKernel>,
     parent: &std::sync::Arc<GkKernel>,
     parent_coords: &[ScopeCoord],
-    clauses: &[(String, String)],
+    clauses: &[nbrs_variates::comprehension::Clause],
     filter: Option<&str>,
     order: Option<&nbrs_variates::comprehension::TraversalOrder>,
     union_context: Option<(usize, usize)>,
     strict: bool,
 ) -> Result<Vec<nbrs_variates::comprehension::IterationStep>, String> {
-    let on_empty = |var: &str, spec_text: &str| -> Result<(), String> {
+    let on_empty = |clause: &nbrs_variates::comprehension::Clause| -> Result<(), String> {
         let context_label = match union_context {
             Some((i, n)) => format!(
-                "for_each_union sub-space {}/{} clause '{var}'", i + 1, n,
+                "for_each_union sub-space {}/{} clause '{clause}'", i + 1, n,
             ),
-            None => format!("for_each clause '{var}'"),
+            None => format!("for_each clause '{clause}'"),
         };
-        let msg = format!(
-            "{context_label}: spec '{spec_text}' produced no values"
-        );
+        let msg = format!("{context_label}: produced no values");
         if strict { return Err(format!("strict: {msg}")); }
         Ok(())
     };
