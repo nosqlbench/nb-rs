@@ -224,32 +224,51 @@ phases:
 
   await_index:
     concurrency: 1
+    # Two ops, run sequentially in declaration order (cycles=auto
+    # gives one cycle per op for a phase with no explicit
+    # `cycles:`):
+    #
+    #   1. `indexes_present` — failsafe precondition. Lists every
+    #      SAI index registered against the table. The
+    #      `verify: min_rows: 1` clause + `strict: true` turns an
+    #      empty result into a hard ExecutionError, which the
+    #      activity's `errors:` policy escalates to a phase + run
+    #      stop. Without this, a missing/failed schema phase
+    #      would let the poll below succeed instantly (zero
+    #      building indexes is, vacuously, also zero indexes
+    #      total) and queries would silently run against an
+    #      un-indexed table.
+    #   2. `indexes_built` — the actual wait. Returns the set of
+    #      indexes still building on the table. PollingDispenser
+    #      stops when the body is empty, i.e. every index that
+    #      exists has finished. No hardcoded index names — the
+    #      query discovers them, so adding/removing index
+    #      declarations in the schema phase doesn't require
+    #      coordinated edits here.
+    #
+    # `system_views.indexes` is the Cassandra 5.x view exposing
+    # SAI build state. On Cassandra 5.0 with "table indexes does
+    # not exist" the inner ops surface a hard ExecutionError
+    # rather than swallowing it, so the workload's `errors:`
+    # policy stops the phase + the run instead of spinning
+    # silently.
     ops:
-      # Wait for the metadata SAI index ({table}_meta_idx) to
-      # finish building. Polling only the vector index lets
-      # pvs_query / fknn workloads start before the metadata
-      # index is fully built, which can silently undercount
-      # filter-matching rows on early queries. Int-column SAI
-      # usually finishes well before the vector index, but the
-      # race is real.
-      #
-      # `system_views.sai_column_indexes` is the Cassandra 5.x
-      # SAI view exposing build state. The earlier `cass6` form
-      # against `system_views.indexes` is left here (commented)
-      # for reference — it 404s on Cassandra 5.0 with "table
-      # indexes does not exist", and the polling op surfaces
-      # that as a hard ExecutionError rather than swallowing it,
-      # which means the workload's `errors:` policy stops the
-      # phase + the run rather than spinning silently.
-      await_vector_index:
-        raw: "SELECT index_name, is_building FROM system_views.indexes WHERE keyspace_name = '{keyspace}' AND index_name = '{table}_vector_idx' AND is_building = true ALLOW FILTERING"
-        poll: await_empty
-        poll_interval_ms: 5000
-        timeout_ms: 600000
-        poll_max_error_retries: 3
-        poll_metric_name: index_build_time_s
-      await_metadata_index:
-        raw: "SELECT index_name, is_building FROM system_views.indexes WHERE keyspace_name = '{keyspace}' AND index_name = '{table}_meta_idx' AND is_building = true ALLOW FILTERING"
+      indexes_present:
+        raw: |
+          SELECT index_name FROM system_views.indexes
+          WHERE keyspace_name = '{keyspace}'
+            AND table_name = '{table}'
+          ALLOW FILTERING
+        verify:
+          - min_rows: 1
+        strict: true
+      indexes_built:
+        raw: |
+          SELECT index_name FROM system_views.indexes
+          WHERE keyspace_name = '{keyspace}'
+            AND table_name = '{table}'
+            AND is_building = true
+          ALLOW FILTERING
         poll: await_empty
         poll_interval_ms: 5000
         timeout_ms: 600000
