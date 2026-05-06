@@ -288,10 +288,30 @@ impl OpBuilder {
         let mut fb = FiberBuilder::new(self.program.clone());
         fb.scope_values = self.scope_values.clone();
         for (idx, value) in &self.scope_values {
-            fb.state.set_input(*idx, value.clone());
+            fb.state().set_input(*idx, value.clone());
         }
         for (node_idx, port_idx, value) in &self.init_overrides {
-            fb.state.seed_node_buffer(*node_idx, *port_idx, value.clone());
+            fb.state().seed_node_buffer(*node_idx, *port_idx, value.clone());
+        }
+        // SRD-13d Phase 9 — instance every per-op-template kernel
+        // bound to this fiber's main kernel via `bind_outer_scope`
+        // (SRD-13c §"Per-Scope Canonical Kernel Cache" cache-and-
+        // rebind primitive). Construction-time bind copies the
+        // current values of parent constants into the op-template
+        // kernel's extern slots; per-cycle inputs (`cycle`) are
+        // set on each kernel directly via `FiberBuilder::set_inputs`.
+        for (op_name, program) in &self.op_template_programs {
+            let mut op_kernel = GkKernel::from_program(program.clone());
+            op_kernel.bind_outer_scope(&fb.main_kernel);
+            // Apply scope-bound values to op-template kernel too,
+            // so iter-var-style externs the parent owns are also
+            // reflected in the op-template kernel's input slots.
+            for (idx, value) in &self.scope_values {
+                if *idx < op_kernel.program().input_names().len() {
+                    op_kernel.state().set_input(*idx, value.clone());
+                }
+            }
+            fb.op_template_kernels.insert(op_name.clone(), op_kernel);
         }
         fb
     }
@@ -329,8 +349,20 @@ fn collect_init_overrides(kernel: &GkKernel) -> Vec<(usize, usize, Value)> {
 /// write directly to GK volatile/sticky ports on the state,
 /// bypassing any intermediate storage.
 pub struct FiberBuilder {
-    program: Arc<GkProgram>,
-    state: GkState,
+    /// The fiber's main kernel — typically the activity-wide
+    /// (workload / phase) program. State lives inside the
+    /// kernel; access via [`Self::state`] and
+    /// [`Self::state_ref`].
+    main_kernel: GkKernel,
+    /// SRD-13d Phase 9 — per-op-template kernel instances, keyed
+    /// by op name. Each instance comes from
+    /// [`GkKernel::from_program`] + [`GkKernel::bind_outer_scope`]
+    /// (per SRD-13c §"Per-Scope Canonical Kernel Cache" — the
+    /// cache-and-rebind primitive). Populated by
+    /// [`OpBuilder::create_fiber_builder`] for every materialised
+    /// op-template; flattened op-templates produce no entry and
+    /// fall back to `main_kernel` in [`Self::resolve_pulls_for_op`].
+    op_template_kernels: std::collections::HashMap<String, GkKernel>,
     /// Scope-bound input values (per-iteration extern bindings)
     /// that should persist across stanza-level
     /// `reset_inputs_from` resets. Empty for a builder created
@@ -606,12 +638,30 @@ pub(crate) fn parse_byte_size(s: &str) -> Option<usize> {
 impl FiberBuilder {
     /// Create a new fiber builder from a shared GK program.
     pub fn new(program: Arc<GkProgram>) -> Self {
-        let state = program.create_state();
+        let main_kernel = GkKernel::from_program(program);
         Self {
-            program,
-            state,
+            main_kernel,
+            op_template_kernels: std::collections::HashMap::new(),
             scope_values: Vec::new(),
         }
+    }
+
+    /// Borrow this fiber's main GK program.
+    pub fn program(&self) -> &Arc<GkProgram> {
+        self.main_kernel.program()
+    }
+
+    /// Mutable access to the fiber's main `GkState`. The state
+    /// lives inside `main_kernel`; this accessor preserves the
+    /// pre-restructure call shape for sites that wrote
+    /// `fiber.state.…` directly.
+    pub fn state(&mut self) -> &mut GkState {
+        self.main_kernel.state()
+    }
+
+    /// Borrowed (`&`) accessor for the main state.
+    pub fn state_ref(&self) -> &GkState {
+        self.main_kernel.state_ref()
     }
 
     /// Set coordinates and begin a new evaluation scope.
@@ -623,10 +673,22 @@ impl FiberBuilder {
     /// stanza, only externs declared) has `coord_count = 0`,
     /// so this becomes a no-op rather than clobbering the
     /// extern slots that follow.
+    ///
+    /// SRD-13d Phase 9: the same coordinates are also written to
+    /// every per-op-template kernel that declares them as
+    /// coords. Each kernel binds its own input slot for `cycle`
+    /// (cascaded from parent) so per-cycle propagation is a
+    /// per-kernel `set_inputs`, not a chain walk.
     pub fn set_inputs(&mut self, coords: &[u64]) {
-        let n = coords.len().min(self.program.coord_count());
-        if n > 0 {
-            self.state.set_inputs(&coords[..n]);
+        let main_n = coords.len().min(self.main_kernel.program().coord_count());
+        if main_n > 0 {
+            self.main_kernel.state().set_inputs(&coords[..main_n]);
+        }
+        for kernel in self.op_template_kernels.values_mut() {
+            let n = coords.len().min(kernel.program().coord_count());
+            if n > 0 {
+                kernel.state().set_inputs(&coords[..n]);
+            }
         }
     }
 
@@ -642,14 +704,26 @@ impl FiberBuilder {
     /// rather than clobbering an extern slot. Field
     /// projections always write by name, so they're safe
     /// regardless of coord_count.
+    ///
+    /// SRD-13d Phase 9: ordinal + fields propagate to every
+    /// op-template kernel that declares matching slots.
     pub fn set_source_item(&mut self, item: &nbrs_variates::source::SourceItem) {
-        if self.program.coord_count() > 0 {
-            self.state.set_inputs(&[item.ordinal]);
+        if self.main_kernel.program().coord_count() > 0 {
+            self.main_kernel.state().set_inputs(&[item.ordinal]);
         }
-        // Inject field projections into named GK inputs
         for (name, value) in &item.fields {
-            if let Some(idx) = self.program.find_input(name) {
-                self.state.set_input(idx, value.clone());
+            if let Some(idx) = self.main_kernel.program().find_input(name) {
+                self.main_kernel.state().set_input(idx, value.clone());
+            }
+        }
+        for kernel in self.op_template_kernels.values_mut() {
+            if kernel.program().coord_count() > 0 {
+                kernel.state().set_inputs(&[item.ordinal]);
+            }
+            for (name, value) in &item.fields {
+                if let Some(idx) = kernel.program().find_input(name) {
+                    kernel.state().set_input(idx, value.clone());
+                }
             }
         }
     }
@@ -661,16 +735,26 @@ impl FiberBuilder {
     /// re-applied after the reset so the iteration's bound
     /// values survive the boundary.
     pub fn reset_captures(&mut self) {
-        self.state.reset_inputs_from(self.program.coord_count());
+        let coord_count = self.main_kernel.program().coord_count();
+        self.main_kernel.state().reset_inputs_from(coord_count);
         for (idx, value) in &self.scope_values {
-            self.state.set_input(*idx, value.clone());
+            self.main_kernel.state().set_input(*idx, value.clone());
+        }
+        // Op-template kernels: same shape, but each one's coord
+        // count comes from its own program.
+        for kernel in self.op_template_kernels.values_mut() {
+            let n = kernel.program().coord_count();
+            kernel.state().reset_inputs_from(n);
         }
     }
 
     /// Invalidate all state: reset all inputs and mark all nodes dirty.
     /// Provides "clean slate" semantics.
     pub fn invalidate_all(&mut self) {
-        self.state.invalidate_all();
+        self.main_kernel.state().invalidate_all();
+        for kernel in self.op_template_kernels.values_mut() {
+            kernel.state().invalidate_all();
+        }
     }
 
     /// Store a captured value directly into GK state.
@@ -679,15 +763,15 @@ impl FiberBuilder {
     /// port was found and the value stored, `false` if no port with
     /// this name exists in the program (value is dropped).
     pub fn capture(&mut self, name: &str, value: Value) -> bool {
-        if let Some(idx) = self.program.find_input(name) {
-            self.state.set_input(idx, value);
+        if let Some(idx) = self.main_kernel.program().find_input(name) {
+            self.main_kernel.state().set_input(idx, value);
             true
         } else {
             false
         }
     }
 
-    /// Materialize a [`PullPlan`] against this fiber's GkState.
+    /// Materialize a [`PullPlan`] against this fiber's main GkState.
     /// O(plan_len) on the hot path, no name hashing — the plan
     /// holds pre-resolved indices.
     ///
@@ -703,7 +787,24 @@ impl FiberBuilder {
         &mut self,
         plan: &crate::fixture::PullPlan,
     ) -> crate::fixture::ResolvedPulls {
-        plan.resolve(&mut self.state)
+        plan.resolve(self.main_kernel.state())
+    }
+
+    /// SRD-13d Phase 9 resolve path — picks the right `GkState`
+    /// for `op_name` and resolves the plan against it. When a
+    /// per-op-template kernel was instanced for `op_name` (the
+    /// op materialised), its state is used; otherwise the plan
+    /// resolves against the fiber's main kernel state (the
+    /// flattened op-template path).
+    pub fn resolve_pulls_for_op(
+        &mut self,
+        op_name: &str,
+        plan: &crate::fixture::PullPlan,
+    ) -> crate::fixture::ResolvedPulls {
+        match self.op_template_kernels.get_mut(op_name) {
+            Some(kernel) => plan.resolve(kernel.state()),
+            None => plan.resolve(self.main_kernel.state()),
+        }
     }
 
     /// Resolve a template's op fields into a [`ResolvedFields`]
@@ -735,7 +836,7 @@ impl FiberBuilder {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let bind_names = nbrs_workload::bindpoints::referenced_bindings(stmt_field);
-        let plan = BindPlan::new(&bind_names, &self.program);
+        let plan = BindPlan::new(&bind_names, self.main_kernel.program());
         let batch_config = BatchConfig::from_params(&template.params);
         self.resolve_cached(template, field_pull_names, plan.as_ref(), &batch_config)
     }
@@ -759,8 +860,9 @@ impl FiberBuilder {
         for (key, value) in &template.op {
             names.push(key.clone());
             if let serde_json::Value::String(s) = value {
+                let program = self.main_kernel.program().clone();
                 let resolved = substitute_bind_points_with_state(
-                    s, &self.program, &mut self.state,
+                    s, &program, self.main_kernel.state(),
                 );
 
                 // Preserve typed value for pure bind point references
@@ -768,8 +870,8 @@ impl FiberBuilder {
                 if trimmed.starts_with('{') && trimmed.ends_with('}') && !trimmed.starts_with("{{") {
                     let name = &trimmed[1..trimmed.len()-1];
                     let bare = if let Some((_, n)) = name.split_once(':') { n } else { name };
-                    if self.program.resolve_output(bare).is_some() {
-                        values.push(self.state.pull(&self.program, bare).clone());
+                    if program.resolve_output(bare).is_some() {
+                        values.push(self.main_kernel.state().pull(&program, bare).clone());
                         continue;
                     }
                 }
@@ -785,11 +887,12 @@ impl FiberBuilder {
         // point names (`id`, `vec`) need to be readable by the
         // adapter, separately from any `id`/`vec` keys it might
         // already have in `op`.
+        let main_program = self.main_kernel.program().clone();
         for binding in field_pull_names {
             if !names.contains(binding) {
-                if self.program.resolve_output(binding).is_some() {
+                if main_program.resolve_output(binding).is_some() {
                     names.push(binding.clone());
-                    values.push(self.state.pull(&self.program, binding).clone());
+                    values.push(self.main_kernel.state().pull(&main_program, binding).clone());
                 }
             }
         }
@@ -801,15 +904,16 @@ impl FiberBuilder {
             // we get here without a plan, it's a bug upstream (e.g., trying to
             // batch with `{capture:...}` or `{input:...}` references).
             if let Some(plan) = bind_plan {
-                let base = self.state.get_input(0).as_u64();
+                let program = self.main_kernel.program().clone();
+                let base = self.main_kernel.state().get_input(0).as_u64();
                 let rows = if let Some(target) = batch_config.target_bytes {
                     plan.pull_to_budget(
-                        &mut self.state, &self.program, base,
+                        self.main_kernel.state(), &program, base,
                         target, batch_config.max_rows,
                     )
                 } else {
                     plan.pull_range(
-                        &mut self.state, &self.program, base, batch_config.size,
+                        self.main_kernel.state(), &program, base, batch_config.size,
                     )
                 };
                 let row_names = plan.names();

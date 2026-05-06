@@ -1401,12 +1401,40 @@ async fn run_phase(
         // this the Arc<GkProgram> alone would be iter-invariant
         // and `{table}` / `{profile}` references in op templates
         // would render with default (empty) values.
-        let op_builder = Arc::new(OpBuilder::new(kernel));
+        //
+        // SRD-13d Phase 9 — pull per-op-template kernel programs
+        // for this phase from the scope tree (set by the runner's
+        // install loop for materialised op-templates) and install
+        // them on the OpBuilder. Each fiber instances one
+        // GkKernel per program at fiber creation time, bound to
+        // the main kernel via the canonical
+        // `from_program + bind_outer_scope` recipe (SRD-13c
+        // §"Per-Scope Canonical Kernel Cache"). Flattened
+        // op-templates produce no entry — their dispensers fall
+        // back to the activity-wide kernel via the standard
+        // `nearest_materialised` path.
+        let op_builder = {
+            let mut b = OpBuilder::new(kernel);
+            if let Some(phase_idx) = ctx.scope_tree.phase_node_by_name(phase_name) {
+                let map = ctx.scope_tree.op_template_programs_for_phase(phase_idx);
+                if !map.is_empty() {
+                    b = b.with_op_template_programs(map);
+                }
+            }
+            Arc::new(b)
+        };
         (op_builder, ops, runtime_extents)
     } else {
         // Workload-kernel fallback: no per-iteration values to
         // inject, so a no-scope-values wrapper is sufficient.
-        (Arc::new(OpBuilder::from_program(ctx.program.clone())), phase.ops.clone(), HashMap::new())
+        let mut b = OpBuilder::from_program(ctx.program.clone());
+        if let Some(phase_idx) = ctx.scope_tree.phase_node_by_name(phase_name) {
+            let map = ctx.scope_tree.op_template_programs_for_phase(phase_idx);
+            if !map.is_empty() {
+                b = b.with_op_template_programs(map);
+            }
+        }
+        (Arc::new(b), phase.ops.clone(), HashMap::new())
     };
 
     let op_sequence = OpSequence::from_ops(iter_ops, ctx.seq_type);

@@ -923,7 +923,16 @@ impl Activity {
                     // its own GK name dependencies; the fixture is
                     // sealed after the wrapper chain is complete and
                     // the resulting PullPlan drives cycle-time reads.
-                    let mut fx = crate::fixture::ScopeFixture::new(program.clone());
+                    //
+                    // SRD-13d Phase 9 — when this op-template
+                    // materialised its own kernel, the fixture
+                    // builds its plan against THAT program so
+                    // pulls resolve in the op-template scope.
+                    // Flattened op-templates fall back to the
+                    // activity-wide program (same scope as before
+                    // Phase 9 landed).
+                    let template_program = op_builder.program_for_op(&template.name);
+                    let mut fx = crate::fixture::ScopeFixture::new(template_program.clone());
 
                     // Wrap with delay — only if template has `delay:`
                     let throttled = if let Some(ref delay_name) = template.delay {
@@ -1853,7 +1862,17 @@ async fn executor_task(
             // name, no name hashing). The resulting `pulls` is
             // disjoint from `fields`: adapters see only `fields`,
             // wrappers see only `pulls`.
-            let pulls = fiber.resolve_pulls(&pull_plans[template_idx]);
+            //
+            // SRD-13d Phase 9 — when this op template materialised
+            // its own kernel, the plan was sealed against the
+            // op-template program; resolve_pulls_for_op picks
+            // that kernel's state. Flattened op-templates fall
+            // through to the main kernel (the workload program)
+            // — same call site, the lookup is idempotent.
+            let pulls = fiber.resolve_pulls_for_op(
+                &template.name,
+                &pull_plans[template_idx],
+            );
             let dispenser = &dispensers[template_idx];
             let exec_ctx = crate::fixture::ExecCtx::new(&fields, &pulls);
             let service_start = Instant::now();
