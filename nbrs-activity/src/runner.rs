@@ -1241,6 +1241,16 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 counter: Option<String>,
                 condition: String,
             },
+            /// SRD-13d Phase 9 — install a kernel for an
+            /// op-template scope that classified as
+            /// `materialised`. Flattened op-templates
+            /// (`materialised == false`) get no install spec;
+            /// their dispensers reach the parent kernel via
+            /// `nearest_materialised`.
+            OpTemplate {
+                idx: crate::scope_tree::ScopeNodeIdx,
+                op: nbrs_workload::model::ParsedOp,
+            },
         }
         let install_specs: Vec<InstallSpec> = scope_tree.iter_dfs()
             .filter_map(|(idx, node)| match &node.kind {
@@ -1309,6 +1319,25 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                             }
                         })
                 }
+                crate::scope_tree::ScopeKind::OpTemplate { name } => {
+                    // SRD-13d Phase 9: install a per-op kernel
+                    // ONLY for materialised op-templates. The
+                    // scope-flattening pre-walk already set the
+                    // mark; we just gate on it here.
+                    if node.materialised != Some(true) {
+                        return None;
+                    }
+                    // Find the ParsedOp by name across all phases
+                    // (an op-template scope's name is unique per
+                    // phase, but the scope tree doesn't carry the
+                    // phase ref directly here — fall back to a
+                    // best-effort search).
+                    phases.values()
+                        .flat_map(|p| p.ops.iter())
+                        .find(|op| op.name == *name)
+                        .cloned()
+                        .map(|op| InstallSpec::OpTemplate { idx, op })
+                }
                 _ => None,
             })
             .collect();
@@ -1317,6 +1346,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             let idx = match &install_spec {
                 InstallSpec::ForComprehension { idx, .. } => *idx,
                 InstallSpec::DoLoop { idx, .. } => *idx,
+                InstallSpec::OpTemplate { idx, .. } => *idx,
             };
             // Nearest installed ancestor — skips Scenario /
             // IncludedScenario nodes that don't install kernels
@@ -1358,6 +1388,23 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     crate::scope::build_do_loop_scope_kernel(
                         counter.as_deref(),
                         &condition,
+                        &parent_manifest,
+                        &parent_kernel,
+                        &workload_params,
+                        gk_lib_paths.clone(),
+                        workload_dir_owned.as_deref(),
+                        strict,
+                        &context,
+                    )
+                }
+                InstallSpec::OpTemplate { op, .. } => {
+                    // SRD-13d Phase 9 — synthesize the op-
+                    // template kernel layered over the parent.
+                    // Includes op-level bindings + cascaded
+                    // parent externs; bind_outer_scope chains
+                    // values in at runtime.
+                    crate::scope::build_op_template_scope_kernel(
+                        &op,
                         &parent_manifest,
                         &parent_kernel,
                         &workload_params,

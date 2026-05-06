@@ -802,6 +802,193 @@ pub fn build_do_loop_scope_kernel(
     Ok(kernel)
 }
 
+/// SRD-13d Phase 9 — synthesize a per-op-template kernel for a
+/// materialised op-template scope.
+///
+/// Mirrors [`build_do_loop_scope_kernel`] but uses the op's
+/// `bindings:` block (which already carries metric `:=` injections
+/// per SRD-40b §1) as the body. The resulting kernel:
+///
+/// 1. Cascades every parent-visible name via `extern <name>: <type>`
+///    so descendants reach parent values through the standard
+///    `bind_outer_scope` chain.
+/// 2. Emits the op's own bindings.
+/// 3. Compiles + `bind_outer_scope`s to the parent kernel and
+///    propagates inherited inputs.
+///
+/// Required outputs are computed from references in the op's
+/// fields, condition, delay, metric values, and result wires —
+/// the same surface `build_scope` uses for the workload-level
+/// kernel.
+pub fn build_op_template_scope_kernel(
+    op: &nbrs_workload::model::ParsedOp,
+    parent_manifest: &[crate::runner::ManifestEntry],
+    parent_kernel: &nbrs_variates::kernel::GkKernel,
+    workload_params: &HashMap<String, String>,
+    gk_lib_paths: Vec<std::path::PathBuf>,
+    workload_dir: Option<&std::path::Path>,
+    strict: bool,
+    context: &str,
+) -> Result<nbrs_variates::kernel::GkKernel, String> {
+    use nbrs_workload::model::BindingsDef;
+
+    let manifest_by_name: HashMap<&str, &crate::runner::ManifestEntry> =
+        parent_manifest.iter().map(|e| (e.name.as_str(), e)).collect();
+
+    let mut source = String::new();
+    let mut emitted: HashSet<String> = HashSet::new();
+    let mut inherited_names: Vec<String> = Vec::new();
+
+    // Collect names this op's body explicitly references via
+    // textual placeholders (op fields, condition, delay) so the
+    // extern emission below knows what types to declare. The
+    // op-level `bindings:` block has its own type story handled
+    // by the GK compiler downstream.
+    let mut referenced: Vec<String> = Vec::new();
+    for value in op.op.values() {
+        if let Some(s) = value.as_str() {
+            for n in nbrs_workload::bindpoints::referenced_bindings(s) {
+                if !referenced.contains(&n) {
+                    referenced.push(n);
+                }
+            }
+        }
+    }
+    if let Some(ref s) = op.condition {
+        let n = s.trim().trim_start_matches('{').trim_end_matches('}');
+        if !n.is_empty() && !referenced.iter().any(|r| r == n) {
+            referenced.push(n.to_string());
+        }
+    }
+    if let Some(ref s) = op.delay {
+        let n = s.trim().trim_start_matches('{').trim_end_matches('}');
+        if !n.is_empty() && !referenced.iter().any(|r| r == n) {
+            referenced.push(n.to_string());
+        }
+    }
+    for spec in op.metrics.values() {
+        let trimmed = spec.value.trim();
+        let bare = !trimmed.is_empty()
+            && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_');
+        if bare && !referenced.iter().any(|r| r == trimmed) {
+            referenced.push(trimmed.to_string());
+        }
+    }
+
+    for name in &referenced {
+        if let Some(entry) = manifest_by_name.get(name.as_str()) {
+            let type_name = match entry.port_type {
+                nbrs_variates::node::PortType::U64 => "u64",
+                nbrs_variates::node::PortType::F64 => "f64",
+                nbrs_variates::node::PortType::Str => "String",
+                nbrs_variates::node::PortType::Bool => "bool",
+                _ => "String",
+            };
+            source.push_str(&format!("extern {name}: {type_name}\n"));
+            emitted.insert(name.clone());
+            inherited_names.push(name.clone());
+        } else if let Some(value) = workload_params.get(name) {
+            let literal = format_workload_param_as_gk_literal(value);
+            source.push_str(&format!("final {name} := {literal}\n"));
+            emitted.insert(name.clone());
+        }
+    }
+
+    // Cascade workload params through this op-template scope so
+    // descendants see them via bind_outer_scope. Same shape as
+    // build_do_loop_scope_kernel.
+    for (name, value) in workload_params {
+        if emitted.contains(name) { continue; }
+        let type_name = workload_param_type_name(value);
+        source.push_str(&format!("extern {name}: {type_name}\n"));
+        emitted.insert(name.clone());
+        inherited_names.push(name.clone());
+    }
+
+    // Cascade every parent-scope name (outer iter vars, ancestor-
+    // declared inputs and outputs).
+    let parent_program = parent_kernel.program();
+    let skip_cascade = |emitted: &HashSet<String>, name: &str| -> bool {
+        emitted.contains(name) || name == "cycle" || name.starts_with("__")
+    };
+    for name in parent_program.output_names() {
+        let owned = name.to_string();
+        if skip_cascade(&emitted, &owned) { continue; }
+        let (node_idx, port_idx) = parent_program.resolve_output_by_index(
+            parent_program.output_index(&owned).unwrap()
+        );
+        let port_type = parent_program.node_meta(node_idx).outs[port_idx].typ;
+        let type_name = match port_type {
+            nbrs_variates::node::PortType::U64 => "u64",
+            nbrs_variates::node::PortType::F64 => "f64",
+            nbrs_variates::node::PortType::Str => "String",
+            nbrs_variates::node::PortType::Bool => "bool",
+            _ => "String",
+        };
+        source.push_str(&format!("extern {owned}: {type_name}\n"));
+        emitted.insert(owned.clone());
+        inherited_names.push(owned);
+    }
+    for name in parent_program.input_names() {
+        if skip_cascade(&emitted, &name) { continue; }
+        let port_type = parent_program.input_port_type(&name)
+            .unwrap_or(nbrs_variates::node::PortType::Str);
+        let type_name = match port_type {
+            nbrs_variates::node::PortType::U64 => "u64",
+            nbrs_variates::node::PortType::F64 => "f64",
+            nbrs_variates::node::PortType::Str => "String",
+            nbrs_variates::node::PortType::Bool => "bool",
+            _ => "String",
+        };
+        source.push_str(&format!("extern {name}: {type_name}\n"));
+        emitted.insert(name.clone());
+        inherited_names.push(name);
+    }
+
+    // Now emit the op's own bindings as the body. These are
+    // already in op.bindings — for the GkSource form we just
+    // splice the source; for the Map form we serialize.
+    let body_text: String = match &op.bindings {
+        BindingsDef::GkSource(s) => s.clone(),
+        BindingsDef::Map(m) => {
+            let mut out = String::new();
+            for (name, expr) in m {
+                out.push_str(&format!("{name} := {expr}\n"));
+            }
+            out
+        }
+    };
+    if body_text.trim().is_empty() {
+        // No own bindings — the kernel just re-exports parent.
+        // The flatten-elision logic upstream should have caught
+        // this, but defensively keep the kernel non-empty.
+        if source.is_empty() {
+            source.push_str("final __empty := 0\n");
+        }
+    } else {
+        if !source.ends_with('\n') && !source.is_empty() {
+            source.push('\n');
+        }
+        source.push_str(&body_text);
+        if !source.ends_with('\n') {
+            source.push('\n');
+        }
+    }
+
+    let mut kernel = nbrs_variates::dsl::compile::compile_gk_with_libs(
+        &source,
+        workload_dir,
+        gk_lib_paths,
+        &[],
+        strict,
+        context,
+    ).map_err(|e| format!("{context}: op-template scope synthesis: {e}"))?;
+    kernel.mark_inherited_outputs(inherited_names);
+    kernel.bind_outer_scope(parent_kernel);
+    propagate_parent_inputs(&mut kernel, parent_kernel);
+    Ok(kernel)
+}
+
 
 pub fn build_scope(
     ops: &[ParsedOp],
@@ -1064,6 +1251,31 @@ pub fn build_scope(
                 .unwrap_or(delay.trim());
             if !name.is_empty() && !exclude.contains(&name.to_string()) {
                 scope.add_required_output(name);
+            }
+        }
+        // SRD-40b §6: synthetic-metric `value:` references must
+        // survive DCE so the dispenser's GK pull plan can resolve
+        // them. Bare-name values (the SRD-40b §1 canonical form)
+        // refer to a wire produced somewhere in scope; non-bare
+        // expressions are deferred to Phase 9 elsewhere — for the
+        // bare-name case we mark the wire required.
+        for spec in op.metrics.values() {
+            let trimmed = spec.value.trim();
+            let bare = !trimmed.is_empty()
+                && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_');
+            if bare && !exclude.contains(&trimmed.to_string()) {
+                scope.add_required_output(trimmed);
+            }
+        }
+        // SRD-40b §5 result-as-GK: each `result:` wire reads a
+        // path expression off the response body and exposes it as
+        // a GK wire. The wire's *name* is what subsequent
+        // wrappers (metrics, validation) pull against — mark each
+        // declared result wire as required so the kernel exposes
+        // an extern slot for it on the post-execute write path.
+        for wire in op.result.keys() {
+            if !exclude.contains(wire) {
+                scope.add_required_output(wire);
             }
         }
         crate::bindings::collect_param_bindings_into(&op.params, exclude, &mut scope.required_outputs);

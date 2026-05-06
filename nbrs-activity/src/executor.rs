@@ -1982,8 +1982,6 @@ async fn run_phase(
     // could be 30s away) or session shutdown (which produced a
     // thundering herd of stale windows).
     {
-        crate::diag!(crate::observer::LogLevel::Debug,
-            "phase '{phase_name}': capture_delta start");
         let mut final_delta = phase_component
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -1993,35 +1991,19 @@ async fn run_phase(
         // before teardown. Mark it partial so the cadence stream
         // can distinguish it from naturally pulse-flushed windows.
         final_delta.mark_partial();
-        crate::diag!(crate::observer::LogLevel::Debug,
-            "phase '{phase_name}': cadence ingest(final_delta) start");
         ctx.cadence_reporter.ingest(&labels, final_delta.clone());
-        crate::diag!(crate::observer::LogLevel::Debug,
-            "phase '{phase_name}': cadence ingest(final_delta) returned");
         ctx.stop_handle.report_frame(&final_delta);
-        crate::diag!(crate::observer::LogLevel::Debug,
-            "phase '{phase_name}': stop_handle.report_frame(final_delta) returned");
 
         // Flush validation metrics (recall, precision) as gauges
         if let Some(mut vframe) = validation_frame.lock().unwrap_or_else(|e| e.into_inner()).take() {
             // Same scope_close partial annotation — vframe is the
             // phase's terminal validation snapshot.
             vframe.mark_partial();
-            crate::diag!(crate::observer::LogLevel::Debug,
-                "phase '{phase_name}': cadence ingest(vframe) start");
             ctx.cadence_reporter.ingest(&labels, vframe.clone());
-            crate::diag!(crate::observer::LogLevel::Debug,
-                "phase '{phase_name}': cadence ingest(vframe) returned");
             ctx.stop_handle.report_frame(&vframe);
-            crate::diag!(crate::observer::LogLevel::Debug,
-                "phase '{phase_name}': stop_handle.report_frame(vframe) returned");
         }
 
-        crate::diag!(crate::observer::LogLevel::Debug,
-            "phase '{phase_name}': cadence close_path start");
         ctx.cadence_reporter.close_path(&labels);
-        crate::diag!(crate::observer::LogLevel::Debug,
-            "phase '{phase_name}': cadence close_path returned");
     }
 
     // Transition to Stopped
@@ -2029,8 +2011,6 @@ async fn run_phase(
         let mut pc = phase_component.write().unwrap_or_else(|e| e.into_inner());
         pc.set_state(ComponentState::Stopped);
     }
-    crate::diag!(crate::observer::LogLevel::Debug,
-        "phase '{phase_name}': phase_component set Stopped");
 
     let phase_duration = phase_start.elapsed().as_secs_f64();
     if stopped {

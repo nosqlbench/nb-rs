@@ -841,20 +841,17 @@ impl OpDispenser for ResultDispenser {
                 return Ok(result);
             }
             for slot in &self.specs {
-                match Self::evaluate(slot, &result) {
-                    Some(v) => {
-                        result.captures.insert(slot.wire.clone(), v);
-                    }
-                    None => {
-                        crate::diag!(
-                            crate::observer::LogLevel::Debug,
-                            "result wire '{}' resolved to nothing on cycle {cycle} \
-                             (no default declared); skipping.",
-                            slot.wire,
-                        );
-                    }
+                if let Some(v) = Self::evaluate(slot, &result) {
+                    result.captures.insert(slot.wire.clone(), v);
                 }
+                // Per-cycle missing-wire is silent. If a downstream
+                // consumer (e.g. MetricsDispenser) references a wire
+                // that didn't land in captures, that consumer
+                // surfaces the failure as a hard ExecutionError —
+                // logging it here would just add per-cycle session.log
+                // spam without telling the user anything actionable.
             }
+            let _ = cycle;
             Ok(result)
         })
     }
@@ -915,21 +912,30 @@ pub struct MetricsDispenser {
 }
 
 /// One compiled metric slot: instrument storage + sanitiser +
-/// expression to evaluate.
+/// pre-bound GK pull handle.
 struct MetricSlot {
     /// Family name registered with the [`Component`]. Used in
     /// diagnostic messages (e.g. the counter non-positive warning).
     family: String,
-    /// The GK expression to evaluate per cycle. Currently treated
-    /// as a bare binding name — looked up in `OpResult.captures`.
-    /// SRD-13d Phase 9 will route this through a real GK eval.
+    /// The original `value:` text from the workload, kept for
+    /// diagnostics. Per-cycle resolution goes through the
+    /// pre-bound `pull_handle` below.
     value_expr: String,
-    /// Optional value sanitiser. Applied after expression eval,
-    /// before the instrument record.
+    /// Optional value sanitiser. Applied after the value is
+    /// pulled, before the instrument record.
     format: Option<nbrs_workload::metric_format::FormatSpec>,
     /// Resolved instrument storage — exactly one variant is
     /// populated per slot, matching `MetricSpec.kind`.
     instrument: MetricInstrument,
+    /// Pre-bound handle into the per-cycle GK state. Every
+    /// metric value flows through the GK kernel — if a name
+    /// referenced in `value:` isn't in the kernel's wire
+    /// vocabulary at wrap time, the wrap call errors before
+    /// any cycle runs. Per the project's "GK Is Canonical Scope"
+    /// rule (memory:feedback_gk_canonical_scope), there is one
+    /// touch-point for value reads: the GK context. No sidecar
+    /// captures-map fallback.
+    pull_handle: crate::fixture::PullHandle,
 }
 
 /// Kind-specialised instrument storage owned by a [`MetricSlot`].
@@ -998,6 +1004,7 @@ impl MetricsDispenser {
         inner: Arc<dyn OpDispenser>,
         metrics: &HashMap<String, nbrs_workload::model::MetricSpec>,
         component: &mut nbrs_metrics::component::Component,
+        fx: &mut crate::fixture::ScopeFixture,
     ) -> Result<Arc<dyn OpDispenser>, String> {
         if metrics.is_empty() {
             return Ok(inner);
@@ -1045,6 +1052,30 @@ impl MetricsDispenser {
                 }
             };
 
+            // Resolve `value:` against the GK kernel up front. The
+            // GK context is the sole touch-point for reads in the
+            // op's scope (project rule "GK Is Canonical Scope"); if
+            // the kernel doesn't know the name at wrap time, the
+            // workload is referencing a wire that no binding /
+            // input / `result:` capture produced — surface as a
+            // hard init error before any cycle runs.
+            if !is_bare_name(&spec.value) {
+                return Err(format!(
+                    "metric '{name}' value '{value}' is not a bare \
+                     binding name — non-bare expressions are deferred \
+                     to SRD-13d Phase 9 (op-dispenser kernel handle). \
+                     Either rename the metric's `value:` to a single \
+                     binding, or wait for Phase 9.",
+                    value = spec.value,
+                ));
+            }
+            let pull_handle = fx.register_pull(spec.value.trim()).map_err(|e| {
+                format!(
+                    "metric '{name}' value '{value}': {e}",
+                    value = spec.value,
+                )
+            })?;
+
             // SRD-40b §7.2 — collide-on-duplicate at init. The
             // single registry on `Component` is the canonical
             // store; the slot's `Arc<...>` shares the same
@@ -1063,38 +1094,21 @@ impl MetricsDispenser {
                 value_expr: spec.value.clone(),
                 format,
                 instrument,
+                pull_handle,
             });
         }
 
         Ok(Arc::new(Self { inner, slots }))
     }
+}
 
-    /// Read the bare-binding-name value out of the captures map.
-    /// Returns `None` if the name is missing — caller logs at
-    /// debug and skips the slot. Non-bare-name expressions
-    /// (anything containing operators / parens / whitespace) get
-    /// the same `None` treatment until Phase 9 lands.
-    ///
-    /// Captures map values can be any `Value` variant; we coerce
-    /// numeric variants (U64, F64, Bool) to `f64`. Non-numeric
-    /// variants (Str, vectors) yield `None` so the slot logs +
-    /// skips rather than panicking through `Value::as_f64`'s
-    /// strict matcher.
-    fn lookup_bare_name(
-        captures: &HashMap<String, nbrs_variates::node::Value>,
-        expr: &str,
-    ) -> Option<f64> {
-        let trimmed = expr.trim();
-        // Treat anything that isn't a single ident-shaped token
-        // as a deferred GK expression — log once per cycle and
-        // skip. This is the SRD-13d Phase 9 path.
-        let bare = !trimmed.is_empty()
-            && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_');
-        if !bare {
-            return None;
-        }
-        captures.get(trimmed).and_then(value_to_f64)
-    }
+/// Predicate for an SRD-40b §1 "bare binding name": a single
+/// ident-shaped token. Whitespace is allowed around the edges
+/// but not inside.
+fn is_bare_name(expr: &str) -> bool {
+    let trimmed = expr.trim();
+    !trimmed.is_empty()
+        && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
 impl OpDispenser for MetricsDispenser {
@@ -1112,21 +1126,34 @@ impl OpDispenser for MetricsDispenser {
                 return Ok(result);
             }
             for slot in &self.slots {
-                let raw = match Self::lookup_bare_name(&result.captures, &slot.value_expr) {
+                // Sole resolution path: pre-bound `PullHandle`
+                // into the per-cycle GK state. The GK context is
+                // the canonical scope (project rule
+                // "GK Is Canonical Scope") — there is no second
+                // way to fetch a value here.
+                let value = ctx.pulls.get(slot.pull_handle);
+                let raw = match value_to_f64(value) {
                     Some(v) => v,
                     None => {
-                        // Two reasons we could land here:
-                        //  * bare name not yet present in captures
-                        //    (likely a workload bug — log at debug)
-                        //  * expression isn't a bare name (deferred
-                        //    to SRD-13d Phase 9 — log at debug too)
-                        crate::diag!(
-                            crate::observer::LogLevel::Debug,
-                            "metric '{}' value expr '{}' did not resolve on cycle {cycle}; \
-                             skipping (non-bare-name exprs are deferred to Phase 9)",
-                            slot.family, slot.value_expr,
-                        );
-                        continue;
+                        // The wire resolved but its type can't
+                        // coerce to a numeric metric value (Str,
+                        // vector, handle, etc.). Surface as a
+                        // hard ExecutionError so the activity's
+                        // `errors:` policy decides — by default
+                        // (errors=stop) the phase + run halt.
+                        return Err(ExecutionError::Op(crate::adapter::AdapterError {
+                            error_name: "metric_value_non_numeric".into(),
+                            message: format!(
+                                "metric '{family}' on cycle {cycle}: \
+                                 binding '{expr}' is not coercible to f64 \
+                                 (got value variant {disc:?}); metric \
+                                 values must be numeric (U64 / F64 / Bool)",
+                                family = slot.family,
+                                expr = slot.value_expr,
+                                disc = std::mem::discriminant(value),
+                            ),
+                            retryable: false,
+                        }));
                     }
                 };
                 let sanitised = slot.format.as_ref().map(|f| f.apply(raw)).unwrap_or(raw);
@@ -1459,6 +1486,22 @@ mod tests {
         )
     }
 
+    /// Build a tiny `ScopeFixture` over a one-input `cycle` program
+    /// for tests that just need a fixture argument to satisfy the
+    /// `MetricsDispenser::wrap` signature. The slot-level
+    /// `pull_handle` stays `None` for any binding name that isn't
+    /// in this minimal program — tests exercise the captures-lookup
+    /// fallback path instead.
+    fn fresh_fixture() -> crate::fixture::ScopeFixture {
+        use nbrs_variates::assembly::{GkAssembler, WireRef};
+        use nbrs_variates::nodes::identity::Identity;
+        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        asm.add_node("cycle_id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
+        asm.add_output("cycle_id", WireRef::node("cycle_id"));
+        let kernel = asm.compile().expect("test fixture asm.compile");
+        crate::fixture::ScopeFixture::new(kernel.program().clone())
+    }
+
     fn make_spec(value: &str, kind: MetricKind, format: Option<&str>) -> MetricSpec {
         MetricSpec {
             value: value.to_string(),
@@ -1476,7 +1519,10 @@ mod tests {
         });
         let inner_ptr = Arc::as_ptr(&inner);
         let mut comp = fresh_component();
-        let wrapped = MetricsDispenser::wrap(inner.clone(), &HashMap::new(), &mut comp).unwrap();
+        let mut fx = fresh_fixture();
+        let wrapped = MetricsDispenser::wrap(
+            inner.clone(), &HashMap::new(), &mut comp, &mut fx,
+        ).unwrap();
         // Empty declaration short-circuits — wrapper returns the
         // inner Arc itself, not a fresh `MetricsDispenser`.
         assert_eq!(Arc::as_ptr(&wrapped), inner_ptr);
@@ -1511,24 +1557,56 @@ mod tests {
         }
     }
 
-    /// Test helper: build a typed `Arc<MetricsDispenser>` so
-    /// tests can both `execute` (via dyn coercion) and read the
-    /// stashed instruments via `slot_*`. Mirrors the public
-    /// `MetricsDispenser::wrap` body for the non-empty-decls case.
-    fn typed_wrap(
+    /// Build a one-input GK kernel whose outputs are the given
+    /// `(name, value)` constants. Used by dispenser tests so each
+    /// metric `value:` reference resolves to a per-cycle value
+    /// through the canonical GK pull path. Returns the kernel +
+    /// fixture; caller seals the fixture after wrapping the
+    /// dispenser, then resolves pulls against the kernel state.
+    fn kernel_with_const_outputs(
+        consts: &[(&str, f64)],
+    ) -> (
+        nbrs_variates::kernel::GkKernel,
+        crate::fixture::ScopeFixture,
+    ) {
+        use nbrs_variates::assembly::{GkAssembler, WireRef};
+        use nbrs_variates::nodes::fixed::ConstF64;
+        let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        for (name, val) in consts {
+            asm.add_node(*name, Box::new(ConstF64::new(*val)), vec![]);
+            asm.add_output(*name, WireRef::node(*name));
+        }
+        let kernel = asm.compile().expect("test kernel asm.compile");
+        let fx = crate::fixture::ScopeFixture::new(kernel.program().clone());
+        (kernel, fx)
+    }
+
+    /// Mirrors `MetricsDispenser::wrap` for the non-empty-decl
+    /// case but returns a typed `Arc<MetricsDispenser>` so tests
+    /// can read instrument values via `slot_*` accessors. Also
+    /// builds the resolved pulls so the caller can run
+    /// `execute()` against a real cycle context.
+    fn typed_wrap_with_kernel(
         inner: Arc<dyn OpDispenser>,
         decls: &HashMap<String, MetricSpec>,
-    ) -> Result<Arc<MetricsDispenser>, String> {
+        consts: &[(&str, f64)],
+    ) -> Result<
+        (
+            Arc<MetricsDispenser>,
+            crate::fixture::ResolvedPulls,
+        ),
+        String,
+    > {
+        let (mut kernel, mut fx) = kernel_with_const_outputs(consts);
         let mut comp = fresh_component();
+
+        // Replicate the production wrap body so the returned
+        // handle is typed. Same registration order (sorted by
+        // metric name) so handle-indexes line up with what the
+        // production path produces.
         if decls.is_empty() {
-            // The public `wrap` short-circuits to the inner — no
-            // typed handle exists in that case. Tests should not
-            // call this for the empty case.
-            return Err("typed_wrap requires non-empty decls".into());
+            return Err("typed_wrap_with_kernel requires non-empty decls".into());
         }
-        // Replicate `MetricsDispenser::wrap` body here so the
-        // returned handle is typed. Mirror the public function
-        // exactly so the test path validates the same behaviour.
         let mut entries: Vec<_> = decls.iter().collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
         let component_labels = comp.effective_labels().clone();
@@ -1556,58 +1634,72 @@ mod tests {
                 )),
             };
             comp.register_instrument_with_unit(
-                family.clone(),
-                spec.unit.clone(),
-                instrument.as_ref(),
+                family.clone(), spec.unit.clone(), instrument.as_ref(),
             )?;
+            if !is_bare_name(&spec.value) {
+                return Err(format!(
+                    "metric '{name}' value '{}' is not a bare binding name",
+                    spec.value,
+                ));
+            }
+            let pull_handle = fx.register_pull(spec.value.trim())?;
             slots.push(MetricSlot {
                 family,
                 value_expr: spec.value.clone(),
                 format,
                 instrument,
+                pull_handle,
             });
         }
-        Ok(Arc::new(MetricsDispenser { inner, slots }))
+        let typed = Arc::new(MetricsDispenser { inner, slots });
+
+        let plan = fx.seal();
+        kernel.set_inputs(&[0]);
+        let pulls = plan.resolve_with(&mut kernel);
+        Ok((typed, pulls))
+    }
+
+    /// Run `dispenser.execute(0, ctx)` to completion against
+    /// pulls + empty fields. Returns the result.
+    fn run_dispenser(
+        dispenser: Arc<dyn OpDispenser>,
+        pulls: &crate::fixture::ResolvedPulls,
+    ) -> Result<OpResult, ExecutionError> {
+        let fields = crate::adapter::ResolvedFields::new(vec![], vec![]);
+        let ctx = ExecCtx::new(&fields, pulls);
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(dispenser.execute(0, &ctx))
     }
 
     #[test]
     fn metrics_dispenser_gauge_records_f64() {
-        let mut captures = HashMap::new();
-        captures.insert("my_factor".into(), nbrs_variates::node::Value::F64(3.14));
-        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures });
-
+        // The kernel produces `my_factor = 3.14` as an output;
+        // the metric's `value: my_factor` resolves to that wire
+        // through the GK pull plan.
+        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures: HashMap::new() });
         let mut decl = HashMap::new();
         decl.insert("my_factor".into(), make_spec("my_factor", MetricKind::Gauge, None));
 
-        let typed = typed_wrap(inner, &decl).unwrap();
-        let dyn_disp: Arc<dyn OpDispenser> = typed.clone();
+        let (typed, pulls) = typed_wrap_with_kernel(
+            inner, &decl, &[("my_factor", 3.14)],
+        ).unwrap();
         let gauge = typed.slot_gauge("my_factor").unwrap();
-
-        let (fields, pulls) = empty_ctx();
-        let ctx = ExecCtx::new(&fields, &pulls);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        rt.block_on(dyn_disp.execute(0, &ctx)).unwrap();
+        run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls).unwrap();
 
         assert!((gauge.get() - 3.14).abs() < 1e-9);
     }
 
     #[test]
     fn metrics_dispenser_histogram_truncates_to_u64() {
-        let mut captures = HashMap::new();
-        captures.insert("latency_ms".into(), nbrs_variates::node::Value::F64(7.9));
-        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures });
-
+        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures: HashMap::new() });
         let mut decl = HashMap::new();
         decl.insert("latency_ms".into(), make_spec("latency_ms", MetricKind::Histogram, None));
 
-        let typed = typed_wrap(inner, &decl).unwrap();
-        let dyn_disp: Arc<dyn OpDispenser> = typed.clone();
+        let (typed, pulls) = typed_wrap_with_kernel(
+            inner, &decl, &[("latency_ms", 7.9)],
+        ).unwrap();
         let hist = typed.slot_histogram("latency_ms").unwrap();
-
-        let (fields, pulls) = empty_ctx();
-        let ctx = ExecCtx::new(&fields, &pulls);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        rt.block_on(dyn_disp.execute(0, &ctx)).unwrap();
+        run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls).unwrap();
 
         // Truncated 7.9 -> 7. Histogram snapshot's max recorded.
         let snap = hist.peek_snapshot();
@@ -1618,24 +1710,17 @@ mod tests {
     #[test]
     fn metrics_dispenser_counter_positive_inc_and_skip_non_positive() {
         // Two counters: one positive, one non-positive (zero).
-        let mut captures = HashMap::new();
-        captures.insert("ok_inc".into(), nbrs_variates::node::Value::U64(5));
-        captures.insert("skip_inc".into(), nbrs_variates::node::Value::F64(0.0));
-        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures });
-
+        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures: HashMap::new() });
         let mut decl = HashMap::new();
         decl.insert("ok_inc".into(), make_spec("ok_inc", MetricKind::Counter, None));
         decl.insert("skip_inc".into(), make_spec("skip_inc", MetricKind::Counter, None));
 
-        let typed = typed_wrap(inner, &decl).unwrap();
-        let dyn_disp: Arc<dyn OpDispenser> = typed.clone();
+        let (typed, pulls) = typed_wrap_with_kernel(
+            inner, &decl, &[("ok_inc", 5.0), ("skip_inc", 0.0)],
+        ).unwrap();
         let ok_counter = typed.slot_counter("ok_inc").unwrap();
         let skip_counter = typed.slot_counter("skip_inc").unwrap();
-
-        let (fields, pulls) = empty_ctx();
-        let ctx = ExecCtx::new(&fields, &pulls);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        rt.block_on(dyn_disp.execute(0, &ctx)).unwrap();
+        run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls).unwrap();
 
         assert_eq!(ok_counter.get(), 5);
         // Non-positive value warns and skips — counter stays at 0.
@@ -1644,24 +1729,18 @@ mod tests {
 
     #[test]
     fn metrics_dispenser_format_rounds_value() {
-        let mut captures = HashMap::new();
-        captures.insert("ratio".into(), nbrs_variates::node::Value::F64(1.234));
-        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures });
-
+        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures: HashMap::new() });
         let mut decl = HashMap::new();
         decl.insert(
             "ratio".into(),
             make_spec("ratio", MetricKind::Gauge, Some("#.##")),
         );
 
-        let typed = typed_wrap(inner, &decl).unwrap();
-        let dyn_disp: Arc<dyn OpDispenser> = typed.clone();
+        let (typed, pulls) = typed_wrap_with_kernel(
+            inner, &decl, &[("ratio", 1.234)],
+        ).unwrap();
         let gauge = typed.slot_gauge("ratio").unwrap();
-
-        let (fields, pulls) = empty_ctx();
-        let ctx = ExecCtx::new(&fields, &pulls);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        rt.block_on(dyn_disp.execute(0, &ctx)).unwrap();
+        run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls).unwrap();
 
         assert!((gauge.get() - 1.23).abs() < 1e-9);
     }
@@ -1685,7 +1764,8 @@ mod tests {
         let mut decl = HashMap::new();
         decl.insert("recall_at_10".into(), make_spec("recall_at_10", MetricKind::Gauge, None));
 
-        let err = match MetricsDispenser::wrap(inner, &decl, &mut comp) {
+        let (_kernel, mut fx) = kernel_with_const_outputs(&[("recall_at_10", 0.0)]);
+        let err = match MetricsDispenser::wrap(inner, &decl, &mut comp, &mut fx) {
             Ok(_) => panic!("expected duplicate-family error, got Ok"),
             Err(e) => e,
         };
@@ -1707,44 +1787,59 @@ mod tests {
         let mut decl = HashMap::new();
         decl.insert("g".into(), make_spec("g", MetricKind::Gauge, None));
 
-        let typed = typed_wrap(Arc::new(SkipInner), &decl).unwrap();
-        let dyn_disp: Arc<dyn OpDispenser> = typed.clone();
+        let (typed, pulls) = typed_wrap_with_kernel(
+            Arc::new(SkipInner), &decl, &[("g", 1.0)],
+        ).unwrap();
         let gauge = typed.slot_gauge("g").unwrap();
 
-        let (fields, pulls) = empty_ctx();
-        let ctx = ExecCtx::new(&fields, &pulls);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let res = rt.block_on(dyn_disp.execute(0, &ctx)).unwrap();
+        let res = run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls).unwrap();
         assert!(res.skipped);
         // Gauge default value untouched.
         assert_eq!(gauge.get(), 0.0);
     }
 
     #[test]
-    fn metrics_dispenser_non_bare_expr_skips() {
-        // Inline expression like "factor * 2.0" should be deferred
-        // to Phase 9 — wrapper logs at debug and continues without
-        // recording. The gauge stays untouched.
-        let mut captures = HashMap::new();
-        captures.insert("factor".into(), nbrs_variates::node::Value::F64(3.0));
-        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures });
-
+    fn metrics_dispenser_non_bare_expr_errors_at_init() {
+        // Inline expression like "factor * 2.0" is deferred to
+        // SRD-13d Phase 9. The GK pull-handle resolution at wrap()
+        // time rejects it with a clear init error, so the workload
+        // fails fast — no cycles run.
+        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures: HashMap::new() });
         let mut decl = HashMap::new();
         decl.insert(
             "computed".into(),
             make_spec("factor * 2.0", MetricKind::Gauge, None),
         );
 
-        let typed = typed_wrap(inner, &decl).unwrap();
-        let dyn_disp: Arc<dyn OpDispenser> = typed.clone();
-        let gauge = typed.slot_gauge("computed").unwrap();
+        let (_kernel, mut fx) = kernel_with_const_outputs(&[("factor", 3.0)]);
+        let mut comp = fresh_component();
+        let err = MetricsDispenser::wrap(inner, &decl, &mut comp, &mut fx)
+            .err()
+            .expect("non-bare expr should error at init");
+        assert!(err.contains("computed"), "msg: {err}");
+        assert!(err.contains("not a bare binding name"), "msg: {err}");
+    }
 
-        let (fields, pulls) = empty_ctx();
-        let ctx = ExecCtx::new(&fields, &pulls);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        rt.block_on(dyn_disp.execute(0, &ctx)).unwrap();
+    #[test]
+    fn metrics_dispenser_missing_wire_errors_at_init() {
+        // value: declares a bare name that no binding produces.
+        // The fixture's `register_pull` errors with a list of
+        // available outputs/inputs — surface that to the workload
+        // author at init time.
+        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures: HashMap::new() });
+        let mut decl = HashMap::new();
+        decl.insert(
+            "missing_metric".into(),
+            make_spec("absent_wire", MetricKind::Gauge, None),
+        );
 
-        // Expression is non-bare → skipped → gauge stays default.
-        assert_eq!(gauge.get(), 0.0);
+        let (_kernel, mut fx) = kernel_with_const_outputs(&[("present", 1.0)]);
+        let mut comp = fresh_component();
+        let err = MetricsDispenser::wrap(inner, &decl, &mut comp, &mut fx)
+            .err()
+            .expect("missing-wire metric should error at init");
+        assert!(err.contains("absent_wire"), "msg: {err}");
+        // The fixture error includes "Available outputs" / "inputs".
+        assert!(err.contains("Available"), "msg: {err}");
     }
 }

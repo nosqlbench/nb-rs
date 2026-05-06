@@ -1057,7 +1057,7 @@ impl Activity {
                             let mut guard = dispenser_component.write()
                                 .unwrap_or_else(|e| e.into_inner());
                             match crate::wrappers::MetricsDispenser::wrap(
-                                with_result.clone(), &template.metrics, &mut guard,
+                                with_result.clone(), &template.metrics, &mut guard, &mut fx,
                             ) {
                                 Ok(d) => d,
                                 Err(e) => {
@@ -1340,14 +1340,17 @@ impl Activity {
                     let result = std::panic::AssertUnwindSafe(body).catch_unwind().await;
                     match result {
                         Ok(()) => {
-                            // Per-fiber exit logging stays at
-                            // Debug — useful for drain-loop
-                            // diagnostics, filtered out of the
-                            // TUI log panel by default so it
-                            // doesn't drown out the signal.
-                            crate::diag!(crate::observer::LogLevel::Debug,
-                                "fiber exit (normal) in activity '{}'",
-                                activity_name_for_log);
+                            // Normal fiber exit is silent — the
+                            // session log used to record one
+                            // line per fiber here at Debug, but
+                            // with concurrency=N, that's N lines
+                            // per phase boundary in session.log
+                            // for no diagnostic value (the phase
+                            // completion + duration already
+                            // tells the user the fibers
+                            // completed). Panic exits below
+                            // remain Error-level.
+                            let _ = activity_name_for_log;
                         }
                         Err(panic_payload) => {
                         let msg = panic_payload
