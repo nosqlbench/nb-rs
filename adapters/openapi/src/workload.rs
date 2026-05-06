@@ -96,6 +96,8 @@ pub fn generate_ops(
                 .collect(),
             condition: None,
             delay: None,
+            metrics: HashMap::new(),
+            result: HashMap::new(),
         };
         parsed_ops.push(parsed);
     }

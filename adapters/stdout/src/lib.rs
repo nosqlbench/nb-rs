@@ -19,6 +19,15 @@
 //!   separator=<str>    — field separator for raw/csv formats
 //!   header=true        — emit header row (csv/tsv formats)
 //!   fields=a,b,c       — only include named fields
+//!
+//! Per-op-template channel routing (SRD-40b §9):
+//!   stdout=terminal    — default, write rendered op to fd 1 / file
+//!   stdout=eventlog    — emit through the runner's event log
+//!                        (`nbrs_activity::diag!` Info level), suppressing
+//!                        terminal/file output. Use when the op's
+//!                        synthetic metric is the point and the rendered
+//!                        line is just diagnostic.
+//!   stdout=silent      — drop output entirely; op still executes.
 
 use std::io::{self, Write, BufWriter};
 use std::fs::File;
@@ -28,7 +37,46 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use nbrs_activity::adapter::{
     AdapterError, DriverAdapter, ExecutionError, OpDispenser, OpResult, ResolvedFields, TextBody,
 };
+use nbrs_activity::observer::LogLevel;
 use nbrs_workload::model::ParsedOp;
+
+/// Where the stdout adapter routes its rendered output for a
+/// given op template (SRD-40b §9).
+///
+/// Selected per op via the `stdout:` op-template parameter.
+/// Adapter-wide configuration (filename, format, etc.) is
+/// independent — `Terminal` routes to whatever
+/// [`OutputTarget`] the adapter was constructed with;
+/// `EventLog` and `Silent` bypass it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StdoutChannel {
+    /// Default: write rendered output to fd 1 / configured file.
+    #[default]
+    Terminal,
+    /// Emit through the runner's event log (`crate::diag!`).
+    /// Suppresses terminal/file output; the op still executes.
+    EventLog,
+    /// Drop output entirely. The op still executes and any
+    /// synthetic metrics still record.
+    Silent,
+}
+
+impl StdoutChannel {
+    /// Parse a channel name. Accepted: `terminal` (default),
+    /// `eventlog`, `silent`. Returns `Err` on any other value so
+    /// the caller can fold the error into the workload diagnostic
+    /// chain — silent acceptance would let typos disable output.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim().to_lowercase().as_str() {
+            "terminal" | "stdout" | "default" => Ok(Self::Terminal),
+            "eventlog" | "log" | "diag" => Ok(Self::EventLog),
+            "silent" | "drop" | "discard" | "none" => Ok(Self::Silent),
+            other => Err(format!(
+                "unknown stdout channel '{other}'. Available: terminal, eventlog, silent"
+            )),
+        }
+    }
+}
 
 /// Output target for the stdout adapter.
 enum OutputTarget {
@@ -291,7 +339,19 @@ impl StdoutAdapter {
 impl DriverAdapter for StdoutAdapter {
     fn name(&self) -> &str { "stdout" }
 
-    fn map_op(&self, _template: &ParsedOp) -> Result<Box<dyn OpDispenser>, String> {
+    fn map_op(&self, template: &ParsedOp) -> Result<Box<dyn OpDispenser>, String> {
+        // SRD-40b §9: per-op-template channel routing. The
+        // op-template parameter `stdout: <channel>` selects where
+        // rendered output goes for this template. Absent → terminal.
+        let channel = match template.params.get("stdout") {
+            None => StdoutChannel::Terminal,
+            Some(serde_json::Value::String(s)) => StdoutChannel::parse(s)
+                .map_err(|e| format!("op '{}' params.stdout: {e}", template.name))?,
+            Some(other) => return Err(format!(
+                "op '{}' params.stdout must be a string (one of terminal/eventlog/silent), got {other}",
+                template.name
+            )),
+        };
         Ok(Box::new(StdoutDispenser {
             writer: self.writer.clone(),
             format: self.format,
@@ -301,6 +361,7 @@ impl DriverAdapter for StdoutAdapter {
             header: self.header,
             header_emitted: self.header_emitted.clone(),
             color: self.color,
+            channel,
         }))
     }
 
@@ -312,6 +373,10 @@ impl DriverAdapter for StdoutAdapter {
     // vocabulary of known fields (CQL, HTTP when they're
     // refactored to declare their own). See SRD 30 §"Core-first
     // field processing" for the intended progression.
+
+    /// Declare the SRD-40b §9 channel-routing op-template param
+    /// so it survives the core's unknown-param guard.
+    fn known_op_params(&self) -> &'static [&'static str] { &["stdout"] }
 }
 
 /// Op dispenser for the stdout adapter.
@@ -324,6 +389,8 @@ pub struct StdoutDispenser {
     header: bool,
     header_emitted: Arc<AtomicBool>,
     color: bool,
+    /// Per-op channel routing. SRD-40b §9.
+    channel: StdoutChannel,
 }
 
 impl OpDispenser for StdoutDispenser {
@@ -358,47 +425,85 @@ impl OpDispenser for StdoutDispenser {
                 raw_text
             };
 
-            let result = {
-                let mut writer = self.writer.lock()
-                    .unwrap_or_else(|e| e.into_inner());
+            // SRD-40b §9 channel dispatch. Terminal keeps the
+            // current write-to-OutputTarget path (with header
+            // bookkeeping). EventLog routes the rendered line
+            // through `nbrs_activity::diag!` so it lands in the
+            // session log file and the runner observer (TUI ring
+            // buffer / stderr) instead of the user-facing target.
+            // Silent drops the line entirely; the op still
+            // executes and any wrapping MetricsDispenser still
+            // records.
+            match self.channel {
+                StdoutChannel::Terminal => {
+                    let result = {
+                        let mut writer = self.writer.lock()
+                            .unwrap_or_else(|e| e.into_inner());
 
-                // Emit header row once for tabular formats
-                if self.header && self.format.supports_header()
-                    && !self.header_emitted.swap(true, Ordering::Relaxed)
-                {
-                    let header = self.format.render_header(render_fields, &self.separator);
-                    if !header.is_empty() {
-                        let _ = writeln!(writer, "{header}");
+                        // Emit header row once for tabular formats
+                        if self.header && self.format.supports_header()
+                            && !self.header_emitted.swap(true, Ordering::Relaxed)
+                        {
+                            let header = self.format.render_header(render_fields, &self.separator);
+                            if !header.is_empty() {
+                                let _ = writeln!(writer, "{header}");
+                            }
+                        }
+
+                        let write_result = if self.newline {
+                            writeln!(writer, "{text}")
+                        } else {
+                            write!(writer, "{text}")
+                        };
+                        if let Err(e) = writer.flush() {
+                            return Err(ExecutionError::Op(AdapterError {
+                                error_name: "FlushError".into(),
+                                message: e.to_string(),
+                                retryable: false,
+                            }));
+                        }
+                        write_result
+                    };
+
+                    if let Err(e) = result {
+                        return Err(ExecutionError::Op(AdapterError {
+                            error_name: "IoError".into(),
+                            message: e.to_string(),
+                            retryable: false,
+                        }));
                     }
                 }
-
-                let write_result = if self.newline {
-                    writeln!(writer, "{text}")
-                } else {
-                    write!(writer, "{text}")
-                };
-                if let Err(e) = writer.flush() {
-                    return Err(ExecutionError::Op(AdapterError {
-                        error_name: "FlushError".into(),
-                        message: e.to_string(),
-                        retryable: false,
-                    }));
+                StdoutChannel::EventLog => {
+                    // Header row, when configured, also goes
+                    // through the event log on its first emit.
+                    // Stays consistent with the Terminal path's
+                    // behaviour — operators that switch channels
+                    // mid-development don't get surprised by
+                    // header rows reappearing.
+                    if self.header && self.format.supports_header()
+                        && !self.header_emitted.swap(true, Ordering::Relaxed)
+                    {
+                        let header = self.format.render_header(render_fields, &self.separator);
+                        if !header.is_empty() {
+                            nbrs_activity::diag!(LogLevel::Info, "{}", header);
+                        }
+                    }
+                    nbrs_activity::diag!(LogLevel::Info, "{}", text);
                 }
-                write_result
-            };
-
-            match result {
-                Ok(()) => Ok(OpResult {
-                    body: Some(Box::new(TextBody(text))),
-                    captures: std::collections::HashMap::new(),
-                    skipped: false,
-                }),
-                Err(e) => Err(ExecutionError::Op(AdapterError {
-                    error_name: "IoError".into(),
-                    message: e.to_string(),
-                    retryable: false,
-                })),
+                StdoutChannel::Silent => {
+                    // No emit. Op-execution side effects (running
+                    // through the dispenser pipeline, populating
+                    // GK wires, recording wrapped metrics) still
+                    // happen by virtue of having reached this
+                    // closure.
+                }
             }
+
+            Ok(OpResult {
+                body: Some(Box::new(TextBody(text))),
+                captures: std::collections::HashMap::new(),
+                skipped: false,
+            })
         })
     }
 }
@@ -561,6 +666,211 @@ mod tests {
         assert_eq!(lines[1], "alice,30");
         assert_eq!(lines[2], "bob,25");
         let _ = std::fs::remove_file(&path);
+    }
+
+    // -------------------------------------------------------------
+    // SRD-40b §9 channel-routing tests
+    // -------------------------------------------------------------
+
+    /// Process-wide capturing observer for `eventlog` channel
+    /// tests. Installed once via `set_global_observer` (an
+    /// internal `OnceLock`); subsequent test runs reuse it.
+    /// Other test processes don't share this observer.
+    use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
+
+    static CAPTURED_LOGS: StdOnceLock<Arc<StdMutex<Vec<(LogLevel, String)>>>> = StdOnceLock::new();
+
+    fn captured_logs() -> &'static Arc<StdMutex<Vec<(LogLevel, String)>>> {
+        CAPTURED_LOGS.get_or_init(|| Arc::new(StdMutex::new(Vec::new())))
+    }
+
+    struct CapturingObserver {
+        sink: Arc<StdMutex<Vec<(LogLevel, String)>>>,
+    }
+
+    impl nbrs_activity::observer::RunObserver for CapturingObserver {
+        fn phase_starting(&self, _: &str, _: &str, _: usize, _: u64, _: usize) {}
+        fn phase_completed(&self, _: &str, _: &str, _: f64) {}
+        fn phase_failed(&self, _: &str, _: &str, _: &str) {}
+        fn phase_progress(&self, _: &nbrs_activity::observer::PhaseProgressUpdate) {}
+        fn run_finished(&self) {}
+        fn log(&self, level: LogLevel, message: &str) {
+            self.sink.lock().unwrap().push((level, message.to_string()));
+        }
+    }
+
+    /// Install the capturing observer exactly once for this test
+    /// process. The runtime's `GLOBAL_OBSERVER` is a `OnceLock`
+    /// that silently no-ops on a second `set` — the first call
+    /// wins. As long as every channel-routing test takes this
+    /// path, they share one observer and the captured-logs vec.
+    fn install_capturing_observer() -> Arc<StdMutex<Vec<(LogLevel, String)>>> {
+        let sink = captured_logs().clone();
+        let observer: Arc<dyn nbrs_activity::observer::RunObserver> =
+            Arc::new(CapturingObserver { sink: sink.clone() });
+        nbrs_activity::observer::set_global_observer(observer);
+        sink
+    }
+
+    #[test]
+    fn channel_parse_accepts_documented_aliases() {
+        assert_eq!(StdoutChannel::parse("terminal").unwrap(), StdoutChannel::Terminal);
+        assert_eq!(StdoutChannel::parse("eventlog").unwrap(), StdoutChannel::EventLog);
+        assert_eq!(StdoutChannel::parse("silent").unwrap(), StdoutChannel::Silent);
+        // Aliases — lets workloads reach for the natural word.
+        assert_eq!(StdoutChannel::parse("LOG").unwrap(), StdoutChannel::EventLog);
+        assert_eq!(StdoutChannel::parse(" Drop ").unwrap(), StdoutChannel::Silent);
+        assert_eq!(StdoutChannel::parse("default").unwrap(), StdoutChannel::Terminal);
+        // Typo is rejected, not silently treated as terminal.
+        assert!(StdoutChannel::parse("eventlogg").is_err());
+        assert!(StdoutChannel::parse("").is_err());
+    }
+
+    #[tokio::test]
+    async fn terminal_is_default_when_param_absent() {
+        // Sanity: omitting `params.stdout` keeps the legacy
+        // behavior — output flows to the configured target.
+        let path = std::env::temp_dir().join("nb_chan_default.txt");
+        let adapter = StdoutAdapter::with_config(StdoutConfig {
+            filename: path.to_str().unwrap().into(),
+            newline: true,
+            format: StdoutFormat::Assignments,
+            ..Default::default()
+        });
+        let template = ParsedOp::simple("t", "stmt");
+        // No `params.stdout` set.
+        assert!(template.params.get("stdout").is_none(),
+            "guard: this test relies on the param being absent");
+
+        let dispenser = adapter.map_op(&template).unwrap();
+        let fields = test_fields(&[("k", "default_terminal_marker_abc")]);
+        let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
+        let ctx = nbrs_activity::adapter::ExecCtx::new(&fields, &pulls);
+        dispenser.execute(0, &ctx).await.unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("default_terminal_marker_abc"),
+            "Terminal default should write to the file target; got: {content:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn eventlog_channel_routes_to_observer_log_not_file() {
+        let sink = install_capturing_observer();
+        sink.lock().unwrap().clear();
+
+        // Configure the adapter to write to a temp file so we
+        // can assert the file is *not* touched when the channel
+        // is `eventlog`.
+        let path = std::env::temp_dir().join("nb_eventlog_test.txt");
+        // Pre-create the file empty so we can detect a write
+        // unambiguously: any non-empty content = the dispenser
+        // wrote. (`File::create` truncates on adapter
+        // construction, so this also resets prior runs.)
+        let adapter = StdoutAdapter::with_config(StdoutConfig {
+            filename: path.to_str().unwrap().into(),
+            newline: true,
+            format: StdoutFormat::Assignments,
+            ..Default::default()
+        });
+
+        // Op template requests the eventlog channel.
+        let mut template = ParsedOp::simple("eventlog_op", "ignored");
+        template.params.insert(
+            "stdout".into(),
+            serde_json::Value::String("eventlog".into()),
+        );
+
+        let dispenser = adapter.map_op(&template).unwrap();
+        let fields = test_fields(&[("k", "v_routed_to_eventlog_xyz123")]);
+        let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
+        let ctx = nbrs_activity::adapter::ExecCtx::new(&fields, &pulls);
+        let result = dispenser.execute(0, &ctx).await.unwrap();
+
+        // The OpResult body still carries the rendered text so
+        // capture-extraction still works for synthetic-metric
+        // wrappers.
+        assert!(!result.skipped);
+
+        // The file must remain empty — no Terminal write.
+        let file_contents = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            file_contents.is_empty(),
+            "eventlog channel must not write to the file target; \
+             got contents: {file_contents:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+
+        // The capturing observer must have received the rendered
+        // line at Info level.
+        let logs = sink.lock().unwrap().clone();
+        let matched = logs.iter().any(|(lvl, msg)| {
+            *lvl == LogLevel::Info && msg.contains("v_routed_to_eventlog_xyz123")
+        });
+        assert!(
+            matched,
+            "expected eventlog channel to emit through the observer log; \
+             captured: {logs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn silent_channel_writes_nothing_anywhere() {
+        let sink = install_capturing_observer();
+        sink.lock().unwrap().clear();
+
+        let path = std::env::temp_dir().join("nb_silent_test.txt");
+        let adapter = StdoutAdapter::with_config(StdoutConfig {
+            filename: path.to_str().unwrap().into(),
+            ..Default::default()
+        });
+        let mut template = ParsedOp::simple("silent_op", "ignored");
+        template.params.insert(
+            "stdout".into(),
+            serde_json::Value::String("silent".into()),
+        );
+
+        let dispenser = adapter.map_op(&template).unwrap();
+        let fields = test_fields(&[("k", "must_not_appear_unique_marker_pq987")]);
+        let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
+        let ctx = nbrs_activity::adapter::ExecCtx::new(&fields, &pulls);
+        dispenser.execute(0, &ctx).await.unwrap();
+
+        let file_contents = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(file_contents.is_empty(),
+            "silent channel must not write to file: {file_contents:?}");
+        let _ = std::fs::remove_file(&path);
+
+        let logs = sink.lock().unwrap().clone();
+        let leaked = logs.iter().any(|(_, msg)| msg.contains("must_not_appear_unique_marker_pq987"));
+        assert!(!leaked, "silent channel must not emit through observer; logs: {logs:?}");
+    }
+
+    #[test]
+    fn map_op_rejects_unknown_channel_value() {
+        let adapter = StdoutAdapter::new();
+        let mut template = ParsedOp::simple("bad", "ignored");
+        template.params.insert("stdout".into(), serde_json::Value::String("nope".into()));
+        let err = match adapter.map_op(&template) {
+            Ok(_) => panic!("unknown channel must error"),
+            Err(e) => e,
+        };
+        assert!(err.contains("unknown stdout channel"), "diagnostic should explain: {err}");
+        assert!(err.contains("'bad'"), "diagnostic should name the op: {err}");
+    }
+
+    #[test]
+    fn map_op_rejects_non_string_channel_value() {
+        let adapter = StdoutAdapter::new();
+        let mut template = ParsedOp::simple("bad", "ignored");
+        template.params.insert("stdout".into(), serde_json::Value::Bool(true));
+        let err = match adapter.map_op(&template) {
+            Ok(_) => panic!("non-string channel must error"),
+            Err(e) => e,
+        };
+        assert!(err.contains("must be a string"), "got: {err}");
     }
 }
 

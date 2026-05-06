@@ -134,17 +134,16 @@ nbrs-web          Web dashboard with Axum + HTMX
 
 Each of these areas has a distinctive design which has evolved from its nosqlbench form. This represents a capsule-form view of the user-facing elements which compose together to make a whole system.
 
-### GK Modules
+These are areas which are due for some documentation.
 
-### Op Templates
-
-#### Op Synthesis
-
-### Scenarios
-
-### Phases
-
-
+- user interface
+- test data / variates
+- custom op behaviors
+- workload description
+- dynamic controls
+- status views
+- reports / plots / tables
+- metrics db / metricsql
 
 ## License
 

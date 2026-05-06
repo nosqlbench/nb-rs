@@ -1,9 +1,44 @@
 # Pending Work
 
-Items not yet implemented. See `docs/sysref/` for design context.
+# Showcase Topics
 
-## Serialization
-
-- [ ] Compare nb-rs serialization needs with `veks-*` and
-  `vectordata` crate formats. Determine if CBOR/CDDL from those
-  crates can be leveraged or if nb-rs needs its own wire format.
+- user interface
+  - CLI (dynamic/smart autocompletion)
+  - TUIs
+- test data
+  - variates (gk subsystem)
+    - function graphs
+    - expressions
+    - layered scopes
+  - vector data sources
+- custom op behaviors
+  - concurrency, linearization
+  - standard wrappers
+  - result semantics and format
+  - capture semantics and format
+  - error handler injection
+- workload
+  - parameters
+  - scenarios
+  - phases
+  - ops (op templates)
+  - stanzas (linearized operations, etc)
+- controls
+  - rates
+  - concurrency
+- reporting and status
+  - live display
+    - readouts and views
+    - customization
+    - interactivity
+  - metrics
+    - reporting cadences
+    - reporting channels
+    - realtime summary views
+  - reports
+    - markdown
+    - plots
+    - tables
+    - text
+  - query tools
+    - metricsql

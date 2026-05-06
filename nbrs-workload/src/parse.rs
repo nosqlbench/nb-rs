@@ -9,7 +9,9 @@
 use std::collections::HashMap;
 use serde_json::Value as JVal;
 use nbrs_variates::comprehension::{parse_clause, parse_clause_list, parse_order_spec};
-use crate::model::{BindingsDef, ParsedOp, ScenarioNode, Workload, WorkloadPhase};
+use crate::model::{
+    BindingsDef, MetricSpec, ParsedOp, ScenarioNode, Workload, WorkloadPhase,
+};
 use crate::template::expand_templates;
 
 /// Parse a YAML workload string into a normalized Workload.
@@ -833,8 +835,18 @@ fn parse_phases(
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // Phase-level bindings override workload bindings for ops in this phase
-        let phase_bindings = merge_bindings(doc_bindings, &extract_bindings(phase_obj.get("bindings")));
+        // Phase-level YAML `bindings:` block. Captured raw on
+        // the phase AST so SRD-13d's `HasGkMatter` impl can
+        // classify it correctly and a future runtime can layer
+        // a phase kernel between workload and op kernels.
+        let phase_bindings_only = extract_bindings(phase_obj.get("bindings"));
+        // Legacy merge: combine workload + phase bindings into
+        // the bindings the parser hands to each op. SRD-13d
+        // phases 3–9 will remove this merge in favour of
+        // proper kernel chaining; today's runtime still
+        // expects per-op bindings to carry phase-level
+        // declarations.
+        let phase_bindings = merge_bindings(doc_bindings, &phase_bindings_only);
 
         // Parse inline ops if present
         let mut inline_ops = Vec::new();
@@ -926,6 +938,7 @@ fn parse_phases(
             iter_scope,
             checkpoint,
             status_metrics,
+            bindings: phase_bindings_only,
         });
         phase_order.push(phase_name.clone());
     }
@@ -1124,6 +1137,8 @@ fn normalize_op_entry(
                 tags: tags.clone(),
                 condition: None,
                 delay: None,
+                metrics: HashMap::new(),
+                result: HashMap::new(),
             };
             op.tags.insert("block".to_string(), block_name.to_string());
             Ok(op)
@@ -1174,7 +1189,7 @@ fn normalize_op_object(
         .map(|s| s.to_string());
 
     // Extract recognized fields
-    let op_bindings = merge_bindings(parent_bindings, &extract_bindings(map.get("bindings")));
+    let mut op_bindings = merge_bindings(parent_bindings, &extract_bindings(map.get("bindings")));
     let op_params = merge_value_maps(parent_params, &extract_value_map(map.get("params")));
     let mut op_tags = merge_string_maps(parent_tags, &extract_string_map(map.get("tags")));
     op_tags.insert("block".to_string(), block_name.to_string());
@@ -1318,6 +1333,11 @@ fn normalize_op_object(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let metrics = parse_metrics_field(map.get("metrics"), &name, &mut op_bindings)
+        .map_err(|e| format!("op '{name}' metrics: {e}"))?;
+    let result = parse_result_field(map.get("result"), &name)
+        .map_err(|e| format!("op '{name}' result: {e}"))?;
+
     Ok(ParsedOp {
         name,
         description,
@@ -1327,7 +1347,262 @@ fn normalize_op_object(
         tags: op_tags,
         condition,
         delay,
+        metrics,
+        result,
     })
+}
+
+/// SRD-40b §1 + §2: parse the `metrics:` field on an op
+/// template. Three YAML shapes accepted, dispatched on the
+/// value's type:
+///
+/// - **Scalar** (bare string, §2.1): one metric with the
+///   string as both family and `value:`.
+/// - **Sequence** (list, §2.2): each entry is a bare-name
+///   string OR a `name := <gk expression>` wire-expression.
+///   Wire expressions are auto-injected into the op's
+///   `bindings:` block; the metric is then a bare-name
+///   reference to the new wire.
+/// - **Mapping** (object, §2.3): canonical full-shape form
+///   keyed by metric name. Each value is either a string
+///   (treated as `value:`) or a full `MetricSpec` mapping.
+fn parse_metrics_field(
+    val: Option<&JVal>,
+    op_name: &str,
+    op_bindings: &mut BindingsDef,
+) -> Result<HashMap<String, MetricSpec>, String> {
+    use crate::model::MetricSpec;
+    let Some(v) = val else { return Ok(HashMap::new()); };
+    let mut out: HashMap<String, MetricSpec> = HashMap::new();
+    match v {
+        JVal::String(s) => {
+            let name = s.trim().to_string();
+            if name.is_empty() {
+                return Err("scalar form requires a metric name".into());
+            }
+            out.insert(name.clone(), MetricSpec {
+                value: name, family: None, kind: None,
+                unit: None, format: None,
+            });
+        }
+        JVal::Array(items) => {
+            for (idx, item) in items.iter().enumerate() {
+                let raw = item.as_str().ok_or_else(|| format!(
+                    "metrics list entry {idx}: must be a string \
+                     (bare name or `name := <gk expr>`)"))?;
+                let trimmed = raw.trim();
+                if let Some((name, expr)) = trimmed.split_once(":=") {
+                    // Wire-expression form: declare the binding +
+                    // register the metric.
+                    let name = name.trim();
+                    let expr = expr.trim();
+                    if name.is_empty() || expr.is_empty() {
+                        return Err(format!(
+                            "metrics list entry {idx} '{raw}': wire \
+                             expression must be `name := <expression>`"));
+                    }
+                    inject_wire_into_bindings(op_bindings, name, expr, op_name)?;
+                    if out.contains_key(name) {
+                        return Err(format!(
+                            "duplicate metric wire '{name}' in metrics list"));
+                    }
+                    out.insert(name.to_string(), MetricSpec {
+                        value: name.to_string(), family: None, kind: None,
+                        unit: None, format: None,
+                    });
+                } else {
+                    // Bare-name form.
+                    if trimmed.is_empty() {
+                        return Err(format!(
+                            "metrics list entry {idx}: empty name"));
+                    }
+                    if out.contains_key(trimmed) {
+                        return Err(format!(
+                            "duplicate metric '{trimmed}' in metrics list"));
+                    }
+                    out.insert(trimmed.to_string(), MetricSpec {
+                        value: trimmed.to_string(), family: None, kind: None,
+                        unit: None, format: None,
+                    });
+                }
+            }
+        }
+        JVal::Object(map) => {
+            for (key, val) in map {
+                if out.contains_key(key) {
+                    return Err(format!(
+                        "duplicate metric key '{key}' in metrics map"));
+                }
+                let spec = parse_metric_spec_value(val, key)?;
+                out.insert(key.clone(), spec);
+            }
+        }
+        _ => return Err(format!(
+            "metrics: expected scalar, sequence, or mapping; got {v:?}")),
+    }
+    Ok(out)
+}
+
+/// Parse one entry under the mapping form of `metrics:`.
+/// Accepts a bare string (treated as `value:`) or a full
+/// `MetricSpec` object.
+fn parse_metric_spec_value(v: &JVal, key: &str) -> Result<crate::model::MetricSpec, String> {
+    use crate::model::MetricSpec;
+    match v {
+        JVal::String(s) => Ok(MetricSpec {
+            value: s.clone(), family: None, kind: None,
+            unit: None, format: None,
+        }),
+        JVal::Object(map) => {
+            let value = map.get("value")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| format!(
+                    "metric '{key}': required field `value:` missing or \
+                     not a string"))?
+                .to_string();
+            let family = map.get("family")
+                .and_then(|v| v.as_str()).map(String::from);
+            let unit = map.get("unit")
+                .and_then(|v| v.as_str()).map(String::from);
+            let format = map.get("format")
+                .and_then(|v| v.as_str()).map(String::from);
+            // Validate format syntax at parse time so the user
+            // hears about a bad `#.##` pattern at workload
+            // load, not first-cycle. SRD-40b §1.
+            if let Some(f) = format.as_deref() {
+                crate::metric_format::parse_format_spec(f)
+                    .map_err(|e| format!(
+                        "metric '{key}' format '{f}': {e}"))?;
+            }
+            let kind = match map.get("kind") {
+                None => None,
+                Some(JVal::String(s)) => Some(parse_metric_kind(s, key)?),
+                Some(other) => return Err(format!(
+                    "metric '{key}' kind: expected string, got {other:?}")),
+            };
+            Ok(MetricSpec { value, family, kind, unit, format })
+        }
+        _ => Err(format!(
+            "metric '{key}': expected string or mapping, got {v:?}")),
+    }
+}
+
+fn parse_metric_kind(s: &str, key: &str) -> Result<crate::model::MetricKind, String> {
+    use crate::model::MetricKind;
+    match s.to_ascii_lowercase().as_str() {
+        "gauge" => Ok(MetricKind::Gauge),
+        "histogram" => Ok(MetricKind::Histogram),
+        "counter" => Ok(MetricKind::Counter),
+        other => Err(format!(
+            "metric '{key}' kind '{other}': expected one of \
+             gauge / histogram / counter")),
+    }
+}
+
+/// Auto-inject `name := expr` into the op template's
+/// `bindings:` block (per SRD-40b §2.2). Conflicts with an
+/// existing declaration of the same name are a strict
+/// workload parse error per §2.2.
+fn inject_wire_into_bindings(
+    bindings: &mut BindingsDef,
+    name: &str,
+    expr: &str,
+    op_name: &str,
+) -> Result<(), String> {
+    // Look for an existing same-name declaration to refuse
+    // shadowing. The check is textual: a line beginning with
+    // `<name>` followed by whitespace + `:=`. Prefix matching
+    // would surface false positives for `foo` vs `foobar`,
+    // hence the boundary check.
+    let line_to_inject = format!("{name} := {expr}\n");
+    // BindingsDef has no `Empty` variant — `Map(empty)` is the
+    // default. Detect emptiness via the existing helper, then
+    // promote to GkSource for injection (we're adding a real
+    // GK statement, not a name→expr pair the legacy Map form
+    // can't carry alone).
+    if bindings.is_empty() {
+        *bindings = BindingsDef::GkSource(line_to_inject);
+        return Ok(());
+    }
+    match bindings {
+        BindingsDef::GkSource(src) => {
+            if has_binding_named(src, name) {
+                return Err(format!(
+                    "metric wire '{name}' (op '{op_name}') collides \
+                     with existing `bindings:` declaration of the \
+                     same name"));
+            }
+            if !src.ends_with('\n') { src.push('\n'); }
+            src.push_str(&line_to_inject);
+        }
+        BindingsDef::Map(map) => {
+            if map.contains_key(name) {
+                return Err(format!(
+                    "metric wire '{name}' (op '{op_name}') collides \
+                     with existing `bindings:` declaration of the \
+                     same name"));
+            }
+            map.insert(name.to_string(), expr.to_string());
+        }
+    }
+    Ok(())
+}
+
+/// True when the GK source contains a binding line
+/// `<name> := …` at the start of any (whitespace-trimmed)
+/// line. Used by the wire-expression injection to detect
+/// shadowing without parsing the GK grammar.
+fn has_binding_named(src: &str, name: &str) -> bool {
+    for raw in src.lines() {
+        let line = raw.trim_start();
+        if let Some(rest) = line.strip_prefix(name) {
+            // Boundary: next char must be whitespace or `:=`.
+            let rest = rest.trim_start();
+            if rest.starts_with(":=") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// SRD-40b §5: parse the `result:` field on an op template.
+/// Mapping shape only — each entry names a GK wire to
+/// populate from the op's result body.
+fn parse_result_field(
+    val: Option<&JVal>,
+    op_name: &str,
+) -> Result<HashMap<String, crate::model::ResultWireSpec>, String> {
+    use crate::model::ResultWireSpec;
+    let Some(v) = val else { return Ok(HashMap::new()); };
+    let map = v.as_object().ok_or_else(|| format!(
+        "op '{op_name}' result: expected mapping (name → source)"))?;
+    let mut out: HashMap<String, ResultWireSpec> = HashMap::new();
+    for (key, val) in map {
+        if out.contains_key(key) {
+            return Err(format!(
+                "duplicate result wire '{key}'"));
+        }
+        let spec = match val {
+            JVal::String(s) => ResultWireSpec::String(s.clone()),
+            JVal::Object(m) => {
+                let source = m.get("source")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| format!(
+                        "result '{key}': required field `source:` \
+                         missing or not a string"))?
+                    .to_string();
+                let default = m.get("default")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                ResultWireSpec::Object { source, default }
+            }
+            _ => return Err(format!(
+                "result '{key}': expected string or mapping")),
+        };
+        out.insert(key.clone(), spec);
+    }
+    Ok(out)
 }
 
 // -----------------------------------------------------------------
@@ -1845,6 +2120,141 @@ phases:
         let workload = parse_workload(yaml, &HashMap::new()).unwrap();
         let rampup = &workload.phases["rampup"];
         assert_eq!(rampup.cycles.as_deref(), Some("{train_count}"));
+    }
+
+    // ── SRD-40b §1 + §2: `metrics:` discriminant on op template ──
+
+    #[test]
+    fn parse_metrics_full_mapping_form() {
+        let yaml = r##"
+phases:
+  predict:
+    bindings: |
+      example_factor := 1.0 + 2.5
+    ops:
+      synth:
+        stmt: "noop"
+        metrics:
+          example_factor:
+            value: example_factor
+            kind: gauge
+            unit: ratio
+            format: "#.##"
+"##;
+        let wl = parse_workload(yaml, &HashMap::new()).unwrap();
+        let op = &wl.phases["predict"].ops[0];
+        assert_eq!(op.name, "synth");
+        let m = &op.metrics["example_factor"];
+        assert_eq!(m.value, "example_factor");
+        assert_eq!(m.kind, Some(crate::model::MetricKind::Gauge));
+        assert_eq!(m.unit.as_deref(), Some("ratio"));
+        assert_eq!(m.format.as_deref(), Some("#.##"));
+    }
+
+    #[test]
+    fn parse_metrics_bare_string_sugar() {
+        let yaml = r#"
+phases:
+  p:
+    bindings: |
+      overscan := 1.0
+    ops:
+      o:
+        stmt: "noop"
+        metrics: overscan
+"#;
+        let wl = parse_workload(yaml, &HashMap::new()).unwrap();
+        let op = &wl.phases["p"].ops[0];
+        let m = &op.metrics["overscan"];
+        // Bare-string form: family + value both = "overscan"
+        // (defaults), kind unset (defaults to gauge at runtime).
+        assert_eq!(m.value, "overscan");
+        assert_eq!(m.family, None);
+        assert_eq!(m.kind, None);
+    }
+
+    #[test]
+    fn parse_metrics_list_with_wire_expression() {
+        let yaml = r#"
+phases:
+  p:
+    ops:
+      o:
+        stmt: "noop"
+        metrics:
+          - latency_pred := 0.5 + 1.5 * pow(limit, -0.4)
+          - already_bound
+"#;
+        let wl = parse_workload(yaml, &HashMap::new()).unwrap();
+        let op = &wl.phases["p"].ops[0];
+        // Both metric entries registered.
+        assert!(op.metrics.contains_key("latency_pred"));
+        assert!(op.metrics.contains_key("already_bound"));
+        // Wire expression auto-injected into op bindings.
+        match &op.bindings {
+            BindingsDef::GkSource(src) => {
+                assert!(src.contains("latency_pred := 0.5 + 1.5 * pow(limit, -0.4)"),
+                    "wire not injected; bindings: {src:?}");
+            }
+            other => panic!("expected GkSource bindings, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_metrics_format_validation_runs_at_load() {
+        let yaml = r##"
+phases:
+  p:
+    ops:
+      o:
+        stmt: "noop"
+        metrics:
+          x:
+            value: x
+            format: "%3.2f"
+"##;
+        let err = parse_workload(yaml, &HashMap::new()).unwrap_err();
+        assert!(err.contains("printf-style"),
+            "format error not surfaced at parse time: {err}");
+    }
+
+    #[test]
+    fn parse_metrics_wire_expression_collision_errors() {
+        let yaml = r#"
+phases:
+  p:
+    ops:
+      o:
+        stmt: "noop"
+        bindings: |
+          foo := 1.0
+        metrics:
+          - foo := 2.0
+"#;
+        let err = parse_workload(yaml, &HashMap::new()).unwrap_err();
+        assert!(err.contains("collides"),
+            "collision not detected: {err}");
+    }
+
+    #[test]
+    fn parse_phase_bindings_round_trip() {
+        // SRD-13d Phase 1: phase-level `bindings:` block must
+        // land on WorkloadPhase.bindings (not just merged into
+        // ops) so HasGkMatter can classify it.
+        let yaml = r#"
+phases:
+  p:
+    bindings: |
+      phase_factor := 7
+    ops:
+      o:
+        stmt: "noop"
+"#;
+        let wl = parse_workload(yaml, &HashMap::new()).unwrap();
+        match &wl.phases["p"].bindings {
+            BindingsDef::GkSource(s) => assert!(s.contains("phase_factor := 7")),
+            other => panic!("expected GkSource, got {other:?}"),
+        }
     }
 
     #[test]

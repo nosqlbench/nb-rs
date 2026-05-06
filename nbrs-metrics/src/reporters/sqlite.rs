@@ -384,14 +384,31 @@ mod inner {
             }
         }
 
-        fn get_or_insert_family(&mut self, name: &str, typ: &str) -> i64 {
+        /// Get-or-create the `metric_family` row for a given
+        /// `(name, type)` identity, attaching the OpenMetrics unit
+        /// when supplied.
+        ///
+        /// SRD-40b §1 / SRD-40a §4.3: the unit is persisted in the
+        /// `metric_family.unit` column for structured read access,
+        /// while the family name itself already carries the unit
+        /// as a suffix (the writer enforces both surfaces from a
+        /// single declaration via [`crate::snapshot::MetricFamily::with_unit`]).
+        ///
+        /// `unit` is `None` when the family has no declared unit;
+        /// the column is left NULL in that case.
+        fn get_or_insert_family(
+            &mut self,
+            name: &str,
+            typ: &str,
+            unit: Option<&str>,
+        ) -> i64 {
             let key = format!("{name}:{typ}");
             if let Some(&id) = self.family_cache.get(&key) {
                 return id;
             }
             self.conn.execute(
-                "INSERT OR IGNORE INTO metric_family (name, type) VALUES (?1, ?2)",
-                params![name, typ],
+                "INSERT OR IGNORE INTO metric_family (name, type, unit) VALUES (?1, ?2, ?3)",
+                params![name, typ, unit],
             ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
             let id: i64 = self.conn.query_row(
                 "SELECT id FROM metric_family WHERE name=?1 AND type=?2",
@@ -496,12 +513,18 @@ mod inner {
                 .as_millis() as i64;
             let interval_ms = snapshot.interval().as_millis() as i64;
             let name = family.name();
+            // SRD-40b §1: the family's declared unit (if any)
+            // lands in `metric_family.unit` so the read side can
+            // surface it without re-parsing the name. Sibling
+            // `_sum` / `_count` families inherit the same unit
+            // per OpenMetrics §5.3.
+            let unit = family.unit();
             let labels = metric.labels();
             let Some(point) = metric.point() else { return };
 
             match point.value() {
                 MetricValue::Counter(c) => {
-                    let family_id = self.get_or_insert_family(name, "counter");
+                    let family_id = self.get_or_insert_family(name, "counter", unit);
                     let label_set_id = self.get_or_insert_label_set(labels);
                     let instance_id = self.get_or_insert_instance(family_id, label_set_id, name, labels);
 
@@ -522,7 +545,7 @@ mod inner {
                     ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
                 }
                 MetricValue::Gauge(g) => {
-                    let family_id = self.get_or_insert_family(name, "gauge");
+                    let family_id = self.get_or_insert_family(name, "gauge", unit);
                     let label_set_id = self.get_or_insert_label_set(labels);
                     let instance_id = self.get_or_insert_instance(family_id, label_set_id, name, labels);
 
@@ -533,7 +556,7 @@ mod inner {
                     ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
                 }
                 MetricValue::Histogram(h) => {
-                    let family_id = self.get_or_insert_family(name, "summary");
+                    let family_id = self.get_or_insert_family(name, "summary", unit);
                     let label_set_id = self.get_or_insert_label_set(labels);
                     let instance_id = self.get_or_insert_instance(family_id, label_set_id, name, labels);
 
@@ -579,7 +602,7 @@ mod inner {
                         MetricType::GaugeHistogram => "gaugehistogram",
                         _ => "histogram",
                     };
-                    let family_id = self.get_or_insert_family(name, family_type);
+                    let family_id = self.get_or_insert_family(name, family_type, unit);
                     for (le, count) in &h.buckets {
                         let le_str = match le {
                             crate::snapshot::BucketBound::Finite(v) => v.to_string(),
@@ -602,7 +625,7 @@ mod inner {
                     // Sibling _sum / _count families.
                     if let Some(sum_value) = h.sum {
                         let sum_id = self.get_or_insert_family(
-                            &format!("{name}_sum"), family_type);
+                            &format!("{name}_sum"), family_type, unit);
                         let label_set_id = self.get_or_insert_label_set(labels);
                         let instance_id = self.get_or_insert_instance(
                             sum_id, label_set_id, &format!("{name}_sum"), labels);
@@ -616,7 +639,7 @@ mod inner {
                         });
                     }
                     let count_id = self.get_or_insert_family(
-                        &format!("{name}_count"), family_type);
+                        &format!("{name}_count"), family_type, unit);
                     let label_set_id = self.get_or_insert_label_set(labels);
                     let instance_id = self.get_or_insert_instance(
                         count_id, label_set_id, &format!("{name}_count"), labels);
@@ -632,7 +655,7 @@ mod inner {
                 MetricValue::Info(_) => {
                     // OpenMetrics §5.6: always-1 metric
                     // whose data lives in the label set.
-                    let family_id = self.get_or_insert_family(name, "info");
+                    let family_id = self.get_or_insert_family(name, "info", unit);
                     let label_set_id = self.get_or_insert_label_set(labels);
                     let instance_id = self.get_or_insert_instance(
                         family_id, label_set_id, name, labels);
@@ -652,7 +675,7 @@ mod inner {
                     // name itself as the key is forbidden;
                     // we use `state` as the label key by
                     // convention).
-                    let family_id = self.get_or_insert_family(name, "stateset");
+                    let family_id = self.get_or_insert_family(name, "stateset", unit);
                     for (state_name, active) in &s.states {
                         let state_labels = labels.with("state", state_name.as_str());
                         let label_set_id = self.get_or_insert_label_set(&state_labels);
@@ -713,7 +736,9 @@ mod inner {
             labels: &Labels,
             sample: &NativeSample,
         ) {
-            let family_id = self.get_or_insert_family(family_name, family_type);
+            let family_id = self.get_or_insert_family(
+                family_name, family_type, sample.unit.as_deref(),
+            );
             let label_set_id = self.get_or_insert_label_set(labels);
             let instance_id = self.get_or_insert_instance(
                 family_id, label_set_id, family_name, labels,
@@ -771,6 +796,16 @@ mod inner {
         /// it; the catalog reader exposes `<name>_created`
         /// when populated.
         pub created_ms: Option<i64>,
+        /// SRD-40b §1 / SRD-40a §4.3: optional unit suffix
+        /// (`ratio`, `seconds`, `bytes`, …) declared on the
+        /// family. When present, persisted to
+        /// `metric_family.unit` on first-insert. The family
+        /// name itself is expected to already carry the
+        /// unit as a `_<unit>` suffix per OpenMetrics §4.4
+        /// — both surfaces flow from the producer's single
+        /// declaration and are kept in sync at the source
+        /// (see [`crate::snapshot::MetricFamily::with_unit`]).
+        pub unit: Option<String>,
     }
 
     /// Exemplar payload per OpenMetrics §4.6.1. Attached to a
@@ -824,7 +859,11 @@ mod inner {
             sample_timestamp_ms: i64,
             exemplar: &ExemplarRow,
         ) {
-            let family_id = self.get_or_insert_family(family_name, family_type);
+            // Exemplars attach to a previously-written sample
+            // — the family row is expected to exist already, so
+            // unit is left unspecified here. If the sample-write
+            // path wrote it, the cache returns the existing id.
+            let family_id = self.get_or_insert_family(family_name, family_type, None);
             let label_set_id = self.get_or_insert_label_set(instance_labels);
             let instance_id = self.get_or_insert_instance(
                 family_id, label_set_id, family_name, instance_labels,
@@ -2000,6 +2039,99 @@ mod inner {
                 "SELECT COUNT(*) FROM metric_instance", [], |row| row.get(0),
             ).unwrap();
             assert_eq!(instances, 2, "different labels should be different instances");
+        }
+
+        /// Regression guard for SRD-40b §1 / SRD-40a §4.3.
+        ///
+        /// When a `MetricFamily` is declared with a unit, the unit
+        /// MUST land in **two** surfaces — concatenated onto the
+        /// family name as a `_<unit>` suffix per OpenMetrics §4.4
+        /// **and** stored in the `metric_family.unit` column for
+        /// structured access from the read side. Both surfaces
+        /// derive from the single `with_unit` declaration so they
+        /// cannot drift.
+        ///
+        /// This test asserts the round-trip through the sqlite
+        /// reporter — the cited drift mode is a real regression risk
+        /// (e.g. someone adding a code path that bypasses
+        /// `with_unit` and hand-builds a family with `name="overscan"`
+        /// and a separate unit string would break the invariant).
+        #[test]
+        fn unit_round_trips_into_name_suffix_and_unit_column() {
+            use crate::snapshot::{GaugeValue, MetricPoint};
+            let mut reporter = SqliteReporter::in_memory().unwrap();
+            let mut snapshot = MetricSet::new(Duration::from_secs(1));
+
+            // Build a family with name="overscan" + unit="ratio" via
+            // the canonical `with_unit` path. The single declaration
+            // SHOULD produce both surfaces in sync — name becomes
+            // `overscan_ratio` and the unit field carries `ratio`.
+            let mut family = MetricFamily::new("overscan", MetricType::Gauge)
+                .with_unit("ratio");
+            family.insert(Metric::single(
+                Labels::of("activity", "search"),
+                MetricPoint::untimed(MetricValue::Gauge(GaugeValue::new(0.97))),
+            ));
+            snapshot.insert(family);
+            reporter.report(&snapshot);
+
+            // Both surfaces should be present and consistent.
+            let row: (String, Option<String>) = reporter.conn.query_row(
+                "SELECT name, unit FROM metric_family WHERE type = 'gauge'",
+                [], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).unwrap();
+            assert_eq!(row.0, "overscan_ratio",
+                "OpenMetrics §4.4: unit MUST be a `_<unit>` suffix of family name");
+            assert_eq!(row.1.as_deref(), Some("ratio"),
+                "SRD-40a §4.3: unit MUST also land in metric_family.unit column");
+        }
+
+        /// Counterpart for the no-op case: when the caller's family
+        /// name already carries the unit suffix, `with_unit` does
+        /// not double-suffix, and the unit column is still
+        /// populated.
+        #[test]
+        fn unit_column_populated_when_name_already_carries_suffix() {
+            use crate::snapshot::{GaugeValue, MetricPoint};
+            let mut reporter = SqliteReporter::in_memory().unwrap();
+            let mut snapshot = MetricSet::new(Duration::from_secs(1));
+
+            let mut family = MetricFamily::new("memory_bytes", MetricType::Gauge)
+                .with_unit("bytes");
+            family.insert(Metric::single(
+                Labels::of("activity", "load"),
+                MetricPoint::untimed(MetricValue::Gauge(GaugeValue::new(1024.0))),
+            ));
+            snapshot.insert(family);
+            reporter.report(&snapshot);
+
+            let row: (String, Option<String>) = reporter.conn.query_row(
+                "SELECT name, unit FROM metric_family WHERE type = 'gauge'",
+                [], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).unwrap();
+            assert_eq!(row.0, "memory_bytes", "no double suffixing");
+            assert_eq!(row.1.as_deref(), Some("bytes"));
+        }
+
+        /// Counterpart for the no-unit case: families with no
+        /// declared unit leave the column NULL. Guards the "unit
+        /// is optional" half of the contract — adding the column
+        /// shouldn't have introduced a forced default.
+        #[test]
+        fn unit_column_null_when_family_has_no_unit() {
+            let mut reporter = SqliteReporter::in_memory().unwrap();
+            let mut snapshot = MetricSet::new(Duration::from_secs(1));
+            snapshot.insert_counter(
+                "ops_total", Labels::of("activity", "x"), 1, Instant::now(),
+            );
+            reporter.report(&snapshot);
+
+            let unit: Option<String> = reporter.conn.query_row(
+                "SELECT unit FROM metric_family WHERE name = 'ops_total'",
+                [], |r| r.get(0),
+            ).unwrap();
+            assert!(unit.is_none(),
+                "no `with_unit` declaration → unit column must be NULL");
         }
 
         /// Visual test: prints a summary table to stderr so you can

@@ -532,6 +532,22 @@ pub struct WorkloadPhase {
     /// ```
     #[serde(default)]
     pub status_metrics: Vec<String>,
+    /// Phase-level GK `bindings:` block (SRD-13c, SRD-13d).
+    /// Captured on the phase AST so the scope-tree pre-walk
+    /// (SRD-13d §3) can classify phase-level GK content via
+    /// [`crate::gk_matter::HasGkMatter`] and so the runtime
+    /// can compose a phase kernel layered between the
+    /// workload kernel and any op-template kernels.
+    ///
+    /// Today the parser ALSO merges this block into per-op
+    /// bindings (legacy `parse.rs::parse_phases` behaviour) so
+    /// the existing runtime keeps working unchanged. Once
+    /// SRD-13d phases 3–9 land (per-template kernels with
+    /// proper `bind_outer_scope` chaining through the phase
+    /// kernel), the per-op merge is removed and ops resolve
+    /// phase bindings via the GK scope chain.
+    #[serde(default, skip_serializing_if = "BindingsDef::is_empty")]
+    pub bindings: BindingsDef,
 }
 
 /// Per-phase checkpoint declaration. Three legal forms in YAML:
@@ -844,6 +860,115 @@ pub struct ParsedOp {
     /// f64 = milliseconds. Applied before adapter execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delay: Option<String>,
+    /// SRD-40b synthetic-metric declarations. Each entry
+    /// publishes one metric family per cycle, valued by a GK
+    /// expression evaluated in the op's bound scope. Empty
+    /// when absent. Map key is the metric name and the
+    /// **default family name**; `MetricSpec::family` overrides
+    /// it when set. See SRD-40b §1 for the schema, §2 for
+    /// sugared forms (bare-string / list with wire-expression
+    /// entries).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metrics: HashMap<String, MetricSpec>,
+    /// SRD-40b §5 result-as-GK declarations. Each entry
+    /// names a GK wire to populate from the op's result body
+    /// (capture path, count/ok built-in, or GK function call)
+    /// before metric expressions evaluate. Empty when absent.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub result: HashMap<String, ResultWireSpec>,
+}
+
+/// SRD-40b §1 schema for one synthetic-metric declaration on
+/// an op template.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricSpec {
+    /// Required. A GK expression evaluated in the op's bound
+    /// scope. A bare binding name is the canonical form when
+    /// the formula belongs in a `bindings:` block; any GK
+    /// expression that produces a numeric result is also
+    /// valid. See SRD-40b §4.
+    pub value: String,
+    /// Optional override of the family name. Defaults to the
+    /// map key on `ParsedOp.metrics`. SRD-40b §1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    /// Optional metric type. Defaults to `Gauge` per SRD-40b §1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<MetricKind>,
+    /// Optional OpenMetrics unit suffix (`ms`, `bytes`, …).
+    /// When set, lands in BOTH the family-name suffix and the
+    /// `metric_family.unit` column per SRD-40a §4.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// Optional generation-time numeric sanitiser using
+    /// Excel-style hash patterns (`#.##`, `0.000`, etc.).
+    /// Translated at registration time into a round op that
+    /// runs before the value is recorded on the instrument;
+    /// storage holds the sanitised number. SRD-40b §1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+}
+
+/// Metric type discriminator. SRD-40b §1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MetricKind {
+    /// Current-state observation; per-cycle `set(value)`.
+    /// Default per SRD-40b §1.
+    Gauge,
+    /// Distribution sample; per-cycle `record(value)`.
+    Histogram,
+    /// Monotonic running total; per-cycle `inc_by(value)`.
+    Counter,
+}
+
+impl Default for MetricKind {
+    /// SRD-40b §1: gauge is the default — synthetic values are
+    /// most often current-state observations.
+    fn default() -> Self { MetricKind::Gauge }
+}
+
+/// SRD-40b §5 declaration for one GK wire populated from the
+/// op's result body. The mechanism: per cycle, after the inner
+/// adapter returns its `OpResult`, the dispenser's
+/// result-as-GK adapter writes each declared wire's value
+/// into the op's GkState before metric wrappers evaluate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ResultWireSpec {
+    /// String form: a single source spec encoded as one of the
+    /// SRD-40b §5.1 grammars:
+    /// - `count` — built-in row/element count of the body.
+    /// - `ok` — built-in success boolean.
+    /// - `<path-expr>` — JSON-path into the result body
+    ///   (e.g. `rows[0].field`).
+    /// - `<gk-call>` — GK function call referencing captures
+    ///   and result.
+    String(String),
+    /// Mapping form for future fields (currently empty;
+    /// reserved for `default:`, `kind:`, etc. as the result-
+    /// tap mechanism grows). SRD-40b §10 carries the
+    /// open-question pointer.
+    Object {
+        /// The source expression (same grammars as the string
+        /// form).
+        source: String,
+        /// Optional default value when the source resolves to
+        /// nothing (missing capture, empty body).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default: Option<String>,
+    },
+}
+
+impl ResultWireSpec {
+    /// Pull the source expression regardless of which
+    /// variant the user wrote.
+    pub fn source(&self) -> &str {
+        match self {
+            ResultWireSpec::String(s) => s,
+            ResultWireSpec::Object { source, .. } => source,
+        }
+    }
 }
 
 impl ParsedOp {
@@ -860,6 +985,8 @@ impl ParsedOp {
             tags: HashMap::new(),
             condition: None,
             delay: None,
+            metrics: HashMap::new(),
+            result: HashMap::new(),
         }
     }
 }

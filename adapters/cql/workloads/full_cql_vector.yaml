@@ -201,7 +201,7 @@ phases:
           (key text PRIMARY KEY, value vector<float, {dim}>, metadata int)
       create_vector_index:
         raw: |
-          CREATE CUSTOM INDEX IF NOT EXISTS {table}_idx 
+          CREATE CUSTOM INDEX IF NOT EXISTS {table}_vector_idx
           ON {keyspace}.{table} (value) 
           USING 'StorageAttachedIndex' 
           WITH OPTIONS = {'optimize_for': '{optimize_for}', 'similarity_function': '{similarity_function}'}
@@ -218,7 +218,7 @@ phases:
       drop_metadata_index:
         raw: "DROP INDEX IF EXISTS {keyspace}.{table}_meta_idx"
       drop_vector_index:
-        raw: "DROP INDEX IF EXISTS {keyspace}.{table}_idx"
+        raw: "DROP INDEX IF EXISTS {keyspace}.{table}_vector_idx"
       drop_table:
         raw: "DROP TABLE IF EXISTS {keyspace}.{table}"
 
@@ -241,14 +241,14 @@ phases:
       # that as a hard ExecutionError rather than swallowing it,
       # which means the workload's `errors:` policy stops the
       # phase + the run rather than spinning silently.
-#      wait_for_index:
-#        raw: "SELECT index_name, is_building FROM system_views.sai_column_indexes WHERE keyspace_name = '{keyspace}' AND index_name = '{table}_meta_idx' AND is_building = true ALLOW FILTERING"
-#        poll: await_empty
-#        poll_interval_ms: 5000
-#        timeout_ms: 600000
-#        poll_max_error_retries: 3
-#        poll_metric_name: index_build_time_s
-      wait_for_index_cass6:
+      await_vector_index:
+        raw: "SELECT index_name, is_building FROM system_views.indexes WHERE keyspace_name = '{keyspace}' AND index_name = '{table}_vector_idx' AND is_building = true ALLOW FILTERING"
+        poll: await_empty
+        poll_interval_ms: 5000
+        timeout_ms: 600000
+        poll_max_error_retries: 3
+        poll_metric_name: index_build_time_s
+      await_metadata_index:
         raw: "SELECT index_name, is_building FROM system_views.indexes WHERE keyspace_name = '{keyspace}' AND index_name = '{table}_meta_idx' AND is_building = true ALLOW FILTERING"
         poll: await_empty
         poll_interval_ms: 5000

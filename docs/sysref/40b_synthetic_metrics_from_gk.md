@@ -547,12 +547,13 @@ becomes a component for the duration of the cycle's metric
 recording. (Flattening is about the GK kernel layer, not the
 metric component layer; the two decisions are independent.)
 
-### 7.2 Duplicate-family check uses the existing instrument set
+### 7.2 Duplicate-family check uses the component's registry
 
-`Component` already owns its `InstrumentSet`. SRD-40b adds no
-new registry — the duplicate check is "does this component
-already have an instrument with this family name?" answered
-against the component's instrument map.
+Each `Component` carries `Vec<RegisteredInstrument>`
+(consolidated 2026-05; see SRD 40 §"Instrument registry").
+`Component::register_instrument(family, instrument)` is the
+single entry point — it scans the Vec for a name collision
+and inserts atomically.
 
 The check fires at op-dispenser construction, before any cycle
 runs:
@@ -768,7 +769,12 @@ matters; SRD-42 holds the cadence-reporter-shaped *how*.
 
 ---
 
-## 12. Open questions
+## 12. Resolutions and codified working assumptions
+
+This SRD has no remaining open questions. Every item that was
+once tracked as "open" has been resolved or codified as a
+working assumption — in this section or in the SRDs cross-
+referenced from it.
 
 ### 12.1 Resolved
 
@@ -793,7 +799,7 @@ matters; SRD-42 holds the cadence-reporter-shaped *how*.
    mechanism; SRD-40 / SRD-42 will be amended to absorb the
    contract.
 
-### 12.2 Remaining open
+### 12.2 Codified working assumptions
 
 4. **`unit:` in family-name suffix vs separate column.**
    Resolved as **both** (§1) — the value flows into the

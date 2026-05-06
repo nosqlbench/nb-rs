@@ -78,6 +78,18 @@ use crate::labels::Labels;
 pub struct MetricSet {
     captured_at: Instant,
     interval: Duration,
+    /// SRD-40b §11 / SRD-42 §"Component lifecycle: scope_close flush":
+    /// a snapshot is `partial=true` when it was sealed before its
+    /// cadence window naturally closed — typically because the
+    /// component owning the contributing instruments is being torn
+    /// down between cadence pulses. Partial snapshots fold into the
+    /// next full window via the same `coalesce` rules as normal
+    /// pulse-flushed samples (Counter sum, Gauge weighted-avg with
+    /// last-write fallback, Histogram HDR-merge); the flag is
+    /// preserved so downstream tooling can distinguish the
+    /// scope-close contribution if needed. Coalesce result is
+    /// partial whenever **any** contributing input was partial.
+    partial: bool,
     families: Vec<MetricFamily>,
 }
 
@@ -86,6 +98,7 @@ impl Default for MetricSet {
         Self {
             captured_at: Instant::now(),
             interval: Duration::ZERO,
+            partial: false,
             families: Vec::new(),
         }
     }
@@ -98,6 +111,7 @@ impl MetricSet {
         Self {
             captured_at: Instant::now(),
             interval,
+            partial: false,
             families: Vec::new(),
         }
     }
@@ -105,11 +119,23 @@ impl MetricSet {
     /// Construct an empty snapshot stamped with an explicit
     /// `captured_at` (e.g., for tests reproducing a known instant).
     pub fn at(captured_at: Instant, interval: Duration) -> Self {
-        Self { captured_at, interval, families: Vec::new() }
+        Self { captured_at, interval, partial: false, families: Vec::new() }
     }
 
     pub fn captured_at(&self) -> Instant { self.captured_at }
     pub fn interval(&self) -> Duration { self.interval }
+
+    /// True if this snapshot represents a partial cadence window
+    /// (sealed before the window naturally closed — typically a
+    /// `scope_close` flush at component teardown). See SRD-42
+    /// §"Component lifecycle: scope_close flush" for the
+    /// semantics.
+    pub fn is_partial(&self) -> bool { self.partial }
+
+    /// Mark this snapshot as a partial-window contribution.
+    /// Idempotent. Once set, `coalesce` carries the flag forward —
+    /// any output that includes this snapshot will be partial too.
+    pub fn mark_partial(&mut self) { self.partial = true; }
 
     /// Set the represented interval. Used when a coalesce path
     /// promotes a snapshot to a coarser cadence's window.
@@ -172,8 +198,12 @@ impl MetricSet {
 
         let captured_at = snapshots.iter().map(|s| s.captured_at).max().unwrap();
         let interval: Duration = snapshots.iter().map(|s| s.interval).sum();
+        // Partial flag is sticky — if any contributing input was
+        // a scope_close partial, the merged result is too. SRD-42
+        // §"Component lifecycle: scope_close flush" / SRD-40b §11.2.
+        let partial = snapshots.iter().any(|s| s.partial);
 
-        let mut out = MetricSet { captured_at, interval, families: Vec::new() };
+        let mut out = MetricSet { captured_at, interval, partial, families: Vec::new() };
 
         // Family identity is `name`. For each unique family name
         // across inputs, fold its metrics in identity order.
@@ -339,8 +369,32 @@ impl MetricFamily {
         }
     }
 
+    /// Attach a unit to this family.
+    ///
+    /// SRD-40b §1 / SRD-40a §4.3: when a unit is set it lands in
+    /// **two** surfaces — concatenated onto the family name as an
+    /// `_<unit>` suffix (per OpenMetrics §4.4) **and** stored in
+    /// the `unit` field for structured access. Both surfaces flow
+    /// from this single declaration so they cannot drift.
+    ///
+    /// If the family name already ends with `_<unit>` (or has
+    /// `_<unit>` immediately before a known exposition suffix
+    /// like `_total` / `_count` per [`crate::validation::check_unit_suffix`]),
+    /// the name is left unchanged — the invariant is already met.
+    /// Otherwise the suffix is appended: `overscan` + `ratio` →
+    /// `overscan_ratio`.
+    ///
+    /// Empty unit is treated as no-op for the name; the unit is
+    /// still stored as `Some("")` so callers can distinguish
+    /// "explicitly empty" from "unset" if they care.
     pub fn with_unit(mut self, unit: impl Into<String>) -> Self {
-        self.unit = Some(unit.into());
+        let unit_str: String = unit.into();
+        if !unit_str.is_empty()
+            && crate::validation::check_unit_suffix(&self.name, Some(&unit_str)).is_err()
+        {
+            self.name = format!("{}_{}", self.name, unit_str);
+        }
+        self.unit = Some(unit_str);
         self
     }
 
@@ -1045,6 +1099,47 @@ impl MetricSet {
         }
     }
 
+    /// Insert one observation, looking up or creating the
+    /// [`MetricFamily`] by name with the given unit. When `unit`
+    /// is set, the family name picks up the OpenMetrics
+    /// `_<unit>` suffix at creation (per
+    /// [`MetricFamily::with_unit`]) and the unit is also stored
+    /// in the `unit` field. Subsequent inserts for the same bare
+    /// `(family_name, unit)` pair find the same family by the
+    /// suffixed name.
+    ///
+    /// Equivalent to [`insert_metric`] when `unit` is `None`.
+    pub fn insert_metric_with_unit(
+        &mut self,
+        family_name: impl Into<String>,
+        family_type: MetricType,
+        unit: Option<&str>,
+        labels: Labels,
+        value: MetricValue,
+        timestamp: Instant,
+    ) {
+        let bare = family_name.into();
+        let template = MetricFamily::new(bare.clone(), family_type);
+        let template = match unit {
+            Some(u) => template.with_unit(u),
+            None => template,
+        };
+        let effective_name = template.name().to_string();
+        let point = MetricPoint::new(value, timestamp);
+        if let Some(fam) = self.families.iter_mut().find(|f| f.name == effective_name) {
+            assert_eq!(
+                fam.r#type, family_type,
+                "family '{}' already exists as {:?}; cannot insert as {:?}",
+                effective_name, fam.r#type, family_type,
+            );
+            fam.insert(Metric::single(labels, point));
+        } else {
+            let mut fam = template;
+            fam.insert(Metric::single(labels, point));
+            self.families.push(fam);
+        }
+    }
+
     /// Insert a counter observation. Convenience over
     /// [`insert_metric`] that builds the [`CounterValue`] for you.
     pub fn insert_counter(
@@ -1056,6 +1151,22 @@ impl MetricSet {
     ) {
         self.insert_metric(
             family_name, MetricType::Counter, labels,
+            MetricValue::Counter(CounterValue::new(total)),
+            timestamp,
+        );
+    }
+
+    /// Counter variant of [`insert_metric_with_unit`].
+    pub fn insert_counter_with_unit(
+        &mut self,
+        family_name: impl Into<String>,
+        unit: Option<&str>,
+        labels: Labels,
+        total: u64,
+        timestamp: Instant,
+    ) {
+        self.insert_metric_with_unit(
+            family_name, MetricType::Counter, unit, labels,
             MetricValue::Counter(CounterValue::new(total)),
             timestamp,
         );
@@ -1076,6 +1187,22 @@ impl MetricSet {
         );
     }
 
+    /// Gauge variant of [`insert_metric_with_unit`].
+    pub fn insert_gauge_with_unit(
+        &mut self,
+        family_name: impl Into<String>,
+        unit: Option<&str>,
+        labels: Labels,
+        value: f64,
+        timestamp: Instant,
+    ) {
+        self.insert_metric_with_unit(
+            family_name, MetricType::Gauge, unit, labels,
+            MetricValue::Gauge(GaugeValue::new(value)),
+            timestamp,
+        );
+    }
+
     /// Insert a histogram observation. Convenience over
     /// [`insert_metric`] that wraps the HDR reservoir into a
     /// [`HistogramValue`] and computes `count`/`sum` from it.
@@ -1088,6 +1215,22 @@ impl MetricSet {
     ) {
         self.insert_metric(
             family_name, MetricType::Histogram, labels,
+            MetricValue::Histogram(HistogramValue::from_hdr(reservoir)),
+            timestamp,
+        );
+    }
+
+    /// Histogram variant of [`insert_metric_with_unit`].
+    pub fn insert_histogram_with_unit(
+        &mut self,
+        family_name: impl Into<String>,
+        unit: Option<&str>,
+        labels: Labels,
+        reservoir: HdrHistogram<u64>,
+        timestamp: Instant,
+    ) {
+        self.insert_metric_with_unit(
+            family_name, MetricType::Histogram, unit, labels,
             MetricValue::Histogram(HistogramValue::from_hdr(reservoir)),
             timestamp,
         );
@@ -1303,13 +1446,37 @@ mod tests {
 
     #[test]
     fn metric_family_records_type_and_optional_metadata() {
+        // SRD-40b §1 / SRD-40a §4.3: `with_unit` appends the
+        // `_<unit>` suffix to the family name when the invariant
+        // is not already met. Both surfaces (name + unit) derive
+        // from this single declaration.
         let f = MetricFamily::new("latency", MetricType::Histogram)
             .with_unit("nanoseconds")
             .with_help("End-to-end op latency");
-        assert_eq!(f.name(), "latency");
+        assert_eq!(f.name(), "latency_nanoseconds");
         assert_eq!(f.r#type(), MetricType::Histogram);
         assert_eq!(f.unit(), Some("nanoseconds"));
         assert_eq!(f.help(), Some("End-to-end op latency"));
+    }
+
+    #[test]
+    fn with_unit_preserves_name_when_suffix_already_present() {
+        // No double-suffixing: if the caller already wrote the
+        // canonical name, `with_unit` is a no-op for the name.
+        let f = MetricFamily::new("memory_bytes", MetricType::Gauge)
+            .with_unit("bytes");
+        assert_eq!(f.name(), "memory_bytes");
+        assert_eq!(f.unit(), Some("bytes"));
+    }
+
+    #[test]
+    fn with_unit_preserves_name_when_unit_precedes_exposition_suffix() {
+        // OpenMetrics §4.4 / §5.x: the unit may sit before a
+        // known exposition suffix (e.g. `_total`).
+        let f = MetricFamily::new("process_cpu_seconds_total", MetricType::Counter)
+            .with_unit("seconds");
+        assert_eq!(f.name(), "process_cpu_seconds_total");
+        assert_eq!(f.unit(), Some("seconds"));
     }
 
     #[test]
