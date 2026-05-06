@@ -9,6 +9,11 @@
 //! across personas. `main.rs` wires it up; nothing in this file
 //! duplicates that logic.
 
+/// Legacy human-readable usage text. Today's CLI surface is built
+/// from `cli_spec` and renders help via that path; this function
+/// is retained as a fallback writer for tooling that wants the
+/// classic flat block.
+#[allow(dead_code)]
 pub fn print_usage() {
     eprintln!("nbrs — nosqlbench for Rust");
     eprintln!();

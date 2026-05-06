@@ -1,6 +1,15 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
+// Module-level allow: the legacy `LIST_FLAGS` / `MATCH_FLAGS` /
+// `SESSION_FLAGS` constants and the corresponding `*_all_flags`
+// helpers + `metrics_command` are referenced only by
+// `completion::metrics_node()`, which itself is in the legacy
+// dead path retained for fallback (see `completion.rs` module
+// comment). Kept so a future re-activation of the legacy tree
+// finds the contracts intact.
+#![allow(dead_code)]
+
 //! `nbrs metrics list [<expr>]` and `nbrs metrics show [<expr>]`
 //!
 //! Reads `metric_instance` rows from the active session's

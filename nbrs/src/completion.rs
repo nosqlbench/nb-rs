@@ -1,6 +1,16 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
+// Module-level allow: this file holds the legacy shell-completion
+// builder API (`build_tree`, the `*_node` family, `Category` /
+// `Level` enums duplicated in `cli_spec`). Retained per the doc
+// comment on `build_tree`: "main.rs uses
+// `cli_spec::completion::build_command_tree(&root)` instead, so
+// the spec is the single source of truth." The orphan tree
+// stays compileable as a fallback path for downstream tooling
+// that hasn't migrated to the spec-driven builder yet.
+#![allow(dead_code)]
+
 //! Stratified shell completion for the `nbrs` CLI, built on
 //! [`veks_completion`].
 //!

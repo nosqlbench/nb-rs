@@ -168,6 +168,9 @@ pub enum PositionalKind {
     /// Optional: zero or one accepted.
     ZeroOrOne,
     /// Zero or more — collects all remaining non-flag args.
+    /// Reserved for variadic positional surfaces; no current
+    /// command declares this, so the walker has no consumer yet.
+    #[allow(dead_code)]
     Many,
 }
 
@@ -192,6 +195,9 @@ pub struct ParsedCommand {
     pub raw: Vec<String>,
     /// Original argv (less the program name). Useful for
     /// raw-args handlers that delegate to legacy parsers.
+    /// No current handler reads this; reserved for the legacy-
+    /// delegation pattern.
+    #[allow(dead_code)]
     pub argv: Vec<String>,
     /// True when `--help` or `-h` appeared anywhere in argv.
     /// The walker stops at the deepest subcommand seen *before*
