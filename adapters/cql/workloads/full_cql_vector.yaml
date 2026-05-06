@@ -359,9 +359,13 @@ phases:
       query_vector := query_vector_at(prebuffered, q % query_counts)
       predicate := predicate_value_at(prebuffered, q % query_counts)
       ground_truth := filtered_neighbor_indices_at(prebuffered, q % query_counts)
-      latency_factor := 0.979 + 4.021 * pow(limit, -0.761)                                                                                                                                                                                                             
+      latency_factor := 0.979 + 4.021 * pow(limit, -0.761)
       recall_factor  := 0.509 + 9.491 * pow(limit, -0.402)
-      overscan := map("LATENCY", "RECALL", latency_factor, recall_factor) 
+      # Align with ann_query's overscan formula. A future
+      # `map(key, "K1", v1, "K2", v2, ...)` intrinsic could
+      # replace this once designed; for now `if(... == "LATENCY",
+      # ..., ...)` is the canonical dispatch on string keys.
+      overscan := if(optimize_for == "LATENCY", latency_factor, recall_factor)
 
     ops:
       select_ann:
