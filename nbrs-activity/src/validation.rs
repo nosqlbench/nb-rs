@@ -96,11 +96,27 @@ pub enum AssertionPredicate {
     Lte(f64),
     /// String: field contains substring.
     Contains(String),
+    /// Body-level: result must contain at least N rows
+    /// (`element_count() >= N`). Use to make a SELECT
+    /// failsafe — empty result sets surface as a hard error
+    /// instead of silently passing per-row assertions vacuously.
+    /// Field name is ignored for this predicate.
+    MinRows(u64),
 }
 
 impl AssertionSpec {
     /// Check this assertion against a result.
     pub fn check(&self, result: &OpResult) -> bool {
+        // Body-level predicates are evaluated against the result's
+        // shape rather than a per-row field value. Handled before
+        // field extraction.
+        if let AssertionPredicate::MinRows(n) = &self.predicate {
+            let row_count = result.body.as_ref()
+                .map(|b| b.element_count())
+                .unwrap_or(0);
+            return row_count >= *n;
+        }
+
         let json = match &result.body {
             Some(body) => body.to_json(),
             None => return matches!(self.predicate, AssertionPredicate::IsNull),
@@ -123,6 +139,9 @@ impl AssertionSpec {
             AssertionPredicate::Contains(substr) => {
                 field_val.map_or(false, |v| json_value_as_string(&v).contains(substr.as_str()))
             }
+            AssertionPredicate::MinRows(_) => unreachable!(
+                "MinRows handled in early-return above"
+            ),
         }
     }
 }
@@ -373,13 +392,19 @@ impl OpDispenser for ValidatingDispenser {
             let fields = ctx.fields;
             let result = self.inner.execute(cycle, ctx).await?;
 
-            // Phase 1: Field assertions
-            let mut all_pass = true;
+            // Phase 1: Field assertions. Track failed predicates
+            // so the strict-mode error can say which check failed
+            // (especially helpful for body-level checks like
+            // `min_rows: 1` where the user gets clear feedback that
+            // the result was empty rather than a generic "validation
+            // failed" message).
+            let mut failed_assertions: Vec<String> = Vec::new();
             for assertion in &self.assertions {
                 if !assertion.check(&result) {
-                    all_pass = false;
+                    failed_assertions.push(describe_assertion_failure(assertion, &result));
                 }
             }
+            let all_pass = failed_assertions.is_empty();
 
             // Phase 2: Relevancy metrics
             if let Some(config) = &self.relevancy {
@@ -487,7 +512,10 @@ impl OpDispenser for ValidatingDispenser {
                 if self.strict {
                     return Err(ExecutionError::Op(crate::adapter::AdapterError {
                         error_name: "validation_failed".into(),
-                        message: "result validation failed (strict mode)".into(),
+                        message: format!(
+                            "result validation failed (strict mode): {}",
+                            failed_assertions.join("; "),
+                        ),
                         retryable: false,
                     }));
                 }
@@ -502,6 +530,32 @@ impl OpDispenser for ValidatingDispenser {
 // YAML parsing
 // =========================================================================
 
+/// Render a one-line description of an assertion that failed
+/// against `result`. Used by the strict-mode error message so
+/// the workload author sees exactly which predicate fired.
+fn describe_assertion_failure(assertion: &AssertionSpec, result: &OpResult) -> String {
+    match &assertion.predicate {
+        AssertionPredicate::MinRows(n) => {
+            let got = result.body.as_ref()
+                .map(|b| b.element_count())
+                .unwrap_or(0);
+            format!("min_rows: expected ≥{n}, got {got}")
+        }
+        AssertionPredicate::Eq(expected) =>
+            format!("field '{}' eq '{}' failed", assertion.field, expected),
+        AssertionPredicate::NotNull =>
+            format!("field '{}' must not be null", assertion.field),
+        AssertionPredicate::IsNull =>
+            format!("field '{}' must be null", assertion.field),
+        AssertionPredicate::Gte(t) =>
+            format!("field '{}' >= {t} failed", assertion.field),
+        AssertionPredicate::Lte(t) =>
+            format!("field '{}' <= {t} failed", assertion.field),
+        AssertionPredicate::Contains(sub) =>
+            format!("field '{}' contains '{}' failed", assertion.field, sub),
+    }
+}
+
 /// Parse `verify:` block from a ParsedOp's params.
 ///
 /// Expected YAML structure:
@@ -513,7 +567,13 @@ impl OpDispenser for ValidatingDispenser {
 ///     gte: 0
 ///   - field: data
 ///     eq: "expected_value"
+///   - min_rows: 1     # body-level: result must have ≥1 row
 /// ```
+///
+/// Most predicates target a named field within each result row
+/// and require `field:`. The body-level `min_rows:` predicate is
+/// the exception — it asserts on the result's row count rather
+/// than any specific field, so it has no `field:` key.
 fn parse_assertions(template: &nbrs_workload::model::ParsedOp) -> Vec<AssertionSpec> {
     let Some(verify) = template.params.get("verify") else {
         return Vec::new();
@@ -526,6 +586,18 @@ fn parse_assertions(template: &nbrs_workload::model::ParsedOp) -> Vec<AssertionS
     let mut assertions = Vec::new();
     for item in items {
         let Some(obj) = item.as_object() else { continue };
+
+        // Body-level predicates first: `min_rows: N` doesn't take
+        // a `field:` because it asserts on the body's row count.
+        if let Some(v) = obj.get("min_rows") {
+            let n = v.as_u64().unwrap_or(0);
+            assertions.push(AssertionSpec {
+                field: String::new(),  // ignored for MinRows
+                predicate: AssertionPredicate::MinRows(n),
+            });
+            continue;
+        }
+
         let Some(field) = obj.get("field").and_then(|v| v.as_str()) else { continue };
 
         let predicate = if let Some(v) = obj.get("eq") {
@@ -982,6 +1054,107 @@ mod tests {
             predicate: AssertionPredicate::NotNull,
         };
         assert!(!spec_not_null.check(&result));
+    }
+
+    /// Body whose `element_count()` reflects the number of items
+    /// in a JSON array — exercises body-level predicates like
+    /// `MinRows` that read from `element_count` rather than
+    /// inspecting fields.
+    #[derive(Debug)]
+    struct CountedBody {
+        rows: Vec<serde_json::Value>,
+    }
+    impl ResultBody for CountedBody {
+        fn to_json(&self) -> serde_json::Value {
+            serde_json::Value::Array(self.rows.clone())
+        }
+        fn as_any(&self) -> &dyn Any { self }
+        fn element_count(&self) -> u64 { self.rows.len() as u64 }
+    }
+
+    #[test]
+    fn assertion_min_rows_passes_when_threshold_met() {
+        let result = OpResult {
+            body: Some(Box::new(CountedBody {
+                rows: vec![
+                    serde_json::json!({"index_name": "vec_idx"}),
+                    serde_json::json!({"index_name": "meta_idx"}),
+                ],
+            })),
+            captures: HashMap::new(),
+            skipped: false,
+        };
+        let spec = AssertionSpec {
+            field: String::new(),
+            predicate: AssertionPredicate::MinRows(1),
+        };
+        assert!(spec.check(&result));
+
+        let spec_two = AssertionSpec {
+            field: String::new(),
+            predicate: AssertionPredicate::MinRows(2),
+        };
+        assert!(spec_two.check(&result));
+    }
+
+    #[test]
+    fn assertion_min_rows_fails_when_below_threshold() {
+        // Empty array: element_count = 0, MinRows(1) must fail.
+        let result = OpResult {
+            body: Some(Box::new(CountedBody { rows: Vec::new() })),
+            captures: HashMap::new(),
+            skipped: false,
+        };
+        let spec = AssertionSpec {
+            field: String::new(),
+            predicate: AssertionPredicate::MinRows(1),
+        };
+        assert!(!spec.check(&result));
+
+        // No body at all: element_count defaults to 0 → MinRows(1) fails.
+        let result_none = OpResult {
+            body: None,
+            captures: HashMap::new(),
+            skipped: false,
+        };
+        assert!(!spec.check(&result_none));
+    }
+
+    #[test]
+    fn parse_assertions_min_rows_from_yaml() {
+        // SRD-40b-shaped failsafe verify form:
+        //   verify:
+        //     - min_rows: 1
+        let mut template = nbrs_workload::model::ParsedOp::simple("await", "test");
+        template.params.insert("verify".into(), serde_json::json!([
+            {"min_rows": 1},
+        ]));
+        let assertions = parse_assertions(&template);
+        assert_eq!(assertions.len(), 1);
+        match &assertions[0].predicate {
+            AssertionPredicate::MinRows(n) => assert_eq!(*n, 1),
+            other => panic!("expected MinRows(1), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn min_rows_failure_describes_actual_vs_expected() {
+        // Strict-mode error renderer should name the predicate
+        // and the actual count so the user sees "expected ≥1, got 0"
+        // rather than a generic "validation failed".
+        let result = OpResult {
+            body: Some(Box::new(CountedBody { rows: Vec::new() })),
+            captures: HashMap::new(),
+            skipped: false,
+        };
+        let spec = AssertionSpec {
+            field: String::new(),
+            predicate: AssertionPredicate::MinRows(1),
+        };
+        let msg = describe_assertion_failure(&spec, &result);
+        assert!(msg.contains("min_rows"), "got: {msg}");
+        assert!(msg.contains("≥1"), "got: {msg}");
+        assert!(msg.contains("got 0"), "got: {msg}");
     }
 
     #[test]
