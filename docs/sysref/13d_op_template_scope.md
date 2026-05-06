@@ -109,8 +109,9 @@ Existing depths are `phase`, `cycle`, `full` (SRD-04 / runner
 |-----------|------------------------------------------------------------|
 | `phase`   | Scenario tree walk; phase-level kernels instanced; no ops. |
 | `op`      | **NEW.** Phase walk + op-template kernels instanced;      |
-|           | adapter `map_op` called; metric instruments registered;   |
-|           | `register_family` collisions surface here; no cycles run. |
+|           | adapter `map_op` called; metric instruments registered    |
+|           | (duplicate-family collisions from                         |
+|           | `Component::register_instrument` surface here); no cycles. |
 | `cycle`   | One cycle per op runs through the silent adapter.          |
 | `full`    | Standard run.                                              |
 
@@ -755,3 +756,15 @@ build the scope-tree marks; phases 6–9 are the runtime
 consumers. Once this SRD lands, SRD-40b's §3 becomes a thin
 reference to it — the metrics mechanism just consumes the
 op-template scope layer.
+
+### Phase 9 status (2026-05)
+
+Phases 1–8 are landed. **Phase 9 is scoped but not
+implemented** — see
+`docs/design/srd13d_phase9_scope.md` for the full assessment.
+Summary: the cross-crate plumbing is contained, but it's
+gated on a new `GkProgram::compile_expr` API surface that
+deserves its own design pass before code. Until Phase 9 lands,
+`MetricsDispenser` evaluates `value_expr` as a bare-binding
+lookup against `OpResult.captures` (the canonical SRD-40b §1
+form); non-bare expressions warn + skip.

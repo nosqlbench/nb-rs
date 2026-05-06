@@ -68,6 +68,7 @@ pub mod bindings;
 pub mod params;
 pub mod scope;
 pub mod scope_tree;
+pub mod scope_flattening;
 pub mod scene_tree;
 pub mod checkpoint;
 pub mod scheduler;

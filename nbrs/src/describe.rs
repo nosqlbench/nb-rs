@@ -649,6 +649,7 @@ fn extract_first_comment(source: &str, name: &str) -> Option<String> {
 ///
 /// Usage:
 ///   nbrs describe gk dag <file.gk> [--format=dot|mermaid|svg] [--output=file]
+///   nbrs describe gk dag --with-flattening <workload.yaml>
 fn describe_gk_dag(args: &[String]) {
     use nbrs_variates::viz;
 
@@ -658,6 +659,7 @@ fn describe_gk_dag(args: &[String]) {
         .unwrap_or("dot");
     let output = args.iter()
         .find_map(|a| a.strip_prefix("--output="));
+    let with_flattening = args.iter().any(|a| a == "--with-flattening");
 
     let source = match file {
         Some(path) => match std::fs::read_to_string(path) {
@@ -669,15 +671,45 @@ fn describe_gk_dag(args: &[String]) {
         },
         None => {
             eprintln!("nbrs describe gk dag <file.gk> [--format=dot|mermaid|svg] [--output=file]");
+            eprintln!("nbrs describe gk dag --with-flattening <workload.yaml>");
             eprintln!();
             eprintln!("Renders a GK source file as a DAG diagram.");
-            eprintln!("  --format=dot       DOT digraph (default)");
-            eprintln!("  --format=mermaid   Mermaid flowchart");
-            eprintln!("  --format=svg       Self-contained SVG (pure Rust, no external tools)");
-            eprintln!("  --output=file      Write to file instead of stdout");
+            eprintln!("  --format=dot         DOT digraph (default)");
+            eprintln!("  --format=mermaid     Mermaid flowchart");
+            eprintln!("  --format=svg         Self-contained SVG (pure Rust, no external tools)");
+            eprintln!("  --output=file        Write to file instead of stdout");
+            eprintln!("  --with-flattening    Treat <file> as a workload YAML; print");
+            eprintln!("                       the SRD-13d scope-flattening summary");
+            eprintln!("                       (materialised bit, logical_name, bind_outer)");
             return;
         }
     };
+
+    // SRD-13d Phase 8: --with-flattening switches the surface from
+    // "render a GK source string" to "parse a workload YAML, build
+    // its scope tree, run mark_scope_flattening with the
+    // 'materialise everything' stub predicate, and print the
+    // per-node summary." When SRD-13d Phase 3 lands and supplies
+    // the real predicate, swap it in here — the rest of the pipe
+    // stays.
+    if with_flattening {
+        let path = file.map(|s| s.as_str()).unwrap_or("<missing>");
+        let summary = render_flattening_summary(&source, path);
+        match summary {
+            Ok(content) => {
+                if let Some(p) = output {
+                    match std::fs::write(p, &content) {
+                        Ok(()) => eprintln!("wrote {} bytes to {p}", content.len()),
+                        Err(e) => eprintln!("error: failed to write '{p}': {e}"),
+                    }
+                } else {
+                    print!("{content}");
+                }
+            }
+            Err(e) => eprintln!("error: {e}"),
+        }
+        return;
+    }
 
     let result = match format {
         "dot" => viz::gk_to_dot(&source),
@@ -702,6 +734,99 @@ fn describe_gk_dag(args: &[String]) {
         }
         Err(e) => eprintln!("error: {e}"),
     }
+}
+
+/// SRD-13d Phase 8 entry point: parse `yaml_source` as a
+/// workload, build its [`ScopeTree`], run
+/// [`ScopeTree::mark_scope_flattening`] with a stub
+/// "materialise everything" predicate, and produce a textual
+/// summary listing each node's logical_name, materialised
+/// bit, and the nearest_materialised ancestor it would bind
+/// to (the SRD-13d "walking parent" reference).
+///
+/// Today's predicate is a stub — SRD-13d Phase 3 will install
+/// the real one (consulting `HasGkMatter` + program-hash
+/// equivalence). Wiring everything else end-to-end now means
+/// that swap is a one-liner when the predicate lands.
+///
+/// `path` is the file path the user supplied; it's surfaced
+/// in the header line so the caller can confirm which file
+/// was read.
+fn render_flattening_summary(yaml_source: &str, path: &str) -> Result<String, String> {
+    use nbrs_activity::scope_tree::{ScopeTree, ScopeKind};
+    use nbrs_workload::parse::parse_workload;
+    use std::collections::HashMap;
+
+    let workload = parse_workload(yaml_source, &HashMap::new())
+        .map_err(|e| format!("parse_workload('{path}'): {e}"))?;
+
+    // Pick the scenario the same way the runner does: take the
+    // user-named scenario or, if absent, synthesise a default
+    // from `phase_order`. We don't accept a `--scenario=` knob
+    // here today — the diagnostic surface is structural, not
+    // configurable.
+    let scenario_name = "default";
+    let scenario_nodes: Vec<_> = if let Some(nodes) = workload.scenarios.get(scenario_name) {
+        nodes.clone()
+    } else if !workload.phase_order.is_empty() {
+        workload.phase_order.iter()
+            .map(|n| nbrs_workload::model::ScenarioNode::Phase(n.clone()))
+            .collect()
+    } else {
+        return Err(format!(
+            "workload '{path}' has neither a 'default' scenario nor any phases"
+        ));
+    };
+
+    let mut tree = ScopeTree::build(scenario_name, &scenario_nodes);
+    // SRD-13d Phase 3 stub: every node materialises. Swap in
+    // the real predicate (HasGkMatter classification +
+    // program-hash equivalence) when Phase 3 lands.
+    tree.mark_scope_flattening(|_kind, _idx| true);
+
+    let mut out = String::new();
+    out.push_str(&format!("# scope flattening summary: {path}\n"));
+    out.push_str(&format!("# scenario: {scenario_name}\n"));
+    out.push_str("# predicate: stub (materialise everything) — SRD-13d Phase 3 pending\n");
+    out.push('\n');
+    out.push_str(&format!(
+        "{:<5} {:<6} {:<14} {:<50} {:<50} {}\n",
+        "idx", "depth", "materialised", "logical_name", "kind", "bind_outer",
+    ));
+    out.push_str(&format!(
+        "{:<5} {:<6} {:<14} {:<50} {:<50} {}\n",
+        "---", "-----", "------------", "------------", "----", "----------",
+    ));
+    for (idx, node) in tree.iter_dfs() {
+        let mat = match node.materialised {
+            Some(true)  => "true",
+            Some(false) => "false",
+            None        => "?",
+        };
+        // bind_outer = nearest materialised ancestor, walking
+        // *strict* parents when this node is itself flattened.
+        // For materialised nodes we surface the same identity
+        // (own logical_name) so the summary is self-contained:
+        // a reader knows where every node binds at a glance.
+        let bind_outer = match node.materialised {
+            Some(false) => match node.parent
+                .and_then(|p| tree.nearest_materialised(p))
+            {
+                Some(anc) => tree.nodes[anc].logical_name.clone(),
+                None => "<none>".to_string(),
+            },
+            _ => node.logical_name.clone(),
+        };
+        let kind_label = match &node.kind {
+            ScopeKind::Workload => "workload".to_string(),
+            other => other.label(),
+        };
+        out.push_str(&format!(
+            "{:<5} {:<6} {:<14} {:<50} {:<50} {}\n",
+            idx, node.depth, mat, node.logical_name, kind_label, bind_outer,
+        ));
+    }
+    Ok(out)
 }
 
 // ── cli_spec entry ─────────────────────────────────────────
@@ -733,5 +858,114 @@ pub fn spec() -> crate::cli_spec::Command {
         handler: Some(Handler::Sync(handle)),
         raw_args: true,
         completion_override: None,
+    }
+}
+
+#[cfg(test)]
+mod describe_gk_dag_flattening_tests {
+    //! SRD-13d Phase 8 — the `--with-flattening` surface on
+    //! `nbrs describe gk dag`. Drives the same code path the CLI
+    //! does (parse YAML → build ScopeTree → mark → render
+    //! summary) and asserts the produced text contains the
+    //! per-node fields the SRD calls out: logical_name,
+    //! materialised, and the bind_outer reference.
+    use super::render_flattening_summary;
+
+    /// Minimal flat workload — one phase under the implicit
+    /// scenario. Exercises the simplest path: workload, scenario,
+    /// phase. With the all-materialise stub every node should be
+    /// `materialised=true` and `bind_outer` equal to its own
+    /// `logical_name`.
+    #[test]
+    fn flat_phase_workload_summary_contains_logical_names() {
+        let yaml = r#"
+phases:
+  setup:
+    ops:
+      - op: noop
+"#;
+        let out = render_flattening_summary(yaml, "test.yaml")
+            .expect("flat workload should parse and render");
+        // Header sanity.
+        assert!(out.contains("# scope flattening summary: test.yaml"));
+        assert!(out.contains("# scenario: default"));
+        // Logical names per SRD-13d §5.3.
+        assert!(out.contains("workload"),
+            "root node logical_name 'workload' missing:\n{out}");
+        assert!(out.contains("workload.scenario.default"),
+            "scenario logical_name missing:\n{out}");
+        assert!(out.contains("workload.scenario.default.phase.setup"),
+            "phase logical_name missing:\n{out}");
+        // Stub predicate ⇒ everyone's materialised.
+        assert!(out.contains("true"),
+            "expected at least one materialised=true row:\n{out}");
+        // No 'false' rows under the all-materialise stub. (We
+        // can't assert "no false" by literal substring because
+        // 'false' could appear inside a logical_name; the regex
+        // would be brittle. Spot-check the column instead by
+        // counting "    false    " patterns.)
+        assert!(!out.contains(" false "),
+            "stub predicate should not flag any node as flattened:\n{out}");
+    }
+
+    /// Multi-phase workload — verify each phase appears with its
+    /// own logical_name path, and the bind_outer column points
+    /// at the materialised ancestor (here itself, since stub
+    /// materialises everything).
+    #[test]
+    fn multi_phase_workload_lists_every_phase() {
+        let yaml = r#"
+phases:
+  setup:
+    ops:
+      - op: noop
+  run:
+    ops:
+      - op: noop
+"#;
+        let out = render_flattening_summary(yaml, "two.yaml")
+            .expect("two-phase workload should render");
+        assert!(out.contains("phase.setup"), "setup phase row missing:\n{out}");
+        assert!(out.contains("phase.run"), "run phase row missing:\n{out}");
+    }
+
+    /// Bad workload YAML surfaces an Err with the file path
+    /// embedded, so the diagnostic tells the user *which* file
+    /// failed (matters when running the binary against a
+    /// directory of workloads or via shell expansion).
+    #[test]
+    fn malformed_workload_returns_path_tagged_error() {
+        let bad = "not: valid: yaml: workload";
+        let err = render_flattening_summary(bad, "bad.yaml").unwrap_err();
+        assert!(err.contains("bad.yaml"),
+            "error should embed the offending path: {err}");
+    }
+
+    /// `bind_outer` for a materialised node points at its own
+    /// logical_name (so the summary is self-describing). When
+    /// SRD-13d Phase 3 ships and a non-trivial predicate flags
+    /// some node as flattened, the same row will instead point
+    /// at the nearest materialised ancestor — but the column
+    /// shape stays.
+    #[test]
+    fn bind_outer_column_is_self_when_node_is_materialised() {
+        let yaml = r#"
+phases:
+  p:
+    ops:
+      - op: noop
+"#;
+        let out = render_flattening_summary(yaml, "x.yaml").unwrap();
+        // The phase row should mention its own name twice — once
+        // in the logical_name column, once in bind_outer.
+        let phase_lines: Vec<&str> = out.lines()
+            .filter(|l| l.contains("phase.p"))
+            .collect();
+        assert_eq!(phase_lines.len(), 1,
+            "expected exactly one phase row, got: {phase_lines:?}");
+        let line = phase_lines[0];
+        let occurrences = line.matches("workload.scenario.default.phase.p").count();
+        assert_eq!(occurrences, 2,
+            "materialised phase row should list its logical_name twice (logical_name + bind_outer): {line}");
     }
 }

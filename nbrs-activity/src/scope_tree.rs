@@ -76,9 +76,22 @@ pub enum ScopeKind {
         condition: String,
         counter: Option<String>,
     },
-    /// A leaf phase reference. The kernel slot, if filled, holds
-    /// the per-phase GK program that the executor activates.
+    /// A phase reference. With SRD-13d Phase 6 the phase is no
+    /// longer a leaf — every op template the phase declares
+    /// becomes an `OpTemplate` child of this node. The kernel
+    /// slot, if filled, holds the per-phase GK program.
     Phase { name: String },
+    /// SRD-13d Phase 6 — an op template's scope, child of its
+    /// declaring phase. Per-template GK content (`bindings:`,
+    /// `metrics:` wire-injections, inline `{{<expr>}}` rewrites)
+    /// hangs off this node; the scope-flattening pre-walk
+    /// (§3.3) decides whether it materialises its own kernel
+    /// or flattens into the parent phase. Op-template scopes
+    /// also own per-op `Component` instances at runtime so
+    /// SRD-40b's duplicate-family check (via
+    /// `Component::register_instrument`) surfaces per-op
+    /// rather than per-phase.
+    OpTemplate { name: String },
 }
 
 impl ScopeKind {
@@ -127,6 +140,7 @@ impl ScopeKind {
                 None => format!("do_until {condition}"),
             },
             ScopeKind::Phase { name } => format!("phase '{name}'"),
+            ScopeKind::OpTemplate { name } => format!("op '{name}'"),
         }
     }
 }
@@ -169,6 +183,21 @@ pub struct ScopeNode {
     /// [`ScopeTree::lookup_name`] and never touch this slot
     /// directly.
     pub cached_kernel: std::sync::OnceLock<std::sync::Arc<nbrs_variates::kernel::GkKernel>>,
+    /// SRD-13d §3 scope-flattening mark — set once at
+    /// pre-walk by [`ScopeTree::mark_scope_flattening`] and
+    /// read by every consumer (premap, runtime, diagnostics).
+    /// `None` means "not yet computed"; the pre-walk
+    /// guarantees every node has `Some` after it finishes.
+    /// `true` ⇒ this scope materialises its own kernel;
+    /// `false` ⇒ flattened into the nearest materialised
+    /// ancestor.
+    pub materialised: Option<bool>,
+    /// SRD-13d §5.3 logical kernel name. Stable, fully-
+    /// qualified scope-tree path (`workload`, `phase.<n>`,
+    /// `phase.<n>.op.<o>`, etc.). Used by `dryrun=op`
+    /// diagnostics and `nbrs describe gk` displays. Empty
+    /// before the pre-walk runs.
+    pub logical_name: String,
 }
 
 // `OnceLock` doesn't implement `Clone`, so neither does
@@ -187,6 +216,8 @@ impl Clone for ScopeNode {
             depth: self.depth,
             pragmas: self.pragmas.clone(),
             cached_kernel: std::sync::OnceLock::new(),
+            materialised: self.materialised,
+            logical_name: self.logical_name.clone(),
         }
     }
 }
@@ -222,6 +253,8 @@ impl ScopeTree {
             depth: 0,
             pragmas: PragmaSet::default(),
             cached_kernel: std::sync::OnceLock::new(),
+            materialised: None,
+            logical_name: String::new(),
         });
 
         // Scenario layer wraps the user's children. This is the
@@ -234,6 +267,8 @@ impl ScopeTree {
             depth: 1,
             pragmas: PragmaSet::default(),
             cached_kernel: std::sync::OnceLock::new(),
+            materialised: None,
+            logical_name: String::new(),
         });
         tree.nodes[0].children.push(scenario_idx);
 
@@ -260,6 +295,8 @@ impl ScopeTree {
                     depth,
                     pragmas: PragmaSet::default(),
             cached_kernel: std::sync::OnceLock::new(),
+            materialised: None,
+            logical_name: String::new(),
                 });
                 self.nodes[parent_idx].children.push(idx);
             }
@@ -273,6 +310,8 @@ impl ScopeTree {
                     depth,
                     pragmas: PragmaSet::default(),
                     cached_kernel: std::sync::OnceLock::new(),
+                    materialised: None,
+                    logical_name: String::new(),
                 });
                 self.nodes[parent_idx].children.push(idx);
                 for child in children {
@@ -287,6 +326,8 @@ impl ScopeTree {
                     depth,
                     pragmas: PragmaSet::default(),
                     cached_kernel: std::sync::OnceLock::new(),
+                    materialised: None,
+                    logical_name: String::new(),
                 });
                 self.nodes[parent_idx].children.push(idx);
                 for child in children {
@@ -304,6 +345,8 @@ impl ScopeTree {
                     depth,
                     pragmas: PragmaSet::default(),
             cached_kernel: std::sync::OnceLock::new(),
+            materialised: None,
+            logical_name: String::new(),
                 });
                 self.nodes[parent_idx].children.push(idx);
                 for child in children {
@@ -321,6 +364,8 @@ impl ScopeTree {
                     depth,
                     pragmas: PragmaSet::default(),
             cached_kernel: std::sync::OnceLock::new(),
+            materialised: None,
+            logical_name: String::new(),
                 });
                 self.nodes[parent_idx].children.push(idx);
                 for child in children {
@@ -334,6 +379,149 @@ impl ScopeTree {
         let idx = self.nodes.len();
         self.nodes.push(node);
         idx
+    }
+
+    /// SRD-13d Phase 6 — extend every `Phase` scope node with
+    /// `OpTemplate` children (one per op declared in the
+    /// phase). Two-step build: `ScopeTree::build` produces
+    /// the scenario-shaped skeleton (phases as leaves);
+    /// this method adds the op-template tier on top by
+    /// consulting the workload's per-phase `WorkloadPhase`
+    /// records.
+    ///
+    /// Idempotent: a phase whose `OpTemplate` children are
+    /// already present is left alone (the post-build pre-walk
+    /// can run before or after this without double-adding).
+    /// Run before `mark_scope_flattening` so the per-op
+    /// classification gets the chance to flatten / materialise
+    /// each op-template tier.
+    pub fn extend_with_op_templates(
+        &mut self,
+        phases: &std::collections::HashMap<String, nbrs_workload::model::WorkloadPhase>,
+    ) {
+        // Snapshot the indices first — we'll mutate `nodes`
+        // during the loop.
+        let phase_nodes: Vec<(ScopeNodeIdx, String, usize)> = self.nodes.iter()
+            .enumerate()
+            .filter_map(|(i, n)| match &n.kind {
+                ScopeKind::Phase { name } => Some((i, name.clone(), n.depth)),
+                _ => None,
+            })
+            .collect();
+
+        for (phase_idx, phase_name, phase_depth) in phase_nodes {
+            // Skip phases that already have OpTemplate children.
+            let already_has_ops = self.nodes[phase_idx].children.iter()
+                .any(|&c| matches!(self.nodes[c].kind, ScopeKind::OpTemplate { .. }));
+            if already_has_ops {
+                continue;
+            }
+            // Look up the phase's op list. Phases referenced
+            // by name with no entry in `phases` (e.g. the
+            // `default` scenario including a phase that's
+            // declared elsewhere) just get no op children —
+            // not a structural error.
+            let Some(phase) = phases.get(&phase_name) else { continue; };
+            for op in &phase.ops {
+                let op_idx = self.add_node(ScopeNode {
+                    kind: ScopeKind::OpTemplate { name: op.name.clone() },
+                    parent: Some(phase_idx),
+                    children: Vec::new(),
+                    depth: phase_depth + 1,
+                    pragmas: PragmaSet::default(),
+                    cached_kernel: std::sync::OnceLock::new(),
+                    materialised: None,
+                    logical_name: String::new(),
+                });
+                self.nodes[phase_idx].children.push(op_idx);
+            }
+        }
+    }
+
+    /// SRD-13d §3.3 — pre-walk every scope-tree node and mark
+    /// it `materialised` (own kernel) or flattened (descendants
+    /// bind through parent). Also assigns the SRD-13d §5.3
+    /// logical kernel name, which is the fully-qualified
+    /// scope-tree path. Run once at workload-load; premap and
+    /// runtime read the marks afterward.
+    ///
+    /// `is_materialising` is the predicate the pre-walk
+    /// applies per node — typically a closure that consults
+    /// the AST node's `HasGkMatter` classification (None /
+    /// Readonly ⇒ flatten; Definitions ⇒ check program-hash
+    /// equivalence with the parent and decide). The walker is
+    /// agnostic to the exact predicate; SRD-13d §3.3 fixes
+    /// the order.
+    ///
+    /// The workload root is **always** materialised (see
+    /// SRD-13d §5.1) so the walk terminates at a materialised
+    /// ancestor regardless of how aggressively descendants
+    /// flatten.
+    pub fn mark_scope_flattening<F>(&mut self, mut is_materialising: F)
+    where F: FnMut(&ScopeKind, ScopeNodeIdx) -> bool,
+    {
+        // Walk in DFS order; logical names depend on parent
+        // names being assigned first, which DFS pre-order
+        // guarantees (root → scenario → … → leaf).
+        let order: Vec<ScopeNodeIdx> = self.iter_dfs().map(|(idx, _)| idx).collect();
+        for idx in order {
+            // Root: always materialised, named "workload".
+            if idx == self.root {
+                self.nodes[idx].materialised = Some(true);
+                self.nodes[idx].logical_name = "workload".to_string();
+                continue;
+            }
+            let kind = self.nodes[idx].kind.clone();
+            let materialise = is_materialising(&kind, idx);
+            self.nodes[idx].materialised = Some(materialise);
+
+            // Logical name = parent's logical name + "."
+            // + per-kind segment. The segment shape follows
+            // SRD-13d §5.3's table (`phase.<n>`,
+            // `for_each.<var>`, `op.<o>`).
+            let parent_name = self.nodes[idx].parent
+                .map(|p| self.nodes[p].logical_name.clone())
+                .unwrap_or_default();
+            let segment = match &kind {
+                ScopeKind::Workload => "workload".to_string(),
+                ScopeKind::Scenario { name } => format!("scenario.{name}"),
+                ScopeKind::Phase { name } => format!("phase.{name}"),
+                ScopeKind::OpTemplate { name } => format!("op.{name}"),
+                ScopeKind::Comprehension { .. } => "for_each".to_string(),
+                ScopeKind::IncludedScenario { name } => format!("include.{name}"),
+                ScopeKind::DoWhile { .. } => "do_while".to_string(),
+                ScopeKind::DoUntil { .. } => "do_until".to_string(),
+            };
+            self.nodes[idx].logical_name = if parent_name.is_empty() {
+                segment
+            } else {
+                format!("{parent_name}.{segment}")
+            };
+        }
+    }
+
+    /// SRD-13d §5.1 — walk past flattened scope tiers to the
+    /// nearest materialised ancestor (or self, when this
+    /// node is itself materialised). Every consumer that
+    /// needs a kernel handle (cache lookups, bind-outer-
+    /// scope, diagnostics) routes through this — it's the
+    /// single point that knows about flattening; nothing
+    /// else does.
+    ///
+    /// The workload root is always materialised, so this
+    /// always terminates with `Some(idx)`. Returns `None`
+    /// only if [`mark_scope_flattening`] hasn't been run.
+    pub fn nearest_materialised(&self, idx: ScopeNodeIdx) -> Option<ScopeNodeIdx> {
+        let mut cur = idx;
+        loop {
+            match self.nodes[cur].materialised? {
+                true => return Some(cur),
+                false => match self.nodes[cur].parent {
+                    Some(p) => cur = p,
+                    None => return Some(cur), // root by construction
+                },
+            }
+        }
     }
 
     /// Iterate every scope node in depth-first pre-order. The
@@ -1024,6 +1212,160 @@ mod tests {
             "k typed u64 from k_values pre-eval");
         assert_eq!(limit_entry.port_type, nbrs_variates::node::PortType::U64,
             "limit typed u64 via recursive probe k=1 → k_1_limits → \"1, 2, 4, 8\"");
+    }
+
+    // ── SRD-13d Phase 4 + 5: scope flattening marks ──
+
+    #[test]
+    fn mark_scope_flattening_assigns_logical_names() {
+        let mut tree = ScopeTree::build("default", &[phase("p")]);
+        // All-materialise predicate so every node gets a name.
+        tree.mark_scope_flattening(|_kind, _idx| true);
+        // Root is "workload" by SRD-13d §5.3 convention.
+        assert_eq!(tree.nodes[0].logical_name, "workload");
+        assert_eq!(tree.nodes[0].materialised, Some(true));
+        // Scenario is named after its scenario tag.
+        let scenario_idx = tree.nodes[0].children[0];
+        assert_eq!(tree.nodes[scenario_idx].logical_name,
+            "workload.scenario.default");
+        // Phase descends from scenario.
+        let phase_idx = tree.nodes[scenario_idx].children[0];
+        assert_eq!(tree.nodes[phase_idx].logical_name,
+            "workload.scenario.default.phase.p");
+    }
+
+    #[test]
+    fn mark_scope_flattening_records_predicate_decisions() {
+        let mut tree = ScopeTree::build("default", &[phase("p")]);
+        // Predicate: only Phase scopes materialise.
+        tree.mark_scope_flattening(|kind, _idx| {
+            matches!(kind, ScopeKind::Phase { .. })
+        });
+        let scenario_idx = tree.nodes[0].children[0];
+        let phase_idx = tree.nodes[scenario_idx].children[0];
+        assert_eq!(tree.nodes[scenario_idx].materialised, Some(false));
+        assert_eq!(tree.nodes[phase_idx].materialised, Some(true));
+    }
+
+    #[test]
+    fn nearest_materialised_walks_past_flattened_layers() {
+        let mut tree = ScopeTree::build("default", &[phase("p")]);
+        // Predicate: only the workload root materialises.
+        tree.mark_scope_flattening(|kind, _idx| {
+            matches!(kind, ScopeKind::Workload)
+        });
+        let scenario_idx = tree.nodes[0].children[0];
+        let phase_idx = tree.nodes[scenario_idx].children[0];
+        // Phase's nearest materialised ancestor is the root.
+        assert_eq!(tree.nearest_materialised(phase_idx), Some(0));
+        assert_eq!(tree.nearest_materialised(scenario_idx), Some(0));
+        assert_eq!(tree.nearest_materialised(0), Some(0));
+    }
+
+    #[test]
+    fn nearest_materialised_returns_self_when_node_materialises() {
+        let mut tree = ScopeTree::build("default", &[phase("p")]);
+        tree.mark_scope_flattening(|_kind, _idx| true);
+        let phase_idx = tree.nodes[tree.nodes[0].children[0]].children[0];
+        assert_eq!(tree.nearest_materialised(phase_idx), Some(phase_idx));
+    }
+
+    #[test]
+    fn nearest_materialised_none_before_pre_walk() {
+        // Pre-walk hasn't run — every node's `materialised` is
+        // None — so the walker can't terminate. Returns None.
+        let tree = ScopeTree::build("default", &[phase("p")]);
+        assert_eq!(tree.nearest_materialised(0), None);
+    }
+
+    #[test]
+    fn workload_root_always_materialises_regardless_of_predicate() {
+        // Even an "always flatten" predicate can't flatten the
+        // root — SRD-13d §5.1 mandates the root is the
+        // termination point of nearest_materialised walks.
+        let mut tree = ScopeTree::build("default", &[phase("p")]);
+        tree.mark_scope_flattening(|_kind, _idx| false);
+        assert_eq!(tree.nodes[0].materialised, Some(true));
+    }
+
+    // ── SRD-13d Phase 6: op-template tier ──
+
+    #[test]
+    fn extend_with_op_templates_adds_one_child_per_op() {
+        use std::collections::HashMap;
+        use nbrs_workload::model::{ParsedOp, WorkloadPhase, BindingsDef};
+        let mut tree = ScopeTree::build("default", &[phase("p")]);
+        let mut phases = HashMap::new();
+        phases.insert("p".into(), WorkloadPhase {
+            cycles: None, concurrency: None, rate: None,
+            adapter: None, errors: None, tags: None,
+            ops: vec![
+                ParsedOp::simple("alpha", "noop"),
+                ParsedOp::simple("beta", "noop"),
+            ],
+            for_each: None, loop_scope: None, iter_scope: None,
+            checkpoint: None, status_metrics: vec![],
+            bindings: BindingsDef::default(),
+        });
+        tree.extend_with_op_templates(&phases);
+        let scenario_idx = tree.nodes[0].children[0];
+        let phase_idx = tree.nodes[scenario_idx].children[0];
+        // Phase now has 2 op-template children.
+        assert_eq!(tree.nodes[phase_idx].children.len(), 2);
+        let op_a_idx = tree.nodes[phase_idx].children[0];
+        let op_b_idx = tree.nodes[phase_idx].children[1];
+        assert!(matches!(&tree.nodes[op_a_idx].kind,
+            ScopeKind::OpTemplate { name } if name == "alpha"));
+        assert!(matches!(&tree.nodes[op_b_idx].kind,
+            ScopeKind::OpTemplate { name } if name == "beta"));
+        // Depth = phase depth + 1.
+        assert_eq!(tree.nodes[op_a_idx].depth, tree.nodes[phase_idx].depth + 1);
+    }
+
+    #[test]
+    fn extend_with_op_templates_is_idempotent() {
+        use std::collections::HashMap;
+        use nbrs_workload::model::{ParsedOp, WorkloadPhase, BindingsDef};
+        let mut tree = ScopeTree::build("default", &[phase("p")]);
+        let mut phases = HashMap::new();
+        phases.insert("p".into(), WorkloadPhase {
+            cycles: None, concurrency: None, rate: None,
+            adapter: None, errors: None, tags: None,
+            ops: vec![ParsedOp::simple("only", "noop")],
+            for_each: None, loop_scope: None, iter_scope: None,
+            checkpoint: None, status_metrics: vec![],
+            bindings: BindingsDef::default(),
+        });
+        tree.extend_with_op_templates(&phases);
+        let n_after_first = tree.nodes.len();
+        tree.extend_with_op_templates(&phases); // Second call.
+        assert_eq!(tree.nodes.len(), n_after_first,
+            "second call should not add nodes");
+    }
+
+    #[test]
+    fn op_template_logical_name_uses_op_segment() {
+        use std::collections::HashMap;
+        use nbrs_workload::model::{ParsedOp, WorkloadPhase, BindingsDef};
+        let mut tree = ScopeTree::build("default", &[phase("p")]);
+        let mut phases = HashMap::new();
+        phases.insert("p".into(), WorkloadPhase {
+            cycles: None, concurrency: None, rate: None,
+            adapter: None, errors: None, tags: None,
+            ops: vec![ParsedOp::simple("foo", "noop")],
+            for_each: None, loop_scope: None, iter_scope: None,
+            checkpoint: None, status_metrics: vec![],
+            bindings: BindingsDef::default(),
+        });
+        tree.extend_with_op_templates(&phases);
+        tree.mark_scope_flattening(|_kind, _idx| true);
+        // Find the op node and check its logical name.
+        let op_idx = tree.iter_dfs()
+            .find(|(_, n)| matches!(&n.kind, ScopeKind::OpTemplate { name } if name == "foo"))
+            .map(|(i, _)| i)
+            .expect("op-template node");
+        assert_eq!(tree.nodes[op_idx].logical_name,
+            "workload.scenario.default.phase.p.op.foo");
     }
 
     #[test]

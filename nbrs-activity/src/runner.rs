@@ -95,10 +95,23 @@ pub fn scenarios_in_workload_file(path: &str) -> Vec<String> {
 /// registrations — the calling binary just needs to link the adapter
 /// crates it wants available.
 /// Execution depth: how far through the pipeline to go.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Ordering (shallowest → deepest): `Phase < Op < Cycle < Full`.
+/// `PartialOrd`/`Ord` follow this ordering so depth-gating
+/// sites can write `ctx.diag.depth >= ExecDepth::Cycle` etc.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ExecDepth {
-    /// Compile scopes, stop before cycles. No adapters created.
+    /// Compile scope-level kernels, stop before op-template
+    /// kernels / adapter `map_op` / metric instruments. No
+    /// adapters created.
     Phase,
+    /// SRD-13d §2.3 — phase walk + op-template kernels
+    /// instanced; adapter `map_op` called; metric instruments
+    /// registered (duplicate-family collisions from
+    /// `Component::register_instrument` surface here);
+    /// no cycles run. Adds the scope-flattening summary dump
+    /// at the end (SRD-13d §4.9, §5.3).
+    Op,
     /// Run cycles with dry-run adapter.
     Cycle,
     /// Normal execution.
@@ -139,6 +152,7 @@ impl DiagnosticConfig {
         for flag in spec.split(',') {
             match flag.trim() {
                 "phase" => { config.depth = ExecDepth::Phase; depth_set = true; }
+                "op" => { config.depth = ExecDepth::Op; depth_set = true; }
                 "cycle" => { config.depth = ExecDepth::Cycle; depth_set = true; }
                 "full" => { config.depth = ExecDepth::Full; depth_set = true; }
                 "gk" => config.explain_gk = true,
@@ -215,6 +229,64 @@ pub fn render_controls_tree(
             out,
             "  {path}\n    {name}: {value}  [{ty}]  {meta}  {write}",
         )?;
+    }
+    Ok(())
+}
+
+
+/// Render the SRD-13d scope-flattening summary for `dryrun=op`.
+/// One line per scope-tree node (DFS pre-order), showing the
+/// logical name and the materialised/flattens-to mark.
+///
+/// Format follows SRD-13d §5.3:
+/// ```text
+/// scope flattening summary
+/// ------------------------
+/// workload                                           materialised=true
+/// workload.scenario.default                          materialised=false  flattens-to=workload
+/// workload.scenario.default.phase.predict            materialised=true
+/// ```
+///
+/// `materialised=true` means the node owns a kernel; `false`
+/// means it flattens into its nearest materialised ancestor
+/// (shown as `flattens-to=<logical_name>`). Nodes whose mark
+/// is still `None` (predicate hasn't fired — should not
+/// happen post-`classify_and_mark`) are surfaced as `unknown`
+/// rather than silently skipped.
+pub fn render_scope_flattening_summary(
+    tree: &crate::scope_tree::ScopeTree,
+    out: &mut dyn std::io::Write,
+) -> std::io::Result<()> {
+    let summary = crate::scope_flattening::flattening_summary(tree);
+    // Width of the logical-name column — 4-space gutter past
+    // the longest name (or 48ch min) so the materialised marks
+    // line up cleanly even with deeply-nested phase trees.
+    let name_width = summary.iter()
+        .map(|(_, _, _, name, _)| name.len())
+        .max()
+        .unwrap_or(0)
+        .max(48);
+
+    writeln!(out, "scope flattening summary")?;
+    writeln!(out, "------------------------")?;
+    for (idx, _depth, materialised, logical_name, _kind) in &summary {
+        match materialised {
+            Some(true) => {
+                writeln!(out, "{:<width$}    materialised=true",
+                    logical_name, width = name_width)?;
+            }
+            Some(false) => {
+                let flattens_to = tree.nearest_materialised(*idx)
+                    .map(|p| tree.nodes[p].logical_name.clone())
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                writeln!(out, "{:<width$}    materialised=false  flattens-to={}",
+                    logical_name, flattens_to, width = name_width)?;
+            }
+            None => {
+                writeln!(out, "{:<width$}    materialised=unknown",
+                    logical_name, width = name_width)?;
+            }
+        }
     }
     Ok(())
 }
@@ -1108,6 +1180,29 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             let wp_names: std::collections::HashSet<String> =
                 workload_params.keys().cloned().collect();
             t.validate_iter_var_uniqueness(&wp_names)?;
+            // SRD-13d Phase 6 — extend the scope tree with
+            // op-template children of every Phase node so the
+            // op tier is visible to the flattening classifier
+            // and downstream diagnostics.
+            t.extend_with_op_templates(&phases);
+            // SRD-13d Phase 3 — workload-init scope-flattening
+            // pre-walk. Reads `HasGkMatter` on each AST node
+            // and marks the corresponding scope-tree node
+            // `materialised` (own kernel) or flattened (binds
+            // through parent). Conservative predicate today
+            // (Definitions ⇒ materialise without hash-subset
+            // refinement); Phase 6 tightens it.
+            //
+            // Scoped fields rather than `&workload` because
+            // `workload.ops` was moved earlier in this fn —
+            // the classifier reads only bindings + params +
+            // phases anyway.
+            let classify_inputs = crate::scope_flattening::ClassifyInputs {
+                bindings: &workload.bindings,
+                params: &workload.params,
+                phases: &phases,
+            };
+            crate::scope_flattening::classify_and_mark(&mut t, &classify_inputs);
             std::sync::Arc::new(t)
         };
 
@@ -1548,6 +1643,20 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         // so we close at the session root.
         cadence_reporter.close_path(&Labels::of("session", &session.id));
 
+        // SRD-13d Phase 7 — `dryrun=op` scope-flattening summary.
+        // Phase walk has just completed; scope tree carries final
+        // `materialised` / `logical_name` marks (set by the
+        // workload-load classifier). Dump now so the diagnostic
+        // surfaces phase-init artifacts (registered metrics,
+        // adapter map_op calls) in the same run.
+        if diag.depth == ExecDepth::Op {
+            let mut out = std::io::stdout();
+            if let Err(e) = render_scope_flattening_summary(&scope_tree, &mut out) {
+                crate::diag!(crate::observer::LogLevel::Warn,
+                    "warning: rendering scope-flattening summary: {e}");
+            }
+        }
+
     } else {
         // --- Single-activity execution ---
         let ops = all_ops_for_compile;
@@ -1628,7 +1737,6 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         let mut activity = Activity::with_params_and_sigdigs(
             config, &labels, op_sequence, workload_params, sigdigs,
         );
-        let shared_metrics = activity.shared_metrics();
 
         // Attach the single activity as a component of the session
         // tree so the session-level scheduler captures its metrics
@@ -1639,16 +1747,20 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             nbrs_metrics::component::Component::new(labels.clone(), HashMap::new()),
         ));
         nbrs_metrics::component::attach(&session.component, &activity_component);
-        {
-            let mut ac = activity_component.write().unwrap_or_else(|e| e.into_inner());
-            ac.set_instruments(shared_metrics.clone());
-            ac.set_state(nbrs_metrics::component::ComponentState::Running);
-        }
 
         // Wire the activity component back onto the Activity so
-        // `run_with_adapters` can declare the `concurrency`
-        // control on it (SRD 23 §"Fiber executor").
+        // `run_with_adapters` can declare the `concurrency` control
+        // on it (SRD 23 §"Fiber executor"). `attach_component` also
+        // registers ActivityMetrics' static instruments on this
+        // component via `ActivityMetrics::register_on`.
         activity.attach_component(activity_component.clone());
+
+        // Mark the activity component Running so the cadence
+        // reporter's tree walk picks it up.
+        {
+            let mut ac = activity_component.write().unwrap_or_else(|e| e.into_inner());
+            ac.set_state(nbrs_metrics::component::ComponentState::Running);
+        }
 
         let stopped = activity.run_with_driver(
             adapter,
@@ -1656,14 +1768,16 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         ).await;
 
         // Workload-end lifecycle boundary for the single-activity
-        // path. Capture the final delta, ingest, then close the
+        // path. Capture the final delta from the activity's
+        // component (which holds every registered instrument from
+        // ActivityMetrics::register_on), ingest, then close the
         // activity's path so the trailing partial is published
         // immediately rather than idling until session shutdown.
         {
-            use nbrs_metrics::component::InstrumentSet;
-            let final_delta = shared_metrics.capture_delta(
-                std::time::Duration::from_secs(1),
-            );
+            let final_delta = activity_component
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .capture_delta(std::time::Duration::from_secs(1));
             cadence_reporter.ingest(&labels, final_delta);
             cadence_reporter.close_path(&labels);
         }
@@ -2717,6 +2831,104 @@ mod tests {
     fn parse_dryrun_unknown_flag_does_not_set_controls() {
         let cfg = DiagnosticConfig::parse("phase,bogus");
         assert!(!cfg.list_controls);
+    }
+
+    // ── SRD-13d Phase 7 — `dryrun=op` ──
+
+    #[test]
+    fn parse_dryrun_op_sets_op_depth() {
+        let cfg = DiagnosticConfig::parse("op");
+        assert_eq!(cfg.depth, ExecDepth::Op);
+    }
+
+    #[test]
+    fn parse_dryrun_phase_still_sets_phase_depth() {
+        let cfg = DiagnosticConfig::parse("phase");
+        assert_eq!(cfg.depth, ExecDepth::Phase);
+    }
+
+    #[test]
+    fn parse_dryrun_cycle_still_sets_cycle_depth() {
+        let cfg = DiagnosticConfig::parse("cycle");
+        assert_eq!(cfg.depth, ExecDepth::Cycle);
+    }
+
+    #[test]
+    fn parse_dryrun_op_combines_with_gk_flag() {
+        let cfg = DiagnosticConfig::parse("op,gk");
+        assert_eq!(cfg.depth, ExecDepth::Op);
+        assert!(cfg.explain_gk);
+    }
+
+    #[test]
+    fn exec_depth_ordering_matches_srd_13d() {
+        // `Phase` is the shallowest stop, `Full` is the deepest;
+        // `Op` sits between `Phase` and `Cycle`. Depth-gating
+        // sites read this ordering as `< Cycle` ⇒ "skip cycles".
+        assert!(ExecDepth::Phase < ExecDepth::Op);
+        assert!(ExecDepth::Op < ExecDepth::Cycle);
+        assert!(ExecDepth::Cycle < ExecDepth::Full);
+        // The transitive should hold (it would be a derive
+        // bug if it didn't, but assert it for documentation).
+        assert!(ExecDepth::Phase < ExecDepth::Cycle);
+        assert!(ExecDepth::Op < ExecDepth::Full);
+    }
+
+    #[test]
+    fn exec_depth_phase_and_op_short_circuit_before_cycles() {
+        // The executor's per-phase early-exit fires when
+        // `depth < Cycle`. Both Phase and Op satisfy that;
+        // Cycle and Full do not.
+        assert!(ExecDepth::Phase < ExecDepth::Cycle);
+        assert!(ExecDepth::Op    < ExecDepth::Cycle);
+        assert!(!(ExecDepth::Cycle < ExecDepth::Cycle));
+        assert!(!(ExecDepth::Full  < ExecDepth::Cycle));
+    }
+
+    #[test]
+    fn render_scope_flattening_summary_shows_materialised_and_flattens_to() {
+        use nbrs_workload::model::{BindingsDef, ScenarioNode, WorkloadPhase};
+        use std::collections::HashMap;
+
+        let phase = WorkloadPhase {
+            cycles: None, concurrency: None, rate: None,
+            adapter: None, errors: None, tags: None,
+            ops: vec![], for_each: None,
+            loop_scope: None, iter_scope: None,
+            checkpoint: None, status_metrics: vec![],
+            bindings: BindingsDef::default(),
+        };
+        let mut phases = HashMap::new();
+        phases.insert("predict".to_string(), phase);
+        let mut tree = crate::scope_tree::ScopeTree::build(
+            "default",
+            &[ScenarioNode::Phase("predict".into())],
+        );
+        // Conservative classifier: empty workload + empty
+        // phase ⇒ scenario and phase flatten into root.
+        let inputs = crate::scope_flattening::ClassifyInputs {
+            bindings: &BindingsDef::default(),
+            params: &HashMap::new(),
+            phases: &phases,
+        };
+        crate::scope_flattening::classify_and_mark(&mut tree, &inputs);
+
+        let mut buf: Vec<u8> = Vec::new();
+        render_scope_flattening_summary(&tree, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+
+        assert!(s.contains("scope flattening summary"),
+            "missing header: {s}");
+        // Workload root materialises always (SRD-13d §5.1).
+        assert!(s.contains("workload") && s.contains("materialised=true"),
+            "expected materialised=true line for workload root: {s}");
+        // Scenario + phase flatten into the workload root.
+        assert!(s.contains("flattens-to=workload"),
+            "expected flattens-to=workload for empty phase: {s}");
+        assert!(s.contains("workload.scenario.default"),
+            "expected scenario logical name: {s}");
+        assert!(s.contains("workload.scenario.default.phase.predict"),
+            "expected phase logical name: {s}");
     }
 
     #[test]

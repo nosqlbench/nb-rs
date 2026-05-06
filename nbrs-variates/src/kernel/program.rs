@@ -510,6 +510,66 @@ impl GkProgram {
         self.input_provenance.get(node_idx).copied().unwrap_or(0)
     }
 
+    /// SRD-13d §3.2: hash-compare two programs for AST /
+    /// constant equivalence. Two programs that produce the
+    /// same `canonical_hash` are functionally equivalent at
+    /// compile time; their runtime instances would differ
+    /// only by parent-bound values, which `bind_outer_scope`
+    /// handles. Cheap (one hash compare); doesn't allocate
+    /// state. The pre-walker uses this to flatten one scope
+    /// into another that materialises identical content.
+    pub fn is_equivalent_to(&self, other: &GkProgram) -> bool {
+        self.canonical_hash() == other.canonical_hash()
+    }
+
+    /// SRD-13d §3.2: "can-flatten?" predicate. Returns true
+    /// when this program adds no GK content the parent
+    /// program doesn't already supply — i.e. when the inner
+    /// scope's contribution is structurally a subset of the
+    /// parent's. The pre-walker uses this for nodes that
+    /// classified as `GkMatter::Definitions` to detect cases
+    /// where the new content turns out to be parent-equivalent
+    /// (rare, but correct: a binding that duplicates a parent
+    /// declaration is structurally a no-op).
+    ///
+    /// Current implementation: structural — true when the
+    /// inner program has zero outputs and zero inputs beyond
+    /// what the parent already exposes. The semantic-
+    /// equivalence form (new bindings whose definitions equal
+    /// parent bindings) is documented as future work in
+    /// SRD-13d §8.2 item 4 (hash normalisation depth).
+    pub fn is_subset_of(&self, parent: &GkProgram) -> bool {
+        // Equivalent programs flatten trivially.
+        if self.is_equivalent_to(parent) {
+            return true;
+        }
+        // The inner program contributes new content if it
+        // declares outputs the parent doesn't, or constants
+        // / nodes the parent doesn't carry. Cheapest check:
+        // an inner program with no outputs of its own and
+        // every input also declared by the parent is a
+        // structural no-op.
+        if !self.output_list.is_empty() {
+            return false;
+        }
+        // Inputs: every name declared by `self` must be
+        // declared by `parent` (parent supplies the value).
+        // Inner program might have empty input_defs entirely
+        // — that's the "trivial wrapper" case and trivially
+        // a subset.
+        let parent_inputs: std::collections::HashSet<&str> = parent
+            .input_defs
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect();
+        for d in &self.input_defs {
+            if !parent_inputs.contains(d.name.as_str()) {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Canonical content-addressable hash of this program.
     ///
     /// SHA-256 over a deterministic byte sequence describing
@@ -1326,5 +1386,40 @@ mod canonical_hash_tests {
         let h1 = cp.instance_hash(&[p1.program().as_ref()]);
         let h2 = cp.instance_hash(&[p2.program().as_ref()]);
         assert_eq!(h1, h2);
+    }
+
+    // ── SRD-13d §3.2: is_equivalent_to / is_subset_of ──
+
+    #[test]
+    fn is_equivalent_to_identical_programs() {
+        let src = "final x := 100\n";
+        let a = compile_gk(src).expect("a");
+        let b = compile_gk(src).expect("b");
+        assert!(a.program().is_equivalent_to(b.program()));
+        assert!(b.program().is_equivalent_to(a.program())); // symmetric
+    }
+
+    #[test]
+    fn is_equivalent_to_differs_when_const_differs() {
+        let a = compile_gk("final x := 100\n").expect("a");
+        let b = compile_gk("final x := 101\n").expect("b");
+        assert!(!a.program().is_equivalent_to(b.program()));
+    }
+
+    #[test]
+    fn is_subset_of_self_is_true() {
+        let p = compile_gk("final x := 1\n").expect("p");
+        // A program is trivially a subset of itself (the
+        // equivalence shortcut at the top of is_subset_of).
+        assert!(p.program().is_subset_of(p.program()));
+    }
+
+    #[test]
+    fn is_subset_of_distinct_definitions_is_false() {
+        // Inner declares a NEW output the parent doesn't —
+        // structurally not a subset.
+        let parent = compile_gk("final x := 1\n").expect("parent");
+        let inner = compile_gk("final y := 2\n").expect("inner");
+        assert!(!inner.program().is_subset_of(parent.program()));
     }
 }
