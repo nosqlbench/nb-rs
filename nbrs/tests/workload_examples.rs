@@ -657,3 +657,71 @@ fn unresolved_placeholder_error_carries_yaml_location() {
 //     // grepping can't perform. Gated on a metric-based
 //     // assertion path that compares wall-clock to expected.
 // }
+
+// ─── Synthetic metrics (SRD-40b) end-to-end ─────────────────
+
+/// Run `synthetic_metrics.yaml` and verify every declared
+/// synthetic metric flows through the pipeline into the
+/// session's `metrics.db`. Covers SRD-40b §1 (the schema:
+/// mapping form, bare-string sugar, list form with
+/// `wire := <expr>` entries) plus SRD-40a §4.3 (unit-suffix
+/// + `metric_family.unit` invariant).
+///
+/// Owns its `SessionDir` for the whole test so the metrics.db
+/// can be inspected after the run; the session parent is
+/// removed by `SessionDir`'s `Drop` impl when the test exits.
+#[test]
+fn synthetic_metrics_workload_populates_metric_family() {
+    let session = SessionDir::new();
+    let mut cmd = nbrs(&session);
+    cmd.arg("workload=examples/workloads/synthetic_metrics.yaml");
+    cmd.arg("cycle_count=12");
+    let output = cmd.output().expect("failed to run nbrs");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        output.status.success() && stderr.contains("done"),
+        "synthetic_metrics workload did not complete:\n{stderr}",
+    );
+
+    let db_path = session.path.join("metrics.db");
+    assert!(db_path.exists(), "metrics.db missing at {db_path:?}");
+    let conn = rusqlite::Connection::open(&db_path)
+        .expect("open metrics.db");
+
+    // (family_name, expected_type, expected_unit). SRD-40b §1
+    // says `unit:` lands in BOTH the `_<unit>` suffix on
+    // `metric_family.name` AND in `metric_family.unit`.
+    let expectations: &[(&str, &str, Option<&str>)] = &[
+        // Mapping form: explicit unit "ms" → name suffix + unit column.
+        ("latency_curve_ms", "gauge", Some("ms")),
+        // Bare-string sugar: `metrics: load` — gauge default, no unit.
+        ("load", "gauge", None),
+        // List form with `:= <expr>` — auto-injected wires.
+        ("forecast_low", "gauge", None),
+        ("forecast_high", "gauge", None),
+        // Counter with explicit unit "ops".
+        ("step_counter_ops", "counter", Some("ops")),
+        // Histogram defaults: stored as "summary" per OpenMetrics
+        // mapping (HDR-backed → summary).
+        ("observation_dist", "summary", None),
+    ];
+
+    for (name, expected_type, expected_unit) in expectations {
+        let row: Result<(String, Option<String>), _> = conn.query_row(
+            "SELECT type, unit FROM metric_family WHERE name = ?1",
+            [name],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+        );
+        let (got_type, got_unit) = row.unwrap_or_else(|e| {
+            panic!("metric_family row missing for {name:?}: {e}");
+        });
+        assert_eq!(
+            got_type, *expected_type,
+            "metric_family.type mismatch for {name}",
+        );
+        assert_eq!(
+            got_unit.as_deref(), *expected_unit,
+            "metric_family.unit mismatch for {name}",
+        );
+    }
+}

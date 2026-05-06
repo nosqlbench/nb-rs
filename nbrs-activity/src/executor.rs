@@ -1762,10 +1762,11 @@ async fn run_phase(
     // (SRD 23 §"Fiber executor").
     activity.attach_component(phase_component.clone());
 
-    // Register instruments on the component and set Running
+    // Mark the phase component Running. Instrument registration on
+    // this component already happened inside `attach_component` via
+    // `ActivityMetrics::register_on`; no `set_instruments` call here.
     {
         let mut pc = phase_component.write().unwrap_or_else(|e| e.into_inner());
-        pc.set_instruments(activity.shared_metrics());
         pc.set_state(ComponentState::Running);
     }
 
@@ -1777,11 +1778,15 @@ async fn run_phase(
     // a no-op.
     crate::activity::declare_adapter_controls(&adapters, &phase_component);
 
-    // dryrun=Phase: every phase has now been constructed —
+    // dryrun=Phase / dryrun=Op: every phase has now been constructed —
     // component attached, concurrency / rate / adapter controls
     // declared — so dump-the-tree paths (`dryrun=controls` in
     // particular) see the full surface. Stop before fiber pool
-    // spawn / progress thread / cycle execution.
+    // spawn / progress thread / cycle execution. Both Phase and
+    // Op short-circuit here; Op additionally triggers the
+    // scope-flattening summary dump in `runner::run_impl` after
+    // the executor returns (SRD-13d §4.9, §5.3). Anything
+    // `>= Cycle` proceeds to actually run cycles.
     //
     // Fire phase_completed (with a sentinel zero duration) so
     // scene-tree state transitions Running → Completed and the
@@ -1789,7 +1794,7 @@ async fn run_phase(
     // `[..] phase (still running)`. The renderer suppresses the
     // " 0.00s" duration suffix for zero-duration completions
     // (see `nbrs_tui::observer::print_post_run_summary`).
-    if ctx.diag.depth == crate::runner::ExecDepth::Phase {
+    if ctx.diag.depth < crate::runner::ExecDepth::Cycle {
         ctx.observer.phase_completed(phase_name, &phase_labels, 0.0);
         crate::scene_tree::with_global_mut(|t| {
             t.set_phase_completed(phase_name, &phase_labels, 0.0);
@@ -1803,8 +1808,6 @@ async fn run_phase(
     // gone as of Phase 7b.
 
     let validation_frame = activity.validation_frame.clone();
-    let final_metrics = activity.shared_metrics();
-
     // Feed the observer with live metrics at 500ms cadence.
     // This populates the TUI's ActivePhase panel.
     let observer_for_progress = ctx.observer.clone();
@@ -1979,10 +1982,17 @@ async fn run_phase(
     // could be 30s away) or session shutdown (which produced a
     // thundering herd of stale windows).
     {
-        use nbrs_metrics::component::InstrumentSet;
         crate::diag!(crate::observer::LogLevel::Debug,
             "phase '{phase_name}': capture_delta start");
-        let final_delta = final_metrics.capture_delta(std::time::Duration::from_secs(1));
+        let mut final_delta = phase_component
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .capture_delta(std::time::Duration::from_secs(1));
+        // SRD-40b §11 / SRD-42 §"Component lifecycle: scope_close
+        // flush" — this delta is the phase's last-tick contribution
+        // before teardown. Mark it partial so the cadence stream
+        // can distinguish it from naturally pulse-flushed windows.
+        final_delta.mark_partial();
         crate::diag!(crate::observer::LogLevel::Debug,
             "phase '{phase_name}': cadence ingest(final_delta) start");
         ctx.cadence_reporter.ingest(&labels, final_delta.clone());
@@ -1993,7 +2003,10 @@ async fn run_phase(
             "phase '{phase_name}': stop_handle.report_frame(final_delta) returned");
 
         // Flush validation metrics (recall, precision) as gauges
-        if let Some(vframe) = validation_frame.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(mut vframe) = validation_frame.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            // Same scope_close partial annotation — vframe is the
+            // phase's terminal validation snapshot.
+            vframe.mark_partial();
             crate::diag!(crate::observer::LogLevel::Debug,
                 "phase '{phase_name}': cadence ingest(vframe) start");
             ctx.cadence_reporter.ingest(&labels, vframe.clone());

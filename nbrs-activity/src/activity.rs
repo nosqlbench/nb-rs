@@ -116,34 +116,47 @@ impl Default for ActivityConfig {
 
 /// Standard metrics for an activity. Shared via Arc so the metrics
 /// scheduler can capture snapshots while executor tasks record.
+///
+/// Fields are `Arc<Counter>` / `Arc<Timer>` / `Arc<Histogram>` so
+/// the same instrument is held both here (for per-cycle record
+/// access) and in the activity's `Component` instrument registry
+/// (for the cadence reporter's per-tick capture). Per-cycle code
+/// continues calling `metrics.cycles_total.inc()` etc. through
+/// `Arc`'s `Deref`.
+///
+/// Static instruments (the fields below) register on the component
+/// from [`ActivityMetrics::register_on`] called by
+/// [`Activity::attach_component`]. Dynamic per-error-type counters
+/// and adapter-specific metrics flow through the
+/// [`nbrs_metrics::component::DynamicCapture`] hook implemented
+/// for [`ActivityMetricsDynamic`].
 pub struct ActivityMetrics {
-    pub service_time: Timer,
-    pub wait_time: Timer,
-    pub response_time: Timer,
+    pub service_time: Arc<Timer>,
+    pub wait_time: Arc<Timer>,
+    pub response_time: Arc<Timer>,
     /// Service time for successful ops only. Allows isolating
     /// success latency from error/retry latency.
-    pub result_success_time: Timer,
+    pub result_success_time: Arc<Timer>,
     /// Number of tries per op (1 = succeeded first try, 2+ = retried).
     /// Distribution shape reveals incremental saturation.
-    pub tries_histogram: Histogram,
-    pub cycles_total: Counter,
-    pub successes_total: Counter,
-    pub skips_total: Counter,
-    pub errors_total: Counter,
-    pub stanzas_total: Counter,
+    pub tries_histogram: Arc<Histogram>,
+    pub cycles_total: Arc<Counter>,
+    pub successes_total: Arc<Counter>,
+    pub skips_total: Arc<Counter>,
+    pub errors_total: Arc<Counter>,
+    pub stanzas_total: Arc<Counter>,
     /// Number of ops dispatched to adapters (monotonic).
     pub ops_started: std::sync::atomic::AtomicU64,
     /// Number of ops returned from adapters (monotonic).
     pub ops_finished: std::sync::atomic::AtomicU64,
-    pub result_elements: Counter,
-    pub result_bytes: Counter,
+    pub result_elements: Arc<Counter>,
+    pub result_bytes: Arc<Counter>,
     /// Per-error-type counters, keyed by error_name.
     /// Created on demand when a new error type is first seen.
-    error_type_counts: std::sync::Mutex<std::collections::HashMap<String, Counter>>,
+    /// Captured via the [`DynamicCapture`] hook — the registry on
+    /// `Component` only holds instruments known at init.
+    error_type_counts: std::sync::Mutex<std::collections::HashMap<String, Arc<Counter>>>,
     labels: Labels,
-    /// Previous counter values for delta computation. Keyed by label identity hash.
-    /// Updated on each `capture_delta()` call.
-    prev_counters: std::sync::Mutex<std::collections::HashMap<u64, u64>>,
     /// Dispensers for adapter-specific metrics capture. Set after dispenser creation.
     dispensers: std::sync::Mutex<Option<Arc<Vec<Arc<dyn crate::adapter::OpDispenser>>>>>,
     /// Shared handles to the per-template validation metrics. Populated
@@ -167,26 +180,101 @@ impl ActivityMetrics {
     /// significant digits — subtree-scoped setting").
     pub fn with_sigdigs(labels: &Labels, sigdigs: u8) -> Self {
         Self {
-            service_time: Timer::with_sigdigs(labels.with("name", "cycles_servicetime"), sigdigs),
-            wait_time: Timer::with_sigdigs(labels.with("name", "cycles_waittime"), sigdigs),
-            response_time: Timer::with_sigdigs(labels.with("name", "cycles_responsetime"), sigdigs),
-            result_success_time: Timer::with_sigdigs(labels.with("name", "result_success"), sigdigs),
-            tries_histogram: nbrs_metrics::instruments::histogram::Histogram::with_sigdigs(labels.with("name", "tries"), sigdigs),
-            cycles_total: Counter::new(labels.with("name", "cycles_total")),
-            successes_total: Counter::new(labels.with("name", "successes_total")),
-            skips_total: Counter::new(labels.with("name", "skips_total")),
-            errors_total: Counter::new(labels.with("name", "errors_total")),
-            stanzas_total: Counter::new(labels.with("name", "stanzas_total")),
+            service_time: Arc::new(Timer::with_sigdigs(labels.with("name", "cycles_servicetime"), sigdigs)),
+            wait_time: Arc::new(Timer::with_sigdigs(labels.with("name", "cycles_waittime"), sigdigs)),
+            response_time: Arc::new(Timer::with_sigdigs(labels.with("name", "cycles_responsetime"), sigdigs)),
+            result_success_time: Arc::new(Timer::with_sigdigs(labels.with("name", "result_success"), sigdigs)),
+            tries_histogram: Arc::new(nbrs_metrics::instruments::histogram::Histogram::with_sigdigs(labels.with("name", "tries"), sigdigs)),
+            cycles_total: Arc::new(Counter::new(labels.with("name", "cycles_total"))),
+            successes_total: Arc::new(Counter::new(labels.with("name", "successes_total"))),
+            skips_total: Arc::new(Counter::new(labels.with("name", "skips_total"))),
+            errors_total: Arc::new(Counter::new(labels.with("name", "errors_total"))),
+            stanzas_total: Arc::new(Counter::new(labels.with("name", "stanzas_total"))),
             ops_started: std::sync::atomic::AtomicU64::new(0),
             ops_finished: std::sync::atomic::AtomicU64::new(0),
-            result_elements: Counter::new(labels.with("name", "result_elements")),
-            result_bytes: Counter::new(labels.with("name", "result_bytes")),
+            result_elements: Arc::new(Counter::new(labels.with("name", "result_elements"))),
+            result_bytes: Arc::new(Counter::new(labels.with("name", "result_bytes"))),
             error_type_counts: std::sync::Mutex::new(std::collections::HashMap::new()),
             labels: labels.clone(),
-            prev_counters: std::sync::Mutex::new(std::collections::HashMap::new()),
             dispensers: std::sync::Mutex::new(None),
             validation_metrics: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Register every static instrument on `component` and install
+    /// a [`DynamicCapture`] hook for the dynamic surface (per-error-type
+    /// counters and adapter-specific metrics from registered dispensers).
+    ///
+    /// Called once from [`Activity::attach_component`]. After this
+    /// point:
+    /// - The cadence reporter's tree walk picks up every static
+    ///   instrument here through `component.capture_delta`.
+    /// - Per-cycle code continues recording through this struct's
+    ///   typed `Arc` fields — same `Arc` that the registry holds.
+    pub fn register_on(
+        self: &Arc<Self>,
+        component: &mut nbrs_metrics::component::Component,
+    ) -> Result<(), String> {
+        use nbrs_metrics::component::InstrumentRef;
+        // Order mirrors the historical capture_delta emission so
+        // metric_family ordering stays stable for downstream
+        // consumers. `successes_total` was omitted historically
+        // even though the field exists; preserve that omission to
+        // avoid a behavioural change.
+        component.register_instrument(
+            "cycles_servicetime",
+            InstrumentRef::Timer(self.service_time.clone()),
+        )?;
+        component.register_instrument(
+            "cycles_waittime",
+            InstrumentRef::Timer(self.wait_time.clone()),
+        )?;
+        component.register_instrument(
+            "cycles_responsetime",
+            InstrumentRef::Timer(self.response_time.clone()),
+        )?;
+        component.register_instrument(
+            "result_success",
+            InstrumentRef::Timer(self.result_success_time.clone()),
+        )?;
+        component.register_instrument(
+            "cycles_total",
+            InstrumentRef::Counter(self.cycles_total.clone()),
+        )?;
+        component.register_instrument(
+            "skips_total",
+            InstrumentRef::Counter(self.skips_total.clone()),
+        )?;
+        component.register_instrument(
+            "errors_total",
+            InstrumentRef::Counter(self.errors_total.clone()),
+        )?;
+        component.register_instrument(
+            "stanzas_total",
+            InstrumentRef::Counter(self.stanzas_total.clone()),
+        )?;
+        component.register_instrument(
+            "result_elements",
+            InstrumentRef::Counter(self.result_elements.clone()),
+        )?;
+        component.register_instrument(
+            "result_bytes",
+            InstrumentRef::Counter(self.result_bytes.clone()),
+        )?;
+        component.register_instrument(
+            "tries",
+            InstrumentRef::Histogram(self.tries_histogram.clone()),
+        )?;
+
+        component.set_dynamic_capture(Arc::new(
+            ActivityMetricsDynamic {
+                metrics: self.clone(),
+                prev_counters: std::sync::Mutex::new(
+                    std::collections::HashMap::new(),
+                ),
+            },
+        ));
+        Ok(())
     }
 
     /// Return the number of cycles completed so far.
@@ -198,13 +286,18 @@ impl ActivityMetrics {
     }
 
     /// Increment counter for a specific error type. Creates the
-    /// counter on first occurrence of each error name.
+    /// counter on first occurrence of each error name. The new
+    /// counter is read by the [`DynamicCapture`] hook on every
+    /// capture tick — registration on `Component` is implicit
+    /// through the hook, not a per-name `register_instrument` call.
     pub fn count_error_type(&self, error_name: &str) {
         let mut map = self.error_type_counts.lock()
             .unwrap_or_else(|e| e.into_inner());
         let counter = map.entry(error_name.to_string())
             .or_insert_with(|| {
-                Counter::new(self.labels.with("name", &format!("errors.{error_name}")))
+                Arc::new(Counter::new(
+                    self.labels.with("name", &format!("errors.{error_name}")),
+                ))
             });
         counter.inc();
     }
@@ -354,80 +447,72 @@ impl ActivityMetrics {
         counters
     }
 
-    /// Compute the counter delta: current absolute value minus previous.
-    /// Updates the stored previous value for next call.
-    fn counter_delta(&self, counter: &Counter) -> u64 {
-        let current = counter.get();
-        let hash = counter.labels().identity_hash();
-        let mut prev = self.prev_counters.lock().unwrap_or_else(|e| e.into_inner());
-        let previous = prev.insert(hash, current).unwrap_or(0);
-        current.saturating_sub(previous)
-    }
 }
 
-impl nbrs_metrics::component::InstrumentSet for ActivityMetrics {
-    /// Capture a delta snapshot suitable for the component tree scheduler.
+/// [`DynamicCapture`] adapter for [`ActivityMetrics`]. Captures the
+/// dynamic surface — per-error-type counters and adapter-specific
+/// metrics from registered dispensers — that isn't known at
+/// `register_on` time and therefore can't live in the static
+/// component instrument registry.
+struct ActivityMetricsDynamic {
+    metrics: Arc<ActivityMetrics>,
+    /// Per-counter previous-value baseline for delta emission on
+    /// the `drain=true` path. Keyed by `counter.labels().identity_hash()`.
+    /// Mirrors the per-component baseline that `Component` keeps for
+    /// registered counters; per-error-type counters live outside
+    /// the registry so the baseline travels with the hook.
     ///
-    /// Timer histograms are inherently delta (reset on snapshot).
-    /// Counters emit the change since the last `capture_delta()` call.
-    fn capture_delta(&self, interval: Duration) -> MetricSet {
-        let service_snap = self.service_time.snapshot();
-        let wait_snap = self.wait_time.snapshot();
-        let response_snap = self.response_time.snapshot();
-        let success_snap = self.result_success_time.snapshot();
-        let tries_snap = self.tries_histogram.snapshot();
-        let now = Instant::now();
+    /// Why deltas: `MetricSet::combine_into` for Counter is
+    /// `total = a.total.saturating_add(b.total)` — the cascade
+    /// coalesce path treats Counter.total as the per-interval
+    /// delta and SUMS across intervals. Emitting absolutes here
+    /// would inflate as the cascade coalesces.
+    prev_counters: std::sync::Mutex<std::collections::HashMap<u64, u64>>,
+}
 
-        let mut snap = MetricSet::at(now, interval);
+impl nbrs_metrics::component::DynamicCapture for ActivityMetricsDynamic {
+    fn capture_into(
+        &self,
+        out: &mut MetricSet,
+        now: Instant,
+        drain: bool,
+    ) {
+        use nbrs_metrics::snapshot::{MetricType, MetricValue, split_name_label};
 
-        // Helper: take an instrument's `Labels` (which currently embeds
-        // the metric name as a `name=...` pair) and route it into the
-        // snapshot's family-keyed shape.
-        fn split(l: &Labels) -> (String, Labels) {
-            nbrs_metrics::snapshot::split_name_label(l)
-        }
-
-        // Timers (histograms in OpenMetrics terms).
-        let (n, lbl) = split(self.service_time.labels());
-        snap.insert_histogram(n, lbl, service_snap.histogram, now);
-        let (n, lbl) = split(self.wait_time.labels());
-        snap.insert_histogram(n, lbl, wait_snap.histogram, now);
-        let (n, lbl) = split(self.response_time.labels());
-        snap.insert_histogram(n, lbl, response_snap.histogram, now);
-        let (n, lbl) = split(self.result_success_time.labels());
-        snap.insert_histogram(n, lbl, success_snap.histogram, now);
-
-        // Counters.
-        let (n, lbl) = split(self.cycles_total.labels());
-        snap.insert_counter(n, lbl, self.counter_delta(&self.cycles_total), now);
-        let (n, lbl) = split(self.skips_total.labels());
-        snap.insert_counter(n, lbl, self.counter_delta(&self.skips_total), now);
-        let (n, lbl) = split(self.errors_total.labels());
-        snap.insert_counter(n, lbl, self.counter_delta(&self.errors_total), now);
-        let (n, lbl) = split(self.stanzas_total.labels());
-        snap.insert_counter(n, lbl, self.counter_delta(&self.stanzas_total), now);
-        let (n, lbl) = split(self.result_elements.labels());
-        snap.insert_counter(n, lbl, self.counter_delta(&self.result_elements), now);
-        let (n, lbl) = split(self.result_bytes.labels());
-        snap.insert_counter(n, lbl, self.counter_delta(&self.result_bytes), now);
-
-        // Tries histogram.
-        let (n, lbl) = split(self.tries_histogram.labels());
-        snap.insert_histogram(n, lbl, tries_snap, now);
-
-        // Per-error-type counter deltas.
-        let error_counts = self.error_type_counts.lock()
+        // Per-error-type counters.
+        // - drain=true (cadence path): emit deltas vs. the stored
+        //   baseline so cascade coalesce sums across intervals
+        //   without inflation.
+        // - drain=false (peek path): emit absolute totals.
+        let error_counts = self.metrics.error_type_counts.lock()
             .unwrap_or_else(|e| e.into_inner());
-        for counter in error_counts.values() {
-            let (n, lbl) = split(counter.labels());
-            snap.insert_counter(n, lbl, self.counter_delta(counter), now);
+        if drain {
+            let mut prev = self.prev_counters.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for counter in error_counts.values() {
+                let (name, lbl) = split_name_label(counter.labels());
+                let current = counter.get();
+                let key = counter.labels().identity_hash();
+                let previous = prev.insert(key, current).unwrap_or(0);
+                out.insert_counter(
+                    name, lbl, current.saturating_sub(previous), now,
+                );
+            }
+        } else {
+            for counter in error_counts.values() {
+                let (name, lbl) = split_name_label(counter.labels());
+                out.insert_counter(name, lbl, counter.get(), now);
+            }
         }
 
-        // Add adapter-specific metrics (e.g., rows_inserted timer from CQL batch).
-        if let Some(ref disps) = *self.dispensers.lock().unwrap_or_else(|e| e.into_inner()) {
+        // Adapter-specific metrics from each registered dispenser.
+        // Passthrough — the adapter decides delta vs. absolute
+        // semantics for its own metrics.
+        if let Some(ref disps) = *self.metrics.dispensers.lock()
+            .unwrap_or_else(|e| e.into_inner())
+        {
             for dispenser in disps.iter() {
                 for (family, metric_labels, value) in dispenser.adapter_metrics() {
-                    use nbrs_metrics::snapshot::{MetricType, MetricValue};
                     let mtype = match &value {
                         MetricValue::Counter(_) => MetricType::Counter,
                         MetricValue::Gauge(_) => MetricType::Gauge,
@@ -436,75 +521,10 @@ impl nbrs_metrics::component::InstrumentSet for ActivityMetrics {
                         MetricValue::Info(_) => MetricType::Info,
                         MetricValue::StateSet(_) => MetricType::StateSet,
                     };
-                    snap.insert_metric(family, mtype, metric_labels, value, now);
+                    out.insert_metric(family, mtype, metric_labels, value, now);
                 }
             }
         }
-
-        snap
-    }
-
-    fn capture_current(&self) -> MetricSet {
-        use nbrs_metrics::snapshot::split_name_label as split;
-        let now = Instant::now();
-        let mut snap = MetricSet::at(now, Duration::ZERO);
-
-        // Timers / histograms: non-draining peeks so the pull path
-        // never disturbs the scheduler's cascade delta reservoir.
-        let (n, lbl) = split(self.service_time.labels());
-        snap.insert_histogram(n, lbl, self.service_time.peek_snapshot().histogram, now);
-        let (n, lbl) = split(self.wait_time.labels());
-        snap.insert_histogram(n, lbl, self.wait_time.peek_snapshot().histogram, now);
-        let (n, lbl) = split(self.response_time.labels());
-        snap.insert_histogram(n, lbl, self.response_time.peek_snapshot().histogram, now);
-        let (n, lbl) = split(self.result_success_time.labels());
-        snap.insert_histogram(n, lbl, self.result_success_time.peek_snapshot().histogram, now);
-        let (n, lbl) = split(self.tries_histogram.labels());
-        snap.insert_histogram(n, lbl, self.tries_histogram.peek_snapshot(), now);
-
-        // Counters: absolute atomic reads — no baseline advance,
-        // readable arbitrarily often without perturbing deltas.
-        let (n, lbl) = split(self.cycles_total.labels());
-        snap.insert_counter(n, lbl, self.cycles_total.get(), now);
-        let (n, lbl) = split(self.skips_total.labels());
-        snap.insert_counter(n, lbl, self.skips_total.get(), now);
-        let (n, lbl) = split(self.errors_total.labels());
-        snap.insert_counter(n, lbl, self.errors_total.get(), now);
-        let (n, lbl) = split(self.stanzas_total.labels());
-        snap.insert_counter(n, lbl, self.stanzas_total.get(), now);
-        let (n, lbl) = split(self.result_elements.labels());
-        snap.insert_counter(n, lbl, self.result_elements.get(), now);
-        let (n, lbl) = split(self.result_bytes.labels());
-        snap.insert_counter(n, lbl, self.result_bytes.get(), now);
-
-        let error_counts = self.error_type_counts.lock()
-            .unwrap_or_else(|e| e.into_inner());
-        for counter in error_counts.values() {
-            let (n, lbl) = split(counter.labels());
-            snap.insert_counter(n, lbl, counter.get(), now);
-        }
-
-        // Adapter-specific metrics are already non-mutating — the
-        // delta path just pulls current values and hands them up.
-        // Same call works for capture_current.
-        if let Some(ref disps) = *self.dispensers.lock().unwrap_or_else(|e| e.into_inner()) {
-            for dispenser in disps.iter() {
-                for (family, metric_labels, value) in dispenser.adapter_metrics() {
-                    use nbrs_metrics::snapshot::{MetricType, MetricValue};
-                    let mtype = match &value {
-                        MetricValue::Counter(_) => MetricType::Counter,
-                        MetricValue::Gauge(_) => MetricType::Gauge,
-                        MetricValue::Histogram(_) => MetricType::Summary,
-                        MetricValue::BucketedHistogram(_) => MetricType::Histogram,
-                        MetricValue::Info(_) => MetricType::Info,
-                        MetricValue::StateSet(_) => MetricType::StateSet,
-                    };
-                    snap.insert_metric(family, mtype, metric_labels, value, now);
-                }
-            }
-        }
-
-        snap
     }
 }
 
@@ -692,6 +712,16 @@ impl Activity {
             component.read().unwrap_or_else(|e| e.into_inner())
                 .controls().declare(rate_control);
         }
+        // Register every static instrument owned by ActivityMetrics
+        // on this component so the cadence reporter's tree walk
+        // sees them. Failures here are programming errors
+        // (duplicate family on the activity's own component) —
+        // panic so the issue surfaces during init.
+        {
+            let mut guard = component.write().unwrap_or_else(|e| e.into_inner());
+            self.metrics.register_on(&mut guard)
+                .expect("ActivityMetrics::register_on failed on a fresh activity component");
+        }
         self.component = Some(component);
     }
 
@@ -754,6 +784,20 @@ impl Activity {
         });
         let mut dispensers: Vec<Arc<dyn OpDispenser>> = Vec::new();
         let mut validation_metrics: Vec<Arc<validation::ValidationMetrics>> = Vec::new();
+        // SRD-40b §6/§7 — one `Component` per **op dispenser**
+        // (= per op template), not per op execution. Op
+        // dispensers are the durable CNS layer of the nbrs
+        // runtime; per-cycle op invocations are stack-ephemeral
+        // and inherit the dispenser's component implicitly via
+        // the wrapper-stack closure capture. Each component
+        // carries `op=<template.name>` labels (child of the
+        // activity component) so SRD-40b §7.2's duplicate-
+        // family check (`Component::register_instrument`)
+        // sees one dimensional cell per dispenser, surviving
+        // for the run's duration. Held here to keep the Arc
+        // alive.
+        let mut dispenser_components: Vec<std::sync::Arc<std::sync::RwLock<
+            nbrs_metrics::component::Component>>> = Vec::new();
         // Per-template list of GK output names that must appear in
         // `ResolvedFields` for the inner adapter (op-field bind
         // points only). Wrapper-side reads (validation, conditional,
@@ -968,7 +1012,7 @@ impl Activity {
                     } else {
                         conditional
                     };
-                    // Wrap with emit (outermost) — prints result JSON
+                    // Wrap with emit — prints result JSON.
                     let emitted = if template.params.get("emit")
                         .and_then(|v| v.as_bool().or_else(|| v.as_str().map(|s| s == "true")))
                         .unwrap_or(false)
@@ -977,7 +1021,68 @@ impl Activity {
                     } else {
                         final_dispenser
                     };
-                    dispensers.push(emitted);
+
+                    // SRD-40b §5: result-as-GK adapter — exposes
+                    // captured result fields to the op's GK
+                    // scope via `OpResult.captures` so metric
+                    // expressions (and any later wrappers) can
+                    // reference them by name. No-op when the
+                    // op declares no `result:` wires.
+                    let with_result = crate::wrappers::ResultDispenser::wrap(
+                        emitted, &template.result,
+                    );
+
+                    // SRD-40b §6: MetricsDispenser — outermost
+                    // synthetic-metric publication wrapper.
+                    // The `Component` here is the dispenser's
+                    // own component (child of the activity
+                    // component) carrying `op=<template.name>`
+                    // — one per dispenser, NOT per cycle. The
+                    // family-name registry collision check
+                    // (§7.2) lives on this component, so two
+                    // ops in the same phase declaring the same
+                    // family produce different cells (their
+                    // `op=` label differs).
+                    let with_metrics = if !template.metrics.is_empty() {
+                        let labels = nbrs_metrics::labels::Labels::of("op", &template.name);
+                        let dispenser_component = std::sync::Arc::new(std::sync::RwLock::new(
+                            nbrs_metrics::component::Component::new(
+                                labels, std::collections::HashMap::new(),
+                            )
+                        ));
+                        if let Some(parent) = activity.component.as_ref() {
+                            nbrs_metrics::component::attach(parent, &dispenser_component);
+                        }
+                        let wrapped = {
+                            let mut guard = dispenser_component.write()
+                                .unwrap_or_else(|e| e.into_inner());
+                            match crate::wrappers::MetricsDispenser::wrap(
+                                with_result.clone(), &template.metrics, &mut guard,
+                            ) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    crate::diag!(crate::observer::LogLevel::Error,
+                                        "error: op '{}': {e}", template.name);
+                                    return true;
+                                }
+                            }
+                        };
+                        // Mark the dispenser component Running so
+                        // the cadence reporter's `capture_tree`
+                        // walk visits it on every tick. Without
+                        // this the synthetic metrics registered
+                        // above would never reach `metrics.db`.
+                        dispenser_component
+                            .write()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .set_state(nbrs_metrics::component::ComponentState::Running);
+                        dispenser_components.push(dispenser_component);
+                        wrapped
+                    } else {
+                        with_result
+                    };
+
+                    dispensers.push(with_metrics);
 
                     // Seal the per-template fixture. The PullPlan
                     // drives cycle-time reads for every wrapper that
@@ -2069,6 +2174,70 @@ mod tests {
         assert_eq!(shared_metrics.cycles_total.get(), 50);
         let frame = shared_metrics.capture(std::time::Duration::from_secs(1));
         assert!(!frame.is_empty());
+    }
+
+    #[tokio::test]
+    async fn per_error_type_counters_emit_deltas_through_dynamic_capture() {
+        // SRD-40 / cascade coalesce: `MetricSet::combine_into` for
+        // Counter sums `total` across intervals — so per-cycle
+        // emissions must be DELTAS, not absolutes. Per-error-type
+        // counters live on `ActivityMetricsDynamic` (outside the
+        // static registry), so they need their own delta tracking.
+        // This test exercises that path directly.
+        use nbrs_metrics::component::Component;
+        use nbrs_metrics::snapshot::MetricValue;
+
+        let metrics = Arc::new(ActivityMetrics::new(&Labels::of("session", "s1")));
+        let component = Arc::new(std::sync::RwLock::new(
+            Component::new(Labels::of("activity", "t"), HashMap::new()),
+        ));
+        {
+            let mut g = component.write().unwrap();
+            g.set_state(nbrs_metrics::component::ComponentState::Running);
+            metrics.register_on(&mut g).unwrap();
+        }
+
+        // Seed two error-type counters with different totals.
+        for _ in 0..3 { metrics.count_error_type("net"); }
+        for _ in 0..7 { metrics.count_error_type("timeout"); }
+
+        // First capture_delta — totals=3 and 7 are the deltas.
+        let snap1 = component.read().unwrap()
+            .capture_delta(std::time::Duration::from_secs(1));
+        let net1 = read_counter(&snap1, "errors.net");
+        let to1  = read_counter(&snap1, "errors.timeout");
+        assert_eq!(net1, 3, "first delta for net should be 3, got {net1}");
+        assert_eq!(to1, 7,  "first delta for timeout should be 7, got {to1}");
+
+        // Drive the per-error-type counters further.
+        for _ in 0..2 { metrics.count_error_type("net"); }
+        for _ in 0..1 { metrics.count_error_type("timeout"); }
+
+        // Second capture_delta — should report only the new deltas
+        // (2 and 1), NOT the absolute totals (5 and 8).
+        let snap2 = component.read().unwrap()
+            .capture_delta(std::time::Duration::from_secs(1));
+        let net2 = read_counter(&snap2, "errors.net");
+        let to2  = read_counter(&snap2, "errors.timeout");
+        assert_eq!(net2, 2, "second delta for net should be 2 (new only), got {net2}");
+        assert_eq!(to2, 1,  "second delta for timeout should be 1 (new only), got {to2}");
+
+        // capture_current (drain=false) should still report absolutes.
+        let cur = component.read().unwrap().capture_current();
+        let net_abs = read_counter(&cur, "errors.net");
+        let to_abs  = read_counter(&cur, "errors.timeout");
+        assert_eq!(net_abs, 5, "current should be absolute total 5, got {net_abs}");
+        assert_eq!(to_abs, 8,  "current should be absolute total 8, got {to_abs}");
+
+        fn read_counter(snap: &nbrs_metrics::snapshot::MetricSet, family: &str) -> u64 {
+            let f = snap.family(family).unwrap_or_else(||
+                panic!("family {family:?} missing from snapshot"));
+            let m = f.metrics().next().expect("at least one metric");
+            match m.point().unwrap().value() {
+                MetricValue::Counter(c) => c.total,
+                v => panic!("not a counter: {v:?}"),
+            }
+        }
     }
 
     #[tokio::test]

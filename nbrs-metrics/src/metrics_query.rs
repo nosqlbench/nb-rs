@@ -465,25 +465,10 @@ fn insert_metric_into(out: &mut MetricSet, family: &MetricFamily, metric: &Metri
 mod tests {
     use super::*;
     use crate::cadence::{Cadences, CadenceTree};
-    use crate::component::{Component, ComponentState, InstrumentSet, attach};
+    use crate::component::{Component, ComponentState, InstrumentRef, attach};
+    use crate::instruments::counter::Counter;
     use crate::snapshot::MetricValue;
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    struct StubInstruments {
-        n: AtomicU64,
-    }
-    impl InstrumentSet for StubInstruments {
-        fn capture_delta(&self, interval: Duration) -> MetricSet {
-            let v = self.n.load(Ordering::Relaxed);
-            let mut s = MetricSet::new(interval);
-            s.insert_counter("ops", Labels::default(), v, Instant::now());
-            s
-        }
-        fn capture_current(&self) -> MetricSet {
-            self.capture_delta(Duration::ZERO)
-        }
-    }
 
     fn build_one_component_query() -> (Arc<RwLock<Component>>, Arc<CadenceReporter>, MetricsQuery) {
         let root = Component::root(Labels::of("session", "s1"), HashMap::new());
@@ -494,7 +479,9 @@ mod tests {
         {
             let mut p = phase.write().unwrap();
             p.set_state(ComponentState::Running);
-            p.set_instruments(Arc::new(StubInstruments { n: AtomicU64::new(7) }));
+            let counter = Arc::new(Counter::new(Labels::of("name", "ops")));
+            counter.inc_by(7);
+            p.register_instrument("ops", InstrumentRef::Counter(counter)).unwrap();
         }
 
         let cadences = Cadences::new(&[Duration::from_millis(100)]).unwrap();

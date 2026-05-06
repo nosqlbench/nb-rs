@@ -234,8 +234,8 @@ captures delta snapshots from all RUNNING components.
 ```
 Session (root)
   └── Scenario
-        └── Phase (has InstrumentSet → ActivityMetrics)
-              └── Dispenser (optional instruments)
+        └── Phase (registers ActivityMetrics' instruments)
+              └── Dispenser (per-op-template instruments)
 ```
 
 ### Component and ComponentState
@@ -248,7 +248,9 @@ pub struct Component {
     parent: Option<Weak<RwLock<Component>>>,
     children: Vec<Arc<RwLock<Component>>>,
     state: ComponentState,
-    instruments: Option<Arc<dyn InstrumentSet>>,
+    instruments: Vec<RegisteredInstrument>,           // canonical store
+    dynamic_capture: Option<Arc<dyn DynamicCapture>>, // see below
+    prev_counters: Mutex<HashMap<u64, u64>>,          // delta baselines
 }
 
 pub enum ComponentState {
@@ -276,22 +278,60 @@ own props first, then walks up to each ancestor until found.
 Used for `hdr_digits`, `base_interval`, and other inheritable
 configuration that affects instrument construction.
 
-### InstrumentSet
+### Instrument registry (consolidated 2026-05)
 
-The `InstrumentSet` trait abstracts over concrete instrument
-collections. The component tree does not know about specific
-instrument types — it only asks for a frame of delta samples:
+Each `Component` carries a single `Vec<RegisteredInstrument>`
+holding every instrument hung on that node. Registration is
+once-at-init via `register_instrument(family, instrument)` (or
+the unit-bearing `register_instrument_with_unit`); the same
+`Arc<...>` is held both by the registry (for capture) and by
+the per-cycle caller (for record-path access).
 
 ```rust
-pub trait InstrumentSet: Send + Sync {
-    fn capture_delta(&self, interval: Duration) -> MetricsFrame;
+pub enum InstrumentRef {
+    Counter(Arc<Counter>),
+    Gauge(Arc<ValueGauge>),
+    Histogram(Arc<Histogram>),
+    Timer(Arc<Timer>),
+}
+
+pub struct RegisteredInstrument {
+    pub family: String,
+    pub unit: Option<String>,
+    pub instrument: InstrumentRef,
+}
+
+impl Component {
+    pub fn capture_delta(&self, interval: Duration) -> MetricSet { ... }
+    pub fn capture_current(&self) -> MetricSet { ... }
 }
 ```
 
-`ActivityMetrics` implements this in nbrs-activity. The
-`capture_delta` call resets internal delta accumulators
-(histograms, F64Stats) and emits counter changes since the
-last call.
+`Component::capture_delta` walks the registry, dispatching on
+the variant: counters emit deltas (against the per-component
+`prev_counters` baseline), histograms drain, gauges read, timers
+drain. The cadence reporter calls this on every tick.
+
+`ActivityMetrics::register_on(&mut Component)` registers all
+its static instruments at activity-attach time. Family-name
+lookup (`find_instrument(name)`) is a linear scan — diagnostic
+only; per-cycle code never goes through it.
+
+### DynamicCapture
+
+For instruments whose existence isn't known at init time
+(per-error-type counters, adapter-specific dispenser metrics),
+a component can install one [`DynamicCapture`] hook:
+
+```rust
+pub trait DynamicCapture: Send + Sync {
+    fn capture_into(&self, out: &mut MetricSet, now: Instant, drain: bool);
+}
+```
+
+`Component::capture_*` walks the registry first, then invokes
+the dynamic hook (if any), so dynamic samples ride the same
+cadence pipeline.
 
 ---
 

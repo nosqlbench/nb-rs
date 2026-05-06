@@ -23,7 +23,7 @@ use nbrs_metrics::cadence::{
     format_duration_short,
 };
 use nbrs_metrics::cadence_reporter::{CadenceReporter, HISTORY_RING_CAP};
-use nbrs_metrics::component::{Component, ComponentState, InstrumentSet, attach, capture_tree};
+use nbrs_metrics::component::{Component, ComponentState, InstrumentRef, attach, capture_tree};
 use nbrs_metrics::instruments::counter::Counter;
 use nbrs_metrics::instruments::gauge::ValueGauge;
 use nbrs_metrics::instruments::histogram::Histogram;
@@ -375,24 +375,12 @@ fn cadence_reporter_ring_is_capped() {
 // metrics query — the four modes
 // =========================================================================
 
-struct StubInstruments {
-    value: AtomicU64,
-}
-
-impl InstrumentSet for StubInstruments {
-    fn capture_delta(&self, interval: Duration) -> MetricSet {
-        let mut s = MetricSet::new(interval);
-        s.insert_counter(
-            "ops",
-            Labels::default(),
-            self.value.load(Ordering::Relaxed),
-            Instant::now(),
-        );
-        s
-    }
-    fn capture_current(&self) -> MetricSet {
-        self.capture_delta(Duration::ZERO)
-    }
+/// Test helper: register a counter holding `value` under family
+/// `name` on the given component.
+fn install_test_counter(c: &mut Component, family: &str, value: u64) {
+    let counter = Arc::new(Counter::new(Labels::of("name", family)));
+    counter.inc_by(value);
+    c.register_instrument(family, InstrumentRef::Counter(counter)).unwrap();
 }
 
 fn build_query_fixture(
@@ -406,7 +394,7 @@ fn build_query_fixture(
     {
         let mut p = phase.write().unwrap();
         p.set_state(ComponentState::Running);
-        p.set_instruments(Arc::new(StubInstruments { value: AtomicU64::new(42) }));
+        install_test_counter(&mut p, "ops", 42);
     }
     let tree = CadenceTree::plan_default(cadences);
     let reporter = Arc::new(CadenceReporter::new(tree));
@@ -564,7 +552,7 @@ fn capture_tree_visits_only_running_components() {
     {
         let mut p = phase.write().unwrap();
         p.set_state(ComponentState::Stopped);
-        p.set_instruments(Arc::new(StubInstruments { value: AtomicU64::new(1) }));
+        install_test_counter(&mut p, "ops", 1);
     }
     let captured = capture_tree(&root, Duration::from_secs(1));
     assert_eq!(captured.len(), 0);

@@ -8,14 +8,29 @@
 //! a phase component's effective labels include all ancestor labels.
 //! Properties walk upward — a child can query a prop set on any ancestor.
 //!
-//! Instruments hang off components via the [`InstrumentSet`] trait.
-//! The scheduler walks the tree to capture delta snapshots from all
-//! RUNNING components.
+//! ## Instrument ownership (consolidated 2026-05)
+//!
+//! Each component carries a single `Vec<RegisteredInstrument>` — the
+//! canonical store for every instrument hung on the node. Per-cycle
+//! callers (op-dispenser wrappers, the activity executor) hold typed
+//! `Arc<...>` references captured at registration time and never
+//! look up by family name on the hot path. The [`Component::find_instrument`]
+//! linear scan exists for diagnostics / introspection only.
+//!
+//! Dynamic instruments whose existence isn't known at init —
+//! per-error-type counters allocated on first sighting — register
+//! through the [`DynamicCapture`] hook installed via
+//! [`Component::set_dynamic_capture`]. Capture walks the registry
+//! first, then invokes the dynamic hook (if any).
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock, Weak};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::time::{Duration, Instant};
 
+use crate::instruments::counter::Counter;
+use crate::instruments::gauge::ValueGauge;
+use crate::instruments::histogram::Histogram;
+use crate::instruments::timer::Timer;
 use crate::labels::Labels;
 use crate::snapshot::MetricSet;
 
@@ -33,47 +48,70 @@ pub enum ComponentState {
     Stopped,
 }
 
-/// A set of instruments that can produce snapshots of their
-/// current state.
+/// A typed instrument reference owned by a [`Component`].
 ///
-/// Implemented by `ActivityMetrics` in nbrs-activity. The component
-/// tree does not know about specific instrument types — it only
-/// asks for a [`MetricSet`].
-///
-/// Two read modes — one draining, one not — because the scheduler's
-/// cascade coalesce needs delta semantics to feed the
-/// [`crate::cadence_reporter::CadenceReporter`] correctly, while
-/// interactive pull readers (TUI, summary, GK metric nodes) need
-/// non-mutating reads that never touch counter accumulators or
-/// drain histogram reservoirs.
-pub trait InstrumentSet: Send + Sync {
-    /// Capture a delta snapshot covering the given interval.
-    ///
-    /// Resets internal delta accumulators (histograms drain,
-    /// counter baselines advance). Called by the scheduler on every
-    /// tick — the result feeds the cadence reporter's smallest-cadence
-    /// accumulator.
-    fn capture_delta(&self, interval: Duration) -> MetricSet;
+/// One variant per kind matches the [`crate::snapshot::MetricType`]
+/// axis (counter / gauge / histogram / timer). Capture dispatches
+/// on the variant to call the right kind-specific snapshot method.
+#[derive(Clone)]
+pub enum InstrumentRef {
+    Counter(Arc<Counter>),
+    Gauge(Arc<ValueGauge>),
+    Histogram(Arc<Histogram>),
+    Timer(Arc<Timer>),
+}
 
-    /// Capture a non-mutating snapshot of current state.
-    ///
-    /// - Counters: absolute totals (atomic load).
-    /// - Gauges: current value.
-    /// - Histograms: non-draining clone (`peek_snapshot`).
-    ///
-    /// Never touches internal accumulators — callers may invoke
-    /// this arbitrarily often without perturbing the scheduler's
-    /// per-tick cascade. Used by [`crate::metrics_query::MetricsQuery::now`]
-    /// and the memoized [`crate::metrics_query::MetricHandle`] read
-    /// path.
-    fn capture_current(&self) -> MetricSet;
+impl InstrumentRef {
+    /// Labels recorded on the underlying instrument. The `name=...`
+    /// pair (used by [`split_name_label`]) is preserved here so
+    /// existing snapshots keep their shape.
+    pub fn labels(&self) -> &Labels {
+        match self {
+            Self::Counter(c) => c.labels(),
+            Self::Gauge(g) => g.labels(),
+            Self::Histogram(h) => h.labels(),
+            Self::Timer(t) => t.labels(),
+        }
+    }
+}
+
+/// One registry entry: the bare family name, optional OpenMetrics
+/// unit, and the typed instrument.
+///
+/// `family` is the bare name as given to
+/// [`Component::register_instrument`]. The `_<unit>` suffix per
+/// SRD-40a §4.3 is applied at capture time (in
+/// [`crate::snapshot::MetricSet::insert_metric_with_unit`]) so the
+/// `metric_family.name` ends up suffixed and `metric_family.unit`
+/// holds the unit. Unit `None` means the family is published as-is.
+pub struct RegisteredInstrument {
+    pub family: String,
+    pub unit: Option<String>,
+    pub instrument: InstrumentRef,
+}
+
+/// Hook for components that own a dynamically-extending set of
+/// instruments — e.g. per-error-type counters allocated lazily.
+///
+/// The registry-side `Vec<RegisteredInstrument>` is the canonical
+/// store for instruments known at init. Anything that needs to
+/// register more instruments after `register_on` has run installs
+/// a `DynamicCapture` via [`Component::set_dynamic_capture`]; the
+/// component's capture path invokes it after walking the registry
+/// so the dynamic samples ride the same cadence pipeline.
+pub trait DynamicCapture: Send + Sync {
+    /// Append the dynamic instruments' current samples into `out`.
+    /// `drain` mirrors the registry walk: `true` for the cadence
+    /// reporter's per-tick path (drain histograms, etc.); `false`
+    /// for the non-mutating "current" path.
+    fn capture_into(&self, out: &mut MetricSet, now: Instant, drain: bool);
 }
 
 /// A node in the runtime component tree.
 ///
 /// Components form a hierarchy: Session → Scenario → Phase → Dispenser.
 /// Each component carries its own labels, inheritable properties, and
-/// an optional instrument set for metrics capture.
+/// its own instrument registry.
 pub struct Component {
     /// This component's own labels (e.g., `phase="rampup"`).
     labels: Labels,
@@ -89,9 +127,23 @@ pub struct Component {
     children: Vec<Arc<RwLock<Component>>>,
     /// Lifecycle state. Only RUNNING components are captured.
     state: ComponentState,
-    /// Instruments owned by this component. None for structural-only
-    /// nodes (session, scenario) that don't directly record metrics.
-    instruments: Option<Arc<dyn InstrumentSet>>,
+    /// Canonical instrument store for this component.
+    ///
+    /// Hot-path callers hold typed `Arc<...>` references obtained
+    /// at registration time and never look up by name per cycle.
+    /// Family-name lookup ([`find_instrument`]) is a linear scan and
+    /// is reserved for diagnostics / introspection — see the
+    /// [`find_instrument`] doc-comment.
+    instruments: Vec<RegisteredInstrument>,
+    /// Optional hook for instruments whose existence isn't known at
+    /// init (per-error-type counters, etc.). Capture walks
+    /// `instruments` first, then invokes this if present. See
+    /// [`DynamicCapture`].
+    dynamic_capture: Option<Arc<dyn DynamicCapture>>,
+    /// Per-counter previous-snapshot baseline for delta computation.
+    /// Keyed by counter labels' `identity_hash`. Populated lazily on
+    /// each `capture_delta` call.
+    prev_counters: Mutex<HashMap<u64, u64>>,
     /// Dynamic-controls declared on this component (SRD 23).
     /// Empty unless the code that instantiates the component
     /// explicitly declares a control via
@@ -112,7 +164,9 @@ impl Component {
             parent: None,
             children: Vec::new(),
             state: ComponentState::Starting,
-            instruments: None,
+            instruments: Vec::new(),
+            dynamic_capture: None,
+            prev_counters: Mutex::new(HashMap::new()),
             controls: crate::controls::ControlRegistry::new(),
         }
     }
@@ -144,9 +198,170 @@ impl Component {
         self.state = state;
     }
 
-    /// Set the instrument set for this component.
-    pub fn set_instruments(&mut self, instruments: Arc<dyn InstrumentSet>) {
-        self.instruments = Some(instruments);
+    /// Register an instrument under `family` on this component.
+    ///
+    /// Returns `Err` when `family` is already registered on this
+    /// component — duplicate-family declarations on the same
+    /// dimensional cell surface as a workload error here, before
+    /// any cycle runs (SRD-40b §7.2). The component's
+    /// `effective_labels` define the dimensional cell; the same
+    /// family on a different component is a different cell and
+    /// produces no collision.
+    ///
+    /// The collision check is a linear scan over the registry
+    /// Vec — see the storage-shape note on [`Self::instruments`].
+    pub fn register_instrument(
+        &mut self,
+        family: impl Into<String>,
+        instrument: InstrumentRef,
+    ) -> Result<(), String> {
+        self.register_instrument_with_unit(family, None, instrument)
+    }
+
+    /// Variant of [`Self::register_instrument`] that records an
+    /// OpenMetrics unit (`ms`, `bytes`, …).
+    ///
+    /// At capture time the unit drives the `_<unit>` suffix on
+    /// `metric_family.name` and populates the `unit` column per
+    /// SRD-40a §4.3 / SRD-40b §1. `None` is identical to the
+    /// no-unit `register_instrument` path.
+    pub fn register_instrument_with_unit(
+        &mut self,
+        family: impl Into<String>,
+        unit: Option<String>,
+        instrument: InstrumentRef,
+    ) -> Result<(), String> {
+        let family = family.into();
+        if self.instruments.iter().any(|ri| ri.family == family) {
+            return Err(format!(
+                "duplicate family name on dimensionally-same metric \
+                 context: {family}{}",
+                self.effective_labels.to_prometheus(),
+            ));
+        }
+        self.instruments.push(RegisteredInstrument {
+            family,
+            unit,
+            instrument,
+        });
+        Ok(())
+    }
+
+    /// Read-only view of every registered instrument on this
+    /// component, in insertion order. Walked by the cadence
+    /// reporter on every tick.
+    pub fn instruments(&self) -> &[RegisteredInstrument] {
+        &self.instruments
+    }
+
+    /// Linear scan by family name — diagnostic / rare-path only.
+    ///
+    /// Hot-path callers must use the typed `Arc<...>` they
+    /// captured at registration time. The Vec storage and linear
+    /// scan are deliberate: registration is once-at-init,
+    /// per-cycle access is pre-bound, and a HashMap probe would
+    /// add API + Hash bound for ~40 ns saved once per workload load.
+    ///
+    /// If you find yourself reaching for this on a per-cycle code
+    /// path, that's a design bug in the caller — pre-bind the
+    /// `Arc<...>` you got from [`register_instrument`] instead.
+    pub fn find_instrument(&self, family: &str) -> Option<&InstrumentRef> {
+        self.instruments
+            .iter()
+            .find(|ri| ri.family == family)
+            .map(|ri| &ri.instrument)
+    }
+
+    /// Install a [`DynamicCapture`] hook for instruments whose
+    /// existence isn't known at init time. Replaces any prior
+    /// installation. See the trait doc.
+    pub fn set_dynamic_capture(&mut self, hook: Arc<dyn DynamicCapture>) {
+        self.dynamic_capture = Some(hook);
+    }
+
+    /// Capture a delta snapshot covering `interval`.
+    ///
+    /// Resets internal delta accumulators (histograms drain;
+    /// counter baselines advance). Called by the scheduler on
+    /// every tick — the result feeds the cadence reporter's
+    /// smallest-cadence accumulator.
+    pub fn capture_delta(&self, interval: Duration) -> MetricSet {
+        let now = Instant::now();
+        let mut out = MetricSet::at(now, interval);
+        self.capture_registry_into(&mut out, now, true);
+        if let Some(hook) = &self.dynamic_capture {
+            hook.capture_into(&mut out, now, true);
+        }
+        out
+    }
+
+    /// Capture a non-mutating snapshot of current state.
+    ///
+    /// - Counters: absolute totals (atomic load).
+    /// - Gauges: current value.
+    /// - Histograms / Timers: non-draining clone (`peek_snapshot`).
+    ///
+    /// Never touches internal accumulators — callers may invoke
+    /// this arbitrarily often without perturbing the scheduler's
+    /// per-tick cascade.
+    pub fn capture_current(&self) -> MetricSet {
+        let now = Instant::now();
+        let mut out = MetricSet::at(now, Duration::ZERO);
+        self.capture_registry_into(&mut out, now, false);
+        if let Some(hook) = &self.dynamic_capture {
+            hook.capture_into(&mut out, now, false);
+        }
+        out
+    }
+
+    /// Walk the registered instruments and emit their samples into
+    /// `out`. `drain=true` drains histograms and advances counter
+    /// baselines (delta semantics); `drain=false` peeks without
+    /// disturbing reservoirs (current semantics).
+    fn capture_registry_into(&self, out: &mut MetricSet, now: Instant, drain: bool) {
+        for ri in &self.instruments {
+            let family = ri.family.clone();
+            let unit = ri.unit.as_deref();
+            match &ri.instrument {
+                InstrumentRef::Counter(c) => {
+                    let lbl = strip_name_label(c.labels());
+                    let absolute = c.get();
+                    let value = if drain {
+                        self.counter_delta(c.labels().identity_hash(), absolute)
+                    } else {
+                        absolute
+                    };
+                    out.insert_counter_with_unit(family, unit, lbl, value, now);
+                }
+                InstrumentRef::Gauge(g) => {
+                    let lbl = strip_name_label(g.labels());
+                    out.insert_gauge_with_unit(family, unit, lbl, g.get(), now);
+                }
+                InstrumentRef::Histogram(h) => {
+                    let lbl = strip_name_label(h.labels());
+                    let reservoir = if drain { h.snapshot() } else { h.peek_snapshot() };
+                    out.insert_histogram_with_unit(family, unit, lbl, reservoir, now);
+                }
+                InstrumentRef::Timer(t) => {
+                    let lbl = strip_name_label(t.labels());
+                    let snap = if drain { t.snapshot() } else { t.peek_snapshot() };
+                    out.insert_histogram_with_unit(family, unit, lbl, snap.histogram, now);
+                }
+            }
+        }
+    }
+
+    /// Compute the delta for a counter: current minus previous,
+    /// updating the stored baseline. Mirrors the sidecar that
+    /// `ActivityMetrics` used to maintain. `identity_hash` keys
+    /// the per-counter prev-value cell.
+    fn counter_delta(&self, identity_hash: u64, current: u64) -> u64 {
+        let mut prev = self
+            .prev_counters
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous = prev.insert(identity_hash, current).unwrap_or(0);
+        current.saturating_sub(previous)
     }
 
     /// Get a property by name, walking up the tree.
@@ -297,6 +512,65 @@ impl Component {
         }
         count
     }
+}
+
+/// Strip the legacy `name=...` label from an instrument's `Labels`,
+/// returning the dimensional residual that goes onto the captured
+/// `MetricFamily` row. The family name itself is provided
+/// separately by [`RegisteredInstrument::family`] — historical
+/// instruments embedded the family name as a `name=...` label, but
+/// that pair must NOT appear on the metric's `LabelSet` (label-set
+/// uniqueness within a family per OpenMetrics §4.5.1 would
+/// otherwise be polluted).
+fn strip_name_label(labels: &Labels) -> Labels {
+    let mut out = Labels::default();
+    for (k, v) in labels.iter() {
+        if k != "name" {
+            out = out.with(k, v);
+        }
+    }
+    out
+}
+
+/// SRD-40b §11 / SRD-42 §"Component lifecycle: scope_close flush" —
+/// fused teardown helper. Captures a final delta from this component's
+/// instruments, fires the cadence reporter's `scope_close` (which
+/// marks the partial, ingests, and closes the path), and transitions
+/// the component to [`ComponentState::Stopped`].
+///
+/// **Only acts on `Running` components.** Components that are
+/// `Starting`, `Stopping`, or already `Stopped` return without
+/// touching the reporter — calling `scope_close` twice on the same
+/// component is a no-op on the second call, matching SRD-40 §
+/// component lifecycle.
+///
+/// Components with no registered instruments still close the path so
+/// any in-flight prebuffer at that label set (e.g. ingests routed via
+/// a sibling layer) flushes through the cascade.
+pub fn scope_close(
+    component: &Arc<RwLock<Component>>,
+    cadence_reporter: &crate::cadence_reporter::CadenceReporter,
+    interval: Duration,
+) {
+    // Read-capture the delta first, then take a write guard to
+    // transition state. Read guard is released between the two so
+    // the write doesn't deadlock.
+    let (labels, delta) = {
+        let g = component.read().unwrap_or_else(|e| e.into_inner());
+        if g.state != ComponentState::Running {
+            return;
+        }
+        let delta = g.capture_delta(interval);
+        (g.effective_labels.clone(), delta)
+    };
+
+    cadence_reporter.scope_close(&labels, delta);
+
+    // Transition to Stopped so a subsequent capture pass skips this
+    // component (capture_tree only walks Running) and a second
+    // scope_close call is a no-op.
+    let mut g = component.write().unwrap_or_else(|e| e.into_inner());
+    g.state = ComponentState::Stopped;
 }
 
 // =========================================================================
@@ -471,7 +745,7 @@ pub fn detach(
 }
 
 /// Walk the component tree and capture delta snapshots from all
-/// RUNNING components that have instruments.
+/// RUNNING components.
 ///
 /// Returns one `(effective_labels, snapshot)` pair per captured
 /// component. Draining semantics — used by the scheduler tick.
@@ -491,39 +765,29 @@ fn capture_recursive(
 ) {
     // Take a read guard, snapshot the values we need, drop the
     // guard before recursing so child locks don't nest on ours.
-    let guard = node.read().ok();
-    let (state, effective_labels, instruments, children, control_gauges) = match guard {
-        Some(n) => {
-            let controls_snap = n.controls.snapshot_gauges(
-                &n.effective_labels,
-                std::time::Instant::now(),
-            );
-            (
-                n.state,
-                n.effective_labels.clone(),
-                n.instruments.clone(),
-                n.children.clone(),
-                controls_snap,
-            )
-        }
-        None => return,
-    };
+    let Ok(guard) = node.read() else { return };
+    let state = guard.state;
+    let effective_labels = guard.effective_labels.clone();
+    let children = guard.children.clone();
 
     if state == ComponentState::Running {
-        if let Some(ref instr) = instruments {
-            let snapshot = instr.capture_delta(interval);
-            if !snapshot.is_empty() {
-                results.push((effective_labels.clone(), snapshot));
-            }
+        let snapshot = guard.capture_delta(interval);
+        if !snapshot.is_empty() {
+            results.push((effective_labels.clone(), snapshot));
         }
         // Reified control gauges — one per declared control that
         // has a numeric projection. Published at every tick so
         // they flow through the same sinks as regular metrics.
+        let control_gauges = guard.controls.snapshot_gauges(
+            &effective_labels,
+            Instant::now(),
+        );
         if !control_gauges.is_empty() {
             results.push((effective_labels, control_gauges));
         }
     }
 
+    drop(guard);
     for child in &children {
         capture_recursive(child, interval, results);
     }
@@ -531,8 +795,8 @@ fn capture_recursive(
 
 /// Non-mutating counterpart of [`capture_tree`]. Walks every RUNNING
 /// component and returns absolute/peeked snapshots via
-/// [`InstrumentSet::capture_current`]. Safe to call arbitrarily
-/// often — doesn't drain histograms or advance counter baselines.
+/// [`Component::capture_current`]. Safe to call arbitrarily often —
+/// doesn't drain histograms or advance counter baselines.
 pub fn capture_tree_current(
     root: &Arc<RwLock<Component>>,
 ) -> Vec<(Labels, MetricSet)> {
@@ -545,102 +809,149 @@ fn capture_current_recursive(
     node: &Arc<RwLock<Component>>,
     results: &mut Vec<(Labels, MetricSet)>,
 ) {
-    let guard = node.read().ok();
-    let (state, effective_labels, instruments, children, control_gauges) = match guard {
-        Some(n) => {
-            let controls_snap = n.controls.snapshot_gauges(
-                &n.effective_labels,
-                std::time::Instant::now(),
-            );
-            (
-                n.state,
-                n.effective_labels.clone(),
-                n.instruments.clone(),
-                n.children.clone(),
-                controls_snap,
-            )
-        }
-        None => return,
-    };
+    let Ok(guard) = node.read() else { return };
+    let state = guard.state;
+    let effective_labels = guard.effective_labels.clone();
+    let children = guard.children.clone();
 
     if state == ComponentState::Running {
-        if let Some(ref instr) = instruments {
-            let snapshot = instr.capture_current();
-            if !snapshot.is_empty() {
-                results.push((effective_labels.clone(), snapshot));
-            }
+        let snapshot = guard.capture_current();
+        if !snapshot.is_empty() {
+            results.push((effective_labels.clone(), snapshot));
         }
+        let control_gauges = guard.controls.snapshot_gauges(
+            &effective_labels,
+            Instant::now(),
+        );
         if !control_gauges.is_empty() {
             results.push((effective_labels, control_gauges));
         }
     }
 
+    drop(guard);
     for child in &children {
         capture_current_recursive(child, results);
-    }
-}
-
-/// Walk the component tree and collect `(effective_labels, instruments)`
-/// pairs for every RUNNING component. Used by
-/// [`crate::metrics_query::MetricsQuery::resolve`] to memoize the
-/// set of instrument sets a handle pulls from — subsequent reads
-/// skip the tree walk.
-pub fn collect_running_instruments(
-    root: &Arc<RwLock<Component>>,
-) -> Vec<(Labels, Arc<dyn InstrumentSet>)> {
-    let mut out = Vec::new();
-    collect_recursive(root, &mut out);
-    out
-}
-
-fn collect_recursive(
-    node: &Arc<RwLock<Component>>,
-    out: &mut Vec<(Labels, Arc<dyn InstrumentSet>)>,
-) {
-    let (state, effective_labels, instruments, children) = {
-        let n = node.read().unwrap_or_else(|e| e.into_inner());
-        (
-            n.state,
-            n.effective_labels.clone(),
-            n.instruments.clone(),
-            n.children.clone(),
-        )
-    };
-    if state == ComponentState::Running {
-        if let Some(instr) = instruments {
-            out.push((effective_labels, instr));
-        }
-    }
-    for child in &children {
-        collect_recursive(child, out);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    struct MockInstruments {
-        value: std::sync::atomic::AtomicU64,
+    fn new_counter(family: &str) -> Arc<Counter> {
+        Arc::new(Counter::new(Labels::of("name", family)))
     }
 
-    impl InstrumentSet for MockInstruments {
-        fn capture_delta(&self, interval: Duration) -> MetricSet {
-            let v = self.value.load(std::sync::atomic::Ordering::Relaxed);
-            let mut s = MetricSet::new(interval);
-            s.insert_counter(
-                "test_counter",
-                Labels::default(),
-                v,
-                std::time::Instant::now(),
-            );
-            s
+    // ── SRD-40b §7.2: register_instrument duplicate detection ──
+
+    #[test]
+    fn register_instrument_first_time_succeeds() {
+        let mut c = Component::new(Labels::empty(), HashMap::new());
+        assert!(c.register_instrument(
+            "recall_at_10",
+            InstrumentRef::Counter(new_counter("recall_at_10")),
+        ).is_ok());
+        assert!(c.find_instrument("recall_at_10").is_some());
+    }
+
+    #[test]
+    fn register_instrument_duplicate_errors() {
+        let mut c = Component::new(Labels::empty(), HashMap::new());
+        c.register_instrument(
+            "recall_at_10",
+            InstrumentRef::Counter(new_counter("recall_at_10")),
+        ).unwrap();
+        let err = c.register_instrument(
+            "recall_at_10",
+            InstrumentRef::Counter(new_counter("recall_at_10")),
+        ).unwrap_err();
+        assert!(err.contains("duplicate family"),
+            "wrong message: {err}");
+        assert!(err.contains("recall_at_10"),
+            "family name not in error: {err}");
+    }
+
+    #[test]
+    fn register_instrument_distinct_names_succeed() {
+        let mut c = Component::new(Labels::empty(), HashMap::new());
+        c.register_instrument("a", InstrumentRef::Counter(new_counter("a"))).unwrap();
+        c.register_instrument("b", InstrumentRef::Counter(new_counter("b"))).unwrap();
+        c.register_instrument("c", InstrumentRef::Counter(new_counter("c"))).unwrap();
+        assert_eq!(c.instruments().len(), 3);
+    }
+
+    #[test]
+    fn register_instrument_error_carries_label_context() {
+        // SRD-40b §7's contract: the error message names the
+        // dimensional cell so the workload author can see WHICH
+        // op-template's label set produced the collision.
+        let labels = Labels::of("phase", "pvs_query")
+            .with("op", "select_ann");
+        let mut c = Component::new(labels, HashMap::new());
+        c.register_instrument(
+            "overscan",
+            InstrumentRef::Counter(new_counter("overscan")),
+        ).unwrap();
+        let err = c.register_instrument(
+            "overscan",
+            InstrumentRef::Counter(new_counter("overscan")),
+        ).unwrap_err();
+        assert!(err.contains("phase"), "missing phase label: {err}");
+        assert!(err.contains("pvs_query"), "missing phase value: {err}");
+        assert!(err.contains("op"), "missing op label: {err}");
+    }
+
+    #[test]
+    fn register_instrument_isolated_per_component() {
+        // Two components — registering the same family on each
+        // is OK; dimensional uniqueness comes from the
+        // component-tree structure, not a global registry.
+        let mut a = Component::new(Labels::of("op", "foo"), HashMap::new());
+        let mut b = Component::new(Labels::of("op", "bar"), HashMap::new());
+        assert!(a.register_instrument(
+            "overscan",
+            InstrumentRef::Counter(new_counter("overscan")),
+        ).is_ok());
+        assert!(b.register_instrument(
+            "overscan",
+            InstrumentRef::Counter(new_counter("overscan")),
+        ).is_ok());
+    }
+
+    // Test helper: register a counter that records a fixed value.
+    fn install_counter(c: &mut Component, family: &str, value: u64) -> Arc<Counter> {
+        let counter = new_counter(family);
+        counter.inc_by(value);
+        c.register_instrument(
+            family,
+            InstrumentRef::Counter(counter.clone()),
+        ).unwrap();
+        counter
+    }
+
+    // ── DynamicCapture hook ──
+
+    struct DynamicCounter {
+        inner: AtomicU64,
+    }
+    impl DynamicCapture for DynamicCounter {
+        fn capture_into(&self, out: &mut MetricSet, now: Instant, _drain: bool) {
+            let v = self.inner.load(Ordering::Relaxed);
+            out.insert_counter("dynamic_counter", Labels::default(), v, now);
         }
-        fn capture_current(&self) -> MetricSet {
-            // Tests don't distinguish current vs delta — fine to
-            // reuse. Real impls (ActivityMetrics) differentiate.
-            self.capture_delta(Duration::ZERO)
-        }
+    }
+
+    #[test]
+    fn dynamic_capture_runs_after_registry() {
+        let mut c = Component::new(Labels::empty(), HashMap::new());
+        install_counter(&mut c, "static_counter", 5);
+        c.set_dynamic_capture(Arc::new(DynamicCounter {
+            inner: AtomicU64::new(7),
+        }));
+        let snap = c.capture_current();
+        assert!(snap.family("static_counter").is_some());
+        assert!(snap.family("dynamic_counter").is_some());
     }
 
     #[test]
@@ -710,7 +1021,7 @@ mod tests {
     fn capture_tree_collects_running_components() {
         let root = Component::root(Labels::of("session", "s1"), HashMap::new());
 
-        // Running child with instruments
+        // Running child with a registered counter.
         let child1 = Arc::new(RwLock::new(
             Component::new(Labels::of("phase", "load"), HashMap::new()),
         ));
@@ -718,12 +1029,10 @@ mod tests {
         {
             let mut c = child1.write().unwrap();
             c.set_state(ComponentState::Running);
-            c.set_instruments(Arc::new(MockInstruments {
-                value: std::sync::atomic::AtomicU64::new(42),
-            }));
+            install_counter(&mut c, "test_counter", 42);
         }
 
-        // Stopped child with instruments — should NOT be captured
+        // Stopped child with a registered counter — must NOT be captured.
         let child2 = Arc::new(RwLock::new(
             Component::new(Labels::of("phase", "done"), HashMap::new()),
         ));
@@ -731,9 +1040,7 @@ mod tests {
         {
             let mut c = child2.write().unwrap();
             c.set_state(ComponentState::Stopped);
-            c.set_instruments(Arc::new(MockInstruments {
-                value: std::sync::atomic::AtomicU64::new(99),
-            }));
+            install_counter(&mut c, "test_counter", 99);
         }
 
         let captured = capture_tree(&root, Duration::from_secs(1));
@@ -758,9 +1065,7 @@ mod tests {
         {
             let mut p = phase.write().unwrap();
             p.set_state(ComponentState::Running);
-            p.set_instruments(Arc::new(MockInstruments {
-                value: std::sync::atomic::AtomicU64::new(10),
-            }));
+            install_counter(&mut p, "test_counter", 10);
         }
 
         let captured = capture_tree(&root, Duration::from_secs(1));
@@ -777,8 +1082,6 @@ mod tests {
 
     /// Fixture: a small session tree with two activity subtrees,
     /// each holding a handful of phases with distinct label shapes.
-    /// Returns the session root + quick accessors to named nodes
-    /// so individual tests don't rebuild.
     fn sample_tree() -> Arc<RwLock<Component>> {
         let root = Component::root(
             Labels::empty()
@@ -824,12 +1127,9 @@ mod tests {
     #[test]
     fn find_returns_every_match_in_preorder() {
         let root = sample_tree();
-        // Every component with type=phase — expect 4 across both activities.
         let sel = crate::selector::Selector::new().eq("type", "phase");
         let hits = find(&root, &sel);
         assert_eq!(hits.len(), 4);
-        // Pre-order DFS: activity_a's rampup + ann_queries first,
-        // then activity_b's teardown. Verify by reading names.
         let names: Vec<String> = hits.iter()
             .filter_map(|c| c.read().ok().and_then(|g|
                 g.effective_labels().get("name").map(|s| s.to_string())
@@ -866,15 +1166,13 @@ mod tests {
     #[test]
     fn find_with_present_and_absent_clauses() {
         let root = sample_tree();
-        // Phases that carry a `k` label (only ann_queries do).
         let with_k = find(&root, &crate::selector::Selector::new()
             .eq("type", "phase").present("k"));
         assert_eq!(with_k.len(), 2);
 
-        // Phases that do NOT carry a `k` label.
         let without_k = find(&root, &crate::selector::Selector::new()
             .eq("type", "phase").absent("k"));
-        assert_eq!(without_k.len(), 2); // rampup + teardown
+        assert_eq!(without_k.len(), 2);
     }
 
     #[test]
@@ -893,9 +1191,6 @@ mod tests {
     fn find_one_not_found() {
         let root = sample_tree();
         let sel = crate::selector::Selector::new().eq("name", "nowhere");
-        // `Component` doesn't implement Debug / PartialEq, so we
-        // can't `assert_eq!(find_one(...), Err(...))` directly
-        // — inspect the `Err` arm with a match instead.
         match find_one(&root, &sel) {
             Err(crate::selector::LookupError::NotFound) => {}
             Err(other) => panic!("expected NotFound, got {other:?}"),
@@ -906,7 +1201,6 @@ mod tests {
     #[test]
     fn find_one_ambiguous_reports_count() {
         let root = sample_tree();
-        // Two ann_query phases share these labels.
         let sel = crate::selector::Selector::new()
             .eq("type", "phase").eq("name", "ann_query");
         match find_one(&root, &sel) {
@@ -935,22 +1229,15 @@ mod tests {
     #[test]
     fn query_from_subtree_is_scoped() {
         let root = sample_tree();
-        // Start the lookup from activity_a; activity_b's teardown
-        // must NOT appear.
         let activity_a = root.read().unwrap().children.first().unwrap().clone();
         let hits = find(&activity_a,
             &crate::selector::Selector::new().eq("type", "phase"));
-        assert_eq!(hits.len(), 3); // rampup + 2 ann_queries, no teardown
+        assert_eq!(hits.len(), 3);
     }
 
     #[test]
     fn effective_labels_include_inherited_session_label() {
-        // Selectors compose with parent-inherited labels because
-        // they match on `effective_labels`, which is the merged
-        // set.
         let root = sample_tree();
-        // Filter by a label defined on the session root — every
-        // descendant inherits it.
         let sel = crate::selector::Selector::new()
             .eq("session", "test-session")
             .eq("type", "phase");
@@ -959,8 +1246,6 @@ mod tests {
 
     #[test]
     fn selector_macro_drives_find() {
-        // End-to-end use of the `selector!` macro against the
-        // tree, for the exact call-site ergonomics SRD 24 shows.
         let root = sample_tree();
         let hits = find(&root, &crate::selector!(type = "phase", name = "teardown"));
         assert_eq!(hits.len(), 1);
@@ -970,9 +1255,6 @@ mod tests {
     // Controls on components (SRD 23)
     // =====================================================================
 
-    /// Controls declared on a component are reachable via
-    /// `component.controls()` — proving the registry is wired
-    /// through the Component API, not just present as a field.
     #[tokio::test]
     async fn controls_declare_and_lookup_through_component() {
         let root = Component::root(Labels::of("session", "s"), HashMap::new());
@@ -982,14 +1264,11 @@ mod tests {
                 crate::controls::ControlBuilder::new("concurrency", 16u32).build(),
             );
         }
-        // Look up and mutate.
         let c: crate::controls::Control<u32> = {
             let guard = root.read().unwrap();
             guard.controls().get::<u32>("concurrency").unwrap()
         };
         c.set(32, crate::controls::ControlOrigin::Test).await.unwrap();
-        // Re-reading from the component's registry yields the
-        // same Arc-shared state.
         let reread: crate::controls::Control<u32> = {
             let guard = root.read().unwrap();
             guard.controls().get::<u32>("concurrency").unwrap()
@@ -999,9 +1278,6 @@ mod tests {
 
     #[tokio::test]
     async fn reified_control_gauges_flow_through_capture_tree() {
-        // Full integration: declare a reified control on a
-        // running component → capture_tree → the captured
-        // MetricSets include the control's gauge.
         let root = Component::root(
             Labels::empty().with("type", "session").with("session", "s1"),
             HashMap::new(),
@@ -1018,17 +1294,13 @@ mod tests {
                     .reify_as_gauge(|v| Some(*v as f64))
                     .build(),
             );
-            // Mark the phase Running so capture walks it.
         }
         phase.write().unwrap().set_state(ComponentState::Running);
 
-        // Mutate the control after the tree is set up.
         let c: crate::controls::Control<u32> = phase.read().unwrap()
             .controls().get::<u32>("concurrency").unwrap();
         c.set(64, crate::controls::ControlOrigin::Test).await.unwrap();
 
-        // `capture_tree` should now surface a `control.concurrency`
-        // gauge with the updated value and the phase's labels.
         let captured = capture_tree(&root, Duration::from_secs(1));
         let mut found_value: Option<f64> = None;
         for (labels, set) in &captured {
@@ -1040,9 +1312,6 @@ mod tests {
                             found_value = Some(g.value);
                         }
                     }
-                    // The family's metric should carry both the
-                    // inherited phase labels AND the `control=...`
-                    // dimension the registry adds.
                     assert_eq!(m.labels().get("name"), Some("rampup"));
                     assert_eq!(m.labels().get("control"), Some("concurrency"));
                 }
@@ -1050,7 +1319,6 @@ mod tests {
         }
         assert_eq!(found_value, Some(64.0));
 
-        // `capture_tree_current` (non-draining) must also surface it.
         let current = capture_tree_current(&root);
         let mut saw_via_current = false;
         for (_, set) in &current {
@@ -1061,15 +1329,9 @@ mod tests {
         assert!(saw_via_current);
     }
 
-    /// `dryrun=controls`-style enumeration — walk the tree,
-    /// ask each component for its declared controls, and render
-    /// the set. Validates that the selector + lookup + controls
-    /// combination covers the discovery UX SRD 23 calls out.
     #[test]
     fn dryrun_controls_enumeration_over_tree() {
         let root = sample_tree();
-        // Declare a control on each phase — different value types
-        // per phase so the erased rendering has to cope.
         let phase_hits = find(&root,
             &crate::selector::Selector::new().eq("type", "phase"));
         for (idx, phase) in phase_hits.iter().enumerate() {
@@ -1082,7 +1344,6 @@ mod tests {
             );
         }
 
-        // Enumerate: walk every component, list its controls.
         let mut entries: Vec<(String, String)> = Vec::new();
         for c in find(&root, &crate::selector::Selector::new()) {
             let guard = c.read().unwrap();
@@ -1099,9 +1360,7 @@ mod tests {
             }
         }
 
-        // Every declared control is reachable through the walk.
         assert_eq!(entries.len(), phase_hits.len());
-        // Values round-trip through the erased render.
         for (key, value) in &entries {
             assert!(key.ends_with("/concurrency"), "key = {key}");
             assert!(value.parse::<u32>().is_ok(), "value = {value}");
@@ -1113,10 +1372,6 @@ mod tests {
     #[test]
     fn branch_scope_subtree_resolves_from_descendant() {
         use crate::controls::{BranchScope, ControlBuilder};
-
-        // session has a Subtree-scoped hdr_sigdigs; phase does
-        // not declare it. A descendant read walks up and finds
-        // the session's declaration.
         let root = Component::root(
             Labels::empty().with("type", "session").with("session", "s1"),
             HashMap::new(),
@@ -1142,7 +1397,6 @@ mod tests {
     #[test]
     fn branch_scope_local_does_not_leak_to_descendants() {
         use crate::controls::{BranchScope, ControlBuilder};
-
         let root = Component::root(
             Labels::empty().with("type", "session").with("session", "s1"),
             HashMap::new(),
@@ -1153,7 +1407,6 @@ mod tests {
         )));
         attach(&root, &phase);
 
-        // Default BranchScope::Local — phase should NOT see it.
         root.read().unwrap().controls().declare(
             ControlBuilder::new("private", 99u32)
                 .branch_scope(BranchScope::Local)
@@ -1169,10 +1422,6 @@ mod tests {
     #[test]
     fn nearest_declaration_wins_during_walk_up() {
         use crate::controls::{BranchScope, ControlBuilder};
-
-        // Session declares hdr_sigdigs=3 Subtree; phase
-        // re-declares it Local=5. The descendant read should
-        // return the phase's value (nearest wins).
         let root = Component::root(
             Labels::empty().with("type", "session").with("session", "s1"),
             HashMap::new(),
@@ -1197,5 +1446,81 @@ mod tests {
             .unwrap()
             .value();
         assert_eq!(v, 5u32, "phase override should win over session default");
+    }
+
+    // =====================================================================
+    // SRD-40b §11 / SRD-42 §"Component lifecycle: scope_close flush"
+    // =====================================================================
+
+    #[test]
+    fn component_scope_close_flushes_running_component_marks_partial_and_stops() {
+        use crate::cadence::{Cadences, CadenceTree};
+        use crate::cadence_reporter::CadenceReporter;
+
+        let tree = CadenceTree::plan_default(
+            Cadences::new(&[Duration::from_secs(1)]).unwrap(),
+        );
+        let reporter = CadenceReporter::new(tree);
+
+        // Build a phase component with a registered counter holding N=42.
+        let root = Component::root(Labels::of("session", "s1"), HashMap::new());
+        let phase = Arc::new(RwLock::new(
+            Component::new(Labels::of("phase", "short"), HashMap::new()),
+        ));
+        attach(&root, &phase);
+        {
+            let mut p = phase.write().unwrap();
+            p.set_state(ComponentState::Running);
+            install_counter(&mut p, "test_counter", 42);
+        }
+
+        scope_close(&phase, &reporter, Duration::from_millis(150));
+        reporter.flush_for_tests();
+
+        // Component is now Stopped — second call must be a no-op.
+        assert_eq!(phase.read().unwrap().state(), ComponentState::Stopped);
+        scope_close(&phase, &reporter, Duration::from_millis(150));
+        reporter.flush_for_tests();
+
+        let labels = phase.read().unwrap().effective_labels().clone();
+        let latest = reporter.latest(&labels, Duration::from_secs(1))
+            .expect("scope_close must publish the partial");
+        assert!(latest.is_partial(), "snapshot must be marked partial");
+        let f = latest.family("test_counter").expect("test_counter family present");
+        let m = f.metrics().next().unwrap();
+        match m.point().unwrap().value() {
+            crate::snapshot::MetricValue::Counter(c) => assert_eq!(c.total, 42),
+            v => panic!("expected counter, got {v:?}"),
+        }
+    }
+
+    #[test]
+    fn component_scope_close_skips_non_running_states() {
+        use crate::cadence::{Cadences, CadenceTree};
+        use crate::cadence_reporter::CadenceReporter;
+
+        let tree = CadenceTree::plan_default(
+            Cadences::new(&[Duration::from_secs(1)]).unwrap(),
+        );
+        let reporter = CadenceReporter::new(tree);
+
+        let root = Component::root(Labels::of("session", "s1"), HashMap::new());
+        let phase = Arc::new(RwLock::new(
+            Component::new(Labels::of("phase", "starting"), HashMap::new()),
+        ));
+        attach(&root, &phase);
+        assert_eq!(phase.read().unwrap().state(), ComponentState::Starting);
+        {
+            let mut p = phase.write().unwrap();
+            install_counter(&mut p, "test_counter", 99);
+        }
+
+        scope_close(&phase, &reporter, Duration::from_millis(150));
+        reporter.flush_for_tests();
+
+        assert_eq!(phase.read().unwrap().state(), ComponentState::Starting);
+        let labels = phase.read().unwrap().effective_labels().clone();
+        assert!(reporter.latest(&labels, Duration::from_secs(1)).is_none(),
+            "scope_close on a non-Running component must not publish");
     }
 }

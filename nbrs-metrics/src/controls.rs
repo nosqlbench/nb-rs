@@ -440,9 +440,10 @@ impl<T: Clone + Send + Sync + 'static> Control<T> {
 
     /// Raw handle to the reified [`ValueGauge`] for callers that
     /// want to sample the gauge directly without going through
-    /// the control machinery (e.g. attaching it to an
-    /// `InstrumentSet` separately). `None` if the control
-    /// wasn't declared with gauge reification.
+    /// the control machinery (e.g. registering it on a
+    /// [`crate::component::Component`] via
+    /// `register_instrument`). `None` if the control wasn't
+    /// declared with gauge reification.
     pub fn reified_gauge(&self) -> Option<Arc<ValueGauge>> {
         self.inner.gauge.as_ref().map(|g| g.gauge.clone())
     }
