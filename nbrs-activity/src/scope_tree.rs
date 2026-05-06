@@ -560,6 +560,32 @@ impl ScopeTree {
             })
     }
 
+    /// Op-template kernel programs for every materialised
+    /// op-template that's a child of `phase_idx`. Keyed by the
+    /// op's name. Used by the executor to thread per-op-template
+    /// programs into the activity so each `MetricsDispenser`
+    /// builds its `ScopeFixture` against the correct scope
+    /// (SRD-13d Phase 9 §"per-dispenser kernel instancing").
+    /// Flattened op-templates (`materialised != Some(true)`) are
+    /// omitted from the map; their dispensers reach the parent
+    /// kernel through the standard `nearest_materialised`
+    /// fall-through.
+    pub fn op_template_programs_for_phase(
+        &self,
+        phase_idx: ScopeNodeIdx,
+    ) -> std::collections::HashMap<String, std::sync::Arc<nbrs_variates::kernel::GkProgram>> {
+        let mut out = std::collections::HashMap::new();
+        for &child_idx in &self.nodes[phase_idx].children {
+            let child = &self.nodes[child_idx];
+            let ScopeKind::OpTemplate { name } = &child.kind else { continue };
+            if child.materialised != Some(true) { continue; }
+            if let Some(kernel) = child.cached_kernel.get() {
+                out.insert(name.clone(), kernel.program().clone());
+            }
+        }
+        out
+    }
+
     /// All phase-leaf indices in depth-first order. Equivalent
     /// to filtering `iter_dfs()` to `ScopeKind::Phase` — the
     /// helper exists because it's the most common consumer

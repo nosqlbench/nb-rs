@@ -192,6 +192,14 @@ pub struct OpBuilder {
     /// the binding's eval function fires exactly once per scope
     /// activation (on the activation kernel), not once per fiber.
     init_overrides: Vec<(usize, usize, Value)>,
+    /// SRD-13d Phase 9 — per-op-template kernel programs keyed
+    /// by op name. Populated by [`Self::with_op_template_programs`]
+    /// when the runner has materialised op-template kernels in
+    /// the scope tree. Wrappers (e.g. `MetricsDispenser`) look up
+    /// the program for their template via [`Self::program_for_op`]
+    /// and build their `ScopeFixture` against it; flattened
+    /// op-templates fall through to the activity-wide `program`.
+    op_template_programs: std::collections::HashMap<String, Arc<GkProgram>>,
 }
 
 impl OpBuilder {
@@ -210,7 +218,12 @@ impl OpBuilder {
         let scope_values = kernel.scope_values();
         let init_overrides = collect_init_overrides(&kernel);
         let program = kernel.into_program();
-        Self { program, scope_values, init_overrides }
+        Self {
+            program,
+            scope_values,
+            init_overrides,
+            op_template_programs: std::collections::HashMap::new(),
+        }
     }
 
     /// Wrap an existing program with no scope values.
@@ -224,7 +237,31 @@ impl OpBuilder {
             program,
             scope_values: Vec::new(),
             init_overrides: Vec::new(),
+            op_template_programs: std::collections::HashMap::new(),
         }
+    }
+
+    /// Install per-op-template kernel programs (SRD-13d Phase 9).
+    /// The runner builds these from the scope tree's
+    /// `cached_kernel` slots for materialised op-template scopes
+    /// and threads them here so wrappers can look up the right
+    /// program when constructing their fixtures.
+    pub fn with_op_template_programs(
+        mut self,
+        programs: std::collections::HashMap<String, Arc<GkProgram>>,
+    ) -> Self {
+        self.op_template_programs = programs;
+        self
+    }
+
+    /// Look up the kernel program for op `name`. Returns the
+    /// per-op-template program if Phase 9 produced one for this
+    /// op (i.e. `materialised` and bindings non-empty); otherwise
+    /// returns the activity-wide program (the flatten path).
+    pub fn program_for_op(&self, name: &str) -> Arc<GkProgram> {
+        self.op_template_programs.get(name)
+            .cloned()
+            .unwrap_or_else(|| self.program.clone())
     }
 
     /// Access the shared GK program.
