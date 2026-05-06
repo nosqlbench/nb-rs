@@ -169,6 +169,23 @@ impl Compiler {
         targets: &[String],
         value: &Expr,
     ) -> Result<(), String> {
+        // Track the LHS as the "current binding" so anon_name() prefixes
+        // intermediate node names with it. Saved/restored so nested
+        // recursive calls (e.g. the `if` desugar that re-enters
+        // compile_binding) keep the outer binding visible.
+        let prior_binding = self.current_binding.take();
+        self.current_binding = targets.first().cloned().or(prior_binding.clone());
+        let result = self.compile_binding_inner(asm, targets, value);
+        self.current_binding = prior_binding;
+        result
+    }
+
+    fn compile_binding_inner(
+        &mut self,
+        asm: &mut GkAssembler,
+        targets: &[String],
+        value: &Expr,
+    ) -> Result<(), String> {
         match value {
             Expr::Call(call) => {
                 // `if(cond, a, b)` is a compiler intrinsic — desugar
@@ -196,14 +213,24 @@ impl Compiler {
                     };
                     let a_type = infer_expr_type(&a_expr, asm, &self.input_names);
                     let b_type = infer_expr_type(&b_expr, asm, &self.input_names);
-                    let f64_path = a_type == PortType::F64 || b_type == PortType::F64;
+                    // Branch-type priority: Str > F64 > U64. When
+                    // either branch is Str, route through select_str
+                    // (the other branch auto-converts to Str at wire
+                    // resolution per PortType's "any → Str" rule).
+                    // Otherwise the existing F64/U64 widening path
+                    // applies.
+                    let str_path = a_type == PortType::Str || b_type == PortType::Str;
+                    let f64_path = !str_path
+                        && (a_type == PortType::F64 || b_type == PortType::F64);
                     let widened_a = if f64_path && a_type == PortType::U64 {
                         wrap_to_f64(a_expr.clone())
                     } else { a_expr };
                     let widened_b = if f64_path && b_type == PortType::U64 {
                         wrap_to_f64(b_expr.clone())
                     } else { b_expr };
-                    let func_name = if f64_path { "select_f64" } else { "select_u64" };
+                    let func_name = if str_path { "select_str" }
+                                    else if f64_path { "select_f64" }
+                                    else { "select_u64" };
                     let new_call = crate::dsl::ast::CallExpr {
                         func: func_name.into(),
                         args: vec![
@@ -579,8 +606,20 @@ impl Compiler {
                     BinOpKind::Eq | BinOpKind::Ne |
                     BinOpKind::Lt | BinOpKind::Gt |
                     BinOpKind::Le | BinOpKind::Ge => {
-                        let f64_path = lhs_type == PortType::F64 || rhs_type == PortType::F64;
-                        let prefix = if f64_path { "f64" } else { "u64" };
+                        // Three operand-type families: Str takes
+                        // priority (str_eq / str_ne are the only
+                        // ordered ops we support on Str so far —
+                        // <, >, <=, >= on Str fall through to the
+                        // u64 path which will surface a type
+                        // mismatch). f64 wins over u64 when either
+                        // side is f64 (with widening). u64 is the
+                        // default.
+                        let str_path = lhs_type == PortType::Str || rhs_type == PortType::Str;
+                        let f64_path = !str_path
+                            && (lhs_type == PortType::F64 || rhs_type == PortType::F64);
+                        let prefix = if str_path { "str" }
+                                     else if f64_path { "f64" }
+                                     else { "u64" };
                         let suffix = match op {
                             BinOpKind::Eq => "eq",
                             BinOpKind::Ne => "ne",
@@ -597,8 +636,17 @@ impl Compiler {
                             ("f64", "eq") => "f64_eq", ("f64", "ne") => "f64_ne",
                             ("f64", "lt") => "f64_lt", ("f64", "gt") => "f64_gt",
                             ("f64", "le") => "f64_le", ("f64", "ge") => "f64_ge",
+                            ("str", "eq") => "str_eq", ("str", "ne") => "str_ne",
+                            ("str", _) => return Err(format!(
+                                "comparison operator `{suffix}` is not supported for String operands; only `==` and `!=` work on strings",
+                            )),
                             _ => unreachable!(),
                         };
+                        // Widen u64→f64 only on the f64 path. The
+                        // str path takes both sides as Str via
+                        // automatic conversion at wire-resolution
+                        // time (any type → Str is implicit per
+                        // PortType doc).
                         let widen_lhs = f64_path && lhs_type == PortType::U64;
                         let widen_rhs = f64_path && rhs_type == PortType::U64;
                         (name, widen_lhs, widen_rhs)

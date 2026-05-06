@@ -490,6 +490,11 @@ pub(super) struct Compiler {
     /// assembler's `strict_types` / `strict_values` flags
     /// (SRD 15 §"Module-Level Pragmas" + §"Strict Wire Mode").
     pub(super) pragmas: super::pragmas::PragmaSet,
+    /// LHS binding name currently being compiled, if any. Used as a
+    /// prefix for auto-generated anonymous node names so type-mismatch
+    /// errors point at the user-level binding (`overscan__anon_3`)
+    /// instead of an opaque counter (`__anon_14`).
+    pub(super) current_binding: Option<String>,
 }
 
 /// Records a cursor whose `range(...)` bounds reference const
@@ -522,6 +527,7 @@ impl Compiler {
             deferred_extents: Vec::new(),
             cursor_limit: None,
             pragmas: super::pragmas::PragmaSet::default(),
+            current_binding: None,
         }
     }
 
@@ -540,6 +546,7 @@ impl Compiler {
             deferred_extents: Vec::new(),
             cursor_limit: None,
             pragmas: super::pragmas::PragmaSet::default(),
+            current_binding: None,
         }
     }
 

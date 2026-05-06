@@ -212,6 +212,75 @@ impl GkNode for SelectU64 {
     fn jit_constants(&self) -> Vec<u64> { vec![] }
 }
 
+// ---------------------------------------------------------------------------
+// String comparisons
+// ---------------------------------------------------------------------------
+//
+// Strings live on the heap; the compiled-u64 fast path can't carry
+// them in raw u64 buffers, so these are eval-only. The DSL desugar
+// in `binding.rs` picks `str_eq` / `str_ne` over the u64 / f64
+// variants when either operand has `PortType::Str`.
+
+/// Equality of two String wires. Returns 1 if equal else 0.
+///
+/// Signature: `str_eq(a: String, b: String) -> (u64)`
+pub struct StrEq { meta: NodeMeta }
+impl Default for StrEq { fn default() -> Self { Self::new() } }
+impl StrEq {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "str_eq".into(),
+                ins: vec![
+                    Slot::Wire(Port::new("a", crate::node::PortType::Str)),
+                    Slot::Wire(Port::new("b", crate::node::PortType::Str)),
+                ],
+                outs: vec![Port::u64("output")],
+            },
+        }
+    }
+}
+impl GkNode for StrEq {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let eq = match (&inputs[0], &inputs[1]) {
+            (Value::Str(a), Value::Str(b)) => a == b,
+            _ => false,
+        };
+        outputs[0] = Value::U64(if eq { 1 } else { 0 });
+    }
+}
+
+/// Inequality of two String wires.
+///
+/// Signature: `str_ne(a: String, b: String) -> (u64)`
+pub struct StrNe { meta: NodeMeta }
+impl Default for StrNe { fn default() -> Self { Self::new() } }
+impl StrNe {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "str_ne".into(),
+                ins: vec![
+                    Slot::Wire(Port::new("a", crate::node::PortType::Str)),
+                    Slot::Wire(Port::new("b", crate::node::PortType::Str)),
+                ],
+                outs: vec![Port::u64("output")],
+            },
+        }
+    }
+}
+impl GkNode for StrNe {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let eq = match (&inputs[0], &inputs[1]) {
+            (Value::Str(a), Value::Str(b)) => a == b,
+            _ => false,
+        };
+        outputs[0] = Value::U64(if !eq { 1 } else { 0 });
+    }
+}
+
 /// Pick between two f64 inputs based on a u64 condition.
 /// Any nonzero `cond` → `a`; zero → `b`.
 pub struct SelectF64 { meta: NodeMeta }
@@ -249,6 +318,37 @@ impl GkNode for SelectF64 {
     fn jit_constants(&self) -> Vec<u64> { vec![] }
 }
 
+/// Pick between two String inputs based on a u64 condition.
+/// Any nonzero `cond` → `a`; zero → `b`.
+pub struct SelectStr { meta: NodeMeta }
+impl Default for SelectStr { fn default() -> Self { Self::new() } }
+impl SelectStr {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "select_str".into(),
+                ins: vec![
+                    Slot::Wire(Port::u64("cond")),
+                    Slot::Wire(Port::new("a", crate::node::PortType::Str)),
+                    Slot::Wire(Port::new("b", crate::node::PortType::Str)),
+                ],
+                outs: vec![Port::new("output", crate::node::PortType::Str)],
+            },
+        }
+    }
+}
+impl GkNode for SelectStr {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let cond = inputs[0].as_u64();
+        let pick = if cond != 0 { &inputs[1] } else { &inputs[2] };
+        outputs[0] = match pick {
+            Value::Str(s) => Value::Str(s.clone()),
+            other => Value::Str(other.to_display_string()),
+        };
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Registry wiring
 // ---------------------------------------------------------------------------
@@ -266,6 +366,15 @@ static SELECT_F64_PARAMS: &[ParamSpec] = &[
     ParamSpec { name: "a",    slot_type: SlotType::Wire, required: true, example: "to_f64(0)", constraint: None },
     ParamSpec { name: "b",    slot_type: SlotType::Wire, required: true, example: "to_f64(0)", constraint: None },
 ];
+static SELECT_STR_PARAMS: &[ParamSpec] = &[
+    ParamSpec { name: "cond", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+    ParamSpec { name: "a",    slot_type: SlotType::Wire, required: true, example: "\"yes\"", constraint: None },
+    ParamSpec { name: "b",    slot_type: SlotType::Wire, required: true, example: "\"no\"",  constraint: None },
+];
+static STR_CMP_PARAMS: &[ParamSpec] = &[
+    ParamSpec { name: "a", slot_type: SlotType::Wire, required: true, example: "\"foo\"", constraint: None },
+    ParamSpec { name: "b", slot_type: SlotType::Wire, required: true, example: "\"bar\"", constraint: None },
+];
 
 static SIGS: &[FuncSig] = &[
     // u64 comparisons
@@ -282,6 +391,27 @@ static SIGS: &[FuncSig] = &[
     cmp_f64_sig("f64_gt", "greater-than comparison of two f64 wires"),
     cmp_f64_sig("f64_le", "less-or-equal comparison of two f64 wires"),
     cmp_f64_sig("f64_ge", "greater-or-equal comparison of two f64 wires"),
+    // string comparisons
+    FuncSig {
+        name: "str_eq", category: FuncCategory::Comparison, outputs: 1,
+        description: "equality of two String wires",
+        help: "Returns 1 if the two String inputs are equal, 0 otherwise.\nUsed when the DSL `==` operator is desugared and either operand is String.",
+        identity: None, variadic_ctor: None,
+        params: STR_CMP_PARAMS,
+        arity: Arity::Fixed,
+        commutativity: crate::node::Commutativity::Positional,
+            default_resolver: None,
+    },
+    FuncSig {
+        name: "str_ne", category: FuncCategory::Comparison, outputs: 1,
+        description: "inequality of two String wires",
+        help: "Returns 1 if the two String inputs differ, 0 otherwise.\nUsed when the DSL `!=` operator is desugared and either operand is String.",
+        identity: None, variadic_ctor: None,
+        params: STR_CMP_PARAMS,
+        arity: Arity::Fixed,
+        commutativity: crate::node::Commutativity::Positional,
+            default_resolver: None,
+    },
     // selection
     FuncSig {
         name: "select_u64", category: FuncCategory::Comparison, outputs: 1,
@@ -299,6 +429,16 @@ static SIGS: &[FuncSig] = &[
         help: "Pick between two f64 inputs based on a u64 condition.\nThe DSL `if(cond, a, b)` desugars to this when either branch is f64.\nParameters:\n  cond — u64 wire (0 or nonzero)\n  a    — f64 wire (returned when cond != 0)\n  b    — f64 wire (returned when cond == 0)\nExample: select_f64(f64_gt(err_rate, 0.05), 0.5, 1.05)",
         identity: None, variadic_ctor: None,
         params: SELECT_F64_PARAMS,
+        arity: Arity::Fixed,
+        commutativity: crate::node::Commutativity::Positional,
+            default_resolver: None,
+    },
+    FuncSig {
+        name: "select_str", category: FuncCategory::Comparison, outputs: 1,
+        description: "pick String a or b based on cond",
+        help: "Pick between two String inputs based on a u64 condition (any nonzero -> a; zero -> b).\nThe DSL `if(cond, a, b)` desugars to this when either branch is String.\nParameters:\n  cond — u64 wire (0 or nonzero)\n  a    — String wire (returned when cond != 0)\n  b    — String wire (returned when cond == 0)",
+        identity: None, variadic_ctor: None,
+        params: SELECT_STR_PARAMS,
         arity: Arity::Fixed,
         commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
@@ -359,6 +499,9 @@ pub(crate) fn build_node(
         "f64_ge" => Some(Ok(Box::new(F64Ge::new()))),
         "select_u64" => Some(Ok(Box::new(SelectU64::new()))),
         "select_f64" => Some(Ok(Box::new(SelectF64::new()))),
+        "select_str" => Some(Ok(Box::new(SelectStr::new()))),
+        "str_eq" => Some(Ok(Box::new(StrEq::new()))),
+        "str_ne" => Some(Ok(Box::new(StrNe::new()))),
         _ => None,
     }
 }
@@ -412,5 +555,33 @@ mod tests {
         assert_eq!(outs[0].as_f64(), 0.5);
         SelectF64::new().eval(&[Value::U64(0), Value::F64(0.5), Value::F64(1.05)], &mut outs);
         assert_eq!(outs[0].as_f64(), 1.05);
+    }
+
+    #[test]
+    fn str_eq_ne_basics() {
+        let mut out = vec![Value::U64(0)];
+        StrEq::new().eval(&[Value::Str("LATENCY".into()), Value::Str("LATENCY".into())], &mut out);
+        assert_eq!(out[0].as_u64(), 1);
+        StrEq::new().eval(&[Value::Str("LATENCY".into()), Value::Str("RECALL".into())], &mut out);
+        assert_eq!(out[0].as_u64(), 0);
+        StrNe::new().eval(&[Value::Str("LATENCY".into()), Value::Str("RECALL".into())], &mut out);
+        assert_eq!(out[0].as_u64(), 1);
+        StrNe::new().eval(&[Value::Str("a".into()), Value::Str("a".into())], &mut out);
+        assert_eq!(out[0].as_u64(), 0);
+    }
+
+    #[test]
+    fn select_str_picks_by_cond() {
+        let mut out = vec![Value::Str(String::new())];
+        SelectStr::new().eval(
+            &[Value::U64(1), Value::Str("yes".into()), Value::Str("no".into())],
+            &mut out,
+        );
+        assert_eq!(out[0].as_str(), "yes");
+        SelectStr::new().eval(
+            &[Value::U64(0), Value::Str("yes".into()), Value::Str("no".into())],
+            &mut out,
+        );
+        assert_eq!(out[0].as_str(), "no");
     }
 }

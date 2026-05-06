@@ -42,8 +42,17 @@ pub(super) struct ResolvedModule {
 
 impl Compiler {
     /// Generate a fresh anonymous node name for desugared intermediates.
+    ///
+    /// When a user-level binding is in scope (set by `compile_binding`),
+    /// the name is prefixed with that binding's LHS so type-mismatch
+    /// errors point at a recognisable source name
+    /// (`overscan__anon_3`) instead of an opaque counter
+    /// (`__anon_14`).
     pub(super) fn anon_name(&mut self) -> String {
-        let name = format!("__anon_{}", self.anon_counter);
+        let name = match &self.current_binding {
+            Some(b) => format!("{b}__anon_{}", self.anon_counter),
+            None => format!("__anon_{}", self.anon_counter),
+        };
         self.anon_counter += 1;
         name
     }
