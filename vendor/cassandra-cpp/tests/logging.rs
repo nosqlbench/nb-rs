@@ -86,16 +86,60 @@ async fn test_log_logger() {
         .unwrap();
     cluster.connect().await.expect_err("Should fail to connect");
 
-    let record = logger.pop().unwrap();
+    // `logtest::Logger` is a *process-global* `log` crate
+    // subscriber. By the time the cassandra-cpp resolver
+    // emits its address-resolution failure, the queue
+    // also contains unrelated records from any other
+    // thread that logged via the `log` crate while this
+    // test was running — typically tokio / mio internals
+    // (`registering event source with poller …`) but
+    // potentially anything in the binary that uses
+    // `log::*`. Popping the head and asserting on it is
+    // therefore order-dependent and flaky under
+    // workspace-level `cargo test` parallelism.
+    //
+    // Drain the queue and look for the cassandra-cpp
+    // record specifically (matched by its distinctive
+    // resolver target). Fail with a useful message if it
+    // never arrives within a generous bound; soft-ignore
+    // every other record because they're all unrelated to
+    // this test's contract.
+    const RESOLVER_TARGET: &str =
+        "{anonymous}::DefaultClusterMetadataResolver::on_resolve";
+    const MAX_DRAIN: usize = 1024;
+
+    let mut seen_records: Vec<String> = Vec::new();
+    let mut found: Option<logtest::Record> = None;
+    for _ in 0..MAX_DRAIN {
+        match logger.pop() {
+            Some(record) if record.target() == RESOLVER_TARGET => {
+                found = Some(record);
+                break;
+            }
+            Some(record) => {
+                seen_records.push(format!(
+                    "  - target={:?} level={:?} args={:?}",
+                    record.target(), record.level(), record.args(),
+                ));
+                continue;
+            }
+            None => break,
+        }
+    }
+    let record = found.unwrap_or_else(|| panic!(
+        "expected a `log` record with target {RESOLVER_TARGET:?} \
+         after the failed connect, but never saw one. Drained {} \
+         unrelated record(s):\n{}",
+        seen_records.len(),
+        seen_records.join("\n"),
+    ));
+
     assert_eq!(
         record.args(),
         "Unable to resolve address for absolute-gibberish.invalid:9042\n",
     );
     assert_eq!(record.level(), Level::Error);
-    assert_eq!(
-        record.target(),
-        "{anonymous}::DefaultClusterMetadataResolver::on_resolve"
-    );
+    assert_eq!(record.target(), RESOLVER_TARGET);
     assert_eq!(record.key_values(), vec!());
 }
 

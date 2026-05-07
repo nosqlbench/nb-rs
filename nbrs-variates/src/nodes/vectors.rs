@@ -300,7 +300,29 @@ impl DatasetHandle {
 }
 
 /// Downcast a handle Value to the typed `DatasetHandle` enum.
+///
+/// Surfaces a clear, actionable panic when the upstream slot
+/// holds `Value::None` — that's the canonical signal from a
+/// failed `dataset_open` / `dataset_group_open` (catalog miss,
+/// I/O failure, missing facet on disk, …). Without this
+/// dedicated branch the user would see a generic
+/// `expected Handle, got U64` panic from
+/// [`Value::as_handle`] (None reports U64 as its placeholder
+/// port type), which is six layers removed from the actual
+/// fault. The engine's `enrich_eval_panic` adds node
+/// provenance on top of whichever message we panic with here.
 fn handle_of(v: &Value) -> &DatasetHandle {
+    if matches!(v, Value::None) {
+        panic!(
+            "dataset handle is None — an upstream dataset_open / \
+             dataset_group_open failed to resolve. Check the audit \
+             log for the underlying open error (catalog miss, missing \
+             facet on disk, or transport failure). The dataset's name \
+             is in the audit message; this is the most common fault \
+             when running a workload on a system whose vectordata \
+             catalog isn't configured for the requested dataset."
+        );
+    }
     v.as_handle::<DatasetHandle>()
 }
 
@@ -342,20 +364,25 @@ impl GkNode for DatasetOpen {
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let source = inputs[0].as_str();
         let facet = inputs[1].as_str();
-        // Surfacing a *runtime error* (bad source/profile string)
-        // as a panic crashes the whole runtime — see
-        // adapters/cql/workloads/full_cql_vector.yaml for the
-        // canonical reproducer where an outer iter var was not
-        // cascaded and the source string came in as
-        // "<dataset>:0". Returning `Value::None` lets a wrapper
-        // surface this as an op-level error instead.
+        // Resolve failures used to fall through silently as
+        // `Value::None` so a downstream op wrapper could lift
+        // them. That pattern also let comprehension clause
+        // evaluation degrade silently (catalog miss → None →
+        // downstream `handle_of` panic → caught + swallowed →
+        // literal-list fallback splits the spec on a comma →
+        // garbage iter-var). We now panic with the underlying
+        // error: the engine's `enrich_eval_panic` adds node
+        // provenance, `eval_const_expr` traps the panic into
+        // `Result::Err`, and `evaluate_spec` propagates it as
+        // a clean clause-level diagnostic.
         outputs[0] = match DatasetHandle::open(source, facet) {
             Ok(h) => Value::handle(Arc::new(h)),
             Err(e) => {
-                crate::audit::error(&format!(
+                let msg = format!(
                     "dataset_open: failed to resolve '{source}' facet='{facet}': {e}"
-                ));
-                Value::None
+                );
+                crate::audit::error(&msg);
+                panic!("{msg}");
             }
         };
     }
@@ -391,15 +418,20 @@ impl GkNode for DatasetGroupOpen {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let source = inputs[0].as_str();
-        // Same rationale as `DatasetOpen::eval` — surface as
-        // Value::None plus stderr, not a panic.
+        // Hard-fail on resolve failure — see `DatasetOpen::eval`
+        // for the rationale. The Value::None pattern was a
+        // silent-degradation source for comprehension clause
+        // evaluation (catalog miss on a fresh box → garbage
+        // iter-var values → malformed downstream output six
+        // layers from the actual fault).
         outputs[0] = match DatasetHandle::open_group(source) {
             Ok(h) => Value::handle(Arc::new(h)),
             Err(e) => {
-                crate::audit::error(&format!(
+                let msg = format!(
                     "dataset_group_open: failed to resolve '{source}': {e}"
-                ));
-                Value::None
+                );
+                crate::audit::error(&msg);
+                panic!("{msg}");
             }
         };
     }

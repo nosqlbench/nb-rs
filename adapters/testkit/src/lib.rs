@@ -684,3 +684,34 @@ inventory::submit! {
         }),
     }
 }
+
+// SRD-35 Push C: testkit adapter declares itself
+// pool-shareable. `ModelAdapter` is pure in-process
+// state with no external resources — sharing it across
+// phases is trivially correct (and avoids re-parsing
+// the result-* config knobs every phase). The whole
+// `result-*` family is identity-bearing because the
+// adapter's per-call behaviour is configured at
+// construction.
+inventory::submit! {
+    nbrs_activity::adapter::SharedDriverRegistration {
+        adapter: "testkit",
+        driver: nbrs_activity::adapter::DEFAULT_DRIVER_NAME,
+        share_capability: nbrs_activity::resource_pool::ShareCapability::Shared,
+        resource_key: |params| {
+            let identity_fields = [
+                "result", "result-latency",
+                "result-error-rate", "result-error-name", "result-error-message",
+                "result-capacity", "result-overload",
+                "result-throw-at", "result-throw-name",
+            ];
+            let mut k = nbrs_activity::resource_pool::ResourceKey::new("testkit");
+            for field in identity_fields {
+                if let Some(v) = params.get(field) {
+                    k = k.with(field, v.clone());
+                }
+            }
+            Ok(k)
+        },
+    }
+}

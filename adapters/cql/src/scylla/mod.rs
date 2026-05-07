@@ -189,6 +189,25 @@ inventory::submit! {
     }
 }
 
+// SRD-35 Push B: scylla engine declares itself
+// pool-shareable. `scylla::Session` is documented Send +
+// Sync and designed for concurrent use across many
+// clients. Phases whose params produce equal
+// `CqlConfig::to_resource_key("scylla")` keys share a
+// single `ScyllaCqlAdapter` for the whole workload.
+inventory::submit! {
+    nbrs_activity::adapter::SharedDriverRegistration {
+        adapter: "cql",
+        driver: "scylla",
+        share_capability: nbrs_activity::resource_pool::ShareCapability::Shared,
+        resource_key: |params| {
+            let cfg = crate::common::CqlConfig::from_params(params)
+                .map_err(|e| format!("scylla config error: {e}"))?;
+            Ok(cfg.to_resource_key("scylla"))
+        },
+    }
+}
+
 // =========================================================================
 // Helpers shared across dispenser modules
 // =========================================================================

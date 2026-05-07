@@ -87,6 +87,7 @@ specifies how the kernel runs.
 - [SRD 32: Dispenser Wrappers](sysref/32_wrappers.md) — TraversingDispenser, ValidatingDispenser, composition order.
 - [SRD 33: Result Validation](sysref/33_result_validation.md) — relevancy, ground truth, binding visibility.
 - [SRD 34: Capture Points](sysref/34_capture_points.md) — inter-op data flow.
+- [SRD 35: Driver Resource Lifecycle and Sharing](sysref/35_driver_resources.md) *(DESIGN; Push A/B implemented)* — generic adapter-shell vs driver-instance split; `ResourceKey` value-equality identity; instance-shaping vs shell-shaping param partition (normative); `ShareCapability` driver-declared + `ResourceSharePolicy` user-elevatable; resource-API trait pair `can_share()` (capability declaration: thread-safe + designed for sharing) and `can_support_more_load()` (live capacity: `true` = route another caller here, `false` = saturated, spawn a sibling); pool-level guard catches `quiescent-decline` driver bugs; pre-map-driven multi-generation refcount lifecycle with explicit async `close()`; debug `resource.{attach,init,share.spawn,detach,close}` event surface. CQL is the prototype consumer.
 
 ### Metrics and observability
 

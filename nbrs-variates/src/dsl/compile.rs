@@ -334,13 +334,51 @@ pub fn compile_gk_checked(source: &str) -> (Result<GkKernel, ()>, DiagnosticRepo
 /// ```
 pub fn eval_const_expr(source: &str) -> Result<crate::node::Value, String> {
     let wrapped = format!("inputs := ()\nout := {source}");
-    let kernel = compile_gk(&wrapped)?;
-    kernel.get_constant("out")
-        .cloned()
-        .ok_or_else(|| format!(
-            "not a const expression: '{}' depends on runtime inputs",
-            source
-        ))
+    // Constant-folding inside `compile_gk` invokes node `eval`
+    // for inputs-free DAGs, so any node that panics on bad data
+    // (e.g. `handle_of(&Value::None)` after a failed
+    // `dataset_open`) would unwind out past this function and
+    // crash any caller that doesn't itself catch panics.
+    // Comprehension clause evaluation calls this inside a
+    // pipeline that surfaces failures as clean `Err(String)`,
+    // so we trap the unwind here and convert it. The kernel's
+    // own `engines::eval_node` already enriches node-eval
+    // panics with their provenance string; that string is what
+    // we extract.
+    let result = std::panic::catch_unwind(
+        std::panic::AssertUnwindSafe(|| -> Result<crate::node::Value, String> {
+            let kernel = compile_gk(&wrapped)?;
+            kernel.get_constant("out")
+                .cloned()
+                .ok_or_else(|| format!(
+                    "not a const expression: '{}' depends on runtime inputs",
+                    source
+                ))
+        })
+    );
+    match result {
+        Ok(r) => r,
+        Err(payload) => Err(format!(
+            "node-eval panic while folding '{source}': {}",
+            panic_payload_message(&payload),
+        )),
+    }
+}
+
+/// Best-effort extraction of a human message from a
+/// `catch_unwind` payload. The kernel's `enrich_eval_panic`
+/// re-raises with a `String` payload, so the common case is one
+/// line of context-bearing text; fall through to a sentinel for
+/// non-string payloads (rare — third-party panic with a custom
+/// payload type).
+fn panic_payload_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
+    }
 }
 
 /// Evaluate an `extern name: type = default` default expression

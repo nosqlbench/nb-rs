@@ -66,6 +66,40 @@ impl Default for CqlConfig {
 }
 
 impl CqlConfig {
+    /// SRD-35 Push B — derive the pool resource key from
+    /// the *instance-shaping* params (cluster contact
+    /// info, keyspace, auth). Per-statement and per-phase
+    /// values (`request_timeout_ms`, `trace_rate`,
+    /// `trace_log_path`) are deliberately excluded — they
+    /// flow through the per-phase shell, not the shared
+    /// instance.
+    ///
+    /// Two phases whose `CqlConfig` produces equal keys
+    /// share a single live cassandra-cpp / scylla session
+    /// across the entire workload; differing values
+    /// produce distinct sessions. The `driver_name`
+    /// argument distinguishes engines so a workload that
+    /// runs both `cassandra-cpp` and `scylla` against the
+    /// same cluster gets two independent sessions (one per
+    /// driver library).
+    pub fn to_resource_key(
+        &self,
+        driver_name: &str,
+    ) -> nbrs_activity::resource_pool::ResourceKey {
+        nbrs_activity::resource_pool::ResourceKey::new("cql")
+            .with("driver", driver_name)
+            .with("hosts", &self.hosts)
+            .with("port", &self.port.to_string())
+            .with("keyspace", &self.keyspace)
+            .with("consistency", &format!("{:?}", self.consistency))
+            // Auth identity is part of the instance —
+            // changing the username produces a different
+            // logical session. The key's `fmt_for_log`
+            // redacts `password` automatically.
+            .with("username", self.username.as_deref().unwrap_or(""))
+            .with("password", self.password.as_deref().unwrap_or(""))
+    }
+
     /// Parse from workload params. Errors are returned as user-
     /// readable strings; callers prepend their own context.
     ///

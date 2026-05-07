@@ -61,6 +61,7 @@ explains the design intent behind it.
 | 32 | [Dispenser Wrappers](32_wrappers.md) | TraversingDispenser, ValidatingDispenser, composition order |
 | 33 | [Result Validation](33_result_validation.md) | Assertions, relevancy metrics, ground truth, binding visibility |
 | 34 | [Capture Points](34_capture_points.md) | Inter-op data flow, GK ports, capture extraction |
+| 35 | [Driver Resource Lifecycle and Sharing](35_driver_resources.md) *(DESIGN — Push A/B implemented)* | Two-layer split (shell vs instance); `ResourceKey` value-equality identity; instance-shaping vs shell-shaping param partition; `ShareCapability` (driver-declared, planning-time) + `ResourceSharePolicy` (user-elevatable); paired live-instance trait methods `can_share()` (capability: thread-safe + designed for sharing) and `can_support_more_load()` (live capacity: can the instance take another caller right now? `true` = yes, route here; `false` = saturated, spawn a sibling) — driver decides the criterion, no canonical shape imposed; pool-level guard catches `quiescent-decline` driver bugs (saturation reported at zero load); pre-map-driven multi-generation refcount lifecycle, explicit async `close()` with bounded teardown, debug `resource.{attach,init,share.spawn,detach,close}` event surface with stable `generation` field; CQL adapter is the prototype consumer |
 
 ### 5. Metrics and Observability (nbrs-metrics)
 

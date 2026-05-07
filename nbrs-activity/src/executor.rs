@@ -129,6 +129,17 @@ pub struct ExecCtx {
     /// declaration: `None` when SQLite is disabled (in-memory
     /// adapters, fixture tests).
     pub sqlite_reporter: Arc<std::sync::Mutex<Option<nbrs_metrics::reporters::sqlite::SqliteReporter>>>,
+    /// Driver-resource sharing pool (SRD-35). Owns the
+    /// lifecycle of long-lived shared resources across
+    /// phases — adapter shells attach via
+    /// [`crate::resource_pool::attach`] for the duration
+    /// of one phase activation. Push A: every adapter goes
+    /// through the pool under PerPhase semantics (one
+    /// resource per phase, byte-identical to today) but
+    /// the lifecycle event quartet (`resource.attach` /
+    /// `resource.init.*` / `resource.detach` /
+    /// `resource.close.*`) lands at every boundary.
+    pub resource_pool: Arc<crate::resource_pool::ResourcePool>,
 }
 
 /// Workload YAML source kept alongside the parsed model so
@@ -1759,10 +1770,92 @@ async fn run_phase(
             if a != phase_driver { adapter_names.insert(a.to_string()); }
         }
     }
+    // SRD-35 Push A: every adapter is acquired via the
+    // session's resource pool. The legacy
+    // `create_adapter(...)` factory is wrapped under
+    // `LegacyAdapterResource` (`can_share()=false`,
+    // forcing `PerPhase` semantics), so behaviour is
+    // byte-identical to today: one fresh adapter per
+    // phase, dropped at phase end. The visible difference
+    // is the lifecycle event quartet
+    // (`resource.{attach,init.*,detach,close.*}`) now
+    // landing at every phase boundary, giving operators a
+    // consistent debug-level view of what the executor is
+    // creating and tearing down. Push B will migrate
+    // adapters out of the legacy shim into real
+    // `SharedResource` impls with `can_share()=true` so
+    // the pool can collapse same-config phases onto a
+    // single shared instance.
     let mut adapters: HashMap<String, Arc<dyn DriverAdapter>> = HashMap::new();
+    let mut attach_guards: Vec<crate::resource_pool::AttachGuard> = Vec::new();
+    let phase_seq_label = format!("{:?}", ctx.label_stack);
     for aname in &adapter_names {
-        let a = crate::runner::create_adapter(aname, &ctx.merged_params, ctx.dry_run).await?;
-        adapters.insert(a.name().to_string(), a);
+        let aname_owned = aname.clone();
+        let merged_params = ctx.merged_params.clone();
+        let dry_run = ctx.dry_run;
+        let aname_for_factory = aname_owned.clone();
+
+        // Push B: prefer the pool-shared path when the
+        // adapter has registered a `SharedDriverRegistration`.
+        // The executor resolves the driver name here (no
+        // instantiation), looks up the shared registration,
+        // and uses it to derive the resource key. Phases
+        // whose params produce equal keys share a single
+        // `Arc<dyn DriverAdapter>` for the rest of the
+        // session — fixing the per-phase open/close storm
+        // that motivated SRD-35.
+        //
+        // Adapters that haven't migrated fall through to the
+        // Push A `LegacyAdapterResource` shim under
+        // `PerPhase` policy — byte-identical to today.
+        let shared_reg = if dry_run.is_none() {
+            // Dry-run paths use a synthetic adapter that
+            // doesn't have a real driver to resolve; skip
+            // the shared lookup and let them ride the
+            // legacy path.
+            let driver_name = crate::adapter::resolve_driver_name(
+                &aname_owned,
+                &resolve_selector_param(&aname_owned),
+                &merged_params,
+            );
+            driver_name.and_then(|d| crate::adapter::find_shared_driver(&aname_owned, d))
+        } else {
+            None
+        };
+
+        let (adapter, guard) = if let Some(reg) = shared_reg {
+            // Shared path: the registration's
+            // `resource_key` declares which params are
+            // identity-bearing.
+            let key = (reg.resource_key)(&merged_params)?;
+            crate::resource_pool::attach_shared_adapter(
+                &ctx.resource_pool,
+                &aname_owned,
+                phase_name,
+                key,
+                move || async move {
+                    crate::runner::create_adapter(
+                        &aname_for_factory, &merged_params, dry_run,
+                    ).await
+                },
+            ).await?
+        } else {
+            // Legacy path: per-phase key, fresh adapter
+            // every phase. Push A behaviour preserved.
+            crate::resource_pool::attach_legacy_adapter(
+                &ctx.resource_pool,
+                &aname_owned,
+                phase_name,
+                &[("__phase", phase_name), ("__phase_seq", phase_seq_label.as_str())],
+                move || async move {
+                    crate::runner::create_adapter(
+                        &aname_for_factory, &merged_params, dry_run,
+                    ).await
+                },
+            ).await?
+        };
+        adapters.insert(adapter.name().to_string(), adapter);
+        attach_guards.push(guard);
     }
 
     // Build labels from component tree: session + for_each levels + phase
@@ -2103,6 +2196,19 @@ async fn run_phase(
         }
     }
     Ok(())
+}
+
+/// SRD-35 Push B helper — return the conventional
+/// driver-selector parameter name for an adapter so the
+/// pool's shared-attach lookup can resolve which
+/// `DriverImpl` is in play. The convention is
+/// `<adapter>driver=…` (e.g. `cqldriver=scylla`,
+/// `httpdriver=…`); adapters that don't follow it never
+/// have multiple driver impls today, so the synthesized
+/// name resolves to `None` from `find_driver` and the
+/// executor falls through to the legacy path harmlessly.
+fn resolve_selector_param(adapter: &str) -> String {
+    format!("{adapter}driver")
 }
 
 /// Build a runtime [`PhaseIdentity`] for a phase that has just

@@ -488,3 +488,26 @@ inventory::submit! {
         }),
     }
 }
+
+// SRD-35 Push C: plotter adapter declares itself
+// pool-shareable. The plotter writes to a terminal
+// (raw stdout) and is identified by its mode + fade +
+// lanes config; phases targeting the same plot config
+// share one adapter, avoiding the per-phase plot-state
+// reset that would otherwise wipe accumulated history.
+inventory::submit! {
+    nbrs_activity::adapter::SharedDriverRegistration {
+        adapter: "plotter",
+        driver: nbrs_activity::adapter::DEFAULT_DRIVER_NAME,
+        share_capability: nbrs_activity::resource_pool::ShareCapability::Shared,
+        resource_key: |params| {
+            let mut k = nbrs_activity::resource_pool::ResourceKey::new("plotter");
+            for field in ["mode", "fade", "lanes"] {
+                if let Some(v) = params.get(field) {
+                    k = k.with(field, v.clone());
+                }
+            }
+            Ok(k)
+        },
+    }
+}

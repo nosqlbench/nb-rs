@@ -224,6 +224,102 @@ pub struct CqlAdapter {
 unsafe impl Send for CqlAdapter {}
 unsafe impl Sync for CqlAdapter {}
 
+/// Wrap a connect-error string with actionable resource-exhaustion
+/// diagnostics when the cpp-driver's failure code points at
+/// per-process limits (`LIB_UNABLE_TO_INIT`,
+/// `LIB_NO_HOSTS_AVAILABLE` after a long-running session, …).
+///
+/// libuv (which the cpp-driver uses for its event loop) reports
+/// `UNABLE_TO_INIT` when `epoll_create1` / `eventfd` / pipe2
+/// returns `EMFILE` / `ENFILE` / `EAGAIN` — i.e. the process has
+/// run through its file-descriptor or thread allowance. The bare
+/// driver string ("Unable to initialize cluster event loop")
+/// gives the operator no hint that this is environmental rather
+/// than a Cassandra-side problem; with the driver also being a C++
+/// dependency, the chase up the stack is non-obvious.
+///
+/// We append a snapshot of the relevant per-process limits and
+/// counters so the operator can see at a glance whether they're
+/// up against `RLIMIT_NOFILE` or `RLIMIT_NPROC`. The snapshot is
+/// best-effort — `/proc` reads may fail in a sandbox; on those
+/// platforms the suffix is just the contextual hint without raw
+/// numbers.
+fn enrich_connect_error(stage: &str, raw: String) -> String {
+    let needs_diag =
+        raw.contains("LIB_UNABLE_TO_INIT")
+        || raw.contains("Unable to initialize");
+    if !needs_diag {
+        return format!("{stage}: {raw}");
+    }
+    let snap = process_resource_snapshot();
+    format!(
+        "{stage}: {raw}\n\
+         \n\
+         This error from the Cassandra C++ driver almost always\n\
+         indicates *per-process resource exhaustion* — usually\n\
+         file descriptors or threads — not a Cassandra-side\n\
+         problem. The driver's libuv backend reports this when\n\
+         `epoll_create1` / `eventfd` / `pipe2` fails inside\n\
+         `uv_loop_init`, which on Linux means the kernel is\n\
+         refusing the syscall (`EMFILE`/`ENFILE`/`EAGAIN`).\n\
+         \n\
+         Process resource snapshot:\n\
+         {snap}\n\
+         \n\
+         If `fds_in_use` is at or near `nofile_soft`, raise the\n\
+         FD limit (e.g. `ulimit -n 65536` before the run, or set\n\
+         `LimitNOFILE=` in the systemd unit). If the run\n\
+         exhausted FDs over many phases (consistent failure at\n\
+         the same phase index), suspect a per-phase\n\
+         CqlAdapter/session leak — each phase rebuilds the\n\
+         adapter and the previous session's resources need to\n\
+         release fully before the next phase opens a new one."
+    )
+}
+
+/// Best-effort snapshot of the per-process resource counters
+/// we care about for the LIB_UNABLE_TO_INIT diagnostic. Each
+/// line is rendered as `key: value` with `?` filling in for
+/// platforms or sandboxes where the source isn't readable.
+fn process_resource_snapshot() -> String {
+    fn read_or_q(path: &str) -> String {
+        std::fs::read_to_string(path).map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "?".into())
+    }
+    let fds = std::fs::read_dir("/proc/self/fd")
+        .map(|d| d.count().to_string())
+        .unwrap_or_else(|_| "?".into());
+    let nofile_soft = read_or_q("/proc/self/limits");
+    // /proc/self/limits is multi-line; pull just the rows we need.
+    let limit_for = |needle: &str| -> (String, String) {
+        if nofile_soft == "?" { return ("?".into(), "?".into()); }
+        for line in nofile_soft.lines() {
+            if line.starts_with(needle) {
+                // Format: "Max open files            65536                65536                files"
+                let cols: Vec<&str> = line.split_whitespace().collect();
+                if cols.len() >= 4 {
+                    let n = cols.len();
+                    return (cols[n-3].into(), cols[n-2].into());
+                }
+            }
+        }
+        ("?".into(), "?".into())
+    };
+    let (nofile_s, nofile_h)   = limit_for("Max open files");
+    let (nproc_s,  nproc_h)    = limit_for("Max processes");
+    let threads = std::fs::read_dir("/proc/self/task")
+        .map(|d| d.count().to_string())
+        .unwrap_or_else(|_| "?".into());
+    format!(
+        "  fds_in_use:    {fds}\n\
+         \x20 nofile_soft:   {nofile_s}\n\
+         \x20 nofile_hard:   {nofile_h}\n\
+         \x20 threads_alive: {threads}\n\
+         \x20 nproc_soft:    {nproc_s}\n\
+         \x20 nproc_hard:    {nproc_h}",
+    )
+}
+
 impl CqlAdapter {
     pub async fn connect(config: &CqlConfig) -> Result<Self, String> {
         let mut cluster = cass::Cluster::default();
@@ -246,7 +342,8 @@ impl CqlAdapter {
         // fall back to connecting without a keyspace (needed for DDL phases
         // that create the keyspace).
         let session = if config.keyspace.is_empty() {
-            cluster.connect().await.map_err(|e| format!("connect: {e}"))?
+            cluster.connect().await
+                .map_err(|e| enrich_connect_error("connect", e.to_string()))?
         } else {
             match cluster.connect_keyspace(&config.keyspace).await {
                 Ok(s) => s,
@@ -260,9 +357,13 @@ impl CqlAdapter {
                             &format!(
                                 "cql/cassandra-cpp: keyspace '{}' not found, connecting without keyspace",
                                 config.keyspace));
-                        cluster.connect().await.map_err(|e| format!("connect (no keyspace): {e}"))?
+                        cluster.connect().await
+                            .map_err(|e| enrich_connect_error("connect (no keyspace)", e.to_string()))?
                     } else {
-                        return Err(format!("connect to keyspace '{}': {e}", config.keyspace));
+                        return Err(enrich_connect_error(
+                            &format!("connect to keyspace '{}'", config.keyspace),
+                            msg,
+                        ));
                     }
                 }
             }
@@ -1188,6 +1289,26 @@ inventory::submit! {
     }
 }
 
+// SRD-35 Push B: declare the cassandra-cpp engine as
+// pool-shareable. Phases whose params produce equal
+// `CqlConfig::to_resource_key("cassandra-cpp")` keys share
+// a single `CqlAdapter` (and therefore a single
+// `cass::Session`) for the whole workload — directly
+// fixing the per-phase open/close storm that motivates
+// SRD-35.
+inventory::submit! {
+    nbrs_activity::adapter::SharedDriverRegistration {
+        adapter: "cql",
+        driver: "cassandra-cpp",
+        share_capability: nbrs_activity::resource_pool::ShareCapability::Shared,
+        resource_key: |params| {
+            let cfg = crate::common::CqlConfig::from_params(params)
+                .map_err(|e| format!("CQL config error: {e}"))?;
+            Ok(cfg.to_resource_key("cassandra-cpp"))
+        },
+    }
+}
+
 // =========================================================================
 // Type-aware value binders
 // =========================================================================
@@ -1388,6 +1509,58 @@ fn make_binder(cql_type: cass::ValueType) -> BinderFn {
             Box::new(|stmt, idx, value| {
                 stmt.bind_string(idx, &value.to_display_string())?; Ok(())
             })
+        }
+    }
+}
+
+#[cfg(test)]
+mod connect_diag_tests {
+    use super::{enrich_connect_error, process_resource_snapshot};
+
+    #[test]
+    fn unrelated_errors_pass_through_unchanged() {
+        // Auth, network, syntax — anything that isn't a libuv
+        // init failure — must NOT trigger the resource-limit
+        // diagnostic. The user shouldn't be told "check your
+        // ulimit" when the password was wrong.
+        let out = enrich_connect_error("connect", "Bad credentials".into());
+        assert_eq!(out, "connect: Bad credentials");
+        assert!(!out.contains("RLIMIT"), "no resource diag expected, got: {out}");
+        assert!(!out.contains("nofile_soft"), "no resource diag expected, got: {out}");
+    }
+
+    #[test]
+    fn lib_unable_to_init_attaches_resource_snapshot() {
+        // The exact error string the user pasted in the bug
+        // report — confirms the contains-match catches it and
+        // appends the actionable section.
+        let raw = "Cassandra error LIB_UNABLE_TO_INIT: \
+                   Unable to initialize cluster event loop";
+        let out = enrich_connect_error("connect to keyspace 'baselines'", raw.into());
+        assert!(out.contains("LIB_UNABLE_TO_INIT"), "raw error preserved");
+        assert!(out.contains("per-process resource exhaustion"),
+            "diagnostic explanation present");
+        assert!(out.contains("Process resource snapshot:"),
+            "snapshot section present");
+        assert!(out.contains("fds_in_use:"), "FD count line present");
+        assert!(out.contains("nofile_soft:") && out.contains("nofile_hard:"),
+            "FD limit lines present");
+        assert!(out.contains("ulimit -n"),
+            "remediation hint present");
+    }
+
+    #[test]
+    fn snapshot_renders_numeric_values_on_linux() {
+        // On Linux (the typical CI / test environment) the
+        // /proc reads succeed and we should see real numbers
+        // rather than `?` placeholders. Skip the assertion if
+        // /proc isn't available (sandboxed CI, non-Linux dev
+        // host) — the function must still return *something*.
+        let snap = process_resource_snapshot();
+        assert!(snap.contains("fds_in_use:"));
+        if std::path::Path::new("/proc/self/fd").exists() {
+            assert!(!snap.contains("fds_in_use:    ?"),
+                "/proc/self/fd should yield a numeric count on Linux, got: {snap}");
         }
     }
 }

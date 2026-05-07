@@ -889,3 +889,32 @@ inventory::submit! {
         }),
     }
 }
+
+// SRD-35 Push C: stdout adapter declares itself
+// pool-shareable. `println!` / `write!` are
+// thread-safe; the underlying `StdoutAdapter` holds
+// configuration but no per-phase mutable state that
+// would forbid sharing. Phases targeting the same
+// output sink (filename + format + separator) share one
+// adapter, avoiding per-phase file-handle re-open
+// churn.
+inventory::submit! {
+    nbrs_activity::adapter::SharedDriverRegistration {
+        adapter: "stdout",
+        driver: nbrs_activity::adapter::DEFAULT_DRIVER_NAME,
+        share_capability: nbrs_activity::resource_pool::ShareCapability::Shared,
+        resource_key: |params| {
+            // Identity-bearing: the output destination
+            // and on-write formatting decisions. Per-op
+            // `fields` values come from op templates and
+            // don't shape the underlying writer.
+            let mut k = nbrs_activity::resource_pool::ResourceKey::new("stdout");
+            for field in ["filename", "format", "separator", "header", "color"] {
+                if let Some(v) = params.get(field) {
+                    k = k.with(field, v.clone());
+                }
+            }
+            Ok(k)
+        },
+    }
+}

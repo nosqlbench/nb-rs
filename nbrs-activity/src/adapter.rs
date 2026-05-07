@@ -648,6 +648,56 @@ pub struct DriverImpl {
 
 inventory::collect!(DriverImpl);
 
+/// SRD-35 Push B: declares that a `(adapter, driver)` pair
+/// supports pool-shared instances. Drivers that submit one
+/// of these opt into the resource pool's `Shared` policy
+/// path: instead of a fresh `Arc<dyn DriverAdapter>` per
+/// phase, the pool caches the adapter under
+/// [`Self::resource_key`] and reuses it across every phase
+/// whose params produce the same key.
+///
+/// Drivers without a `SharedDriverRegistration` continue
+/// to use Push A's `LegacyAdapterResource` shim, which is
+/// `PerPhase`-isolated. Migration is opt-in per driver.
+pub struct SharedDriverRegistration {
+    /// Adapter name this registration applies to (e.g.
+    /// `"cql"`). Pairs with [`Self::driver`] for lookup.
+    pub adapter: &'static str,
+    /// Driver identifier (e.g. `"cassandra-cpp"`,
+    /// `"scylla"`). Distinguishes registrations when the
+    /// same adapter has multiple driver implementations.
+    pub driver: &'static str,
+    /// Strongest sharing the driver supports. Default
+    /// `Shared` for typical pool-friendly drivers; stricter
+    /// only if the driver type can't be safely shared.
+    pub share_capability: crate::resource_pool::ShareCapability,
+    /// Pure function that derives the resource key from
+    /// the adapter's params. Two phases with the same key
+    /// share an instance under `Shared` policy. SRD-35
+    /// §"Instance-shaping vs shell-shaping params" — only
+    /// instance-shaping params (`hosts`, `keyspace`, …)
+    /// belong here; per-statement and per-phase knobs MUST
+    /// NOT.
+    pub resource_key: fn(&std::collections::HashMap<String, String>)
+        -> Result<crate::resource_pool::ResourceKey, String>,
+}
+
+inventory::collect!(SharedDriverRegistration);
+
+/// Look up the shared registration for a `(adapter, driver)`
+/// pair. Returns `None` when the driver hasn't migrated to
+/// the pool-shared shape — the executor falls back to the
+/// `LegacyAdapterResource` shim under `PerPhase` policy in
+/// that case.
+pub fn find_shared_driver(
+    adapter: &str,
+    driver: &str,
+) -> Option<&'static SharedDriverRegistration> {
+    inventory::iter::<SharedDriverRegistration>
+        .into_iter()
+        .find(|e| e.adapter == adapter && e.driver == driver)
+}
+
 /// Default order of drivers registered for `adapter`, sorted by
 /// ascending [`DriverImpl::default_rank`]. Used as the fallback
 /// when the user doesn't set the adapter's driver-selector
@@ -690,6 +740,55 @@ pub fn adapter_driver_params(adapter: &str) -> Vec<&'static str> {
 /// Single-name semantics by convention; comma-separated lists
 /// are accepted (the runner walks them in order and takes the
 /// first that's compiled in).
+/// Sentinel driver name for adapters that don't have
+/// multiple `DriverImpl` registrations (HTTP, stdout,
+/// testkit, openapi — anything that registers only via
+/// [`AdapterRegistration`] with a direct `create`
+/// factory). The shared-pool path keys
+/// `SharedDriverRegistration` by `(adapter, driver)`;
+/// single-engine adapters submit theirs with this sentinel
+/// so the executor's lookup finds them after
+/// [`resolve_driver_name`] returns the same sentinel.
+pub const DEFAULT_DRIVER_NAME: &str = "default";
+
+/// Resolve the driver name for an `(adapter, params)` pair
+/// without instantiating anything. Used by the resource
+/// pool's Push B path: the executor needs the resolved
+/// driver name to look up a [`SharedDriverRegistration`]
+/// before deciding which attach path to use. Mirrors the
+/// resolution logic in [`instantiate_with_driver`] —
+/// user-supplied selector first (comma-separated, in
+/// order), then the rank-sorted default list.
+///
+/// Returns [`DEFAULT_DRIVER_NAME`] when no `DriverImpl` is
+/// registered for the adapter (single-engine adapters that
+/// only register via `AdapterRegistration`). Single-engine
+/// adapters that opt into pool sharing submit their
+/// `SharedDriverRegistration` with the same sentinel.
+pub fn resolve_driver_name(
+    adapter: &str,
+    selector_param: &str,
+    params: &std::collections::HashMap<String, String>,
+) -> Option<&'static str> {
+    let user_order: Option<Vec<&str>> = params.get(selector_param)
+        .map(|s| s.split(',').map(str::trim).filter(|s| !s.is_empty()).collect());
+    let default_order = default_drivers(adapter);
+    let order: Vec<&str> = match &user_order {
+        Some(v) => v.clone(),
+        None => default_order.iter().copied().collect(),
+    };
+    for driver in &order {
+        if let Some(entry) = find_driver(adapter, driver) {
+            return Some(entry.driver);
+        }
+    }
+    // Single-engine adapter (no DriverImpl registered, just
+    // a direct AdapterRegistration). Fall back to the
+    // sentinel so SharedDriverRegistration lookup can find
+    // a `(adapter, "default")` entry.
+    Some(DEFAULT_DRIVER_NAME)
+}
+
 pub async fn instantiate_with_driver(
     adapter: &str,
     selector_param: &str,

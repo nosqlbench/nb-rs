@@ -293,3 +293,28 @@ inventory::submit! {
         }),
     }
 }
+
+// SRD-35 Push C: HTTP adapter declares itself
+// pool-shareable. The reqwest `Client` is documented
+// thread-safe and pools connections internally; sharing
+// one `HttpAdapter` across all phases that target the
+// same `(base_url, timeout)` combination eliminates the
+// per-phase TLS handshake / connection-establish storm.
+//
+// `base_url` and `timeout` are instance-shaping (the same
+// reqwest client serves every request that uses them);
+// per-call URL paths and method overrides come in via the
+// op-template layer and don't affect the resource key.
+inventory::submit! {
+    nbrs_activity::adapter::SharedDriverRegistration {
+        adapter: "http",
+        driver: nbrs_activity::adapter::DEFAULT_DRIVER_NAME,
+        share_capability: nbrs_activity::resource_pool::ShareCapability::Shared,
+        resource_key: |params| {
+            let cfg = HttpConfig::from_params(params);
+            Ok(nbrs_activity::resource_pool::ResourceKey::new("http")
+                .with("base_url", cfg.base_url.unwrap_or_default())
+                .with("timeout_ms", cfg.timeout_ms.to_string()))
+        },
+    }
+}

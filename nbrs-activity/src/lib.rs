@@ -78,6 +78,7 @@ pub mod observer;
 pub mod session;
 pub mod runner;
 pub mod executor;
+pub mod resource_pool;
 pub mod describe;
 pub mod wrappers;
 pub mod relevancy;

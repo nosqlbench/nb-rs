@@ -1706,6 +1706,12 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 checkpoint_writer: Some(checkpoint_writer.clone()),
                 resume_plan: resume_plan.clone(),
                 sqlite_reporter: sqlite_reporter.clone(),
+                // SRD-35 Push A: one resource pool per
+                // session, owning the lifecycle of every
+                // shared driver-side resource the
+                // executor attaches to during phase
+                // activation.
+                resource_pool: Arc::new(crate::resource_pool::ResourcePool::new()),
             };
             let scheduler = crate::scheduler::build(&schedule_spec);
             scheduler.run(

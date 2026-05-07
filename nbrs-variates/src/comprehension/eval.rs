@@ -98,9 +98,60 @@ pub fn evaluate_spec(
     let value_str = match crate::dsl::compile::eval_const_expr(&interpolated) {
         Ok(Value::Str(s)) => s.to_string(),
         Ok(other) => return Ok(vec![other]),
-        Err(_) => interpolated,
+        // Fall back to the literal-list parse only when the text
+        // is unambiguously a comma-separated list of literals
+        // (e.g. `1, 10, 100` — `eval_const_expr` doesn't accept
+        // that shape because it isn't a single GK expression).
+        // Anything that looks like an expression (parens, GK
+        // operators, identifiers other than `true`/`false`) was
+        // *meant* to evaluate; if it failed, we MUST surface the
+        // failure rather than silently splitting on `,` and
+        // handing the workload an iter-var like
+        // `matching_profiles('x'` (truncated). The latter
+        // produces malformed downstream output six steps removed
+        // from the actual fault — a Push-2 kind of bad UX.
+        Err(eval_err) => {
+            if looks_like_literal_list(&interpolated) {
+                interpolated
+            } else {
+                return Err(format!(
+                    "for_each clause expression failed to evaluate: {eval_err}\n\
+                     spec: {interpolated}\n\
+                     If this was meant as a literal list (e.g. `1, 10, 100`), \
+                     it should contain only literal values separated by commas. \
+                     If it was meant as an expression, fix the underlying \
+                     evaluation error."
+                ));
+            }
+        }
     };
     Ok(parse_list_with_types(&value_str))
+}
+
+/// Heuristic: does this interpolated spec text look like a
+/// "literal list" (comma-separated literals like `1, 10, 100` or
+/// `foo, bar, baz`) rather than an expression?
+///
+/// True only when no character suggests an expression: no
+/// parentheses, no operators, no string-quote characters that
+/// would imply a function-call shape. Whitespace, digits,
+/// alphanumerics, dots (for floats), minus (for negatives), and
+/// commas (the separator) are all OK.
+///
+/// The point of this gate is to keep "list" specs (`for: "k in 1,
+/// 10, 100"`) working through the literal-list fallback while
+/// still surfacing real evaluation failures for expression specs
+/// like `matching_profiles('x', 'y')`. A wrong call on a
+/// borderline case here is cheap — it just produces a clearer
+/// error from the eval layer instead of swallowed garbage.
+fn looks_like_literal_list(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() { return false; }
+    !trimmed.chars().any(|c| matches!(
+        c,
+        '(' | ')' | '[' | ']' | '{' | '}' | '\'' | '"'
+        | '+' | '*' | '/' | '%' | '=' | '<' | '>' | '!' | '&' | '|' | '~' | '^' | '?'
+    ))
 }
 
 /// Pre-evaluate a clause's spec text at synthesis time, using
@@ -160,7 +211,24 @@ pub fn pre_evaluate_clause(
     let value_str = match crate::dsl::compile::eval_const_expr(&interpolated) {
         Ok(Value::Str(s)) => s.to_string(),
         Ok(other) => return Ok(vec![other]),
-        Err(_) => interpolated,
+        // Mirrors `evaluate_spec`'s gating: only fall back to
+        // parse_list_with_types when the text is unambiguously a
+        // literal list. See `looks_like_literal_list` for the
+        // rationale.
+        Err(eval_err) => {
+            if looks_like_literal_list(&interpolated) {
+                interpolated
+            } else {
+                return Err(format!(
+                    "for_each clause expression failed to evaluate: {eval_err}\n\
+                     spec: {interpolated}\n\
+                     If this was meant as a literal list (e.g. `1, 10, 100`), \
+                     it should contain only literal values separated by commas. \
+                     If it was meant as an expression, fix the underlying \
+                     evaluation error."
+                ));
+            }
+        }
     };
     Ok(parse_list_with_types(&value_str))
 }
@@ -1710,21 +1778,102 @@ mod tests {
 
     #[test]
     fn all_cursor_only_matches_exact_shape() {
-        // `all(<ident>)` is the only matched shape; anything more
-        // complex falls through to the normal eval path (which
-        // for now treats unrecognized text as a comma-list of
-        // string values).
+        // `all(<ident>)` is the only matched shape — anything
+        // more complex falls through to the normal eval path.
+        // `all(row, 5)` doesn't match the strict shape (the
+        // comma breaks the bare-ident requirement), so the
+        // pipeline tries to evaluate it as a regular GK
+        // expression. There's no registered function named
+        // `all`, so eval fails and the failure is propagated as
+        // a clean clause-level error (the legacy silent
+        // literal-list fallback masked this kind of typo six
+        // layers downstream).
         let kernel = crate::dsl::compile::compile_gk(
             "final __cursor_extent_row_start := 0\n\
              final __cursor_extent_row_end := 5\n"
         ).unwrap();
-        // `all(row, 5)` doesn't match the strict shape — comma
-        // breaks the bare-ident requirement. Fall-through path
-        // splits on commas, producing two string fragments.
-        let result = evaluate_spec("all(row, 5)", &kernel).unwrap();
-        // Not the cursor's range — the form didn't match.
-        assert_ne!(result, vec![
-            Value::U64(0), Value::U64(1), Value::U64(2), Value::U64(3), Value::U64(4),
+        let err = evaluate_spec("all(row, 5)", &kernel).unwrap_err();
+        assert!(err.contains("all(row, 5)"), "error must mention the failing spec, got: {err}");
+        assert!(
+            err.contains("failed to evaluate") || err.contains("unknown function"),
+            "error must explain the eval failure, got: {err}"
+        );
+    }
+
+    #[test]
+    fn missing_dataset_surface_as_clean_error_not_garbage() {
+        // Regression: workload runs on a system whose
+        // vectordata catalog doesn't have the requested
+        // dataset. The spec
+        //   `profile in matching_profiles('nonexistent_dataset_xyz', 'label_')`
+        // must produce a clean clause-level error naming the
+        // resolution failure — NOT a "garbage" iter-var like
+        // `matching_profiles('nonexistent_dataset_xyz'`
+        // (truncated at the first comma) that flows downstream
+        // into malformed CQL six layers later.
+        //
+        // Three failure layers used to compound here:
+        //   1. `dataset_group_open` returned `Value::None` on
+        //      catalog miss.
+        //   2. `handle_of(&Value::None)` panicked with
+        //      "expected Handle, got U64" — opaque.
+        //   3. `evaluate_spec` swallowed the eval error and
+        //      fell through to splitting the literal text on
+        //      commas.
+        // The user-visible result was a CQL parser error from a
+        // malformed `DROP INDEX`. After this fix every layer
+        // propagates an actionable diagnostic.
+        let kernel = crate::dsl::compile::compile_gk("final unrelated := 1\n").unwrap();
+        let result = evaluate_spec(
+            "matching_profiles('nonexistent_dataset_xyz_qqq', 'label_')",
+            &kernel,
+        );
+        let err = result.expect_err(
+            "missing dataset must surface as Err, not silent literal-list fallback"
+        );
+        // Doesn't matter which exact error string we get from
+        // the catalog layer — the test guards the *contract*:
+        // the spec text appears in the error, the failure is
+        // attributed to the dataset / resolver / open path, and
+        // it is a Result::Err (not garbage data).
+        assert!(
+            err.contains("nonexistent_dataset_xyz_qqq")
+                || err.contains("matching_profiles")
+                || err.contains("dataset"),
+            "error must point at the actual fault, got: {err}"
+        );
+    }
+
+    #[test]
+    fn function_call_eval_failure_is_not_silently_split() {
+        // Defensive: any text containing `(` is an
+        // expression — never a literal list. If eval fails, we
+        // must propagate the failure rather than splitting on
+        // commas. This guards the broader contract that
+        // protected the dataset-resolution case above.
+        let kernel = crate::dsl::compile::compile_gk("final unrelated := 1\n").unwrap();
+        let err = evaluate_spec("nonexistent_func('a', 'b', 'c')", &kernel).unwrap_err();
+        assert!(err.contains("failed to evaluate") || err.contains("unknown"),
+            "expected a clean eval-failure error, got: {err}");
+    }
+
+    #[test]
+    fn literal_list_path_still_works() {
+        // Counter-case: a plain comma-separated list of
+        // literals (no parens, no operators) MUST still work
+        // through the literal-list fallback after eval fails
+        // (which it should — `1, 10, 100` isn't a single GK
+        // expression). This is the legitimate use case that the
+        // fallback exists for.
+        let kernel = crate::dsl::compile::compile_gk("final unrelated := 1\n").unwrap();
+        let values = evaluate_spec("1, 10, 100", &kernel).unwrap();
+        assert_eq!(values, vec![Value::U64(1), Value::U64(10), Value::U64(100)]);
+
+        let names = evaluate_spec("foo, bar, baz", &kernel).unwrap();
+        assert_eq!(names, vec![
+            Value::Str("foo".into()),
+            Value::Str("bar".into()),
+            Value::Str("baz".into()),
         ]);
     }
 
