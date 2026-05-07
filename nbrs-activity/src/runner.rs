@@ -1714,10 +1714,23 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 resource_pool: Arc::new(crate::resource_pool::ResourcePool::new()),
             };
             let scheduler = crate::scheduler::build(&schedule_spec);
-            scheduler.run(
+            let scheduler_result = scheduler.run(
                 &mut exec_ctx,
                 &scenario_nodes,
-            ).await?;
+            ).await;
+
+            // SRD-35: drain the resource pool at session
+            // end. `Shared`/`PerScenario` entries
+            // intentionally stay alive across phases (the
+            // whole reason the pool exists), so this is
+            // the close trigger that releases their
+            // network resources. Runs even if the
+            // scenario errored out — half-open clusters
+            // would otherwise leak FDs into the next
+            // session in TUI / `metrics watch` host
+            // processes.
+            exec_ctx.resource_pool.shutdown().await;
+            scheduler_result?;
         }
 
         // Workload-end lifecycle boundary: every phase in the

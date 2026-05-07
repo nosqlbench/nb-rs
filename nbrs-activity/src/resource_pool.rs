@@ -505,6 +505,62 @@ impl ResourcePool {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).entries_by_key.len()
     }
 
+    /// Drain every live entry, awaiting each resource's
+    /// `close()` and removing the entry from the map. Call
+    /// at session end so `Shared`-policy entries — which
+    /// the per-attach detach intentionally keeps alive
+    /// across phases — release their network resources
+    /// before the process exits.
+    ///
+    /// Emits `resource.close.started reason=session-end`
+    /// per entry, then `resource.close.completed` /
+    /// `resource.close.failed` after each resource's
+    /// `close()` future resolves. Returns `Ok(())` even if
+    /// individual close calls fail — the failures are
+    /// logged and accounted, but the pool always finishes
+    /// the drain so the executor can move on.
+    pub async fn shutdown(self: &Arc<Self>) {
+        // Snapshot the entries, then drop the lock so the
+        // close futures can run unblocked.
+        let entries: Vec<Arc<Entry>> = {
+            let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.entries_by_key.values().cloned().collect()
+        };
+        for entry in entries {
+            // Take the resource out of the slot. If it's
+            // already gone (concurrent close, or never
+            // realised after init failure), skip.
+            let resource = {
+                let mut slot = entry.resource.lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                slot.take()
+            };
+            let Some(resource) = resource else {
+                self.remove_entry(&entry.key, entry.generation);
+                continue;
+            };
+            let live = entry.live_attaches.load(Ordering::Acquire);
+            let pending = entry.pending_uses.load(Ordering::Acquire);
+            // Note residual counts on the started event so
+            // operators can spot bugs in the pre-map walker
+            // when it lands (Push D): if `pending > 0` at
+            // session end, the walker over-predicted; if
+            // `live > 0`, an attach guard wasn't dropped.
+            emit_event(LogLevel::Debug, "close.started", &entry,
+                &format!("reason=session-end live={live} pending={pending}"));
+            let started_at = Instant::now();
+            let result = resource.close().await;
+            let elapsed_ms = started_at.elapsed().as_millis() as u64;
+            match result {
+                Ok(()) => emit_event(LogLevel::Debug, "close.completed",
+                    &entry, &format!("elapsed_ms={elapsed_ms}")),
+                Err(ref e) => emit_event(LogLevel::Warn, "close.failed",
+                    &entry, &format!("elapsed_ms={elapsed_ms} error={e:?}")),
+            }
+            self.remove_entry(&entry.key, entry.generation);
+        }
+    }
+
     /// Look up or create the entry for the given key under
     /// the given policy. Generation 0 by default; siblings
     /// (Push D) will create higher generations on
@@ -747,17 +803,48 @@ impl AttachGuard {
         emit_event(LogLevel::Debug, "detach", &self.entry,
             &format!("phase={:?} pending={pending} live={live}", self.phase));
 
-        // Refcount drain: when both go to zero, trigger
-        // close. Pre-Push-B the pre-map walker doesn't
-        // pre-populate `pending_uses`, so the close fires
-        // immediately when no shell holds the resource.
-        if live == 0 && pending == 0 {
-            self.trigger_close(await_close).await?;
+        // Close-on-detach is policy-dependent:
+        //
+        // - `Shared` / `PerScenario`: the WHOLE POINT of
+        //   sharing is to keep the instance alive across
+        //   phases that share the same key. Closing on
+        //   `live==0` defeats sharing — the next attach
+        //   would re-init from scratch (which is exactly
+        //   the per-phase open/close storm SRD-35 was
+        //   written to fix). The entry stays in the pool
+        //   until session shutdown drains it.
+        //
+        //   Note: `pending_uses` is a *per-key* prediction
+        //   the pre-map walker (Push D) will populate from
+        //   the scenario graph — it answers "how many
+        //   phases TOTAL will attach this key?" The
+        //   walker explicitly does NOT pre-assign phases
+        //   to generations; generation routing is a
+        //   runtime decision the driver owns via
+        //   `can_support_more_load()`, and is
+        //   intentionally non-deterministic across runs.
+        //   When the walker lands, the close trigger for
+        //   `Shared` becomes "key-level pending hits 0 and
+        //   every generation's live is 0" — earlier than
+        //   session-end when no further phase will need
+        //   the key, but still never closing one
+        //   generation mid-key.
+        //
+        // - `PerPhase` / `PerFiber`: the legacy-shim
+        //   semantics. Each attach is the resource's only
+        //   user; close fires immediately on detach to
+        //   release whatever the legacy adapter holds.
+        let policy_keeps_alive = matches!(
+            self.entry.policy,
+            ResourceSharePolicy::Shared | ResourceSharePolicy::PerScenario,
+        );
+        if live == 0 && pending == 0 && !policy_keeps_alive {
+            self.trigger_close(await_close, "refcount-zero").await?;
         }
         Ok(())
     }
 
-    async fn trigger_close(&self, await_close: bool) -> Result<(), String> {
+    async fn trigger_close(&self, await_close: bool, reason: &str) -> Result<(), String> {
         // Pull the resource out of the entry slot — only
         // the close path holds it after this point, and a
         // late attach would observe an empty slot and
@@ -775,7 +862,7 @@ impl AttachGuard {
         };
 
         emit_event(LogLevel::Debug, "close.started", &self.entry,
-            "reason=refcount-zero");
+            &format!("reason={reason}"));
         let started_at = Instant::now();
 
         let entry_for_async = Arc::clone(&self.entry);
@@ -829,7 +916,14 @@ impl Drop for AttachGuard {
         emit_event(LogLevel::Debug, "detach", &self.entry,
             &format!("phase={phase:?} pending={pending} live={live}"));
 
-        if live == 0 && pending == 0 {
+        // Policy-keyed close gate (mirrors `detach_inner`).
+        // Shared/PerScenario hold the entry alive until
+        // pool shutdown; PerPhase/PerFiber close on detach.
+        let policy_keeps_alive = matches!(
+            self.entry.policy,
+            ResourceSharePolicy::Shared | ResourceSharePolicy::PerScenario,
+        );
+        if live == 0 && pending == 0 && !policy_keeps_alive {
             // Take the resource out so the close path owns
             // it — even if no runtime is active to await
             // the close, the synchronous bookkeeping is
@@ -1206,7 +1300,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shared_resource_attach_init_completes_then_detach_closes() {
+    async fn shared_resource_survives_detach_until_pool_shutdown() {
+        // The whole point of `Shared` policy is to keep
+        // the resource alive across phases that share the
+        // key — so a detach that drains the refcount must
+        // NOT close it. The 55 phases in the operator's
+        // session.log were each opening and closing a
+        // fresh cassandra session because this guard was
+        // missing; that's the exact bug we're locking
+        // down.
         let pool = Arc::new(ResourcePool::new());
         let mock = MockResource::new(key("cql", "cassandra-cpp"));
         let mock_for_factory = Arc::clone(&mock);
@@ -1218,16 +1320,44 @@ mod tests {
             }),
         ).await.unwrap();
 
-        assert_eq!(mock.init_calls.load(Ordering::Acquire), 1,
-            "init() should fire on first attach");
-        assert_eq!(pool.live_entries(), 1);
-        assert_eq!(pool.total_attaches(), 1);
+        assert_eq!(mock.init_calls.load(Ordering::Acquire), 1);
+        guard.detach().await.unwrap();
+        assert_eq!(mock.close_calls.load(Ordering::Acquire), 0,
+            "Shared-policy detach MUST NOT close the resource — \
+             it stays alive until pool shutdown");
+        assert_eq!(pool.live_entries(), 1,
+            "entry stays in the pool across phases under Shared policy");
+
+        // Pool shutdown drains it.
+        pool.shutdown().await;
+        assert_eq!(mock.close_calls.load(Ordering::Acquire), 1,
+            "shutdown() closes Shared-policy entries");
+        assert_eq!(pool.live_entries(), 0);
+    }
+
+    #[tokio::test]
+    async fn per_phase_resource_closes_on_detach() {
+        // Counter-test: under `PerPhase` policy, the
+        // legacy-shim semantics still apply — close fires
+        // on the detach that drains refcount, no waiting
+        // for shutdown. The synthetic mock has
+        // `can_share=true`, so we explicitly use PerPhase
+        // to exercise this branch.
+        let pool = Arc::new(ResourcePool::new());
+        let mock = MockResource::new(key("legacy", "synthetic"));
+        let mock_for_factory = Arc::clone(&mock);
+
+        let guard = attach(&pool, mock.resource_key().clone(),
+            ResourceSharePolicy::PerPhase, "phase_A",
+            ResourceFactory::new(move || async move {
+                Ok(mock_for_factory as Arc<dyn SharedResource>)
+            }),
+        ).await.unwrap();
 
         guard.detach().await.unwrap();
         assert_eq!(mock.close_calls.load(Ordering::Acquire), 1,
-            "close() should fire on the detach that drains refcount");
-        assert_eq!(pool.live_entries(), 0,
-            "entry should be removed after close");
+            "PerPhase detach MUST close immediately");
+        assert_eq!(pool.live_entries(), 0);
     }
 
     #[tokio::test]
@@ -1326,14 +1456,26 @@ mod tests {
         assert_eq!(pool.total_attaches(), 2);
         assert_eq!(pool.live_entries(), 1);
 
-        // Drop both guards in order; close fires only when
-        // both have detached.
+        // Detach both guards. Under `Shared` policy the
+        // resource MUST stay alive — neither detach
+        // triggers a close. The session.log bug we just
+        // fixed was the resource closing here, defeating
+        // sharing across the next phase's attach.
         g1.detach().await.unwrap();
         assert_eq!(mock.close_calls.load(Ordering::Acquire), 0,
             "close MUST NOT fire while another guard is live");
         g2.detach().await.unwrap();
+        assert_eq!(mock.close_calls.load(Ordering::Acquire), 0,
+            "close MUST NOT fire on detach under Shared policy — \
+             the resource stays alive across phases");
+        assert_eq!(pool.live_entries(), 1,
+            "entry stays cached across phases");
+
+        // The session-end shutdown drains it.
+        pool.shutdown().await;
         assert_eq!(mock.close_calls.load(Ordering::Acquire), 1,
-            "close fires when the last guard drops");
+            "shutdown() drains the entry");
+        assert_eq!(pool.live_entries(), 0);
     }
 
     /// Minimal `DriverAdapter` stub used by the legacy-
@@ -1441,8 +1583,12 @@ mod tests {
         assert_eq!(pool.live_entries(), 1,
             "entry stays live while any guard holds it");
         guard_b.detach().await.unwrap();
+        assert_eq!(pool.live_entries(), 1,
+            "Shared-policy entry stays cached across phases — \
+             session shutdown is the close trigger, not last detach");
+        pool.shutdown().await;
         assert_eq!(pool.live_entries(), 0,
-            "entry closed when last guard drops");
+            "shutdown drains the cached entry");
     }
 
     #[tokio::test]
