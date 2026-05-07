@@ -64,6 +64,16 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         }
     };
 
+    // `--rebuild` (or `NBRS_REPORT_REBUILD=1`) wipes the
+    // declared target markdown files before any renderer
+    // touches them. The set comes from the resolved item
+    // list — files outside the declared targets stay
+    // intact. Idempotent: missing files are silently
+    // skipped (a fresh session has nothing to wipe).
+    if is_rebuild_mode(args) {
+        rebuild_wipe_targets(&items, &output_root);
+    }
+
     // SRD-15 strict mode: when `--strict` is on the arg list
     // (or `NBRS_STRICT` is set), figure-render no-data errors
     // remain hard failures. Without strict mode, "no-data"
@@ -603,6 +613,12 @@ struct ResolvedItem {
     /// the per-series loop in `draw_chart` can substitute the
     /// override for the matching series's palette default.
     pub series_overrides: Vec<nbrs_workload::report::SeriesOverride>,
+    /// SRD-46 plot-only `with-table: true` directive — when
+    /// set on a `Kind::Plot` item, the renderer emits a
+    /// companion table immediately after the plot in the
+    /// same markdown file. The table reuses the plot's
+    /// query data (each series query becomes one column).
+    pub with_table: bool,
 }
 
 fn extract_workload(args: &[String]) -> (Option<PathBuf>, Vec<String>) {
@@ -622,6 +638,14 @@ fn extract_workload(args: &[String]) -> (Option<PathBuf>, Vec<String>) {
     const BOOL_FLAGS: &[&str] = &[
         "--strict", "--no-prompt", "--resume-latest",
         "--force-retry-failed",
+        // `--rebuild` wipes the report markdown files that
+        // the workload's `report:` block declares before
+        // rendering, so a workload that *removed* a plot
+        // since the last `nbrs report` doesn't leave the
+        // stale section sitting in summary.md. Consumed by
+        // `is_rebuild_mode`; stripped here so it doesn't
+        // confuse the dispatch loop.
+        "--rebuild",
     ];
     let mut workload_path: Option<PathBuf> = None;
     let mut rest: Vec<String> = Vec::new();
@@ -717,6 +741,7 @@ fn resolve_items(
                     marker_size: style.size,
                     target_file,
                     series_overrides: style.series.clone(),
+                    with_table: item.with_table,
                 });
             }
         }
@@ -837,6 +862,11 @@ fn parse_persisted_item(key: &str, value: &str) -> Option<ResolvedItem> {
         // there's no source-of-truth to pull overrides from
         // here.
         series_overrides: Vec::new(),
+        // `with-table` is workload-source-only (it controls
+        // whether to ALSO emit a table; the persisted db row
+        // is whatever the renderer chose to save). Db
+        // fallback never auto-emits a companion.
+        with_table: false,
     })
 }
 
@@ -943,6 +973,56 @@ fn render_all(
 fn is_strict_mode(args: &[String]) -> bool {
     args.iter().any(|a| a == "--strict")
         || std::env::var("NBRS_STRICT").is_ok()
+}
+
+/// True when `--rebuild` is on the arg list. Activates the
+/// "fresh markdown" code path that deletes every report file
+/// the workload would write to *before* the renderer runs.
+/// Use case: the operator removed a plot from the workload's
+/// `report:` block and wants the resulting markdown to match
+/// the new declaration set without orphan sections from the
+/// previous render.
+fn is_rebuild_mode(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--rebuild")
+        || std::env::var("NBRS_REPORT_REBUILD").is_ok()
+}
+
+/// Delete every report markdown file that the resolved
+/// items would write to. Called before rendering when
+/// `--rebuild` is set so a re-render reflects the *current*
+/// workload declaration set, not a union of every prior
+/// run's sections.
+///
+/// The wipe is scoped to declared-target files only: items
+/// without a `target_file` set fall through to the default
+/// `summary.md`, and that's deleted exactly once even when
+/// many items share it. Files outside the resolved-target
+/// set are left untouched — ad-hoc `nbrs report scratch`
+/// output, hand-edited notes, prior-run images, all
+/// preserved.
+fn rebuild_wipe_targets(items: &[ResolvedItem], output_root: &Path) {
+    use std::collections::HashSet;
+    let mut targets: HashSet<PathBuf> = HashSet::new();
+    for item in items {
+        let target = item.target_file.as_deref().unwrap_or("summary.md");
+        targets.insert(output_root.join(target));
+    }
+    for path in &targets {
+        match std::fs::remove_file(path) {
+            Ok(()) => eprintln!("nbrs report: --rebuild removed '{}'", path.display()),
+            // ENOENT is expected — first-run rebuild has
+            // nothing to wipe; that's fine. Other errors
+            // (permission, I/O) print so the operator
+            // notices, but don't abort the render — the
+            // renderer will fail with a clearer message
+            // if it can't write.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!(
+                "nbrs report: --rebuild: could not remove '{}': {e}",
+                path.display(),
+            ),
+        }
+    }
 }
 
 /// Classify a render error as a warning vs failure based on
@@ -1211,7 +1291,7 @@ fn render_one(
             // non-strict mode (incremental / auto-render
             // legitimately produces empty results before data
             // accumulates).
-            crate::plot_metrics::plot_metrics_command_result(&base)
+            let plot_result = crate::plot_metrics::plot_metrics_command_result(&base)
                 .map_err(|e| {
                     if crate::plot_metrics::is_no_data_error(&e) {
                         format!(
@@ -1223,7 +1303,28 @@ fn render_one(
                     } else {
                         format!("plot '{}' failed: {e}", item.name)
                     }
-                })
+                });
+
+            // SRD-46 plot-only `with-table: true` companion.
+            // Render the table view immediately after the
+            // plot so the markdown carries both views in the
+            // same section flow. The companion uses the same
+            // body as the plot; the summary renderer reads
+            // off `y / y1 / y2 / y3 / y4 / x-ticks` queries
+            // and tabulates them. Failures here are
+            // *secondary* — the plot's already rendered (or
+            // already failed); the companion's outcome is
+            // logged but doesn't replace the plot's
+            // success/failure return.
+            if item.with_table && plot_result.is_ok() {
+                if let Err(e) = render_companion_table(n, item, output_root, session_db) {
+                    eprintln!(
+                        "WARNING: companion table for plot '{}' failed: {e}",
+                        item.name,
+                    );
+                }
+            }
+            plot_result
         }
         Kind::Table => {
             crate::summary::summary_command(&base);
@@ -1231,6 +1332,136 @@ fn render_one(
         }
         Kind::Text | Kind::File | Kind::Details => unreachable!(),
     }
+}
+
+/// Render a companion table for a plot whose body declared
+/// `with-table: true`. Reuses the plot's body (each `y` /
+/// `y1` / `y2` / `y3` / `y4` line becomes one table column;
+/// `x` / `x-ticks` provide the row key). The table writes
+/// into the same target markdown file as the plot,
+/// immediately after the plot's section, with an anchor
+/// derived from the plot's name plus a `_table` suffix so
+/// users can link to either view independently.
+///
+/// Implemented as a thin facade over the existing summary
+/// renderer: we synthesise a table-shaped argv from the
+/// plot's `y*` queries, call `summary_command`, and let it
+/// do the markdown emission via the same path tables use
+/// today.
+fn render_companion_table(
+    plot_figure_num: usize,
+    item: &ResolvedItem,
+    output_root: &Path,
+    session_db: Option<&Path>,
+) -> Result<(), String> {
+    let columns = extract_y_queries(&item.body);
+    if columns.is_empty() {
+        return Err("no y/y1/y2/y3/y4 query lines in plot body".into());
+    }
+    let group_by = extract_x_query(&item.body)
+        .or_else(|| extract_xticks_query(&item.body))
+        .map(|q| extract_label_keys(&q))
+        .unwrap_or_default();
+
+    let mut argv: Vec<String> = vec![
+        format!("--name={}_table", item.name),
+        "--figure-num".into(),
+        // Numbering convention: companion uses the parent
+        // plot's number with an `a` suffix in the heading,
+        // but for the tools that need a numeric arg we
+        // pass the plot's number — the heading is
+        // overridden via --label below.
+        plot_figure_num.to_string(),
+    ];
+    let plot_label = item.label.clone()
+        .unwrap_or_else(|| crate::report::prettify_name(&item.name));
+    argv.push("--label".into());
+    argv.push(format!("{plot_label} (data)"));
+    if let Some(target) = item.target_file.as_deref() {
+        argv.push("--report".into());
+        argv.push(output_root.join(target).to_string_lossy().into_owned());
+    }
+    if let Some(db) = session_db {
+        argv.push("--db".into());
+        argv.push(db.to_string_lossy().into_owned());
+    }
+    if !group_by.is_empty() {
+        argv.push("--group-by".into());
+        argv.push(group_by.join(","));
+    }
+    for (col_name, query) in columns {
+        argv.push("--column".into());
+        argv.push(format!("{col_name}={query}"));
+    }
+    crate::summary::summary_command(&argv);
+    Ok(())
+}
+
+/// Pull every `y[N]: <query>` line out of a plot body,
+/// returning `(column_name, query)` pairs. The column name
+/// for `y` / `y1` is `recall_y1` (etc.) — namespaced so
+/// the companion table's column headings stay distinct
+/// from any other columns the user might add.
+fn extract_y_queries(body: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in body.lines() {
+        let line = line.trim();
+        for prefix in ["y:", "y1:", "y2:", "y3:", "y4:"] {
+            if let Some(rest) = line.strip_prefix(prefix) {
+                let key = match prefix {
+                    "y:" | "y1:" => "y1",
+                    "y2:" => "y2",
+                    "y3:" => "y3",
+                    "y4:" => "y4",
+                    _ => unreachable!(),
+                };
+                out.push((key.to_string(), rest.trim().to_string()));
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Pull the `x: <query>` line if present.
+fn extract_x_query(body: &str) -> Option<String> {
+    for line in body.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("x:") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Pull the `x-ticks: <query>` line if present.
+fn extract_xticks_query(body: &str) -> Option<String> {
+    for line in body.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("x-ticks:") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Pull the label keys out of a `... by (k1, k2, k3)` clause
+/// in a metricsql query. Used to seed the companion
+/// table's group_by so each row corresponds to one (k1,
+/// k2, k3) tuple of the plot's series discriminators.
+fn extract_label_keys(query: &str) -> Vec<String> {
+    let lower = query.to_ascii_lowercase();
+    let by_idx = lower.rfind(" by ");
+    let by_idx = match by_idx { Some(i) => i, None => return Vec::new() };
+    let after = &query[by_idx + 4..];
+    let after = after.trim();
+    let inner = after.strip_prefix('(')
+        .and_then(|s| s.strip_suffix(')'))
+        .unwrap_or(after);
+    inner.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// Render a text item by writing its body verbatim into the

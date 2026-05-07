@@ -197,27 +197,108 @@ pub fn use_color() -> bool {
     })
 }
 
+/// Minimum severity that reaches the file sink
+/// (`session.log`). Default `Debug` — the file gets every
+/// non-trivial entry. The display threshold (per-observer
+/// `min_level`) is the SEPARATE knob that controls what
+/// reaches stderr; it defaults to `Info`. The two are
+/// configured independently via:
+///
+/// - `loglevel-retain=` / `--log-retain-level` /
+///   `NBRS_LOG_RETAIN_LEVEL` — what the file gets.
+/// - `loglevel=` / `--log-display-level` /
+///   `NBRS_LOG_DISPLAY_LEVEL` — what stderr gets.
+///
+/// The runner installs the user-supplied retain level via
+/// [`set_retain_level`] at startup; readers consult
+/// [`retain_level`] before sending to the sink.
+static RETAIN_LEVEL: std::sync::OnceLock<LogLevel> = std::sync::OnceLock::new();
+
+/// Install the file-sink retention threshold. Called once
+/// by the runner; subsequent calls are silent no-ops
+/// (matching the "first wins" pattern of the rest of the
+/// global observer surface).
+pub fn set_retain_level(level: LogLevel) {
+    let _ = RETAIN_LEVEL.set(level);
+}
+
+/// Effective retention threshold. Defaults to `Debug` so
+/// pre-runner-init log calls (very early startup) still
+/// reach the file sink.
+pub fn retain_level() -> LogLevel {
+    *RETAIN_LEVEL.get().unwrap_or(&LogLevel::Debug)
+}
+
+/// Companion to [`RETAIN_LEVEL`]: the *display* threshold
+/// that gates console emission. Each observer carries its
+/// own `min_level` for the live log path; this global
+/// captures the effective value so secondary surfaces
+/// (the failure-dump path in `nbrs-tui::observer`) can
+/// honour the same threshold without plumbing the observer
+/// reference everywhere.
+static DISPLAY_LEVEL: std::sync::OnceLock<LogLevel> = std::sync::OnceLock::new();
+
+/// Install the console display threshold. Called by the
+/// runner alongside [`set_retain_level`] at startup.
+pub fn set_display_level(level: LogLevel) {
+    let _ = DISPLAY_LEVEL.set(level);
+}
+
+/// Effective console display threshold. Defaults to
+/// `Info` — same default the live observers use.
+pub fn display_level() -> LogLevel {
+    *DISPLAY_LEVEL.get().unwrap_or(&LogLevel::Info)
+}
+
 pub fn log(level: LogLevel, message: &str) {
-    if let Some(sink) = crate::log_sink::global() {
-        let tag = match level {
-            LogLevel::Debug => "DBG",
-            LogLevel::Info  => "INF",
-            LogLevel::Warn  => "WRN",
-            LogLevel::Error => "ERR",
-        };
-        // Human-readable wall-clock timestamp from the session
-        // formatter — matches the session id's date/time style
-        // so log lines correlate visually with the session
-        // directory.
-        let ts = crate::session::now_log_timestamp();
-        let line = format!("{ts} {tag} {message}\n").into_bytes();
-        let _ = sink.try_send(line);
+    if level >= retain_level() {
+        if let Some(sink) = crate::log_sink::global() {
+            let tag = match level {
+                LogLevel::Debug => "DBG",
+                LogLevel::Info  => "INF",
+                LogLevel::Warn  => "WRN",
+                LogLevel::Error => "ERR",
+            };
+            // Human-readable wall-clock timestamp from the session
+            // formatter — matches the session id's date/time style
+            // so log lines correlate visually with the session
+            // directory.
+            let ts = crate::session::now_log_timestamp();
+            let line = format!("{ts} {tag} {message}\n").into_bytes();
+            let _ = sink.try_send(line);
+        }
     }
     if let Some(obs) = GLOBAL_OBSERVER.get() {
         obs.log(level, message);
     } else {
-        eprintln!("{message}");
+        eprintln!("{}", colorize_log_line(level, message));
     }
+}
+
+/// ANSI-colorize a log line by severity for console
+/// output. Always applied at the producer side — every
+/// console emission of a log entry runs through this so
+/// `DBG`/`INF`/`WRN`/`ERR` are visually distinct without
+/// the operator having to squint at message bodies.
+/// Falls through to the bare message when stderr isn't a
+/// TTY or `NO_COLOR` is set (per [`use_color`]); pipeline
+/// captures stay readable.
+pub fn colorize_log_line(level: LogLevel, message: &str) -> String {
+    if !use_color() { return message.to_string(); }
+    let (color, reset) = match level {
+        // Dim grey for debug — present but de-emphasized.
+        LogLevel::Debug => ("\x1b[2m",      "\x1b[0m"),
+        // Default-color for info — the baseline; no
+        // override so user-themed terminals show their
+        // preferred default.
+        LogLevel::Info  => ("",             ""),
+        // Yellow for warn.
+        LogLevel::Warn  => ("\x1b[33m",     "\x1b[0m"),
+        // Bold red for error.
+        LogLevel::Error => ("\x1b[1;31m",   "\x1b[0m"),
+    };
+    if color.is_empty() { message.to_string() }
+    else { format!("{color}{message}{reset}") }
 }
 
 /// Convenience macros for logging through the global observer.
@@ -310,7 +391,7 @@ impl RunObserver for StderrObserver {
             {
                 eprintln!();
             }
-            eprintln!("{message}");
+            eprintln!("{}", colorize_log_line(level, message));
         }
     }
 }

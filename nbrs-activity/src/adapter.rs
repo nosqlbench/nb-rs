@@ -293,6 +293,35 @@ pub trait OpDispenser: Send + Sync {
         ctx: &'a crate::fixture::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>>;
 
+    /// One-line description of the op this dispenser
+    /// represents — typically the statement text /
+    /// request shape with bind-point placeholders left
+    /// unresolved (`{table}`, `{key}`, `?`, …).
+    ///
+    /// Used by the runtime's error-capture path to attach
+    /// the actual op identity to a phase-stop diagnostic.
+    /// Without this, an error like `[validation_failed]
+    /// op 'indexes_present_cass' …` only names the op
+    /// template; the operator can't see what statement
+    /// the dispenser is actually firing without grepping
+    /// the workload yaml. With this hooked, the captured
+    /// reason carries the rendered statement so the
+    /// operator can immediately tell whether (a) it's the
+    /// wrong dialect's branch firing, (b) the bindpoints
+    /// resolved to something unexpected, (c) the
+    /// statement is malformed in the workload, etc.
+    ///
+    /// Returns `None` for dispensers whose op shape isn't
+    /// usefully one-lineable (composed wrappers that
+    /// delegate, dispensers whose body is multi-paragraph
+    /// HTTP, etc.). The runtime falls through to the
+    /// inner-dispenser chain when this returns None.
+    /// Default: delegate to inner dispenser if any, else
+    /// None.
+    fn describe(&self) -> Option<String> {
+        self.inner_dispenser().and_then(|inner| inner.describe())
+    }
+
     /// Snapshot adapter-specific metrics for inclusion in the capture
     /// snapshot.
     ///
@@ -329,11 +358,58 @@ pub trait OpDispenser: Send + Sync {
         }
     }
 
-    /// Returns the inner dispenser if this is a wrapper.
-    /// Used for delegating `adapter_metrics()` and `status_counters()`
-    /// through wrapper chains (TraversingDispenser, etc.).
+    /// Returns the wrapped dispenser when this is a
+    /// wrapper, `None` when this is a leaf (the adapter's
+    /// base dispenser — e.g. CQL raw / prepared / batch,
+    /// HTTP, stdout, plotter, …).
+    ///
+    /// Default returns `None`, which is correct for every
+    /// leaf. Adapter-base dispensers should rely on the
+    /// default — they have no inner to expose, and asking
+    /// them to write `fn inner_dispenser(&self) -> None`
+    /// is pure boilerplate.
+    ///
+    /// **Wrappers MUST override** to return
+    /// `Some(self.inner.as_ref())`. Several pieces of
+    /// cross-cutting machinery walk this chain:
+    /// - `adapter_metrics` and `status_counters` delegate
+    ///   through wrapper layers via the default
+    ///   implementations on this trait, which call
+    ///   `inner_dispenser()` to find the wrapped layer.
+    /// - `describe()` walks inward to surface the runtime
+    ///   op shape (CQL statement text) for error-context
+    ///   dumps; missing this on a wrapper silently breaks
+    ///   the walk and the error loses its op-shape line.
+    ///
+    /// The [`WrappingDispenser`] marker trait below is
+    /// the type-system signal that flags "this is a
+    /// wrapper"; wrappers should implement both. Future
+    /// composition machinery (SRD-32a) will use the
+    /// `WrappingDispenser` bound to require the override
+    /// at the registration boundary.
     fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { None }
 }
+
+/// Marker trait for dispensers that wrap another
+/// `OpDispenser`. Implementing it is the type-level
+/// commitment that this layer has overridden
+/// [`OpDispenser::inner_dispenser`] to expose its inner
+/// dispenser. Without that override, cross-cutting
+/// machinery (`describe()`, `adapter_metrics`,
+/// `status_counters`) silently stops walking at the
+/// wrapper, which has been a real source of bugs.
+///
+/// Pure marker — no methods. The chain-walking code
+/// already takes `&dyn OpDispenser` and calls
+/// `inner_dispenser()`; this trait exists to make the
+/// wrapper-vs-leaf split visible at the type level and
+/// to give SRD-32a's wrapper registry a bound to require
+/// at composition time.
+///
+/// Leaves do not implement this trait — their
+/// `inner_dispenser` falls through to the default
+/// `None`-returning impl on `OpDispenser`, no boilerplate.
+pub trait WrappingDispenser: OpDispenser {}
 
 /// Resolved field values for a single cycle. Produced by the GK
 /// synthesis pipeline, consumed by the OpDispenser.

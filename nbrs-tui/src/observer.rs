@@ -706,15 +706,120 @@ pub fn print_post_run_summary(
         }
     }
 
-    // Dump recent log messages on failure for error context.
+    // Dump recent log messages on failure for error
+    // context. Each line carries elapsed-since-session-
+    // start (in fractional seconds) plus severity. Header
+    // line names the UTC moment that "0.00000" corresponds
+    // to, so the operator can map the relative timestamps
+    // back to wall-clock if they need to correlate with
+    // other systems.
+    //
+    // The relative-seconds shape is more readable than full
+    // UTC for short-failure dumps: events 0.005 seconds
+    // apart show up as `1.34020` / `1.34520` rather than
+    // `19:14:32.040` / `19:14:32.045` where the operator
+    // has to do mental arithmetic.
     if run_result.is_err() && !s.log_messages.is_empty() {
+        // The failure dump honours the same display
+        // threshold the live observer used (default Info)
+        // so DBG noise stays in the file but doesn't
+        // re-spam the console at the end of a failed run.
+        // Operators who want the dump fuller pass
+        // `loglevel=debug` (or set the env var) — same
+        // knob as the live path.
+        let display_min = nbrs_activity::observer::display_level();
+        let recent: Vec<&LogEntry> = s.log_messages.iter()
+            .rev()
+            .filter(|e| log_severity_to_level(e.severity) >= display_min)
+            .take(20)
+            .collect();
+        if recent.is_empty() {
+            // Everything in the ring was below the
+            // display threshold; nothing useful to show.
+            return;
+        }
         eprintln!();
         eprintln!("--- recent log messages ---");
-        let recent: Vec<&LogEntry> = s.log_messages.iter().rev().take(20).collect();
+        eprintln!("  (elapsed-seconds since session start at {} UTC)",
+            nbrs_activity::session::format_log_timestamp(s.started_at_utc));
         for entry in recent.into_iter().rev() {
-            eprintln!("  {}", entry.message);
+            let elapsed = entry.at.duration_since(s.started_at_utc)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            let ts = format_elapsed_seconds(elapsed);
+            let level = log_severity_to_level(entry.severity);
+            let lvl_tag = match entry.severity {
+                crate::state::LogSeverity::Debug => "DBG",
+                crate::state::LogSeverity::Info  => "INF",
+                crate::state::LogSeverity::Warn  => "WRN",
+                crate::state::LogSeverity::Error => "ERR",
+            };
+            // Color the entire line by severity so the
+            // dump matches the live console look.
+            let line = format!("  {ts} {lvl_tag} {}", entry.message);
+            eprintln!("{}",
+                nbrs_activity::observer::colorize_log_line(level, &line));
         }
         eprintln!("---");
+    }
+}
+
+/// Render `elapsed_secs` so the integer-seconds part takes
+/// just enough columns and the fractional part fills the
+/// remaining width up to a 7-character target. Once the
+/// session's been running long enough that the integer part
+/// needs ≥4 columns, the fractional part stabilises at 3
+/// digits (millisecond precision) and the seconds column
+/// keeps growing.
+///
+/// Examples:
+/// -   `0.00012` → `0.00012` (5 fractional digits — early-
+///     session events, dense)
+/// -   `9.91234` → `9.91234`
+/// -  `12.5`     → `12.5000` (4 fractional digits)
+/// - `123.4`     → `123.400` (3 fractional digits)
+/// - `1234.5678` → `1234.568` (3 fractional digits, integer widens)
+fn format_elapsed_seconds(elapsed_secs: f64) -> String {
+    let s = elapsed_secs.max(0.0);
+    if s < 10.0 {
+        format!("{s:.5}")          // 0.00000 → 9.99999  (7 chars)
+    } else if s < 100.0 {
+        format!("{s:.4}")          // 10.0000 → 99.9999 (7 chars)
+    } else if s < 1000.0 {
+        format!("{s:.3}")          // 100.000 → 999.999 (7 chars)
+    } else {
+        format!("{s:.3}")          // 1000.000 and beyond — 3 millis fixed,
+                                   // integer part widens (8+ chars)
+    }
+}
+
+#[cfg(test)]
+mod elapsed_format_tests {
+    use super::format_elapsed_seconds;
+
+    #[test]
+    fn buckets_widen_seconds_keep_seven_until_thousand() {
+        // [0, 10): one integer digit + 5 fractional
+        assert_eq!(format_elapsed_seconds(0.0),       "0.00000");
+        assert_eq!(format_elapsed_seconds(0.000123),  "0.00012");
+        assert_eq!(format_elapsed_seconds(9.99999),   "9.99999");
+        // [10, 100): two integer digits + 4 fractional
+        assert_eq!(format_elapsed_seconds(10.0),      "10.0000");
+        assert_eq!(format_elapsed_seconds(99.9999),   "99.9999");
+        // [100, 1000): three integer digits + 3 fractional
+        assert_eq!(format_elapsed_seconds(100.0),     "100.000");
+        assert_eq!(format_elapsed_seconds(999.999),   "999.999");
+        // [1000, ∞): integer widens, millis stays at 3
+        assert_eq!(format_elapsed_seconds(1234.5678), "1234.568");
+        assert_eq!(format_elapsed_seconds(12345.6),   "12345.600");
+    }
+
+    #[test]
+    fn negative_or_clock_skew_clamps_to_zero() {
+        // SystemTime can run backward across a clock
+        // adjustment. Don't surface a negative-elapsed
+        // string; just clamp.
+        assert_eq!(format_elapsed_seconds(-0.5), "0.00000");
     }
 }
 

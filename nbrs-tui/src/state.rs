@@ -49,10 +49,21 @@ pub enum LogSeverity {
 }
 
 /// A log message with severity for display coloring.
+///
+/// Carries the wall-clock instant the entry was produced
+/// so the failure-dump path can surface time-of-arrival
+/// alongside the message — without it, "recent log
+/// messages" reads as an opaque list with no clue which
+/// lines came seconds vs. minutes apart, or which line
+/// was the one closest to the failure.
 #[derive(Clone, Debug)]
 pub struct LogEntry {
     pub severity: LogSeverity,
     pub message: String,
+    /// Wall-clock at log-entry creation. The dump uses
+    /// this directly; the live TUI ignores it (it has its
+    /// own scroll-based ordering).
+    pub at: std::time::SystemTime,
 }
 
 // `EntryKind` and `PhaseStatus` now live on the canonical
@@ -193,6 +204,14 @@ pub struct RunState {
     pub scenario_name: String,
     pub adapter: String,
     pub started_at: Instant,
+    /// Wall-clock at session start. Captured alongside the
+    /// monotonic `started_at` so the failure-dump path can
+    /// (a) print a UTC header naming the absolute moment
+    /// `0.00000` corresponds to, and (b) compute per-entry
+    /// deltas against it. The monotonic `started_at` stays
+    /// authoritative for elapsed-time comparisons; this one
+    /// is for human-readable display only.
+    pub started_at_utc: std::time::SystemTime,
     pub profiler: String,
     pub limit: String,
 
@@ -287,6 +306,7 @@ impl RunState {
             scenario_name: scenario_name.to_string(),
             adapter: adapter.to_string(),
             started_at: Instant::now(),
+            started_at_utc: std::time::SystemTime::now(),
             profiler: "off".to_string(),
             limit: "none".to_string(),
             tree: SceneTree::new(),
@@ -340,7 +360,10 @@ impl RunState {
     /// `log_seq_total` increments unconditionally so display sinks
     /// can detect new-since-last-drain without inspecting the ring.
     pub fn push_log(&mut self, severity: LogSeverity, message: String) {
-        self.log_messages.push(LogEntry { severity, message });
+        self.log_messages.push(LogEntry {
+            severity, message,
+            at: std::time::SystemTime::now(),
+        });
         if self.log_messages.len() > 200 {
             self.log_messages.remove(0);
         }

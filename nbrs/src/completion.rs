@@ -421,7 +421,7 @@ fn report_node() -> StrictNode<true, true> {
         ("list",     Node::leaf_with_flags(
             &["--db", "--session", "--workload"], &[])),
         ("all",      Node::leaf_with_flags(
-            &["--db", "--session", "--workload"], &[])),
+            &["--db", "--session", "--workload"], &["--rebuild"])),
         ("show",     Node::leaf_with_flags(
             &["--db", "--session", "--workload"], &[])
             .with_value_provider("--name", fn_provider(report_any_name_provider))),

@@ -1022,8 +1022,20 @@ impl Session {
             }
         }
 
+        // Root labels carry both the session id (already
+        // unique per run) and the workload's bare stem
+        // (filename without path or extension, falling
+        // back to `"workload"` for inline / op= runs that
+        // have no file). Every metric and component
+        // descendant inherits these via the component
+        // tree, so cross-session queries can group by
+        // `workload="full_cql_vector"` regardless of
+        // whether the operator ran it from
+        // `./full_cql_vector.yaml`,
+        // `adapters/cql/workloads/full_cql_vector.yaml`,
+        // or any other path.
         let component = Component::root(
-            Labels::of("session", &id),
+            Labels::of("session", &id).with("workload", workload_stem),
             std::collections::HashMap::new(),
         );
         // Install the session root as the resolver backing for
@@ -1100,8 +1112,14 @@ impl Session {
             }
         }
 
+        // Root labels carry session + workload stem (see
+        // `Session::new_with_args` for rationale). Resume
+        // reuses the same workload stem so the resumed
+        // metrics keep the same `workload=...` label and
+        // continue to match cross-session queries that
+        // grouped on it.
         let component = Component::root(
-            Labels::of("session", &id),
+            Labels::of("session", &id).with("workload", workload_stem),
             std::collections::HashMap::new(),
         );
         nbrs_variates::nodes::runtime_context::set_session_root(component.clone());
@@ -1200,8 +1218,15 @@ fn format_timestamp() -> String {
 /// Current wall-clock time as `YYYY-MM-DD HH:MM:SS.mmm` (UTC).
 /// Used by the session log writer for human-readable line timestamps.
 pub fn now_log_timestamp() -> String {
-    let dur = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    format_log_timestamp(std::time::SystemTime::now())
+}
+
+/// Format a specific `SystemTime` in the same shape as
+/// [`now_log_timestamp`]. Used by the failure-dump path
+/// in `nbrs-tui::observer` to render per-LogEntry
+/// timestamps captured at log-emit time.
+pub fn format_log_timestamp(t: std::time::SystemTime) -> String {
+    let dur = t.duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     let secs = dur.as_secs();
     let millis = dur.subsec_millis();

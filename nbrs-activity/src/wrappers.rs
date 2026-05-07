@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::adapter::{
-    AdapterError, ExecutionError, OpDispenser, OpResult,
+    AdapterError, ExecutionError, OpDispenser, OpResult, WrappingDispenser,
 };
 use nbrs_workload::bindpoints;
 
@@ -128,6 +128,8 @@ fn json_to_value(v: &serde_json::Value) -> nbrs_variates::node::Value {
     }
 }
 
+impl WrappingDispenser for TraversingDispenser {}
+
 impl OpDispenser for TraversingDispenser {
     fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
     fn execute<'a>(
@@ -212,6 +214,8 @@ fn is_truthy(value: &nbrs_variates::node::Value) -> bool {
     }
 }
 
+impl WrappingDispenser for ConditionalDispenser {}
+
 impl OpDispenser for ConditionalDispenser {
     fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
     fn execute<'a>(
@@ -264,6 +268,8 @@ impl ThrottleDispenser {
         Ok(Arc::new(Self { inner, delay_handle }))
     }
 }
+
+impl WrappingDispenser for ThrottleDispenser {}
 
 impl OpDispenser for ThrottleDispenser {
     fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
@@ -381,6 +387,8 @@ impl PollingDispenser {
         (dispenser, metrics)
     }
 }
+
+impl WrappingDispenser for PollingDispenser {}
 
 impl OpDispenser for PollingDispenser {
     fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
@@ -536,6 +544,8 @@ impl EmitDispenser {
         })
     }
 }
+
+impl WrappingDispenser for EmitDispenser {}
 
 impl OpDispenser for EmitDispenser {
     fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
@@ -821,6 +831,8 @@ impl ResultDispenser {
         }
     }
 }
+
+impl WrappingDispenser for ResultDispenser {}
 
 impl OpDispenser for ResultDispenser {
     fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }
@@ -1110,6 +1122,8 @@ fn is_bare_name(expr: &str) -> bool {
     !trimmed.is_empty()
         && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
+
+impl WrappingDispenser for MetricsDispenser {}
 
 impl OpDispenser for MetricsDispenser {
     fn inner_dispenser(&self) -> Option<&dyn OpDispenser> { Some(self.inner.as_ref()) }

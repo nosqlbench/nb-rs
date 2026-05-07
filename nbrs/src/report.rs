@@ -89,9 +89,7 @@ pub fn write_named_section(
         current = format!("{DOC_HEADER}{current}");
     }
 
-    let new_heading = format!("## {heading_display} {{#{anchor}}}\n");
-    let body_trimmed = body.trim_end_matches('\n');
-    let new_section = format!("{new_heading}\n{body_trimmed}\n\n");
+    let new_section = render_section(anchor, heading_display, body);
 
     let (updated, modified) = match (find_section_by_anchor(&current, anchor), mode) {
         (Some((start, end)), WriteMode::Update) => {
@@ -126,6 +124,30 @@ pub fn write_named_section(
     Ok(true)
 }
 
+/// Render one `## Heading` section preceded by a portable
+/// HTML anchor tag.
+///
+/// The previous shape used the pandoc-style `{#anchor}`
+/// extension after the heading text — terse but only some
+/// markdown renderers honour it; many display the literal
+/// `{#anchor}` braces in the rendered output. The HTML
+/// anchor on its own line is universally understood (every
+/// markdown processor passes raw HTML through to the
+/// rendered DOM) and disappears from the visible heading.
+///
+/// Layout:
+///
+/// ```text
+/// <a id="anchor"></a>
+/// ## Heading Display
+///
+/// <body>
+/// ```
+fn render_section(anchor: &str, heading_display: &str, body: &str) -> String {
+    let body_trimmed = body.trim_end_matches('\n');
+    format!("<a id=\"{anchor}\"></a>\n## {heading_display}\n\n{body_trimmed}\n\n")
+}
+
 /// Like [`write_named_section`] but forces the section to be
 /// the FIRST `##` heading in the file (right after the doc
 /// header). Used for the auto-injected Details block (SRD-46)
@@ -151,9 +173,7 @@ pub fn write_named_section_first(
         current = format!("{DOC_HEADER}{current}");
     }
 
-    let new_heading = format!("## {heading_display} {{#{anchor}}}\n");
-    let body_trimmed = body.trim_end_matches('\n');
-    let new_section = format!("{new_heading}\n{body_trimmed}\n\n");
+    let new_section = render_section(anchor, heading_display, body);
 
     let updated = if let Some((start, end)) = find_section_by_anchor(&current, anchor) {
         // Replace in place — preserves position whether or not
@@ -198,24 +218,91 @@ pub fn write_named_section_first(
     Ok(true)
 }
 
-/// Look up an existing `## … {#anchor}` heading by its anchor
-/// token. End is the byte where the next `## ` heading starts,
-/// or end-of-file.
+/// Look up an existing section by its anchor and return the
+/// `[start, end)` byte range covering the anchor + heading +
+/// body up to (but not including) the next `## ` heading.
+///
+/// Two forms are recognised:
+///
+/// - **Modern (HTML anchor on its own line above the
+///   heading)** — `<a id="anchor"></a>\n## Heading\n…`. The
+///   start byte is the line where the `<a id=…>` lives, so
+///   replacement overwrites both the anchor tag and the
+///   heading.
+/// - **Legacy (pandoc-style `{#anchor}` after the heading
+///   text)** — `## Heading {#anchor}\n…`. The start byte is
+///   the heading line. Recognised so files written by older
+///   builds get migrated to the modern form on the next
+///   render touch — no `--rebuild` required for the format
+///   migration.
+///
+/// Returns `None` when no anchor by that name exists in
+/// either form.
 fn find_section_by_anchor(text: &str, anchor: &str) -> Option<(usize, usize)> {
-    let token = format!("{{#{anchor}}}");
+    // Try the modern form first.
+    let html_token = format!("<a id=\"{anchor}\"></a>");
     let mut start_byte: Option<usize> = None;
-    for (idx, _) in text.match_indices(&token) {
+    for (idx, _) in text.match_indices(&html_token) {
         let line_start = text[..idx].rfind('\n').map(|p| p + 1).unwrap_or(0);
-        if text[line_start..].starts_with("## ") {
+        // Anchor line contains only the tag, then the `## `
+        // heading on the next line.
+        let line_end = text[line_start..].find('\n')
+            .map(|p| line_start + p)
+            .unwrap_or(text.len());
+        let after = &text[line_end..];
+        if after.starts_with("\n## ") {
             start_byte = Some(line_start);
             break;
         }
     }
+
+    // Fall back to the legacy `{#anchor}` form so old files
+    // get migrated on the next write.
+    if start_byte.is_none() {
+        let legacy_token = format!("{{#{anchor}}}");
+        for (idx, _) in text.match_indices(&legacy_token) {
+            let line_start = text[..idx].rfind('\n').map(|p| p + 1).unwrap_or(0);
+            if text[line_start..].starts_with("## ") {
+                start_byte = Some(line_start);
+                break;
+            }
+        }
+    }
+
     let start_byte = start_byte?;
-    let after = &text[start_byte + 3..];
-    let end_byte = after.find("\n## ")
-        .map(|rel| start_byte + 3 + rel + 1)
-        .unwrap_or(text.len());
+    // Walk past the heading line of THIS section so we don't
+    // mistake our own `## …` for the next section's. The
+    // heading is the first `## ` at or after `start_byte`;
+    // we want everything from `start_byte` up to (but not
+    // including) the *next* `## ` heading after that.
+    let own_heading_offset = text[start_byte..].find("## ")
+        .map(|rel| start_byte + rel)
+        .unwrap_or(start_byte);
+    let after_heading = own_heading_offset + 3;
+
+    let end_byte = if let Some(rel) = text[after_heading..].find("\n## ") {
+        let next_heading_byte = after_heading + rel + 1;
+        // If an HTML anchor sits on the line directly above
+        // the next heading, that anchor "belongs" to the
+        // next section — exclude it from this one so a
+        // rewrite doesn't strip it. Find the line start
+        // immediately preceding `next_heading_byte` and
+        // check it.
+        let prev_line_end = text[..next_heading_byte].rfind('\n').unwrap_or(0);
+        let prior_line_start = text[..prev_line_end].rfind('\n')
+            .map(|p| p + 1)
+            .unwrap_or(0);
+        let prior_line = &text[prior_line_start..prev_line_end];
+        if prior_line.trim_start().starts_with("<a id=") &&
+           prior_line.trim_end().ends_with("</a>")
+        {
+            prior_line_start
+        } else {
+            next_heading_byte
+        }
+    } else {
+        text.len()
+    };
     Some((start_byte, end_byte))
 }
 
@@ -282,8 +369,15 @@ mod tests {
             WriteMode::AddIfMissing).unwrap();
         assert!(added2);
         let content = std::fs::read_to_string(&p).unwrap();
-        assert!(content.contains("{#summary_a}"));
-        assert!(content.contains("{#plot_b}"));
+        assert!(content.contains("<a id=\"summary_a\"></a>"),
+            "missing anchor for summary_a: {content}");
+        assert!(content.contains("<a id=\"plot_b\"></a>"),
+            "missing anchor for plot_b: {content}");
+        // The pandoc-style `{#…}` form must NOT appear in
+        // freshly-written output — it confuses some
+        // markdown renderers (literal braces in the heading).
+        assert!(!content.contains("{#summary_a}"));
+        assert!(!content.contains("{#plot_b}"));
         assert!(content.contains("first"));
         assert!(content.contains("second"));
     }
@@ -297,8 +391,13 @@ mod tests {
             "![](plot_recall_at_k10.png)",
             WriteMode::Update).unwrap();
         let content = std::fs::read_to_string(&p).unwrap();
-        assert!(content.contains("## 3. Recall At K10 (plot) {#recall_at_k10}"),
-            "heading missing: {content}");
+        // HTML anchor on its own line above the heading;
+        // heading text is clean (no `{#…}` suffix).
+        assert!(
+            content.contains("<a id=\"recall_at_k10\"></a>\n## 3. Recall At K10 (plot)"),
+            "anchor + heading shape missing: {content}");
+        assert!(!content.contains("{#recall_at_k10}"),
+            "legacy `{{#…}}` form must not appear in fresh output");
     }
 
     #[test]
@@ -315,12 +414,38 @@ mod tests {
             "5. Recall@10 reordered (plot)", "second body",
             WriteMode::Update).unwrap();
         let content = std::fs::read_to_string(&p).unwrap();
-        assert!(content.contains("5. Recall@10 reordered (plot) {#recall_at_k10}"),
+        assert!(
+            content.contains("<a id=\"recall_at_k10\"></a>\n## 5. Recall@10 reordered (plot)"),
             "new heading missing: {content}");
         assert!(content.contains("second body"), "new body missing: {content}");
         assert!(!content.contains("first body"), "stale body retained: {content}");
-        // Exactly one heading for this anchor.
-        assert_eq!(content.matches("{#recall_at_k10}").count(), 1);
+        // Exactly one anchor + one heading for this anchor.
+        assert_eq!(content.matches("<a id=\"recall_at_k10\"></a>").count(), 1);
+    }
+
+    #[test]
+    fn legacy_pandoc_anchor_format_is_migrated_on_rewrite() {
+        // Operator already has a markdown report whose
+        // sections were written by an older build using
+        // `## Title {#anchor}`. The new writer must find
+        // the section by its anchor, replace it with the
+        // HTML-anchor form, and leave a clean file.
+        let p = tmp_path("migrate_legacy.md");
+        let _ = std::fs::remove_file(&p);
+        let legacy = "# Report\n\n## 1. Old Title {#legacy_anchor}\n\nold body\n\n";
+        std::fs::write(&p, legacy).unwrap();
+
+        write_named_section(&p, "legacy_anchor",
+            "1. Migrated Title", "fresh body",
+            WriteMode::Update).unwrap();
+
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(content.contains("<a id=\"legacy_anchor\"></a>"),
+            "expected migrated HTML anchor; got: {content}");
+        assert!(!content.contains("{#legacy_anchor}"),
+            "legacy form should be gone after rewrite; got: {content}");
+        assert!(content.contains("fresh body"));
+        assert!(!content.contains("old body"));
     }
 
     #[test]

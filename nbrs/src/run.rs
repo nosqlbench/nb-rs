@@ -168,9 +168,30 @@ pub async fn run_command(args: &[String]) {
         } else {
             nbrs_activity::observer::LogLevel::Info
         };
+        // Two independent log-level knobs:
+        //
+        //   loglevel=         — display threshold (stderr).
+        //                       Default Info; debug+ noisy
+        //                       on console.
+        //   loglevel-retain=  — file-sink threshold
+        //                       (session.log). Default Debug
+        //                       so the file captures
+        //                       everything for post-mortem.
+        //
+        // Aliases: `loglevel-display=` is accepted for
+        // symmetry with `loglevel-retain=`; both map to the
+        // stderr threshold.
         let stderr_min_level = cli_params.get("loglevel")
+            .or_else(|| cli_params.get("loglevel-display"))
+            .or_else(|| cli_params.get("loglevel_display"))
             .and_then(|s| nbrs_activity::runner::parse_log_level(s))
             .unwrap_or(default_min_level);
+        let retain_min_level = cli_params.get("loglevel-retain")
+            .or_else(|| cli_params.get("loglevel_retain"))
+            .and_then(|s| nbrs_activity::runner::parse_log_level(s))
+            .unwrap_or(nbrs_activity::observer::LogLevel::Debug);
+        nbrs_activity::observer::set_retain_level(retain_min_level);
+        nbrs_activity::observer::set_display_level(stderr_min_level);
         // Same cadence parsing the `tui=on` path uses, so the
         // metrics scheduler plans the same windows whether the
         // observer eventually drives a LogOnlySink or a TuiSink.
@@ -287,9 +308,20 @@ pub async fn run_command(args: &[String]) {
     // (own LOD knobs); this only controls what reaches stderr
     // before the TUI claims the terminal and after it tears
     // down (`q` mid-run).
+    // Display + retain levels: same dual-knob shape as the
+    // tui=off / log-only path above. `loglevel=` →
+    // display; `loglevel-retain=` → file sink.
     let stderr_min_level = params.get("loglevel")
+        .or_else(|| params.get("loglevel-display"))
+        .or_else(|| params.get("loglevel_display"))
         .and_then(|s| nbrs_activity::runner::parse_log_level(s))
         .unwrap_or(nbrs_activity::observer::LogLevel::Info);
+    let retain_min_level = params.get("loglevel-retain")
+        .or_else(|| params.get("loglevel_retain"))
+        .and_then(|s| nbrs_activity::runner::parse_log_level(s))
+        .unwrap_or(nbrs_activity::observer::LogLevel::Debug);
+    nbrs_activity::observer::set_retain_level(retain_min_level);
+    nbrs_activity::observer::set_display_level(stderr_min_level);
     let observer = Arc::new(
         TuiObserver::new(run_state.clone(), cadences)
             .with_min_level(stderr_min_level),

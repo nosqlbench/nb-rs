@@ -211,6 +211,22 @@ pub fn spec() -> Command {
                 raw_args: false,
                 completion_override: None,
             },
+            Command {
+                name: "groups",
+                help: "Pivot matching instances into a per-label-tuple table \
+                       (instances, rows, mean, min, max).",
+                category: Category::Tools, level: Level::Secondary,
+                flags: groups_flags(),
+                positionals: vec![crate::cli_spec::Positional {
+                    name: "expr",
+                    help: "Filter expression (`family{labels}`); required.",
+                    kind: crate::cli_spec::PositionalKind::One,
+                }],
+                subcommands: Vec::new(),
+                handler: Some(Handler::Sync(handle_groups)),
+                raw_args: false,
+                completion_override: None,
+            },
             // metricsql query/watch keep their existing parsers
             // (they have a richer flag surface — duration, --at,
             // streaming options). raw_args=true here so the spec
@@ -252,6 +268,39 @@ fn handle_list(p: ParsedCommand) -> Result<(), String> {
 fn handle_show(p: ParsedCommand) -> Result<(), String> {
     list_from_parsed(&p, true);
     Ok(())
+}
+
+fn handle_groups(p: ParsedCommand) -> Result<(), String> {
+    let mut argv: Vec<String> = Vec::new();
+    if let Some(db) = p.flag("--db") { argv.push("--db".into()); argv.push(db.to_string()); }
+    if let Some(by) = p.flag("--by") { argv.push("--by".into()); argv.push(by.to_string()); }
+    if let Some(fmt) = p.flag("--format") { argv.push("--format".into()); argv.push(fmt.to_string()); }
+    if let Some(expr) = p.positional(0) { argv.push(expr.to_string()); }
+    groups_command(&argv);
+    Ok(())
+}
+
+fn groups_flags() -> Vec<Flag> {
+    vec![
+        Flag {
+            long: "--db", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::Path,
+            help: "Override metrics db. Default: logs/latest/metrics.db",
+            repeatable: false,
+        },
+        Flag {
+            long: "--by", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::None,
+            help: "Comma-separated label keys to group by (required).",
+            repeatable: false,
+        },
+        Flag {
+            long: "--format", short: None, aliases: &[],
+            arity: Arity::Value, value: ValueProvider::Custom(format_completer),
+            help: "plain | csv | json. Default: plain.",
+            repeatable: false,
+        },
+    ]
 }
 
 fn handle_match(p: ParsedCommand) -> Result<(), String> {
@@ -317,6 +366,7 @@ pub fn metrics_command(args: &[String]) {
         Some("list") => list(rest, false),
         Some("show") => list(rest, true),
         Some("match") => match_specs(rest),
+        Some("groups") => groups_command(rest),
         Some("query") => crate::metricsql_cmd::query(rest),
         Some("watch") => crate::metricsql_cmd::watch(rest),
         Some(other) => {
@@ -344,6 +394,13 @@ fn print_metrics_usage() {
     eprintln!("                               match — copy-paste into other");
     eprintln!("                               commands or sanity-check a");
     eprintln!("                               filter pattern.");
+    eprintln!("  nbrs metrics groups <expr>   Pivot matching instances into");
+    eprintln!("    --by k1,k2[,...]           a small table grouped by the");
+    eprintln!("                               named label keys, with row");
+    eprintln!("                               counts and value aggregates.");
+    eprintln!("                               Use to answer questions like");
+    eprintln!("                               \"are these two label values");
+    eprintln!("                               actually distinct in the data?\"");
     eprintln!("  nbrs metrics query  <expr>   Evaluate a metricsql");
     eprintln!("                               expression against the db.");
     eprintln!("                               Run `nbrs metrics query` with");
@@ -470,6 +527,356 @@ fn match_specs(args: &[String]) {
         if count == 1 { "" } else { "es" },
         rows.len(),
     );
+}
+
+/// Running aggregate accumulated by `groups_command` for
+/// each distinct label tuple — `BTreeMap` keyed on the
+/// per-row tuple of requested label values, value is the
+/// per-group totals.
+struct GroupBucket {
+    instances: usize,
+    rows: i64,
+    sum: f64,
+    min: f64,
+    max: f64,
+}
+
+impl GroupBucket {
+    fn new() -> Self {
+        Self { instances: 0, rows: 0, sum: 0.0,
+               min: f64::INFINITY, max: f64::NEG_INFINITY }
+    }
+}
+
+/// Trait-shaped read for a group bucket — lets the
+/// `render_groups_*` helpers stay generic without
+/// exposing the private struct shape directly to every
+/// caller.
+trait GroupBucketRead {
+    fn instances(&self) -> usize;
+    fn rows(&self) -> i64;
+    fn sum(&self) -> f64;
+    fn min(&self) -> f64;
+    fn max(&self) -> f64;
+}
+
+impl GroupBucketRead for GroupBucket {
+    fn instances(&self) -> usize { self.instances }
+    fn rows(&self) -> i64 { self.rows }
+    fn sum(&self) -> f64 { self.sum }
+    fn min(&self) -> f64 { self.min }
+    fn max(&self) -> f64 { self.max }
+}
+
+/// `nbrs metrics groups <expr> --by k1,k2[,...]` — pivot
+/// every matching metric instance's samples into a small
+/// table keyed by the requested label tuple. Answers the
+/// question "for these instances, broken out by these
+/// labels, how many rows are there and what's the
+/// aggregate?"
+///
+/// Replaces the SQL-three-way-join the user otherwise has
+/// to write against `sample_value` / `metric_instance` /
+/// `label_set_entry`. The filter expression syntax is the
+/// same one `nbrs metrics list` / `show` / `match` already
+/// accept (`family{label="value"}`).
+///
+/// Example:
+///
+/// ```text
+/// nbrs metrics groups 'recall_mean{phase="ann_query"}' --by optimize_for,k
+/// ```
+///
+/// Output:
+///
+/// ```text
+/// optimize_for | k   | instances | rows | mean   | min  | max
+/// LATENCY      | 1   |        12 | 4290 | 0.7864 | 0.00 | 1.00
+/// LATENCY      | 10  |        12 | 4288 | 0.9134 | 0.20 | 1.00
+/// RECALL       | 1   |        12 | 4290 | 0.7860 | 0.00 | 1.00
+/// RECALL       | 10  |        12 | 4288 | 0.9128 | 0.20 | 1.00
+/// ```
+///
+/// Use `(none)` as the displayed value for instances that
+/// don't carry the requested label key — the row is still
+/// shown so the operator notices missing-label bugs.
+fn groups_command(args: &[String]) {
+    let mut db_path: Option<PathBuf> = None;
+    let mut filter_expr: Option<String> = None;
+    let mut by_keys: Vec<String> = Vec::new();
+    let mut format = Format::Plain;
+    let mut iter = args.iter();
+    while let Some(a) = iter.next() {
+        match a.as_str() {
+            "--db" => { db_path = iter.next().map(PathBuf::from); }
+            other if other.starts_with("--db=") => {
+                db_path = Some(PathBuf::from(&other[5..]));
+            }
+            "--by" => {
+                by_keys = iter.next()
+                    .map(|s| s.split(',').map(|k| k.trim().to_string())
+                        .filter(|k| !k.is_empty())
+                        .collect())
+                    .unwrap_or_default();
+            }
+            other if other.starts_with("--by=") => {
+                by_keys = other[5..].split(',')
+                    .map(|k| k.trim().to_string())
+                    .filter(|k| !k.is_empty())
+                    .collect();
+            }
+            "--format" => {
+                if let Some(name) = iter.next() {
+                    match Format::parse(name) {
+                        Ok(f) => format = f,
+                        Err(e) => { eprintln!("nbrs metrics groups: {e}"); std::process::exit(2); }
+                    }
+                }
+            }
+            other if other.starts_with("--format=") => {
+                match Format::parse(&other[9..]) {
+                    Ok(f) => format = f,
+                    Err(e) => { eprintln!("nbrs metrics groups: {e}"); std::process::exit(2); }
+                }
+            }
+            "--session" | "--session-name" | "--session-path"
+            | "--session-reuse" | "--session-keep" | "--session-shelflife" => {
+                let _ = iter.next();
+            }
+            other if other.starts_with("--session") => {}
+            other if !other.starts_with("--") => {
+                filter_expr = Some(other.to_string());
+            }
+            other => {
+                eprintln!("nbrs metrics groups: unknown flag '{other}'");
+                std::process::exit(2);
+            }
+        }
+    }
+
+    let Some(expr) = filter_expr else {
+        eprintln!("nbrs metrics groups: filter expression required");
+        eprintln!("  e.g. `nbrs metrics groups 'recall_mean{{phase=\"ann_query\"}}' \\");
+        eprintln!("        --by optimize_for,k`");
+        std::process::exit(2);
+    };
+    if by_keys.is_empty() {
+        eprintln!("nbrs metrics groups: --by <key,...> required");
+        eprintln!("  Specify which label keys to pivot on, e.g. `--by optimize_for,k`.");
+        std::process::exit(2);
+    }
+    let filter = match parse_filter(&expr) {
+        Ok(f) => f,
+        Err(e) => { eprintln!("nbrs metrics groups: filter: {e}"); std::process::exit(2); }
+    };
+
+    let db = db_path.unwrap_or_else(|| PathBuf::from("logs/latest/metrics.db"));
+    if !db.exists() {
+        eprintln!("nbrs metrics groups: db not found at '{}'", db.display());
+        std::process::exit(2);
+    }
+    let conn = match rusqlite::Connection::open(&db) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("nbrs metrics groups: open '{}': {e}", db.display());
+            std::process::exit(2);
+        }
+    };
+
+    // Walk every metric_instance, filter, accumulate per-
+    // group aggregates. We aggregate at the
+    // `sample_value`-row level (every row counts as one
+    // observation), not at the instance level — so a phase
+    // that ran 1000 samples weighs 1000× a phase with one
+    // sample. That's the right shape for the recall /
+    // latency questions this is designed to answer.
+    let mut stmt = match conn.prepare(
+        "SELECT mi.id, mi.spec FROM metric_instance mi"
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("nbrs metrics groups: query: {e}");
+            std::process::exit(2);
+        }
+    };
+    let instances: Vec<(i64, String)> = stmt.query_map([], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    }).map(|it| it.flatten().collect()).unwrap_or_default();
+
+    let mut buckets: BTreeMap<Vec<String>, GroupBucket> = BTreeMap::new();
+
+    for (id, spec) in &instances {
+        let (family, labels) = split_spec(spec);
+        if !filter.matches(&family, &labels) { continue; }
+        // Look up each requested key on this instance.
+        let key_tuple: Vec<String> = by_keys.iter()
+            .map(|k| labels.iter().find(|(kk, _)| kk == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| "(none)".to_string()))
+            .collect();
+
+        // Aggregate every sample row. count is the per-sample
+        // observation count (a histogram bucket can carry many
+        // observations in one sample row); fall back to 1 for
+        // gauges that only have a `mean` value.
+        let mut sql = match conn.prepare(
+            "SELECT COALESCE(count, 1), \
+                    mean, \
+                    min, \
+                    max \
+             FROM sample_value WHERE instance_id = ?1"
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("nbrs metrics groups: prepare: {e}");
+                std::process::exit(2);
+            }
+        };
+        let bucket = buckets.entry(key_tuple).or_insert_with(GroupBucket::new);
+        bucket.instances += 1;
+        let rows_iter = sql.query_map([id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<f64>>(1)?,
+                r.get::<_, Option<f64>>(2)?,
+                r.get::<_, Option<f64>>(3)?,
+            ))
+        });
+        if let Ok(rows_iter) = rows_iter {
+            for row in rows_iter.flatten() {
+                let (cnt, mean, mn, mx) = row;
+                bucket.rows += cnt;
+                if let Some(m) = mean {
+                    bucket.sum += m * cnt as f64;
+                }
+                if let Some(v) = mn { if v < bucket.min { bucket.min = v; } }
+                if let Some(v) = mx { if v > bucket.max { bucket.max = v; } }
+            }
+        }
+    }
+
+    if buckets.is_empty() {
+        eprintln!(
+            "nbrs metrics groups: no matching metric instances. \
+             Try `nbrs metrics match '{expr}'` to see what's there."
+        );
+        std::process::exit(1);
+    }
+
+    // Render. CSV / JSON / plain are the three shapes the
+    // existing `list` surface speaks; reuse them so the
+    // output round-trips through any pipeline that already
+    // consumes those.
+    match format {
+        Format::Csv => render_groups_csv(&by_keys, &buckets),
+        Format::Json => render_groups_json(&by_keys, &buckets),
+        _            => render_groups_plain(&by_keys, &buckets),
+    }
+}
+
+fn render_groups_plain(
+    by_keys: &[String],
+    buckets: &BTreeMap<Vec<String>, impl GroupBucketRead>,
+) {
+    // Width-align so the table reads as a tidy column dump.
+    let mut headers: Vec<String> = by_keys.to_vec();
+    headers.extend(["instances", "rows", "mean", "min", "max"]
+        .iter().map(|s| s.to_string()));
+
+    /// Format an aggregate value, replacing the f64
+    /// sentinels we use for "no observations" with a
+    /// dash. Without this, gauges that don't carry
+    /// per-sample min/max columns render as `inf` /
+    /// `-inf` — meaningless to the operator.
+    fn fmt_agg(v: f64) -> String {
+        if v.is_finite() { format!("{v:.4}") } else { "-".to_string() }
+    }
+
+    let mut grid: Vec<Vec<String>> = Vec::new();
+    grid.push(headers.clone());
+    for (key, b) in buckets {
+        let mean = if b.rows() > 0 { b.sum() / b.rows() as f64 } else { f64::NAN };
+        let mut row: Vec<String> = key.clone();
+        row.push(b.instances().to_string());
+        row.push(b.rows().to_string());
+        row.push(fmt_agg(mean));
+        row.push(fmt_agg(b.min()));
+        row.push(fmt_agg(b.max()));
+        grid.push(row);
+    }
+    let widths: Vec<usize> = (0..grid[0].len())
+        .map(|c| grid.iter().map(|row| row[c].len()).max().unwrap_or(0))
+        .collect();
+    for (i, row) in grid.iter().enumerate() {
+        let line: Vec<String> = row.iter().enumerate()
+            .map(|(c, v)| format!("{v:width$}", width = widths[c]))
+            .collect();
+        println!("{}", line.join(" | "));
+        if i == 0 {
+            // Underline header.
+            let underline: Vec<String> = widths.iter()
+                .map(|w| "-".repeat(*w))
+                .collect();
+            println!("{}", underline.join("-+-"));
+        }
+    }
+}
+
+fn render_groups_csv(
+    by_keys: &[String],
+    buckets: &BTreeMap<Vec<String>, impl GroupBucketRead>,
+) {
+    let mut header: Vec<&str> = by_keys.iter().map(String::as_str).collect();
+    header.extend(["instances", "rows", "mean", "min", "max"]);
+    println!("{}", header.join(","));
+    for (key, b) in buckets {
+        let mean = if b.rows() > 0 { b.sum() / b.rows() as f64 } else { f64::NAN };
+        let mut row: Vec<String> = key.iter().map(|v| csv_escape(v)).collect();
+        row.push(b.instances().to_string());
+        row.push(b.rows().to_string());
+        row.push(format!("{mean:.6}"));
+        row.push(format!("{:.6}", b.min()));
+        row.push(format!("{:.6}", b.max()));
+        println!("{}", row.join(","));
+    }
+}
+
+fn render_groups_json(
+    by_keys: &[String],
+    buckets: &BTreeMap<Vec<String>, impl GroupBucketRead>,
+) {
+    let rows: Vec<serde_json::Value> = buckets.iter().map(|(key, b)| {
+        let mut obj = serde_json::Map::new();
+        for (i, k) in by_keys.iter().enumerate() {
+            obj.insert(k.clone(), serde_json::Value::String(key[i].clone()));
+        }
+        let mean = if b.rows() > 0 { b.sum() / b.rows() as f64 } else { f64::NAN };
+        obj.insert("instances".into(),
+            serde_json::Value::Number(serde_json::Number::from(b.instances() as i64)));
+        obj.insert("rows".into(),
+            serde_json::Value::Number(serde_json::Number::from(b.rows())));
+        if mean.is_finite() {
+            obj.insert("mean".into(),
+                serde_json::Value::Number(
+                    serde_json::Number::from_f64(mean).unwrap_or(serde_json::Number::from(0))
+                ));
+        }
+        if b.min().is_finite() {
+            obj.insert("min".into(),
+                serde_json::Value::Number(
+                    serde_json::Number::from_f64(b.min()).unwrap_or(serde_json::Number::from(0))
+                ));
+        }
+        if b.max().is_finite() {
+            obj.insert("max".into(),
+                serde_json::Value::Number(
+                    serde_json::Number::from_f64(b.max()).unwrap_or(serde_json::Number::from(0))
+                ));
+        }
+        serde_json::Value::Object(obj)
+    }).collect();
+    let out = serde_json::Value::Array(rows);
+    println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
 }
 
 /// Chosen serialization for `nbrs metrics list` / `show`.

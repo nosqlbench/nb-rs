@@ -185,7 +185,8 @@ fn run_render_loop(
             }
 
             for entry in &ring[start_idx..] {
-                if severity_to_level(entry.severity) < min_level {
+                let entry_level = severity_to_level(entry.severity);
+                if entry_level < min_level {
                     continue;
                 }
                 // Match the observer's cosmetic blank line before
@@ -199,7 +200,13 @@ fn run_render_loop(
                 // when the sink supervisor has stdin in raw mode
                 // for the Ctrl-T watcher. In cooked mode the
                 // extra `\r` is a no-op (already at col 0).
-                let _ = write!(stderr, "{}\r\n", entry.message);
+                //
+                // Colorize by severity. `colorize_log_line` is
+                // a no-op on non-tty / NO_COLOR so log captures
+                // stay clean.
+                let painted = nbrs_activity::observer::colorize_log_line(
+                    entry_level, &entry.message);
+                let _ = write!(stderr, "{}\r\n", painted);
             }
             let _ = stderr.flush();
             last_seen = total;

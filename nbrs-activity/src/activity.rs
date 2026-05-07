@@ -966,26 +966,18 @@ impl Activity {
                     if let Some(vm) = vm {
                         validation_metrics.push(vm);
                     }
-                    // Wrap with condition check — only if template has `if:`
-                    let conditional = if let Some(ref cond) = template.condition {
-                        let cond_name = cond.trim()
-                            .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
-                            .unwrap_or(cond.trim());
-                        match crate::wrappers::ConditionalDispenser::wrap(
-                            validated, cond_name, activity.metrics.clone(), &mut fx,
-                        ) {
-                            Ok(d) => d,
-                            Err(e) => {
-                                crate::diag!(crate::observer::LogLevel::Error,
-                                    "error: op '{}': {e}", template.name);
-                                return true;
-                            }
-                        }
-                    } else {
-                        validated
-                    };
-                    // Wrap with polling (outermost) — only if template has `poll: await_empty`
-                    let final_dispenser = if template.params.get("poll")
+                    // Wrap with polling — only if template
+                    // has `poll: await_empty`. Polling is
+                    // applied BEFORE the `if:` conditional
+                    // so a false condition skips the polling
+                    // apparatus entirely (no per-interval
+                    // wakeups, no "polling enabled"
+                    // diagnostic, no timeout countdown). This
+                    // matches operator intent: an op gated
+                    // by `if: cql_dialect == 'cndb'` shouldn't
+                    // contribute polling cost on a Cassandra
+                    // 5 cluster.
+                    let polled = if template.params.get("poll")
                         .and_then(|v| v.as_str()).is_some()
                     {
                         let interval = template.params.get("poll_interval_ms")
@@ -1013,7 +1005,7 @@ impl Activity {
                             .map(|s| s.to_string());
                         let (dispenser, poll_metrics) =
                             crate::wrappers::PollingDispenser::wrap(
-                                conditional, interval, timeout, max_error_retries, metric_name,
+                                validated, interval, timeout, max_error_retries, metric_name,
                             );
                         crate::diag!(crate::observer::LogLevel::Debug,
                             "  op '{}': polling enabled (interval={}ms, timeout={}ms, max_error_retries={})",
@@ -1021,7 +1013,36 @@ impl Activity {
                         let _ = poll_metrics; // metrics accessible via Arc if needed
                         dispenser
                     } else {
-                        conditional
+                        validated
+                    };
+                    // Wrap with condition check (outermost
+                    // op-template-level wrapper). When the
+                    // template has an `if:` clause, the
+                    // conditional dispenser short-circuits
+                    // before any inner work fires — including
+                    // the polling wakeup loop above. This
+                    // ordering is load-bearing: polling
+                    // outside `if:` would emit per-interval
+                    // ticks even when the condition was false
+                    // (the per-tick body inner-skipped, but
+                    // the polling apparatus still ran for the
+                    // full timeout).
+                    let final_dispenser = if let Some(ref cond) = template.condition {
+                        let cond_name = cond.trim()
+                            .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+                            .unwrap_or(cond.trim());
+                        match crate::wrappers::ConditionalDispenser::wrap(
+                            polled, cond_name, activity.metrics.clone(), &mut fx,
+                        ) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                crate::diag!(crate::observer::LogLevel::Error,
+                                    "error: op '{}': {e}", template.name);
+                                return true;
+                            }
+                        }
+                    } else {
+                        polled
                     };
                     // Wrap with emit — prints result JSON.
                     let emitted = if template.params.get("emit")
@@ -1871,8 +1892,14 @@ async fn executor_task(
                     } else {
                         "<non-string panic payload>".to_string()
                     };
+                    // Always carry the op-template name and cycle
+                    // so the phase-level stop message can name
+                    // exactly which op fired. A bare "GK eval
+                    // panic" leaves the operator hunting through
+                    // every op in the phase to find the cause.
                     let full = format!(
-                        "GK eval panic at cycle {cycle}: {msg}"
+                        "op '{}' at cycle {cycle}: GK eval panic: {msg}",
+                        template.name,
                     );
                     activity.metrics.errors_total.inc();
                     activity.metrics.count_error_type("gk_eval_panic");
@@ -1923,16 +1950,33 @@ async fn executor_task(
                         if detail.should_stop {
                             activity.stop_flag.store(true, Ordering::Relaxed);
                             // Capture the first stopping error so the
-                            // phase-level error can surface a real
+                            // phase-level error surfaces a real
                             // diagnostic instead of a bare "stopped
                             // by error handler". Lock-and-set-once;
                             // later fibers' errors don't overwrite.
+                            //
+                            // Include op-template name + cycle so the
+                            // operator can pinpoint exactly which op
+                            // template inside the phase fired the
+                            // error. Plus the dispenser's `describe()`
+                            // (when it has one) so the operator can
+                            // see the actual statement / request the
+                            // op was firing — a bare op-template name
+                            // doesn't tell you whether it's the
+                            // wrong dialect's branch, a malformed
+                            // bindpoint, or a broken filter clause.
                             if let Ok(mut slot) = activity.stop_reason.lock()
                                 && slot.is_none()
                             {
+                                let op_shape = dispenser.describe()
+                                    .map(|d| format!("\n    op-shape: {d}"))
+                                    .unwrap_or_default();
                                 *slot = Some(format!(
-                                    "[{}] {}",
-                                    inner.error_name, inner.message,
+                                    "[{}] op '{}' at cycle {}: {}{op_shape}",
+                                    inner.error_name,
+                                    template.name,
+                                    cycle,
+                                    inner.message,
                                 ));
                             }
                         }

@@ -112,13 +112,22 @@ impl ScopeKind {
             ScopeKind::Scenario { name } => format!("scenario '{name}'"),
             ScopeKind::Comprehension { comprehension } => match &comprehension.mode {
                 ComprehensionMode::Cartesian(clauses) if clauses.len() == 1 => {
-                    format!("for_each {} in {}", clauses[0].var(), clauses[0].expr())
+                    // Both single-clause and multi-clause
+                    // comprehensions render as `each …` in
+                    // user-facing displays — operators
+                    // shouldn't have to learn the
+                    // for_each / for_combinations
+                    // distinction to read a scenario tree.
+                    // Header carries variable names only;
+                    // bound values appear on per-iteration
+                    // child scopes below.
+                    format!("each {}", clauses[0].var())
                 }
                 ComprehensionMode::Cartesian(clauses) => {
-                    let dims: Vec<String> = clauses.iter()
-                        .map(|c| format!("{} in {}", c.var(), c.expr()))
+                    let vars: Vec<&str> = clauses.iter()
+                        .map(|c| c.var())
                         .collect();
-                    format!("for_combinations [{}]", dims.join(", "))
+                    format!("each {}", vars.join(", "))
                 }
                 ComprehensionMode::Union(subspaces) => {
                     let parts: Vec<String> = subspaces.iter().map(|set| {
@@ -967,7 +976,7 @@ mod tests {
         assert_eq!(names, vec![
             "workload".to_string(),
             "scenario 'default'".into(),
-            "for_each x in xs".into(),
+            "each x".into(),
             "phase 'a'".into(),
             "phase 'b'".into(),
             "phase 'c'".into(),
@@ -985,7 +994,7 @@ mod tests {
             .collect();
         assert_eq!(ancestors, vec![
             "phase 'a'".to_string(),
-            "for_each x in xs".into(),
+            "each x".into(),
             "scenario 'default'".into(),
             "workload".into(),
         ]);

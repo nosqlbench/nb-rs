@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use nbrs_metrics::labels::Labels;
 
 use crate::adapter::{
-    ExecutionError, OpDispenser, OpResult,
+    ExecutionError, OpDispenser, OpResult, WrappingDispenser,
 };
 use crate::relevancy::{self, RelevancyFn};
 
@@ -403,7 +403,19 @@ impl ValidatingDispenser {
     }
 }
 
+impl WrappingDispenser for ValidatingDispenser {}
+
 impl OpDispenser for ValidatingDispenser {
+    /// Expose the wrapped dispenser so `describe()` can
+    /// walk through this layer to reach the adapter
+    /// (raw / prepared / batch). Without this override,
+    /// the default trait method returns `None`, the
+    /// describe walk stops here, and the error-context
+    /// dump loses the CQL statement text.
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> {
+        Some(self.inner.as_ref())
+    }
+
     fn execute<'a>(
         &'a self,
         cycle: u64,

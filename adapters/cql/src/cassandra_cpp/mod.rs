@@ -224,6 +224,32 @@ pub struct CqlAdapter {
 unsafe impl Send for CqlAdapter {}
 unsafe impl Sync for CqlAdapter {}
 
+/// Collapse a multi-line statement to a single line for
+/// error-diagnostic display: trim each line, drop empty
+/// lines, and join with a single space. Truncates at a
+/// generous bound so a hand-rolled `BATCH` with thousands
+/// of statements doesn't blow the error message size.
+fn flatten_one_line(s: &str) -> String {
+    const MAX: usize = 400;
+    let joined: String = s.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if joined.len() > MAX {
+        // Honour char boundaries — naive [..MAX] could
+        // split a multi-byte char and panic.
+        let cutoff = joined.char_indices()
+            .take_while(|(i, _)| *i < MAX)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        format!("{}…", &joined[..cutoff])
+    } else {
+        joined
+    }
+}
+
 /// Wrap a connect-error string with actionable resource-exhaustion
 /// diagnostics when the cpp-driver's failure code points at
 /// per-process limits (`LIB_UNABLE_TO_INIT`,
@@ -556,6 +582,7 @@ impl DriverAdapter for CqlAdapter {
                 Ok(Box::new(CqlRawDispenser {
                     session,
                     field_name,
+                    stmt_template: stmt_text.clone(),
                     trace_rate_bits: self.trace_rate_bits.clone(),
                     trace_log: self.trace_log.clone(),
                 }))
@@ -564,6 +591,7 @@ impl DriverAdapter for CqlAdapter {
                 Ok(Box::new(CqlRawDispenser {
                     session,
                     field_name,
+                    stmt_template: stmt_text.clone(),
                     trace_rate_bits: self.trace_rate_bits.clone(),
                     trace_log: self.trace_log.clone(),
                 }))
@@ -591,6 +619,7 @@ impl DriverAdapter for CqlAdapter {
                     Ok(Box::new(CqlRawDispenser {
                         session,
                         field_name,
+                        stmt_template: stmt_text.clone(),
                         trace_rate_bits: self.trace_rate_bits.clone(),
                         trace_log: self.trace_log.clone(),
                     }))
@@ -639,6 +668,14 @@ struct CqlRawDispenser {
     session: SessionHandle,
     /// The op field name that carries the statement ("raw", "simple", "prepared", "stmt").
     field_name: String,
+    /// Statement template captured at `map_op` time —
+    /// retains the `{name}` bind-point placeholders the
+    /// operator wrote in the workload yaml. Used by
+    /// [`OpDispenser::describe`] to surface the op shape
+    /// in error diagnostics. Per-cycle execution reads
+    /// the fully-interpolated text from `ctx.fields`; this
+    /// field is informational only.
+    stmt_template: String,
     /// Live tracing probability (f64 bits). Loaded per execute;
     /// `cql_trace_rate` control writes here.
     trace_rate_bits: Arc<AtomicU64>,
@@ -651,6 +688,14 @@ struct CqlRawDispenser {
 }
 
 impl OpDispenser for CqlRawDispenser {
+    fn describe(&self) -> Option<String> {
+        // Single-line shape of the statement template,
+        // collapsing internal whitespace runs to one
+        // space so an indented multi-line `raw: |` block
+        // reads cleanly in an error message.
+        Some(format!("CQL raw: {}", flatten_one_line(&self.stmt_template)))
+    }
+
     fn execute<'a>(
         &'a self,
         cycle: u64,
@@ -813,6 +858,11 @@ impl CqlPreparedDispenser {
 }
 
 impl OpDispenser for CqlPreparedDispenser {
+    fn describe(&self) -> Option<String> {
+        Some(format!("CQL prepared: {}", flatten_one_line(&self.stmt_text)))
+    }
+
+
     fn execute<'a>(
         &'a self,
         cycle: u64,
@@ -1029,6 +1079,11 @@ impl CqlBatchDispenser {
 }
 
 impl OpDispenser for CqlBatchDispenser {
+    fn describe(&self) -> Option<String> {
+        Some(format!("CQL batch: {}", flatten_one_line(&self.stmt_text)))
+    }
+
+
     fn status_counters(&self) -> Vec<(&str, u64)> {
         let total = self.rows_total.load(std::sync::atomic::Ordering::Relaxed);
         if total == 0 { return Vec::new(); }

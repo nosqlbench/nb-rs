@@ -29,6 +29,8 @@ params:
 #  optimize_for_values: "RECALL"
   optimize_for_values: "RECALL,LATENCY"
   cql_dialect: cass5
+  vector_idx_suffix: _vector_idx
+  meta_idx_suffix: _meta_idx
 
 # Unified report block (SRD-46): plots + tables in declaration
 # order. Each scenario contributes its items to its own
@@ -80,14 +82,60 @@ report:
       legend: br
       x: r
       x-legend: "R"
-      x-ticks: avg(recall_mean{k="1",profile=~"label.*",optimize_for=~".*"}) by (r)
-      y1: avg(recall_mean{k="1",phase="ann_query",profile=~"label.*",optimize_for=~".*"}) by (r,optimize_for)
-      y2: avg(recall_mean{k="1",phase="pvs_query",profile=~"default",optimize_for=~".*"}) by (r,optimize_for)
-      y3: avg(overscan{k="1", phase="ann_query",profile=~"label.*",optimize_for=~".*"}) by (r)
+      x-ticks: avg(recall_mean{k="1",profile=~"label.*"}) by (k,r)
+      y1: avg(recall_mean{k="1",phase="ann_query",profile=~"label.*"}) by (k,r,optimize_for)
+      y2: avg(recall_mean{k="1",phase="pvs_query",profile=~"default"}) by (k,r,optimize_for)
+      y3: avg(overscan{k="1",phase="ann_query",profile=~"label.*"}) by (k,r)
       y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]", overscan]
       y-ranges: [[0.0,1.0]]
       y-labels:  [recall, overscan]
+      with-table: true
       style profile=default:line=dotted
+
+    plot recall_10_mean
+      label "ALL 10-recall@R, oracles & PVS {cql_dialect}"
+      legend: br
+      x: r
+      x-legend: "R"
+      x-ticks: avg(recall_mean{k="10",profile=~"label.*"}) by (k,r)
+      y1: avg(recall_mean{k="10",phase="ann_query",profile=~"label.*"}) by (k,r,optimize_for)
+      y2: avg(recall_mean{k="10",phase="pvs_query",profile=~"default"}) by (k,r,optimize_for)
+      y3: avg(overscan{k="10",phase="ann_query",profile=~"label.*"}) by (k,r)
+      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]", overscan]
+      y-ranges: [[0.0,1.0]]
+      y-labels:  [recall, overscan]
+      with-table: true
+      style profile=default:line=dotted
+
+    plot recall_100_mean
+      label "ALL 100-recall@R, oracles & PVS {cql_dialect}"
+      legend: br
+      x: r
+      x-legend: "R"
+      x-ticks: avg(recall_mean{k="100",profile=~"label.*"}) by (k,r,optimize_for)
+      y1: avg(recall_mean{k="100",phase="ann_query",profile=~"label.*"}) by (k,r,optimize_for)
+      y2: avg(recall_mean{k="100",phase="pvs_query",profile=~"default"}) by (k,r,optimize_for)
+      y3: avg(overscan{k="100",phase="ann_query",profile=~"label.*"}) by (k,r)
+      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]", overscan]
+      y-ranges: [[0.0,1.0]]
+      y-labels:  [recall, overscan]
+      with-table: true
+      style profile=default:line=dotted
+
+    plot recall_vs_latency_k1
+      label "Recall@1 vs latency, oracles & PVS {cql_dialect}"
+      legend: br
+      x: cycles_servicetime_mean
+      x-legend: "service time"
+      y1: avg(recall_mean{k="1",phase="ann_query",profile=~"label.*"}) by (k,r,optimize_for)
+      y2: avg(recall_mean{k="1",phase="pvs_query",profile=~"default"}) by (k,r,optimize_for)
+      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
+      y-ranges: [[0.0,1.0]]
+      y-labels:  [recall]
+      with-table: true
+      style profile=default:line=dotted
+
+
 
 #    plot recall_1_each_ofr
 #      label "MEAN 1-recall@R, oracles & PVS"
@@ -198,7 +246,7 @@ scenarios:
   test_oracles:
     - for: "profile in matching_profiles('{dataset}', '{oracles_prefix}')"
       phases:
-        - for: "table in vec_{profile}, optimize_for in {optimize_for_values}"
+        - for: "optimize_for in {optimize_for_values}, table in vec_{profile}_{optimize_for}"
           phases:
             - teardown
             - schema
@@ -223,7 +271,7 @@ scenarios:
   # that differed only in their metric labels. Mirrors the
   # `test_oracles` shape.
   test_fknn:
-    - for: "profile in {fknn_profile}, table in fknn_{profile}, optimize_for in {optimize_for_values}"
+    - for: "profile in {fknn_profile}, optimize_for in {optimize_for_values}, table in fknn_{profile}_{optimize_for}"
       phases:
         - teardown
         - schema
@@ -284,9 +332,9 @@ phases:
       drop_metadata_index:
         raw: "DROP INDEX IF EXISTS {keyspace}.{table}_meta_idx"
       drop_vector_index:
-        raw: "DROP INDEX IF EXISTS {keyspace}.{table}_vector_idx"
+        raw: "DROP INDEX IF EXISTS {keyspace}.{table}{vector_idx_suffix}"
       drop_table:
-        raw: "DROP TABLE IF EXISTS {keyspace}.{table}"
+        raw: "DROP TABLE IF EXISTS {keyspace}.{table}{meta_idx_suffix}"
 
   await_index:
     concurrency: 1
@@ -298,32 +346,22 @@ phases:
     # policy stops the phase + the run instead of spinning
     # silently.
     ops:
-      indexes_present_cass:
+      indexes_present_cass5:
         if: "cql_dialect == 'cass5'"
         raw: |
-          SELECT index_name FROM system_views.sai_column_indexes
+          SELECT index_name FROM system_views.index
           WHERE keyspace_name = '{keyspace}'
-            AND table_name = '{table}'
+            AND index_name = '{table}{vector_idx_suffix}'
           ALLOW FILTERING
         verify:
           - min_rows: 1
         strict: true
-      indexes_present_cndb:
-        if: "cql_dialect == 'cndb'"
-        raw: |
-          SELECT index_name FROM system_views.indexes
-          WHERE keyspace_name = '{keyspace}'
-            AND table_name = '{table}'
-          ALLOW FILTERING
-        verify:
-          - min_rows: 1
-        strict: true
-      indexes_built_cass:
+      indexes_built_cass5:
         if: "cql_dialect == 'cass5'"
         raw: |
-          SELECT index_name FROM system_views.sai_column_indexes
+          SELECT index_name FROM system_views.index
           WHERE keyspace_name = '{keyspace}'
-            AND table_name = '{table}'
+            AND index_name = '{table}{vector_idx_suffix}'
             AND is_building = true
           ALLOW FILTERING
         poll: await_empty
@@ -331,10 +369,20 @@ phases:
         timeout_ms: 600000
         poll_max_error_retries: 3
         poll_metric_name: index_build_time_s
+      indexes_present_cndb:
+        if: "cql_dialect == 'cndb'"
+        raw: |
+          SELECT index_name FROM system_views.sai_column_indexes
+          WHERE keyspace_name = '{keyspace}'
+            AND table_name = '{table}'
+          ALLOW FILTERING
+        verify:
+          - min_rows: 1
+        strict: true
       indexes_built_cndb:
         if: "cql_dialect == 'cndb'"
         raw: |
-          SELECT index_name FROM system_views.indexes
+          SELECT index_name FROM system_views.sai_column_indexes
           WHERE keyspace_name = '{keyspace}'
             AND table_name = '{table}'
             AND is_building = true

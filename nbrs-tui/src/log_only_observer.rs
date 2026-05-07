@@ -444,7 +444,12 @@ impl RunObserver for LogOnlyObserver {
             {
                 eprintln!();
             }
-            eprintln!("{message}");
+            // Color-code by severity so DBG / INF / WRN /
+            // ERR are visually distinct on the console.
+            // `colorize_log_line` is a no-op on
+            // non-tty / NO_COLOR.
+            eprintln!("{}",
+                nbrs_activity::observer::colorize_log_line(level, message));
         }
     }
 

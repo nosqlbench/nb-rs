@@ -1163,7 +1163,15 @@ impl GkProgram {
                 // exact failure mode that motivates this branch).
                 Value::Handle(arc) => {
                     let original_name = self.nodes[i].meta().name.clone();
-                    crate::audit::info(&format!(
+                    // Per-node compile-time mechanic; one
+                    // line per `init` binding pollutes
+                    // session output with no actionable
+                    // signal for the operator. Demote to
+                    // Debug — visible under `--log-level
+                    // debug` for compiler-pipeline
+                    // inspection, silent on the default
+                    // INFO console.
+                    crate::audit::debug(&format!(
                         "fold: replacing init node '{original_name}' with ConstHandle \
                          (Arc<dyn Any>) — eval will not re-fire post-fold"));
                     Box::new(ConstHandle::new(arc.clone()))

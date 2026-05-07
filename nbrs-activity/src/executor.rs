@@ -63,6 +63,13 @@ pub struct ExecCtx {
     pub error_spec: String,
     /// Session identifier for metric labeling.
     pub session_id: String,
+    /// Workload's bare stem (filename without path or
+    /// extension; `"workload"` fallback for inline /
+    /// op-only runs). Surfaces as the `workload=…` label
+    /// on every metric — cross-session queries (e.g.
+    /// "compare last week's full_cql_vector runs") group
+    /// on this rather than on the path.
+    pub workload_name: String,
     /// Label stack: accumulated dimensional labels from the component tree.
     /// for_each pushes (var, value), phase pushes ("phase", name).
     /// do_while/do_until are transparent — they don't contribute labels.
@@ -187,8 +194,16 @@ pub(crate) fn enrich_with_yaml_location(
 
 impl ExecCtx {
     /// Build Labels from the current label stack.
+    ///
+    /// Always seeded with `session` (the run's id) and
+    /// `workload` (the workload file's bare stem) so every
+    /// metric inherits both. The `workload` label is a
+    /// stable name that's invariant across `path/` shifts
+    /// and `--session-name` overrides — it's what
+    /// cross-session queries should group on.
     pub fn labels(&self) -> Labels {
-        let mut labels = Labels::of("session", &self.session_id);
+        let mut labels = Labels::of("session", &self.session_id)
+            .with("workload", &self.workload_name);
         for (k, v) in &self.label_stack {
             labels = labels.with(k, v);
         }
@@ -2422,29 +2437,44 @@ fn pre_map_recursive(
                             )?,
                             _ => Vec::new(),
                         };
-                        // Single-clause for_each: one path
-                        // segment for the construct. All
-                        // iteration scopes share this path.
+                        // Single-clause for_each. Render
+                        // structurally the same as
+                        // multi-clause: a header scope
+                        // naming the iter variable, with
+                        // one child scope per iteration
+                        // carrying the bound value(s). The
+                        // operator sees a uniform
+                        //
+                        //   each <vars>
+                        //     <var>=<value>
+                        //
+                        // shape regardless of arity, and
+                        // the variable identity stays in
+                        // the header where it belongs.
                         let mut scope_path = parent_path.to_vec();
                         scope_path.push(PathSegment::ForEach { var: clauses[0].var().to_string() });
-                        let header = format!("for_each {} in {}",
-                            clauses[0].var(), clauses[0].expr());
+                        let header = format!("each {}", clauses[0].var());
+                        let scope = tree.push(parent, NodeKind::Scope, header, "");
+                        tree.set_own_names(scope, own_names.clone());
+                        tree.set_yaml_path(scope, scope_path.clone());
                         if steps.is_empty() {
-                            let scope = tree.push(parent, NodeKind::Scope, header, "");
-                            tree.set_own_names(scope, own_names.clone());
-                            tree.set_yaml_path(scope, scope_path.clone());
+                            // No iterations produced —
+                            // descend under the header so
+                            // a downstream zero-iteration
+                            // diagnostic still has the
+                            // right scope context.
                             pre_map_recursive(
                                 children, phases, scope_tree, scope, parent_coords,
                                 effective_parent_kernel, &scope_path, tree, strict,
                             )?;
                         } else {
                             for step in &steps {
-                                let scope = tree.push(parent, NodeKind::Scope,
-                                    format!("for_each {}", iter_label(&step.bindings)), "");
-                                tree.set_own_names(scope, own_names.clone());
-                                tree.set_yaml_path(scope, scope_path.clone());
+                                let inner_scope = tree.push(scope, NodeKind::Scope,
+                                    iter_label(&step.bindings), "");
+                                tree.set_own_names(inner_scope, own_names.clone());
+                                tree.set_yaml_path(inner_scope, scope_path.clone());
                                 pre_map_recursive(
-                                    children, phases, scope_tree, scope, &step.coord_path,
+                                    children, phases, scope_tree, inner_scope, &step.coord_path,
                                     Some(&step.bound_kernel), &scope_path, tree, strict,
                                 )?;
                             }
@@ -2457,8 +2487,13 @@ fn pre_map_recursive(
                         scope_path.push(PathSegment::ForCombinations {
                             vars: clauses.iter().map(|c| c.var().to_string()).collect(),
                         });
+                        // No brackets — symmetric with the
+                        // single-clause shape above. The
+                        // header is just `each var1, var2`;
+                        // values flow into per-iteration
+                        // child scopes below.
                         let scope = tree.push(parent, NodeKind::Scope,
-                            format!("for_combinations [{summary}]"), "");
+                            format!("each {summary}"), "");
                         tree.set_own_names(scope, own_names.clone());
                         tree.set_yaml_path(scope, scope_path.clone());
                         let steps = match (canonical, parent_kernel.as_ref()) {

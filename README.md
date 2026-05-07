@@ -144,6 +144,8 @@ These are areas which are due for some documentation.
 - status views
 - reports / plots / tables
 - metrics db / metricsql
+- portability / local-only sufficiency
+- safety checks
 
 ## License
 

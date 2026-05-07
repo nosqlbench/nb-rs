@@ -308,8 +308,16 @@ pub async fn run(args: &[String]) -> Result<(), String> {
     };
     let cli_params = parse_params(stripped);
     let min_level = cli_params.get("loglevel")
+        .or_else(|| cli_params.get("loglevel-display"))
+        .or_else(|| cli_params.get("loglevel_display"))
         .and_then(|s| parse_log_level(s))
         .unwrap_or(crate::observer::LogLevel::Info);
+    let retain_level = cli_params.get("loglevel-retain")
+        .or_else(|| cli_params.get("loglevel_retain"))
+        .and_then(|s| parse_log_level(s))
+        .unwrap_or(crate::observer::LogLevel::Debug);
+    crate::observer::set_retain_level(retain_level);
+    crate::observer::set_display_level(min_level);
     run_with_observer(args,
         Arc::new(crate::observer::StderrObserver::with_min_level(min_level))).await
 }
@@ -1675,6 +1683,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 rate,
                 error_spec: error_spec.clone(),
                 session_id: session_id.clone(),
+                workload_name: session.workload.clone(),
                 label_stack: Vec::new(),
                 session_component: session.component.clone(),
                 cadence_reporter: cadence_reporter.clone(),

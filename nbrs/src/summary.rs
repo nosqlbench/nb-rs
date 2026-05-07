@@ -176,19 +176,60 @@ fn render_metricsql_table(
         }
     }
 
+    // Per-column unit / scaling decision. For columns whose
+    // query targets a time-domain metric (latency,
+    // servicetime, anything ending in `_ns`/`_seconds`/`_us`/
+    // `_ms`), pick a uniform display unit from the column's
+    // own value range so cells are read-able and the unit
+    // is shown in the heading. Without this, the operator
+    // sees a column of bare nanosecond integers labelled
+    // `latency` and has no way to tell whether
+    // `338422551` is microseconds, nanoseconds, or seconds.
+    let column_units: Vec<Option<TimeUnit>> = cfg.metricsql_columns.iter()
+        .enumerate()
+        .map(|(idx, (_name, expr))| {
+            if !is_time_domain_query(expr) { return None; }
+            // Gather the max-abs cell value across rows.
+            let max_abs = by_group.values()
+                .filter_map(|row| row[idx])
+                .fold(0.0_f64, |m, v| m.max(v.abs()));
+            Some(TimeUnit::for_max_nanos(max_abs))
+        })
+        .collect();
+
+    // Render headers including unit annotations.
+    let column_headers: Vec<String> = cfg.metricsql_columns.iter()
+        .zip(column_units.iter())
+        .map(|((name, _expr), unit)| match unit {
+            Some(u) => format!("{name} ({})", u.symbol),
+            None    => name.clone(),
+        })
+        .collect();
+
+    // Render a single cell against the chosen column unit.
+    fn render_cell(value: Option<f64>, unit: Option<&TimeUnit>, sep: &str) -> String {
+        let _ = sep;
+        match (value, unit) {
+            (None, _)            => "-".to_string(),
+            (Some(v), Some(u))   => format!("{:.3}", v / u.divisor),
+            (Some(v), None)      => format!("{v:.4}"),
+        }
+    }
+
     // Emit. Markdown table by default; CSV with `--format=csv`.
     if format.eq_ignore_ascii_case("csv") {
         let mut out = String::new();
         let mut header: Vec<&str> = Vec::new();
         if !group_key.is_empty() { header.push(group_key); }
-        for (col, _) in &cfg.metricsql_columns { header.push(col); }
+        let header_strs: Vec<&str> = column_headers.iter().map(String::as_str).collect();
+        for h in &header_strs { header.push(*h); }
         out.push_str(&header.join(","));
         out.push('\n');
         for (group_val, cells) in &by_group {
             let mut row: Vec<String> = Vec::new();
             if !group_key.is_empty() { row.push(group_val.clone()); }
-            for cell in cells {
-                row.push(cell.map(|v| format!("{v:.6}")).unwrap_or_default());
+            for (cell, unit) in cells.iter().zip(column_units.iter()) {
+                row.push(render_cell(*cell, unit.as_ref(), ","));
             }
             out.push_str(&row.join(","));
             out.push('\n');
@@ -200,7 +241,8 @@ fn render_metricsql_table(
     let mut out = String::new();
     let mut header: Vec<&str> = Vec::new();
     if !group_key.is_empty() { header.push(group_key); }
-    for (col, _) in &cfg.metricsql_columns { header.push(col); }
+    let header_strs: Vec<&str> = column_headers.iter().map(String::as_str).collect();
+    for h in &header_strs { header.push(*h); }
     out.push_str("| ");
     out.push_str(&header.join(" | "));
     out.push_str(" |\n|");
@@ -215,12 +257,95 @@ fn render_metricsql_table(
             out.push_str(" | ");
         }
         let cell_strs: Vec<String> = cells.iter()
-            .map(|c| c.map(|v| format!("{v:.4}")).unwrap_or_else(|| "-".into()))
+            .zip(column_units.iter())
+            .map(|(c, u)| render_cell(*c, u.as_ref(), " | "))
             .collect();
         out.push_str(&cell_strs.join(" | "));
         out.push_str(" |\n");
     }
     Ok(out)
+}
+
+/// Display unit for a time-domain column. nb-rs internal
+/// metrics are nanoseconds (per project memory
+/// "Nanos Standard"); the formatter picks a single
+/// human-readable unit per *column* so cells stay aligned
+/// and the unit shows up in the heading once.
+#[derive(Copy, Clone, Debug)]
+struct TimeUnit {
+    /// `s` / `ms` / `µs` / `ns`.
+    symbol: &'static str,
+    /// What to divide nanoseconds by to produce the
+    /// displayed value.
+    divisor: f64,
+}
+
+impl TimeUnit {
+    fn for_max_nanos(max_abs: f64) -> Self {
+        if max_abs >= 1e9       { Self { symbol: "s",  divisor: 1e9 } }
+        else if max_abs >= 1e6  { Self { symbol: "ms", divisor: 1e6 } }
+        else if max_abs >= 1e3  { Self { symbol: "µs", divisor: 1e3 } }
+        else                    { Self { symbol: "ns", divisor: 1.0 } }
+    }
+}
+
+/// Heuristic: does this metricsql query target a time-domain
+/// metric whose values are stored as nanoseconds?
+///
+/// We can't reach into the metric registry from the table
+/// renderer, but the OpenMetrics naming convention and
+/// nb-rs's own metric-name vocabulary make this an easy
+/// substring match. Both internal-time names (containing
+/// `latency`, `servicetime`, `duration`, `elapsed`) and the
+/// suffix conventions (`_ns`, `_seconds`, `_ms`, `_us`,
+/// `_µs`) are recognised. False positives (a hypothetical
+/// `latency_count` of dimensionless integers) would just
+/// re-scale a small column harmlessly.
+fn is_time_domain_query(expr: &str) -> bool {
+    let lower = expr.to_ascii_lowercase();
+    const NAME_HINTS: &[&str] = &[
+        "latency", "servicetime", "service_time",
+        "duration", "elapsed", "responsetime", "response_time",
+    ];
+    if NAME_HINTS.iter().any(|h| lower.contains(h)) { return true; }
+    // Suffix conventions. Look at every metric-shaped
+    // token (alphanumeric + underscores) for the suffix.
+    for tok in lower.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+        for suffix in ["_ns", "_seconds", "_ms", "_us"] {
+            if tok.ends_with(suffix) { return true; }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod time_unit_tests {
+    use super::*;
+
+    #[test]
+    fn time_unit_for_max_nanos_picks_natural_scale() {
+        assert_eq!(TimeUnit::for_max_nanos(2_500_000_000.0).symbol, "s");
+        assert_eq!(TimeUnit::for_max_nanos(338_422_551.0).symbol,    "ms");
+        assert_eq!(TimeUnit::for_max_nanos(951_290.0).symbol,        "µs");
+        assert_eq!(TimeUnit::for_max_nanos(750.0).symbol,            "ns");
+        assert_eq!(TimeUnit::for_max_nanos(0.0).symbol,              "ns");
+    }
+
+    #[test]
+    fn is_time_domain_query_recognises_the_canonical_names() {
+        assert!(is_time_domain_query("avg(cycles_servicetime_mean) by (profile)"));
+        assert!(is_time_domain_query("avg(latency_p99) by (profile)"));
+        assert!(is_time_domain_query("avg(some_metric_ns)"));
+        assert!(is_time_domain_query("rate(http_request_duration_seconds[5m])"));
+        assert!(is_time_domain_query("AVG(LATENCY_MEAN)"), "case-insensitive");
+    }
+
+    #[test]
+    fn is_time_domain_query_rejects_dimensionless() {
+        assert!(!is_time_domain_query("avg(recall_mean) by (profile)"));
+        assert!(!is_time_domain_query("count(rows_total)"));
+        assert!(!is_time_domain_query("max(connection_errors)"));
+    }
 }
 
 pub fn summary_command(args: &[String]) {

@@ -116,6 +116,20 @@ pub struct ReportItem {
     /// the group order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_file: Option<String>,
+    /// Plot-only directive: when `true`, the renderer
+    /// emits a companion table immediately after the plot
+    /// in the same markdown file, sharing the plot's
+    /// underlying query data. The companion table reuses
+    /// the plot's name with a `_table` suffix for its
+    /// anchor and figure-numbering slot, so users can
+    /// link to either view independently.
+    ///
+    /// Set via `with-table: true` in the plot's body.
+    /// No-op for `Kind::Table` and other non-plot items.
+    /// Default `false` — plots without an explicit toggle
+    /// keep their existing single-image behaviour.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub with_table: bool,
 }
 
 /// Kind discriminator. Identifies which renderer owns the item.
@@ -636,6 +650,7 @@ impl PartialItem {
             style: Style::default(),
             body: String::new(),
             target_file: None,
+            with_table: false,
         };
 
         // Text items: body is verbatim markdown. Pull out a
@@ -673,6 +688,39 @@ impl PartialItem {
             }
             if let Some(rest) = strip_directive_keyword(line, "as") {
                 item.as_stem = Some(rest.trim().to_string());
+                continue;
+            }
+            // `with-table: true|false` — plot-only flag
+            // that asks the renderer to emit a companion
+            // table immediately after the plot, sharing
+            // the plot's underlying query data. SRD-46
+            // §"Table-from-plot". Accepted-but-warned for
+            // non-plot items.
+            if let Some(rest) = strip_directive_keyword(line, "with-table") {
+                let v = rest.trim().trim_matches(':').trim();
+                let truthy = matches!(
+                    v.to_ascii_lowercase().as_str(),
+                    "true" | "yes" | "on" | "1" | "",
+                );
+                let falsy = matches!(
+                    v.to_ascii_lowercase().as_str(),
+                    "false" | "no" | "off" | "0",
+                );
+                if !truthy && !falsy {
+                    return Err(format!(
+                        "report.{}:{} `with-table`: expected true/false, got '{v}'",
+                        self.group, self.line_no,
+                    ));
+                }
+                item.with_table = truthy;
+                if item.with_table && !matches!(self.kind, Kind::Plot) {
+                    warnings.push(format!(
+                        "report.{}:{} item '{}' uses `with-table` but is a {}; \
+                         only plots can have a companion table.",
+                        self.group, self.line_no, item.name, item.kind.as_str(),
+                    ));
+                    item.with_table = false;
+                }
                 continue;
             }
             if let Some(rest) = strip_directive_keyword(line, "style") {
