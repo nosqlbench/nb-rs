@@ -67,7 +67,15 @@ const FLAGS_TAKING_VALUE: &[&str] = &[
     "--figure-num", "--title", "--xlabel", "--ylabel",
     "--xscale", "--yscale", "--width", "--height",
     "--x-min", "--x-max", "--y-min", "--y-max", "--legend",
-    "--query",
+    "--y", "--y1",
+    "--y-legend",
+    "--y1-label", "--y1-legend", "--y1-min", "--y1-max", "--y1-scale", "--y1-ticks", "--y1-range",
+    "--y2", "--y2-label", "--y2-min", "--y2-max", "--y2-scale",
+    "--y3", "--y3-label", "--y3-min", "--y3-max", "--y3-scale", "--y3-ticks", "--y3-range",
+    "--y4", "--y4-label", "--y4-min", "--y4-max", "--y4-scale", "--y4-ticks", "--y4-range",
+    "--style",
+    "--x-ticks", "--y-ticks", "--y2-ticks",
+    "--x-range", "--y-range", "--y2-range",
     "--csv-also", "--report", "--update-markdown",
     "--add-to-markdown",
     // Global flags consumed at startup but still appearing in
@@ -120,8 +128,11 @@ fn register_bundled_font() {
 fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
     let mut opts = PlotMetricsOpts {
         agg: "mean".to_string(),
-        xscale: "linear".to_string(),
-        yscale: "linear".to_string(),
+        // Empty (= "auto") so explicit ticks can drive the
+        // shape classifier; pin to "linear" / "log" / "dec" /
+        // "bin" for fixed scale.
+        xscale: String::new(),
+        yscale: String::new(),
         width: 1024,
         height: 640,
         ..Default::default()
@@ -181,20 +192,157 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect();
+    // `auto` is the YAML/CLI sentinel for "no pin — derive from
+    // data." Maps back to `None` on the parsed-options struct so
+    // a parent template's default can be overridden.
+    let parse_axis_bound = |s: &str| -> Result<Option<f64>, String> {
+        let t = s.trim();
+        if t.eq_ignore_ascii_case("auto") || t.is_empty() {
+            return Ok(None);
+        }
+        t.parse().map(Some)
+            .map_err(|_| format!("axis bound '{t}' must be a number or `auto`"))
+    };
     let mut residual_lines: Vec<String> = Vec::new();
-    for line in &lines_vec {
-        if let Some(rest) = line.strip_prefix("query:").map(str::trim) {
+    let mut axis_seen = AxisDirectiveTracker::default();
+    // Plural directives (`y-ranges:`, `y-legends:`,
+    // `y-labels:`) target axes positionally — but the
+    // axis declarations themselves (`y1:`, `y2:`, …) may
+    // appear in any order relative to the plurals in a
+    // plot body. Defer plural application until the main
+    // dispatch loop finishes so the operator can write
+    // the directives in any order without `apply_y_plural_*`
+    // failing on a not-yet-declared axis. Each entry is
+    // the raw value text (after the `directive:` prefix
+    // strip) — the apply helpers parse it.
+    let mut deferred_y_ranges: Option<String> = None;
+    let mut deferred_y_legends: Option<String> = None;
+    let mut deferred_y_labels: Option<String> = None;
+    for raw_line in &lines_vec {
+        // Bare `y:` (the primary query) is handled here;
+        // every other `y*-*` form goes through
+        // `parse_y_axis_directive` → `apply_axis_directive`
+        // (axis 1..=4). Bare-y per-axis forms (`y-min:`,
+        // `y-range:`, etc.) have been retired in favour of
+        // `y1-*` (axis-specific) and `y-*s:` (plural,
+        // workload-wide); the early-error block below
+        // explains the migration.
+        let line: &str = raw_line;
+
+        if let Some(rest) = line.strip_prefix("y:").map(str::trim) {
             opts.query = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix("x:").map(str::trim) {
             opts.x_label = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("series:").map(str::trim) {
-            for k in rest.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                opts.series_labels.push(k.to_string());
-            }
+        } else if let Some(rest) = line.strip_prefix("x-label:").map(str::trim) {
+            opts.xlabel = Some(strip_quotes(rest).to_string());
+        } else if let Some(rest) = line.strip_prefix("x-legend:").map(str::trim) {
+            // `x-legend:` is an alias for `x-label:`: the
+            // x-axis is single (one wire bound at parse
+            // time), so there's no per-series legend
+            // concept the way the y-axes have. Both
+            // forms set the displayed x-axis title.
+            opts.xlabel = Some(strip_quotes(rest).to_string());
+        } else if let Some(rest) = line.strip_prefix("yl-label:").map(str::trim) {
+            // Left y-axis title shorthand. Same target as
+            // `y-label:` / `y1-label:` (axis 1 lives on the
+            // left edge); the `yl-` form pairs naturally
+            // with the `yr-` shorthand for the right rail.
+            opts.ylabel = Some(strip_quotes(rest).to_string());
+        } else if let Some(rest) = line.strip_prefix("yr-label:").map(str::trim) {
+            // Right y-axis title shorthand. Targets the
+            // first secondary axis (axis 2) since that's
+            // the one with a real plotters-rendered rail
+            // (axes 3+ project into primary y-coord and
+            // don't currently have rail-tick rendering —
+            // see SRD-98 followup). Routes through
+            // `apply_axis_directive` so the existing y2
+            // axis-tracker checks fire.
+            apply_axis_directive(
+                &mut opts, &mut axis_seen, 2, "label",
+                strip_quotes(rest),
+            )?;
+        } else if line.starts_with("y-label:")
+            || line.starts_with("y-legend:")
+            || line.starts_with("y-scale:")
+            || line.starts_with("y-min:")
+            || line.starts_with("y-max:")
+            || line.starts_with("y-range:")
+            || line.starts_with("y-ticks:")
+        {
+            // Singular `y-*` per-axis directives have been
+            // retired in favour of the explicit `y1-*`
+            // form (axis 1) or the `y-*s:` plural form
+            // (workload-wide). The bare `y-` prefix used
+            // to be axis-1-specific, but now that plurals
+            // exist (`y-ranges:`, `y-legends:`,
+            // `y-labels:`) we reserve `y-*` without a
+            // numeric suffix for the workload-level
+            // surface only — anything else must say which
+            // axis it targets.
+            let directive = line.split(':').next().unwrap_or(line);
+            return Err(format!(
+                "directive `{directive}` was retired — use `y1-{rest}` for \
+                 the primary-axis form (or the matching plural `y-{rest}s` \
+                 / `yl-`/`yr-` shorthand)",
+                rest = &directive[2..],
+            ));
+        } else if let Some(rest) = line.strip_prefix("x-min:").map(str::trim) {
+            axis_seen.note(AxisKey::X, AxisRole::Min, "x-min")?;
+            opts.x_min = parse_axis_bound(rest)?;
+        } else if let Some(rest) = line.strip_prefix("x-max:").map(str::trim) {
+            axis_seen.note(AxisKey::X, AxisRole::Max, "x-max")?;
+            opts.x_max = parse_axis_bound(rest)?;
+        } else if let Some(parsed) = parse_y_axis_directive(line) {
+            // y2/y3/y4 family: dispatch into `secondary_axes`
+            // by axis number. SRD-65: same per-axis surface
+            // for every secondary axis, so we drive them
+            // through one helper instead of N hand-rolled
+            // arms. `parse_y_axis_directive` returns the
+            // axis number, sub-directive name (`""` for the
+            // bare query), and the value bytes after `:`.
+            apply_axis_directive(
+                &mut opts, &mut axis_seen,
+                parsed.axis_num, parsed.sub, parsed.value,
+            )?;
+        } else if let Some(rest) = line.strip_prefix("legend:").map(str::trim) {
+            opts.legend = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("x-ticks:").map(str::trim) {
+            opts.x_ticks = parse_tick_spec(rest);
+        } else if let Some(rest) = line.strip_prefix("x-range:").map(str::trim) {
+            axis_seen.note(AxisKey::X, AxisRole::Range, "x-range")?;
+            let (lo, hi) = parse_range_spec(rest)?;
+            opts.x_min = lo; opts.x_max = hi;
+        } else if let Some(rest) = line.strip_prefix("y-ranges:").map(str::trim) {
+            // Plural form: positional array of ranges, one
+            // per declared y-axis. Recorded for deferred
+            // application at end of body parse so the
+            // operator can write `y-ranges:` either
+            // before or after the `y1:` / `y2:` declarations.
+            deferred_y_ranges = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("y-legends:").map(str::trim) {
+            deferred_y_legends = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("y-labels:").map(str::trim) {
+            deferred_y_labels = Some(rest.to_string());
         } else {
             residual_lines.push((*line).to_string());
         }
     }
+    // Apply deferred plural directives now that every
+    // axis declaration in the body has been processed.
+    // This way `y-ranges:` / `y-legends:` / `y-labels:`
+    // can appear before OR after `y1:` / `y2:` / `y3:`
+    // in the source — the apply helpers see the final
+    // axis count regardless.
+    if let Some(v) = deferred_y_ranges.as_deref() {
+        apply_y_plural_ranges(&mut opts, &mut axis_seen, v)?;
+    }
+    if let Some(v) = deferred_y_legends.as_deref() {
+        apply_y_plural_legends(&mut opts, v)?;
+    }
+    if let Some(v) = deferred_y_labels.as_deref() {
+        apply_y_plural_labels(&mut opts, &mut axis_seen, v)?;
+    }
+    opts.validate_axis_contiguity()?;
     let by_lines = residual_lines.join(";");
 
     for directive in by_lines.split(';').map(str::trim).filter(|s| !s.is_empty()) {
@@ -300,6 +448,7 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             }
         }
     }
+    opts.validate_axis_contiguity()?;
     Ok(opts)
 }
 
@@ -409,10 +558,734 @@ struct PlotMetricsOpts {
     /// the same `(series_name → Vec<(x, y)>)` shape the legacy
     /// path produces. Set via:
     ///
-    ///   - `--query "<metricsql>"` on the CLI, or
-    ///   - a `query: <metricsql>` directive in a `report:`-block
-    ///     plot/table body.
+    ///   - `--y "<metricsql>"` on the CLI, or
+    ///   - a `y: <metricsql>` directive in a `report:`-block
+    ///     plot body.
+    ///
+    /// Parallels the `y2:` directive for the secondary axis.
     query: Option<String>,
+    /// Optional MetricsQL expression for the right (y2) axis.
+    /// When set, the chart is built dual-axis: `query`'s series
+    /// render against the left scale; this query's series render
+    /// against an independent right scale. Useful for overlaying
+    /// metrics with very different magnitudes (e.g. recall in
+    /// `0..1` and overscan in `1..200`).
+    ///
+    /// Set via `--y2 "<metricsql>"` or `y2: <metricsql>` in a
+    /// `report:` plot block.
+    /// Per-series legend-label template for axis 1. Same
+    /// shape as [`AxisOpts::legend_format`] for secondary
+    /// axes — `[label_name]` placeholders are substituted
+    /// with the corresponding discriminator-label value at
+    /// render time. Set via `y-legend:` / `y1-legend:` /
+    /// `--y-legend` / `--y1-legend`. `None` ⇒ legacy
+    /// auto-generated series names.
+    y_legend_format: Option<String>,
+    /// Per-secondary-axis state. Indexed by `axis_num - 2` so
+    /// `secondary_axes[0]` is `y2`, `secondary_axes[1]` is
+    /// `y3`, etc. SRD-65: axes are contiguous — no
+    /// `secondary_axes[1]` without `[0]`. Empty when only the
+    /// primary axis is configured. Each entry holds the full
+    /// per-axis directive surface (query / label / bounds /
+    /// scale / ticks) — same shape across all axes so the
+    /// renderer can iterate uniformly. The primary axis (axis
+    /// 1) lives in the existing `query` / `ylabel` / `y_min` /
+    /// `y_max` / `yscale` / `y_ticks` flat fields above; those
+    /// are kept distinct because the legacy DSL surface
+    /// (positional spec, `metric`, filters) writes through
+    /// them directly.
+    secondary_axes: Vec<AxisOpts>,
+    /// Per-series style overrides — one entry per `style
+    /// key=value:directives` directive. The renderer's
+    /// per-series loop in `draw_chart` looks up overrides by
+    /// matching the series's discriminator labels against each
+    /// override's `(key, value)` and substitutes the override's
+    /// fields (line / width / marker / size / color) for the
+    /// palette default. Empty ⇒ every series uses the cascade
+    /// default.
+    series_overrides: Vec<PlotStyleOverride>,
+    /// Explicit tick-detent positions per axis. `None` ⇒
+    /// plotters' auto-picker; `Auto` ⇒ distinct values from
+    /// the primary query result (X-axis label values for
+    /// x-ticks; sample values for y-ticks / y2-ticks); literal
+    /// list ⇒ verbatim; metricsql expression ⇒ evaluate +
+    /// extract distinct values of the corresponding axis
+    /// label (X for x-ticks; the result's value column for
+    /// y/y2-ticks).
+    x_ticks: TickSpec,
+    y_ticks: TickSpec,
+}
+
+/// Per-axis directive bundle. SRD-65: every secondary y-axis
+/// carries the same surface as the primary (query, label,
+/// bounds, scale, ticks). The renderer iterates over a slice
+/// of these so adding `y5`, `y6`, etc. would only require
+/// extending the parse dispatch — no new render branches.
+#[derive(Debug, Clone, Default)]
+struct AxisOpts {
+    /// Display name of this axis — `"y2"`, `"y3"`, etc. Used
+    /// for parser-error messages and the cross-cutting
+    /// `AxisDirectiveTracker`. Stored so iteration code
+    /// doesn't need to recompute it from the index.
+    name: String,
+    /// MetricsQL expression for this axis's series.
+    query: Option<String>,
+    /// Right-rail axis title. `None` ⇒ derived from the
+    /// query's leading identifier (same heuristic as
+    /// `metric` for axis 1).
+    label: Option<String>,
+    /// Hard-coded bounds. `None` ⇒ derive from data with
+    /// log-aware padding (see `pad_lo` / `pad_hi`).
+    min: Option<f64>,
+    max: Option<f64>,
+    /// Scale snap. Empty ⇒ default linear; `auto` ⇒ run
+    /// `detect_scale_from_ticks` on the resolved ticks;
+    /// `linear` / `log` / `dec` / `bin` honoured verbatim.
+    scale: String,
+    /// Tick detents.
+    ticks: TickSpec,
+    /// Per-series legend-label template. Bracketed
+    /// placeholders (`[label_name]`) are substituted with
+    /// the corresponding discriminator-label value at
+    /// render time, per series. `None` ⇒ legacy
+    /// auto-generated series names (`profile=label_00,
+    /// k=10` shape from `series_tuple_key`).
+    ///
+    /// Example: `y2-legend: "overscan-[k]"` produces legend
+    /// entries `overscan-1`, `overscan-10`, `overscan-100`
+    /// for series partitioned by `k`. Unknown placeholders
+    /// (no matching label on the series) are left verbatim.
+    legend_format: Option<String>,
+    /// Which side of the chart this axis's curves render
+    /// on: `Some("left")` projects values into axis 1's
+    /// (primary) coord space; `Some("right")` projects
+    /// into axis 2's secondary coord space. `None` falls
+    /// back to the per-axis default — axis 2 → right
+    /// (preserves the legacy y2-rail layout); axes 3+ →
+    /// left (the projection-into-primary fallback used
+    /// before this knob existed). Set via
+    /// `yN-side: left|right` in the plot body or
+    /// `--yN-side` on the CLI.
+    side: Option<String>,
+}
+
+/// How tick detents are specified for one axis. Resolved
+/// down to a concrete `Vec<f64>` at `render_one` time after
+/// the data rows are available (so `Auto` and `Query` can
+/// pull from the result set).
+#[derive(Debug, Clone, Default)]
+enum TickSpec {
+    /// No explicit ticks — plotters' tick-picker decides.
+    #[default]
+    None,
+    /// Distinct values from the primary query result, on the
+    /// axis this spec targets.
+    Auto,
+    /// Verbatim numeric list — `x-ticks: 1, 2, 4, 8, 16`.
+    Literal(Vec<f64>),
+    /// MetricsQL expression — evaluate against the same db
+    /// the primary query reads, then extract distinct values
+    /// of the X-axis label (for x-ticks) or sample values
+    /// (for y/y2-ticks). Any series-returning expression
+    /// works: `avg(...) by (limit)` exposes `limit` as a
+    /// label on each result series; `label_value(metric,
+    /// "limit")` is the canonical extraction primitive once
+    /// that function lands as evaluable.
+    Query(String),
+}
+
+/// Identifies which axis a `range`/`min`/`max` directive
+/// applies to. Used by [`AxisDirectiveTracker`] to detect
+/// conflicting bound declarations on the same axis (e.g.
+/// `x-range:` with `x-min:`). Y maps to axis 1 (the
+/// primary y-axis); `y1*` directives also resolve to Y so
+/// `y` and `y1` refer to the same logical axis (SRD-65).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum AxisKey { X, Y, Y2, Y3, Y4 }
+
+/// What aspect of an axis a directive set. `Range` is
+/// mutually exclusive with `Min`/`Max` on the same axis.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum AxisRole { Range, Min, Max }
+
+/// Records which `*-range` / `*-min` / `*-max` directives
+/// have been seen during a single parse, and rejects
+/// conflicts. `*-range` and `*-min`/`*-max` over the same
+/// axis are mutually exclusive — picking one declaration
+/// style per axis prevents silent overwrites where the
+/// later directive wins by accident.
+#[derive(Default)]
+struct AxisDirectiveTracker {
+    /// Stores the directive label as `String` so dynamic
+    /// names (`y3-min`, `y4-range`, …) can be tracked
+    /// alongside the static y/y2/x ones.
+    seen: std::collections::HashMap<(AxisKey, AxisRole), String>,
+}
+
+impl AxisDirectiveTracker {
+    fn note(&mut self, axis: AxisKey, role: AxisRole, name: &'static str) -> Result<(), String> {
+        self.note_owned(axis, role, name.to_string())
+    }
+    fn note_owned(&mut self, axis: AxisKey, role: AxisRole, name: String) -> Result<(), String> {
+        // Conflict with the opposite kind on the same axis.
+        let conflict = match role {
+            AxisRole::Range => [AxisRole::Min, AxisRole::Max].iter()
+                .find_map(|r| self.seen.get(&(axis, *r)).cloned()),
+            AxisRole::Min | AxisRole::Max => self.seen.get(&(axis, AxisRole::Range)).cloned(),
+        };
+        if let Some(prev) = conflict {
+            return Err(format!(
+                "directive `{name}` conflicts with `{prev}` on the same axis — \
+                 use either `*-range` OR `*-min`/`*-max`, not both"
+            ));
+        }
+        self.seen.insert((axis, role), name);
+        Ok(())
+    }
+}
+
+/// One secondary axis after data resolution: its parsed
+/// config, the bucketed+aggregated series, and resolved
+/// tick positions. The renderer iterates a slice of these
+/// so adding more axes (within the SRD-65 cap) requires no
+/// new render branches — only loop iterations.
+struct ResolvedSecondaryAxis {
+    /// Display name (`"y2"`, `"y3"`, `"y4"`).
+    name: String,
+    /// User-supplied directive bundle. Carries label /
+    /// min / max / scale for the renderer's range
+    /// computation.
+    cfg: AxisOpts,
+    /// Aggregated `(series_name → Vec<(x, y)>)` shape — same
+    /// as the primary's `aggregated` map. Empty when the
+    /// axis is pending.
+    series: BTreeMap<String, Vec<(f64, f64)>>,
+    /// Resolved tick detents (numeric positions) for this
+    /// axis. Empty when no ticks were requested or the
+    /// resolver returned nothing.
+    ticks: Vec<f64>,
+    /// `true` when the axis's metricsql query returned no
+    /// series yet (live-plotting an ongoing run before the
+    /// data has populated). Pending axes contribute no
+    /// drawing or range data, but the renderer still emits
+    /// a placeholder legend entry so the operator sees the
+    /// axis exists and is waiting on data.
+    pending: bool,
+}
+
+/// One parsed `yN[-sub]:value` directive. Returned by
+/// [`parse_y_axis_directive`] so the body / CLI / key=value
+/// parsers all dispatch through a single helper instead of
+/// per-axis arms.
+struct ParsedAxisDirective<'a> {
+    axis_num: usize,
+    /// The sub-directive after the axis prefix: `""` for the
+    /// bare query (`y2:`, `y3:` …), `"label"`, `"min"`,
+    /// `"max"`, `"scale"`, `"ticks"`, `"range"`. Lowercase.
+    sub: &'a str,
+    /// Trimmed value text after the `:`.
+    value: &'a str,
+}
+
+/// CLI form of [`parse_y_axis_directive`]. Returns
+/// `Some((axis_num, sub))` when `flag` matches `--yN` or
+/// `--yN-sub` with `N ∈ 1..=4`. Used by the long-flag
+/// parser to dispatch through `apply_axis_directive`.
+/// Bare `--y` (the primary query alias) is handled
+/// separately upstream because the legacy DSL writes
+/// through the same field.
+fn cli_axis_flag_match(flag: &str) -> Option<(usize, &str)> {
+    let stripped = flag.strip_prefix("--")?;
+    let bytes = stripped.as_bytes();
+    if bytes.first().copied() != Some(b'y') { return None; }
+    let digit = bytes.get(1).copied()?;
+    if !(b'1'..=b'4').contains(&digit) { return None; }
+    let axis_num = (digit - b'0') as usize;
+    let after = &stripped[2..];
+    if after.is_empty() {
+        return Some((axis_num, ""));
+    }
+    let sub = after.strip_prefix('-')?;
+    Some((axis_num, sub))
+}
+
+/// Pattern-match a YAML-body line against the
+/// `yN[-sub]:value` shape, where `N ∈ 1..=4`. Returns
+/// `None` for anything that doesn't match. Axis 1 (`y1-*`)
+/// directives go through here too — they route into the
+/// primary-axis flat fields via [`apply_axis_directive`].
+/// Bare `y:` (the primary query) is handled separately
+/// because of the legacy-DSL path that also writes
+/// through `opts.query`.
+fn parse_y_axis_directive(line: &str) -> Option<ParsedAxisDirective<'_>> {
+    let bytes = line.as_bytes();
+    if bytes.first().copied() != Some(b'y') { return None; }
+    let digit = bytes.get(1).copied()?;
+    if !(b'1'..=b'4').contains(&digit) { return None; }
+    let axis_num = (digit - b'0') as usize;
+    let after = &line[2..];
+    let (sub, value): (&str, &str) = if let Some(rest) = after.strip_prefix(':') {
+        ("", rest.trim())
+    } else if let Some(rest) = after.strip_prefix('-') {
+        // `y2-min:0.5` → sub="min", value="0.5". The colon
+        // is the value separator inside the sub-directive
+        // body.
+        let (sub, value) = rest.split_once(':')?;
+        (sub.trim(), value.trim())
+    } else {
+        return None;
+    };
+    Some(ParsedAxisDirective { axis_num, sub, value })
+}
+
+/// Write one `yN[-sub]:value` directive into the
+/// appropriate slot in `opts.secondary_axes`. Mutates the
+/// shared [`AxisDirectiveTracker`] so range/min/max
+/// conflicts are caught the same way as for the primary
+/// axis. Used by every parser entry point (body, CLI
+/// long-flag, CLI key=value) so the validation logic stays
+/// in one place.
+fn apply_axis_directive(
+    opts: &mut PlotMetricsOpts,
+    axis_seen: &mut AxisDirectiveTracker,
+    axis_num: usize,
+    sub: &str,
+    value: &str,
+) -> Result<(), String> {
+    if axis_num == 1 {
+        return apply_primary_axis_directive(opts, axis_seen, sub, value);
+    }
+    let axis_key = match axis_num {
+        2 => AxisKey::Y2,
+        3 => AxisKey::Y3,
+        4 => AxisKey::Y4,
+        _ => return Err(format!(
+            "axis index y{axis_num} is out of range — SRD-65 supports y..y4"
+        )),
+    };
+    let prefix = format!("y{axis_num}");
+    let axis = opts.ensure_secondary_axis(axis_num)?;
+    match sub {
+        "" => { axis.query = Some(value.to_string()); }
+        "label" => { axis.label = Some(strip_quotes(value).to_string()); }
+        "legend" => { axis.legend_format = Some(strip_quotes(value).to_string()); }
+        "side" => {
+            let v = value.trim().to_ascii_lowercase();
+            if v != "left" && v != "right" {
+                return Err(format!(
+                    "{prefix}-side: expected `left` or `right`, got `{value}`"
+                ));
+            }
+            axis.side = Some(v);
+        }
+        "min" => {
+            axis_seen.note_owned(axis_key, AxisRole::Min, format!("{prefix}-min"))?;
+            axis.min = parse_axis_bound_value(value)?;
+        }
+        "max" => {
+            axis_seen.note_owned(axis_key, AxisRole::Max, format!("{prefix}-max"))?;
+            axis.max = parse_axis_bound_value(value)?;
+        }
+        "scale" => { axis.scale = value.to_string(); }
+        "ticks" => { axis.ticks = parse_tick_spec(value); }
+        "range" => {
+            axis_seen.note_owned(axis_key, AxisRole::Range, format!("{prefix}-range"))?;
+            let (lo, hi) = parse_range_spec(value)
+                .map_err(|e| format!("--{prefix}-range: {e}"))?;
+            axis.min = lo;
+            axis.max = hi;
+        }
+        other => return Err(format!(
+            "unknown {prefix} sub-directive `{prefix}-{other}` — accepted: \
+             label, legend, side, min, max, scale, ticks, range"
+        )),
+    }
+    Ok(())
+}
+
+/// Apply a primary-axis (`y1-*`) directive. Routes into
+/// the legacy primary-axis flat fields (`opts.query`,
+/// `opts.ylabel`, `opts.y_min`, …) — those are the
+/// canonical homes the renderer reads from. The bare
+/// `y:` query alias is handled upstream via the legacy
+/// DSL path; this entry covers `y1:` (the explicit form)
+/// plus every `y1-*` sub-directive.
+fn apply_primary_axis_directive(
+    opts: &mut PlotMetricsOpts,
+    axis_seen: &mut AxisDirectiveTracker,
+    sub: &str,
+    value: &str,
+) -> Result<(), String> {
+    match sub {
+        "" => { opts.query = Some(value.to_string()); }
+        "label" => { opts.ylabel = Some(strip_quotes(value).to_string()); }
+        "legend" => { opts.y_legend_format = Some(strip_quotes(value).to_string()); }
+        "min" => {
+            axis_seen.note(AxisKey::Y, AxisRole::Min, "y1-min")?;
+            opts.y_min = parse_axis_bound_value(value)?;
+        }
+        "max" => {
+            axis_seen.note(AxisKey::Y, AxisRole::Max, "y1-max")?;
+            opts.y_max = parse_axis_bound_value(value)?;
+        }
+        "scale" => { opts.yscale = value.to_string(); }
+        "ticks" => { opts.y_ticks = parse_tick_spec(value); }
+        "range" => {
+            axis_seen.note(AxisKey::Y, AxisRole::Range, "y1-range")?;
+            let (lo, hi) = parse_range_spec(value)
+                .map_err(|e| format!("--y1-range: {e}"))?;
+            opts.y_min = lo;
+            opts.y_max = hi;
+        }
+        // `side` on axis 1 is moot — primary axis is
+        // always the left rail. Reject explicitly so an
+        // operator who wrote `y1-side: right` sees the
+        // unsupported nature of the request rather than
+        // a silent acceptance.
+        "side" => return Err(
+            "y1-side: axis 1 always renders on the left; \
+             use `yN-side: left` on a secondary axis instead".to_string()
+        ),
+        other => return Err(format!(
+            "unknown y1 sub-directive `y1-{other}` — accepted: \
+             label, legend, min, max, scale, ticks, range"
+        )),
+    }
+    Ok(())
+}
+
+/// Strip a single layer of surrounding quotes (`"..."`
+/// or `'...'`) if present, leaving the body verbatim.
+/// Used by directives like `y2-label:` and `y2-legend:`
+/// where the operator is naturally going to write
+/// `"oracle-[profile]"` and not expect the literal
+/// quotes in the rendered output.
+fn strip_quotes(s: &str) -> &str {
+    let t = s.trim();
+    if t.len() >= 2 {
+        let first = t.as_bytes()[0];
+        let last = t.as_bytes()[t.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return &t[1..t.len() - 1];
+        }
+    }
+    t
+}
+
+/// Substitute `[label_name]` placeholders in `template`
+/// with values from `labels`. Used by the legend
+/// renderer for `yN-legend:` template strings.
+///
+/// - `[name]` matched against `labels.get("name")`. Hit:
+///   the label value replaces the bracketed text.
+/// - Miss: the bracketed text is left verbatim, so the
+///   operator can spot the typo / missing label.
+/// - `[` not followed by a matching `]` is treated as a
+///   literal `[`.
+fn expand_legend_template(
+    template: &str,
+    labels: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find('[') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        if let Some(end) = after.find(']') {
+            let key = &after[..end];
+            match labels.get(key) {
+                Some(v) => out.push_str(v),
+                None => {
+                    // Leave the bracketed segment in place
+                    // so the operator sees their typo.
+                    out.push('[');
+                    out.push_str(key);
+                    out.push(']');
+                }
+            }
+            rest = &after[end + 1..];
+        } else {
+            // Unterminated `[` — push the rest verbatim.
+            out.push('[');
+            out.push_str(after);
+            return out;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Parse `"k1=v1, k2=v2, …"` (the format produced by
+/// `series_tuple_key`) back into a label HashMap. Used
+/// at draw time to feed `expand_legend_template`.
+fn parse_series_key_to_labels(
+    series_key: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    if series_key.is_empty() { return out; }
+    for piece in series_key.split(", ") {
+        if let Some((k, v)) = piece.split_once('=') {
+            out.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
+    out
+}
+
+/// Standalone form of the inline `parse_axis_bound`
+/// closure — needed by `apply_axis_directive` since that
+/// runs outside the closure's scope.
+fn parse_axis_bound_value(s: &str) -> Result<Option<f64>, String> {
+    let t = s.trim();
+    if t.eq_ignore_ascii_case("auto") || t.is_empty() {
+        return Ok(None);
+    }
+    t.parse().map(Some)
+        .map_err(|_| format!("axis bound '{t}' must be a number or `auto`"))
+}
+
+/// Split a bracketed array literal `[a, b, c]` into its
+/// comma-delimited top-level items. Entries may themselves
+/// contain `[...]` or `(...)` (e.g. nested ranges in
+/// `y-ranges: [[0,1], [0,100]]`); commas inside those
+/// nested groupings are not treated as separators. Trailing
+/// commas tolerated.
+fn split_array_value(s: &str) -> Result<Vec<String>, String> {
+    let trimmed = s.trim();
+    let inner = trimmed.strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .ok_or_else(|| format!(
+            "expected `[...]` array, got `{trimmed}`"
+        ))?;
+    let mut out = Vec::new();
+    let mut depth: i32 = 0;
+    let mut current = String::new();
+    let mut in_quote: Option<char> = None;
+    for c in inner.chars() {
+        if let Some(q) = in_quote {
+            current.push(c);
+            if c == q { in_quote = None; }
+            continue;
+        }
+        match c {
+            '"' | '\'' => { in_quote = Some(c); current.push(c); }
+            '[' | '(' => { depth += 1; current.push(c); }
+            ']' | ')' => { depth -= 1; current.push(c); }
+            ',' if depth == 0 => {
+                let item = current.trim().to_string();
+                if !item.is_empty() { out.push(item); }
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+    let last = current.trim();
+    if !last.is_empty() { out.push(last.to_string()); }
+    Ok(out)
+}
+
+/// Apply `y-ranges: [[a,b], [c,d], …]` positionally to
+/// y1, y2, y3, …. Each element is parsed via
+/// [`parse_range_spec`] — any of `a..b`, `(a, b)`, or
+/// `[a, b]` works.
+fn apply_y_plural_ranges(
+    opts: &mut PlotMetricsOpts,
+    axis_seen: &mut AxisDirectiveTracker,
+    value: &str,
+) -> Result<(), String> {
+    let items = split_array_value(value)
+        .map_err(|e| format!("y-ranges: {e}"))?;
+    let max_axes = 1 + opts.secondary_axes.len();
+    if items.len() > max_axes {
+        return Err(format!(
+            "y-ranges: {} entries supplied but only {} y-axis(es) declared \
+             (declare yN: queries first or trim the array)",
+            items.len(), max_axes,
+        ));
+    }
+    for (i, item) in items.iter().enumerate() {
+        let (lo, hi) = parse_range_spec(item)
+            .map_err(|e| format!("y-ranges[{i}]: {e}"))?;
+        if i == 0 {
+            axis_seen.note_owned(AxisKey::Y, AxisRole::Range, "y-ranges[0]".to_string())?;
+            opts.y_min = lo; opts.y_max = hi;
+        } else {
+            let axis_num = i + 1;
+            let key = match axis_num {
+                2 => AxisKey::Y2,
+                3 => AxisKey::Y3,
+                4 => AxisKey::Y4,
+                _ => return Err(format!("y-ranges: axis index {axis_num} out of range")),
+            };
+            axis_seen.note_owned(key, AxisRole::Range, format!("y-ranges[{i}]"))?;
+            let axis = opts.ensure_secondary_axis(axis_num)?;
+            axis.min = lo;
+            axis.max = hi;
+        }
+    }
+    Ok(())
+}
+
+/// Apply `y-legends: [t1, t2, t3, …]` positionally — entry
+/// `i` lands on axis `i + 1`'s legend template
+/// (`yN-legend`). Quoted strings have their outer quotes
+/// stripped so `["oracle [profile]", PVS, overscan]` works
+/// uniformly.
+fn apply_y_plural_legends(
+    opts: &mut PlotMetricsOpts,
+    value: &str,
+) -> Result<(), String> {
+    let items = split_array_value(value)
+        .map_err(|e| format!("y-legends: {e}"))?;
+    let max_axes = 1 + opts.secondary_axes.len();
+    if items.len() > max_axes {
+        return Err(format!(
+            "y-legends: {} entries supplied but only {} y-axis(es) declared",
+            items.len(), max_axes,
+        ));
+    }
+    for (i, item) in items.iter().enumerate() {
+        let template = strip_quotes(item).to_string();
+        if i == 0 {
+            opts.y_legend_format = Some(template);
+        } else {
+            let axis_num = i + 1;
+            let axis = opts.ensure_secondary_axis(axis_num)?;
+            axis.legend_format = Some(template);
+        }
+    }
+    Ok(())
+}
+
+/// Apply `y-labels: [left_title, right_title]` — entry 0
+/// sets `yl-label` (axis 1 / left rail), entry 1 sets
+/// `yr-label` (axis 2 / right rail). At most two entries;
+/// the third+ would have no rail to apply to in the
+/// current renderer (axes 3+ project into existing rails
+/// and don't have their own visible titles).
+fn apply_y_plural_labels(
+    opts: &mut PlotMetricsOpts,
+    _axis_seen: &mut AxisDirectiveTracker,
+    value: &str,
+) -> Result<(), String> {
+    let items = split_array_value(value)
+        .map_err(|e| format!("y-labels: {e}"))?;
+    if items.len() > 2 {
+        return Err(format!(
+            "y-labels: at most 2 entries (left, right); got {}",
+            items.len(),
+        ));
+    }
+    if let Some(left) = items.first() {
+        opts.ylabel = Some(strip_quotes(left).to_string());
+    }
+    if let Some(right) = items.get(1) {
+        let axis = opts.ensure_secondary_axis(2)?;
+        axis.label = Some(strip_quotes(right).to_string());
+    }
+    Ok(())
+}
+
+/// Parse a `x-range:` / `y-range:` / `y2-range:` value into
+/// `(Option<f64>, Option<f64>)` — `(min, max)`. Three
+/// accepted forms:
+///
+/// - **Rust range syntax**: `a..b` (inclusive of `a`,
+///   exclusive of `b`, matching `std::ops::Range`).
+///   `..b` and `a..` are accepted with the missing side as
+///   `None` (open-ended; the renderer falls back to data
+///   extent on that side, with the existing 5% padding).
+/// - **Paren tuple**: `(a, b)` — same semantics as `a..b`.
+///   Single-element `(a,)` and `(, b)` accepted as
+///   half-open. Whitespace around values ignored.
+/// - **Bracket interval**: `[a, b]` — same semantics as
+///   the paren form. Mathematical interval notation reads
+///   naturally for axis bounds.
+///
+/// `auto` (or empty) ⇒ `(None, None)`. Anything that
+/// neither matches a recognised form nor parses both ends
+/// as numbers errors.
+fn parse_range_spec(s: &str) -> Result<(Option<f64>, Option<f64>), String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+        return Ok((None, None));
+    }
+    let parse_endpoint = |p: &str| -> Result<Option<f64>, String> {
+        if p.is_empty() { return Ok(None); }
+        p.parse::<f64>().map(Some)
+            .map_err(|_| format!("range endpoint '{p}' is not a number"))
+    };
+    // Bracketed forms: `(a, b)` or `[a, b]` — split on comma.
+    let inner = trimmed.strip_prefix('(').and_then(|s| s.strip_suffix(')'))
+        .or_else(|| trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')));
+    if let Some(inner) = inner {
+        let mut parts = inner.splitn(2, ',');
+        let lo = parts.next().unwrap_or("").trim();
+        let hi = parts.next().unwrap_or("").trim();
+        return Ok((parse_endpoint(lo)?, parse_endpoint(hi)?));
+    }
+    // Rust range form: `a..b`.
+    if let Some(idx) = trimmed.find("..") {
+        let lo_str = trimmed[..idx].trim();
+        let hi_str = trimmed[idx + 2..].trim();
+        return Ok((parse_endpoint(lo_str)?, parse_endpoint(hi_str)?));
+    }
+    Err(format!(
+        "range value '{trimmed}' must be `a..b`, `(a, b)`, or `[a, b]` \
+         (either side may be empty for an open end)"
+    ))
+}
+
+/// Parse a `x-ticks:` / `--x-ticks` value into a [`TickSpec`].
+/// Three forms are sniffed by content:
+///
+/// - empty / whitespace ⇒ `None` (the parser shouldn't even
+///   call this for empty strings; defensive).
+/// - the bare keyword `auto` (case-insensitive) ⇒ `Auto`.
+/// - comma-separated numbers (`1, 2, 4.5, 8`) ⇒ `Literal`.
+///   Whitespace between values is ignored; trailing commas
+///   tolerated.
+/// - anything else ⇒ `Query(expression-as-written)`. The
+///   metricsql evaluator is invoked at resolve time, not
+///   here, so syntactic validity is the metricsql crate's
+///   problem.
+fn parse_tick_spec(s: &str) -> TickSpec {
+    let trimmed = s.trim();
+    if trimmed.is_empty() { return TickSpec::None; }
+    if trimmed.eq_ignore_ascii_case("auto") { return TickSpec::Auto; }
+    // Numeric-list sniff: every comma-split fragment must
+    // parse as f64. Empty fragments (trailing comma) are OK
+    // and dropped.
+    let parts: Vec<&str> = trimmed.split(',')
+        .map(str::trim).filter(|p| !p.is_empty()).collect();
+    if !parts.is_empty()
+        && parts.iter().all(|p| p.parse::<f64>().is_ok())
+    {
+        return TickSpec::Literal(parts.iter()
+            .map(|p| p.parse::<f64>().unwrap()).collect());
+    }
+    TickSpec::Query(trimmed.to_string())
+}
+
+/// One per-series style override. Renderer-internal mirror of
+/// `nbrs_workload::report::SeriesOverride`, kept thin so the
+/// plot crate doesn't depend on the workload's full report
+/// model.
+#[derive(Debug, Clone)]
+struct PlotStyleOverride {
+    /// Discriminator key — a label name from the series
+    /// partition tuple (e.g. `profile`).
+    key: String,
+    /// Discriminator value — the label value the override
+    /// applies to (e.g. `default`).
+    value: String,
+    /// Style fields. Only the populated `Some(_)` fields are
+    /// applied; `None` falls back to the cascade default.
+    palette: Option<String>,
+    line: Option<String>,
+    width: Option<f32>,
+    marker: Option<String>,
+    size: Option<f32>,
+    color: Option<String>,
 }
 
 impl Default for PlotMetricsOpts {
@@ -451,8 +1324,83 @@ impl Default for PlotMetricsOpts {
             y_max: None,
             legend: None,
             query: None,
+            y_legend_format: None,
+            secondary_axes: Vec::new(),
+            series_overrides: Vec::new(),
+            x_ticks: TickSpec::None,
+            y_ticks: TickSpec::None,
         }
     }
+}
+
+impl PlotMetricsOpts {
+    /// Look up a mutable axis bundle by 1-based axis number.
+    /// Axis 1 is the primary y-axis; for it the storage is
+    /// the legacy flat fields, so this method only returns
+    /// secondary axes (2..=N). Auto-grows `secondary_axes`
+    /// to cover up to `axis_num`, naming each new entry
+    /// `yN`. Returns an error past the SRD-65 cap (`y4`).
+    fn ensure_secondary_axis(&mut self, axis_num: usize)
+        -> Result<&mut AxisOpts, String>
+    {
+        const MAX_AXES: usize = 4;
+        if axis_num < 2 || axis_num > MAX_AXES {
+            return Err(format!(
+                "axis index {axis_num} out of range — SRD-65 supports \
+                 y, y1, y2, y3, y4 (cap at 4 axes total)"
+            ));
+        }
+        let target_len = axis_num - 1;
+        while self.secondary_axes.len() < target_len {
+            let next_idx = self.secondary_axes.len() + 2; // 2..=4
+            self.secondary_axes.push(AxisOpts {
+                name: format!("y{next_idx}"),
+                ..AxisOpts::default()
+            });
+        }
+        Ok(&mut self.secondary_axes[axis_num - 2])
+    }
+
+    /// Validate axis-contiguity: a `yN` axis is valid only if
+    /// every smaller index has a query set. Called after
+    /// parsing finishes (every parser entry point — body, CLI
+    /// long-flag, key=value).
+    fn validate_axis_contiguity(&self) -> Result<(), String> {
+        for (i, axis) in self.secondary_axes.iter().enumerate() {
+            let n = i + 2;
+            if axis.query.is_some() {
+                // Every smaller index (down to 2) must have a query.
+                for prev in 0..i {
+                    if self.secondary_axes[prev].query.is_none() {
+                        let prev_name = format!("y{}", prev + 2);
+                        return Err(format!(
+                            "plot declares `y{n}:` but no `{prev_name}:` — \
+                             axis indices must be contiguous (SRD-65)"
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Sentinel prefix on plot-render errors that signal
+/// "the data isn't there yet" rather than a true failure
+/// (empty metricsql result, no rows matched, no finite
+/// `(x, y)` points). Incremental / auto-render paths run
+/// during a workload before the data has accumulated;
+/// those legitimately produce no-data conditions and
+/// shouldn't abort the run. The dispatcher recognises
+/// this prefix to downgrade the error to a warning unless
+/// `--strict` (SRD-15) is set, in which case the error
+/// stays a hard failure.
+pub const PLOT_NO_DATA_PREFIX: &str = "[no-data] ";
+
+/// True when this error string was emitted as a
+/// no-data sentinel (see [`PLOT_NO_DATA_PREFIX`]).
+pub fn is_no_data_error(msg: &str) -> bool {
+    msg.contains(PLOT_NO_DATA_PREFIX)
 }
 
 /// Entry point — called from `plot::plot_command` when the
@@ -481,9 +1429,35 @@ pub fn plot_metrics_command(args: &[String]) {
         }
     };
     if let Err(e) = render_one(opts) {
+        // No-data errors during incremental / auto-render
+        // are warnings unless `--strict` is set. Real
+        // failures (parser errors, db open errors, etc.)
+        // remain hard exits.
+        if is_no_data_error(&e) && !is_strict_mode(args) {
+            eprintln!("nbrs plot: warning: {}", strip_no_data_prefix(&e));
+            return;
+        }
         eprintln!("nbrs plot: {e}");
         std::process::exit(1);
     }
+}
+
+/// Detect SRD-15 strict mode from the arg list (`--strict`)
+/// or env var (`NBRS_STRICT`). Mirrors the convention in
+/// `nbrs-activity/src/runner.rs`. Local helper because
+/// `plot_metrics_command` only sees the per-invocation
+/// args slice — not the global runner context.
+fn is_strict_mode(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--strict")
+        || std::env::var("NBRS_STRICT").is_ok()
+}
+
+/// Strip the [`PLOT_NO_DATA_PREFIX`] sentinel from an
+/// error message before surfacing it as a warning. The
+/// sentinel is for dispatcher-side classification; the
+/// human-facing text shouldn't carry it.
+pub fn strip_no_data_prefix(msg: &str) -> String {
+    msg.replace(PLOT_NO_DATA_PREFIX, "")
 }
 
 /// Same as [`plot_metrics_command`] but returns errors instead
@@ -538,7 +1512,7 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     }).filter(|s| !s.is_empty());
     let metric_owned: String = opts.metric.clone()
         .or(synthetic_metric)
-        .ok_or_else(|| "--metric <pattern> is required (or pass `--query <metricsql>` / a positional spec)".to_string())?;
+        .ok_or_else(|| "--metric <pattern> is required (or pass `--y <metricsql>` / a positional spec)".to_string())?;
     let metric = metric_owned.as_str();
     let Some(x_label) = opts.x_label.as_deref() else {
         return Err("--x <label_key> is required (or `over <label>` in the spec)".to_string());
@@ -565,12 +1539,22 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     //     engine, project the resulting `Vec<Series>` into
     //     `DbRow`s keyed by each Series's labels.
     //   - else → legacy SQL builder over `metric_instance.spec`.
+    // Play-by-play diagnostic logging: each query reports
+    // back what was found (or that it found nothing) so the
+    // operator running plots against a live session can see
+    // which axes resolved and which are still waiting on data.
     let rows = if let Some(q) = opts.query.as_deref() {
-        rows_via_metricsql(&query_db, q)
-            .map_err(|e| format!("metricsql failed against '{}': {e}", query_db.display()))?
+        let r = rows_via_metricsql(&query_db, q)
+            .map_err(|e| format!("metricsql failed against '{}': {e}", query_db.display()))?;
+        eprintln!("plot: y1 query against '{}': `{q}` → {} row(s)",
+            query_db.display(), r.len());
+        r
     } else {
-        query_rows(&query_db, metric, &opts.filters)
-            .map_err(|e| format!("query failed against '{}': {e}", query_db.display()))?
+        let r = query_rows(&query_db, metric, &opts.filters)
+            .map_err(|e| format!("query failed against '{}': {e}", query_db.display()))?;
+        eprintln!("plot: y1 legacy SQL against '{}' for metric '{metric}' → {} row(s)",
+            query_db.display(), r.len());
+        r
     };
     // Default-output paths anchor on the first user-supplied db
     // (not the merge temp) so artifacts live next to real
@@ -589,18 +1573,32 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
                 opts.filters.iter().map(|(k, v)| format!("{k}={v}"))
                     .collect::<Vec<_>>().join(", ")));
         }
-        return Err(msg);
+        return Err(format!("{PLOT_NO_DATA_PREFIX}{msg}"));
     }
 
     // 2. Resolve series labels.
-    //   - Empty → single series.
-    //   - `["*"]` → auto-detect: every label that has >1 distinct
-    //     value across the rows (excluding x and session).
+    //   - `["*"]` (explicit) → auto-detect: every label that has
+    //     >1 distinct value across the rows (excluding x and
+    //     session).
+    //   - Empty + `query:` set → auto-detect (the MetricsQL
+    //     `by(...)` clause already declares the dimensions; the
+    //     labels in the result minus the X axis are the natural
+    //     series-partition tuple. Defers to MetricsQL — no
+    //     duplicate `series:` / `by:` directive needed in the
+    //     plot grammar).
+    //   - Empty + legacy SQL path → single series (preserves the
+    //     old behaviour for the no-`query:` form).
     //   - Otherwise → explicit list of label keys; one series
     //     per distinct *tuple* of values across them.
     let series_labels: Vec<String> = if opts.series_labels.iter().any(|s| s == "*") {
         let auto = auto_detect_series_labels(&rows, x_label);
         eprintln!("series: auto-detected discriminants: [{}]", auto.join(", "));
+        auto
+    } else if opts.series_labels.is_empty() && opts.query.is_some() {
+        let auto = auto_detect_series_labels(&rows, x_label);
+        if !auto.is_empty() {
+            eprintln!("series: auto-detected discriminants: [{}]", auto.join(", "));
+        }
         auto
     } else {
         opts.series_labels.clone()
@@ -611,8 +1609,9 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
         bucket_rows(&rows, x_label, &series_labels);
     if series.is_empty() {
         return Err(format!(
-            "rows matched but none yielded a usable ({x_label}, value) pair — \
-             check that '{x_label}' is a label on the matched rows."
+            "{PLOT_NO_DATA_PREFIX}rows matched but none yielded a usable \
+             ({x_label}, value) pair — check that '{x_label}' is a label on \
+             the matched rows."
         ));
     }
 
@@ -661,8 +1660,114 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
         dir.join(format!("plot_{safe_metric}_over_{safe_x}.png"))
     });
 
+    // Secondary-axis pipeline (SRD-65). Each declared y2/y3/y4
+    // axis runs the same query→bucket→aggregate shape as the
+    // primary, with its own auto-detected series-discriminator
+    // labels (so y2's `by(limit)` doesn't get partitioned on y1's
+    // `profile`). The renderer iterates over the resolved bundle
+    // — no per-axis branches.
+    let mut secondary_resolved: Vec<ResolvedSecondaryAxis> = Vec::new();
+    for axis in &opts.secondary_axes {
+        let q = match axis.query.as_deref() {
+            Some(q) => q,
+            None => continue,  // shouldn't happen post-validate, but safe
+        };
+        let rows2 = rows_via_metricsql(&query_db, q)
+            .map_err(|e| format!("{} metricsql failed against '{}': {e}",
+                axis.name, query_db.display()))?;
+        eprintln!("plot: {} query against '{}': `{q}` → {} row(s)",
+            axis.name, query_db.display(), rows2.len());
+        // Empty-result handling: instead of failing the whole
+        // plot when one secondary axis has no rows yet, mark
+        // the axis as "pending" and continue. The renderer
+        // skips drawing for pending axes but emits a placeholder
+        // legend entry with a `(pending)` suffix so the operator
+        // sees the axis exists and is waiting on data. This is
+        // the right behaviour for live plotting against an
+        // ongoing run where some phases haven't started yet.
+        if rows2.is_empty() {
+            eprintln!(
+                "plot: {} → no data yet — marking pending",
+                axis.name,
+            );
+            secondary_resolved.push(ResolvedSecondaryAxis {
+                name: axis.name.clone(),
+                cfg: axis.clone(),
+                series: BTreeMap::new(),
+                ticks: Vec::new(),
+                pending: true,
+            });
+            continue;
+        }
+        let axis_series_labels: Vec<String> =
+            if opts.series_labels.iter().any(|s| s == "*") {
+                auto_detect_series_labels(&rows2, x_label)
+            } else if opts.series_labels.is_empty() {
+                auto_detect_series_labels(&rows2, x_label)
+            } else {
+                opts.series_labels.clone()
+            };
+        let buckets = bucket_rows(&rows2, x_label, &axis_series_labels);
+        if buckets.is_empty() {
+            // Same pending-axis treatment for the
+            // rows-matched-but-no-(x,value)-pairs case.
+            eprintln!(
+                "plot: {} rows matched but none yielded a usable \
+                 ({x_label}, value) pair — marking pending",
+                axis.name,
+            );
+            secondary_resolved.push(ResolvedSecondaryAxis {
+                name: axis.name.clone(),
+                cfg: axis.clone(),
+                series: BTreeMap::new(),
+                ticks: Vec::new(),
+                pending: true,
+            });
+            continue;
+        }
+        let series: BTreeMap<String, Vec<(f64, f64)>> = buckets.iter()
+            .map(|(sname, by_x)| {
+                let mut points: Vec<(f64, f64)> = by_x.iter()
+                    .map(|(xk, ys)| (xk.0, aggregate(&opts.agg, ys)))
+                    .collect();
+                points.sort_by(|a, b|
+                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                (sname.clone(), points)
+            })
+            .collect();
+        let total_pts: usize = series.values().map(|v| v.len()).sum();
+        eprintln!("plot: {} → {} series, {} point(s)",
+            axis.name, series.len(), total_pts);
+        let ticks = resolve_tick_spec(
+            &axis.ticks, &rows2, x_label, &query_db, TickAxis::YValue,
+        )?;
+        secondary_resolved.push(ResolvedSecondaryAxis {
+            name: axis.name.clone(),
+            cfg: axis.clone(),
+            series,
+            ticks,
+            pending: false,
+        });
+    }
+
+    // Resolve tick specs for the primary axes (X and Y1).
+    // Each axis can pull from a literal list, the primary query
+    // result (`Auto`), or a metricsql expression evaluated
+    // against the same db (`Query`). For x-ticks the
+    // extraction target is the X-axis label values; for
+    // y-ticks it's the result's value column — sample mean
+    // values, since Y represents the metric value rather than
+    // a label.
+    let x_ticks_resolved = resolve_tick_spec(
+        &opts.x_ticks, &rows, x_label, &query_db, TickAxis::XLabel,
+    )?;
+    let y_ticks_resolved = resolve_tick_spec(
+        &opts.y_ticks, &rows, x_label, &query_db, TickAxis::YValue,
+    )?;
+
     // 4. Render.
-    render_plot(&aggregated, &opts, x_label, metric, &out_path)
+    render_plot(&aggregated, &secondary_resolved, &opts, x_label, metric, &out_path,
+        &x_ticks_resolved, &y_ticks_resolved)
         .map_err(|e| format!("render failed: {e}"))?;
 
     let total_points: usize = aggregated.values().map(|v| v.len()).sum();
@@ -1125,8 +2230,11 @@ fn print_usage() {
 fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
     let mut opts = PlotMetricsOpts {
         agg: "mean".to_string(),
-        xscale: "linear".to_string(),
-        yscale: "linear".to_string(),
+        // Empty (= "auto") so explicit ticks can drive the
+        // shape classifier; pin to "linear" / "log" / "dec" /
+        // "bin" for fixed scale.
+        xscale: String::new(),
+        yscale: String::new(),
         width: 1024,
         height: 640,
         ..Default::default()
@@ -1179,6 +2287,7 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
         opts = parse_spec(spec)?;
     }
     let mut iter = args.iter().peekable();
+    let mut axis_seen = AxisDirectiveTracker::default();
     while let Some(a) = iter.next() {
         let next = |it: &mut std::iter::Peekable<std::slice::Iter<String>>, flag: &str| {
             it.next().cloned().ok_or_else(|| format!("--{flag} requires a value"))
@@ -1228,16 +2337,82 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                 .parse().map_err(|_| "--width must be a positive integer".to_string())?,
             "--height" => opts.height = next(&mut iter, "height")?
                 .parse().map_err(|_| "--height must be a positive integer".to_string())?,
-            "--x-min" => opts.x_min = Some(next(&mut iter, "x-min")?
-                .parse().map_err(|_| "--x-min must be a number".to_string())?),
-            "--x-max" => opts.x_max = Some(next(&mut iter, "x-max")?
-                .parse().map_err(|_| "--x-max must be a number".to_string())?),
-            "--y-min" => opts.y_min = Some(next(&mut iter, "y-min")?
-                .parse().map_err(|_| "--y-min must be a number".to_string())?),
-            "--y-max" => opts.y_max = Some(next(&mut iter, "y-max")?
-                .parse().map_err(|_| "--y-max must be a number".to_string())?),
+            "--x-min" => {
+                axis_seen.note(AxisKey::X, AxisRole::Min, "--x-min")?;
+                opts.x_min = Some(next(&mut iter, "x-min")?
+                    .parse().map_err(|_| "--x-min must be a number".to_string())?);
+            }
+            "--x-max" => {
+                axis_seen.note(AxisKey::X, AxisRole::Max, "--x-max")?;
+                opts.x_max = Some(next(&mut iter, "x-max")?
+                    .parse().map_err(|_| "--x-max must be a number".to_string())?);
+            }
+            "--y-min" => {
+                axis_seen.note(AxisKey::Y, AxisRole::Min, "--y-min")?;
+                opts.y_min = Some(next(&mut iter, "y-min")?
+                    .parse().map_err(|_| "--y-min must be a number".to_string())?);
+            }
+            "--y-max" => {
+                axis_seen.note(AxisKey::Y, AxisRole::Max, "--y-max")?;
+                opts.y_max = Some(next(&mut iter, "y-max")?
+                    .parse().map_err(|_| "--y-max must be a number".to_string())?);
+            }
             "--legend" => opts.legend = Some(next(&mut iter, "legend")?),
-            "--query" => opts.query = Some(next(&mut iter, "query")?),
+            // `--y` and `--y1*` flags both target axis 1
+            // (SRD-65: synonyms). The CLI doesn't enforce
+            // mix-detection across `--y`/`--y1` because flag
+            // order is operator-driven; the body parser does.
+            "--y" | "--y1" => opts.query = Some(next(&mut iter, "y")?),
+            "--y-legend" | "--y1-legend" => {
+                opts.y_legend_format = Some(strip_quotes(&next(&mut iter, "y-legend")?).to_string());
+            }
+            "--y1-label" => opts.ylabel = Some(next(&mut iter, "y1-label")?),
+            "--y1-min" => {
+                axis_seen.note(AxisKey::Y, AxisRole::Min, "--y1-min")?;
+                opts.y_min = parse_axis_bound_value(&next(&mut iter, "y1-min")?)?;
+            }
+            "--y1-max" => {
+                axis_seen.note(AxisKey::Y, AxisRole::Max, "--y1-max")?;
+                opts.y_max = parse_axis_bound_value(&next(&mut iter, "y1-max")?)?;
+            }
+            "--y1-scale" => opts.yscale = next(&mut iter, "y1-scale")?,
+            "--y1-ticks" => opts.y_ticks = parse_tick_spec(&next(&mut iter, "y1-ticks")?),
+            "--y1-range" => {
+                axis_seen.note(AxisKey::Y, AxisRole::Range, "--y1-range")?;
+                let (lo, hi) = parse_range_spec(&next(&mut iter, "y1-range")?)
+                    .map_err(|e| format!("--y1-range: {e}"))?;
+                opts.y_min = lo; opts.y_max = hi;
+            }
+            // y2/y3/y4 flag families dispatch through the
+            // shared `apply_axis_directive` helper — same
+            // policy as the YAML body parser. The CLI form
+            // strips the leading `--` and feeds the rest of
+            // the flag name (axis-num + sub-directive) to
+            // the dispatcher.
+            flag if cli_axis_flag_match(flag).is_some() => {
+                let (axis_num, sub) = cli_axis_flag_match(flag).unwrap();
+                let value = next(&mut iter, &flag[2..])?;
+                apply_axis_directive(&mut opts, &mut axis_seen, axis_num, sub, value.trim())?;
+            }
+            "--style" => {
+                let v = next(&mut iter, "style")?;
+                opts.series_overrides.push(parse_style_override(&v)
+                    .map_err(|e| format!("--style '{v}': {e}"))?);
+            }
+            "--x-ticks"  => opts.x_ticks  = parse_tick_spec(&next(&mut iter, "x-ticks")?),
+            "--y-ticks"  => opts.y_ticks  = parse_tick_spec(&next(&mut iter, "y-ticks")?),
+            "--x-range"  => {
+                axis_seen.note(AxisKey::X, AxisRole::Range, "--x-range")?;
+                let (lo, hi) = parse_range_spec(&next(&mut iter, "x-range")?)
+                    .map_err(|e| format!("--x-range: {e}"))?;
+                opts.x_min = lo; opts.x_max = hi;
+            }
+            "--y-range"  => {
+                axis_seen.note(AxisKey::Y, AxisRole::Range, "--y-range")?;
+                let (lo, hi) = parse_range_spec(&next(&mut iter, "y-range")?)
+                    .map_err(|e| format!("--y-range: {e}"))?;
+                opts.y_min = lo; opts.y_max = hi;
+            }
             "--verbose" | "-v" => opts.verbose = true,
             // Global flags consumed at startup
             // (`apply_session_directory_at_startup`, SRD-15
@@ -1306,16 +2481,66 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                             .map_err(|_| "--width must be a positive integer".to_string())?,
                         "height" => opts.height = v.parse()
                             .map_err(|_| "--height must be a positive integer".to_string())?,
-                        "x-min" => opts.x_min = Some(v.parse()
-                            .map_err(|_| "--x-min must be a number".to_string())?),
-                        "x-max" => opts.x_max = Some(v.parse()
-                            .map_err(|_| "--x-max must be a number".to_string())?),
-                        "y-min" => opts.y_min = Some(v.parse()
-                            .map_err(|_| "--y-min must be a number".to_string())?),
-                        "y-max" => opts.y_max = Some(v.parse()
-                            .map_err(|_| "--y-max must be a number".to_string())?),
+                        "x-min" => {
+                            axis_seen.note(AxisKey::X, AxisRole::Min, "--x-min")?;
+                            opts.x_min = Some(v.parse()
+                                .map_err(|_| "--x-min must be a number".to_string())?);
+                        }
+                        "x-max" => {
+                            axis_seen.note(AxisKey::X, AxisRole::Max, "--x-max")?;
+                            opts.x_max = Some(v.parse()
+                                .map_err(|_| "--x-max must be a number".to_string())?);
+                        }
+                        "y-min" => {
+                            axis_seen.note(AxisKey::Y, AxisRole::Min, "--y-min")?;
+                            opts.y_min = Some(v.parse()
+                                .map_err(|_| "--y-min must be a number".to_string())?);
+                        }
+                        "y-max" => {
+                            axis_seen.note(AxisKey::Y, AxisRole::Max, "--y-max")?;
+                            opts.y_max = Some(v.parse()
+                                .map_err(|_| "--y-max must be a number".to_string())?);
+                        }
                         "legend" => opts.legend = Some(v.to_string()),
-                        "query" => opts.query = Some(v.to_string()),
+                        "y" | "y1" => opts.query = Some(v.to_string()),
+                        "y-legend" | "y1-legend" => {
+                            opts.y_legend_format = Some(strip_quotes(v).to_string());
+                        }
+                        "y1-label" => opts.ylabel = Some(v.to_string()),
+                        "y1-min" => {
+                            axis_seen.note(AxisKey::Y, AxisRole::Min, "--y1-min")?;
+                            opts.y_min = parse_axis_bound_value(v)?;
+                        }
+                        "y1-max" => {
+                            axis_seen.note(AxisKey::Y, AxisRole::Max, "--y1-max")?;
+                            opts.y_max = parse_axis_bound_value(v)?;
+                        }
+                        "y1-scale" => opts.yscale = v.to_string(),
+                        "y1-ticks" => opts.y_ticks = parse_tick_spec(v),
+                        "y1-range" => {
+                            axis_seen.note(AxisKey::Y, AxisRole::Range, "--y1-range")?;
+                            let (lo, hi) = parse_range_spec(v)
+                                .map_err(|e| format!("--y1-range: {e}"))?;
+                            opts.y_min = lo; opts.y_max = hi;
+                        }
+                        "style" => opts.series_overrides.push(
+                            parse_style_override(v)
+                                .map_err(|e| format!("--style '{v}': {e}"))?
+                        ),
+                        "x-ticks"  => opts.x_ticks  = parse_tick_spec(v),
+                        "y-ticks"  => opts.y_ticks  = parse_tick_spec(v),
+                        "x-range"  => {
+                            axis_seen.note(AxisKey::X, AxisRole::Range, "--x-range")?;
+                            let (lo, hi) = parse_range_spec(v)
+                                .map_err(|e| format!("--x-range: {e}"))?;
+                            opts.x_min = lo; opts.x_max = hi;
+                        }
+                        "y-range"  => {
+                            axis_seen.note(AxisKey::Y, AxisRole::Range, "--y-range")?;
+                            let (lo, hi) = parse_range_spec(v)
+                                .map_err(|e| format!("--y-range: {e}"))?;
+                            opts.y_min = lo; opts.y_max = hi;
+                        }
                         "csv-also" => opts.csv_also = Some(PathBuf::from(v)),
                         "report" | "update-markdown" => {
                             if v == "skip" || v.is_empty() {
@@ -1329,7 +2554,25 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                             opts.report = Some(PathBuf::from(v));
                             opts.report_mode = crate::report::WriteMode::AddIfMissing;
                         }
-                        _ => return Err(format!("unknown option: {other}")),
+                        // Generic y2/y3/y4 axis dispatch — same
+                        // helper as the body parser. The `--`
+                        // prefix has been stripped by the outer
+                        // `strip_prefix("--")` already, so we
+                        // re-add it for the matcher (which
+                        // expects the full `--key` form). Falls
+                        // through to "unknown option" if the
+                        // key isn't a yN-* shape.
+                        key => {
+                            let full = format!("--{key}");
+                            if let Some((axis_num, sub)) = cli_axis_flag_match(&full) {
+                                apply_axis_directive(
+                                    &mut opts, &mut axis_seen,
+                                    axis_num, sub, v.trim(),
+                                )?;
+                            } else {
+                                return Err(format!("unknown option: {other}"));
+                            }
+                        }
                     }
                 } else if matches!(other, "--strict" | "--no-prompt"
                     | "--resume-latest" | "--force-retry-failed")
@@ -1344,6 +2587,7 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
             }
         }
     }
+    opts.validate_axis_contiguity()?;
     Ok(opts)
 }
 
@@ -1620,23 +2864,35 @@ fn series_tuple_key(
 /// Returns the keys in stable alphabetical order so the legend
 /// formatting is deterministic.
 fn auto_detect_series_labels(rows: &[DbRow], x_label: &str) -> Vec<String> {
-    let mut by_key: std::collections::HashMap<String, std::collections::HashSet<String>> =
-        std::collections::HashMap::new();
+    // Discriminator policy: every label present on the
+    // result rows except the X axis becomes a series
+    // discriminator, regardless of how many distinct
+    // values it carries.
+    //
+    //   * The `by(...)` clause in metricsql is the
+    //     authoritative declaration of which dimensions
+    //     the result is grouped on. Honouring every label
+    //     defers to that declaration without
+    //     second-guessing.
+    //   * Single-valued labels (e.g. `optimize_for="RECALL"`
+    //     filtered to one value, or `session` in a
+    //     single-db plot) are still legitimate
+    //     discriminators that may need to be referenced
+    //     by `[name]` placeholders in legend templates,
+    //     or that the operator wants visible for
+    //     cross-run / cross-session comparison.
+    //
+    // Only the X axis is excluded — including it in the
+    // discriminator set would yield one series per X
+    // value, defeating the chart.
+    let mut keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     for row in rows {
-        for (k, v) in &row.labels {
+        for k in row.labels.keys() {
             if k == x_label { continue; }
-            // `session` was already stripped by db_merge for
-            // multi-db; the per-db case still has it. Exclude it
-            // from auto-series so single-db plots don't
-            // accidentally dimensionalize on session id.
-            if k == "session" { continue; }
-            by_key.entry(k.clone()).or_default().insert(v.clone());
+            keys.insert(k.clone());
         }
     }
-    let mut varying: Vec<String> = by_key.into_iter()
-        .filter(|(_, vs)| vs.len() > 1)
-        .map(|(k, _)| k)
-        .collect();
+    let mut varying: Vec<String> = keys.into_iter().collect();
     varying.sort();
     varying
 }
@@ -1667,12 +2923,87 @@ fn sanitize_filename(s: &str) -> String {
     }).collect()
 }
 
+/// Project a value `v` from a secondary axis's coordinate
+/// system (range `from`, log iff `from_log`) into the
+/// primary y-coordinate (range `to`, log iff `to_log`).
+/// Used by `draw_chart` to draw axis 3+ series against the
+/// primary chart coord — plotters only has one built-in
+/// secondary slot, so axes past it are projected. The
+/// projection preserves relative position within each
+/// axis's range, picking log or linear normalisation per
+/// side independently.
+fn project_value(
+    v: f64,
+    from: &std::ops::Range<f64>, from_log: bool,
+    to: &std::ops::Range<f64>, to_log: bool,
+) -> f64 {
+    let normalize = |x: f64, lo: f64, hi: f64, log: bool| -> f64 {
+        if log && x > 0.0 && lo > 0.0 && hi > 0.0 {
+            let l_lo = lo.ln();
+            let l_hi = hi.ln();
+            if l_hi == l_lo { 0.0 } else { (x.ln() - l_lo) / (l_hi - l_lo) }
+        } else if hi == lo { 0.0 } else { (x - lo) / (hi - lo) }
+    };
+    let denormalize = |t: f64, lo: f64, hi: f64, log: bool| -> f64 {
+        if log && lo > 0.0 && hi > 0.0 {
+            let l_lo = lo.ln();
+            let l_hi = hi.ln();
+            (l_lo + t * (l_hi - l_lo)).exp()
+        } else { lo + t * (hi - lo) }
+    };
+    let t = normalize(v, from.start, from.end, from_log);
+    denormalize(t, to.start, to.end, to_log)
+}
+
+/// Per-axis range/scale/label data fully resolved and ready
+/// for the renderer. Built by `render_plot` from
+/// `ResolvedSecondaryAxis` plus the global axis-padding
+/// rules; consumed by `draw_chart`. Adding axis 5+ would
+/// only require the cap to be raised and another iteration —
+/// no new struct fields or render branches.
+struct RenderedAxis<'a> {
+    /// Display name (`"y2"`, `"y3"`, …).
+    name: &'a str,
+    /// Right-rail axis title.
+    label: String,
+    /// Padded, scale-snapped range.
+    range: std::ops::Range<f64>,
+    /// Linear vs log.
+    is_log: bool,
+    /// Resolved tick detents (may be empty).
+    ticks: &'a [f64],
+    /// Aggregated series.
+    series: &'a BTreeMap<String, Vec<(f64, f64)>>,
+    /// Per-series legend template (`yN-legend:`). When
+    /// `Some`, replaces the auto-generated series-name
+    /// shape entirely — no `(R)` / `(R2)` suffix is
+    /// appended (the operator is taking full ownership of
+    /// the label, including any axis disambiguation).
+    legend_format: Option<&'a str>,
+    /// `true` when no data has been produced yet for this
+    /// axis. Pending axes are not drawn but still emit a
+    /// placeholder legend entry suffixed `(pending)` so
+    /// live plots show the axis is wired up and waiting.
+    pending: bool,
+    /// Effective side: `"left"` projects into the primary
+    /// y coord; `"right"` uses plotters' secondary coord
+    /// (axis 2's range). Resolved per `AxisOpts.side` with
+    /// per-axis defaults applied (axis 2 → right; axes 3+
+    /// → left to preserve the project-into-primary
+    /// fallback). See SRD-65 followups for full
+    /// rail-rendering of axes 3+ on the right.
+    side: &'a str,
+}
+
 fn render_plot(
     series: &BTreeMap<String, Vec<(f64, f64)>>,
+    secondary: &[ResolvedSecondaryAxis],
     opts: &PlotMetricsOpts,
     x_label: &str,
     metric: &str,
     out_path: &Path,
+    x_ticks: &[f64],
+    y_ticks: &[f64],
 ) -> Result<(), String> {
     if let Some(parent) = out_path.parent() {
         if !parent.as_os_str().is_empty() && !parent.exists() {
@@ -1681,7 +3012,9 @@ fn render_plot(
         }
     }
 
-    // Compute axis ranges across all series.
+    // Compute axis ranges across all series — primary first,
+    // then every secondary axis. X is shared across all axes
+    // (the chart has one X scale); each Y range is per-axis.
     let mut x_min = f64::INFINITY;
     let mut x_max = f64::NEG_INFINITY;
     let mut y_min = f64::INFINITY;
@@ -1699,18 +3032,80 @@ fn render_plot(
         }
     }
     if !x_min.is_finite() || !x_max.is_finite() || !y_min.is_finite() || !y_max.is_finite() {
-        return Err("no finite (x, y) points to plot".to_string());
+        return Err(format!("{PLOT_NO_DATA_PREFIX}no finite (x, y) points to plot"));
     }
-    // Padding so points don't sit on the axis edges. User-set
-    // bounds (via `--x-min` / `--x-max` / `--y-min` / `--y-max`)
-    // win verbatim — no padding applied — so two charts can
-    // share scales when the user pins them explicitly.
-    let x_pad = ((x_max - x_min) * 0.05).max(1e-9);
-    let y_pad = ((y_max - y_min) * 0.05).max(1e-9);
-    let x_lo = opts.x_min.unwrap_or(x_min - x_pad);
-    let x_hi = opts.x_max.unwrap_or(x_max + x_pad);
-    let y_lo = opts.y_min.unwrap_or(y_min - y_pad);
-    let y_hi = opts.y_max.unwrap_or(y_max + y_pad);
+
+    // Per-secondary-axis data extents. We compute these in a
+    // first pass so X-range knows about every axis's points,
+    // THEN we apply per-axis padding/scale resolution.
+    let mut sec_extents: Vec<(f64, f64)> = Vec::with_capacity(secondary.len());
+    for axis in secondary {
+        // Pending axes (no data yet) get a placeholder
+        // extent. They aren't drawn, so the range value is
+        // never actually rendered — but downstream code
+        // still indexes into `sec_extents` per axis.
+        if axis.pending {
+            sec_extents.push((0.0, 1.0));
+            continue;
+        }
+        let mut a_min = f64::INFINITY;
+        let mut a_max = f64::NEG_INFINITY;
+        for points in axis.series.values() {
+            for &(x, y) in points {
+                if x.is_finite() {
+                    if x < x_min { x_min = x; }
+                    if x > x_max { x_max = x; }
+                }
+                if y.is_finite() {
+                    if y < a_min { a_min = y; }
+                    if y > a_max { a_max = y; }
+                }
+            }
+        }
+        if !a_min.is_finite() || !a_max.is_finite() {
+            // Defensive: a non-pending axis with no finite
+            // points shouldn't happen post the
+            // bucket-empty pending guard, but the
+            // placeholder treatment is safe either way.
+            sec_extents.push((0.0, 1.0));
+            continue;
+        }
+        sec_extents.push((a_min, a_max));
+    }
+
+    // Resolve log/linear scale ahead of range computation so
+    // padding can be axis-appropriate. Linear axes get
+    // additive padding (`(max - min) * 5%`); log axes get
+    // multiplicative padding (`* 1.05` and `/ 1.05`) so the
+    // lower bound stays strictly positive — additive padding
+    // would push `x_lo = x_min - pad` negative whenever
+    // `pad > x_min`, which collapses every datapoint to the
+    // log axis's left edge.
+    let resolve_scale = |user: &str, ticks: &[f64]| -> bool {
+        let want_auto = user.is_empty() || user.eq_ignore_ascii_case("auto");
+        if want_auto {
+            if !ticks.is_empty() {
+                matches!(detect_scale_from_ticks(ticks), DetectedScale::Log)
+            } else { false }
+        } else {
+            user.eq_ignore_ascii_case("log")
+        }
+    };
+    let x_log = resolve_scale(&opts.xscale, x_ticks);
+    let y_log = resolve_scale(&opts.yscale, y_ticks);
+
+    // Padding helper closures. Reused across primary and
+    // every secondary axis — no per-axis branching.
+    let pad_lo = |min: f64, max: f64, log: bool| -> f64 {
+        if log && min > 0.0 { min / 1.05 } else { min - ((max - min) * 0.05).max(1e-9) }
+    };
+    let pad_hi = |min: f64, max: f64, log: bool| -> f64 {
+        if log && max > 0.0 { max * 1.05 } else { max + ((max - min) * 0.05).max(1e-9) }
+    };
+    let x_lo = opts.x_min.unwrap_or_else(|| pad_lo(x_min, x_max, x_log));
+    let x_hi = opts.x_max.unwrap_or_else(|| pad_hi(x_min, x_max, x_log));
+    let y_lo = opts.y_min.unwrap_or_else(|| pad_lo(y_min, y_max, y_log));
+    let y_hi = opts.y_max.unwrap_or_else(|| pad_hi(y_min, y_max, y_log));
 
     // Scale snapping: `dec` / `bin` keep a linear axis but
     // expand the range so the endpoints sit on a tick-friendly
@@ -1729,22 +3124,112 @@ fn render_plot(
     let x_range = x_lo..x_hi;
     let y_range = y_lo..y_hi;
 
-    let title = opts.title.clone().unwrap_or_else(|| {
-        let filter_summary = if opts.filters.is_empty() {
-            String::new()
-        } else {
-            format!(
-                " [{}]",
-                opts.filters.iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>().join(", "),
-            )
-        };
-        format!("{metric} vs {x_label}{filter_summary}")
-    });
+    // Per-axis range + log resolution. Mirrors the primary
+    // padding/snap policy. Stored owned (Strings, Ranges)
+    // because RenderedAxis borrows from this vec.
+    struct AxisDerived {
+        label: String,
+        range: std::ops::Range<f64>,
+        is_log: bool,
+    }
+    let derived: Vec<AxisDerived> = secondary.iter().enumerate().map(|(i, axis)| {
+        let (a_min, a_max) = sec_extents[i];
+        let is_log = resolve_scale(&axis.cfg.scale, &axis.ticks);
+        let lo = axis.cfg.min.unwrap_or_else(|| pad_lo(a_min, a_max, is_log));
+        let hi = axis.cfg.max.unwrap_or_else(|| pad_hi(a_min, a_max, is_log));
+        let (lo, hi) = scale_snap(
+            lo, hi, &axis.cfg.scale,
+            axis.cfg.min.is_some(), axis.cfg.max.is_some(),
+        );
+        // Right-rail title resolution order:
+        //   1. Explicit `yN-label:` / `yr-label:` (axis 2) /
+        //      `--yN-label` → `axis.cfg.label`. Operator-
+        //      supplied verbatim.
+        //   2. `yN-legend:` template, IF it has no `[name]`
+        //      placeholders. A static template like
+        //      `y2-legend: "pvs"` reads naturally as both
+        //      the legend label and the axis title.
+        //   3. Synthesise from the query's leading
+        //      identifier (legacy fallback).
+        //   4. Axis name (`y2`, `y3`, …) as last resort.
+        let label = axis.cfg.label.clone().unwrap_or_else(|| {
+            if let Some(template) = axis.cfg.legend_format.as_deref() {
+                if !template.contains('[') {
+                    return template.to_string();
+                }
+            }
+            axis.cfg.query.as_deref()
+                .map(|q| q.chars().take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect::<String>())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| axis.name.clone())
+        });
+        AxisDerived { label, range: lo..hi, is_log }
+    }).collect();
+    let rendered_secondary: Vec<RenderedAxis<'_>> = secondary.iter().enumerate()
+        .map(|(i, axis)| RenderedAxis {
+            name: &axis.name,
+            label: derived[i].label.clone(),
+            range: derived[i].range.clone(),
+            is_log: derived[i].is_log,
+            ticks: &axis.ticks,
+            series: &axis.series,
+            legend_format: axis.cfg.legend_format.as_deref(),
+            pending: axis.pending,
+            // Effective side: explicit `yN-side:` value
+            // wins; otherwise default per axis index.
+            // Axis 2 (i==0) defaults to right (preserves
+            // the legacy y2-rail layout). Axes 3+ default
+            // to left (the project-into-primary path that
+            // existed before `side:` was introduced).
+            side: axis.cfg.side.as_deref().unwrap_or(if i == 0 { "right" } else { "left" }),
+        })
+        .collect();
+
+    // Chart caption resolution order:
+    //   1. Explicit `title:` directive — operator-supplied
+    //      caption, used verbatim.
+    //   2. `label "..."` directive — the workload-level
+    //      display label is the natural chart caption when
+    //      no separate title is given. The same string also
+    //      becomes the markdown heading for the figure, so
+    //      caption and heading match by default.
+    //   3. Synthesised `<metric> vs <x>` fallback for plots
+    //      with neither directive set.
+    let title = opts.title.clone()
+        .or_else(|| opts.label.clone())
+        .unwrap_or_else(|| {
+            let filter_summary = if opts.filters.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " [{}]",
+                    opts.filters.iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>().join(", "),
+                )
+            };
+            format!("{metric} vs {x_label}{filter_summary}")
+        });
 
     let x_axis = opts.xlabel.clone().unwrap_or_else(|| x_label.to_string());
-    let y_axis = opts.ylabel.clone().unwrap_or_else(|| metric.to_string());
+    // Y-axis (left) title resolution order:
+    //   1. Explicit `yl-label:` / `y-label:` / `--ylabel`
+    //      → `opts.ylabel`. Operator-supplied verbatim.
+    //   2. `y-legend:` / `y1-legend:` template, IF it has
+    //      no `[name]` placeholders. A static template like
+    //      `y-legend: "oracle recall"` reads naturally as
+    //      both the legend label and the axis title; a
+    //      template with placeholders (`oracle [profile]`)
+    //      is per-series and not appropriate as an axis
+    //      title.
+    //   3. The metric name (`metric` arg to render_plot) —
+    //      legacy fallback.
+    let y_axis = opts.ylabel.clone()
+        .or_else(|| opts.y_legend_format.as_deref()
+            .filter(|t| !t.contains('['))
+            .map(|t| t.to_string()))
+        .unwrap_or_else(|| metric.to_string());
 
     // Pick the backend by output extension. SVG is the default
     // hermetic path; PNG goes through the bitmap backend (which
@@ -1758,31 +3243,46 @@ fn render_plot(
     let legend_spec = parse_legend_spec(opts.legend.as_deref())?;
     let legend_explicit = opts.legend.is_some();
 
-    // `log` axis: plotters' log-scale coord type differs from
-    // the linear range type at compile time, so wiring it
-    // requires a 4-arm dispatch (lin/log × x/y) over the chart
-    // builder. Deferred — for now `log` falls back to `dec`
-    // (which gives decade-aligned linear ticks, the same look
-    // most users want from `log`). Logged here as a TODO; the
-    // behavior is documented in `--help` and the vocab keyword
-    // is still accepted so workloads don't break.
-    if opts.xscale == "log" || opts.yscale == "log" {
-        eprintln!("warning: xscale/yscale 'log' currently renders \
-            with decade-aligned linear ticks (range snapped \
-            to powers of 10); a true log axis is pending.");
+    // Diagnostic scale logging: one line per axis. Same
+    // format whether the chart has 1, 2, 3, or 4 axes.
+    let log_label = |is_log: bool| if is_log { "log" } else { "linear" };
+    let src = |user: &str, ticks: &[f64]| -> String {
+        if !user.is_empty() { format!("`{user}`") }
+        else if ticks.is_empty() { "default linear (no ticks for auto-detect)".to_string() }
+        else { format!("auto-detect on {} tick(s)", ticks.len()) }
+    };
+    eprintln!("scale: xscale={} (from {}) ticks={:?}",
+        log_label(x_log), src(&opts.xscale, x_ticks), x_ticks);
+    eprintln!("scale: y1scale={} (from {}) ticks={:?}",
+        log_label(y_log), src(&opts.yscale, y_ticks), y_ticks);
+    for axis in &rendered_secondary {
+        eprintln!("scale: {}scale={} (from {}) ticks={:?}",
+            axis.name, log_label(axis.is_log),
+            src(&secondary.iter().find(|a| a.name == axis.name).unwrap().cfg.scale, axis.ticks),
+            axis.ticks);
     }
 
     if is_svg {
         let root = SVGBackend::new(out_path, (opts.width, opts.height)).into_drawing_area();
-        draw_chart(&root, series, &title, &x_axis, &y_axis, x_range, y_range, metric,
+        draw_chart(&root, series, &rendered_secondary, &title, &x_axis, &y_axis,
+            x_range, y_range, metric,
             opts.palette.as_deref(), opts.line.as_deref(), opts.line_width,
-            opts.marker.as_deref(), opts.marker_size, legend_spec, legend_explicit)?;
+            opts.marker.as_deref(), opts.marker_size, legend_spec, legend_explicit,
+            &opts.series_overrides,
+            x_log, y_log,
+            x_ticks, y_ticks,
+            opts.y_legend_format.as_deref())?;
         root.present().map_err(|e| format!("present: {e}"))?;
     } else {
         let root = BitMapBackend::new(out_path, (opts.width, opts.height)).into_drawing_area();
-        draw_chart(&root, series, &title, &x_axis, &y_axis, x_range, y_range, metric,
+        draw_chart(&root, series, &rendered_secondary, &title, &x_axis, &y_axis,
+            x_range, y_range, metric,
             opts.palette.as_deref(), opts.line.as_deref(), opts.line_width,
-            opts.marker.as_deref(), opts.marker_size, legend_spec, legend_explicit)?;
+            opts.marker.as_deref(), opts.marker_size, legend_spec, legend_explicit,
+            &opts.series_overrides,
+            x_log, y_log,
+            x_ticks, y_ticks,
+            opts.y_legend_format.as_deref())?;
         root.present().map_err(|e| format!("present: {e}"))?;
     }
     Ok(())
@@ -1810,6 +3310,341 @@ enum LegendSpec {
 /// bounds (`pinned_lo` / `pinned_hi`) skip the snap on that
 /// side so explicit overrides win verbatim.
 ///
+/// Parse one `--style key=value:k=v k=v` argument into a
+/// [`PlotStyleOverride`]. Mirrors the workload-side
+/// `parse_series_arg` (in `nbrs/src/report_build.rs`) so the
+/// CLI form, the YAML body form, and the `--style` flag the
+/// report-cmd render path emits all round-trip identically.
+///
+/// Form: `key=value:k=v k=v ...`
+///   - `key=value` — discriminator (first `=` only; values
+///     can't contain `:` here).
+///   - directive list — whitespace-separated `k=v` pairs.
+fn parse_style_override(s: &str) -> Result<PlotStyleOverride, String> {
+    let (head, rest) = s.split_once(':').ok_or_else(|| format!(
+        "value '{s}' must be 'key=value:<directives>'"))?;
+    let (key, value) = head.split_once('=').ok_or_else(|| format!(
+        "head '{head}' must be 'key=value'"))?;
+    let mut o = PlotStyleOverride {
+        key: key.trim().to_string(),
+        value: value.trim().trim_matches('"').trim_matches('\'').to_string(),
+        palette: None, line: None, width: None,
+        marker: None, size: None, color: None,
+    };
+    for tok in rest.split_whitespace() {
+        let (k, v) = tok.split_once('=').ok_or_else(|| format!(
+            "directive '{tok}' must be key=value"))?;
+        let v = v.trim().trim_matches('"').trim_matches('\'');
+        match k {
+            "palette" => o.palette = Some(v.to_string()),
+            "line"    => o.line    = Some(v.to_string()),
+            "width"   => o.width   = Some(v.parse()
+                .map_err(|_| format!("style width '{v}' must be a number"))?),
+            "marker"  => o.marker  = Some(v.to_string()),
+            "size"    => o.size    = Some(v.parse()
+                .map_err(|_| format!("style size '{v}' must be a number"))?),
+            "color"   => o.color   = Some(v.to_string()),
+            other => return Err(format!("unknown style key '{other}'")),
+        }
+    }
+    Ok(o)
+}
+
+/// Unified plotters coordinate descriptor for an f64-valued
+/// axis. Supplies `Ranged` + `ValueFormatter<f64>` impls that
+/// internally dispatch on linear vs log AND honor explicit
+/// tick positions when supplied — collapsing what would be a
+/// 4-way coord-type dispatch (linear / log × auto-ticks /
+/// explicit-ticks) into a single concrete type at the chart-
+/// construction site.
+///
+/// Why an enum instead of generic-NewType wrappers:
+///
+/// - plotters' chart context is parametrically typed over its
+///   coord descriptor. Mixing log and linear coords across
+///   axes — or toggling explicit-ticks on per axis — produces
+///   distinct chart types that a single `match` can't unify.
+///   Each combination would force its own arm, and combining
+///   x × y options gives 16 (and y2 would push to 32).
+/// - Plotters' explicit-tick combinator (`WithKeyPoints<...>`)
+///   doesn't ship the `ValueFormatter<f64>` impl that
+///   `configure_mesh` requires for numeric coords (the
+///   `Debug`-driven blanket is gated behind
+///   `FormatOption = DefaultFormatting`; numeric coords use
+///   `NoDefaultFormatting`). A wrapper for ticks alone is
+///   needed regardless.
+/// - Putting both the linear/log choice AND the
+///   tick-or-auto-pick choice inside one runtime-tagged enum
+///   collapses the explosion: chart construction sees a
+///   single `F64Axis` type per axis, and the `Ranged`
+///   methods branch on the variant. The chart's overall
+///   coord-type is `Cartesian2d<F64Axis, F64Axis>` regardless
+///   of axis configuration.
+///
+/// The trade-off is one runtime branch per `map` /
+/// `key_points` / `range` call. Plotters invokes these once
+/// per tick / per data point during draw — well below the
+/// noise floor of the rendering work itself.
+enum F64CoordKind {
+    Linear(plotters::coord::types::RangedCoordf64),
+    Log(plotters::coord::combinators::LogCoord<f64>),
+}
+
+struct F64Axis {
+    kind: F64CoordKind,
+    /// Explicit tick positions. Empty ⇒ delegate to the
+    /// inner coord's auto-picker (plotters' built-in
+    /// decade / linear-step heuristic). Non-empty ⇒ used
+    /// verbatim as the bold-tick list.
+    explicit_ticks: Vec<f64>,
+}
+
+impl F64Axis {
+    fn new(range: std::ops::Range<f64>, log: bool, ticks: Vec<f64>) -> Self {
+        use plotters::coord::combinators::IntoLogRange;
+        let kind = if log {
+            F64CoordKind::Log(range.log_scale().into())
+        } else {
+            F64CoordKind::Linear(range.into())
+        };
+        Self { kind, explicit_ticks: ticks }
+    }
+}
+
+impl plotters::coord::ranged1d::Ranged for F64Axis {
+    type FormatOption = plotters::coord::ranged1d::NoDefaultFormatting;
+    type ValueType = f64;
+
+    fn range(&self) -> std::ops::Range<f64> {
+        match &self.kind {
+            F64CoordKind::Linear(r) => r.range(),
+            F64CoordKind::Log(r) => r.range(),
+        }
+    }
+
+    fn map(&self, v: &f64, limit: (i32, i32)) -> i32 {
+        match &self.kind {
+            F64CoordKind::Linear(r) => r.map(v, limit),
+            F64CoordKind::Log(r) => r.map(v, limit),
+        }
+    }
+
+    fn key_points<H: plotters::coord::ranged1d::KeyPointHint>(&self, hint: H) -> Vec<f64> {
+        if !self.explicit_ticks.is_empty() {
+            return self.explicit_ticks.clone();
+        }
+        match &self.kind {
+            F64CoordKind::Linear(r) => r.key_points(hint),
+            F64CoordKind::Log(r) => r.key_points(hint),
+        }
+    }
+}
+
+impl plotters::coord::ranged1d::ValueFormatter<f64> for F64Axis {
+    fn format(value: &f64) -> String {
+        // Compact f64 rendering for axis tick labels:
+        //   * integer-valued numbers print without decimals;
+        //   * otherwise round to 6 significant digits and
+        //     strip trailing zeros, so `0.1` prints as `0.1`,
+        //     not `0.1000000` and `1.0` not `0.9999999999`.
+        // The 6-sig-fig cap is the practical readability
+        // limit for chart labels; rounding hides float
+        // imprecision artifacts from plotters' tick picker.
+        if value.fract() == 0.0 && value.abs() < 1e16 {
+            return format!("{}", *value as i64);
+        }
+        if !value.is_finite() {
+            return format!("{value}");
+        }
+        // 6 significant digits, then trim trailing zeros and
+        // a dangling decimal point.
+        let mag = value.abs();
+        let digits_after_decimal: i32 = if mag == 0.0 { 0 }
+            else { 5 - mag.log10().floor() as i32 };
+        let digits_after_decimal = digits_after_decimal.clamp(0, 12) as usize;
+        let mut s = format!("{value:.*}", digits_after_decimal);
+        if s.contains('.') {
+            while s.ends_with('0') { s.pop(); }
+            if s.ends_with('.') { s.pop(); }
+        }
+        s
+    }
+}
+
+/// What an `Auto` / `Query` tick spec extracts from the
+/// underlying rows. X-axis ticks pull the X-label values out
+/// of result series's labels; Y/Y2 ticks pull the sample
+/// `mean` value column.
+#[derive(Debug, Clone, Copy)]
+enum TickAxis {
+    /// `x-ticks` — distinct values of the configured x-label
+    /// label name across the row set. Numeric parse only;
+    /// non-numeric label values are dropped.
+    XLabel,
+    /// `y-ticks` / `y2-ticks` — distinct sample mean values
+    /// across the row set. Already numeric in the schema.
+    YValue,
+}
+
+/// Resolve a [`TickSpec`] to a sorted, deduped `Vec<f64>` of
+/// tick positions. The result is plumbed into `with_key_points`
+/// at chart-construction time.
+///
+/// `Auto` reads directly from `primary_rows` — the rows
+/// already fetched for the main query. `Query` evaluates a
+/// metricsql expression against `query_db` and harvests the
+/// same axis from its result rows.
+///
+/// Returns an empty Vec for `TickSpec::None` (or when `Auto`
+/// is requested against an empty row set, which happens for
+/// y2 when no y2 query was supplied — the caller falls back
+/// to plotters' tick-picker).
+fn resolve_tick_spec(
+    spec: &TickSpec,
+    primary_rows: &[DbRow],
+    x_label: &str,
+    query_db: &Path,
+    axis: TickAxis,
+) -> Result<Vec<f64>, String> {
+    let extract_axis_values = |rows: &[DbRow]| -> Vec<f64> {
+        let mut out = Vec::new();
+        match axis {
+            TickAxis::XLabel => {
+                for r in rows {
+                    if let Some(v) = r.labels.get(x_label)
+                        && let Ok(n) = v.parse::<f64>()
+                    {
+                        out.push(n);
+                    }
+                }
+            }
+            TickAxis::YValue => {
+                for r in rows {
+                    if let Some(m) = r.mean
+                        && m.is_finite()
+                    {
+                        out.push(m);
+                    }
+                }
+            }
+        }
+        out.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        out.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
+        out
+    };
+    match spec {
+        TickSpec::None => Ok(Vec::new()),
+        TickSpec::Literal(v) => {
+            let mut sorted = v.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            sorted.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
+            Ok(sorted)
+        }
+        TickSpec::Auto => {
+            if primary_rows.is_empty() { return Ok(Vec::new()); }
+            Ok(extract_axis_values(primary_rows))
+        }
+        TickSpec::Query(expr) => {
+            let rows = rows_via_metricsql(query_db, expr)
+                .map_err(|e| format!(
+                    "tick metricsql `{expr}` against '{}': {e}",
+                    query_db.display()))?;
+            Ok(extract_axis_values(&rows))
+        }
+    }
+}
+
+/// Detect axis scale ("linear" / "log") from the *shape* of
+/// a tick-position list. Used when the user pins explicit
+/// detents but leaves the scale unset (or `auto`) — the
+/// spacing of the detents is the unambiguous signal.
+///
+/// The classifier:
+///
+/// 1. Filter to finite positive values, sort, dedupe.
+/// 2. Fewer than 3 ticks ⇒ Linear (insufficient signal).
+/// 3. Compute the linear residual: deltas between adjacent
+///    values, normalized RMS deviation against mean delta.
+/// 4. Compute the log residual: ratios between adjacent
+///    values (requires all-positive), normalized RMS
+///    deviation against mean ratio.
+/// 5. Pick whichever residual is smaller AND under the 5%
+///    threshold; tie → linear.
+///
+/// `[1, 2, 3, 4, 5]` → constant deltas → Linear.
+/// `[1, 2, 4, 8, 16]` or `[1, 10, 100, 1000]` → constant
+/// ratios → Log.
+/// `[1, 5, 7, 12]` → neither fits → Linear (default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetectedScale { Linear, Log }
+
+fn detect_scale_from_ticks(ticks: &[f64]) -> DetectedScale {
+    let mut v: Vec<f64> = ticks.iter()
+        .copied().filter(|x| x.is_finite()).collect();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    v.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
+    if v.len() < 3 { return DetectedScale::Linear; }
+    // Linear residual.
+    let deltas: Vec<f64> = v.windows(2).map(|w| w[1] - w[0]).collect();
+    let mean_delta: f64 = deltas.iter().sum::<f64>() / deltas.len() as f64;
+    let linear_residual = if mean_delta.abs() > 0.0 {
+        let var = deltas.iter()
+            .map(|d| (d - mean_delta).powi(2))
+            .sum::<f64>() / deltas.len() as f64;
+        var.sqrt() / mean_delta.abs()
+    } else { f64::INFINITY };
+    // Log residual — requires all-positive.
+    let log_residual = if v.iter().all(|&x| x > 0.0) {
+        let ratios: Vec<f64> = v.windows(2).map(|w| w[1] / w[0]).collect();
+        let mean_ratio: f64 = ratios.iter().sum::<f64>() / ratios.len() as f64;
+        if mean_ratio > 0.0 {
+            let var = ratios.iter()
+                .map(|r| (r - mean_ratio).powi(2))
+                .sum::<f64>() / ratios.len() as f64;
+            var.sqrt() / mean_ratio
+        } else { f64::INFINITY }
+    } else { f64::INFINITY };
+    const THRESHOLD: f64 = 0.05;
+    if log_residual < linear_residual && log_residual < THRESHOLD {
+        DetectedScale::Log
+    } else {
+        DetectedScale::Linear
+    }
+}
+
+/// Parse a `#RRGGBB` hex-color string into a plotters
+/// `RGBColor`. `None` if the string isn't a 7-char hex form;
+/// the caller falls back to the palette default. Used by the
+/// per-series override `color=…` field.
+fn parse_hex_color_for_override(s: &str) -> Option<plotters::style::RGBColor> {
+    let s = s.strip_prefix('#').unwrap_or(s);
+    if s.len() != 6 { return None; }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some(plotters::style::RGBColor(r, g, b))
+}
+
+/// True when this override's discriminator matches the given
+/// series name. Series names are formatted as `key=value` (one
+/// label) or `k1=v1, k2=v2, …` (multi-key tuple) by
+/// `bucket_rows`. The match is "every key=value pair in the
+/// override appears in the series name as a substring." For
+/// the common single-key case this is just an exact-string
+/// check on the value when the override's key matches the
+/// partition key; for tuple names the substring check
+/// disambiguates which series the override binds to.
+fn style_override_matches(o: &PlotStyleOverride, series_name: &str) -> bool {
+    let needle = format!("{}={}", o.key, o.value);
+    // Exact match: the partition is the override's single key.
+    if series_name == o.value || series_name == needle {
+        return true;
+    }
+    // Multi-key tuple form: `k1=v1, k2=v2, ...` — each pair is
+    // comma-separated.
+    series_name.split(',').any(|seg| seg.trim() == needle)
+}
+
 /// - `dec` snaps to the nearest decade boundary
 ///   (10⌊log10⌋…10⌈log10⌉) — useful when the axis spans
 ///   orders of magnitude.
@@ -1902,6 +3737,7 @@ fn parse_legend_spec(arg: Option<&str>) -> Result<LegendSpec, String> {
 fn draw_chart<DB>(
     root: &DrawingArea<DB, plotters::coord::Shift>,
     series: &BTreeMap<String, Vec<(f64, f64)>>,
+    secondary: &[RenderedAxis<'_>],
     title: &str,
     x_axis: &str,
     y_axis: &str,
@@ -1915,6 +3751,12 @@ fn draw_chart<DB>(
     marker_size: Option<f32>,
     legend_spec: LegendSpec,
     legend_explicit: bool,
+    series_overrides: &[PlotStyleOverride],
+    x_log: bool,
+    y_log: bool,
+    x_ticks: &[f64],
+    y_ticks: &[f64],
+    y_legend_format: Option<&str>,
 ) -> Result<(), String>
 where
     DB: DrawingBackend,
@@ -1922,17 +3764,46 @@ where
 {
     root.fill(&WHITE).map_err(|e| format!("fill: {e}"))?;
 
-    let mut chart_builder = ChartBuilder::on(root);
-    chart_builder
+    // Right-rail allowance grows by 70px per secondary axis
+    // declared. Plotters' `set_secondary_coord` natively
+    // renders the FIRST secondary axis (axis 2) on the right
+    // rail; axes 3+ are projected into the primary coord and
+    // their values are read off the legend's `(Rk)` suffixes
+    // (rail-tick rendering for axes 3+ is deferred — see
+    // SRD-65 followups).
+    let right_label_area = match secondary.len() {
+        0 => 20,
+        1 => 70,
+        n => 70 + 30 * (n as i32 - 1) as i32,
+    };
+
+    // Axis-2 coord descriptor (the only secondary plotters
+    // tracks natively). Empty when the chart has no
+    // secondaries — in that case we still set a
+    // placeholder so the chart-builder's type stays uniform,
+    // but never call `draw_secondary_series`.
+    let x_range_for_secondary = x_range.clone();
+    let (sec_y_range, sec_y_log, sec_y_ticks): (std::ops::Range<f64>, bool, Vec<f64>) =
+        if let Some(a2) = secondary.first() {
+            (a2.range.clone(), a2.is_log, a2.ticks.to_vec())
+        } else {
+            (0.0f64..1.0f64, false, Vec::new())
+        };
+
+    let primary_x = F64Axis::new(x_range, x_log, x_ticks.to_vec());
+    let primary_y = F64Axis::new(y_range.clone(), y_log, y_ticks.to_vec());
+    let secondary_x = F64Axis::new(x_range_for_secondary, x_log, Vec::new());
+    let secondary_y2 = F64Axis::new(sec_y_range, sec_y_log, sec_y_ticks);
+
+    let mut chart = ChartBuilder::on(root)
         .caption(title, ("sans-serif", 24))
         .margin(20)
         .x_label_area_size(50)
         .y_label_area_size(70)
-        .right_y_label_area_size(20);
-
-    let mut chart = chart_builder
-        .build_cartesian_2d(x_range, y_range)
-        .map_err(|e| format!("build chart: {e}"))?;
+        .right_y_label_area_size(right_label_area)
+        .build_cartesian_2d(primary_x, primary_y)
+        .map_err(|e| format!("build chart: {e}"))?
+        .set_secondary_coord(secondary_x, secondary_y2);
 
     chart.configure_mesh()
         .x_desc(x_axis)
@@ -1942,15 +3813,52 @@ where
         .draw()
         .map_err(|e| format!("draw mesh: {e}"))?;
 
+    if let Some(a2) = secondary.first() {
+        chart.configure_secondary_axes()
+            .y_desc(&a2.label)
+            .label_style(("sans-serif", 14))
+            .axis_desc_style(("sans-serif", 16))
+            .draw()
+            .map_err(|e| format!("draw secondary axis: {e}"))?;
+    }
+
     let palette = crate::palette::resolve_or_default(palette_spec);
-    let stroke_width = line_width.map(|w| w.max(0.0) as u32).unwrap_or(2);
-    let line_kind = line_style.unwrap_or("solid");
-    let marker_kind = marker_shape.unwrap_or("circle");
-    let m_size = marker_size.map(|s| s.max(0.0) as i32).unwrap_or(3);
+    let default_stroke = line_width.map(|w| w.max(0.0) as u32).unwrap_or(2);
+    let default_line = line_style.unwrap_or("solid");
+    let default_marker = marker_shape.unwrap_or("circle");
+    let default_m_size = marker_size.map(|s| s.max(0.0) as i32).unwrap_or(3);
 
     for (idx, (series_name, points)) in series.iter().enumerate() {
-        let color = crate::palette::series_color(palette, idx);
-        let series_label_for_legend = if series_name.is_empty() {
+        // Find the first matching per-series style override (if
+        // any). Fields the override sets win over the cascade
+        // default; fields it leaves `None` fall through.
+        let ov = series_overrides.iter()
+            .find(|o| style_override_matches(o, series_name));
+        // Per-series palette — palette override would re-pick
+        // a different ordinal from a different palette, so we
+        // resolve up-front rather than mid-loop.
+        let series_palette = ov.and_then(|o| o.palette.as_deref())
+            .map(|s| crate::palette::resolve_or_default(Some(s)))
+            .unwrap_or(palette);
+        let color = ov.and_then(|o| o.color.as_deref())
+            .and_then(parse_hex_color_for_override)
+            .unwrap_or_else(|| crate::palette::series_color(series_palette, idx));
+        let stroke_width = ov.and_then(|o| o.width)
+            .map(|w| w.max(0.0) as u32)
+            .unwrap_or(default_stroke);
+        let line_kind = ov.and_then(|o| o.line.as_deref()).unwrap_or(default_line);
+        let marker_kind = ov.and_then(|o| o.marker.as_deref())
+            .unwrap_or(default_marker);
+        let m_size = ov.and_then(|o| o.size)
+            .map(|s| s.max(0.0) as i32)
+            .unwrap_or(default_m_size);
+
+        let series_label_for_legend = if let Some(template) = y_legend_format {
+            // Per-series template — `[label_name]` placeholders
+            // pull from the series's discriminator labels.
+            let labels = parse_series_key_to_labels(series_name);
+            expand_legend_template(template, &labels)
+        } else if series_name.is_empty() {
             metric.to_string()
         } else {
             series_name.clone()
@@ -2052,6 +3960,286 @@ where
         }
     }
 
+    // Secondary-axis series. Axis 2 (the first secondary,
+    // `secondary[0]`) draws against plotters' built-in
+    // secondary coord; axes 3+ project their data into the
+    // primary y-coord space and draw against the primary
+    // (no built-in second secondary slot exists). All axes
+    // share the same per-series style-override and palette
+    // policy as the primary — palette ordinal is offset by
+    // the running series total so colors don't collide
+    // across axes. Default line style for secondary axes
+    // falls back to `dashed` when the cascade default is
+    // `solid` (visual disambiguation when the legend is
+    // suppressed).
+    let mut total_secondary_series = 0usize;
+    let series_count_so_far = |so_far: usize| series.len() + so_far;
+    for (axis_idx, axis) in secondary.iter().enumerate() {
+        // Legend suffix per axis (SRD-65): y2 → `(R)`
+        // (preserves legacy ergonomics for two-axis plots);
+        // y3 → `(R2)`; y4 → `(R3)`. The "R+1" offset on
+        // axes past the first means the bare `(R)` reads
+        // implicitly as "first right rail", and the
+        // numbered forms disambiguate the rest.
+        let suffix: String = match axis_idx {
+            0 => "(R)".to_string(),
+            n => format!("(R{})", n + 1),
+        };
+        // Pending axis: no series to draw, but emit a
+        // single placeholder legend entry so the operator
+        // sees the axis is wired and waiting on data. The
+        // entry uses an empty path glyph (no visible mark)
+        // and the axis label suffixed `(pending)`. This is
+        // critical for live-plotting an ongoing run where
+        // some phases (e.g. `pvs_query` data after
+        // `test_oracles`) haven't started producing rows
+        // yet.
+        if axis.pending {
+            let placeholder_color =
+                plotters::style::RGBColor(160, 160, 160).mix(0.6);
+            // Use the operator-supplied `yN-legend` template
+            // when set (mirrors the non-pending path: an
+            // explicit template owns the full legend label,
+            // including any axis disambiguation). With no
+            // series available to substitute discriminator
+            // values, `[name]` placeholders are left intact —
+            // useful when the template is static like `"pvs"`
+            // and tolerable otherwise. Falls back to the
+            // auto-generated `<axis-label> <suffix>` shape
+            // when no template is set.
+            let label = if let Some(template) = axis.legend_format {
+                let empty = std::collections::HashMap::new();
+                format!("{} (pending)", expand_legend_template(template, &empty))
+            } else {
+                format!("{} {suffix} (pending)", axis.label)
+            };
+            // A zero-length series with the right type so
+            // `configure_series_labels` includes the entry.
+            // Drawn against the primary coord with an empty
+            // point list — produces no visible marks but
+            // registers the legend item.
+            let empty: Vec<(f64, f64)> = Vec::new();
+            chart.draw_series(LineSeries::new(empty.into_iter(),
+                placeholder_color.stroke_width(1)))
+                .map_err(|e| format!(
+                    "draw {} pending placeholder: {e}", axis.name))?
+                .label(label)
+                .legend(move |(x, y)| PathElement::new(
+                    vec![(x, y), (x + 20, y)],
+                    placeholder_color.stroke_width(1).filled()));
+            continue;
+        }
+        // Side-driven coord routing (SRD-65 followup —
+        // `yN-side: left|right` knob):
+        //
+        //   * `right` + this is axis 2 (i.e. plotters'
+        //     native secondary coord) → no projection;
+        //     plotters maps directly via the secondary
+        //     range.
+        //   * `right` + axis 3+ → project into axis 2's
+        //     range (so the curve shares the right rail's
+        //     visual scale), then draw against secondary.
+        //   * `left` (any axis) → project into the primary
+        //     y range and draw against primary.
+        //
+        // `target_secondary` selects between
+        // `draw_secondary_series` and `draw_series`; the
+        // projection closure rewrites Y values into
+        // whichever range the target coord uses.
+        let target_secondary = axis.side == "right";
+        let target_range: &std::ops::Range<f64>;
+        let target_log: bool;
+        if target_secondary {
+            // The secondary coord IS axis 2's range; for
+            // axis 2 itself this is identity. For axis 3+
+            // routed right, project into axis 2's range
+            // (`secondary[0]`).
+            if axis_idx == 0 {
+                target_range = &axis.range;
+                target_log = axis.is_log;
+            } else {
+                target_range = &secondary[0].range;
+                target_log = secondary[0].is_log;
+            }
+        } else {
+            target_range = &y_range;
+            target_log = y_log;
+        }
+        let project = |v: f64| -> f64 {
+            project_value(v, &axis.range, axis.is_log, target_range, target_log)
+        };
+        // Whether projection is identity (axis 2 routed
+        // right with its own range as the target).
+        let identity_projection = target_secondary && axis_idx == 0;
+        let palette_offset = series_count_so_far(total_secondary_series);
+        for (i, (series_name, points)) in axis.series.iter().enumerate() {
+            let ov = series_overrides.iter()
+                .find(|o| style_override_matches(o, series_name));
+            let series_palette = ov.and_then(|o| o.palette.as_deref())
+                .map(|s| crate::palette::resolve_or_default(Some(s)))
+                .unwrap_or(palette);
+            let color = ov.and_then(|o| o.color.as_deref())
+                .and_then(parse_hex_color_for_override)
+                .unwrap_or_else(|| crate::palette::series_color(series_palette, palette_offset + i));
+            let stroke_width = ov.and_then(|o| o.width)
+                .map(|w| w.max(0.0) as u32)
+                .unwrap_or(default_stroke);
+            let cascade_line = if default_line == "solid" { "dashed" } else { default_line };
+            let line_kind = ov.and_then(|o| o.line.as_deref()).unwrap_or(cascade_line);
+            let marker_kind = ov.and_then(|o| o.marker.as_deref())
+                .unwrap_or(default_marker);
+            let m_size = ov.and_then(|o| o.size)
+                .map(|s| s.max(0.0) as i32)
+                .unwrap_or(default_m_size);
+
+            // Per-axis legend template overrides the
+            // auto-generated `name (R)` shape entirely. The
+            // user provides axis disambiguation themselves
+            // when they pin a custom format (e.g. by
+            // including `(R)` in the template).
+            let label = if let Some(template) = axis.legend_format {
+                let labels = parse_series_key_to_labels(series_name);
+                expand_legend_template(template, &labels)
+            } else if series_name.is_empty() {
+                format!("{} {suffix}", axis.label)
+            } else {
+                format!("{series_name} {suffix}")
+            };
+            // Project values if needed. Identity case
+            // (right-routed axis 2) skips the per-point
+            // projection allocation.
+            let projected_pts: Vec<(f64, f64)> = if identity_projection {
+                points.clone()
+            } else {
+                points.iter().map(|&(x, y)| (x, project(y))).collect()
+            };
+
+            // The chart's `draw_series` and
+            // `draw_secondary_series` are different methods
+            // (different coord types), so we branch once
+            // per shape based on the resolved side.
+            macro_rules! draw_into {
+                ($drawable:expr, $err:expr) => {{
+                    if target_secondary {
+                        chart.draw_secondary_series($drawable)
+                            .map_err(|e| format!("{}: {e}", $err))?
+                    } else {
+                        chart.draw_series($drawable)
+                            .map_err(|e| format!("{}: {e}", $err))?
+                    }
+                }};
+            }
+            match line_kind {
+                "none" => {}
+                "dashed" => {
+                    let line = plotters::series::DashedLineSeries::new(
+                        projected_pts.iter().cloned(), 8, 8,
+                        color.stroke_width(stroke_width),
+                    );
+                    draw_into!(line,
+                        format!("draw {} dashed line", axis.name))
+                        .label(label.clone())
+                        .legend(move |(x, y)| PathElement::new(
+                            vec![(x, y), (x + 20, y)],
+                            color.stroke_width(stroke_width)));
+                }
+                "dotted" => {
+                    let line = plotters::series::DashedLineSeries::new(
+                        projected_pts.iter().cloned(), 2, 4,
+                        color.stroke_width(stroke_width),
+                    );
+                    draw_into!(line,
+                        format!("draw {} dotted line", axis.name))
+                        .label(label.clone())
+                        .legend(move |(x, y)| PathElement::new(
+                            vec![(x, y), (x + 20, y)],
+                            color.stroke_width(stroke_width)));
+                }
+                _ => {
+                    let line = LineSeries::new(
+                        projected_pts.iter().cloned(),
+                        color.stroke_width(stroke_width));
+                    draw_into!(line,
+                        format!("draw {} line", axis.name))
+                        .label(label.clone())
+                        .legend(move |(x, y)| PathElement::new(
+                            vec![(x, y), (x + 20, y)],
+                            color.stroke_width(stroke_width)));
+                }
+            }
+            match marker_kind {
+                "none" => {}
+                "circle" => {
+                    draw_into!(
+                        projected_pts.iter()
+                            .map(|p| Circle::new(*p, m_size, color.filled())),
+                        format!("draw {} circles", axis.name));
+                }
+                "square" => {
+                    let off = m_size as f64;
+                    draw_into!(
+                        projected_pts.iter().map(|p| {
+                            Rectangle::new(
+                                [(p.0 - off, p.1 - off), (p.0 + off, p.1 + off)],
+                                color.filled(),
+                            )
+                        }),
+                        format!("draw {} squares", axis.name));
+                }
+                "triangle" => {
+                    draw_into!(
+                        projected_pts.iter()
+                            .map(|p| TriangleMarker::new(*p, m_size, color.filled())),
+                        format!("draw {} triangles", axis.name));
+                }
+                "diamond" => {
+                    let off = m_size as f64;
+                    draw_into!(
+                        projected_pts.iter().map(|p| {
+                            Polygon::new(vec![
+                                (p.0, p.1 - off),
+                                (p.0 + off, p.1),
+                                (p.0, p.1 + off),
+                                (p.0 - off, p.1),
+                            ], color.filled())
+                        }),
+                        format!("draw {} diamonds", axis.name));
+                }
+                "plus" => {
+                    draw_into!(
+                        projected_pts.iter()
+                            .map(|p| Cross::new(*p, m_size, color.stroke_width(stroke_width))),
+                        format!("draw {} plus", axis.name));
+                }
+                "cross" => {
+                    let off = m_size as f64;
+                    draw_into!(
+                        projected_pts.iter().flat_map(|p| {
+                            let p = *p;
+                            [
+                                PathElement::new(vec![
+                                    (p.0 - off, p.1 - off), (p.0 + off, p.1 + off),
+                                ], color.stroke_width(stroke_width)),
+                                PathElement::new(vec![
+                                    (p.0 - off, p.1 + off), (p.0 + off, p.1 - off),
+                                ], color.stroke_width(stroke_width)),
+                            ]
+                        }),
+                        format!("draw {} crosses", axis.name));
+                }
+                other => {
+                    eprintln!("warning: unknown {} marker '{other}'; falling back to circle", axis.name);
+                    draw_into!(
+                        projected_pts.iter()
+                            .map(|p| Circle::new(*p, m_size, color.filled())),
+                        format!("draw {} circles", axis.name));
+                }
+            }
+        }
+        total_secondary_series += axis.series.len();
+    }
+    let y2_count = total_secondary_series;
+
     // Draw the legend whenever the user has either:
     //   - multiple series / non-default series naming (the
     //     "the legend has something useful to show" case), OR
@@ -2063,7 +4251,9 @@ where
     //
     // `LegendSpec::Suppressed` (`--legend none|off|hide`) skips
     // unconditionally.
-    let auto_show = series.len() > 1 || series.keys().any(|k| !k.is_empty());
+    let auto_show = series.len() + y2_count > 1
+        || series.keys().any(|k| !k.is_empty())
+        || y2_count > 0;
     let force_show = matches!(legend_spec, LegendSpec::Position(_)) && legend_explicit;
     if (auto_show || force_show) && matches!(legend_spec, LegendSpec::Position(_)) {
         if let LegendSpec::Position(position) = legend_spec {
@@ -2345,6 +4535,313 @@ mod tests {
     }
 
     #[test]
+    fn parse_spec_native_y2_directive() {
+        // The y2 family of body directives (`y2:`, `y2-label:`,
+        // `y2-min:`, `y2-max:`, `y2-scale:`) should round-trip
+        // into the corresponding fields, with `auto` mapping
+        // back to `None` on the bound options so a parent
+        // template's pin can be cleared. Series partitioning
+        // is no longer a plot-body directive; the renderer
+        // auto-detects from the metricsql `by(...)` clause.
+        // Singular `y-*` per-axis directives have been
+        // retired (use `y1-*` for axis 1 explicitly, or
+        // the `y-*s` plural for workload-wide). The test
+        // exercises the surviving canonical forms.
+        let spec = "y: avg(recall_mean) by (limit)\n\
+                    x: limit\n\
+                    y2: avg(overscan_mean) by (limit)\n\
+                    y2-label: overscan\n\
+                    y2-min: auto\n\
+                    y2-max: 250\n\
+                    y2-scale: dec\n\
+                    y1-min: 0.8";
+        let opts = parse_spec(spec).unwrap();
+        assert_eq!(opts.query.as_deref(), Some("avg(recall_mean) by (limit)"));
+        assert_eq!(opts.x_label.as_deref(), Some("limit"));
+        assert!(opts.series_labels.is_empty(),
+            "auto-detect — no explicit partition directive");
+        // y2 family routes through `secondary_axes[0]` (the
+        // first secondary axis) per SRD-65.
+        assert_eq!(opts.secondary_axes.len(), 1);
+        let y2 = &opts.secondary_axes[0];
+        assert_eq!(y2.name, "y2");
+        assert_eq!(y2.query.as_deref(), Some("avg(overscan_mean) by (limit)"));
+        assert_eq!(y2.label.as_deref(), Some("overscan"));
+        assert_eq!(y2.min, None, "y2-min: auto should map to None");
+        assert_eq!(y2.max, Some(250.0));
+        assert_eq!(y2.scale, "dec");
+        assert!((opts.y_min.unwrap() - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_spec_y1_alias_for_y() {
+        // SRD-65: `y1` is a synonym for `y` for axis 1. Both
+        // forms write into the same flat fields. The body
+        // parser strips `y1` → `y` before dispatch.
+        let spec = "y1: avg(recall_mean) by (limit)\n\
+                    x: limit\n\
+                    y1-min: 0.5\n\
+                    y1-max: 1.0\n\
+                    y1-scale: log\n\
+                    y1-ticks: 0.1, 0.5, 1.0";
+        let opts = parse_spec(spec).unwrap();
+        assert_eq!(opts.query.as_deref(), Some("avg(recall_mean) by (limit)"));
+        assert_eq!(opts.y_min, Some(0.5));
+        assert_eq!(opts.y_max, Some(1.0));
+        assert_eq!(opts.yscale, "log");
+        assert!(matches!(opts.y_ticks, TickSpec::Literal(_)));
+    }
+
+    #[test]
+    fn parse_spec_retired_y_dash_directives_error() {
+        // Singular `y-min:` etc. have been retired; the
+        // parser surfaces a migration error instead of
+        // silently accepting them.
+        let spec = "y: avg(a) by (l)\nx: l\ny-min: 0";
+        let err = parse_spec(spec).unwrap_err();
+        assert!(
+            err.contains("retired") && err.contains("y1-"),
+            "err was: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_spec_y3_no_y2_rejected() {
+        // SRD-65: axis indices must be contiguous.
+        let spec = "y: avg(a) by (l)\nx: l\ny3: avg(c) by (l)";
+        let err = parse_spec(spec).unwrap_err();
+        assert!(err.contains("contiguous"), "err was: {err}");
+    }
+
+    // -- yN-legend template ----------------------------------
+
+    #[test]
+    fn legend_template_substitutes_known_labels() {
+        let mut labels = std::collections::HashMap::new();
+        labels.insert("profile".to_string(), "label_03".to_string());
+        labels.insert("k".to_string(), "10".to_string());
+        assert_eq!(
+            expand_legend_template("oracle-[profile]", &labels),
+            "oracle-label_03"
+        );
+        assert_eq!(
+            expand_legend_template("[k] @ [profile]", &labels),
+            "10 @ label_03"
+        );
+    }
+
+    #[test]
+    fn legend_template_keeps_unknown_placeholders_verbatim() {
+        let labels = std::collections::HashMap::new();
+        assert_eq!(
+            expand_legend_template("oracle-[profile]", &labels),
+            "oracle-[profile]"
+        );
+    }
+
+    #[test]
+    fn legend_template_handles_unterminated_bracket() {
+        let labels = std::collections::HashMap::new();
+        assert_eq!(
+            expand_legend_template("oracle-[profile", &labels),
+            "oracle-[profile"
+        );
+    }
+
+    #[test]
+    fn parse_series_key_round_trip() {
+        let labels = parse_series_key_to_labels("profile=label_00, k=10");
+        assert_eq!(labels.get("profile").map(String::as_str), Some("label_00"));
+        assert_eq!(labels.get("k").map(String::as_str), Some("10"));
+    }
+
+    #[test]
+    fn parse_spec_y1_legend_directive() {
+        // `y1-legend:` is the canonical primary-axis form
+        // (singular `y-legend:` retired in favour of the
+        // plural `y-legends:` workload-wide array).
+        let spec = "y: avg(a) by (l)\n\
+                    x: l\n\
+                    y1-legend: \"oracle-[profile]\"";
+        let opts = parse_spec(spec).unwrap();
+        assert_eq!(opts.y_legend_format.as_deref(), Some("oracle-[profile]"));
+    }
+
+    #[test]
+    fn parse_spec_y2_legend_directive() {
+        let spec = "y: avg(a) by (l)\n\
+                    x: l\n\
+                    y2: avg(b) by (l)\n\
+                    y2-legend: \"overscan-[k]\"";
+        let opts = parse_spec(spec).unwrap();
+        assert_eq!(
+            opts.secondary_axes[0].legend_format.as_deref(),
+            Some("overscan-[k]")
+        );
+    }
+
+    #[test]
+    fn strip_quotes_handles_double_and_single() {
+        assert_eq!(strip_quotes("\"foo\""), "foo");
+        assert_eq!(strip_quotes("'foo'"), "foo");
+        assert_eq!(strip_quotes("foo"), "foo");
+        assert_eq!(strip_quotes("\"foo"), "\"foo");
+        assert_eq!(strip_quotes(""), "");
+    }
+
+    // -- y-{ranges,legends,labels} plural directive forms --
+
+    #[test]
+    fn split_array_value_simple() {
+        assert_eq!(
+            split_array_value("[a, b, c]").unwrap(),
+            vec!["a", "b", "c"]
+        );
+    }
+
+    #[test]
+    fn split_array_value_nested() {
+        // Inner ranges shouldn't get split on inner commas.
+        assert_eq!(
+            split_array_value("[[0, 1], [2, 3]]").unwrap(),
+            vec!["[0, 1]", "[2, 3]"]
+        );
+    }
+
+    #[test]
+    fn split_array_value_quotes_protect_commas() {
+        assert_eq!(
+            split_array_value(r#"["oracle [profile]", PVS, overscan]"#).unwrap(),
+            vec![r#""oracle [profile]""#, "PVS", "overscan"],
+        );
+    }
+
+    #[test]
+    fn split_array_value_rejects_non_array() {
+        assert!(split_array_value("not an array").is_err());
+    }
+
+    #[test]
+    fn parse_spec_y_legends_plural_form() {
+        let spec = "y: avg(a) by (l)\n\
+                    x: l\n\
+                    y2: avg(b) by (l)\n\
+                    y3: avg(c) by (l)\n\
+                    y-legends: [\"oracle [profile]\", PVS, overscan]";
+        let opts = parse_spec(spec).unwrap();
+        assert_eq!(opts.y_legend_format.as_deref(), Some("oracle [profile]"));
+        assert_eq!(opts.secondary_axes[0].legend_format.as_deref(), Some("PVS"));
+        assert_eq!(opts.secondary_axes[1].legend_format.as_deref(), Some("overscan"));
+    }
+
+    #[test]
+    fn parse_spec_y_ranges_plural_form() {
+        let spec = "y: avg(a) by (l)\n\
+                    x: l\n\
+                    y2: avg(b) by (l)\n\
+                    y-ranges: [[0.0, 1.0], [0, 100]]";
+        let opts = parse_spec(spec).unwrap();
+        assert_eq!(opts.y_min, Some(0.0));
+        assert_eq!(opts.y_max, Some(1.0));
+        assert_eq!(opts.secondary_axes[0].min, Some(0.0));
+        assert_eq!(opts.secondary_axes[0].max, Some(100.0));
+    }
+
+    #[test]
+    fn parse_spec_y_labels_plural_form() {
+        let spec = "y: avg(a) by (l)\n\
+                    x: l\n\
+                    y2: avg(b) by (l)\n\
+                    y-labels: [recall, overscan]";
+        let opts = parse_spec(spec).unwrap();
+        assert_eq!(opts.ylabel.as_deref(), Some("recall"));
+        assert_eq!(opts.secondary_axes[0].label.as_deref(), Some("overscan"));
+    }
+
+    #[test]
+    fn parse_spec_y_plurals_order_independent() {
+        // Plurals appearing BEFORE the per-axis `yN:`
+        // declarations must work the same as plurals
+        // appearing AFTER. Deferred application kicks in
+        // post-loop so the apply helpers see the final
+        // axis count regardless of source order.
+        let plurals_first = "x: l\n\
+                             y-legends: [\"oracle\", \"PVS\", overscan]\n\
+                             y-ranges:  [[0.0,1.0]]\n\
+                             y-labels:  [recall, overscan]\n\
+                             y: avg(a) by (l)\n\
+                             y2: avg(b) by (l)\n\
+                             y3: avg(c) by (l)";
+        let plurals_last = "y: avg(a) by (l)\n\
+                            x: l\n\
+                            y2: avg(b) by (l)\n\
+                            y3: avg(c) by (l)\n\
+                            y-legends: [\"oracle\", \"PVS\", overscan]\n\
+                            y-ranges:  [[0.0,1.0]]\n\
+                            y-labels:  [recall, overscan]";
+        let opts_a = parse_spec(plurals_first).unwrap();
+        let opts_b = parse_spec(plurals_last).unwrap();
+        for opts in [&opts_a, &opts_b] {
+            assert_eq!(opts.y_legend_format.as_deref(), Some("oracle"));
+            assert_eq!(opts.secondary_axes[0].legend_format.as_deref(), Some("PVS"));
+            assert_eq!(opts.secondary_axes[1].legend_format.as_deref(), Some("overscan"));
+            assert_eq!(opts.y_min, Some(0.0));
+            assert_eq!(opts.y_max, Some(1.0));
+            assert_eq!(opts.ylabel.as_deref(), Some("recall"));
+            assert_eq!(opts.secondary_axes[0].label.as_deref(), Some("overscan"));
+        }
+    }
+
+    #[test]
+    fn parse_spec_y_legends_too_many_entries_errors() {
+        let spec = "y: avg(a) by (l)\n\
+                    x: l\n\
+                    y-legends: [a, b, c]";
+        let err = parse_spec(spec).unwrap_err();
+        assert!(err.contains("y-legends"));
+        assert!(err.contains("entries"));
+    }
+
+    #[test]
+    fn parse_spec_y_labels_more_than_two_errors() {
+        let spec = "y: avg(a) by (l)\n\
+                    x: l\n\
+                    y-labels: [a, b, c]";
+        let err = parse_spec(spec).unwrap_err();
+        assert!(err.contains("y-labels"));
+        assert!(err.contains("at most 2"));
+    }
+
+    #[test]
+    fn parse_spec_three_y_axes() {
+        let spec = "y: avg(a) by (l)\n\
+                    x: l\n\
+                    y2: avg(b) by (l)\n\
+                    y2-label: bee\n\
+                    y3: avg(c) by (l)\n\
+                    y3-label: see\n\
+                    y3-scale: log";
+        let opts = parse_spec(spec).unwrap();
+        assert_eq!(opts.secondary_axes.len(), 2);
+        assert_eq!(opts.secondary_axes[0].name, "y2");
+        assert_eq!(opts.secondary_axes[0].label.as_deref(), Some("bee"));
+        assert_eq!(opts.secondary_axes[1].name, "y3");
+        assert_eq!(opts.secondary_axes[1].label.as_deref(), Some("see"));
+        assert_eq!(opts.secondary_axes[1].scale, "log");
+    }
+
+    #[test]
+    fn parse_spec_y5_rejected() {
+        // SRD-65 caps at 4 axes total — `y5:` is out of range.
+        let spec = "y: avg(a) by (l)\nx: l\ny5: avg(c) by (l)";
+        let err = parse_spec(spec).unwrap_err();
+        assert!(
+            err.contains("out of range") || err.contains("y5"),
+            "err was: {err}"
+        );
+    }
+
+    #[test]
     fn parses_label_spec() {
         let spec = "recall@10.mean{session=\"abc\",profile=\"label_03\",k=\"10\",limit=\"50\"}";
         let labels = parse_labels(spec);
@@ -2577,7 +5074,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_detect_finds_varying_labels() {
+    fn auto_detect_keeps_all_non_x_labels() {
         fn row(spec: &str, mean: f64) -> DbRow {
             DbRow {
                 spec: spec.to_string(),
@@ -2590,10 +5087,17 @@ mod tests {
             row("recall{k=\"10\",optimize_for=\"LATENCY\",limit=\"10\",profile=\"a\"}", 0.8),
             row("recall{k=\"100\",optimize_for=\"RECALL\",limit=\"10\",profile=\"a\"}", 0.7),
         ];
-        // x = limit (constant); session not in data
-        // varying: k, optimize_for; constant: limit, profile
+        // Discriminator policy: every non-x, non-session
+        // label is kept regardless of cardinality. `limit`
+        // is the X axis (excluded); `session` is excluded
+        // by policy. So `k`, `optimize_for`, AND
+        // `profile` (single-valued) all show up as
+        // discriminators.
         let auto = auto_detect_series_labels(&rows, "limit");
-        assert_eq!(auto, vec!["k".to_string(), "optimize_for".to_string()]);
+        assert_eq!(
+            auto,
+            vec!["k".to_string(), "optimize_for".to_string(), "profile".to_string()]
+        );
     }
 
     #[test]
@@ -2641,5 +5145,230 @@ mod tests {
         // limit=10 has both profiles a (0.8) and b (0.7) — mean 0.75
         let agg10 = aggregate("mean", &cell[&F64Key(10.0)]);
         assert!((agg10 - 0.75).abs() < 1e-9);
+    }
+
+    // -- detect_scale_from_ticks ------------------------------
+
+    #[test]
+    fn detect_scale_pure_powers_of_two_is_log() {
+        let ticks = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0];
+        assert!(matches!(detect_scale_from_ticks(&ticks), DetectedScale::Log));
+    }
+
+    #[test]
+    fn detect_scale_pure_powers_of_ten_is_log() {
+        let ticks = [10.0, 100.0, 1000.0, 10000.0];
+        assert!(matches!(detect_scale_from_ticks(&ticks), DetectedScale::Log));
+    }
+
+    #[test]
+    fn detect_scale_arithmetic_progression_is_linear() {
+        let ticks = [10.0, 20.0, 30.0, 40.0, 50.0];
+        assert!(matches!(detect_scale_from_ticks(&ticks), DetectedScale::Linear));
+    }
+
+    #[test]
+    fn detect_scale_too_few_points_is_linear() {
+        // 0 / 1 / 2 ticks → linear (not enough signal to call log).
+        assert!(matches!(detect_scale_from_ticks(&[]), DetectedScale::Linear));
+        assert!(matches!(detect_scale_from_ticks(&[5.0]), DetectedScale::Linear));
+        assert!(matches!(detect_scale_from_ticks(&[1.0, 2.0]), DetectedScale::Linear));
+    }
+
+    #[test]
+    fn detect_scale_unsorted_input_handled_like_sorted() {
+        let ticks = [32.0, 1.0, 8.0, 4.0, 16.0, 2.0];
+        assert!(matches!(detect_scale_from_ticks(&ticks), DetectedScale::Log));
+    }
+
+    // -- parse_tick_spec --------------------------------------
+
+    #[test]
+    fn parse_tick_spec_empty_is_none() {
+        assert!(matches!(parse_tick_spec(""), TickSpec::None));
+        assert!(matches!(parse_tick_spec("   "), TickSpec::None));
+    }
+
+    #[test]
+    fn parse_tick_spec_auto_keyword() {
+        assert!(matches!(parse_tick_spec("auto"), TickSpec::Auto));
+        assert!(matches!(parse_tick_spec("AUTO"), TickSpec::Auto));
+        assert!(matches!(parse_tick_spec(" Auto "), TickSpec::Auto));
+    }
+
+    #[test]
+    fn parse_tick_spec_literal_csv() {
+        match parse_tick_spec("1, 2, 4, 8, 16") {
+            TickSpec::Literal(v) => assert_eq!(v, vec![1.0, 2.0, 4.0, 8.0, 16.0]),
+            other => panic!("expected Literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_tick_spec_literal_floats() {
+        match parse_tick_spec("0.1, 0.5, 1.0, 5.0") {
+            TickSpec::Literal(v) => assert_eq!(v, vec![0.1, 0.5, 1.0, 5.0]),
+            other => panic!("expected Literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_tick_spec_metricsql_query_falls_back() {
+        // Anything that doesn't parse as a CSV of numbers and
+        // isn't `auto` is treated as a metricsql expression.
+        match parse_tick_spec("avg(recall_at_k_mean) by (limit)") {
+            TickSpec::Query(q) => assert_eq!(q, "avg(recall_at_k_mean) by (limit)"),
+            other => panic!("expected Query, got {other:?}"),
+        }
+    }
+
+    // -- parse_range_spec -------------------------------------
+
+    #[test]
+    fn parse_range_spec_rust_form() {
+        assert_eq!(parse_range_spec("0..100").unwrap(), (Some(0.0), Some(100.0)));
+        assert_eq!(parse_range_spec("0.5..1.0").unwrap(), (Some(0.5), Some(1.0)));
+    }
+
+    #[test]
+    fn parse_range_spec_open_ended() {
+        assert_eq!(parse_range_spec("..100").unwrap(), (None, Some(100.0)));
+        assert_eq!(parse_range_spec("5..").unwrap(), (Some(5.0), None));
+    }
+
+    #[test]
+    fn parse_range_spec_tuple_form() {
+        assert_eq!(parse_range_spec("(0,100)").unwrap(), (Some(0.0), Some(100.0)));
+        assert_eq!(parse_range_spec("(0.5, 1.0)").unwrap(), (Some(0.5), Some(1.0)));
+    }
+
+    #[test]
+    fn parse_range_spec_bracket_form() {
+        assert_eq!(parse_range_spec("[0,100]").unwrap(), (Some(0.0), Some(100.0)));
+        assert_eq!(parse_range_spec("[0.75, 1.0]").unwrap(), (Some(0.75), Some(1.0)));
+        // Open-ended brackets should also work.
+        assert_eq!(parse_range_spec("[,100]").unwrap(), (None, Some(100.0)));
+        assert_eq!(parse_range_spec("[5,]").unwrap(), (Some(5.0), None));
+    }
+
+    #[test]
+    fn parse_range_spec_tuple_open_ended() {
+        assert_eq!(parse_range_spec("(,100)").unwrap(), (None, Some(100.0)));
+        assert_eq!(parse_range_spec("(5,)").unwrap(), (Some(5.0), None));
+    }
+
+    #[test]
+    fn parse_range_spec_auto_or_empty() {
+        assert_eq!(parse_range_spec("").unwrap(), (None, None));
+        assert_eq!(parse_range_spec("auto").unwrap(), (None, None));
+        assert_eq!(parse_range_spec("AUTO").unwrap(), (None, None));
+    }
+
+    #[test]
+    fn parse_range_spec_invalid_errors() {
+        assert!(parse_range_spec("not a range").is_err());
+        assert!(parse_range_spec("0..bad").is_err());
+        assert!(parse_range_spec("(a,b)").is_err());
+    }
+
+    // -- AxisDirectiveTracker ---------------------------------
+
+    #[test]
+    fn axis_tracker_range_then_min_conflicts() {
+        let mut t = AxisDirectiveTracker::default();
+        t.note(AxisKey::X, AxisRole::Range, "x-range").unwrap();
+        let err = t.note(AxisKey::X, AxisRole::Min, "x-min").unwrap_err();
+        assert!(err.contains("x-min"), "err was {err:?}");
+        assert!(err.contains("x-range"), "err was {err:?}");
+    }
+
+    #[test]
+    fn axis_tracker_min_then_range_conflicts() {
+        let mut t = AxisDirectiveTracker::default();
+        t.note(AxisKey::Y, AxisRole::Max, "y-max").unwrap();
+        let err = t.note(AxisKey::Y, AxisRole::Range, "y-range").unwrap_err();
+        assert!(err.contains("y-range"), "err was {err:?}");
+        assert!(err.contains("y-max"), "err was {err:?}");
+    }
+
+    #[test]
+    fn axis_tracker_different_axes_independent() {
+        let mut t = AxisDirectiveTracker::default();
+        t.note(AxisKey::X, AxisRole::Range, "x-range").unwrap();
+        // y2-min on a different axis should be fine.
+        t.note(AxisKey::Y2, AxisRole::Min, "y2-min").unwrap();
+        // y-range also fine — different axis from x.
+        t.note(AxisKey::Y, AxisRole::Range, "y-range").unwrap();
+    }
+
+    #[test]
+    fn axis_tracker_min_and_max_compatible() {
+        let mut t = AxisDirectiveTracker::default();
+        t.note(AxisKey::X, AxisRole::Min, "x-min").unwrap();
+        // x-max on the same axis is the *complementary* directive,
+        // not a conflict — both together describe a range.
+        t.note(AxisKey::X, AxisRole::Max, "x-max").unwrap();
+    }
+
+    // -- F64Axis ----------------------------------------------
+
+    #[test]
+    fn f64_axis_linear_range_round_trips() {
+        use plotters::coord::ranged1d::Ranged;
+        let ax = F64Axis::new(0.0..10.0, false, Vec::new());
+        assert_eq!(ax.range(), 0.0..10.0);
+    }
+
+    #[test]
+    fn f64_axis_log_range_round_trips() {
+        use plotters::coord::ranged1d::Ranged;
+        let ax = F64Axis::new(1.0..1000.0, true, Vec::new());
+        let r = ax.range();
+        assert!((r.start - 1.0).abs() < 1e-9, "start was {}", r.start);
+        assert!((r.end - 1000.0).abs() < 1e-9, "end was {}", r.end);
+    }
+
+    #[test]
+    fn f64_axis_explicit_ticks_override_default_keypoints() {
+        use plotters::coord::ranged1d::Ranged;
+        let ticks = vec![1.0, 2.0, 4.0, 8.0, 16.0];
+        let ax = F64Axis::new(1.0..16.0, false, ticks.clone());
+        // Explicit detents should be returned verbatim regardless
+        // of the hint — that's how the renderer pins user-supplied
+        // tick lists onto the axis.
+        let kp = ax.key_points(20usize);
+        assert_eq!(kp, ticks);
+    }
+
+    #[test]
+    fn f64_axis_no_explicit_ticks_falls_through_to_inner() {
+        use plotters::coord::ranged1d::Ranged;
+        // Linear path: with no explicit detents, plotters' picker
+        // should produce *some* tick list (length depends on the
+        // version's heuristic, but it must be non-empty for a
+        // reasonable hint).
+        let ax = F64Axis::new(0.0..10.0, false, Vec::new());
+        let kp = ax.key_points(5usize);
+        assert!(!kp.is_empty(), "expected default linear picker to produce ticks");
+    }
+
+    #[test]
+    fn f64_axis_linear_map_monotone() {
+        use plotters::coord::ranged1d::Ranged;
+        let ax = F64Axis::new(0.0..10.0, false, Vec::new());
+        let lo = ax.map(&0.0, (0, 100));
+        let mid = ax.map(&5.0, (0, 100));
+        let hi = ax.map(&10.0, (0, 100));
+        assert!(lo < mid && mid < hi, "got {lo} {mid} {hi}");
+    }
+
+    #[test]
+    fn f64_axis_log_map_monotone() {
+        use plotters::coord::ranged1d::Ranged;
+        let ax = F64Axis::new(1.0..1000.0, true, Vec::new());
+        let lo = ax.map(&1.0, (0, 100));
+        let mid = ax.map(&100.0, (0, 100));
+        let hi = ax.map(&1000.0, (0, 100));
+        assert!(lo < mid && mid < hi, "got {lo} {mid} {hi}");
     }
 }

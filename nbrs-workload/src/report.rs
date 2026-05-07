@@ -287,7 +287,7 @@ impl ReportItem {
         // simple form (today they all do, but reserved for
         // future extension).
         for s in &self.style.series {
-            out.push_str("  series ");
+            out.push_str("  style ");
             out.push_str(&s.key);
             out.push('=');
             out.push_str(&s.value);
@@ -368,7 +368,7 @@ impl Style {
 ///     (`plot`, `table`) vs a continuation directive.
 const STYLE_DIRECTIVE_KEYWORDS: &[&str] = &[
     "palette", "line", "width", "marker", "size", "color",
-    "figure_width", "figure_height", "series", "label", "as",
+    "figure_width", "figure_height", "style", "label", "as",
 ];
 
 const ITEM_KIND_KEYWORDS: &[&str] = &["plot", "table", "text", "file"];
@@ -377,7 +377,7 @@ const ALL_RESERVED_DIRECTIVES: &[&str] = &[
     "defaults",
     "plot", "table", "text", "file",
     "palette", "line", "width", "marker", "size", "color",
-    "figure_width", "figure_height", "series", "label", "as",
+    "figure_width", "figure_height", "style", "label", "as",
 ];
 
 /// Parse a `report:` value (a YAML mapping) into a [`Report`].
@@ -675,10 +675,10 @@ impl PartialItem {
                 item.as_stem = Some(rest.trim().to_string());
                 continue;
             }
-            if let Some(rest) = strip_directive_keyword(line, "series") {
+            if let Some(rest) = strip_directive_keyword(line, "style") {
                 let so = parse_series_override(rest)
                     .map_err(|e| format!(
-                        "report.{}:{} `series`: {}",
+                        "report.{}:{} `style`: {}",
                         self.group, self.line_no, e,
                     ))?;
                 item.style.series.push(so);
@@ -1010,11 +1010,11 @@ combo: |
     }
 
     #[test]
-    fn series_json_sub_block() {
+    fn style_json_sub_block() {
         let p = parse(r#"
 g: |
   plot p1 over x
-    series profile=hnsw {"line": "dashed", "marker": "triangle"}
+    style profile=hnsw {"line": "dashed", "marker": "triangle"}
 "#);
         let item = &p.report.groups[0].items[0];
         assert_eq!(item.style.series.len(), 1);
@@ -1026,11 +1026,11 @@ g: |
     }
 
     #[test]
-    fn series_directive_form() {
+    fn style_directive_form() {
         let p = parse(r#"
 g: |
   plot p1 over x
-    series profile=ivf line=dotted color=#117733
+    style profile=ivf line=dotted color=#117733
 "#);
         let so = &p.report.groups[0].items[0].style.series[0];
         assert_eq!(so.value, "ivf");
@@ -1401,9 +1401,10 @@ g: |
     #[test]
     fn emitter_orders_directives_canonically() {
         // `as` comes before `label`; identity before style;
-        // style before body; body before series. This is the
-        // canonical order from vocab::ALL_DIRECTIVES so the
-        // round-trip stays stable.
+        // style (scalar fields) before body; body before
+        // per-series style overrides. This is the canonical
+        // order from vocab::ALL_DIRECTIVES so the round-trip
+        // stays stable.
         let mut item = ReportItem {
             kind: Kind::Plot,
             name: "ordered".to_string(),
@@ -1425,10 +1426,11 @@ g: |
         let pos_label  = pos("label \"L\"");
         let pos_style  = pos("palette=wong");
         let pos_body   = pos("over cycle");
-        let pos_series = pos("series k=v");
+        let pos_per_series = pos("style k=v");
         assert!(pos_as < pos_label,    "as before label");
         assert!(pos_label < pos_style, "label before style");
         assert!(pos_style < pos_body,  "style before body");
-        assert!(pos_body < pos_series, "body before series");
+        assert!(pos_body < pos_per_series,
+            "body before per-series style overrides");
     }
 }

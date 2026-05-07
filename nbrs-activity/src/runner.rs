@@ -553,7 +553,22 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     drop(declared);
-    let phases = workload.phases;
+    let mut phases = workload.phases;
+    // Inline-expression rewrite per phase. The
+    // `rewrite_inline_exprs` call later in this function (around
+    // line 818) operates on `all_ops_for_compile` — a flattened
+    // copy used for the workload-level kernel — but
+    // `build_op_template_scope_kernel` (SRD-13d Phase 9) reads
+    // op definitions from `phases.get(name).ops`, which is the
+    // ORIGINAL parsed structure. Without this per-phase rewrite,
+    // op-template kernels never see the synthesised
+    // `__expr_N := <expr>` bindings and the conditional /
+    // inline-expression machinery breaks for any op that lands
+    // on the Phase 9 path. Rewriting in place here keeps the
+    // two compile paths consistent.
+    for phase in phases.values_mut() {
+        crate::scope::rewrite_inline_exprs(&mut phase.ops);
+    }
     let phase_order = workload.phase_order;
     let scenarios = workload.scenarios;
     let workload_readouts = workload.readouts.clone();
@@ -1327,14 +1342,33 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     if node.materialised != Some(true) {
                         return None;
                     }
-                    // Find the ParsedOp by name across all phases
-                    // (an op-template scope's name is unique per
-                    // phase, but the scope tree doesn't carry the
-                    // phase ref directly here — fall back to a
-                    // best-effort search).
-                    phases.values()
-                        .flat_map(|p| p.ops.iter())
-                        .find(|op| op.name == *name)
+                    // Find the ParsedOp by walking up to the
+                    // OWNING phase first, then resolving by name
+                    // within that phase. Two phases can both
+                    // declare an op named e.g. `select_ann` with
+                    // very different bodies; a flat
+                    // `phases.values().flat_map(|p| p.ops.iter())
+                    // .find(...)` would pick whichever phase the
+                    // HashMap iterator yielded first, silently
+                    // compiling pvs_query's body into ann_query's
+                    // op-template kernel (and vice versa).
+                    let owning_phase: Option<&str> = {
+                        let mut cursor = scope_tree.nodes[idx].parent;
+                        let mut found: Option<&str> = None;
+                        while let Some(p) = cursor {
+                            if let crate::scope_tree::ScopeKind::Phase { name: pname } =
+                                &scope_tree.nodes[p].kind
+                            {
+                                found = Some(pname.as_str());
+                                break;
+                            }
+                            cursor = scope_tree.nodes[p].parent;
+                        }
+                        found
+                    };
+                    owning_phase
+                        .and_then(|pname| phases.get(pname))
+                        .and_then(|phase| phase.ops.iter().find(|op| op.name == *name))
                         .cloned()
                         .map(|op| InstallSpec::OpTemplate { idx, op })
                 }

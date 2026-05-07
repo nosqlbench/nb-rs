@@ -257,6 +257,14 @@ impl GkProgram {
         self.output_map.get(name)
     }
 
+    /// Iterate every (output-name, (node_idx, port_idx)) pair.
+    /// Used by the eval-panic enricher to reverse-resolve which
+    /// output(s) a given node feeds when reporting which binding
+    /// the panic originated from.
+    pub fn output_map_iter(&self) -> impl Iterator<Item = (&String, &(usize, usize))> {
+        self.output_map.iter()
+    }
+
     /// Set the binding modifier for a named output.
     pub(crate) fn set_output_modifier(&mut self, name: &str, modifier: crate::dsl::ast::BindingModifier) {
         if modifier != crate::dsl::ast::BindingModifier::NONE {

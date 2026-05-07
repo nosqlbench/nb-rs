@@ -390,8 +390,10 @@ impl ActivityMetrics {
     ///
     /// Supported metric families:
     /// - **Relevancy aggregates** — one entry per registered
-    ///   `relevancy.functions:` (e.g. `recall_at_10`,
-    ///   `precision_at_10`). Value: `total_mean × 100` as a percent.
+    ///   `relevancy.functions:` (e.g. `recall`, `precision`,
+    ///   `f1`). The relevancy cutoff rides on the metric's
+    ///   `k` / `r` labels rather than the family name.
+    ///   Value: `total_mean × 100` as a percent.
     /// - **Latency** — `latency_p50`, `latency_p99`, `latency_max`,
     ///   `latency_mean`, sourced from `service_time` (the per-op
     ///   timer, exclusive of wait time). Value: auto-scaled
@@ -1649,19 +1651,6 @@ impl Activity {
                 total_passed += vm.passed();
                 total_failed += vm.failed();
 
-                final_snapshot.insert_counter(
-                    "validations_passed",
-                    activity_labels.clone(),
-                    vm.passed(),
-                    now,
-                );
-                final_snapshot.insert_counter(
-                    "validations_failed",
-                    activity_labels.clone(),
-                    vm.failed(),
-                    now,
-                );
-
                 for (name, stats) in &vm.relevancy_stats {
                     let snap = stats.snapshot();
                     if !snap.is_empty() {
@@ -1689,16 +1678,56 @@ impl Activity {
                             "{depth_indent}{bold}{name}{reset}: mean={:.2}% {dim}p50={:.2}% p99={:.2}% min={:.2}% max={:.2}% (n={n}){reset}",
                             mean * 100.0, p50 * 100.0, p99 * 100.0, min * 100.0, max * 100.0,
                         );
+                        // Pick up `k`/`r` from the F64Stats's
+                        // labels so per-phase summary gauges
+                        // remain unique under OpenMetrics §4.5
+                        // when multiple relevancy configs share
+                        // a phase but differ in cutoff.
+                        let stats_labels = stats.labels();
+                        let k_label = stats_labels.get("k").map(str::to_string);
+                        let r_label = stats_labels.get("r").map(str::to_string);
                         for (stat, val) in [("mean", mean), ("p50", p50), ("p99", p99), ("min", min), ("max", max)] {
+                            let mut gauge_labels = activity_labels.with("n", &n.to_string());
+                            if let Some(k) = &k_label {
+                                gauge_labels = gauge_labels.with("k", k);
+                            }
+                            if let Some(r) = &r_label {
+                                gauge_labels = gauge_labels.with("r", r);
+                            }
                             final_snapshot.insert_gauge(
                                 format!("{name}_{stat}"),
-                                activity_labels.with("n", &n.to_string()),
+                                gauge_labels,
                                 val,
                                 now,
                             );
                         }
                     }
                 }
+            }
+
+            // Phase-level aggregate counters. One pair per phase
+            // — `total_passed` / `total_failed` sum across every
+            // op's `vm` so the metric instance is unique under
+            // OpenMetrics §4.5 (LabelSets must be unique). The
+            // earlier per-`vm` insertion path inserted N copies
+            // with identical labels, which the snapshot
+            // assembler now rejects as a duplicate. Per-op
+            // breakdown isn't carried by the validation counters
+            // anyway — the labels are activity-scope, not
+            // op-scope.
+            if total_passed > 0 || total_failed > 0 {
+                final_snapshot.insert_counter(
+                    "validations_passed",
+                    activity_labels.clone(),
+                    total_passed,
+                    now,
+                );
+                final_snapshot.insert_counter(
+                    "validations_failed",
+                    activity_labels.clone(),
+                    total_failed,
+                    now,
+                );
             }
 
             // Validation summary line: only emit when there are

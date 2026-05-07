@@ -420,10 +420,22 @@ pub const ALL_DIRECTIVES: &[Directive] = &[
         repeatable: false,
     },
 
-    // ── Per-series sub-block (repeatable) ────────────────
+    // ── Per-series style override (repeatable) ───────────
+    //
+    // `style <key>=<value>:<directives>` overrides scalar
+    // style fields (line / width / marker / size / color /
+    // palette) for the series whose discriminator matches
+    // `<key>=<value>`. Series-partition selection is no
+    // longer a plot directive — `query: avg(…) by (k, profile)`
+    // with `x: <one-of-those>` is the canonical declaration,
+    // and the renderer auto-derives partition labels from the
+    // result-set labels minus the X axis. That makes "what
+    // dimensions split the series" a property of the
+    // MetricsQL aggregation surface rather than something the
+    // plot grammar duplicates.
     Directive {
-        cli_flag: "--series",
-        yaml_directive: "series",
+        cli_flag: "--style",
+        yaml_directive: "style",
         yaml_form: YamlForm::Whitespace,
         applies_to: KindMask::FIGURES,
         target: DirectiveTarget::StyleSeries,
@@ -585,11 +597,11 @@ mod tests {
     }
 
     #[test]
-    fn series_is_repeatable_other_directives_are_not() {
-        let series = directive_by_cli_flag("--series").unwrap();
-        assert!(series.repeatable, "--series must be repeatable");
+    fn style_is_repeatable_other_directives_are_not() {
+        let style = directive_by_cli_flag("--style").unwrap();
+        assert!(style.repeatable, "--style must be repeatable");
         for d in ALL_DIRECTIVES {
-            if d.cli_flag != "--series" {
+            if d.cli_flag != "--style" {
                 assert!(!d.repeatable,
                     "{} should not be repeatable", d.cli_flag);
             }

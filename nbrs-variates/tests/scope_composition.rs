@@ -102,9 +102,7 @@ fn scope_values_extracts_bound_inputs() {
 
     let values = inner.scope_values();
     // Should have entries for dim and count (and possibly cycle default)
-    let dim_val = values.iter().find(|(idx, _)| {
-        inner.program().input_names()[*idx] == "dim"
-    });
+    let dim_val = values.iter().find(|(name, _)| name == "dim");
     assert!(dim_val.is_some(), "scope_values should include dim");
     assert_eq!(dim_val.unwrap().1.as_u64(), 128);
 }

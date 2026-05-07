@@ -1,7 +1,18 @@
 # SRD-13d Phase 9 Scope Assessment
 
-**Status:** scoped, **not implemented**. This memo defines the
-work to make Phase 9 actionable. Reviewer: Jonathan.
+**Status:** **landed** as of 2026-05-06 (commit `7241acd`). The
+core of the SRD-13d Phase 9 surface — per-op-template kernel
+synthesis, install-loop integration, per-fiber kernel
+instancing, and dispenser routing — is implemented. The
+`compile_expr` follow-up for non-bare metric value expressions
+is tracked in `docs/design/srd13d_phase9_followups.md`.
+
+This memo is preserved as the original scoping write-up for
+historical context; the implementation diverged in places
+(simpler than what's outlined below — the scope-tree
+already had `cached_kernel` slots, so the install loop just
+needed an OpTemplate case + per-fiber routing). See the
+follow-ups memo for the remaining work.
 
 ## What Phase 9 is
 

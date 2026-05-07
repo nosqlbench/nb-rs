@@ -69,7 +69,10 @@ pub const LIST_BOOL_FLAGS: &[&str] = &[
 pub const MATCH_FLAGS: &[&str] = &["--db"];
 
 /// Closed value set for `--format`.
-pub const FORMAT_VALUES: &[&str] = &["plain", "json", "jsonl", "yaml", "csv"];
+pub const FORMAT_VALUES: &[&str] = &[
+    "plain", "json", "jsonl", "yaml", "csv",
+    "metricsql", "openmetrics", "promql",
+];
 
 /// Concatenation helper: the full advertised flag list for a
 /// given subcommand (kind-specific flags + session flags).
@@ -364,17 +367,29 @@ fn print_metrics_usage() {
     eprintln!();
     eprintln!("Output (list / show):");
     eprintln!("  --format <name>              plain | json | jsonl | yaml | csv");
-    eprintln!("                               Default: plain.");
+    eprintln!("                               | metricsql");
+    eprintln!("                               Default: plain. `metricsql`");
+    eprintln!("                               (aliases: openmetrics / promql /");
+    eprintln!("                               prometheus) emits one OpenMetrics");
+    eprintln!("                               line per instance —");
+    eprintln!("                               family{{key=\"value\",…}} — with");
+    eprintln!("                               labels in natural alphanumeric");
+    eprintln!("                               order so every line shares the");
+    eprintln!("                               same key sequence (copy-paste");
+    eprintln!("                               into match/query/PromQL tools).");
     eprintln!("  --tofile <path>              Write to <path>. With no");
     eprintln!("                               --format, the extension chooses");
     eprintln!("                               (.json, .jsonl, .yaml, .csv,");
+    eprintln!("                               .om / .openmetrics / .promql /");
+    eprintln!("                               .metricsql → metricsql,");
     eprintln!("                               .txt → plain).");
     eprintln!("  --tree                       Reshape json/yaml output into a");
     eprintln!("                               nested map keyed family →");
     eprintln!("                               constants + dim tree. Roll up by");
     eprintln!("                               family with `jq '.families.<n>'`.");
     eprintln!("                               Implies --format yaml when used");
-    eprintln!("                               alone; rejects csv / jsonl.");
+    eprintln!("                               alone; rejects csv / jsonl /");
+    eprintln!("                               metricsql.");
 }
 
 /// `nbrs metrics match <expr>` — print a flat list of every
@@ -467,6 +482,15 @@ enum Format {
     Jsonl,
     Yaml,
     Csv,
+    /// MetricsQL / OpenMetrics canonical line form:
+    /// `family{key="value",key="value",…}` — one instance per
+    /// line, label keys sorted in natural alphanumeric order so
+    /// every line shares the same key sequence and pivots /
+    /// diffs / line-by-line readers see consistent column
+    /// alignment. Output is directly copy-pasteable into
+    /// `nbrs metrics match` / `nbrs metrics query` /
+    /// downstream PromQL-compatible tooling.
+    MetricsQL,
 }
 
 impl Format {
@@ -477,9 +501,11 @@ impl Format {
             "jsonl" | "ndjson" => Ok(Format::Jsonl),
             "yaml" | "yml" => Ok(Format::Yaml),
             "csv" => Ok(Format::Csv),
+            "metricsql" | "openmetrics" | "promql" | "prometheus"
+                => Ok(Format::MetricsQL),
             other => Err(format!(
                 "unknown format '{other}' (expected one of: \
-                 plain, json, jsonl, yaml, csv)"
+                 plain, json, jsonl, yaml, csv, metricsql)"
             )),
         }
     }
@@ -492,9 +518,58 @@ impl Format {
             "jsonl" | "ndjson" => Format::Jsonl,
             "yaml" | "yml" => Format::Yaml,
             "csv"   => Format::Csv,
+            "om" | "openmetrics" | "promql" | "metricsql"
+                    => Format::MetricsQL,
             _ => Format::Plain,
         }
     }
+}
+
+/// Quote a label value for MetricsQL / OpenMetrics output.
+/// Escapes per the OpenMetrics spec: `\` → `\\`, `"` → `\"`,
+/// newline → `\n`. Bare other-bytes pass through.
+fn escape_metricsql_value(v: &str) -> String {
+    let mut out = String::with_capacity(v.len() + 2);
+    out.push('"');
+    for c in v.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"'  => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Render flat instance rows as one OpenMetrics-canonical line
+/// per instance: `family{key="value",key="value",…}`. Labels
+/// within each line are sorted by [`cmp_natural`] (the
+/// existing natural-alphanumeric comparator used elsewhere in
+/// this module) so all lines share the same key sequence and
+/// readers can rely on columnar alignment.
+fn render_metricsql(
+    w: &mut dyn std::io::Write,
+    flat: &[InstanceRow],
+) -> std::io::Result<()> {
+    for row in flat {
+        let mut labels: Vec<&(String, String)> = row.labels.iter().collect();
+        labels.sort_by(|a, b| cmp_natural(&a.0, &b.0));
+        write!(w, "{}", row.family)?;
+        if !labels.is_empty() {
+            write!(w, "{{")?;
+            let mut first = true;
+            for (k, v) in &labels {
+                if !first { write!(w, ",")?; }
+                first = false;
+                write!(w, "{}={}", k, escape_metricsql_value(v))?;
+            }
+            write!(w, "}}")?;
+        }
+        writeln!(w)?;
+    }
+    Ok(())
 }
 
 /// One row in the structured output. `values` is populated only
@@ -603,7 +678,7 @@ fn list(args: &[String], show_values_in: bool) {
     if tree_mode && !matches!(format, Format::Json | Format::Yaml) {
         eprintln!(
             "nbrs metrics: --tree requires --format json or yaml \
-             (csv/jsonl are flat; plain is already a tree)"
+             (csv/jsonl/metricsql are flat; plain is already a tree)"
         );
         std::process::exit(2);
     }
@@ -697,6 +772,7 @@ fn list(args: &[String], show_values_in: bool) {
             (Format::Csv, _) => emit(&tofile, format, |w| {
                 writeln!(w, "{}", render_csv_header(&flat, show_values))
             }),
+            (Format::MetricsQL, _) => emit(&tofile, format, |_w| Ok(())),
         }
         return;
     }
@@ -725,6 +801,9 @@ fn list(args: &[String], show_values_in: bool) {
         }),
         (Format::Csv, _) => emit(&tofile, format, |w| {
             render_csv(w, &flat, show_values)
+        }),
+        (Format::MetricsQL, _) => emit(&tofile, format, |w| {
+            render_metricsql(w, &flat)
         }),
     }
 }
@@ -1468,6 +1547,86 @@ mod tests {
         let mut v = vec!["10", "1", "2", "100", "20"];
         v.sort_by(|a, b| cmp_natural(a, b));
         assert_eq!(v, vec!["1", "2", "10", "20", "100"]);
+    }
+
+    #[test]
+    fn render_metricsql_sorts_labels_naturally() {
+        // Producer-order labels (as parsed from metric_instance.spec)
+        // should re-emerge in natural-alphanumeric key order on
+        // the metricsql line — every line shares the same key
+        // sequence so columnar readers / diff tools align.
+        let row1 = InstanceRow {
+            family: "recall".into(),
+            labels: vec![
+                ("profile".into(), "label_03".into()),
+                ("k".into(), "10".into()),
+                ("limit".into(), "50".into()),
+                ("k_at_test".into(), "1".into()),
+            ],
+            values: None,
+        };
+        let row2 = InstanceRow {
+            family: "recall".into(),
+            labels: vec![
+                ("limit".into(), "100".into()),
+                ("k".into(), "1".into()),
+                ("profile".into(), "label_00".into()),
+                ("k_at_test".into(), "10".into()),
+            ],
+            values: None,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        render_metricsql(&mut buf, &[row1, row2]).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        // Both lines share the same key sequence:
+        // k, k_at_test, limit, profile (natural alpha-num).
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0],
+            r#"recall{k="10",k_at_test="1",limit="50",profile="label_03"}"#);
+        assert_eq!(lines[1],
+            r#"recall{k="1",k_at_test="10",limit="100",profile="label_00"}"#);
+    }
+
+    #[test]
+    fn render_metricsql_escapes_special_chars() {
+        let row = InstanceRow {
+            family: "weird".into(),
+            labels: vec![
+                ("path".into(), r#"a"b\c"#.into()),
+                ("note".into(), "line1\nline2".into()),
+            ],
+            values: None,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        render_metricsql(&mut buf, &[row]).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        // Backslash → \\, double-quote → \", newline → \n.
+        // Keys appear in natural-alphanumeric order: note, path.
+        assert_eq!(out.trim_end(),
+            r#"weird{note="line1\nline2",path="a\"b\\c"}"#);
+    }
+
+    #[test]
+    fn render_metricsql_empty_labels() {
+        // Family with no labels emits just the bare name.
+        let row = InstanceRow {
+            family: "stanzas_total".into(),
+            labels: vec![],
+            values: None,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        render_metricsql(&mut buf, &[row]).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap().trim_end(), "stanzas_total");
+    }
+
+    #[test]
+    fn format_parse_metricsql_aliases() {
+        for alias in &["metricsql", "openmetrics", "promql", "prometheus",
+                       "MetricsQL", "OpenMetrics"] {
+            assert_eq!(Format::parse(alias).unwrap(), Format::MetricsQL,
+                "alias '{alias}' must resolve to Format::MetricsQL");
+        }
     }
 
     #[test]

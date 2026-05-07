@@ -163,13 +163,17 @@ pub fn build_item(kind: Kind, args: &[String]) -> Result<BuildResult, String> {
                 applicable_kinds_label(directive),
             ));
         }
-        // Special-case --series since each invocation pushes
+        // Special-case --style since each invocation pushes
         // a SeriesOverride rather than overwriting a field.
-        if directive.cli_flag == "--series" {
+        // (The struct name `SeriesOverride` describes "an
+        // override for one series" — semantically it's a
+        // per-series style override, declared via the `style`
+        // directive; the type name is internal.)
+        if directive.cli_flag == "--style" {
             let value = args.get(i + 1)
                 .ok_or_else(|| format!("flag '{arg}' requires a value"))?;
             let so = parse_series_arg(value)
-                .map_err(|e| format!("--series '{value}': {e}"))?;
+                .map_err(|e| format!("--style '{value}': {e}"))?;
             item.style.series.push(so);
             i += 2;
             continue;
@@ -573,11 +577,11 @@ mod tests {
     }
 
     #[test]
-    fn build_repeatable_series_directives() {
+    fn build_repeatable_style_directives() {
         let r = build_item(Kind::Plot, &args(&[
             "x", "--over", "cycle",
-            "--series", r#"profile=hnsw:{"line":"dashed"}"#,
-            "--series", "profile=ivf:line=solid marker=circle",
+            "--style", r#"profile=hnsw:{"line":"dashed"}"#,
+            "--style", "profile=ivf:line=solid marker=circle",
         ])).expect("build");
         assert_eq!(r.item.style.series.len(), 2);
         assert_eq!(r.item.style.series[0].key, "profile");

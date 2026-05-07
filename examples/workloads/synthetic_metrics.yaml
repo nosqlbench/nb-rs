@@ -63,12 +63,21 @@ phases:
         # set explicitly. Unit suffix `_ms` lands on both the
         # family name (`latency_curve_ms`) and the
         # metric_family.unit column.
+        #
+        # `latency_window` demonstrates mapping-form auto-inject
+        # (SRD-13d Phase 9 §1): the non-bare `value:` expression
+        # is promoted into op-template bindings as
+        # `latency_window := …` and `value:` is rewritten to the
+        # bare key, mirroring the list-form `:=` flow.
         metrics:
           latency_curve:
             value: latency_curve
             kind: gauge
             unit: ms
             format: "#.##"
+          latency_window:
+            value: latency_curve * 1.05
+            kind: gauge
 
       synth_op_simple:
         adapter: stdout
@@ -91,8 +100,8 @@ phases:
         # by these `:=` entries.
         metrics:
           - load
-          - forecast_low := mul(latency_curve, 0.9)
-          - forecast_high := mul(latency_curve, 1.1)
+          - forecast_low := latency_curve * 0.9
+          - forecast_high := latency_curve * 1.1
 
       synth_op_kinds:
         adapter: stdout

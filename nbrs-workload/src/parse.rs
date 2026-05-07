@@ -361,6 +361,52 @@ fn collect_idempotent_under_do_loop(
 }
 
 /// Parse a YAML source into just the list of normalized ParsedOps.
+/// Normalise an op-level `if:` clause so callers can write
+/// expressions naturally. The downstream pipeline expects
+/// the condition to be either a binding-name reference
+/// (`{name}`) or an inline expression (`{{expr}}`). When
+/// the operator writes a bare expression like
+/// `cql_dialect == 'cass'`, that doesn't match either
+/// form and the conditional dispenser fails at init when
+/// it tries to look up a GK binding literally named
+/// `cql_dialect == 'cass'`.
+///
+/// Heuristic: if the trimmed value already starts with `{`
+/// (any braced form), or is a plain identifier
+/// (`[A-Za-z_][A-Za-z0-9_]*`), pass through unchanged.
+/// Otherwise treat as an inline expression and wrap with
+/// `{{...}}` so the existing inline-expression machinery
+/// in `nbrs-activity::scope::build_scope` synthesises a
+/// hidden binding (`__expr_N := <expr>`) and rewrites the
+/// condition to reference it.
+pub fn normalize_condition_clause(s: &str) -> String {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+    // Already in any braced form — pass through. The
+    // downstream extractor handles `{{expr}}`, `{:=expr:=}`,
+    // `{name}`, and `{expr-with-operators}` itself.
+    if trimmed.starts_with('{') {
+        return trimmed.to_string();
+    }
+    // Plain identifier — leave as-is so the legacy "if:
+    // points at a single binding name" form keeps working.
+    let is_plain_ident = trimmed
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if is_plain_ident {
+        return trimmed.to_string();
+    }
+    // Anything else (operators, quotes, parens, …) → wrap
+    // as an inline expression.
+    format!("{{{{{trimmed}}}}}")
+}
+
 pub fn parse_ops(yaml_source: &str) -> Result<Vec<ParsedOp>, String> {
     let workload = parse_workload(yaml_source, &HashMap::new())?;
     Ok(workload.ops)
@@ -1327,7 +1373,7 @@ fn normalize_op_object(
 
     let condition = map.get("if")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(normalize_condition_clause);
 
     let delay = map.get("delay")
         .and_then(|v| v.as_str())
@@ -1433,7 +1479,30 @@ fn parse_metrics_field(
                     return Err(format!(
                         "duplicate metric key '{key}' in metrics map"));
                 }
-                let spec = parse_metric_spec_value(val, key)?;
+                let mut spec = parse_metric_spec_value(val, key)?;
+                // SRD-13d Phase 9 mapping-form auto-inject: if
+                // `value:` isn't a bare name, promote it to an
+                // op-template binding `<key> := <value>` and
+                // replace the spec's `value:` with the bare key.
+                // Mirrors the list-form `name := expr` flow.
+                let value_trimmed = spec.value.trim();
+                let bare = !value_trimmed.is_empty()
+                    && value_trimmed.chars().all(|c| c.is_alphanumeric() || c == '_');
+                if !bare {
+                    if !is_valid_ident(key) {
+                        return Err(format!(
+                            "metric '{key}' value '{value}' is a non-bare \
+                             expression so the metric key must itself be a \
+                             valid identifier (alphanumerics + underscore, \
+                             not starting with a digit) so it can be used \
+                             as a binding name. Rename the metric key, or \
+                             move the expression into `bindings:` and set \
+                             `value:` to the bare name.",
+                            value = spec.value));
+                    }
+                    inject_wire_into_bindings(op_bindings, key, value_trimmed, op_name)?;
+                    spec.value = key.clone();
+                }
                 out.insert(key.clone(), spec);
             }
         }
@@ -1546,6 +1615,20 @@ fn inject_wire_into_bindings(
         }
     }
     Ok(())
+}
+
+/// True when `s` is a valid GK identifier: non-empty, first
+/// char is a letter or underscore, remaining chars are
+/// alphanumerics or underscore. Used by the mapping-form
+/// metric auto-inject to confirm the metric key can stand in
+/// as a binding name.
+fn is_valid_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
 /// True when the GK source contains a binding line
@@ -1912,6 +1995,42 @@ ops:
     }
 
     #[test]
+    fn condition_clause_passthrough_for_identifier() {
+        // Bare identifier — legacy "name a binding" form.
+        assert_eq!(normalize_condition_clause("my_flag"), "my_flag");
+        assert_eq!(normalize_condition_clause(" my_flag "), "my_flag");
+    }
+
+    #[test]
+    fn condition_clause_passthrough_for_braced_forms() {
+        assert_eq!(normalize_condition_clause("{my_flag}"), "{my_flag}");
+        assert_eq!(normalize_condition_clause("{{x == 1}}"), "{{x == 1}}");
+        assert_eq!(normalize_condition_clause("{:=x == 1:=}"), "{:=x == 1:=}");
+    }
+
+    #[test]
+    fn condition_clause_wraps_bare_expressions() {
+        assert_eq!(
+            normalize_condition_clause("cql_dialect == 'cass'"),
+            "{{cql_dialect == 'cass'}}",
+        );
+        assert_eq!(
+            normalize_condition_clause("a > 0 && b < 10"),
+            "{{a > 0 && b < 10}}",
+        );
+        assert_eq!(
+            normalize_condition_clause("foo(bar)"),
+            "{{foo(bar)}}",
+        );
+    }
+
+    #[test]
+    fn condition_clause_empty_passthrough() {
+        assert_eq!(normalize_condition_clause(""), "");
+        assert_eq!(normalize_condition_clause("   "), "");
+    }
+
+    #[test]
     fn parse_op_with_fields() {
         let yaml = r#"
 ops:
@@ -2198,6 +2317,55 @@ phases:
             }
             other => panic!("expected GkSource bindings, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_metrics_mapping_form_with_wire_expression() {
+        let yaml = r#"
+phases:
+  p:
+    bindings: |
+      base := 10
+    ops:
+      o:
+        stmt: "noop"
+        metrics:
+          scaled:
+            value: base * 2
+            kind: gauge
+"#;
+        let wl = parse_workload(yaml, &HashMap::new()).unwrap();
+        let op = &wl.phases["p"].ops[0];
+        let m = &op.metrics["scaled"];
+        // After auto-inject the spec's `value:` is the bare key.
+        assert_eq!(m.value, "scaled");
+        // The non-bare expression landed in op-template bindings.
+        match &op.bindings {
+            BindingsDef::GkSource(src) => {
+                assert!(src.contains("scaled := base * 2"),
+                    "expression not injected; bindings: {src:?}");
+            }
+            other => panic!("expected GkSource bindings, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_metrics_mapping_form_invalid_key_for_non_bare_value() {
+        // Non-bare value + key that can't be a binding name → reject.
+        let yaml = r#"
+phases:
+  p:
+    ops:
+      o:
+        stmt: "noop"
+        metrics:
+          "1bad":
+            value: foo + 1
+            kind: gauge
+"#;
+        let err = parse_workload(yaml, &HashMap::new()).unwrap_err();
+        assert!(err.contains("must itself be a valid identifier"),
+            "expected identifier diagnostic, got: {err}");
     }
 
     #[test]

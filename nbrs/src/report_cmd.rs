@@ -64,23 +64,33 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         }
     };
 
-    match rest.first().map(String::as_str) {
+    // SRD-15 strict mode: when `--strict` is on the arg list
+    // (or `NBRS_STRICT` is set), figure-render no-data errors
+    // remain hard failures. Without strict mode, "no-data"
+    // results from incremental / auto-render paths are
+    // downgraded to warnings so a workload reporting before
+    // its data has accumulated doesn't fail the run.
+    let strict = is_strict_mode(args);
+
+    let failures: Vec<String> = match rest.first().map(String::as_str) {
         // Listing form — no selector after the (optional) kind
         // keyword. `list` is an explicit alias for the bare
         // form: `nbrs report list` and `nbrs report` produce
         // the same output.
-        None | Some("list") => print_listing(&items, kind_filter),
-        Some("all") => render_all(&items, kind_filter, &rest[1..], workload_arg.as_deref(), &output_root, session_db.as_deref()),
+        None | Some("list") => { print_listing(&items, kind_filter); Vec::new() }
+        Some("all") => render_all(&items, kind_filter, &rest[1..], workload_arg.as_deref(), &output_root, session_db.as_deref(), strict),
         Some("figure") => {
             let n_arg = rest.get(1).cloned().unwrap_or_default();
             let pass = rest.get(2..).unwrap_or(&[]);
-            render_by_index(&items, kind_filter, &n_arg, pass, workload_arg.as_deref(), &output_root, session_db.as_deref());
+            render_by_index(&items, kind_filter, &n_arg, pass, workload_arg.as_deref(), &output_root, session_db.as_deref(), strict)
         }
         Some("scratch") => {
             crate::report_scratch::scratch_subcommand(&output_root, &rest[1..]);
+            Vec::new()
         }
         Some("rename") => {
             run_rename(&rest[1..], &output_root, workload_path.as_deref());
+            Vec::new()
         }
         // Flag-form: `nbrs plot --name X --series Y ...` — the
         // user is driving the renderer directly with its own
@@ -94,6 +104,7 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
                 kind_filter, &rest, workload_arg.as_deref(),
                 session_db.as_deref(),
             );
+            Vec::new()
         }
         // SRD-64 flag-form: `nbrs report <kind> <name> [--<flag> ...]`.
         // When a vocab-defined `--flag` appears anywhere in the
@@ -110,6 +121,7 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
                 _ => unreachable!(),
             };
             dispatch_new_item(kind, &rest, &output_root, workload_path.as_deref());
+            Vec::new()
         }
         Some(arg) => {
             // Numeric-selector forms (`5`, `2-4`, `2..4`,
@@ -120,11 +132,27 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
             // name — safe to reinterpret as a figure
             // selector.
             if let Some(indices) = parse_figure_selector(arg) {
-                render_by_indices(&items, kind_filter, &indices, &rest[1..], workload_arg.as_deref(), &output_root, session_db.as_deref());
+                render_by_indices(&items, kind_filter, &indices, &rest[1..], workload_arg.as_deref(), &output_root, session_db.as_deref(), strict)
             } else {
-                render_by_glob(&items, kind_filter, arg, &rest[1..], workload_arg.as_deref(), &output_root, session_db.as_deref());
+                render_by_glob(&items, kind_filter, arg, &rest[1..], workload_arg.as_deref(), &output_root, session_db.as_deref(), strict)
             }
         }
+    };
+
+    // SRD: figure-render failures are not skip-overable. The
+    // workload defined a figure; the operator asked for it; the
+    // run produced no output. That is a defect worth a nonzero
+    // exit, even if the rest of the batch produced their
+    // markdown/png artifacts. Each failure was already printed
+    // line-by-line as `ERROR: ...` above; the trailing summary
+    // gives the count and the exit-time signal.
+    if !failures.is_empty() {
+        eprintln!();
+        eprintln!("nbrs report: {} figure(s) failed to render:", failures.len());
+        for f in &failures {
+            eprintln!("  - {f}");
+        }
+        std::process::exit(2);
     }
 }
 
@@ -566,6 +594,15 @@ struct ResolvedItem {
     /// `summary.md`. Set by a preceding `file <filename>`
     /// directive in the same group.
     pub target_file: Option<String>,
+    /// Per-series style overrides — one entry per `series
+    /// <key>=<value>:<directives>` body line. Each entry binds a
+    /// (key, value) discriminator to a `Style` with the same
+    /// fields the item-level cascade uses (line / width /
+    /// marker / size / color / palette). Forwarded to the plot
+    /// renderer via `--series-override key=value:k=v k=v` so
+    /// the per-series loop in `draw_chart` can substitute the
+    /// override for the matching series's palette default.
+    pub series_overrides: Vec<nbrs_workload::report::SeriesOverride>,
 }
 
 fn extract_workload(args: &[String]) -> (Option<PathBuf>, Vec<String>) {
@@ -650,21 +687,36 @@ fn resolve_items(
             .map_err(|e| format!("read '{}': {e}", resolved.display()))?;
         let workload = nbrs_workload::parse::parse_workload(
             &text, &std::collections::HashMap::new())?;
+        // Workload-param interpolation: report items (the
+        // `label "..."` and the body lines) routinely
+        // contain `{cql_dialect}`-style placeholders that
+        // operators expect to render with the workload's
+        // declared param values. Expand them once here so
+        // every downstream consumer (the markdown
+        // assembler, the plot renderer that parses the
+        // body) sees the resolved literals.
+        let params: std::collections::HashMap<String, String> = workload.params.clone();
         let mut out: Vec<ResolvedItem> = Vec::new();
         for group in &workload.report.groups {
             for item in &group.items {
                 let style = workload.report.effective_style(group, item);
+                let label = item.label.as_deref().map(|s|
+                    nbrs_activity::runner::expand_workload_params(s, &params));
+                let body = nbrs_activity::runner::expand_workload_params(&item.body, &params);
+                let target_file = item.target_file.as_deref().map(|s|
+                    nbrs_activity::runner::expand_workload_params(s, &params));
                 out.push(ResolvedItem {
                     name: item.name.clone(),
                     kind: item.kind,
-                    label: item.label.clone(),
-                    body: item.body.clone(),
+                    label,
+                    body,
                     palette: style.palette.clone(),
                     line: style.line.clone(),
                     width: style.width,
                     marker: style.marker.clone(),
                     marker_size: style.size,
-                    target_file: item.target_file.clone(),
+                    target_file,
+                    series_overrides: style.series.clone(),
                 });
             }
         }
@@ -683,6 +735,27 @@ fn resolve_items(
             Ok(c) => c,
             Err(_) => return Ok(Vec::new()),
         };
+        // Pull the workload's persisted params first so we
+        // can expand `{name}` placeholders in stored item
+        // labels / bodies / target_file paths. The runner
+        // writes one `param.<key> → <value>` row per
+        // declared workload param at session start
+        // (`runner.rs:774`); here we read them back for the
+        // expansion. Same substitution as the YAML path.
+        let mut params: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if let Ok(mut pstmt) = conn.prepare(
+            "SELECT key, value FROM session_metadata WHERE key LIKE 'param.%'"
+        ) {
+            if let Ok(prows) = pstmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            }) {
+                for row in prows.flatten() {
+                    if let Some(name) = row.0.strip_prefix("param.") {
+                        params.insert(name.to_string(), row.1);
+                    }
+                }
+            }
+        }
         let mut stmt = match conn.prepare(
             "SELECT key, value FROM session_metadata \
              WHERE key LIKE 'report.%' ORDER BY rowid"
@@ -698,7 +771,15 @@ fn resolve_items(
         };
         let mut out: Vec<ResolvedItem> = Vec::new();
         for row in rows.flatten() {
-            if let Some(item) = parse_persisted_item(&row.0, &row.1) {
+            if let Some(mut item) = parse_persisted_item(&row.0, &row.1) {
+                // Expand workload-param placeholders.
+                if let Some(label) = item.label.as_deref() {
+                    item.label = Some(nbrs_activity::runner::expand_workload_params(label, &params));
+                }
+                item.body = nbrs_activity::runner::expand_workload_params(&item.body, &params);
+                if let Some(tf) = item.target_file.as_deref() {
+                    item.target_file = Some(nbrs_activity::runner::expand_workload_params(tf, &params));
+                }
                 out.push(item);
             }
         }
@@ -749,6 +830,13 @@ fn parse_persisted_item(key: &str, value: &str) -> Option<ResolvedItem> {
         marker: None,
         marker_size: None,
         target_file,
+        // Persisted item form doesn't carry per-series style;
+        // those live on the workload-source side. Round-trip
+        // through `nbrs report` against a session-db fallback
+        // sees an empty list, which is the correct behavior:
+        // there's no source-of-truth to pull overrides from
+        // here.
+        series_overrides: Vec::new(),
     })
 }
 
@@ -828,17 +916,48 @@ fn render_all(
     workload_arg: Option<&str>,
     output_root: &Path,
     session_db: Option<&Path>,
-) {
+    strict: bool,
+) -> Vec<String> {
     // SRD-46: figure numbers count only plot+table items, in
     // their order across the whole resolved item list. The
     // counter advances even when the kind filter excludes the
     // item, so numbers stay stable regardless of which subset
     // the operator renders.
     let mut fig_num: usize = 0;
+    let mut failures: Vec<String> = Vec::new();
     for item in items.iter() {
         if item.kind.is_figure() { fig_num += 1; }
         if !filter.matches(item.kind) { continue; }
-        render_one(fig_num, item, passthrough, workload_arg, output_root, session_db);
+        if let Err(e) = render_one(fig_num, item, passthrough, workload_arg, output_root, session_db) {
+            classify_render_error(e, strict, &mut failures);
+        }
+    }
+    failures
+}
+
+/// Detect SRD-15 strict mode from the args passed to
+/// `report_command`. Mirrors the convention used by the
+/// runner: `--strict` literally on the arg list, or the
+/// `NBRS_STRICT` env var set. When strict is on, no-data
+/// figure-render errors keep their hard-failure semantics.
+fn is_strict_mode(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--strict")
+        || std::env::var("NBRS_STRICT").is_ok()
+}
+
+/// Classify a render error as a warning vs failure based on
+/// strict-mode and the `[no-data]` sentinel. In strict mode
+/// every error is a failure (legacy behaviour); otherwise
+/// no-data errors print as warnings and don't trigger a
+/// nonzero exit. Used by every render-batch entry point.
+fn classify_render_error(e: String, strict: bool, failures: &mut Vec<String>) {
+    let is_no_data = crate::plot_metrics::is_no_data_error(&e);
+    let display = crate::plot_metrics::strip_no_data_prefix(&e);
+    if is_no_data && !strict {
+        eprintln!("WARNING: {display}");
+    } else {
+        eprintln!("ERROR: {display}");
+        failures.push(display);
     }
 }
 
@@ -850,7 +969,8 @@ fn render_by_index(
     workload_arg: Option<&str>,
     output_root: &Path,
     session_db: Option<&Path>,
-) {
+    strict: bool,
+) -> Vec<String> {
     let indices = match parse_figure_selector(n_arg) {
         Some(v) if !v.is_empty() => v,
         _ => {
@@ -861,7 +981,7 @@ fn render_by_index(
             std::process::exit(2);
         }
     };
-    render_by_indices(items, filter, &indices, passthrough, workload_arg, output_root, session_db);
+    render_by_indices(items, filter, &indices, passthrough, workload_arg, output_root, session_db, strict)
 }
 
 fn render_by_indices(
@@ -872,7 +992,9 @@ fn render_by_indices(
     workload_arg: Option<&str>,
     output_root: &Path,
     session_db: Option<&Path>,
-) {
+    strict: bool,
+) -> Vec<String> {
+    let mut failures: Vec<String> = Vec::new();
     // Walk in given order so the user sees output in the
     // order they requested (`5,3,1` renders 5 then 3 then 1).
     for &n in indices {
@@ -887,8 +1009,11 @@ fn render_by_indices(
             );
             std::process::exit(2);
         }
-        render_one(n, item, passthrough, workload_arg, output_root, session_db);
+        if let Err(e) = render_one(n, item, passthrough, workload_arg, output_root, session_db) {
+            classify_render_error(e, strict, &mut failures);
+        }
     }
+    failures
 }
 
 /// Parse a figure-number selector into a list of 1-based
@@ -951,7 +1076,8 @@ fn render_by_glob(
     workload_arg: Option<&str>,
     output_root: &Path,
     session_db: Option<&Path>,
-) {
+    strict: bool,
+) -> Vec<String> {
     // Build (figure_num, item) pairs for figures that pass the
     // kind filter and the glob. Counter advances over every
     // figure in declaration order so the numbers stay stable.
@@ -967,11 +1093,25 @@ fn render_by_glob(
         eprintln!("nbrs report: no items match '{glob}'");
         std::process::exit(2);
     }
+    let mut failures: Vec<String> = Vec::new();
     for (n, item) in matches {
-        render_one(n, item, passthrough, workload_arg, output_root, session_db);
+        if let Err(e) = render_one(n, item, passthrough, workload_arg, output_root, session_db) {
+            classify_render_error(e, strict, &mut failures);
+        }
     }
+    failures
 }
 
+/// Render a single resolved item. Returns `Err(message)`
+/// when a plot fails to render — the caller is responsible
+/// for surfacing the failure and exiting nonzero. Plot
+/// failures must not be silently dropped: a missing figure
+/// is a real defect in the workload or its data, not a
+/// recoverable condition (see "Never Ignore Silently"
+/// guidance). Tables route through `summary_command`,
+/// which currently exits the process on its own errors —
+/// when that gets refactored to return Result, table
+/// failures should funnel through the same path as plots.
 fn render_one(
     n: usize,
     item: &ResolvedItem,
@@ -979,17 +1119,17 @@ fn render_one(
     workload_arg: Option<&str>,
     output_root: &Path,
     session_db: Option<&Path>,
-) {
+) -> Result<(), String> {
     use nbrs_workload::report::Kind;
     // File items are scope directives — they don't render
     // anything themselves; their children do (during normal
     // iteration through the items list).
     if matches!(item.kind, Kind::File) {
-        return;
+        return Ok(());
     }
     if matches!(item.kind, Kind::Text) {
         render_text(item, output_root);
-        return;
+        return Ok(());
     }
     let mut base: Vec<String> = Vec::new();
     if let Some(w) = workload_arg { base.push(w.to_string()); }
@@ -1038,18 +1178,57 @@ fn render_one(
             base.push("--marker-size".into());
             base.push(s.to_string());
         }
+        // Per-series style overrides. One `--style` flag per
+        // override, repeated. Value form is the brace-free
+        // directive list `key=value:k=v k=v` so the renderer
+        // can parse it back identically to how the YAML body
+        // / CLI surface emit them.
+        for so in &item.series_overrides {
+            base.push("--style".into());
+            let mut s = format!("{}={}:", so.key, so.value);
+            let mut first = true;
+            for line in so.style.scalar_directive_lines() {
+                if !first { s.push(' '); }
+                first = false;
+                s.push_str(&line);
+            }
+            base.push(s);
+        }
     }
     base.extend(passthrough.iter().cloned());
     match item.kind {
         Kind::Plot => {
             // Use the result-returning variant so a no-rows
             // failure on one plot doesn't abort the rest of a
-            // `report all` batch.
-            if let Err(e) = crate::plot_metrics::plot_metrics_command_result(&base) {
-                eprintln!("nbrs report: plot '{}' skipped: {e}", item.name);
-            }
+            // `report all` batch — but we surface the failure
+            // to the caller so the overall report exits nonzero
+            // when any figure failed. Silent skip would let a
+            // broken workload masquerade as a successful run.
+            //
+            // Preserve the `[no-data]` sentinel from
+            // `plot_metrics` through the wrap so the upstream
+            // collector can downgrade it to a warning under
+            // non-strict mode (incremental / auto-render
+            // legitimately produces empty results before data
+            // accumulates).
+            crate::plot_metrics::plot_metrics_command_result(&base)
+                .map_err(|e| {
+                    if crate::plot_metrics::is_no_data_error(&e) {
+                        format!(
+                            "{}plot '{}' has no data: {}",
+                            crate::plot_metrics::PLOT_NO_DATA_PREFIX,
+                            item.name,
+                            crate::plot_metrics::strip_no_data_prefix(&e),
+                        )
+                    } else {
+                        format!("plot '{}' failed: {e}", item.name)
+                    }
+                })
         }
-        Kind::Table => crate::summary::summary_command(&base),
+        Kind::Table => {
+            crate::summary::summary_command(&base);
+            Ok(())
+        }
         Kind::Text | Kind::File | Kind::Details => unreachable!(),
     }
 }

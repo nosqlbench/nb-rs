@@ -150,8 +150,65 @@ impl SqliteDataSource {
              PRAGMA temp_store = MEMORY;\
              PRAGMA mmap_size  = 268435456;",
         ).map_err(|e| DataSourceError::new(format!("apply pragmas: {e}")))?;
+        register_regexp(&conn)?;
         Ok(Self { conn: Mutex::new(conn), db_path: None })
     }
+}
+
+/// Register a connection-scoped `REGEXP(pattern, value)`
+/// scalar function backed by the Rust `regex` crate. SQLite
+/// recognises `value REGEXP pattern` as syntactic sugar for
+/// `regexp(pattern, value)` (note the argument order — SQLite
+/// passes the pattern first, the value second), so the
+/// matcher-emitted SQL `v.value REGEXP ?` resolves through
+/// this function for every row scan.
+///
+/// MetricsQL regex matchers are anchored — `label=~"pat"`
+/// matches when `pat` matches the full label value, not a
+/// substring. We anchor with `^(?:...)$` here so a bare
+/// pattern like `label.*` matches values like `label_00`
+/// without inadvertently matching `prefix_label_x`.
+///
+/// The compiled `Regex` is cached per query via a small LRU
+/// (capacity 16) so repeated row evaluations don't re-compile
+/// the pattern. Compilation errors surface as a sqlite
+/// runtime error so the metricsql evaluator's error path
+/// reports a useful diagnostic.
+fn register_regexp(conn: &Connection) -> Result<(), DataSourceError> {
+    use rusqlite::functions::FunctionFlags;
+    use std::sync::Mutex as StdMutex;
+    use std::collections::HashMap;
+    // Compiled regex cache keyed by pattern string. Bounded
+    // by the number of distinct patterns within one query —
+    // metricsql evaluators only emit a handful of regex
+    // matchers per expression, so a `HashMap` without
+    // eviction is the right shape; cleared at the next
+    // open() since the closure owns it.
+    let cache: StdMutex<HashMap<String, regex::Regex>> = StdMutex::new(HashMap::new());
+    conn.create_scalar_function(
+        "regexp", 2,
+        FunctionFlags::SQLITE_DETERMINISTIC | FunctionFlags::SQLITE_UTF8,
+        move |ctx| {
+            let pattern: String = ctx.get(0)?;
+            let value: String = ctx.get(1)?;
+            let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+            let re = match guard.get(&pattern) {
+                Some(r) => r.clone(),
+                None => {
+                    let anchored = format!("^(?:{pattern})$");
+                    let r = regex::Regex::new(&anchored)
+                        .map_err(|e| rusqlite::Error::UserFunctionError(
+                            format!("regexp pattern '{pattern}': {e}").into()
+                        ))?;
+                    guard.insert(pattern, r.clone());
+                    r
+                }
+            };
+            Ok(re.is_match(&value))
+        },
+    ).map_err(|e| DataSourceError::new(
+        format!("register REGEXP function: {e}")))?;
+    Ok(())
 }
 
 impl DataSource for SqliteDataSource {
@@ -803,16 +860,18 @@ fn label_set_filter_clause(matchers: &[&Matcher])
     for (i, m) in matchers.iter().enumerate() {
         let kparam = i * 2 + 4;  // 1, 2, 3 are family_id + ts range
         let vparam = i * 2 + 5;
-        // EqRegex / NeRegex aren't compiled in this push —
-        // the streaming layer's matcher set is `Eq` / `Ne`
-        // for the same reason. Surface as an error rather
-        // than silently degrading to exact match.
+        // Regex matchers route through a connection-scoped
+        // `REGEXP(pattern, value)` scalar function registered
+        // at adapter open (see `register_regexp`). The
+        // function anchors the pattern with `^(?:…)$` so
+        // metricsql's full-string semantics match — e.g.,
+        // `profile=~"label.*"` matches `label_00` but not
+        // `prefix_label_00`.
         let cmp_clause = match m.op {
             MatcherOp::Eq => format!("k.key = ?{kparam} AND v.value = ?{vparam}"),
             MatcherOp::Ne => format!("k.key = ?{kparam} AND v.value != ?{vparam}"),
-            MatcherOp::EqRegex | MatcherOp::NeRegex =>
-                return Err(DataSourceError::new(
-                    "regex matchers not supported by sqlite adapter yet")),
+            MatcherOp::EqRegex => format!("k.key = ?{kparam} AND v.value REGEXP ?{vparam}"),
+            MatcherOp::NeRegex => format!("k.key = ?{kparam} AND NOT (v.value REGEXP ?{vparam})"),
         };
         parts.push(format!(
             "SELECT lse.set_id FROM label_set_entry lse \
@@ -1166,20 +1225,83 @@ mod tests {
     }
 
     #[test]
-    fn regex_matcher_returns_descriptive_error() {
+    fn regex_matcher_filters_by_pattern() {
+        // `EqRegex` on the `host` label routes through the
+        // connection-scoped REGEXP function. The pattern is
+        // anchored, so `label.*` matches `label_00` but not
+        // `prefix_label_00` — same semantics MetricsQL uses.
         let conn = make_schema();
-        let _id = make_instance(&conn, "cpu", "gauge", &[("host", "a")]);
+        let id_a = make_instance(&conn, "cpu", "gauge", &[("host", "label_00")]);
+        let id_b = make_instance(&conn, "cpu", "gauge", &[("host", "label_01")]);
+        let id_c = make_instance(&conn, "cpu", "gauge", &[("host", "other")]);
+        for (id, v) in [(id_a, 1.0), (id_b, 2.0), (id_c, 3.0)] {
+            add_gauge_sample(&conn, id, 0, v);
+        }
+        let ds = open_ds(conn);
+        let got = ds.fetch(
+            &[
+                Matcher { label: "__name__".into(), op: MatcherOp::Eq,
+                    value: "cpu".into() },
+                Matcher { label: "host".into(), op: MatcherOp::EqRegex,
+                    value: "label.*".into() },
+            ],
+            0, 1000,
+        ).expect("fetch");
+        let mut hosts: Vec<&str> = got.iter()
+            .map(|s| lookup(s, "host").unwrap_or(""))
+            .collect();
+        hosts.sort();
+        assert_eq!(hosts, vec!["label_00", "label_01"]);
+    }
+
+    #[test]
+    fn ne_regex_matcher_filters_negated() {
+        // `NeRegex` is the negation: every series whose label
+        // does NOT match the pattern.
+        let conn = make_schema();
+        let id_a = make_instance(&conn, "cpu", "gauge", &[("host", "label_00")]);
+        let id_b = make_instance(&conn, "cpu", "gauge", &[("host", "other")]);
+        for (id, v) in [(id_a, 1.0), (id_b, 2.0)] {
+            add_gauge_sample(&conn, id, 0, v);
+        }
+        let ds = open_ds(conn);
+        let got = ds.fetch(
+            &[
+                Matcher { label: "__name__".into(), op: MatcherOp::Eq,
+                    value: "cpu".into() },
+                Matcher { label: "host".into(), op: MatcherOp::NeRegex,
+                    value: "label.*".into() },
+            ],
+            0, 1000,
+        ).expect("fetch");
+        assert_eq!(got.len(), 1);
+        assert_eq!(lookup(&got[0], "host"), Some("other"));
+    }
+
+    #[test]
+    fn regex_matcher_invalid_pattern_errors() {
+        // Compilation failure surfaces as a sqlite runtime
+        // error from the regexp UDF; the adapter wraps it into
+        // a `DataSourceError`. The metric MUST have at least
+        // one sample so the regex evaluator actually runs —
+        // an empty family scans zero rows and never invokes
+        // the UDF.
+        let conn = make_schema();
+        let id = make_instance(&conn, "cpu", "gauge", &[("host", "a")]);
+        add_gauge_sample(&conn, id, 0, 1.0);
         let ds = open_ds(conn);
         let err = ds.fetch(
             &[
                 Matcher { label: "__name__".into(), op: MatcherOp::Eq,
                     value: "cpu".into() },
                 Matcher { label: "host".into(), op: MatcherOp::EqRegex,
-                    value: ".+".into() },
+                    value: "[unclosed".into() },
             ],
             0, 1000,
-        ).expect_err("expected regex-not-supported error");
-        assert!(err.message.contains("regex"));
+        ).expect_err("expected regex compile error");
+        assert!(err.message.to_lowercase().contains("regex")
+                || err.message.to_lowercase().contains("regexp"),
+            "diagnostic should mention regex/regexp: {err:?}");
     }
 
     #[test]

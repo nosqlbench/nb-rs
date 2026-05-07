@@ -26,9 +26,9 @@ params:
   query_concurrency: "20"
   replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
   fknn_profile: default
+#  optimize_for_values: "RECALL"
   optimize_for_values: "RECALL,LATENCY"
-#  cassandra_dialect: "cndb"
-#  cassandra_dialect: "cass5"
+  cql_dialect: cass5
 
 # Unified report block (SRD-46): plots + tables in declaration
 # order. Each scenario contributes its items to its own
@@ -47,9 +47,10 @@ params:
 # Surface recall-family aggregates and latency on the inline
 # progress line and per-phase ✓ DONE summary. Doc-root setting
 # is inherited by every phase that doesn't declare its own
-# `status_metrics:`. Glob patterns: `recall*` matches every
-# `recall_at_K` from the relevancy block; `latency*` matches
-# the `latency_p50` / `latency_p99` / `latency_max` /
+# `status_metrics:`. Glob patterns: `recall*` matches the
+# `recall` family (with `k`/`r` labels carrying the cutoff)
+# from the relevancy block; `latency*` matches the
+# `latency_p50` / `latency_p99` / `latency_max` /
 # `latency_mean` family sourced from the service-time histogram.
 status_metrics: [recall*, latency*]
 
@@ -71,58 +72,118 @@ report:
 
     table recall_oracles
       group_by: profile
-      query recall: avg(recall_at_10_mean) by (profile,limit)
+      query recall: avg(recall_mean{k="10"}) by (profile,limit)
       query latency: avg(cycles_servicetime_mean) by (profile,limit)
 
-    plot recall_at_k1
-      query: avg(recall_at_1_mean{k="1"}) by (profile, limit)
-      x: limit
-      y-min: 0.8
-      series: profile
-      label "Mean recall@1 across all profile labels and limits"
-    plot recall_at_k10
-      query: avg(recall_at_10_mean{k="10"}) by (profile, limit)
-      x: limit
-      y-min: 0.8
-      series: profile
-      label "Mean recall@10 across all profile labels"
-    plot recall_at_k100
-      query: avg(recall_at_100_mean{k="100"}) by (profile, limit)
-      x: limit
-      y-min: 0.8
-      series: profile
-      label "Recall@100 per profile (k=100)"
+    plot recall_1_mean
+      label "ALL 1-recall@R, oracles & PVS {cql_dialect}"
+      legend: br
+      x: r
+      x-legend: "R"
+      x-ticks: avg(recall_mean{k="1",profile=~"label.*",optimize_for=~".*"}) by (r)
+      y1: avg(recall_mean{k="1",phase="ann_query",profile=~"label.*",optimize_for=~".*"}) by (r,optimize_for)
+      y2: avg(recall_mean{k="1",phase="pvs_query",profile=~"default",optimize_for=~".*"}) by (r,optimize_for)
+      y3: avg(overscan{k="1", phase="ann_query",profile=~"label.*",optimize_for=~".*"}) by (r)
+      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]", overscan]
+      y-ranges: [[0.0,1.0]]
+      y-labels:  [recall, overscan]
+      style profile=default:line=dotted
 
-  fknn_section: |
-    file fknn_report.md as 'Filtered-KNN Sweep'
+#    plot recall_1_each_ofr
+#      label "MEAN 1-recall@R, oracles & PVS"
+#      legend: br
+#      x: R
+#      x-ticks: avg(recall_at_1_mean{k="1",profile=~"label.*",optimize_for="RECALL"}) by (limit)
+#      y1: avg(recall_at_1_mean{k="1",phase="ann_query",profile=~"label.*",optimize_for="RECALL"}) by (profile, limit)
+#      y2: avg(recall_at_1_mean{k="1",phase="pvs_query",profile=~"default",optimize_for="RECALL"}) by (profile, limit)
+#      y3: avg(overscan{k="1", phase="ann_query",profile=~"label.*",optimize_for="RECALL"}) by (limit)
+#      y-ranges: [[0.0,1.0]]
+#      y-legends: ["oracle [profile]", "PVS", overscan]
+#      y-labels:  [recall, overscan]
+#      style profile=default:line=dotted
 
-    text This report covers the **test_fknn** scenario:
-     filtered-KNN queries that combine a vector ANN search with
-     an integer metadata predicate. Phases use `pvs_query` (the
-     filtered query op) and produce recall metrics analogous to
-     the oracles run, plus a metadata-only baseline from
-     `pvs_metadata_query`.
+#    plot recall_10_each_ofr
+#      label "Mean recall@10 (left) + overscan (right) per profile, limits"
+#      legend: br
+#      x: limit
+#      x-ticks: avg(recall_at_10_mean{k="10",profile=~"label.*",optimize_for="RECALL"}) by (limit)
+#      y1: avg(recall_at_10_mean{k="10",phase="ann_query",profile=~"label.*",optimize_for="RECALL"}) by (profile, limit)
+#      y2: avg(recall_at_10_mean{k="10",phase="pvs_query",profile=~"default",optimize_for="RECALL"}) by (profile, limit)
+#      y3: avg(overscan{k="10", phase="ann_query",profile=~"label.*",optimize_for="RECALL"}) by (limit)
+#      y-ranges: [[0.75,1.0]]
+#      y-legends: ["oracle [profile]", pvs, overscan]
+#      y-labels:  [recall, overscan]
+#      style profile=default:line=dotted
 
-     Plots show the recall curve as the ANN search depth
-     (`limit`) grows; the table aggregates by profile.
-
-    table recall_fknn
-      group_by: profile
-      query recall: avg(recall_at_10_mean) by (profile)
-      query latency: avg(cycles_servicetime_mean) by (profile)
-
-    plot fknn_recall_at_k1
-      query: avg(recall_at_1_mean{k="1", profile="default"}) by (limit)
-      x: limit
-      label "Filtered-KNN mean recall@1"
-    plot fknn_recall_at_k10
-      query: avg(recall_at_10_mean{k="10", profile="default"}) by (limit)
-      x: limit
-      label "Filtered-KNN mean recall@10"
-    plot fknn_recall_at_k100
-      query: avg(recall_at_100_mean{k="100", profile="default"}) by (limit)
-      x: limit
-      label "Filtered-KNN mean recall@100"
+#    plot recall_at_k10
+#      label "Mean recall@10 (left) + overscan (right) per profile"
+#      legend: br
+#      x: limit
+#      x-ticks: avg(recall_at_10_mean{k="10",profile=~"label.*"}) by (limit)
+#      y: avg(recall_at_10_mean{k="10",profile=~"label.*"}) by (profile, limit)
+#      y-range: [0.75,1.0]
+#      y2: avg(overscan{k="10", phase="ann_query",profile=~"label.*"}) by (limit)
+#      y2-label: overscan
+#      style profile=default:line=dotted
+#
+#    plot recall_at_k100
+#      label "Recall@100 (left) + overscan (right) per profile (k=100)"
+#      legend: br
+#      x: limit
+#      x-ticks: avg(recall_at_100_mean{k="100",profile=~"label.*"}) by (limit)
+#      y: avg(recall_at_100_mean{k="100",profile=~"label.*"}) by (profile, limit)
+#      y-range: [0.75,1.0]
+#      y2: avg(overscan{k="100", phase="ann_query",profile=~"label.*"}) by (limit)
+#      y2-label: overscan
+#      style profile=default:line=dotted
+#
+#  fknn_section: |
+#    file fknn_report.md as 'Filtered-KNN Sweep'
+#
+#    text This report covers the **test_fknn** scenario:
+#     filtered-KNN queries that combine a vector ANN search with
+#     an integer metadata predicate. Phases use `pvs_query` (the
+#     filtered query op) and produce recall metrics analogous to
+#     the oracles run, plus a metadata-only baseline from
+#     `pvs_metadata_query`.
+#
+#     Plots show the recall curve as the ANN search depth
+#     (`limit`) grows; the table aggregates by profile.
+#
+#    table recall_fknn
+#      group_by: profile
+#      query recall: avg(recall_at_10_mean) by (profile)
+#      query latency: avg(cycles_servicetime_mean) by (profile)
+#
+#    plot fknn_recall_at_k1
+#      label "Filtered-KNN mean recall@1"
+#      legend: br
+#      x: limit
+#      x-ticks: avg(recall_at_1_mean{k="1",phase="pvs_query",profile=~"default"}) by (limit)
+#      y: avg(recall_at_1_mean{k="1",phase="pvs_query", profile="default"}) by (limit)
+#      y-range: [0.75,1.0]
+#      y2: avg(overscan{k="1", phase="pvs_query",profile=~"default"}) by (limit)
+#      y2-label: overscan
+#
+#    plot fknn_recall_at_k10
+#      label "Filtered-KNN mean recall@10"
+#      legend: br
+#      x: limit
+#      x-ticks: avg(recall_at_10_mean{k="10",phase="pvs_query",profile=~"default"}) by (limit)
+#      y: avg(recall_at_10_mean{k="10", phase="pvs_query", profile="default"}) by (limit)
+#      y-range: [0.75,1.0]
+#      y2: avg(overscan{k="10", phase="pvs_query",profile=~"default"}) by (limit)
+#      y2-label: overscan
+#
+#    plot fknn_recall_at_k100
+#      label "Filtered-KNN mean recall@100"
+#      legend: br
+#      x: limit
+#      x-ticks: avg(recall_at_100_mean{k="100",phase="pvs_query",profile=~"default"}) by (limit)
+#      y: avg(recall_at_100_mean{k="100", phase="pvs_query", profile="default"}) by (limit)
+#      y-range: [0.75,1.0]
+#      y2: avg(overscan{k="100",phase="pvs_query",profile=~"default"}) by (limit)
+#      y2-label: overscan
 
 bindings: |
   profiles := matching_profiles("{dataset}", "{prefix}")
@@ -149,24 +210,29 @@ scenarios:
 
   # Filtered KNN against default profile
   # For smoke testing: nbrs full_cql_vector.yaml filtered_knn limit=100
+  #
+  # Rampup and query are interleaved inside the SAME for-loop
+  # iteration over `optimize_for` so each iteration's queries hit
+  # the index that was just built. The previous shape (separate
+  # `rampup_fknn` and `query_fknn` top-level scenarios) caused the
+  # second rampup iteration to tear down and rebuild the table
+  # under a different `optimize_for` setting before the first
+  # iteration's queries could run; both query iterations then
+  # measured the SAME (last-built) index, producing byte-identical
+  # `optimize_for=LATENCY` and `optimize_for=RECALL` recall values
+  # that differed only in their metric labels. Mirrors the
+  # `test_oracles` shape.
   test_fknn:
-    - scenario: rampup_fknn
-    - scenario: query_fknn
-
-  rampup_fknn:
     - for: "profile in {fknn_profile}, table in fknn_{profile}, optimize_for in {optimize_for_values}"
       phases:
         - teardown
         - schema
         - fknn_rampup_data
         - await_index
-
-  query_fknn:
-    - for: "profile in {fknn_profile}, table in fknn_{profile}, optimize_for in {optimize_for_values}"
-      phases:
         - for: "k in {k_values}, limit in {k_{k}_limits}"
           phases:
             - pvs_query
+
   await_fknn:
     - for: "profile in {fknn_profile}, table in fknn_{profile}, optimize_for in {optimize_for_values}"
       phases:
@@ -224,27 +290,6 @@ phases:
 
   await_index:
     concurrency: 1
-    # Two ops, run sequentially in declaration order (cycles=auto
-    # gives one cycle per op for a phase with no explicit
-    # `cycles:`):
-    #
-    #   1. `indexes_present` — failsafe precondition. Lists every
-    #      SAI index registered against the table. The
-    #      `verify: min_rows: 1` clause + `strict: true` turns an
-    #      empty result into a hard ExecutionError, which the
-    #      activity's `errors:` policy escalates to a phase + run
-    #      stop. Without this, a missing/failed schema phase
-    #      would let the poll below succeed instantly (zero
-    #      building indexes is, vacuously, also zero indexes
-    #      total) and queries would silently run against an
-    #      un-indexed table.
-    #   2. `indexes_built` — the actual wait. Returns the set of
-    #      indexes still building on the table. PollingDispenser
-    #      stops when the body is empty, i.e. every index that
-    #      exists has finished. No hardcoded index names — the
-    #      query discovers them, so adding/removing index
-    #      declarations in the schema phase doesn't require
-    #      coordinated edits here.
     #
     # `system_views.indexes` is the Cassandra 5.x view exposing
     # SAI build state. On Cassandra 5.0 with "table indexes does
@@ -253,7 +298,18 @@ phases:
     # policy stops the phase + the run instead of spinning
     # silently.
     ops:
-      indexes_present:
+      indexes_present_cass:
+        if: "cql_dialect == 'cass5'"
+        raw: |
+          SELECT index_name FROM system_views.sai_column_indexes
+          WHERE keyspace_name = '{keyspace}'
+            AND table_name = '{table}'
+          ALLOW FILTERING
+        verify:
+          - min_rows: 1
+        strict: true
+      indexes_present_cndb:
+        if: "cql_dialect == 'cndb'"
         raw: |
           SELECT index_name FROM system_views.indexes
           WHERE keyspace_name = '{keyspace}'
@@ -262,7 +318,21 @@ phases:
         verify:
           - min_rows: 1
         strict: true
-      indexes_built:
+      indexes_built_cass:
+        if: "cql_dialect == 'cass5'"
+        raw: |
+          SELECT index_name FROM system_views.sai_column_indexes
+          WHERE keyspace_name = '{keyspace}'
+            AND table_name = '{table}'
+            AND is_building = true
+          ALLOW FILTERING
+        poll: await_empty
+        poll_interval_ms: 5000
+        timeout_ms: 600000
+        poll_max_error_retries: 3
+        poll_metric_name: index_build_time_s
+      indexes_built_cndb:
+        if: "cql_dialect == 'cndb'"
         raw: |
           SELECT index_name FROM system_views.indexes
           WHERE keyspace_name = '{keyspace}'
@@ -318,7 +388,7 @@ phases:
     bindings: |
       init prebuffered = dataset_prebuffer("{dataset}:{profile}")
       init query_counts = query_count(prebuffered)
-      cursor q = range(0, query_counts * 100)
+      cursor q = range(0, query_counts * 1)
       query_vector := query_vector_at(prebuffered, q % query_counts)
       ground_truth := neighbor_indices_at(prebuffered, q)
       latency_factor := 0.979 + 4.021 * pow(limit, -0.761)                                                                                                                                                                                                             
@@ -340,6 +410,11 @@ phases:
             r: "{limit}"
             functions:
               - recall
+        metrics:
+          overscan:
+            kind: gauge
+            value: overscan
+
 
   pvs_metadata_query:
     concurrency: "{query_concurrency}"
@@ -347,7 +422,7 @@ phases:
     bindings: |
       init prebuffered = dataset_prebuffer("{dataset}:{profile}")
       init query_counts = query_count(prebuffered)
-      cursor q = range(0, query_counts * 100)          
+      cursor q = range(0, query_counts * 1)          
       predicate := predicate_value_at(prebuffered, q % query_counts)
     ops:
       select_ann:
@@ -363,10 +438,6 @@ phases:
           SELECT key FROM {keyspace}.{table}
           WHERE metadata = {predicate}
           LIMIT {limit}
-        metrics:
-          overscan:
-            kind: gauge
-            value: overscan
 
   pvs_query:
     concurrency: "{query_concurrency}"
@@ -374,7 +445,7 @@ phases:
     bindings: |
       init prebuffered = dataset_prebuffer("{dataset}:{profile}")
       init query_counts = query_count(prebuffered)
-      cursor q = range(0, query_counts * 10)
+      cursor q = range(0, query_counts * 1)
       query_vector := query_vector_at(prebuffered, q % query_counts)
       predicate := predicate_value_at(prebuffered, q % query_counts)
       ground_truth := filtered_neighbor_indices_at(prebuffered, q % query_counts)

@@ -229,15 +229,36 @@ pub struct ValidationMetrics {
 }
 
 impl ValidationMetrics {
-    /// Create metrics for the given relevancy functions and k value.
-    pub fn new(labels: &Labels, functions: &[RelevancyFn], k: usize) -> Self {
+    /// Create metrics for the given relevancy functions.
+    ///
+    /// The metric family name is the bare function name
+    /// (`recall`, `precision`, `f1`, …) — `k` and `r` are
+    /// carried as labels rather than baked into the
+    /// family identifier. This collapses every per-`k`
+    /// variant into a single family that consumers can
+    /// query with `recall{k="10",r="10"}` instead of the
+    /// awkward `recall_at_10` synthesised name. `r`
+    /// defaults to `k` when the relevancy config doesn't
+    /// declare it (`r:` was unset → first-k semantics).
+    pub fn new(
+        labels: &Labels,
+        functions: &[RelevancyFn],
+        k: usize,
+        r: Option<usize>,
+    ) -> Self {
+        let r_value = r.unwrap_or(k);
+        let stats_labels = labels
+            .with("k", &k.to_string())
+            .with("r", &r_value.to_string());
         let mut stats = HashMap::new();
         let mut running = HashMap::new();
         for func in functions {
-            let metric_name = format!("{}_at_{}", func.metric_name(), k);
+            let metric_name = func.metric_name().to_string();
             stats.insert(
                 metric_name.clone(),
-                nbrs_metrics::summaries::f64stats::F64Stats::new(labels.with("name", &metric_name)),
+                nbrs_metrics::summaries::f64stats::F64Stats::new(
+                    stats_labels.with("name", &metric_name)
+                ),
             );
             running.insert(
                 metric_name.clone(),
@@ -366,7 +387,7 @@ impl ValidatingDispenser {
         };
 
         let metrics = Arc::new(match &relevancy {
-            Some(config) => ValidationMetrics::new(labels, &config.functions, config.k),
+            Some(config) => ValidationMetrics::new(labels, &config.functions, config.k, config.r),
             None => ValidationMetrics::assertions_only(),
         });
 
@@ -500,8 +521,7 @@ impl OpDispenser for ValidatingDispenser {
                         &actual_ordered,
                         config.k,
                     );
-                    let metric_name = format!("{}_at_{}", func.metric_name(), config.k);
-                    self.metrics.record_relevancy(&metric_name, score);
+                    self.metrics.record_relevancy(func.metric_name(), score);
                 }
             }
 
@@ -1164,15 +1184,37 @@ mod tests {
             &labels,
             &[RelevancyFn::Recall, RelevancyFn::Precision],
             10,
+            Some(20),
         );
-        assert!(metrics.relevancy_stats.contains_key("recall_at_10"));
-        assert!(metrics.relevancy_stats.contains_key("precision_at_10"));
-        assert!(!metrics.relevancy_stats.contains_key("f1_at_10"));
+        // Family names are bare function names; `k` and
+        // `r` ride on the F64Stats's labels so consumers
+        // can query e.g. `recall{k="10",r="20"}`.
+        assert!(metrics.relevancy_stats.contains_key("recall"));
+        assert!(metrics.relevancy_stats.contains_key("precision"));
+        assert!(!metrics.relevancy_stats.contains_key("f1"));
 
-        metrics.record_relevancy("recall_at_10", 0.85);
-        metrics.record_relevancy("recall_at_10", 0.90);
-        let snap = metrics.relevancy_stats["recall_at_10"].snapshot();
+        // The F64Stats labels carry k and r.
+        let recall_labels = metrics.relevancy_stats["recall"].labels();
+        assert_eq!(recall_labels.get("k"), Some("10"));
+        assert_eq!(recall_labels.get("r"), Some("20"));
+
+        metrics.record_relevancy("recall", 0.85);
+        metrics.record_relevancy("recall", 0.90);
+        let snap = metrics.relevancy_stats["recall"].snapshot();
         assert_eq!(snap.len(), 2);
+    }
+
+    #[test]
+    fn validation_metrics_r_defaults_to_k() {
+        let labels = Labels::of("activity", "test");
+        // No `r:` in the relevancy config → the metric's
+        // `r` label equals `k` (legacy first-k semantics).
+        let metrics = ValidationMetrics::new(
+            &labels, &[RelevancyFn::Recall], 100, None,
+        );
+        let l = metrics.relevancy_stats["recall"].labels();
+        assert_eq!(l.get("k"), Some("100"));
+        assert_eq!(l.get("r"), Some("100"));
     }
 
     #[test]

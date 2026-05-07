@@ -184,7 +184,16 @@ pub struct OpBuilder {
     /// Values to inject into every new FiberBuilder's state at creation.
     /// Used for scope composition: outer scope constants are set as
     /// initial values for inner scope extern inputs.
-    scope_values: Vec<(usize, Value)>, // (input_idx, value)
+    /// Name-keyed scope values (per SRD-13c). Stored by name
+    /// rather than `(input_idx, value)` because each kernel —
+    /// the fiber main kernel, every per-op-template kernel —
+    /// owns its own input layout, and an index captured against
+    /// the source kernel doesn't translate. The previous
+    /// `Vec<(usize, Value)>` shape silently mis-routed writes
+    /// across kernels (e.g. `table` value landing in the
+    /// `profile` slot of an op-template kernel whose extern
+    /// declaration order differed from the phase scope).
+    scope_values: Vec<(String, Value)>,
     /// Pre-evaluated init binding values to seed into every new
     /// FiberBuilder's state — `(node_idx, port_idx, value)`. Captured
     /// from the activation kernel after [SRD 11](../../docs/sysref/11_gk_evaluation.md)
@@ -287,8 +296,13 @@ impl OpBuilder {
     pub fn create_fiber_builder(&self) -> FiberBuilder {
         let mut fb = FiberBuilder::new(self.program.clone());
         fb.scope_values = self.scope_values.clone();
-        for (idx, value) in &self.scope_values {
-            fb.state().set_input(*idx, value.clone());
+        // Apply scope values by NAME — each kernel resolves the
+        // name to its own input slot. Cross-kernel-safe by
+        // construction (see `OpBuilder::scope_values` doc).
+        for (name, value) in &self.scope_values {
+            if let Some(idx) = fb.main_kernel.program().find_input(name) {
+                fb.state().set_input(idx, value.clone());
+            }
         }
         for (node_idx, port_idx, value) in &self.init_overrides {
             fb.state().seed_node_buffer(*node_idx, *port_idx, value.clone());
@@ -303,13 +317,44 @@ impl OpBuilder {
         for (op_name, program) in &self.op_template_programs {
             let mut op_kernel = GkKernel::from_program(program.clone());
             op_kernel.bind_outer_scope(&fb.main_kernel);
-            // Apply scope-bound values to op-template kernel too,
-            // so iter-var-style externs the parent owns are also
-            // reflected in the op-template kernel's input slots.
-            for (idx, value) in &self.scope_values {
-                if *idx < op_kernel.program().input_names().len() {
-                    op_kernel.state().set_input(*idx, value.clone());
+            // Apply scope-bound values to op-template kernel by
+            // name. Each op-template kernel has its own input
+            // layout (lazy-cascade extern emission, workload-
+            // param `final` injection) — name-keyed lookup is
+            // the only correct write path.
+            for (name, value) in &self.scope_values {
+                if let Some(op_idx) = op_kernel.program().find_input(name) {
+                    op_kernel.state().set_input(op_idx, value.clone());
                 }
+            }
+            // SRD 11 §"Init Binding Contract" Plan B for the
+            // op-template kernel. The body merged into the
+            // op-template scope carries `init <name> = <expr>`
+            // declarations whose RHS depends on bind_outer_scope-
+            // populated externs (e.g., `init prebuffered =
+            // dataset_prebuffer("{dataset}:{profile}")` where
+            // `profile` is an iter-var extern). Their compile-
+            // time fold ran before the externs were populated and
+            // produced a value computed against `Value::None`. We
+            // re-pull each init output now that the outer scope's
+            // values are in place; the eval cone re-runs against
+            // the correct extern values and the buffer for that
+            // node updates in the per-fiber state. Subsequent
+            // pulls (incl. downstream nodes that consume the init
+            // wire) see the freshly-evaluated value.
+            //
+            // Mirrors the phase-scope-kernel scope-init pass at
+            // executor.rs `run_phase`. catch_unwind keeps a
+            // panicking eval (e.g., a `dataset_prebuffer` call
+            // that fails because the file isn't there) from
+            // poisoning the fiber pool — the panic surfaces as a
+            // first-cycle failure with the same diagnostic shape.
+            let init_outputs: Vec<String> = op_kernel.program()
+                .init_outputs().iter().cloned().collect();
+            for init_name in &init_outputs {
+                let _ = std::panic::catch_unwind(
+                    std::panic::AssertUnwindSafe(|| { op_kernel.pull(init_name); })
+                );
             }
             fb.op_template_kernels.insert(op_name.clone(), op_kernel);
         }
@@ -368,7 +413,7 @@ pub struct FiberBuilder {
     /// `reset_inputs_from` resets. Empty for a builder created
     /// via plain [`FiberBuilder::new`]; populated by
     /// [`OpBuilder::create_fiber_builder`].
-    scope_values: Vec<(usize, Value)>,
+    scope_values: Vec<(String, Value)>,
 }
 
 /// Validate that all bind points in op templates can be resolved.
@@ -737,14 +782,24 @@ impl FiberBuilder {
     pub fn reset_captures(&mut self) {
         let coord_count = self.main_kernel.program().coord_count();
         self.main_kernel.state().reset_inputs_from(coord_count);
-        for (idx, value) in &self.scope_values {
-            self.main_kernel.state().set_input(*idx, value.clone());
+        // Re-apply scope values by name so iteration-bound
+        // externs survive the stanza-boundary reset.
+        for (name, value) in &self.scope_values {
+            if let Some(idx) = self.main_kernel.program().find_input(name) {
+                self.main_kernel.state().set_input(idx, value.clone());
+            }
         }
         // Op-template kernels: same shape, but each one's coord
-        // count comes from its own program.
+        // count comes from its own program. Same name-keyed
+        // reapply rule.
         for kernel in self.op_template_kernels.values_mut() {
             let n = kernel.program().coord_count();
             kernel.state().reset_inputs_from(n);
+            for (name, value) in &self.scope_values {
+                if let Some(idx) = kernel.program().find_input(name) {
+                    kernel.state().set_input(idx, value.clone());
+                }
+            }
         }
     }
 
@@ -1094,7 +1149,7 @@ mod tests {
         for _ in 0..32 {
             let mut fiber = builder.create_fiber_builder();
             fiber.set_inputs(&[0]);
-            let pulled = fiber.state.pull(&builder.program(), "ticks").clone();
+            let pulled = fiber.state().pull(&builder.program(), "ticks").clone();
             assert_eq!(pulled, Value::U64(42));
         }
         let after_fibers = calls.load(Ordering::Relaxed);

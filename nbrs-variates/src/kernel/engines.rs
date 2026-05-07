@@ -28,6 +28,70 @@ use super::program::GkProgram;
 /// per binding declaration.
 pub type SharedCell = Arc<Mutex<Value>>;
 
+/// Build the rich diagnostic message for a node-level eval panic.
+/// Includes the node's function name, every output it feeds, the
+/// input values it was called with, and the program's diagnostic
+/// context (typically the source path / scope label). This is
+/// what the user sees instead of the bare panic payload.
+fn enrich_eval_panic(
+    payload: Box<dyn std::any::Any + Send>,
+    program: &GkProgram,
+    node_idx: usize,
+    inputs: &[Value],
+) -> String {
+    let original = payload
+        .downcast_ref::<&'static str>().map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "<non-string panic payload>".into());
+    let node_name = program.nodes.get(node_idx)
+        .map(|n| n.meta().name.to_string())
+        .unwrap_or_else(|| format!("<unknown node #{node_idx}>"));
+    let mut output_names: Vec<&str> = program.output_map_iter()
+        .filter_map(|(name, (n_idx, _))| {
+            if *n_idx == node_idx { Some(name.as_str()) } else { None }
+        })
+        .collect();
+    output_names.sort();
+    let outputs_label = if output_names.is_empty() {
+        "no declared output".to_string()
+    } else {
+        format!("output{} {}",
+            if output_names.len() == 1 { "" } else { "s" },
+            output_names.join(", "))
+    };
+    let mut input_label = String::new();
+    for (i, v) in inputs.iter().enumerate() {
+        if i > 0 { input_label.push_str(", "); }
+        input_label.push_str(&format!("[{i}]={}", format_value_for_diag(v)));
+    }
+    format!(
+        "{original}\n  ↳ in node `{node_name}` ({outputs_label}) \
+         while evaluating {context}\n  \
+         ↳ inputs: [{input_label}]",
+        context = program.context(),
+    )
+}
+
+/// Format a `Value` into a short diagnostic string. Strings are
+/// quoted + truncated; vectors print their length not contents.
+fn format_value_for_diag(v: &Value) -> String {
+    match v {
+        Value::U64(n) => format!("U64({n})"),
+        Value::F64(n) => format!("F64({n})"),
+        Value::Bool(b) => format!("Bool({b})"),
+        Value::Str(s) => {
+            let trimmed: String = s.chars().take(40).collect();
+            if s.chars().count() > 40 {
+                format!("Str({trimmed:?}…)")
+            } else {
+                format!("Str({trimmed:?})")
+            }
+        }
+        Value::None => "None".to_string(),
+        other => format!("{:?}", other.port_type()),
+    }
+}
+
 /// Shared evaluation state for all GK engines. Contains the node
 /// output buffers, input values, and the eval loop.
 /// Engine types wrap this and provide their own invalidation strategy.
@@ -101,10 +165,36 @@ impl EngineCore {
         }
 
         let input_count = wiring.len();
-        program.nodes[node_idx].eval(
-            &self.input_scratch[..input_count],
-            &mut self.buffers[node_idx],
+        // Wrap the node's eval in catch_unwind so a node-level
+        // panic (e.g. `Value::as_u64` on a Str) can be re-raised
+        // with the diagnostic context the user actually needs:
+        // which node panicked, which output(s) it feeds, what
+        // the input values were, and where in the source the
+        // node came from. Without this, the fiber-level catcher
+        // sees only the bare message — "expected U64, got Str"
+        // — and the user has no way to find the offending
+        // binding short of bisecting the workload.
+        //
+        // Cost: one catch_unwind frame per slow-path node eval.
+        // The JIT path doesn't go through here. On the success
+        // path the frame is a few stack words; on the panic
+        // path it's strictly an improvement over what the
+        // user sees today.
+        let payload = std::panic::catch_unwind(
+            std::panic::AssertUnwindSafe(|| {
+                program.nodes[node_idx].eval(
+                    &self.input_scratch[..input_count],
+                    &mut self.buffers[node_idx],
+                );
+            })
         );
+        if let Err(e) = payload {
+            let enriched = enrich_eval_panic(
+                e, program, node_idx,
+                &self.input_scratch[..input_count],
+            );
+            std::panic::resume_unwind(Box::new(enriched));
+        }
         self.node_clean[node_idx] = true;
     }
 
@@ -458,5 +548,49 @@ impl ProvScanState {
     /// Pull a named output variate from the program.
     pub fn pull(&mut self, program: &GkProgram, output_name: &str) -> &Value {
         self.core.pull(program, output_name)
+    }
+}
+
+#[cfg(test)]
+mod panic_enrichment_tests {
+    //! Verify the eval-panic enricher produces a usable diagnostic
+    //! when a node panics on a type mismatch (the "expected U64,
+    //! got Str" surface that operators see in the wild).
+
+    use crate::dsl::compile::compile_gk_with_libs;
+
+    #[test]
+    fn type_mismatch_panic_carries_node_and_output_context() {
+        // Declare the input as u64, then write a Str into the
+        // slot — `mul`'s u64 path will panic on `as_u64()`.
+        // The enricher must wrap the message with the node
+        // name + output name + program context.
+        let mut k = compile_gk_with_libs(
+            "extern x: u64\n\
+             doubled := mul(x, 2)\n",
+            None, vec![], &[], false, "test_workload",
+        ).expect("compile");
+        let idx = k.program().find_input("x").unwrap();
+        k.state().set_input(idx, crate::node::Value::Str("oops".into()));
+        let result = std::panic::catch_unwind(
+            std::panic::AssertUnwindSafe(|| { k.pull("doubled"); })
+        );
+        let err = result.expect_err("pull should panic on type mismatch");
+        let msg = err.downcast_ref::<String>().cloned()
+            .or_else(|| err.downcast_ref::<&'static str>().map(|s| (*s).to_string()))
+            .expect("panic payload should be a String");
+        assert!(msg.contains("expected U64"),
+            "missing original panic body in: {msg}");
+        assert!(msg.contains("`mul`"),
+            "missing node name in enriched message: {msg}");
+        assert!(msg.contains("doubled"),
+            "missing output binding in enriched message: {msg}");
+        assert!(msg.contains("test_workload"),
+            "missing program context in enriched message: {msg}");
+        assert!(msg.contains("\"oops\""),
+            "missing input snapshot in enriched message: {msg}");
+        // Surface the full enriched message in `cargo test --
+        // --nocapture` runs so the format is easy to eyeball.
+        eprintln!("== enriched message ==\n{msg}\n======================");
     }
 }

@@ -759,12 +759,21 @@ op-template scope layer.
 
 ### Phase 9 status (2026-05)
 
-Phases 1–8 are landed. **Phase 9 is scoped but not
-implemented** — see
-`docs/design/srd13d_phase9_scope.md` for the full assessment.
-Summary: the cross-crate plumbing is contained, but it's
-gated on a new `GkProgram::compile_expr` API surface that
-deserves its own design pass before code. Until Phase 9 lands,
-`MetricsDispenser` evaluates `value_expr` as a bare-binding
-lookup against `OpResult.captures` (the canonical SRD-40b §1
-form); non-bare expressions warn + skip.
+Phases 1–9 are landed. The runner's install loop synthesizes
+per-op-template kernels for materialised scopes (via
+`build_op_template_scope_kernel` in `nbrs-activity/src/scope.rs`)
+and installs them on `cached_kernel` slots. `OpBuilder` carries
+per-op-template programs, `FiberBuilder` instances one
+`GkKernel` per template at fiber creation via the canonical
+`from_program` + `bind_outer_scope` recipe (SRD-13c §"Per-Scope
+Canonical Kernel Cache"), and `resolve_pulls_for_op` routes
+wrapper-side reads to the right state. `MetricsDispenser`
+resolves through the GK pull plan against the op-template
+kernel's program.
+
+`MetricsDispenser` still requires `value:` to be a bare
+binding name. Non-bare expressions (`value: mul(load, 2)`)
+error at wrap-time. The `GkProgram::compile_expr` follow-up
+that lifts that restriction, plus the cross-scope per-cycle
+value contract and value-correctness tests, are tracked in
+`docs/design/srd13d_phase9_followups.md`.

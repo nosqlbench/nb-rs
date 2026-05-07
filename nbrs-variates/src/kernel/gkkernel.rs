@@ -480,18 +480,23 @@ impl GkKernel {
     // SRD-16 §"Mutability Rules: Shared Mutable".
 
     /// Extract the scope values that were set via `bind_outer_scope`.
-    /// Returns `[(input_idx, value)]` for inputs that are not at
-    /// their default. Used by `OpBuilder` to inject the same values
-    /// into every fiber's state.
-    pub fn scope_values(&self) -> Vec<(usize, Value)> {
+    /// Returns `[(name, value)]` for inputs that are not at their
+    /// default. Used by `OpBuilder` to inject the same values into
+    /// every fiber's state, including per-op-template kernels
+    /// whose input layout differs from this kernel's. The name-
+    /// keyed shape is the cross-kernel-safe contract: an index
+    /// captured against this kernel's layout is meaningless when
+    /// applied to a kernel synthesised from a different source
+    /// (different extern declaration order, lazy-cascade omissions,
+    /// etc.). Naming the binding makes the cross-scope write
+    /// unambiguous — a missing name on the target program is a
+    /// no-op rather than a silently mis-routed write.
+    pub fn scope_values(&self) -> Vec<(String, Value)> {
         let mut values = Vec::new();
-        let input_count = self.program.input_names().len();
-        for i in 0..input_count {
+        for (i, name) in self.program.input_names().into_iter().enumerate() {
             let val = self.state.get_input(i);
             if !matches!(val, Value::None) {
-                // Check if it differs from the default (coordinate inputs
-                // default to U64(0), extern inputs default to None)
-                values.push((i, val.clone()));
+                values.push((name, val.clone()));
             }
         }
         values

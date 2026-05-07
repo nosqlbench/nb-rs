@@ -802,6 +802,166 @@ pub fn build_do_loop_scope_kernel(
     Ok(kernel)
 }
 
+/// Token-shaped identifier scan over GK source. Returns every
+/// alphanumeric/underscore-shaped token that isn't a keyword
+/// or numeric literal. Used by
+/// [`build_op_template_scope_kernel`] to discover names the
+/// op's bindings body references; the GK compiler does the
+/// authoritative parse downstream — this scan is just a
+/// best-effort first pass for the cross-scope contract check.
+fn scan_idents_in_gk_source(src: &str) -> HashSet<String> {
+    const KEYWORDS: &[&str] = &[
+        "inputs", "extern", "final", "init", "shared", "volatile",
+        "true", "false", "as", "in", "for",
+    ];
+    let mut out = HashSet::new();
+    let mut chars = src.chars().peekable();
+    let mut current = String::new();
+    let mut in_string = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    while let Some(c) = chars.next() {
+        if in_line_comment {
+            if c == '\n' { in_line_comment = false; }
+            continue;
+        }
+        if in_block_comment {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block_comment = false;
+            }
+            continue;
+        }
+        if in_string {
+            if c == '\\' { chars.next(); continue; }
+            if c == '"' { in_string = false; }
+            continue;
+        }
+        if c == '"' { in_string = true; continue; }
+        if c == '/' {
+            if chars.peek() == Some(&'/') { chars.next(); in_line_comment = true; continue; }
+            if chars.peek() == Some(&'*') { chars.next(); in_block_comment = true; continue; }
+        }
+        if c.is_alphanumeric() || c == '_' {
+            current.push(c);
+        } else if !current.is_empty() {
+            // Token boundary — is `current` an ident?
+            if !current.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true)
+                && !KEYWORDS.contains(&current.as_str())
+            {
+                out.insert(current.clone());
+            }
+            current.clear();
+        }
+    }
+    if !current.is_empty()
+        && !current.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true)
+        && !KEYWORDS.contains(&current.as_str())
+    {
+        out.insert(current);
+    }
+    out
+}
+
+/// Names declared on the LHS of `:=` (or `=` for init bindings)
+/// in GK source. Locally-declared names shadow parent-scope
+/// references per SRD-13c §"Shadowing", so the cross-scope
+/// contract check skips them.
+fn scan_locally_declared_idents(src: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for line in src.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("//") { continue; }
+        // Drop modifier prefixes (`final init x = …`,
+        // `shared y := …`) so the LHS ident is always the
+        // last word before `:=` or `=`.
+        let prefixes = ["shared init ", "final init ", "init ",
+                        "shared ", "final ", "volatile ", "extern "];
+        let mut rest = line;
+        loop {
+            let mut stripped = false;
+            for p in &prefixes {
+                if let Some(r) = rest.strip_prefix(p) {
+                    rest = r.trim_start();
+                    stripped = true;
+                    break;
+                }
+            }
+            if !stripped { break; }
+        }
+        // Find `:=` or `=` (but not `==`).
+        let assign_idx = rest.find(":=")
+            .or_else(|| rest.find('=').filter(|&i| {
+                rest.as_bytes().get(i + 1) != Some(&b'=')
+            }));
+        let Some(idx) = assign_idx else { continue };
+        let lhs = rest[..idx].trim();
+        // `extern name: type` — the lhs is "name: type"; strip the type.
+        let name = lhs.split(':').next().unwrap_or(lhs).trim();
+        if !name.is_empty()
+            && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        {
+            out.insert(name.to_string());
+        }
+    }
+    out
+}
+
+/// Classification of how a name resolves against a parent
+/// scope, per SRD-13d §"Phase 9 follow-ups" §2 (cross-scope
+/// per-cycle value contract). Used by
+/// [`build_op_template_scope_kernel`] to validate that an
+/// op-template's references to parent names are stable across
+/// the per-cycle execution loop.
+#[derive(Debug, Clone, Copy)]
+enum ParentRefKind {
+    /// Parent has the name as a kernel INPUT (a coord like
+    /// `cycle`, or a workload-param-injected slot). Per-cycle
+    /// freshness is intrinsic — `FiberBuilder::set_inputs`
+    /// writes to every kernel directly.
+    Input,
+    /// Parent has the name as an output declared with the
+    /// `shared` modifier. The `SharedCell` mechanism delivers
+    /// live cross-scope reads (SRD-13c §"Mutability Rules:
+    /// Shared Mutable").
+    SharedOutput,
+    /// Parent has the name as an output that's been folded to
+    /// a compile-time constant. The bind-time snapshot is the
+    /// final value — per-cycle changes are impossible by
+    /// construction.
+    ConstantOutput,
+    /// Parent has the name as an output that depends on
+    /// per-cycle inputs and isn't `shared`. Reading it from an
+    /// op-template scope produces a stale snapshot at the bind
+    /// boundary; live updates would require `shared` in the
+    /// parent. This is the failure mode the contract check
+    /// rejects.
+    DynamicOutput,
+}
+
+/// Classify a name against the parent kernel for the SRD-13c
+/// cross-scope visibility contract. Names not known to the
+/// parent (worth a pass-through to workload params or local
+/// declaration) return `None`.
+fn classify_parent_ref(
+    name: &str,
+    parent_kernel: &nbrs_variates::kernel::GkKernel,
+    parent_manifest_by_name: &HashMap<&str, &crate::runner::ManifestEntry>,
+) -> Option<ParentRefKind> {
+    let parent_program = parent_kernel.program();
+    if parent_program.find_input(name).is_some() {
+        return Some(ParentRefKind::Input);
+    }
+    let entry = parent_manifest_by_name.get(name)?;
+    if entry.modifier.is_shared() {
+        return Some(ParentRefKind::SharedOutput);
+    }
+    if parent_kernel.get_constant(name).is_some() {
+        return Some(ParentRefKind::ConstantOutput);
+    }
+    Some(ParentRefKind::DynamicOutput)
+}
+
 /// SRD-13d Phase 9 — synthesize a per-op-template kernel for a
 /// materialised op-template scope.
 ///
@@ -809,17 +969,17 @@ pub fn build_do_loop_scope_kernel(
 /// `bindings:` block (which already carries metric `:=` injections
 /// per SRD-40b §1) as the body. The resulting kernel:
 ///
-/// 1. Cascades every parent-visible name via `extern <name>: <type>`
-///    so descendants reach parent values through the standard
-///    `bind_outer_scope` chain.
-/// 2. Emits the op's own bindings.
-/// 3. Compiles + `bind_outer_scope`s to the parent kernel and
+/// 1. Emits an `extern <name>: <type>` for every parent-visible
+///    name the op explicitly references — and only those, so
+///    the op-template kernel stays narrow.
+/// 2. Validates each reference against the SRD-13c cross-scope
+///    visibility contract: `Input`, `SharedOutput`, or
+///    `ConstantOutput` are accepted; `DynamicOutput` errors at
+///    workload-init time with a clear message pointing at the
+///    `shared` modifier path.
+/// 3. Emits the op's own bindings.
+/// 4. Compiles + `bind_outer_scope`s to the parent kernel and
 ///    propagates inherited inputs.
-///
-/// Required outputs are computed from references in the op's
-/// fields, condition, delay, metric values, and result wires —
-/// the same surface `build_scope` uses for the workload-level
-/// kernel.
 pub fn build_op_template_scope_kernel(
     op: &nbrs_workload::model::ParsedOp,
     parent_manifest: &[crate::runner::ManifestEntry],
@@ -839,11 +999,10 @@ pub fn build_op_template_scope_kernel(
     let mut emitted: HashSet<String> = HashSet::new();
     let mut inherited_names: Vec<String> = Vec::new();
 
-    // Collect names this op's body explicitly references via
-    // textual placeholders (op fields, condition, delay) so the
-    // extern emission below knows what types to declare. The
-    // op-level `bindings:` block has its own type story handled
-    // by the GK compiler downstream.
+    // Collect names this op explicitly references — op fields,
+    // condition, delay, metric values, plus identifier tokens
+    // appearing in the bindings body (a textual scan; the GK
+    // compiler will validate each one structurally downstream).
     let mut referenced: Vec<String> = Vec::new();
     for value in op.op.values() {
         if let Some(s) = value.as_str() {
@@ -874,9 +1033,114 @@ pub fn build_op_template_scope_kernel(
             referenced.push(trimmed.to_string());
         }
     }
+    // Body text — scan for identifier tokens. Names declared by
+    // the op's own bindings get filtered out below (they shadow
+    // parent visibility per SRD-13c §"Shadowing").
+    let body_text: String = match &op.bindings {
+        BindingsDef::GkSource(s) => s.clone(),
+        BindingsDef::Map(m) => {
+            let mut out = String::new();
+            for (name, expr) in m {
+                out.push_str(&format!("{name} := {expr}\n"));
+            }
+            out
+        }
+    };
+    let body_idents = scan_idents_in_gk_source(&body_text);
+    let body_locally_declared = scan_locally_declared_idents(&body_text);
+    for ident in &body_idents {
+        if body_locally_declared.contains(ident) { continue; }
+        if !referenced.iter().any(|r| r == ident) {
+            referenced.push(ident.clone());
+        }
+    }
+    // Also pick up `{name}` string-interpolation references in
+    // the body (e.g. `dataset_prebuffer("{dataset}:{profile}")`).
+    // The GK compiler desugars those into wires that need a
+    // matching extern; without this scan, the cascade misses
+    // them and the compiler defaults the auto-extern to u64,
+    // landing a Str value into a u64 slot at bind-time and
+    // panicking via an inserted `__u64_to_string` adapter.
+    let mut interp_refs: HashSet<String> = HashSet::new();
+    collect_string_interp_refs(&body_text, &mut interp_refs);
+    for ident in interp_refs {
+        if body_locally_declared.contains(&ident) { continue; }
+        if !referenced.iter().any(|r| r == &ident) {
+            referenced.push(ident);
+        }
+    }
 
+    // Per SRD-13c cross-scope visibility contract: classify each
+    // parent reference and error on Dynamic-without-shared.
+    // Workload params + op-local declarations are exempt.
     for name in &referenced {
-        if let Some(entry) = manifest_by_name.get(name.as_str()) {
+        if body_locally_declared.contains(name) { continue; }
+        if workload_params.contains_key(name) { continue; }
+        let Some(kind) = classify_parent_ref(name, parent_kernel, &manifest_by_name) else {
+            // Name not in parent manifest — leave it to the GK
+            // compiler's auto-extern + downstream "unresolved"
+            // diagnostic. Avoids false positives for names that
+            // come from the GK stdlib or that the parent provides
+            // through a different surface.
+            continue;
+        };
+        if matches!(kind, ParentRefKind::DynamicOutput) {
+            return Err(format!(
+                "{context}: op '{op_name}' references parent wire '{name}' which \
+                 is a per-cycle-changing output without the `shared` modifier. \
+                 Op-template scopes get a one-shot snapshot of parent outputs \
+                 at scope creation (SRD-13c §\"Default: Immutable Propagation\"); \
+                 per-cycle freshness across scope boundaries requires the parent \
+                 to declare the binding `shared` (SRD-13c §\"Mutability Rules: \
+                 Shared Mutable\"). Either: (a) mark `shared {name} := …` in the \
+                 parent scope, (b) restate the binding locally in this op, or \
+                 (c) move the op's reference to a parent-scope binding instead.",
+                op_name = op.name,
+            ));
+        }
+    }
+
+    // Emit extern decls only for names the op references and
+    // that the parent provides. Lazy cascade — keeps the
+    // op-template kernel narrow and makes the contract check
+    // above crisp.
+    for name in &referenced {
+        if emitted.contains(name) { continue; }
+        if body_locally_declared.contains(name) { continue; }
+        // Names that are *Coordinate* inputs in the parent (the
+        // implicit `cycle` and friends) must stay Coordinate in
+        // the inner kernel too, so `set_inputs` propagates them
+        // per cycle. An explicit `extern` declaration would force
+        // IterationExtern classification and break propagation —
+        // skip the explicit emit and let the inner kernel's auto-
+        // extern path re-classify as Coordinate.
+        let is_parent_coord = parent_kernel.program().find_input(name)
+            .and_then(|idx| parent_kernel.program().input_kind(idx))
+            .is_some_and(|k| matches!(k, nbrs_variates::kernel::InputKind::Coordinate));
+        if is_parent_coord {
+            // The cascade still needs to record this as an
+            // inherited name so `mark_inherited_outputs` includes
+            // it — the inner kernel will re-publish it as an
+            // (auto-extern) input/output and bind_outer_scope
+            // will value-copy at construction time.
+            inherited_names.push(name.clone());
+            continue;
+        }
+        // Workload-param check goes BEFORE manifest cascade: a
+        // workload param ALSO appears in the parent's manifest
+        // (cascaded as an auto-output of an `extern <name>: …`
+        // line in the for_each scope synthesiser), but op-template
+        // bodies need it as a `final` literal so `init <name> =
+        // <expr-using-param>` folds at compile time. Routing
+        // through the manifest path emits `extern`, leaves init
+        // unfolded, and the runtime sees `Value::None` in the
+        // input slot — exactly the surface the Phase-9 op-template
+        // kernel was hitting on dataset_prebuffer / query_count.
+        if let Some(value) = workload_params.get(name) {
+            let literal = format_workload_param_as_gk_literal(value);
+            source.push_str(&format!("final {name} := {literal}\n"));
+            emitted.insert(name.clone());
+        } else if let Some(entry) = manifest_by_name.get(name.as_str()) {
             let type_name = match entry.port_type {
                 nbrs_variates::node::PortType::U64 => "u64",
                 nbrs_variates::node::PortType::F64 => "f64",
@@ -887,10 +1151,34 @@ pub fn build_op_template_scope_kernel(
             source.push_str(&format!("extern {name}: {type_name}\n"));
             emitted.insert(name.clone());
             inherited_names.push(name.clone());
-        } else if let Some(value) = workload_params.get(name) {
-            let literal = format_workload_param_as_gk_literal(value);
-            source.push_str(&format!("final {name} := {literal}\n"));
-            emitted.insert(name.clone());
+        } else if let Some(parent_idx) = parent_kernel.program().find_input(name) {
+            eprintln!("DBG parent input '{}' idx={parent_idx} kind={:?}",
+                name, parent_kernel.program().input_kind(parent_idx));
+            // Parent INPUT — for non-Coordinate inputs (iteration
+            // vars, capture ports) emit an explicit `extern` so the
+            // inner kernel's input classification matches the
+            // parent's, and bind_outer_scope can value-copy or
+            // shared-cell-attach. For Coordinate inputs (e.g. the
+            // implicit `cycle` coord), DON'T emit — let the GK
+            // auto-extern path classify them as Coordinate too,
+            // so per-cycle `set_inputs` propagates to the inner
+            // kernel. An explicit `extern` would force
+            // IterationExtern and break that propagation.
+            let kind = parent_kernel.program().input_kind(parent_idx);
+            if !matches!(kind, Some(nbrs_variates::kernel::InputKind::Coordinate)) {
+                let port_type = parent_kernel.program().input_port_type(name)
+                    .unwrap_or(nbrs_variates::node::PortType::U64);
+                let type_name = match port_type {
+                    nbrs_variates::node::PortType::U64 => "u64",
+                    nbrs_variates::node::PortType::F64 => "f64",
+                    nbrs_variates::node::PortType::Str => "String",
+                    nbrs_variates::node::PortType::Bool => "bool",
+                    _ => "String",
+                };
+                source.push_str(&format!("extern {name}: {type_name}\n"));
+                emitted.insert(name.clone());
+                inherited_names.push(name.clone());
+            }
         }
     }
 
@@ -904,60 +1192,6 @@ pub fn build_op_template_scope_kernel(
         emitted.insert(name.clone());
         inherited_names.push(name.clone());
     }
-
-    // Cascade every parent-scope name (outer iter vars, ancestor-
-    // declared inputs and outputs).
-    let parent_program = parent_kernel.program();
-    let skip_cascade = |emitted: &HashSet<String>, name: &str| -> bool {
-        emitted.contains(name) || name == "cycle" || name.starts_with("__")
-    };
-    for name in parent_program.output_names() {
-        let owned = name.to_string();
-        if skip_cascade(&emitted, &owned) { continue; }
-        let (node_idx, port_idx) = parent_program.resolve_output_by_index(
-            parent_program.output_index(&owned).unwrap()
-        );
-        let port_type = parent_program.node_meta(node_idx).outs[port_idx].typ;
-        let type_name = match port_type {
-            nbrs_variates::node::PortType::U64 => "u64",
-            nbrs_variates::node::PortType::F64 => "f64",
-            nbrs_variates::node::PortType::Str => "String",
-            nbrs_variates::node::PortType::Bool => "bool",
-            _ => "String",
-        };
-        source.push_str(&format!("extern {owned}: {type_name}\n"));
-        emitted.insert(owned.clone());
-        inherited_names.push(owned);
-    }
-    for name in parent_program.input_names() {
-        if skip_cascade(&emitted, &name) { continue; }
-        let port_type = parent_program.input_port_type(&name)
-            .unwrap_or(nbrs_variates::node::PortType::Str);
-        let type_name = match port_type {
-            nbrs_variates::node::PortType::U64 => "u64",
-            nbrs_variates::node::PortType::F64 => "f64",
-            nbrs_variates::node::PortType::Str => "String",
-            nbrs_variates::node::PortType::Bool => "bool",
-            _ => "String",
-        };
-        source.push_str(&format!("extern {name}: {type_name}\n"));
-        emitted.insert(name.clone());
-        inherited_names.push(name);
-    }
-
-    // Now emit the op's own bindings as the body. These are
-    // already in op.bindings — for the GkSource form we just
-    // splice the source; for the Map form we serialize.
-    let body_text: String = match &op.bindings {
-        BindingsDef::GkSource(s) => s.clone(),
-        BindingsDef::Map(m) => {
-            let mut out = String::new();
-            for (name, expr) in m {
-                out.push_str(&format!("{name} := {expr}\n"));
-            }
-            out
-        }
-    };
     if body_text.trim().is_empty() {
         // No own bindings — the kernel just re-exports parent.
         // The flatten-elision logic upstream should have caught
@@ -1113,6 +1347,25 @@ pub fn build_scope(
         // as wire references.
         if let BindingsDef::GkSource(src) = &op.bindings {
             collect_string_interp_refs(src, &mut referenced);
+            // Also scan for bare identifiers used in binding
+            // RHSs (e.g. `if(optimize_for == "LATENCY", …)`).
+            // Without this, names like `optimize_for` flow
+            // through to the GK compiler unresolved and get
+            // auto-externed at the compiler's default type
+            // (u64); `bind_outer_scope` then writes the
+            // parent's Str value into the u64-typed slot, and
+            // a `__u64_to_string` adapter inserted by type
+            // dispatch panics at runtime on `as_u64()`. The
+            // local-binding filter below mirrors the
+            // build_op_template_scope_kernel cascade — names
+            // declared by THIS scope's own bindings are
+            // resolved locally, not externed.
+            let body_locally_declared = scan_locally_declared_idents(src);
+            for ident in scan_idents_in_gk_source(src) {
+                if !body_locally_declared.contains(&ident) {
+                    referenced.insert(ident);
+                }
+            }
         }
         // Op params (`evaluations:`/`relevancy:`/`verify:`/...
         // hoisted by the workload parser) carry `{name}` bind-
@@ -1237,22 +1490,52 @@ pub fn build_scope(
                 }
             }
         }
-        if let Some(ref cond) = op.condition {
-            let name = cond.trim()
-                .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
-                .unwrap_or(cond.trim());
-            if !name.is_empty() && !exclude.contains(&name.to_string()) {
-                scope.add_required_output(name);
+        // Required-output collection for `if:` and `delay:`.
+        //
+        // The condition / delay value may be one of:
+        //   1. `{{expr}}` — inline expression. Step 5 above
+        //      synthesised a `__expr_N := expr` binding; the
+        //      required output is that synthesised name.
+        //   2. `{name}` — a single-brace binding reference.
+        //   3. A bare identifier — legacy "name a binding"
+        //      form, no braces.
+        // The previous strip-one-pair-of-braces logic only
+        // handled forms 2 and 3; for `{{expr}}` it produced a
+        // half-stripped string `{expr}` that didn't match any
+        // binding and let DCE drop the synthesised
+        // `__expr_N`. Walk through `extract_bind_points` so
+        // every form resolves to the right output name.
+        let mut collect_required = |s: &str| {
+            let trimmed = s.trim();
+            // Bracketed forms: `{{expr}}`, `{:=expr:=}`,
+            // `{name}`, `{expr-with-operators}`.
+            let bps = nbrs_workload::bindpoints::extract_bind_points(trimmed);
+            if !bps.is_empty() {
+                for bp in bps {
+                    match bp {
+                        nbrs_workload::bindpoints::BindPoint::InlineDefinition(expr) => {
+                            if let Some(name) = expr_to_name.get(&expr) {
+                                if !exclude.contains(name) {
+                                    scope.add_required_output(name);
+                                }
+                            }
+                        }
+                        nbrs_workload::bindpoints::BindPoint::Reference { name, .. } => {
+                            if !exclude.contains(&name) {
+                                scope.add_required_output(&name);
+                            }
+                        }
+                    }
+                }
+                return;
             }
-        }
-        if let Some(ref delay) = op.delay {
-            let name = delay.trim()
-                .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
-                .unwrap_or(delay.trim());
-            if !name.is_empty() && !exclude.contains(&name.to_string()) {
-                scope.add_required_output(name);
+            // Bare-identifier form (no braces) — legacy.
+            if !trimmed.is_empty() && !exclude.contains(&trimmed.to_string()) {
+                scope.add_required_output(trimmed);
             }
-        }
+        };
+        if let Some(ref cond) = op.condition { collect_required(cond); }
+        if let Some(ref delay) = op.delay { collect_required(delay); }
         // SRD-40b §6: synthetic-metric `value:` references must
         // survive DCE so the dispenser's GK pull plan can resolve
         // them. Bare-name values (the SRD-40b §1 canonical form)
@@ -1697,45 +1980,127 @@ pub fn rewrite_workload_param_idents_in_bindings(
 pub fn rewrite_inline_exprs(
     ops: &mut [ParsedOp],
 ) -> HashMap<String, String> {
+    // SRD-13d: each op template is its own GK scope. Inline
+    // `{{<expr>}}` rewrites are GK matter that belongs to the
+    // op-template scope, not to the shared phase scope. So each
+    // op gets its OWN expression-to-name mapping, with
+    // op-locally unique synth names — no cross-op dedup. Two ops
+    // with textually identical inline expressions
+    // (`if: cql_dialect == 'cndb'` on both `indexes_present_cndb`
+    // and `indexes_built_cndb`) now get distinct
+    // `__expr_N`/`__expr_M` names. Without this, both ops
+    // injected the same `__expr_1 := cql_dialect == 'cndb'`
+    // line into their bindings; the phase-scope ingest then saw
+    // two ops each declaring `__expr_1` and tripped the
+    // ride-along-uniqueness check (SRD-13c §"Op overriding op
+    // shadow").
+    //
+    // The global `inline_idx` counter still increments
+    // monotonically so synth names are workload-wide unique;
+    // the per-op MAP keeps within-op dedup (same expression in
+    // multiple fields of one op — `if: x == 1` and
+    // `metric: x == 1` — collapses to a single `__expr_N` for
+    // that op).
     let mut inline_idx = 0usize;
-    let mut expr_to_name: HashMap<String, String> = HashMap::new();
-
-    // Collect unique expressions from every op-bearing field.
-    // This was previously op.op.values only; conditions
-    // (`if:`) and delays (`delay:`) are also legal hosts of
-    // inline-expression bind points (`{is_one_of(x, "y")}`),
-    // but they're hoisted out of the op map by the parser so
-    // they need explicit handling here.
-    let collect_from = |s: &str, expr_to_name: &mut HashMap<String, String>, idx: &mut usize| {
+    let mut per_op_expr_to_name: Vec<HashMap<String, String>> =
+        (0..ops.len()).map(|_| HashMap::new()).collect();
+    let collect_from = |s: &str,
+                        idx: &mut usize,
+                        op_map: &mut HashMap<String, String>| {
         for bp in nbrs_workload::bindpoints::extract_bind_points(s) {
             if let nbrs_workload::bindpoints::BindPoint::InlineDefinition(ref expr) = bp {
-                if !expr_to_name.contains_key(expr) {
-                    let name = format!("__expr_{idx}");
+                op_map.entry(expr.clone()).or_insert_with(|| {
+                    let n = format!("__expr_{idx}");
                     *idx += 1;
-                    expr_to_name.insert(expr.clone(), name);
-                }
+                    n
+                });
             }
         }
     };
-    for op in ops.iter() {
+    for (op_index, op) in ops.iter().enumerate() {
+        let op_map = &mut per_op_expr_to_name[op_index];
         for value in op.op.values() {
             if let Some(s) = value.as_str() {
-                collect_from(s, &mut expr_to_name, &mut inline_idx);
+                collect_from(s, &mut inline_idx, op_map);
             }
         }
         if let Some(s) = &op.condition {
-            collect_from(s, &mut expr_to_name, &mut inline_idx);
+            collect_from(s, &mut inline_idx, op_map);
         }
         if let Some(s) = &op.delay {
-            collect_from(s, &mut expr_to_name, &mut inline_idx);
+            collect_from(s, &mut inline_idx, op_map);
         }
     }
+    // For diagnostics + downstream: the legacy single
+    // `expr_to_name` return value flattens the per-op maps.
+    // Names are unique across ops because the inline_idx
+    // counter is global, so the union is collision-free.
+    let expr_to_name: HashMap<String, String> = per_op_expr_to_name.iter()
+        .flat_map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())))
+        .collect();
 
-    // Rewrite op templates + condition + delay.
-    if !expr_to_name.is_empty() {
-        let rewrite = |s: &str, expr_to_name: &HashMap<String, String>| -> String {
+    // Inject the synthesised `__expr_N := expr` bindings into
+    // the first op's GK bindings source so `build_scope`'s
+    // normal ingestion pass picks them up. Without this the
+    // op fields get rewritten to reference `{__expr_N}` but
+    // no binding declaring `__expr_N` ever lands in the
+    // scope, so compilation fails with "unresolved bind
+    // point '{__expr_N}'". Callers used to discard the
+    // returned `expr_to_name` mapping and trust some other
+    // path to install the bindings — there isn't one. Doing
+    // the injection here keeps `rewrite_inline_exprs`
+    // self-contained: every output rewrite has a matching
+    // binding emitted.
+    // Inject + rewrite per op. Each op uses ONLY its own
+    // expr_to_name mapping (per_op_expr_to_name[op_index]).
+    // Synth lines land in that op's bindings; field rewrites
+    // see only that op's expression names. SRD-13d: the
+    // op-template scope owns its own GK matter, including
+    // synth bindings from inline expressions.
+    if expr_to_name.is_empty() {
+        return expr_to_name;
+    }
+    use nbrs_workload::model::BindingsDef;
+    for (op_index, op) in ops.iter_mut().enumerate() {
+        let op_map = &per_op_expr_to_name[op_index];
+        if op_map.is_empty() { continue; }
+
+        // Build synth lines for this op, deterministically
+        // ordered by synth name.
+        let mut entries: Vec<(&String, &String)> = op_map.iter().collect();
+        entries.sort_by(|a, b| a.1.cmp(b.1));
+        let mut synth_lines = String::new();
+        for (expr, name) in &entries {
+            synth_lines.push_str(&format!("\n{name} := {expr}"));
+        }
+
+        // Inject into op.bindings. Map → GkSource conversion
+        // mirrors the existing scope-source assembly path.
+        match &mut op.bindings {
+            BindingsDef::GkSource(s) => {
+                if s.trim().is_empty() {
+                    *s = synth_lines.trim_start_matches('\n').to_string();
+                } else {
+                    s.push_str(&synth_lines);
+                }
+            }
+            BindingsDef::Map(_) => {
+                if let BindingsDef::Map(map) = &op.bindings {
+                    let mut existing = String::new();
+                    for (k, v) in map.iter() {
+                        existing.push_str(&format!("{k} := {v}\n"));
+                    }
+                    op.bindings = BindingsDef::GkSource(format!(
+                        "{existing}{synth_lines}"
+                    ));
+                }
+            }
+        }
+
+        // Rewrite this op's fields using its own mapping only.
+        let rewrite = |s: &str| -> String {
             let mut rewritten = s.to_string();
-            for (expr, name) in expr_to_name {
+            for (expr, name) in op_map {
                 rewritten = rewritten.replace(
                     &format!("{{{{{expr}}}}}"),
                     &format!("{{{name}}}"),
@@ -1755,19 +2120,16 @@ pub fn rewrite_inline_exprs(
             }
             rewritten
         };
-        for op in ops.iter_mut() {
-            for value in op.op.values_mut() {
-                if let Some(s) = value.as_str() {
-                    let rewritten = rewrite(s, &expr_to_name);
-                    *value = serde_json::Value::String(rewritten);
-                }
+        for value in op.op.values_mut() {
+            if let Some(s) = value.as_str() {
+                *value = serde_json::Value::String(rewrite(s));
             }
-            if let Some(s) = &op.condition {
-                op.condition = Some(rewrite(s, &expr_to_name));
-            }
-            if let Some(s) = &op.delay {
-                op.delay = Some(rewrite(s, &expr_to_name));
-            }
+        }
+        if let Some(s) = &op.condition {
+            op.condition = Some(rewrite(s));
+        }
+        if let Some(s) = &op.delay {
+            op.delay = Some(rewrite(s));
         }
     }
 
@@ -1923,5 +2285,252 @@ mod tests {
         // profiles should appear exactly once
         let count = emitted.matches("profiles :=").count();
         assert_eq!(count, 1, "profiles duplicated in:\n{emitted}");
+    }
+
+    // ── SRD-13d Phase 9 cross-scope contract check ──────────
+
+    fn parent_kernel_with_load() -> nbrs_variates::kernel::GkKernel {
+        // Parent has `cycle` input, a folded constant `dim`, a
+        // shared output `budget`, and a dynamic output `load`
+        // (cycle-dependent, no modifier). Each shape exercises
+        // a different `ParentRefKind` arm.
+        nbrs_variates::dsl::compile::compile_gk(
+            "inputs := (cycle)\n\
+             final dim := 128\n\
+             shared budget := 100\n\
+             load := add(cycle, 1)\n",
+        ).expect("compile parent")
+    }
+
+    fn op_with_body(name: &str, body: &str) -> ParsedOp {
+        let mut op = ParsedOp::simple(name, "noop");
+        op.bindings = BindingsDef::GkSource(body.into());
+        op
+    }
+
+    #[test]
+    fn op_template_referencing_cycle_input_is_accepted() {
+        let parent = parent_kernel_with_load();
+        let manifest = nbrs_variates::kernel::extract_manifest(parent.program())
+            .into_iter()
+            .map(|e| crate::runner::ManifestEntry {
+                name: e.name, port_type: e.port_type, modifier: e.modifier,
+            })
+            .collect::<Vec<_>>();
+        let op = op_with_body("step_op", "step := add(cycle, 1)\n");
+        let result = build_op_template_scope_kernel(
+            &op, &manifest, &parent,
+            &HashMap::new(),
+            Vec::new(), None, false, "test",
+        );
+        assert!(result.is_ok(),
+            "cycle is a parent input — should be accepted. err: {:?}",
+            result.err());
+    }
+
+    #[test]
+    fn op_template_referencing_constant_output_is_accepted() {
+        let parent = parent_kernel_with_load();
+        let manifest = nbrs_variates::kernel::extract_manifest(parent.program())
+            .into_iter()
+            .map(|e| crate::runner::ManifestEntry {
+                name: e.name, port_type: e.port_type, modifier: e.modifier,
+            })
+            .collect::<Vec<_>>();
+        // `dim` is a `final` (folded) output — snapshot is final,
+        // per-cycle changes are impossible by construction.
+        let op = op_with_body("calc_op", "scaled := mul(dim, 2)\n");
+        let result = build_op_template_scope_kernel(
+            &op, &manifest, &parent,
+            &HashMap::new(),
+            Vec::new(), None, false, "test",
+        );
+        assert!(result.is_ok(),
+            "final/folded output should be accepted. err: {:?}",
+            result.err());
+    }
+
+    #[test]
+    fn op_template_referencing_shared_output_is_accepted() {
+        let parent = parent_kernel_with_load();
+        let manifest = nbrs_variates::kernel::extract_manifest(parent.program())
+            .into_iter()
+            .map(|e| crate::runner::ManifestEntry {
+                name: e.name, port_type: e.port_type, modifier: e.modifier,
+            })
+            .collect::<Vec<_>>();
+        // `budget` is `shared` — SharedCell carries live updates.
+        let op = op_with_body("budget_op", "remaining := add(budget, 1)\n");
+        let result = build_op_template_scope_kernel(
+            &op, &manifest, &parent,
+            &HashMap::new(),
+            Vec::new(), None, false, "test",
+        );
+        assert!(result.is_ok(),
+            "shared output should be accepted. err: {:?}",
+            result.err());
+    }
+
+    #[test]
+    fn op_template_referencing_dynamic_output_errors() {
+        let parent = parent_kernel_with_load();
+        let manifest = nbrs_variates::kernel::extract_manifest(parent.program())
+            .into_iter()
+            .map(|e| crate::runner::ManifestEntry {
+                name: e.name, port_type: e.port_type, modifier: e.modifier,
+            })
+            .collect::<Vec<_>>();
+        // `load` depends on cycle, isn't shared — DynamicOutput.
+        // Should error per SRD-13c default-immutable-propagation
+        // contract.
+        let op = op_with_body("forecast_op",
+            "forecast := mul(load, 2)\n");
+        let result = build_op_template_scope_kernel(
+            &op, &manifest, &parent,
+            &HashMap::new(),
+            Vec::new(), None, false, "test",
+        );
+        let err = result.expect_err("dynamic-output reference should error");
+        assert!(err.contains("load"), "err should name the wire: {err}");
+        assert!(err.contains("shared"), "err should mention shared: {err}");
+        assert!(err.contains("forecast_op"), "err should name the op: {err}");
+    }
+
+    #[test]
+    fn op_template_pvs_query_full_shape_with_workload_params() {
+        // Closer to the actual full_cql_vector.yaml shape: the
+        // op carries `prepared:` text with `{keyspace}.{table}`
+        // / `{predicate}` / `{query_vector}` / `{limit}` interp
+        // bind-points, plus a `metrics: overscan: {value:
+        // overscan}` declaration. workload_params carries
+        // dataset/profile/keyspace via `final` injection. The
+        // op-template synthesiser must emit the latency_factor /
+        // recall_factor / overscan bindings as outputs so the
+        // metrics fixture's `register_pull("overscan")`
+        // resolves.
+        use nbrs_workload::model::MetricSpec;
+        let parent_src = r#"
+extern k: u64
+extern limit: u64
+extern optimize_for: String
+extern table: String
+"#;
+        let parent = nbrs_variates::dsl::compile::compile_gk_with_libs(
+            parent_src, None, vec![], &[], false, "parent",
+        ).expect("parent compile");
+        let manifest: Vec<crate::runner::ManifestEntry> =
+            nbrs_variates::kernel::extract_manifest(parent.program())
+                .into_iter()
+                .map(|e| crate::runner::ManifestEntry {
+                    name: e.name, port_type: e.port_type, modifier: e.modifier,
+                })
+                .collect();
+        let body = "init prebuffered = dataset_prebuffer(\"{dataset}:{profile}\")\n\
+            init query_counts = query_count(prebuffered)\n\
+            cursor q = range(0, query_counts * 10)\n\
+            query_vector := query_vector_at(prebuffered, q % query_counts)\n\
+            predicate := predicate_value_at(prebuffered, q % query_counts)\n\
+            ground_truth := filtered_neighbor_indices_at(prebuffered, q % query_counts)\n\
+            latency_factor := 0.979 + 4.021 * pow(limit, -0.761)\n\
+            recall_factor  := 0.509 + 9.491 * pow(limit, -0.402)\n\
+            overscan := if(optimize_for == \"LATENCY\", latency_factor, recall_factor)\n";
+        let mut op = op_with_body("select_ann", body);
+        // Mirror op fields the YAML carries.
+        op.op.insert("prepared".into(), serde_json::json!(
+            "SELECT key,value FROM {keyspace}.{table} \
+             WHERE metadata = {predicate} \
+             ORDER BY value ANN OF {query_vector} LIMIT {limit}"
+        ));
+        op.metrics.insert("overscan".into(), MetricSpec {
+            value: "overscan".into(),
+            family: None, kind: None, unit: None, format: None,
+        });
+        let mut workload_params = HashMap::new();
+        workload_params.insert("dataset".into(), "sift1m".into());
+        workload_params.insert("profile".into(), "label_00".into());
+        workload_params.insert("keyspace".into(), "baselines".into());
+        let kernel = build_op_template_scope_kernel(
+            &op, &manifest, &parent,
+            &workload_params, vec![], None, false, "pvs_query.select_ann",
+        ).expect("op-template kernel synth");
+        let outs: Vec<String> = kernel.program().output_names()
+            .iter().map(|s| s.to_string()).collect();
+        for required in &["overscan", "latency_factor", "recall_factor"] {
+            assert!(outs.iter().any(|o| o == required),
+                "op-template kernel missing '{required}'; outputs: {outs:?}");
+        }
+        // Workload params must be folded in as `final` constants
+        // (not externs) so `init prebuffered =
+        // dataset_prebuffer("{dataset}:{profile}")` folds at
+        // compile time. If they cascade through as externs the
+        // init binding stays unfolded, the per-fiber state never
+        // gets the seeded Handle, and downstream nodes (like
+        // `neighbor_indices_at(prebuffered, q)`) panic at runtime
+        // with `expected Handle, got None/U64`.
+        for param in &["dataset", "profile", "keyspace"] {
+            // The param either folds out completely (no input
+            // slot) or appears as a folded constant — both
+            // are fine. What's NOT fine is showing up as an
+            // input on the inner kernel.
+            assert!(
+                kernel.program().find_input(param).is_none(),
+                "workload param '{param}' must NOT be an extern input \
+                 on the op-template kernel — cascade should emit \
+                 it as `final` so init bindings fold. Inputs: {:?}",
+                kernel.program().input_names(),
+            );
+        }
+    }
+
+    #[test]
+    fn op_template_with_pow_and_if_keeps_all_outputs() {
+        // Mirror the shape of full_cql_vector.yaml's pvs_query
+        // phase body (after parser merge): init+cursor+:= ladder
+        // ending with `pow()` + `if()` bindings. The op-template
+        // kernel must expose every `:=` binding as an output;
+        // a missing `overscan` is what triggers the
+        // `register_pull("overscan")` failure at MetricsDispenser
+        // wrap time.
+        let parent_src = r#"
+extern k: u64
+extern limit: u64
+extern optimize_for: String
+extern table: String
+extern dataset: String
+extern profile: String
+extern keyspace: String
+"#;
+        let parent = nbrs_variates::dsl::compile::compile_gk_with_libs(
+            parent_src, None, vec![], &[], false, "parent",
+        ).expect("parent compile");
+        let manifest: Vec<crate::runner::ManifestEntry> =
+            nbrs_variates::kernel::extract_manifest(parent.program())
+                .into_iter()
+                .map(|e| crate::runner::ManifestEntry {
+                    name: e.name, port_type: e.port_type, modifier: e.modifier,
+                })
+                .collect();
+        let body = "init prebuffered = dataset_prebuffer(\"dummy:default\")\n\
+            init query_counts = query_count(prebuffered)\n\
+            cursor q = range(0, query_counts * 10)\n\
+            query_vector := query_vector_at(prebuffered, q % query_counts)\n\
+            predicate := predicate_value_at(prebuffered, q % query_counts)\n\
+            ground_truth := filtered_neighbor_indices_at(prebuffered, q % query_counts)\n\
+            latency_factor := 0.979 + 4.021 * pow(limit, -0.761)\n\
+            recall_factor  := 0.509 + 9.491 * pow(limit, -0.402)\n\
+            overscan := if(optimize_for == \"LATENCY\", latency_factor, recall_factor)\n";
+        let op = op_with_body("select_ann", body);
+        let kernel = build_op_template_scope_kernel(
+            &op, &manifest, &parent,
+            &HashMap::new(),
+            Vec::new(), None, false, "pvs_query.select_ann",
+        ).expect("op-template kernel synth");
+        let outs: Vec<String> = kernel.program().output_names()
+            .iter().map(|s| s.to_string()).collect();
+        for required in &["query_vector", "predicate", "ground_truth",
+                          "latency_factor", "recall_factor", "overscan"] {
+            assert!(outs.iter().any(|o| o == required),
+                "op-template kernel missing '{required}'; outputs: {outs:?}");
+        }
     }
 }

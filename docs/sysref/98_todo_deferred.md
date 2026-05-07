@@ -115,6 +115,56 @@ loops and the Tier 2 cursor work has landed.
 
 ---
 
+## Plot multi-axis: rail-tick rendering for axis 3+
+
+SRD-65 ships `y3` and `y4` directives end-to-end — parsing,
+storage (in `secondary_axes: Vec<AxisOpts>`), per-axis
+range/scale resolution, and series rendering via projection
+into the primary y-coord. What's missing: the right-side
+rail showing tick labels for axis 3+. Today only axis 2
+gets a visible rail (plotters' built-in `set_secondary_coord`
+provides exactly one); axes 3 and 4 carry their values
+implicitly via legend suffixes (`(R2)`, `(R3)`) plus the
+per-axis `yN-label:` directive.
+
+Implementation sketch when this lands: bump
+`right_y_label_area_size` by ~70px per extra axis at
+`draw_chart` time, fetch the chart's pixel-range from
+`chart.plotting_area().get_pixel_range()`, and draw text
++ tick marks at the appropriate x-pixel offsets using
+`root.draw_text` and `root.draw`. Each axis's tick
+positions come from its resolved tick list (or plotters'
+default picker on a `RangedCoordf64` we instantiate
+purely to get key-points — not for any actual rendering).
+
+## Plot multi-axis: small-multiples / faceting
+
+SRD-65 caps the multi-axis surface at four (`y` + `y2` +
+`y3` + `y4`) on a single chart. Beyond that, the legible
+shape is faceting (small multiples) rather than stacking
+more right-rails. Out of scope until a real workload asks.
+
+When reactivating, decide:
+- grammar (`facet by <label>` directive on a plot? a
+  separate `grid` item kind?)
+- the layout primitive (one image per facet vs a single
+  composite image with subplots)
+- what's shared vs per-cell (axis ranges? color palette?
+  legend?)
+
+## Plot multi-axis: axis-scoped style overrides
+
+SRD-65's `style key=value:directives` is axis-agnostic — a
+match against the discriminator label applies to whichever
+axis(es) carry that series. If two axes legitimately share
+a discriminator key and need different style overrides per
+axis, the extension is something like
+`style:y2 key=value:directives` to scope the override to a
+specific axis. Defer until a workload demonstrates the
+collision.
+
+---
+
 ## How items leave this list
 
 - A user reports a need that the deferred feature would

@@ -1399,7 +1399,7 @@ mod walker_tests {
                          "--width", "--marker", "--size",
                          "--color", "--metric",
                          "--xlabel", "--ylabel", "--xscale", "--yscale",
-                         "--series",
+                         "--style",
                          // Orthogonal dispatch flags.
                          "--add", "--at", "--contextual", "--replace",
                          "--rename", "--group", "--workload", "--dry-run",
