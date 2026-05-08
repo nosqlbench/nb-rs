@@ -1927,6 +1927,14 @@ fn every_registered_function_compiles() {
     overrides.insert("file_line_at", format!(
         "inputs := (cycle)\nout := file_line_at(cycle, \"{txt}\")"));
 
+    // SRD-66 `pick(b0..bN-1, v0..vN-1)` — needs Bool
+    // selectors and uniform values. The auto-generated
+    // single-wire form fails the min_wires=2 check; the
+    // explicit override calls with two Bool selectors
+    // (derived from `cycle == const`) and two U64 values.
+    overrides.insert("pick",
+        "inputs := (cycle)\nout := pick(cycle == 0, cycle == 1, 100, 200)".into());
+
     // Vectordata nodes (category RealData) require downloaded datasets —
     // tested separately in vectordata_integration.rs. Skip here to avoid
     // network dependency. Using category rather than a hand-maintained

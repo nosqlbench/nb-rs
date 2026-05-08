@@ -76,7 +76,7 @@ pub struct Dispatch {
     pub group: String,
     /// `--workload <path>` — explicit workload file for
     /// `--add` (otherwise discovered from the active
-    /// session's `checkpoint.json`).
+    /// session's `checkpoint.jsonl`).
     pub workload: Option<String>,
     /// `--stdout` — print rendered text/table to stdout
     /// instead of writing to a scratch file. Plots reject

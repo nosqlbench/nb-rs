@@ -10,6 +10,7 @@
 use nbrs_variates::dsl::compile::compile_gk;
 use nbrs_variates::dsl::ast::BindingModifier;
 use nbrs_variates::node::Value;
+use nbrs_variates::subcontext::chain_kernel_under_parent;
 
 // =========================================================================
 // bind_outer_scope: basic wiring
@@ -29,7 +30,7 @@ fn bind_outer_scope_wires_constants() {
         extern count: u64
     "#).unwrap();
 
-    inner.bind_outer_scope(&outer);
+    chain_kernel_under_parent(&mut inner, &outer);
 
     let dim_idx = inner.program().find_input("dim").unwrap();
     let count_idx = inner.program().find_input("count").unwrap();
@@ -50,7 +51,7 @@ fn bind_outer_scope_only_matches_by_name() {
         extern offset: u64
     "#).unwrap();
 
-    inner.bind_outer_scope(&outer);
+    chain_kernel_under_parent(&mut inner, &outer);
 
     // 'offset' should still be at its default (None for extern)
     let idx = inner.program().find_input("offset").unwrap();
@@ -70,7 +71,7 @@ fn bind_outer_scope_does_not_affect_coordinates() {
         h := hash(cycle)
     "#).unwrap();
 
-    inner.bind_outer_scope(&outer);
+    chain_kernel_under_parent(&mut inner, &outer);
 
     // Coordinate input should still work normally
     inner.set_inputs(&[42]);
@@ -98,7 +99,7 @@ fn scope_values_extracts_bound_inputs() {
         extern count: u64
     "#).unwrap();
 
-    inner.bind_outer_scope(&outer);
+    chain_kernel_under_parent(&mut inner, &outer);
 
     let values = inner.scope_values();
     // Should have entries for dim and count (and possibly cycle default)
@@ -119,7 +120,7 @@ fn scope_values_empty_when_no_externs() {
         h := hash(cycle)
     "#).unwrap();
 
-    inner.bind_outer_scope(&outer);
+    chain_kernel_under_parent(&mut inner, &outer);
 
     // Inner has no externs, so scope_values only has coordinate defaults
     let values = inner.scope_values();
@@ -154,7 +155,7 @@ fn inner_scope_shadows_outer_binding() {
         inputs := (cycle)
         dim := 256
     "#).unwrap();
-    inner2.bind_outer_scope(&outer);
+    chain_kernel_under_parent(&mut inner2, &outer);
     // dim is still 256 (inner definition), not 128 (outer)
     assert_eq!(inner2.get_constant("dim").unwrap().as_u64(), 256);
 }
@@ -328,7 +329,7 @@ fn full_scope_pipeline_outer_to_inner() {
         id := hash(cycle) + base_count
     "#).unwrap();
 
-    inner.bind_outer_scope(&outer);
+    chain_kernel_under_parent(&mut inner, &outer);
 
     // Verify both externs were bound correctly
     inner.set_inputs(&[0]);
@@ -361,7 +362,7 @@ fn scope_pipeline_with_shared_and_final() {
         extern error_budget: u64
         extern max_dim: u64
     "#).unwrap();
-    inner.bind_outer_scope(&outer);
+    chain_kernel_under_parent(&mut inner, &outer);
 
     let eb_idx = inner.program().find_input("error_budget").unwrap();
     let md_idx = inner.program().find_input("max_dim").unwrap();
@@ -386,7 +387,7 @@ fn sequential_inner_scopes_are_independent() {
         extern seed: u64
         h := hash(seed)
     "#).unwrap();
-    inner1.bind_outer_scope(&outer);
+    chain_kernel_under_parent(&mut inner1, &outer);
     inner1.set_inputs(&[0]);
     let v1 = inner1.pull("h").as_u64();
 
@@ -396,7 +397,7 @@ fn sequential_inner_scopes_are_independent() {
         extern seed: u64
         h := hash(seed)
     "#).unwrap();
-    inner2.bind_outer_scope(&outer);
+    chain_kernel_under_parent(&mut inner2, &outer);
     inner2.set_inputs(&[0]);
     let v2 = inner2.pull("h").as_u64();
 
@@ -649,7 +650,7 @@ fn shared_inner_write_propagates_to_outer_via_cell() {
         extern counter: u64
     "#).unwrap();
 
-    inner.bind_outer_scope(&outer);
+    chain_kernel_under_parent(&mut inner, &outer);
 
     // Inner's lookup goes through the cell — sees initial 5.
     assert_eq!(inner.lookup("counter").unwrap().as_u64(), 5);
@@ -680,8 +681,8 @@ fn shared_two_inners_see_each_others_writes_via_cell() {
         extern budget: u64
     "#).unwrap();
 
-    a.bind_outer_scope(&outer);
-    b.bind_outer_scope(&outer);
+    chain_kernel_under_parent(&mut a, &outer);
+    chain_kernel_under_parent(&mut b, &outer);
 
     // Both start at 100 — `lookup` reads the cell.
     assert_eq!(a.lookup("budget").unwrap().as_u64(), 100);
@@ -723,8 +724,8 @@ fn shared_last_write_wins_under_concurrent_writers() {
         extern status: String
     "#).unwrap();
 
-    a.bind_outer_scope(&outer);
-    b.bind_outer_scope(&outer);
+    chain_kernel_under_parent(&mut a, &outer);
+    chain_kernel_under_parent(&mut b, &outer);
 
     let a_idx = a.program().find_input("status").unwrap();
     let b_idx = b.program().find_input("status").unwrap();

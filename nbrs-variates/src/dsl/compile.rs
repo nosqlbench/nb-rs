@@ -475,6 +475,42 @@ pub fn compile_ast_strict(file: &GkFile, source_dir: Option<&Path>, strict: bool
     compiler.compile(file)
 }
 
+/// Compile a pre-parsed AST with the same library / strict /
+/// required-outputs / context-label knobs as
+/// [`compile_gk_with_libs`]. Used by SRD-67's
+/// [`crate::subcontext::SubcontextBuilder`] when finalize has
+/// rewritten the AST in-place (Rule 2 write-through) and can
+/// no longer round-trip through the source-string compile path.
+pub fn compile_ast_with_libs(
+    file: &GkFile,
+    source_dir: Option<&Path>,
+    gk_lib_paths: Vec<PathBuf>,
+    required_outputs: &[String],
+    strict: bool,
+    context: &str,
+) -> Result<GkKernel, String> {
+    let extended = if required_outputs.is_empty() {
+        Vec::new()
+    } else {
+        extend_required_with_init_bindings(required_outputs, file)
+    };
+    let filter = if extended.is_empty() {
+        None
+    } else {
+        Some(extended.as_slice())
+    };
+    let mut compiler = Compiler::with_lib_paths(
+        source_dir.map(|p| p.to_path_buf()),
+        gk_lib_paths,
+        strict,
+    );
+    compiler.context_label = context.to_string();
+    // Collect pragmas from the AST so strict-wire / other
+    // pragma-gated behaviour matches the source-string path.
+    compiler.pragmas = super::pragmas::collect_from_ast(file);
+    compiler.compile_filtered(file, filter)
+}
+
 /// Compile a parsed AST with strict mode and source text for diagnostics.
 ///
 /// Same as `compile_ast_strict` but attaches the original source text

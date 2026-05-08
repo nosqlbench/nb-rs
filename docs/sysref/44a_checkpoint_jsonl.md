@@ -1,6 +1,15 @@
 # SRD-44a — Checkpoint Persistence: JSONL Event Log
 
-**Status:** design (not yet implemented) — refinement of SRD-44
+**Status:** Pushes 1–4 shipped 2026-05-07. CheckpointEvent
+enum + append-only writer + streaming reader/fold +
+truncated-tail recovery + path migration to
+`checkpoint.jsonl` (Pushes 1–2); scope_enter / scope_exit
+emission from the executor scope walker (Push 3);
+`nbrs checkpoint show` and `nbrs checkpoint fold` operator
+tooling (Push 4). Compaction is unnecessary at expected
+file sizes; log rotation is canonically incorrect for an
+event-sourced store and explicitly out of scope. The
+session is the durability boundary. Refinement of SRD-44.
 **Owner:** runtime / runner / checkpoint subsystem
 **Implementation target:** `nbrs-activity/src/checkpoint/storage.rs`
   (rewrite), `nbrs-activity/src/checkpoint/writer.rs` (append-path),
@@ -436,10 +445,17 @@ to or smaller than the current `checkpoint.json` re-write
 cost over the same wall-clock time, and disk-only — no
 in-memory growth because the writer doesn't keep history.
 
-For workloads that genuinely run for days and emit millions
-of progress records, log compaction (replay → snapshot
-record + truncate) is the natural extension. Out of scope
-for v1.
+The log grows linearly with the run. That's a feature, not
+a bug — the file IS the durable record of what happened.
+Compaction is unnecessary at expected sizes (the worst-case
+above is ~5 MB), and **log rotation is canonically incorrect**:
+rotating away history defeats the event-stream contract
+("every state-changing observation is one line"), since the
+fold over a rotated file is no longer a fold over the run's
+full event history. If a session somehow grows past comfort,
+the right answer is per-session lifecycle (the session
+itself ends and a new one starts), not in-flight rotation
+of the active log.
 
 ### Read time
 
@@ -472,13 +488,13 @@ atomic-rename pattern:
    (`checkpoint_fsync=lifecycle|always|never`) is cheap to
    add but introduces another piece of operator surface.
    Defer until somebody has a real perf reason to want it.
-2. **Compaction trigger.** When (if) compaction lands, what
-   triggers it? Options: file-size threshold, session-end
-   replace, manual `nbrs checkpoint compact <session>`. The
-   first is automatic but might surprise; the second is
-   simple but means the long-running session never compacts.
-   Inclined toward "manual + session-end snapshot" as the
-   v2 shape.
+2. ~~Compaction trigger.~~ **Closed.** Compaction is not
+   necessary at expected sizes, and log rotation is
+   canonically incorrect for an event-sourced store —
+   rotating away history breaks the fold contract. The
+   session is the durability boundary; sessions end, new
+   sessions start, the old log stays as the historical
+   record of what happened.
 3. **Cross-machine resume.** If the operator copies a
    session directory between machines, the JSONL replays
    identically. Worth a smoke test in the migration push.
@@ -544,11 +560,12 @@ atomic-rename pattern:
 
 ## Out of scope
 
-- Compaction / log rotation (deferred to v2).
+- Compaction (unnecessary; expected file sizes don't
+  warrant it).
+- Log rotation (canonically incorrect for an event-sourced
+  store; rotating away history breaks the fold contract).
 - Cross-process append-mode coordination beyond the existing
   `flock` model.
 - Forensic event types (per-op errors, full metric history)
   — listed under "future-additive" but not in v1.
-- A binary format. JSONL stays human-readable; if size or
-  parse cost becomes an issue, the right answer is
-  compaction, not protobuf.
+- A binary format. JSONL stays human-readable.

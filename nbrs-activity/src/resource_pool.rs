@@ -340,10 +340,14 @@ struct Entry {
     /// `poisoned`.
     init_error: Mutex<Option<String>>,
 
-    /// Predicted total attaches the pre-map says will land
-    /// on this entry. Push A initialises this to the
-    /// observed attach count rather than walking the
-    /// pre-map (the pre-map walker is on Push B's plate).
+    /// Predicted future attaches that haven't yet landed
+    /// on this entry. SRD-35 Push D's pre-map walker
+    /// (`pre_map_pending_uses`) seeds this from the
+    /// scenario tree at session bootstrap; each `attach`
+    /// decrements eagerly. The pool's close trigger fires
+    /// the moment `pending_uses == 0 && live_attaches ==
+    /// 0`, releasing the resource the instant its last
+    /// predicted user is done.
     pending_uses: AtomicUsize,
     /// Currently in-use shells. Decremented on detach.
     live_attaches: AtomicUsize,
@@ -559,6 +563,74 @@ impl ResourcePool {
             }
             self.remove_entry(&entry.key, entry.generation);
         }
+    }
+
+    /// SRD-35 Push D: declare a predicted future attach for
+    /// `key` under `policy`. Called by the pre-map walker
+    /// once per phase that will eventually attach this key
+    /// — the per-key counter accumulates so a `Shared`
+    /// entry attached by 50 phases starts the run with
+    /// `pending_uses = 50`. Each `attach` decrements
+    /// eagerly; the entry's close trigger fires the moment
+    /// `pending == 0 && live == 0`, releasing the resource
+    /// the instant its last user is done rather than holding
+    /// it until session end.
+    ///
+    /// Idempotent for a given `(key, policy)` — the entry is
+    /// created on first call, then increments on subsequent
+    /// calls. The pre-map walker is the only declared caller;
+    /// adapters never invoke this directly.
+    pub fn declare_pending_use(
+        &self,
+        key: ResourceKey,
+        policy: ResourceSharePolicy,
+    ) {
+        let entry = self.get_or_create_entry(key, policy, 0);
+        entry.pending_uses.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// SRD-35 Push D: explicit per-key `pending_uses`
+    /// decrement, mirroring [`Self::declare_pending_use`].
+    /// Most callers don't need this — the [`AttachGuard`]
+    /// detach path already decrements via the `attach`-time
+    /// "slot consumed" semantic, and the close trigger
+    /// observes the resulting `pending == 0 && live == 0`
+    /// invariant. Provided so external callers (tests, future
+    /// pre-map invalidation paths) can adjust the counter
+    /// explicitly. Saturating at 0 — calling this on a key
+    /// with no pending uses left is a no-op, not an
+    /// underflow.
+    ///
+    /// Returns `true` when the call drove `pending` to 0
+    /// AND `live` was already 0 (so the entry was eligible
+    /// for close). Doesn't itself trigger close — the close
+    /// path runs on detach. Tests that exercise the
+    /// counter-only lifecycle use the return to assert the
+    /// "eligible for close" gate without setting up a real
+    /// attach.
+    pub fn complete_pending_use(&self, key: &ResourceKey) -> bool {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = inner.entries_by_key.get(&(key.clone(), 0)).cloned() else {
+            return false;
+        };
+        drop(inner);
+        let cur = entry.pending_uses.load(Ordering::Acquire);
+        if cur == 0 {
+            return entry.live_attaches.load(Ordering::Acquire) == 0;
+        }
+        let new_pending = entry.pending_uses.fetch_sub(1, Ordering::AcqRel) - 1;
+        new_pending == 0 && entry.live_attaches.load(Ordering::Acquire) == 0
+    }
+
+    /// SRD-35 Push D introspection helper: how many predicted
+    /// future attaches remain on the entry for `key` (gen 0).
+    /// Returns `None` when no entry exists for the key.
+    /// Tests use this to assert pre-map walker correctness
+    /// without poking the pool internals.
+    pub fn pending_uses_for(&self, key: &ResourceKey) -> Option<usize> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.entries_by_key.get(&(key.clone(), 0))
+            .map(|e| e.pending_uses.load(Ordering::Acquire))
     }
 
     /// Look up or create the entry for the given key under
@@ -803,42 +875,32 @@ impl AttachGuard {
         emit_event(LogLevel::Debug, "detach", &self.entry,
             &format!("phase={:?} pending={pending} live={live}", self.phase));
 
-        // Close-on-detach is policy-dependent:
+        // SRD-35 Push D: close trigger is unified across
+        // every policy. The pool closes an entry the moment
+        // its `(pending == 0, live == 0)` invariant is
+        // satisfied — meaning "no more attaches predicted by
+        // the pre-map AND nothing currently using it."
         //
-        // - `Shared` / `PerScenario`: the WHOLE POINT of
-        //   sharing is to keep the instance alive across
-        //   phases that share the same key. Closing on
-        //   `live==0` defeats sharing — the next attach
-        //   would re-init from scratch (which is exactly
-        //   the per-phase open/close storm SRD-35 was
-        //   written to fix). The entry stays in the pool
-        //   until session shutdown drains it.
+        //   - `Shared` / `PerScenario`: pre-map seeds
+        //     `pending_uses` to the predicted attach count
+        //     (sum across all phases that produce this key).
+        //     Each `attach` decrements pending eagerly; the
+        //     last phase's detach drives both counters to
+        //     zero and the entry closes immediately —
+        //     releasing network resources before session end
+        //     for keys whose users are all done. If the
+        //     pre-map walker missed a phase (under-predict),
+        //     the entry would close prematurely and be
+        //     re-initialised on the next attach; if it
+        //     over-predicts, `pending` stays > 0 and
+        //     `pool.shutdown()` does the close at session
+        //     end (the conservative default).
         //
-        //   Note: `pending_uses` is a *per-key* prediction
-        //   the pre-map walker (Push D) will populate from
-        //   the scenario graph — it answers "how many
-        //   phases TOTAL will attach this key?" The
-        //   walker explicitly does NOT pre-assign phases
-        //   to generations; generation routing is a
-        //   runtime decision the driver owns via
-        //   `can_support_more_load()`, and is
-        //   intentionally non-deterministic across runs.
-        //   When the walker lands, the close trigger for
-        //   `Shared` becomes "key-level pending hits 0 and
-        //   every generation's live is 0" — earlier than
-        //   session-end when no further phase will need
-        //   the key, but still never closing one
-        //   generation mid-key.
-        //
-        // - `PerPhase` / `PerFiber`: the legacy-shim
-        //   semantics. Each attach is the resource's only
-        //   user; close fires immediately on detach to
-        //   release whatever the legacy adapter holds.
-        let policy_keeps_alive = matches!(
-            self.entry.policy,
-            ResourceSharePolicy::Shared | ResourceSharePolicy::PerScenario,
-        );
-        if live == 0 && pending == 0 && !policy_keeps_alive {
+        //   - `PerPhase` / `PerFiber`: pre-map intentionally
+        //     skips these — each phase is its own key, so
+        //     `pending` stays 0 throughout. Close fires on
+        //     the first detach when `live` returns to 0.
+        if live == 0 && pending == 0 {
             self.trigger_close(await_close, "refcount-zero").await?;
         }
         Ok(())
@@ -916,14 +978,12 @@ impl Drop for AttachGuard {
         emit_event(LogLevel::Debug, "detach", &self.entry,
             &format!("phase={phase:?} pending={pending} live={live}"));
 
-        // Policy-keyed close gate (mirrors `detach_inner`).
-        // Shared/PerScenario hold the entry alive until
-        // pool shutdown; PerPhase/PerFiber close on detach.
-        let policy_keeps_alive = matches!(
-            self.entry.policy,
-            ResourceSharePolicy::Shared | ResourceSharePolicy::PerScenario,
-        );
-        if live == 0 && pending == 0 && !policy_keeps_alive {
+        // SRD-35 Push D unified close gate (mirrors
+        // `detach_inner`): close as soon as both counters
+        // hit zero, regardless of policy. Pre-map seeds
+        // `pending_uses` so Shared/PerScenario entries close
+        // when their last user drains — not at session end.
+        if live == 0 && pending == 0 {
             // Take the resource out so the close path owns
             // it — even if no runtime is active to await
             // the close, the synchronous bookkeeping is
@@ -1075,10 +1135,17 @@ impl SharedResource for SharedAdapterResource {
 
     fn close(self: Arc<Self>) -> ResourceFuture<'static, Result<(), String>> {
         Box::pin(async move {
-            // Drop the adapter Arc; underlying driver Drop
-            // governs teardown. Push D upgrades specific
-            // engines to await `cass_session_close()` etc.
-            let _ = self.adapter.lock().unwrap_or_else(|e| e.into_inner()).take();
+            // Take the adapter Arc out of the slot so the
+            // shutdown handshake runs on a stable owner.
+            // Drop happens at the end of this scope; the
+            // engine's Drop runs after `shutdown().await`
+            // resolves.
+            let adapter = self.adapter.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(adapter) = adapter {
+                adapter.shutdown().await;
+            }
             Ok(())
         })
     }
@@ -1163,6 +1230,85 @@ where
          a legacy DriverAdapter handle — Push A path should be unreachable"
     ))?;
     Ok((adapter, guard))
+}
+
+// =================================================================
+// Pre-map pending_uses walker — SRD-35 Push D
+// =================================================================
+
+/// Walk the freshly-pre-mapped scenario tree and seed the
+/// pool's `pending_uses` counter for every phase that will
+/// attach a pool-shareable adapter. Called once at session
+/// bootstrap, after [`crate::executor::pre_map_tree`] returns
+/// and before the executor begins running any phase.
+///
+/// For each phase node:
+///   1. Determine the adapter name — `phase.adapter` override
+///      (when the phase declares one) wins over the
+///      session-level `default_driver`.
+///   2. Resolve the driver name without instantiating
+///      anything (`resolve_driver_name`).
+///   3. Look up the matching `SharedDriverRegistration`. If
+///      none registered, the phase rides the legacy
+///      `PerPhase` path — its key is per-phase-unique, so
+///      pre-map contributes zero to any shared `pending_uses`
+///      and the legacy close-on-detach path handles teardown.
+///   4. Compute the resource key from the session's
+///      `merged_params` via the registration's pure
+///      `resource_key` function. `resource_key` failures are
+///      hard errors at session bootstrap — surfacing the same
+///      misconfiguration that `attach_shared_adapter` would
+///      have hit at runtime, just earlier and in one place.
+///   5. Increment the per-key `pending_uses` counter via
+///      [`ResourcePool::declare_pending_use`].
+///
+/// This is a pure read of the scenario tree + phase params;
+/// no adapters are instantiated. The walker can run before
+/// `pool.shutdown()` would otherwise be a no-op — and must
+/// run before the first phase, since pending counts are
+/// the close trigger that releases shared resources promptly
+/// when their last user finishes.
+pub fn pre_map_pending_uses(
+    pool: &Arc<ResourcePool>,
+    tree: &crate::scene_tree::SceneTree,
+    phases: &std::collections::HashMap<String, nbrs_workload::model::WorkloadPhase>,
+    default_driver: &str,
+    merged_params: &std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    for node in tree.dfs_phases() {
+        // Phase-level adapter override wins over session
+        // default. Mirrors `executor::run_phase` (line 1903)
+        // so the predicted key matches the runtime key
+        // exactly.
+        let adapter = phases.get(&node.name)
+            .and_then(|p| p.adapter.clone())
+            .unwrap_or_else(|| default_driver.to_string());
+
+        // Drive the same resolution the executor uses
+        // (`<adapter>driver` selector param + DriverImpl
+        // ranking). `None` here means the adapter has no
+        // `DriverImpl` registered AND no fallback; skip.
+        let selector = format!("{adapter}driver");
+        let Some(driver_name) = crate::adapter::resolve_driver_name(
+            &adapter, &selector, merged_params,
+        ) else {
+            continue;
+        };
+
+        // Only adapters that opted into pool sharing have a
+        // `SharedDriverRegistration`. Legacy adapters fall
+        // through; their `PerPhase` close-on-detach path is
+        // unaffected.
+        let Some(reg) = crate::adapter::find_shared_driver(&adapter, driver_name)
+        else { continue };
+
+        let key = (reg.resource_key)(merged_params).map_err(|e| format!(
+            "resource pool pre-map: phase '{}' adapter '{}' driver '{}': {}",
+            node.name, adapter, driver_name, e,
+        ))?;
+        pool.declare_pending_use(key, default_policy_for(reg.share_capability));
+    }
+    Ok(())
 }
 
 // =================================================================
@@ -1300,19 +1446,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shared_resource_survives_detach_until_pool_shutdown() {
-        // The whole point of `Shared` policy is to keep
-        // the resource alive across phases that share the
-        // key — so a detach that drains the refcount must
-        // NOT close it. The 55 phases in the operator's
-        // session.log were each opening and closing a
-        // fresh cassandra session because this guard was
-        // missing; that's the exact bug we're locking
-        // down.
+    async fn shared_resource_survives_detach_until_more_phases_predicted() {
+        // SRD-35 Push D: the pre-map walker seeds
+        // `pending_uses` with the predicted total attach
+        // count. While `pending > 0`, detach MUST NOT close
+        // — there's still a future phase that will use the
+        // resource. The 55-phase open/close storm in the
+        // operator's session.log was a Push A regression
+        // where pending wasn't seeded; the resource closed
+        // on the first detach and re-initialised every time.
         let pool = Arc::new(ResourcePool::new());
         let mock = MockResource::new(key("cql", "cassandra-cpp"));
         let mock_for_factory = Arc::clone(&mock);
 
+        // Pre-map says: 2 phases will attach this key.
+        pool.declare_pending_use(mock.resource_key().clone(),
+            ResourceSharePolicy::Shared);
+        pool.declare_pending_use(mock.resource_key().clone(),
+            ResourceSharePolicy::Shared);
+        assert_eq!(pool.pending_uses_for(mock.resource_key()), Some(2));
+
+        // Phase A: attach + detach. pending drops to 1, so
+        // close must NOT fire — phase B is still expected.
         let guard = attach(&pool, mock.resource_key().clone(),
             ResourceSharePolicy::Shared, "phase_A",
             ResourceFactory::new(move || async move {
@@ -1323,16 +1478,70 @@ mod tests {
         assert_eq!(mock.init_calls.load(Ordering::Acquire), 1);
         guard.detach().await.unwrap();
         assert_eq!(mock.close_calls.load(Ordering::Acquire), 0,
-            "Shared-policy detach MUST NOT close the resource — \
-             it stays alive until pool shutdown");
-        assert_eq!(pool.live_entries(), 1,
-            "entry stays in the pool across phases under Shared policy");
+            "Shared-policy detach MUST NOT close while another \
+             phase is still predicted to attach");
+        assert_eq!(pool.pending_uses_for(mock.resource_key()), Some(1));
+        assert_eq!(pool.live_entries(), 1);
 
-        // Pool shutdown drains it.
+        // Phase B: attach + detach. pending drops to 0,
+        // live drops to 0 — close fires NOW, not at session
+        // shutdown. Promptly releases the resource the
+        // moment its last user is done.
+        let mock_for_factory2 = Arc::clone(&mock);
+        let guard2 = attach(&pool, mock.resource_key().clone(),
+            ResourceSharePolicy::Shared, "phase_B",
+            ResourceFactory::new(move || async move {
+                Ok(mock_for_factory2 as Arc<dyn SharedResource>)
+            }),
+        ).await.unwrap();
+        guard2.detach().await.unwrap();
+        assert_eq!(mock.close_calls.load(Ordering::Acquire), 1,
+            "close MUST fire when pending hits 0 AND live hits 0 — \
+             that's the SRD-35 Push D close-on-zero contract");
+        assert_eq!(pool.live_entries(), 0,
+            "entry removed once closed");
+
+        // Pool shutdown is now a no-op for this key.
         pool.shutdown().await;
         assert_eq!(mock.close_calls.load(Ordering::Acquire), 1,
-            "shutdown() closes Shared-policy entries");
-        assert_eq!(pool.live_entries(), 0);
+            "shutdown() must NOT double-close an entry");
+    }
+
+    #[tokio::test]
+    async fn shared_resource_overpredicted_pending_holds_until_shutdown() {
+        // Conservative fallback: if the pre-map walker
+        // over-predicts (predicts N phases but only N-1
+        // actually attach), the entry stays alive until
+        // shutdown — better than closing prematurely. The
+        // residual `pending > 0` at session end is also
+        // visible on the `close.started reason=session-end`
+        // line so an operator can spot pre-map bugs.
+        let pool = Arc::new(ResourcePool::new());
+        let mock = MockResource::new(key("cql", "cassandra-cpp"));
+        let mock_for_factory = Arc::clone(&mock);
+
+        // Pre-map says 3 phases, only 1 actually runs.
+        for _ in 0..3 {
+            pool.declare_pending_use(mock.resource_key().clone(),
+                ResourceSharePolicy::Shared);
+        }
+        let guard = attach(&pool, mock.resource_key().clone(),
+            ResourceSharePolicy::Shared, "phase_A",
+            ResourceFactory::new(move || async move {
+                Ok(mock_for_factory as Arc<dyn SharedResource>)
+            }),
+        ).await.unwrap();
+        guard.detach().await.unwrap();
+
+        // pending = 2 after one attach — close MUST NOT
+        // fire mid-run.
+        assert_eq!(pool.pending_uses_for(mock.resource_key()), Some(2));
+        assert_eq!(mock.close_calls.load(Ordering::Acquire), 0);
+        assert_eq!(pool.live_entries(), 1);
+
+        pool.shutdown().await;
+        assert_eq!(mock.close_calls.load(Ordering::Acquire), 1,
+            "shutdown() drains residual entries with pending > 0");
     }
 
     #[tokio::test]
@@ -1423,6 +1632,17 @@ mod tests {
         let factory_called = Arc::new(AtomicU32::new(0));
         let factory_called_clone = Arc::clone(&factory_called);
 
+        // SRD-35 Push D: pre-map predicts 3 phases will
+        // attach this key, but the test only exercises 2.
+        // The residual pending = 1 keeps the entry alive
+        // until shutdown — this lets the test assert "Shared
+        // policy holds across phases" without timing-coupling
+        // the close trigger to detach order.
+        for _ in 0..3 {
+            pool.declare_pending_use(mock.resource_key().clone(),
+                ResourceSharePolicy::Shared);
+        }
+
         let g1 = attach(&pool, mock.resource_key().clone(),
             ResourceSharePolicy::Shared, "phase_A",
             ResourceFactory::new(move || {
@@ -1456,22 +1676,23 @@ mod tests {
         assert_eq!(pool.total_attaches(), 2);
         assert_eq!(pool.live_entries(), 1);
 
-        // Detach both guards. Under `Shared` policy the
-        // resource MUST stay alive — neither detach
-        // triggers a close. The session.log bug we just
-        // fixed was the resource closing here, defeating
+        // Detach both guards. Pre-map predicted 3 phases;
+        // only 2 attached, so pending stays > 0 and the
+        // entry survives until session shutdown. The
+        // session.log bug this contract locks down was the
+        // resource closing on first detach, defeating
         // sharing across the next phase's attach.
         g1.detach().await.unwrap();
         assert_eq!(mock.close_calls.load(Ordering::Acquire), 0,
             "close MUST NOT fire while another guard is live");
         g2.detach().await.unwrap();
         assert_eq!(mock.close_calls.load(Ordering::Acquire), 0,
-            "close MUST NOT fire on detach under Shared policy — \
-             the resource stays alive across phases");
+            "close MUST NOT fire while pending uses remain — \
+             the resource stays alive for predicted future phases");
         assert_eq!(pool.live_entries(), 1,
             "entry stays cached across phases");
 
-        // The session-end shutdown drains it.
+        // The session-end shutdown drains the residual.
         pool.shutdown().await;
         assert_eq!(mock.close_calls.load(Ordering::Acquire), 1,
             "shutdown() drains the entry");
@@ -1548,6 +1769,16 @@ mod tests {
         let key = ResourceKey::new("cql").with("driver", "synthetic");
         let factory_call_count = Arc::new(AtomicU32::new(0));
 
+        // SRD-35 Push D: simulate the pre-map walker
+        // declaring 3 future phases. The two attaches below
+        // consume 2 of those 3, leaving pending = 1 so the
+        // entry survives until shutdown — the assertion
+        // shape this test was designed to verify.
+        for _ in 0..3 {
+            pool.declare_pending_use(key.clone(),
+                ResourceSharePolicy::Shared);
+        }
+
         let factory_count_a = Arc::clone(&factory_call_count);
         let adapter_a = Arc::clone(&adapter);
         let (got_a, guard_a) = attach_shared_adapter(
@@ -1589,6 +1820,88 @@ mod tests {
         pool.shutdown().await;
         assert_eq!(pool.live_entries(), 0,
             "shutdown drains the cached entry");
+    }
+
+    #[test]
+    fn declare_then_complete_pending_use_drains_to_zero() {
+        // SRD-35 Push D counter lifecycle: each
+        // `declare_pending_use` call increments per-key;
+        // each `complete_pending_use` decrements (saturating
+        // at 0) and reports whether the entry is now
+        // eligible for close (`pending == 0 && live == 0`).
+        // The pool's close trigger sits on `(pending, live)`
+        // both being zero — this test exercises the
+        // counter-only side without a real attach to keep
+        // the assertion shape tight.
+        let pool = Arc::new(ResourcePool::new());
+        let k = ResourceKey::new("cql").with("hosts", "h1");
+        assert_eq!(pool.pending_uses_for(&k), None,
+            "no entry exists before declare");
+
+        // Pre-map walker declares: 3 phases will use this key.
+        pool.declare_pending_use(k.clone(), ResourceSharePolicy::Shared);
+        pool.declare_pending_use(k.clone(), ResourceSharePolicy::Shared);
+        pool.declare_pending_use(k.clone(), ResourceSharePolicy::Shared);
+        assert_eq!(pool.pending_uses_for(&k), Some(3));
+        assert_eq!(pool.live_entries(), 1,
+            "declare_pending_use creates the entry on first call");
+
+        // Drain phases 1 and 2: not yet eligible for close.
+        let eligible = pool.complete_pending_use(&k);
+        assert!(!eligible, "pending == 2; not eligible yet");
+        assert_eq!(pool.pending_uses_for(&k), Some(2));
+
+        let eligible = pool.complete_pending_use(&k);
+        assert!(!eligible, "pending == 1; not eligible yet");
+        assert_eq!(pool.pending_uses_for(&k), Some(1));
+
+        // Phase 3 drains: pending hits 0, live is 0 (no
+        // real attach in this test) — eligible for close.
+        let eligible = pool.complete_pending_use(&k);
+        assert!(eligible,
+            "pending == 0 && live == 0 — entry is eligible for close");
+        assert_eq!(pool.pending_uses_for(&k), Some(0));
+
+        // Saturation: extra completes are no-ops, not
+        // underflow. Stays "eligible for close" because the
+        // invariant still holds.
+        let eligible = pool.complete_pending_use(&k);
+        assert!(eligible,
+            "saturating decrement: extra completes don't underflow");
+        assert_eq!(pool.pending_uses_for(&k), Some(0));
+    }
+
+    #[tokio::test]
+    async fn declare_pending_use_paired_with_attach_closes_promptly() {
+        // SRD-35 Push D end-to-end: pre-map seeds pending,
+        // attach decrements eagerly, detach observes the
+        // (pending == 0, live == 0) invariant and closes.
+        // Verifies the close trigger fires the moment the
+        // last predicted phase finishes, not at session end.
+        let pool = Arc::new(ResourcePool::new());
+        let mock = MockResource::new(key("cql", "cassandra-cpp"));
+
+        // Pre-map: exactly 1 phase will use this key.
+        pool.declare_pending_use(mock.resource_key().clone(),
+            ResourceSharePolicy::Shared);
+
+        let mock_for_factory = Arc::clone(&mock);
+        let guard = attach(&pool, mock.resource_key().clone(),
+            ResourceSharePolicy::Shared, "phase_A",
+            ResourceFactory::new(move || async move {
+                Ok(mock_for_factory as Arc<dyn SharedResource>)
+            }),
+        ).await.unwrap();
+        // After attach, pending dropped from 1 to 0.
+        assert_eq!(pool.pending_uses_for(mock.resource_key()), Some(0));
+
+        guard.detach().await.unwrap();
+        // Detach drove live to 0; pending was already 0;
+        // close fired without waiting for shutdown.
+        assert_eq!(mock.close_calls.load(Ordering::Acquire), 1,
+            "Push D: close fires the moment the last predicted \
+             phase detaches — not at session shutdown");
+        assert_eq!(pool.live_entries(), 0);
     }
 
     #[tokio::test]

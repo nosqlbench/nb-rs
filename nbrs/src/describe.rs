@@ -48,10 +48,40 @@ pub fn describe_command(args: &[String]) {
             eprintln!("  dag          Render a GK source as DOT, Mermaid, or SVG");
             eprintln!("  modules      List modules from a directory");
         }
+        // SRD-32a Push 4 — discoverability commands.
+        // `describe wrappers` dumps the wrapper registry; the
+        // resolver isn't consulted here because the table is a
+        // pure registry view.
+        ("wrappers", _) => {
+            print!("{}", render_wrappers_table());
+        }
+        // `describe op <workload> <op>` loads a workload, finds
+        // the named op-template, and renders its resolved
+        // wrapper stack with provenance.
+        ("op", workload_path) if !workload_path.is_empty() => {
+            let op_name = args.get(2).map(|s| s.as_str()).unwrap_or("");
+            if op_name.is_empty() {
+                eprintln!("nbrs describe op <workload> <op>");
+                eprintln!("  loads <workload>, finds the op template named <op>,");
+                eprintln!("  and prints its resolved wrapper stack.");
+                return;
+            }
+            match render_op_description(workload_path, op_name) {
+                Ok(text) => print!("{text}"),
+                Err(e) => eprintln!("error: {e}"),
+            }
+        }
+        ("op", _) => {
+            eprintln!("nbrs describe op <workload> <op>");
+            eprintln!("  loads <workload>, finds the op template named <op>,");
+            eprintln!("  and prints its resolved wrapper stack.");
+        }
         _ => {
             eprintln!("nbrs describe <topic>");
             eprintln!("  adapter[=<name>]   List adapters / show one adapter's params + drivers");
             eprintln!("  gk                 Generation kernel topics");
+            eprintln!("  wrappers           List the registered op-template wrappers");
+            eprintln!("  op <wkl> <op>      Show the resolved wrapper stack for one op");
             eprintln!();
             eprintln!("For workload analysis, use: nbrs run workload=file.yaml dryrun=phase,gk");
         }
@@ -861,6 +891,264 @@ pub fn spec() -> crate::cli_spec::Command {
     }
 }
 
+// ── SRD-32a Push 4 — wrapper discoverability ─────────────────
+
+/// Render the `nbrs describe wrappers` table.
+///
+/// Pulls every registration from the live wrapper inventory and
+/// prints one row per wrapper with the columns NAME, OWNED FIELDS,
+/// TRIGGER, CONSTRAINTS. The "RANK" column from the SRD draft was
+/// dropped on purpose — wrapper composition is constraint-driven
+/// now, so rank would be misleading. The trigger column shows a
+/// human label ("always", "delay set", "verify/relevancy", …) the
+/// caller can grep for; the constraints column is empty for most
+/// wrappers and lists `requires_inner=`, `forbids_outer=`, and
+/// `mutually_exclusive_with=` only when the wrapper declares them.
+///
+/// Returned as a String (rather than printed directly) so the
+/// test suite can pin the exact output. Iteration order is the
+/// alphabetical order the registry hands us — stable across runs.
+pub fn render_wrappers_table() -> String {
+    use nbrs_activity::wrapper_registry::WrapperRegistry;
+    use std::fmt::Write;
+
+    let registry = WrapperRegistry::from_inventory();
+
+    // Build rows first so we can compute column widths once.
+    struct Row {
+        name: String,
+        owned: String,
+        trigger: String,
+        constraints: String,
+    }
+    let mut rows: Vec<Row> = Vec::with_capacity(registry.len());
+    for reg in registry.iter() {
+        let owned = if reg.owned_fields.is_empty() {
+            "(none)".to_string()
+        } else {
+            reg.owned_fields.join(", ")
+        };
+        let trigger = trigger_label(reg.name.as_str(), reg.owned_fields);
+        let mut constraint_parts: Vec<String> = Vec::new();
+        if !reg.requires_inner.is_empty() {
+            let names: Vec<&str> = reg.requires_inner.iter().map(|n| n.as_str()).collect();
+            constraint_parts.push(format!("requires_inner=[{}]", names.join(", ")));
+        }
+        if !reg.forbids_outer.is_empty() {
+            let names: Vec<&str> = reg.forbids_outer.iter().map(|n| n.as_str()).collect();
+            constraint_parts.push(format!("forbids_outer=[{}]", names.join(", ")));
+        }
+        if !reg.mutually_exclusive_with.is_empty() {
+            let names: Vec<&str> =
+                reg.mutually_exclusive_with.iter().map(|n| n.as_str()).collect();
+            constraint_parts.push(format!(
+                "mutually_exclusive_with=[{}]",
+                names.join(", "),
+            ));
+        }
+        rows.push(Row {
+            name: reg.name.as_str().to_string(),
+            owned,
+            trigger,
+            constraints: constraint_parts.join("; "),
+        });
+    }
+
+    let name_w = "NAME"
+        .len()
+        .max(rows.iter().map(|r| r.name.len()).max().unwrap_or(0));
+    let owned_w = "OWNED FIELDS"
+        .len()
+        .max(rows.iter().map(|r| r.owned.len()).max().unwrap_or(0));
+    let trigger_w = "TRIGGER"
+        .len()
+        .max(rows.iter().map(|r| r.trigger.len()).max().unwrap_or(0));
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{:<name_w$}  {:<owned_w$}  {:<trigger_w$}  {}",
+        "NAME",
+        "OWNED FIELDS",
+        "TRIGGER",
+        "CONSTRAINTS",
+        name_w = name_w,
+        owned_w = owned_w,
+        trigger_w = trigger_w,
+    );
+    for r in &rows {
+        let _ = writeln!(
+            out,
+            "{:<name_w$}  {:<owned_w$}  {:<trigger_w$}  {}",
+            r.name,
+            r.owned,
+            r.trigger,
+            r.constraints,
+            name_w = name_w,
+            owned_w = owned_w,
+            trigger_w = trigger_w,
+        );
+    }
+    out
+}
+
+/// Human-readable label for a wrapper's trigger predicate.
+///
+/// The registration carries a `fn(&ParsedOp) -> bool`, which
+/// tells us *whether* a wrapper applies but not *what shape of
+/// op* drives it. The label is hand-curated per wrapper so the
+/// table reads like the SRD's prose. Falls back to
+/// "owned field set" for any future wrapper not enumerated here.
+fn trigger_label(name: &str, owned_fields: &[&str]) -> String {
+    match name {
+        "traverse" => "always".to_string(),
+        "throttle" => "delay set".to_string(),
+        "validate" => "verify/relevancy set".to_string(),
+        "poll" => "poll: set".to_string(),
+        "if" => "if: set".to_string(),
+        "emit" => "emit: true".to_string(),
+        "result" => "always (no-op when result map empty)".to_string(),
+        "metrics" => "non-empty metrics map".to_string(),
+        _ if owned_fields.is_empty() => "always".to_string(),
+        _ => format!("any of: {}", owned_fields.join(", ")),
+    }
+}
+
+/// Render the `nbrs describe op <workload> <op>` text.
+///
+/// Loads `workload_path` via `nbrs_workload::parse::parse_workload`
+/// (the same idiom as `report_cmd::resolve_items`), then walks
+/// every phase's `ops` and the top-level `ops` list looking for
+/// an op-template whose `name` matches `op_name`. The first match
+/// wins; the phase column tells the caller where it came from
+/// (`(phase: foo)` or `(top-level ops:)` when found at the
+/// workload root).
+///
+/// Returns the formatted text on success, or a single-line error
+/// string suitable for `eprintln!`. Resolver errors (constraint
+/// violations) are surfaced via `Display`, not `Debug` — the user
+/// shouldn't see Rust's struct-debug for a config diagnostic.
+pub fn render_op_description(workload_path: &str, op_name: &str) -> Result<String, String> {
+    use nbrs_activity::wrapper_registry::WrapperRegistry;
+    use nbrs_activity::wrapper_resolver::{WrapperActivation, WrapperResolver};
+    use nbrs_workload::model::ParsedOp;
+    use std::collections::HashMap;
+    use std::fmt::Write;
+
+    let resolved = crate::cli::resolve_workload_path(workload_path)
+        .unwrap_or_else(|| workload_path.to_string());
+    let path = std::path::PathBuf::from(&resolved);
+    if !path.exists() {
+        return Err(format!("workload '{resolved}' not found"));
+    }
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read '{}': {e}", path.display()))?;
+    let workload = nbrs_workload::parse::parse_workload(&text, &HashMap::new())
+        .map_err(|e| format!("parse workload '{}': {e}", path.display()))?;
+
+    // Collect every (phase_label, &ParsedOp) pair so we can
+    // both find the requested op and list candidates in the
+    // not-found path. Walk PHASES first — `parse_workload`
+    // flattens phase ops into the top-level `workload.ops` list
+    // as well, and the phase context is the more useful label
+    // for the user (matches the SRD's example output).
+    let mut all_ops: Vec<(Option<String>, &ParsedOp)> = Vec::new();
+    for phase_name in &workload.phase_order {
+        if let Some(phase) = workload.phases.get(phase_name) {
+            for op in &phase.ops {
+                all_ops.push((Some(phase_name.clone()), op));
+            }
+        }
+    }
+    // Pick up any phase that wasn't in phase_order (defensive —
+    // parse_workload always populates phase_order, but we don't
+    // want to silently drop ops if it ever doesn't).
+    for (phase_name, phase) in &workload.phases {
+        if !workload.phase_order.contains(phase_name) {
+            for op in &phase.ops {
+                all_ops.push((Some(phase_name.clone()), op));
+            }
+        }
+    }
+    // Top-level ops come last. Skip any that share a name with
+    // a phase op already collected — those are the same template
+    // and would only confuse the candidate list.
+    let phase_op_names: std::collections::HashSet<&str> =
+        all_ops.iter().map(|(_, op)| op.name.as_str()).collect();
+    for op in &workload.ops {
+        if !phase_op_names.contains(op.name.as_str()) {
+            all_ops.push((None, op));
+        }
+    }
+
+    let found = all_ops.iter().find(|(_, op)| op.name == op_name);
+    let (phase_label, template) = match found {
+        Some(hit) => hit,
+        None => {
+            // List candidate names so the user sees what's available.
+            let mut candidates: Vec<String> = all_ops
+                .iter()
+                .map(|(p, op)| match p {
+                    Some(ph) => format!("  {} (phase: {ph})", op.name),
+                    None => format!("  {} (top-level)", op.name),
+                })
+                .collect();
+            candidates.sort();
+            candidates.dedup();
+            let mut msg = format!(
+                "no op template named '{op_name}' in workload '{}'",
+                path.display(),
+            );
+            if !candidates.is_empty() {
+                msg.push_str("\navailable op templates:\n");
+                msg.push_str(&candidates.join("\n"));
+            }
+            return Err(msg);
+        }
+    };
+
+    let registry = WrapperRegistry::from_inventory();
+    let resolver = WrapperResolver::with_default_order(&registry).map_err(|e| e.to_string())?;
+    let plan = resolver
+        .resolve(template, &registry)
+        .map_err(|e| e.to_string())?;
+
+    let mut out = String::new();
+    match phase_label {
+        Some(ph) => {
+            let _ = writeln!(out, "op '{op_name}' (phase: {ph})");
+        }
+        None => {
+            let _ = writeln!(out, "op '{op_name}' (top-level ops:)");
+        }
+    }
+    out.push_str("  wrapper stack (innermost -> outermost):\n");
+    for (i, reg) in plan.iter_innermost_first().enumerate() {
+        let line = (reg.describe_assignment)(template)
+            .unwrap_or_else(|| reg.name.as_str().to_string());
+        // Prepend the wrapper name to assignments that don't
+        // already start with it — `describe_assignment` lines
+        // typically lead with `<name>: …` already, but the
+        // `traverse` and similar None-returners don't.
+        let display = if line.starts_with(reg.name.as_str()) {
+            line
+        } else {
+            format!("{}: {line}", reg.name.as_str())
+        };
+        let provenance = match plan.activation(reg.name) {
+            Some(WrapperActivation::OwnedField { field, .. }) => {
+                format!(" (triggered by `{field}:` field)")
+            }
+            Some(WrapperActivation::TransitiveFrom { requested_by, .. }) => {
+                format!(" (transitive via {requested_by})")
+            }
+            Some(WrapperActivation::AlwaysOn { .. }) | None => String::new(),
+        };
+        let _ = writeln!(out, "    {n}. {display}{provenance}", n = i + 1);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod describe_gk_dag_flattening_tests {
     //! SRD-13d Phase 8 — the `--with-flattening` surface on
@@ -967,5 +1255,204 @@ phases:
         let occurrences = line.matches("workload.scenario.default.phase.p").count();
         assert_eq!(occurrences, 2,
             "materialised phase row should list its logical_name twice (logical_name + bind_outer): {line}");
+    }
+}
+
+#[cfg(test)]
+mod describe_wrappers_tests {
+    //! SRD-32a Push 4 — discoverability commands. Tests pin the
+    //! shape of `nbrs describe wrappers` and `nbrs describe op`
+    //! so the human-readable surface doesn't drift silently.
+    use super::{render_op_description, render_wrappers_table};
+
+    /// The wrapper table must include every built-in wrapper
+    /// from the registry. The registry is alphabetical, so the
+    /// rows arrive in alphabetical order by wrapper name.
+    #[test]
+    fn wrappers_table_lists_every_built_in() {
+        let out = render_wrappers_table();
+        // Header row.
+        assert!(out.contains("NAME"), "header missing NAME column:\n{out}");
+        assert!(out.contains("OWNED FIELDS"), "header missing OWNED FIELDS:\n{out}");
+        assert!(out.contains("TRIGGER"), "header missing TRIGGER:\n{out}");
+        assert!(out.contains("CONSTRAINTS"), "header missing CONSTRAINTS:\n{out}");
+        // Each registered wrapper appears.
+        for name in [
+            "traverse", "throttle", "validate", "poll",
+            "if", "emit", "result", "metrics",
+        ] {
+            assert!(out.contains(name),
+                "wrapper `{name}` missing from describe wrappers output:\n{out}");
+        }
+    }
+
+    /// Trigger labels for the built-in wrappers — matches the
+    /// SRD §"Discoverability" prose. Pinning these strings keeps
+    /// the documentation surface stable.
+    #[test]
+    fn wrappers_table_uses_human_trigger_labels() {
+        let out = render_wrappers_table();
+        // The traverse row must say "always".
+        let traverse_line = out
+            .lines()
+            .find(|l| l.starts_with("traverse"))
+            .expect("traverse row missing");
+        assert!(traverse_line.contains("always"),
+            "traverse trigger should be `always`: {traverse_line}");
+        let validate_line = out
+            .lines()
+            .find(|l| l.starts_with("validate"))
+            .expect("validate row missing");
+        assert!(validate_line.contains("verify/relevancy"),
+            "validate trigger should mention verify/relevancy: {validate_line}");
+        let metrics_line = out
+            .lines()
+            .find(|l| l.starts_with("metrics"))
+            .expect("metrics row missing");
+        assert!(metrics_line.contains("non-empty metrics map"),
+            "metrics trigger should be `non-empty metrics map`: {metrics_line}");
+        // metrics declares forbids_outer for every other wrapper —
+        // surface that in the constraints column.
+        assert!(metrics_line.contains("forbids_outer="),
+            "metrics row should advertise its forbids_outer constraint: {metrics_line}");
+    }
+
+    /// Owned-fields column lists the registry's owned-field names
+    /// (validate, poll, etc.). Wrappers with no owned fields must
+    /// render `(none)` rather than an empty cell.
+    #[test]
+    fn wrappers_table_owned_fields_column_uses_none_for_empty() {
+        let out = render_wrappers_table();
+        let traverse_line = out
+            .lines()
+            .find(|l| l.starts_with("traverse"))
+            .expect("traverse row missing");
+        assert!(traverse_line.contains("(none)"),
+            "traverse owned fields should render as `(none)`: {traverse_line}");
+        let validate_line = out
+            .lines()
+            .find(|l| l.starts_with("validate"))
+            .expect("validate row missing");
+        for f in ["verify", "relevancy", "strict"] {
+            assert!(validate_line.contains(f),
+                "validate row missing owned field `{f}`: {validate_line}");
+        }
+    }
+
+    /// `describe op` against a workload that defines a phase op
+    /// renders the resolved stack innermost-to-outermost, names
+    /// the phase, and labels each line. The empty `noop` op only
+    /// triggers `traverse` + `result`, so the stack is two lines.
+    #[test]
+    fn describe_op_simple_phase_shows_default_stack() {
+        let yaml = r#"
+phases:
+  setup:
+    ops:
+      noop:
+        stmt: "noop"
+"#;
+        let dir = std::env::temp_dir().join("nbrs_describe_op_simple");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("simple.yaml");
+        std::fs::write(&path, yaml).expect("write workload");
+
+        let out = render_op_description(path.to_str().unwrap(), "noop")
+            .expect("simple workload should resolve");
+        assert!(out.contains("op 'noop'"), "header missing op name: {out}");
+        assert!(out.contains("phase: setup"), "header missing phase: {out}");
+        assert!(out.contains("wrapper stack (innermost -> outermost)"),
+            "stack header missing: {out}");
+        // Empty op fires only the always-on wrappers.
+        let traverse_idx = out.find("traverse").expect("traverse missing");
+        let result_idx = out.find("result").expect("result missing");
+        assert!(traverse_idx < result_idx,
+            "traverse should print before result: {out}");
+        // None of the optional wrappers should appear in the
+        // stack. We check the numbered stack lines so a phase or
+        // op whose name contains "metrics" or "validate" can't
+        // false-positive a substring search.
+        let stack_lines: Vec<&str> = out
+            .lines()
+            .filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit()))
+            .collect();
+        for unexpected in ["throttle", "validate", "poll", "emit", "metrics"] {
+            for line in &stack_lines {
+                assert!(!line.contains(unexpected),
+                    "unexpected wrapper `{unexpected}` in stack line: {line}");
+            }
+        }
+    }
+
+    /// An op declaring `verify:` triggers validate; the resolver
+    /// pulls in traverse transitively. Provenance text must
+    /// distinguish the two activations.
+    #[test]
+    fn describe_op_validate_shows_owned_field_and_transitive() {
+        let yaml = r#"
+phases:
+  go:
+    ops:
+      check:
+        stmt: "SELECT 1"
+        verify: "min_rows >= 1"
+"#;
+        let dir = std::env::temp_dir().join("nbrs_describe_op_validate");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("validate.yaml");
+        std::fs::write(&path, yaml).expect("write workload");
+
+        let out = render_op_description(path.to_str().unwrap(), "check")
+            .expect("validate workload should resolve");
+        // Validate fires on `verify:` — the line should say so.
+        assert!(out.contains("triggered by `verify:` field"),
+            "validate provenance missing: {out}");
+        // Traverse is transitive (always-on wrapper, but it would
+        // also be pulled in transitively by validate). The
+        // resolver tags it AlwaysOn because the trigger fires
+        // first. Either way, the line should not falsely claim
+        // a `verify:` trigger.
+        let traverse_line = out
+            .lines()
+            .find(|l| l.contains("1.") && l.contains("traverse"))
+            .expect("traverse line missing");
+        assert!(!traverse_line.contains("triggered by"),
+            "traverse line should not claim a field trigger: {traverse_line}");
+    }
+
+    /// Unknown op-template names surface a clean error including
+    /// the candidate list. The error path must NOT panic and
+    /// must not propagate a Debug-formatted ResolveError.
+    #[test]
+    fn describe_op_unknown_lists_candidates() {
+        let yaml = r#"
+phases:
+  go:
+    ops:
+      alpha:
+        stmt: "noop"
+      beta:
+        stmt: "noop"
+"#;
+        let dir = std::env::temp_dir().join("nbrs_describe_op_unknown");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("two.yaml");
+        std::fs::write(&path, yaml).expect("write workload");
+
+        let err = render_op_description(path.to_str().unwrap(), "missing").unwrap_err();
+        assert!(err.contains("no op template named 'missing'"),
+            "error should name the missing template: {err}");
+        assert!(err.contains("alpha"), "candidate list should include alpha: {err}");
+        assert!(err.contains("beta"), "candidate list should include beta: {err}");
+    }
+
+    /// Missing-file path returns a clean error string, not a
+    /// panic and not a Debug-format. The path must be embedded so
+    /// the operator sees what was attempted.
+    #[test]
+    fn describe_op_missing_file_returns_clean_error() {
+        let err = render_op_description("/nonexistent/path/never.yaml", "x").unwrap_err();
+        assert!(err.contains("never.yaml"),
+            "error should embed the file path: {err}");
     }
 }

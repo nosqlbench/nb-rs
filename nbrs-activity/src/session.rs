@@ -174,7 +174,7 @@ pub enum SessionReuse {
     #[default]
     Error,
     /// Wipe the existing artifacts (`metrics.db`, `session.log`,
-    /// `checkpoint.json`, `summary.md`, etc.) and start fresh.
+    /// `checkpoint.jsonl`, `summary.md`, etc.) and start fresh.
     /// The dir itself stays; only its contents are cleared.
     Restart,
     /// Continue with the existing session — equivalent to
@@ -592,7 +592,7 @@ pub fn session_dir_has_prior_artifacts(dir: &Path) -> bool {
     if !dir.exists() {
         return false;
     }
-    for marker in ["metrics.db", "session.log", "checkpoint.json"] {
+    for marker in ["metrics.db", "session.log", "checkpoint.jsonl"] {
         if dir.join(marker).exists() {
             return true;
         }
@@ -634,11 +634,11 @@ pub fn forecast_keep_purge(parent: &Path, keep_cap: usize) -> usize {
 /// nbrs run writes — the gate the purge logic uses to avoid
 /// destroying unrelated directories that happen to share a
 /// parent with an explicit `--session-path`. Any one of
-/// `metrics.db`, `session.log`, or `checkpoint.json` is
+/// `metrics.db`, `session.log`, or `checkpoint.jsonl` is
 /// enough; the runtime writes at least one of them per
 /// session, so the test is robust across early-aborted runs.
 fn looks_like_session_dir(path: &Path) -> bool {
-    const SIGNATURES: &[&str] = &["metrics.db", "session.log", "checkpoint.json"];
+    const SIGNATURES: &[&str] = &["metrics.db", "session.log", "checkpoint.jsonl"];
     SIGNATURES.iter().any(|s| path.join(s).exists())
 }
 
@@ -924,7 +924,7 @@ impl Session {
                 SessionReuse::Error => {
                     eprintln!(
                         "error: session directory {} already contains artifacts \
-                         (metrics.db / session.log / checkpoint.json).\n  \
+                         (metrics.db / session.log / checkpoint.jsonl).\n  \
                          Pick a reuse policy:\n    \
                          --session-reuse=restart  (wipe artifacts, fresh run)\n    \
                          --session-reuse=resume   (continue with the prior session — \
@@ -937,7 +937,7 @@ impl Session {
                 }
                 SessionReuse::Restart => {
                     for marker in [
-                        "metrics.db", "session.log", "checkpoint.json",
+                        "metrics.db", "session.log", "checkpoint.jsonl",
                         "checkpoint.lock", "summary.md", "summary.txt",
                         "summary.json", "tui.dump",
                         "flamegraph.svg", "flamegraph-perf.svg",

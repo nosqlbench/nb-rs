@@ -97,7 +97,8 @@ pub fn generate_ops(
             condition: None,
             delay: None,
             metrics: HashMap::new(),
-            result: HashMap::new(),
+            result: None,
+            wrappers: None,
         };
         parsed_ops.push(parsed);
     }

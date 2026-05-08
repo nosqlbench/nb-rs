@@ -20,11 +20,13 @@
 
 pub mod identity;
 pub mod storage;
+pub mod events;
 pub mod writer;
 pub mod resume;
 
 pub use identity::{PathSegment, PhaseIdentity};
 pub use storage::{Checkpoint, OpCounts, PhaseEntry, PhaseStatus};
+pub use events::CheckpointEvent;
 pub use writer::CheckpointWriter;
 pub use resume::{ResumePlan, ResumeAction};
 

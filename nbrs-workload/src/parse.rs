@@ -213,6 +213,7 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         report, report_warnings,
         status_metrics: doc_status_metrics,
         readouts,
+        wrappers: None,
     })
 }
 
@@ -1184,7 +1185,8 @@ fn normalize_op_entry(
                 condition: None,
                 delay: None,
                 metrics: HashMap::new(),
-                result: HashMap::new(),
+                result: None,
+                wrappers: None,
             };
             op.tags.insert("block".to_string(), block_name.to_string());
             Ok(op)
@@ -1395,6 +1397,7 @@ fn normalize_op_object(
         delay,
         metrics,
         result,
+        wrappers: None,
     })
 }
 
@@ -1649,43 +1652,68 @@ fn has_binding_named(src: &str, name: &str) -> bool {
     false
 }
 
-/// SRD-40b §5: parse the `result:` field on an op template.
-/// Mapping shape only — each entry names a GK wire to
-/// populate from the op's result body.
+/// SRD-66 §"Surface 1 §Schema": parse the vari-structured
+/// `result:` field on an op template. Three shapes:
+///
+/// - **String** scalar — GK source block (multi-line or
+///   single-line). Each `<name> := <expr>` declares one
+///   wire.
+/// - **List** sequence — each element is itself a
+///   `ResultSpec` (recursively); fragments concatenate.
+/// - **Mapping** — named-key short-forms; each value is a
+///   string parsed as `count` / `ok` / path-expr / GK expr.
 fn parse_result_field(
     val: Option<&JVal>,
     op_name: &str,
-) -> Result<HashMap<String, crate::model::ResultWireSpec>, String> {
-    use crate::model::ResultWireSpec;
-    let Some(v) = val else { return Ok(HashMap::new()); };
-    let map = v.as_object().ok_or_else(|| format!(
-        "op '{op_name}' result: expected mapping (name → source)"))?;
-    let mut out: HashMap<String, ResultWireSpec> = HashMap::new();
-    for (key, val) in map {
-        if out.contains_key(key) {
-            return Err(format!(
-                "duplicate result wire '{key}'"));
-        }
-        let spec = match val {
-            JVal::String(s) => ResultWireSpec::String(s.clone()),
-            JVal::Object(m) => {
-                let source = m.get("source")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| format!(
-                        "result '{key}': required field `source:` \
-                         missing or not a string"))?
-                    .to_string();
-                let default = m.get("default")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                ResultWireSpec::Object { source, default }
-            }
-            _ => return Err(format!(
-                "result '{key}': expected string or mapping")),
-        };
-        out.insert(key.clone(), spec);
+) -> Result<Option<crate::model::ResultSpec>, String> {
+    let Some(v) = val else { return Ok(None); };
+    let spec = parse_result_spec(v, op_name)?;
+    if spec.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(spec))
     }
-    Ok(out)
+}
+
+fn parse_result_spec(
+    v: &JVal,
+    op_name: &str,
+) -> Result<crate::model::ResultSpec, String> {
+    use crate::model::ResultSpec;
+    match v {
+        JVal::Null => Ok(ResultSpec::String(String::new())),
+        JVal::String(s) => Ok(ResultSpec::String(s.clone())),
+        JVal::Array(items) => {
+            let mut out: Vec<ResultSpec> = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(parse_result_spec(item, op_name)?);
+            }
+            Ok(ResultSpec::List(out))
+        }
+        JVal::Object(map) => {
+            let mut out: std::collections::BTreeMap<String, String>
+                = std::collections::BTreeMap::new();
+            for (key, val) in map {
+                let source = match val {
+                    JVal::String(s) => s.clone(),
+                    JVal::Null => String::new(),
+                    other => return Err(format!(
+                        "op '{op_name}' result.{key}: expected string \
+                         (short-form keyword `count`/`ok`, path \
+                         expression, or GK expression); got {other}")),
+                };
+                if out.insert(key.clone(), source).is_some() {
+                    return Err(format!(
+                        "op '{op_name}' result: duplicate key '{key}'"));
+                }
+            }
+            Ok(ResultSpec::Map(out))
+        }
+        _ => Err(format!(
+            "op '{op_name}' result: expected string (GK source), \
+             list (sequence of fragments), or mapping (named \
+             short-forms); got {v}")),
+    }
 }
 
 // -----------------------------------------------------------------

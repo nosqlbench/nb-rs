@@ -1,6 +1,14 @@
 # SRD-32a — Op Wrapper Registry, Field Ownership, and Stacking Order
 
-**Status:** design (not yet implemented) — refinement of SRD-32
+**Status:** Pushes 1–4 shipped 2026-05-07, including
+`--wrap-order` and `--wrap-default-order` CLI flags
+(env-equivalent `NBRS_WRAP_ORDER` / `NBRS_WRAP_DEFAULT_ORDER`
+auto-derived per SRD-04). Registry + resolver + cascade
+replacement + Info-level assignment logging (Push 1);
+parse-time field ownership / misplaced-field guard (Push 2);
+workload-root + per-op + CLI order overrides (Push 3);
+`nbrs describe wrappers` / `nbrs describe op` (Push 4).
+Refinement of SRD-32.
 **Owner:** runtime / executor / wrappers
 **Implementation target:** `nbrs-activity/src/wrappers.rs` (registry
   surface), `nbrs-activity/src/wrappers/registry.rs` (new),
@@ -200,7 +208,7 @@ handle) that the executor needs to retain.
 | `validate` | `verify`, `relevancy`, `strict` | any owned field present | `traverse` | — | — |
 | `poll` | `poll`, `poll_interval_ms`, `timeout_ms`, `poll_max_error_retries`, `poll_metric_name` | `poll:` set | `traverse` | — | — |
 | `if` | `if` | `if:` set | — | — | — |
-| `emit` | `emit` | `emit: true` | `result` | — | — |
+| `emit` | `emit` | `emit: true` | — | — | — |
 | `result` | (none — reads `result:` wires) | template has `result:` wires | `traverse` | — | — |
 | `metrics` | (none) | always | — | (everything) | — |
 
@@ -221,10 +229,16 @@ Read the table relationally:
   hand-coded "must_be_innermost: true". A future wrapper
   that doesn't need traverse can sit inside it without
   surgery on traverse's record.
-- **`emit`** requires `result` so that emitted output
-  reflects post-result-capture state, not raw adapter
-  output. Pre-`result` emit is reserved as a future
-  variant (`emit.raw`) if needed.
+- **`emit`** declares no `requires_inner`. The cascade
+  composes `result` *outside* `emit` (innermost-first list
+  ends `..., emit, result, metrics`), so an
+  `emit.requires_inner = [result]` declaration would
+  invert the cascade and break the byte-identical-output
+  bar in §"Migration". `result` is always-on (wraps
+  unconditionally, no-op when its wire map is empty), so
+  emit can rely on its presence without an explicit
+  constraint. Pre-`result` emit (raw adapter output) is
+  reserved as a future variant (`emit.raw`) if needed.
 - **`if`** has no `requires_inner`. A false condition
   short-circuits before any inner wrapper fires; that's
   load-bearing for the recent fix that pulled `poll` to

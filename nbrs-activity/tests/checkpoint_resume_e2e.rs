@@ -7,7 +7,7 @@
 //! workload — first as a fresh session, second as a resume —
 //! and asserts that:
 //!
-//! - the first run wrote a `checkpoint.json` with three
+//! - the first run wrote a `checkpoint.jsonl` with three
 //!   Completed phase entries carrying their program hashes,
 //! - the resume run reused the prior session directory
 //!   (`Session::resume` semantics, not `Session::new`),
@@ -80,7 +80,7 @@ phases:
     });
 
     let session_dir = read_logs_latest(&dir);
-    let checkpoint_path = session_dir.join("checkpoint.json");
+    let checkpoint_path = session_dir.join("checkpoint.jsonl");
     let saved = storage::read(&checkpoint_path)
         .expect("read 1st checkpoint")
         .expect("checkpoint should exist after fresh run");
@@ -176,7 +176,7 @@ phases:
         format!("filename={}", stdout_path.display()),
     ]));
     let session_dir = read_logs_latest(&dir);
-    let cp_path = session_dir.join("checkpoint.json");
+    let cp_path = session_dir.join("checkpoint.jsonl");
     let saved = storage::read(&cp_path).unwrap().unwrap();
     let h_v1 = saved.phases[0].identity.phase_hash;
     assert!(h_v1.is_some(), "phase 1 should have stamped a hash");

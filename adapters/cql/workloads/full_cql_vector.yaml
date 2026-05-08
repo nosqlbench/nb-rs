@@ -28,7 +28,6 @@ params:
   fknn_profile: default
 #  optimize_for_values: "RECALL"
   optimize_for_values: "RECALL,LATENCY"
-  cql_dialect: cass5
   vector_idx_suffix: _vector_idx
   meta_idx_suffix: _meta_idx
 
@@ -78,7 +77,7 @@ report:
       query latency: avg(cycles_servicetime_mean) by (profile,limit)
 
     plot recall_1_mean
-      label "ALL 1-recall@R, oracles & PVS {cql_dialect}"
+      label "ALL 1-recall@R, oracles & PVS"
       legend: br
       x: r
       x-legend: "R"
@@ -93,7 +92,7 @@ report:
       style profile=default:line=dotted
 
     plot recall_10_mean
-      label "ALL 10-recall@R, oracles & PVS {cql_dialect}"
+      label "ALL 10-recall@R, oracles & PVS"
       legend: br
       x: r
       x-legend: "R"
@@ -108,7 +107,7 @@ report:
       style profile=default:line=dotted
 
     plot recall_100_mean
-      label "ALL 100-recall@R, oracles & PVS {cql_dialect}"
+      label "ALL 100-recall@R, oracles & PVS"
       legend: br
       x: r
       x-legend: "R"
@@ -123,7 +122,7 @@ report:
       style profile=default:line=dotted
 
     plot recall_vs_latency_k1
-      label "Recall@1 vs latency, oracles & PVS {cql_dialect}"
+      label "Recall@1 vs latency, oracles & PVS"
       legend: br
       x: cycles_servicetime_mean
       x-legend: "service time"
@@ -235,15 +234,24 @@ report:
 
 bindings: |
   profiles := matching_profiles("{dataset}", "{prefix}")
+  # SRD-66: detected-fact wires populated by the
+  # `detect_dialect` phase. Initial `false`; the result-
+  # bindings on `describe_system_views` flip them based on
+  # the cluster's schema. `await_index` reads them via
+  # `pick(...)` to choose the right system-views table.
+  shared has_sai_column_indexes := false
+  shared has_indexes := false
 
 scenarios:
 
   fulltest:
+    - phase: detect_dialect
     - scenario: test_oracles
     - scenario: test_fknn
 
   # Per-profile partition test (label_00..label_11)
   test_oracles:
+    - phase: detect_dialect
     - for: "profile in matching_profiles('{dataset}', '{oracles_prefix}')"
       phases:
         - for: "optimize_for in {optimize_for_values}, table in vec_{profile}_{optimize_for}"
@@ -271,6 +279,7 @@ scenarios:
   # that differed only in their metric labels. Mirrors the
   # `test_oracles` shape.
   test_fknn:
+    - phase: detect_dialect
     - for: "profile in {fknn_profile}, optimize_for in {optimize_for_values}, table in fknn_{profile}_{optimize_for}"
       phases:
         - teardown
@@ -282,6 +291,7 @@ scenarios:
             - pvs_query
 
   await_fknn:
+    - phase: detect_dialect
     - for: "profile in {fknn_profile}, table in fknn_{profile}, optimize_for in {optimize_for_values}"
       phases:
         - await_index
@@ -336,55 +346,58 @@ phases:
       drop_table:
         raw: "DROP TABLE IF EXISTS {keyspace}.{table}{meta_idx_suffix}"
 
+  # SRD-66 probe phase: runs once per scenario, before
+  # any phase that consumes the dialect facts. Reads the
+  # cluster's `system_views` schema and flips the
+  # workload-root `shared` booleans based on which
+  # virtual table is present. Result-bindings use
+  # `regex_match(exactly_one_value(body), …)` to assert
+  # the schema-text body is unary and apply the pattern.
+  # Subsequent phases read the booleans via `extern` and
+  # branch with `pick(...)` to choose the right system
+  # table.
+  detect_dialect:
+    concurrency: 1
+    cycles: 1
+    ops:
+      describe_system_views:
+        raw: "DESCRIBE KEYSPACE system_views"
+        result: |
+          schema_text            := exactly_one_value(body)
+          has_sai_column_indexes := log_info(regex_match(schema_text, "(?im)^\s*(VIRTUAL\s+)?TABLE\s+system_views\.sai_column_indexes\s*\("))
+          has_indexes            := log_info(regex_match(schema_text, "(?im)^\s*(VIRTUAL\s+)?TABLE\s+system_views\.indexes\s*\("))
+
   await_index:
     concurrency: 1
-    #
-    # `system_views.indexes` is the Cassandra 5.x view exposing
-    # SAI build state. On Cassandra 5.0 with "table indexes does
-    # not exist" the inner ops surface a hard ExecutionError
-    # rather than swallowing it, so the workload's `errors:`
-    # policy stops the phase + the run instead of spinning
-    # silently.
+    bindings: |
+      # SRD-66 §"Surface 3" — `pick(b0, b1, v0, v1)`
+      # returns the value paired with the unique true
+      # selector. Exactly one of the two booleans must
+      # be true (the detect_dialect phase guarantees
+      # this); zero or two true selectors is a hard
+      # error pointing the operator at a misconfigured
+      # cluster.
+      target_index_table := pick(
+        has_sai_column_indexes, has_indexes,
+        "system_views.sai_column_indexes",
+        "system_views.indexes")
     ops:
-      indexes_present_cass5:
-        if: "cql_dialect == 'cass5'"
+      indexes_present:
         raw: |
-          SELECT index_name FROM system_views.index
+          SELECT index_name FROM {target_index_table}
           WHERE keyspace_name = '{keyspace}'
+            AND table_name = '{table}'
             AND index_name = '{table}{vector_idx_suffix}'
           ALLOW FILTERING
         verify:
           - min_rows: 1
         strict: true
-      indexes_built_cass5:
-        if: "cql_dialect == 'cass5'"
+      indexes_built:
         raw: |
-          SELECT index_name FROM system_views.index
+          SELECT index_name FROM {target_index_table}
           WHERE keyspace_name = '{keyspace}'
+            AND table_name = '{table}'
             AND index_name = '{table}{vector_idx_suffix}'
-            AND is_building = true
-          ALLOW FILTERING
-        poll: await_empty
-        poll_interval_ms: 5000
-        timeout_ms: 600000
-        poll_max_error_retries: 3
-        poll_metric_name: index_build_time_s
-      indexes_present_cndb:
-        if: "cql_dialect == 'cndb'"
-        raw: |
-          SELECT index_name FROM system_views.sai_column_indexes
-          WHERE keyspace_name = '{keyspace}'
-            AND table_name = '{table}'
-          ALLOW FILTERING
-        verify:
-          - min_rows: 1
-        strict: true
-      indexes_built_cndb:
-        if: "cql_dialect == 'cndb'"
-        raw: |
-          SELECT index_name FROM system_views.sai_column_indexes
-          WHERE keyspace_name = '{keyspace}'
-            AND table_name = '{table}'
             AND is_building = true
           ALLOW FILTERING
         poll: await_empty

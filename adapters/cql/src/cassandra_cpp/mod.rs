@@ -638,6 +638,50 @@ impl DriverAdapter for CqlAdapter {
             }
         }
     }
+
+    /// SRD-35 Push D — graceful CQL session close.
+    ///
+    /// The vendored `cassandra-cpp::Session::close()` wraps
+    /// `cass_session_close()`, which the C++ driver implements
+    /// as a flush of in-flight requests followed by a connection
+    /// teardown. We await the resulting future inside a 5-second
+    /// timeout so a hung node doesn't pin the runtime; on
+    /// timeout the underlying `Drop` still runs the synchronous
+    /// close as a fallback when the adapter's last reference
+    /// goes away.
+    ///
+    /// This override fires from
+    /// [`nbrs_activity::resource_pool::SharedAdapterResource::close`]
+    /// when the pool determines a shared CQL adapter has no
+    /// remaining users.
+    fn shutdown<'a>(
+        &'a self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let close_future = self.session.close();
+            let timeout = std::time::Duration::from_secs(5);
+            match tokio::time::timeout(timeout, close_future).await {
+                Ok(Ok(())) => {
+                    nbrs_activity::diag!(
+                        nbrs_activity::observer::LogLevel::Info,
+                        "cql session closed cleanly",
+                    );
+                }
+                Ok(Err(e)) => {
+                    nbrs_activity::diag!(
+                        nbrs_activity::observer::LogLevel::Error,
+                        "cql session close returned error: {e}; falling back to Drop teardown",
+                    );
+                }
+                Err(_) => {
+                    nbrs_activity::diag!(
+                        nbrs_activity::observer::LogLevel::Error,
+                        "cql session close timed out after 5s; falling back to Drop teardown",
+                    );
+                }
+            }
+        })
+    }
 }
 
 // =========================================================================

@@ -13,6 +13,7 @@ use crate::cassandra::statement::Statement;
 use crate::cassandra::util::{Protected, ProtectedInner};
 use crate::{cassandra::batch::Batch, BatchType};
 
+use crate::cassandra_sys::cass_session_close;
 use crate::cassandra_sys::cass_session_execute;
 use crate::cassandra_sys::cass_session_execute_batch;
 use crate::cassandra_sys::cass_session_free;
@@ -87,6 +88,27 @@ impl Default for Session {
 impl Session {
     pub(crate) fn new() -> Session {
         unsafe { Session(SessionInner::new(cass_session_new())) }
+    }
+
+    /// Closes the session connection and synchronously waits
+    /// for any in-flight requests to complete before the
+    /// returned future resolves.
+    ///
+    /// Returns a `CassFuture<()>` that resolves once the
+    /// underlying C++ driver has finished its close handshake.
+    /// Callers can compose timeouts (`tokio::time::timeout`)
+    /// around the await to bound how long they'll wait for a
+    /// hung session.
+    ///
+    /// `Drop for SessionInner` still calls `cass_session_free`
+    /// to deallocate; calling `close().await` first is the
+    /// graceful path. A session that's dropped without
+    /// awaiting `close()` is closed synchronously by the C++
+    /// driver inside `cass_session_free`, which can block for
+    /// up to the underlying close timeout.
+    pub fn close(&self) -> CassFuture<()> {
+        let inner_future = unsafe { cass_session_close(self.inner()) };
+        <CassFuture<()>>::build(self.clone(), inner_future)
     }
 
     /// Create a prepared statement with the given query.

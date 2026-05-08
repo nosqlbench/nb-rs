@@ -84,6 +84,31 @@ pub struct Workload {
     /// (CLI / extends).
     #[serde(default)]
     pub readouts: ReadoutsBindings,
+    /// SRD-32a Push 3 — workload-root wrapper composition
+    /// override. When present, every op template in this
+    /// workload uses this innermost-to-outermost order
+    /// instead of the runtime's default tiebreaker order.
+    /// Per-op `wrappers: { order: ... }` shadows this entry
+    /// entirely (no cascading merge).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrappers: Option<WrappersConfig>,
+}
+
+/// SRD-32a Push 3 — wrapper-composition override block.
+/// Carries an explicit innermost-to-outermost order list
+/// that the resolver uses in place of its built-in
+/// default-order tiebreaker. The list must be a permutation
+/// of the wrappers the op actually triggers (after
+/// transitive activation); listing a non-triggered wrapper
+/// or omitting a triggered one is a hard error per SRD-32a
+/// §"Workload-level override".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WrappersConfig {
+    /// Innermost-to-outermost wrapper-name list. Empty list
+    /// is treated as "no override" (equivalent to leaving
+    /// `wrappers:` off the workload).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<String>,
 }
 
 /// Per-event-slot list of readout body strings declared in
@@ -870,12 +895,20 @@ pub struct ParsedOp {
     /// entries).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metrics: HashMap<String, MetricSpec>,
-    /// SRD-40b §5 result-as-GK declarations. Each entry
-    /// names a GK wire to populate from the op's result body
-    /// (capture path, count/ok built-in, or GK function call)
-    /// before metric expressions evaluate. Empty when absent.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub result: HashMap<String, ResultWireSpec>,
+    /// SRD-66 result-bindings. Vari-structured: string is
+    /// GK source, list is a sequence of fragments, map is
+    /// named-key short-forms with a composite-map output.
+    /// `None` ⇒ no result wires; the result wrapper is a
+    /// no-op for this op.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<ResultSpec>,
+    /// SRD-32a Push 3 — per-op wrapper-composition override.
+    /// When present, this op uses the named order instead of
+    /// the workload-root or runtime-default tiebreaker order.
+    /// Shadows the workload-root `wrappers:` block entirely
+    /// (no merge).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrappers: Option<WrappersConfig>,
 }
 
 /// SRD-40b §1 schema for one synthetic-metric declaration on
@@ -928,47 +961,121 @@ impl Default for MetricKind {
     fn default() -> Self { MetricKind::Gauge }
 }
 
-/// SRD-40b §5 declaration for one GK wire populated from the
-/// op's result body. The mechanism: per cycle, after the inner
-/// adapter returns its `OpResult`, the dispenser's
-/// result-as-GK adapter writes each declared wire's value
-/// into the op's GkState before metric wrappers evaluate.
+/// SRD-66 result-bindings declaration. Vari-structured to
+/// match the three YAML shapes the user can write:
+///
+/// - **String**: a multi-line GK source block. Each
+///   `<name> := <expr>` assignment declares one result wire.
+/// - **List**: a sequence of nested `ResultSpec`s; each
+///   element processes in order and contributes its
+///   declarations.
+/// - **Map**: named-key short-forms (`count`, `ok`,
+///   path-expr, or any other string treated as a GK
+///   expression). Map shape additionally produces a
+///   composite-map wire (deferred — see Push 2 follow-ups).
+///
+/// SRD-40b §5.1's mapping form is preserved as the map
+/// shape with two refinements: any non-built-in non-path
+/// string is a GK expression (no `(`-detector magic), and
+/// the composite-map output is added.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum ResultWireSpec {
-    /// String form: a single source spec encoded as one of the
-    /// SRD-40b §5.1 grammars:
-    /// - `count` — built-in row/element count of the body.
-    /// - `ok` — built-in success boolean.
-    /// - `<path-expr>` — JSON-path into the result body
-    ///   (e.g. `rows[0].field`).
-    /// - `<gk-call>` — GK function call referencing captures
-    ///   and result.
+pub enum ResultSpec {
+    /// GK source block — one or more `<name> := <expr>`
+    /// assignments separated by newlines. The pre-bound
+    /// wires (`body`, `count`, `ok`, captures) are
+    /// available; references resolve via the standard
+    /// closure-binding rule (gk module matter detects
+    /// linkages).
     String(String),
-    /// Mapping form for future fields (currently empty;
-    /// reserved for `default:`, `kind:`, etc. as the result-
-    /// tap mechanism grows). SRD-40b §10 carries the
-    /// open-question pointer.
+    /// Sequence of fragments. Each element is itself a
+    /// `ResultSpec` (string or map; nested lists are parsed
+    /// but unconventional). Fragments concatenate into one
+    /// result-bindings scope; key collisions across map-
+    /// shape fragments are a hard error.
+    List(Vec<ResultSpec>),
+    /// Named-key short-forms. Each value is one of:
+    /// `"count"`, `"ok"`, a path expression (no parens), or
+    /// any other string treated as a GK expression. Map
+    /// shape also produces a composite-map wire keyed by
+    /// the YAML keys.
+    Map(std::collections::BTreeMap<String, String>),
+}
+
+/// Legacy alias for backwards compatibility during Push 2.
+/// Drops once every consumer migrates to `ResultSpec`.
+pub type ResultWireSpec = LegacyResultWireSpec;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LegacyResultWireSpec {
+    String(String),
     Object {
-        /// The source expression (same grammars as the string
-        /// form).
         source: String,
-        /// Optional default value when the source resolves to
-        /// nothing (missing capture, empty body).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         default: Option<String>,
     },
 }
 
-impl ResultWireSpec {
-    /// Pull the source expression regardless of which
-    /// variant the user wrote.
+impl LegacyResultWireSpec {
     pub fn source(&self) -> &str {
         match self {
-            ResultWireSpec::String(s) => s,
-            ResultWireSpec::Object { source, .. } => source,
+            LegacyResultWireSpec::String(s) => s,
+            LegacyResultWireSpec::Object { source, .. } => source,
         }
     }
+}
+
+impl ResultSpec {
+    /// Walk the spec tree (handling list-shape recursion)
+    /// and yield every (wire-name, source-expr) pair the
+    /// spec ultimately declares.
+    ///
+    /// For map-shape entries, the source is whatever the
+    /// user wrote (`count` / `ok` / path-expr / GK expr).
+    /// For string-shape entries, the source is the entire
+    /// GK block — the caller compiles it as a unit and
+    /// extracts wire names from the LHS of each `:=`
+    /// assignment.
+    pub fn walk_fragments<F: FnMut(ResultFragment<'_>)>(&self, mut on: F) {
+        self.walk_fragments_inner(&mut on);
+    }
+
+    fn walk_fragments_inner<F: FnMut(ResultFragment<'_>)>(&self, on: &mut F) {
+        match self {
+            ResultSpec::String(s) => on(ResultFragment::Source(s)),
+            ResultSpec::List(items) => {
+                for item in items {
+                    item.walk_fragments_inner(on);
+                }
+            }
+            ResultSpec::Map(entries) => {
+                for (name, source) in entries {
+                    on(ResultFragment::Named { name, source });
+                }
+            }
+        }
+    }
+
+    /// True when the spec declares no wires. Used by the
+    /// wrapper-trigger to skip wrapping when `result:` was
+    /// explicitly empty.
+    pub fn is_empty(&self) -> bool {
+        match self {
+            ResultSpec::String(s) => s.trim().is_empty(),
+            ResultSpec::List(items) => items.iter().all(|i| i.is_empty()),
+            ResultSpec::Map(entries) => entries.is_empty(),
+        }
+    }
+}
+
+/// One step of `ResultSpec::walk_fragments`. Either a
+/// string-shape source block (compile as a GK module) or a
+/// map-shape `(name, source)` pair (compile as a single
+/// `name := source` binding).
+pub enum ResultFragment<'a> {
+    Source(&'a str),
+    Named { name: &'a str, source: &'a str },
 }
 
 impl ParsedOp {
@@ -986,7 +1093,8 @@ impl ParsedOp {
             condition: None,
             delay: None,
             metrics: HashMap::new(),
-            result: HashMap::new(),
+            result: None,
+            wrappers: None,
         }
     }
 }

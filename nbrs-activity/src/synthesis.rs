@@ -307,16 +307,24 @@ impl OpBuilder {
         for (node_idx, port_idx, value) in &self.init_overrides {
             fb.state().seed_node_buffer(*node_idx, *port_idx, value.clone());
         }
-        // SRD-13d Phase 9 — instance every per-op-template kernel
-        // bound to this fiber's main kernel via `bind_outer_scope`
-        // (SRD-13c §"Per-Scope Canonical Kernel Cache" cache-and-
-        // rebind primitive). Construction-time bind copies the
-        // current values of parent constants into the op-template
-        // kernel's extern slots; per-cycle inputs (`cycle`) are
-        // set on each kernel directly via `FiberBuilder::set_inputs`.
+        // SRD-13d Phase 9 + SRD-67 Phase 3 — instance every per-
+        // op-template kernel bound to this fiber's main kernel.
+        // The `bind_program_under_parent` helper wraps the
+        // `from_program → bind_outer_scope` sequence (SRD-13c
+        // §"Per-Scope Canonical Kernel Cache" cache-and-rebind
+        // primitive) so the post-bind dance below — scope-value
+        // reapplication, init-pull post-bind — sits behind a
+        // single typed entry point. Construction-time bind copies
+        // the current values of parent constants into the op-
+        // template kernel's extern slots; per-cycle inputs
+        // (`cycle`) are set on each kernel directly via
+        // `FiberBuilder::set_inputs`.
         for (op_name, program) in &self.op_template_programs {
-            let mut op_kernel = GkKernel::from_program(program.clone());
-            op_kernel.bind_outer_scope(&fb.main_kernel);
+            let mut op_kernel = nbrs_variates::subcontext::bind_program_under_parent(
+                &fb.main_kernel,
+                program.clone(),
+                Vec::new(),
+            );
             // Apply scope-bound values to op-template kernel by
             // name. Each op-template kernel has its own input
             // layout (lazy-cascade extern emission, workload-
@@ -683,7 +691,7 @@ pub(crate) fn parse_byte_size(s: &str) -> Option<usize> {
 impl FiberBuilder {
     /// Create a new fiber builder from a shared GK program.
     pub fn new(program: Arc<GkProgram>) -> Self {
-        let main_kernel = GkKernel::from_program(program);
+        let main_kernel = nbrs_variates::subcontext::instance_program(program);
         Self {
             main_kernel,
             op_template_kernels: std::collections::HashMap::new(),
@@ -824,6 +832,47 @@ impl FiberBuilder {
         } else {
             false
         }
+    }
+
+    /// SRD-67 Phase 5 — write a value into a specific op-template
+    /// kernel's input slot by name. No-op when (a) the op didn't
+    /// materialise a kernel (flattened op-template), or (b) the
+    /// kernel doesn't declare an input slot for `name` (the
+    /// closure-binding economy dropped it because the source
+    /// doesn't reference it).
+    ///
+    /// Used by the activity loop's post-`execute` step to feed
+    /// SRD-66 result-binding inputs (`body` / `count` / `ok` and
+    /// any captures) into the op-template kernel before
+    /// [`Self::commit_op_template_write_throughs`] fans the
+    /// computed values up through parent `shared` cells.
+    pub fn write_op_template_input(
+        &mut self,
+        op_name: &str,
+        name: &str,
+        value: Value,
+    ) -> bool {
+        let Some(kernel) = self.op_template_kernels.get_mut(op_name) else {
+            return false;
+        };
+        let Some(idx) = kernel.program().find_input(name) else {
+            return false;
+        };
+        kernel.state().set_input(idx, value);
+        true
+    }
+
+    /// SRD-67 Phase 5 — invoke the op-template kernel's Rule 2
+    /// write-through commit, propagating each result-binding LHS
+    /// value to the parent's `SharedCell` (and from there to any
+    /// sibling phase that imports the same name). No-op when the
+    /// op's kernel carries no write-throughs (the typical case
+    /// for ops without `result:`).
+    pub fn commit_op_template_write_throughs(&mut self, op_name: &str) {
+        let Some(kernel) = self.op_template_kernels.get_mut(op_name) else {
+            return;
+        };
+        kernel.commit_write_throughs();
     }
 
     /// Materialize a [`PullPlan`] against this fiber's main GkState.

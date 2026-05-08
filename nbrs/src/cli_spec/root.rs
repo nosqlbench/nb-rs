@@ -32,6 +32,7 @@ pub fn root() -> Command {
             crate::describe::spec(),
             crate::bench::spec(),
             crate::replay::spec(),
+            crate::checkpoint_cmd::spec(),
             crate::daemon::spec(),
             crate::plot::spec(),
             crate::completion::spec(),

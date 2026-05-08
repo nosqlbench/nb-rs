@@ -561,6 +561,23 @@ pub struct Activity {
     /// [`crate::fiber_pool::ConcurrencyApplier`] so runtime writes
     /// resize the fiber pool.
     pub component: Option<Arc<std::sync::RwLock<nbrs_metrics::component::Component>>>,
+    /// SRD-32a Push 3 — workload-root wrapper-composition
+    /// override. When populated (from the workload's
+    /// `wrappers: { order: [...] }` block), every op
+    /// template that doesn't carry its own
+    /// per-template override uses this innermost-to-outermost
+    /// list as its composition order. Validated against the
+    /// per-op triggered set at cascade time; mismatch is a
+    /// hard error per SRD-32a §"Workload-level override".
+    pub wrappers_override: Option<Vec<String>>,
+    /// SRD-32a Push 3 — CLI `--wrap-default-order` override.
+    /// Replaces the resolver's built-in `DEFAULT_ORDER`
+    /// tiebreaker for this activity. `None` ⇒ resolver uses
+    /// the built-in order. Distinct from
+    /// `wrappers_override`: that pins the per-op stack;
+    /// this changes the tiebreaker used when constraints
+    /// leave order ambiguous.
+    pub wrap_default_order: Option<Vec<String>>,
 }
 
 /// Invoke [`DriverAdapter::declare_controls`] for each unique adapter
@@ -656,7 +673,26 @@ impl Activity {
             stop_reason: Arc::new(std::sync::Mutex::new(None)),
             validation_frame: Arc::new(std::sync::Mutex::new(None)),
             component: None,
+            wrappers_override: None,
+            wrap_default_order: None,
         }
+    }
+
+    /// SRD-32a Push 3 — set the workload-root wrapper-
+    /// composition override on this activity. Pass `None` to
+    /// clear; pass `Some(order)` to install. The order list
+    /// is innermost-to-outermost; per-op `wrappers:` blocks
+    /// shadow this entry entirely.
+    pub fn set_wrappers_override(&mut self, order: Option<Vec<String>>) {
+        self.wrappers_override = order;
+    }
+
+    /// SRD-32a Push 3 — set the resolver's default-order
+    /// tiebreaker for this activity (CLI
+    /// `--wrap-default-order`). `None` ⇒ the resolver uses
+    /// its built-in `DEFAULT_ORDER` list.
+    pub fn set_wrap_default_order(&mut self, order: Option<Vec<String>>) {
+        self.wrap_default_order = order;
     }
 
     /// Attach this activity to its component in the session tree.
@@ -784,6 +820,43 @@ impl Activity {
         let traversal_stats = Arc::new(crate::wrappers::TraversalStats {
             metrics: activity.metrics.clone(),
         });
+
+        // SRD-32a — wrapper registry + resolver. The
+        // registry is fixed at link time (every `inventory::
+        // submit!` block in the binary contributes one
+        // entry); the resolver carries the validated
+        // default-order tiebreaker. Both are built once
+        // here and reused for every op template in this
+        // activity.
+        let wrapper_registry =
+            crate::wrapper_registry::WrapperRegistry::from_inventory();
+        // SRD-32a Push 3 — CLI `--wrap-default-order` replaces
+        // the resolver's built-in tiebreaker. When unset, the
+        // resolver builds with its DEFAULT_ORDER. The CLI list
+        // is validated against the constraint graph at
+        // construction; an inconsistent list aborts the run.
+        let wrapper_resolver = match &activity.wrap_default_order {
+            Some(order) => {
+                let names: Vec<&str> = order.iter().map(|s| s.as_str()).collect();
+                crate::wrapper_resolver::WrapperResolver::from_names(
+                    &names, &wrapper_registry,
+                )
+            }
+            None => crate::wrapper_resolver::WrapperResolver
+                ::with_default_order(&wrapper_registry),
+        };
+        let wrapper_resolver = match wrapper_resolver {
+            Ok(r) => r,
+            Err(e) => {
+                crate::diag!(crate::observer::LogLevel::Error,
+                    "error: wrapper default-order is inconsistent with the \
+                     registered wrapper graph: {e}. CLI `--wrap-default-order` \
+                     and the built-in default both must satisfy every \
+                     registered constraint.");
+                return true;
+            }
+        };
+
         let mut dispensers: Vec<Arc<dyn OpDispenser>> = Vec::new();
         let mut validation_metrics: Vec<Arc<validation::ValidationMetrics>> = Vec::new();
         // SRD-40b §6/§7 — one `Component` per **op dispenser**
@@ -909,19 +982,62 @@ impl Activity {
                     return true; // stop — misconfiguration
                 }
             }
+
+            // SRD-32a Push 2 — field ownership and misplaced-
+            // field guard. The wrapper registry knows which
+            // `params:` keys each wrapper consumes
+            // (`owned_fields`) and what makes the wrapper
+            // trigger. A field that's owned by a wrapper that
+            // ISN'T triggered is misplaced — silently ignoring
+            // it would mask a typo or a half-applied
+            // configuration. Example: `poll_interval_ms: 5000`
+            // on an op without `poll:` is a misconfiguration —
+            // the operator probably meant to enable polling
+            // but forgot the trigger.
+            //
+            // The closed-vocabulary check above catches "I
+            // don't recognise this key at all"; THIS check
+            // catches "I recognise the key but it has no effect
+            // here." Both surface as hard errors.
+            //
+            // Note: we cross-check against `template.params`
+            // for keys. The registry's owned_fields includes
+            // a few names that live elsewhere on `ParsedOp`
+            // (`if` → `template.condition`, `delay` →
+            // `template.delay`); those happen to BE their
+            // wrapper's trigger field too, so when set the
+            // outer `(reg.triggers)(template)` short-circuits
+            // and we never reach the params-key check for
+            // them. The set is small enough that we don't
+            // need a separate "where does this field live"
+            // helper.
+            {
+                let violations = wrapper_registry.misplaced_fields(
+                    template,
+                    |field| template.params.contains_key(field),
+                );
+                if !violations.is_empty() {
+                    for (wrapper, field) in &violations {
+                        crate::diag!(crate::observer::LogLevel::Error,
+                            "error: op '{}': field `{field}` is owned by wrapper \
+                             `{wrapper}`, but the trigger condition for `{wrapper}` \
+                             is not satisfied (no trigger field set on this op). \
+                             Either remove `{field}` or add the wrapper's trigger \
+                             field. SRD-32a §\"Field ownership and parse-time \
+                             validation\".",
+                            template.name);
+                    }
+                    return true; // stop — misconfiguration
+                }
+            }
+
             match adapter.map_op(template) {
                 Ok(d) => {
                     let raw = Arc::from(d);
-                    // Wrap with traversal (innermost). Traversal
-                    // does not read GK values; no fixture
-                    // registration needed.
-                    let traversed = crate::wrappers::TraversingDispenser::wrap(
-                        raw, template, traversal_stats.clone(),
-                    );
 
                     // Open the per-template scope fixture (SRD 32
                     // §"Init-Time Fixture and Consumer Self-
-                    // Registration"). Each consumer below registers
+                    // Registration"). Each wrapper below registers
                     // its own GK name dependencies; the fixture is
                     // sealed after the wrapper chain is complete and
                     // the resulting PullPlan drives cycle-time reads.
@@ -936,185 +1052,240 @@ impl Activity {
                     let template_program = op_builder.program_for_op(&template.name);
                     let mut fx = crate::fixture::ScopeFixture::new(template_program.clone());
 
-                    // Wrap with delay — only if template has `delay:`
-                    let throttled = if let Some(ref delay_name) = template.delay {
-                        let name = delay_name.trim()
-                            .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
-                            .unwrap_or(delay_name.trim());
-                        match crate::wrappers::ThrottleDispenser::wrap(traversed, name, &mut fx) {
-                            Ok(d) => d,
-                            Err(e) => {
-                                crate::diag!(crate::observer::LogLevel::Error,
-                                    "error: op '{}': {e}", template.name);
-                                return true;
-                            }
+                    // SRD-32a — resolve which wrappers fire and
+                    // in what order. The plan is innermost-first;
+                    // `traverse` is always inner. The cascade
+                    // below dispatches to the existing per-
+                    // wrapper `wrap()` factory based on the plan
+                    // entries' names. Plan order matches the
+                    // built-in default order, which mirrors the
+                    // pre-SRD-32a hand-rolled cascade — existing
+                    // tests exercise the same composition.
+                    //
+                    // SRD-32a Push 3 — override precedence:
+                    //   1. Per-op `template.wrappers.order` shadows everything else.
+                    //   2. Else workload-root `activity.wrappers_override`.
+                    //   3. Else the resolver's default-order tiebreaker.
+                    // Per-op shadows root entirely (no merge).
+                    let per_op_override = template.wrappers.as_ref()
+                        .filter(|c| !c.order.is_empty())
+                        .map(|c| c.order.clone());
+                    let effective_override = per_op_override
+                        .or_else(|| activity.wrappers_override.clone());
+                    let plan = match effective_override {
+                        Some(order) => {
+                            let order_strs: Vec<&str> = order.iter()
+                                .map(|s| s.as_str()).collect();
+                            wrapper_resolver.resolve_with_order(
+                                template, &wrapper_registry, &order_strs)
                         }
-                    } else {
-                        traversed
+                        None => wrapper_resolver.resolve(template, &wrapper_registry),
                     };
-                    // Wrap with validation — only if template declares it
-                    let (validated, vm) = match crate::validation::ValidatingDispenser::wrap(
-                        throttled, template, &activity.labels, Some(&program), &mut fx,
-                    ) {
-                        Ok(pair) => pair,
+                    let plan = match plan {
+                        Ok(p) => p,
                         Err(e) => {
                             crate::diag!(crate::observer::LogLevel::Error,
-                                "error: op '{}': {e}", template.name);
-                            return true; // stop — misconfiguration
+                                "error: op '{}': wrapper resolution failed: {e}",
+                                template.name);
+                            return true;
                         }
-                    };
-                    if let Some(vm) = vm {
-                        validation_metrics.push(vm);
-                    }
-                    // Wrap with polling — only if template
-                    // has `poll: await_empty`. Polling is
-                    // applied BEFORE the `if:` conditional
-                    // so a false condition skips the polling
-                    // apparatus entirely (no per-interval
-                    // wakeups, no "polling enabled"
-                    // diagnostic, no timeout countdown). This
-                    // matches operator intent: an op gated
-                    // by `if: cql_dialect == 'cndb'` shouldn't
-                    // contribute polling cost on a Cassandra
-                    // 5 cluster.
-                    let polled = if template.params.get("poll")
-                        .and_then(|v| v.as_str()).is_some()
-                    {
-                        let interval = template.params.get("poll_interval_ms")
-                            .and_then(|v| v.as_str().and_then(|s| s.parse().ok())
-                                .or_else(|| v.as_u64()))
-                            .unwrap_or(1000);
-                        let timeout = template.params.get("timeout_ms")
-                            .and_then(|v| v.as_str().and_then(|s| s.parse().ok())
-                                .or_else(|| v.as_u64()))
-                            .unwrap_or(300_000);
-                        // SRD-03 §"Status-Determination Invariant
-                        // — Retries Within": bounded retry budget
-                        // for retryable inner errors. Default 0
-                        // (strict — first error fails the poll).
-                        // Operators set `poll_max_error_retries:
-                        // N` on the op when transient blips
-                        // during a long fixture readiness check
-                        // are expected.
-                        let max_error_retries = template.params.get("poll_max_error_retries")
-                            .and_then(|v| v.as_str().and_then(|s| s.parse::<u32>().ok())
-                                .or_else(|| v.as_u64().map(|n| n as u32)))
-                            .unwrap_or(0);
-                        let metric_name = template.params.get("poll_metric_name")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let (dispenser, poll_metrics) =
-                            crate::wrappers::PollingDispenser::wrap(
-                                validated, interval, timeout, max_error_retries, metric_name,
-                            );
-                        crate::diag!(crate::observer::LogLevel::Debug,
-                            "  op '{}': polling enabled (interval={}ms, timeout={}ms, max_error_retries={})",
-                            template.name, interval, timeout, max_error_retries);
-                        let _ = poll_metrics; // metrics accessible via Arc if needed
-                        dispenser
-                    } else {
-                        validated
-                    };
-                    // Wrap with condition check (outermost
-                    // op-template-level wrapper). When the
-                    // template has an `if:` clause, the
-                    // conditional dispenser short-circuits
-                    // before any inner work fires — including
-                    // the polling wakeup loop above. This
-                    // ordering is load-bearing: polling
-                    // outside `if:` would emit per-interval
-                    // ticks even when the condition was false
-                    // (the per-tick body inner-skipped, but
-                    // the polling apparatus still ran for the
-                    // full timeout).
-                    let final_dispenser = if let Some(ref cond) = template.condition {
-                        let cond_name = cond.trim()
-                            .strip_prefix('{').and_then(|s| s.strip_suffix('}'))
-                            .unwrap_or(cond.trim());
-                        match crate::wrappers::ConditionalDispenser::wrap(
-                            polled, cond_name, activity.metrics.clone(), &mut fx,
-                        ) {
-                            Ok(d) => d,
-                            Err(e) => {
-                                crate::diag!(crate::observer::LogLevel::Error,
-                                    "error: op '{}': {e}", template.name);
-                                return true;
-                            }
-                        }
-                    } else {
-                        polled
-                    };
-                    // Wrap with emit — prints result JSON.
-                    let emitted = if template.params.get("emit")
-                        .and_then(|v| v.as_bool().or_else(|| v.as_str().map(|s| s == "true")))
-                        .unwrap_or(false)
-                    {
-                        crate::wrappers::EmitDispenser::wrap(final_dispenser, &template.name)
-                    } else {
-                        final_dispenser
                     };
 
-                    // SRD-40b §5: result-as-GK adapter — exposes
-                    // captured result fields to the op's GK
-                    // scope via `OpResult.captures` so metric
-                    // expressions (and any later wrappers) can
-                    // reference them by name. No-op when the
-                    // op declares no `result:` wires.
-                    let with_result = crate::wrappers::ResultDispenser::wrap(
-                        emitted, &template.result,
+                    // SRD-32a §"Composition telemetry" — emit one
+                    // Info-level line per assigned wrapper so
+                    // operators can see, at session start, exactly
+                    // which wrappers shape each op and how. Trivial
+                    // wrappers (e.g. always-on `traverse`) return
+                    // `None` from `describe_assignment` and are
+                    // dropped from this list.
+                    let assignments: Vec<(crate::wrapper_registry::WrapperName, String)> = plan
+                        .iter_innermost_first()
+                        .filter_map(|reg| {
+                            (reg.describe_assignment)(template).map(|s| (reg.name, s))
+                        })
+                        .collect();
+                    if !assignments.is_empty() {
+                        crate::diag!(crate::observer::LogLevel::Info,
+                            "op '{}' wrappers (innermost → outermost):", template.name);
+                        for (i, (_, line)) in assignments.iter().enumerate() {
+                            crate::diag!(crate::observer::LogLevel::Info,
+                                "  {}. {}", i + 1, line);
+                        }
+                    }
+
+                    // Wrap with traversal (innermost). Traversal
+                    // does not read GK values; no fixture
+                    // registration needed. Always present per
+                    // the registry's always-true trigger.
+                    let mut current: Arc<dyn OpDispenser> = crate::wrappers::TraversingDispenser::wrap(
+                        raw, template, traversal_stats.clone(),
                     );
 
-                    // SRD-40b §6: MetricsDispenser — outermost
-                    // synthetic-metric publication wrapper.
-                    // The `Component` here is the dispenser's
-                    // own component (child of the activity
-                    // component) carrying `op=<template.name>`
-                    // — one per dispenser, NOT per cycle. The
-                    // family-name registry collision check
-                    // (§7.2) lives on this component, so two
-                    // ops in the same phase declaring the same
-                    // family produce different cells (their
-                    // `op=` label differs).
-                    let with_metrics = if !template.metrics.is_empty() {
-                        let labels = nbrs_metrics::labels::Labels::of("op", &template.name);
-                        let dispenser_component = std::sync::Arc::new(std::sync::RwLock::new(
-                            nbrs_metrics::component::Component::new(
-                                labels, std::collections::HashMap::new(),
-                            )
-                        ));
-                        if let Some(parent) = activity.component.as_ref() {
-                            nbrs_metrics::component::attach(parent, &dispenser_component);
-                        }
-                        let wrapped = {
-                            let mut guard = dispenser_component.write()
-                                .unwrap_or_else(|e| e.into_inner());
-                            match crate::wrappers::MetricsDispenser::wrap(
-                                with_result.clone(), &template.metrics, &mut guard, &mut fx,
-                            ) {
-                                Ok(d) => d,
-                                Err(e) => {
-                                    crate::diag!(crate::observer::LogLevel::Error,
-                                        "error: op '{}': {e}", template.name);
-                                    return true;
+                    // Apply each remaining wrapper in plan order.
+                    // Skip `traverse`; it's already constructed.
+                    for reg in plan.iter_innermost_first() {
+                        if reg.name == crate::wrapper_registrations::TRAVERSE { continue; }
+                        let stop = match reg.name {
+                            crate::wrapper_registrations::THROTTLE => {
+                                let raw_name = template.delay.as_deref()
+                                    .expect("throttle triggered → delay set");
+                                let name = raw_name.trim()
+                                    .strip_prefix('{')
+                                    .and_then(|s| s.strip_suffix('}'))
+                                    .unwrap_or(raw_name.trim());
+                                match crate::wrappers::ThrottleDispenser::wrap(current.clone(), name, &mut fx) {
+                                    Ok(d) => { current = d; false }
+                                    Err(e) => {
+                                        crate::diag!(crate::observer::LogLevel::Error,
+                                            "error: op '{}': {e}", template.name);
+                                        true
+                                    }
                                 }
                             }
+                            crate::wrapper_registrations::VALIDATE => {
+                                match crate::validation::ValidatingDispenser::wrap(
+                                    current.clone(), template, &activity.labels, Some(&program), &mut fx,
+                                ) {
+                                    Ok((d, vm)) => {
+                                        if let Some(vm) = vm { validation_metrics.push(vm); }
+                                        current = d;
+                                        false
+                                    }
+                                    Err(e) => {
+                                        crate::diag!(crate::observer::LogLevel::Error,
+                                            "error: op '{}': {e}", template.name);
+                                        true
+                                    }
+                                }
+                            }
+                            crate::wrapper_registrations::POLL => {
+                                let interval = template.params.get("poll_interval_ms")
+                                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok())
+                                        .or_else(|| v.as_u64()))
+                                    .unwrap_or(1000);
+                                let timeout = template.params.get("timeout_ms")
+                                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok())
+                                        .or_else(|| v.as_u64()))
+                                    .unwrap_or(300_000);
+                                // SRD-03 §"Status-Determination
+                                // Invariant — Retries Within": bounded
+                                // retry budget for retryable inner
+                                // errors. Default 0 (strict). Operators
+                                // raise this when long fixture readiness
+                                // checks tolerate transient blips.
+                                let max_error_retries = template.params.get("poll_max_error_retries")
+                                    .and_then(|v| v.as_str().and_then(|s| s.parse::<u32>().ok())
+                                        .or_else(|| v.as_u64().map(|n| n as u32)))
+                                    .unwrap_or(0);
+                                let metric_name = template.params.get("poll_metric_name")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+                                let (d, _pm) = crate::wrappers::PollingDispenser::wrap(
+                                    current.clone(), interval, timeout, max_error_retries, metric_name,
+                                );
+                                crate::diag!(crate::observer::LogLevel::Debug,
+                                    "  op '{}': polling enabled (interval={}ms, timeout={}ms, max_error_retries={})",
+                                    template.name, interval, timeout, max_error_retries);
+                                current = d;
+                                false
+                            }
+                            crate::wrapper_registrations::IF_COND => {
+                                // `if:` short-circuits before the
+                                // inner cascade — load-bearing for
+                                // the recent fix that pulls polling
+                                // inside `if`. Resolver order
+                                // mirrors that.
+                                let cond = template.condition.as_deref()
+                                    .expect("if triggered → condition set");
+                                let cond_name = cond.trim()
+                                    .strip_prefix('{')
+                                    .and_then(|s| s.strip_suffix('}'))
+                                    .unwrap_or(cond.trim());
+                                match crate::wrappers::ConditionalDispenser::wrap(
+                                    current.clone(), cond_name, activity.metrics.clone(), &mut fx,
+                                ) {
+                                    Ok(d) => { current = d; false }
+                                    Err(e) => {
+                                        crate::diag!(crate::observer::LogLevel::Error,
+                                            "error: op '{}': {e}", template.name);
+                                        true
+                                    }
+                                }
+                            }
+                            crate::wrapper_registrations::EMIT => {
+                                current = crate::wrappers::EmitDispenser::wrap(current.clone(), &template.name);
+                                false
+                            }
+                            crate::wrapper_registrations::RESULT => {
+                                // SRD-40b §5: result-as-GK adapter —
+                                // exposes captured result fields to
+                                // the op's GK scope via
+                                // `OpResult.captures` so metric
+                                // expressions (and any later wrappers)
+                                // can reference them by name. No-op
+                                // when the op declares no `result:`
+                                // wires.
+                                current = crate::wrappers::ResultDispenser::wrap(current.clone(), template.result.as_ref());
+                                false
+                            }
+                            crate::wrapper_registrations::METRICS => {
+                                // SRD-40b §6/§7 — one `Component`
+                                // per dispenser carrying
+                                // `op=<template.name>` so the
+                                // duplicate-family check sees one
+                                // dimensional cell per dispenser
+                                // and child ops collide cleanly on
+                                // their `op=` label.
+                                let labels = nbrs_metrics::labels::Labels::of("op", &template.name);
+                                let dispenser_component = std::sync::Arc::new(std::sync::RwLock::new(
+                                    nbrs_metrics::component::Component::new(
+                                        labels, std::collections::HashMap::new(),
+                                    )
+                                ));
+                                if let Some(parent) = activity.component.as_ref() {
+                                    nbrs_metrics::component::attach(parent, &dispenser_component);
+                                }
+                                let wrap_result = {
+                                    let mut guard = dispenser_component.write()
+                                        .unwrap_or_else(|e| e.into_inner());
+                                    crate::wrappers::MetricsDispenser::wrap(
+                                        current.clone(), &template.metrics, &mut guard, &mut fx,
+                                    )
+                                };
+                                match wrap_result {
+                                    Ok(d) => {
+                                        // Mark the dispenser
+                                        // component Running so the
+                                        // cadence reporter's
+                                        // `capture_tree` walk visits
+                                        // it on every tick.
+                                        dispenser_component
+                                            .write()
+                                            .unwrap_or_else(|e| e.into_inner())
+                                            .set_state(nbrs_metrics::component::ComponentState::Running);
+                                        dispenser_components.push(dispenser_component);
+                                        current = d;
+                                        false
+                                    }
+                                    Err(e) => {
+                                        crate::diag!(crate::observer::LogLevel::Error,
+                                            "error: op '{}': {e}", template.name);
+                                        true
+                                    }
+                                }
+                            }
+                            other => {
+                                crate::diag!(crate::observer::LogLevel::Error,
+                                    "error: op '{}': resolver returned wrapper `{}` \
+                                     with no dispatch handler in the cascade",
+                                    template.name, other);
+                                true
+                            }
                         };
-                        // Mark the dispenser component Running so
-                        // the cadence reporter's `capture_tree`
-                        // walk visits it on every tick. Without
-                        // this the synthetic metrics registered
-                        // above would never reach `metrics.db`.
-                        dispenser_component
-                            .write()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .set_state(nbrs_metrics::component::ComponentState::Running);
-                        dispenser_components.push(dispenser_component);
-                        wrapped
-                    } else {
-                        with_result
-                    };
+                        if stop { return true; }
+                    }
 
-                    dispensers.push(with_metrics);
+                    dispensers.push(current);
 
                     // Seal the per-template fixture. The PullPlan
                     // drives cycle-time reads for every wrapper that
@@ -2002,9 +2173,27 @@ async fn executor_task(
                 if success {
                     activity.metrics.successes_total.inc();
                     activity.metrics.result_success_time.record(service_nanos);
+                    // SRD-67 Phase 5 — captures route to BOTH
+                    // the fiber's main kernel (legacy path) AND
+                    // the per-op-template kernel when one was
+                    // materialised. The op-template kernel is the
+                    // one that carries result-binding extern
+                    // slots for `body` / `count` / `ok` plus any
+                    // user captures the result-bindings reference,
+                    // and Rule 2 write-throughs feed values up
+                    // through parent `shared` cells. Slots that
+                    // don't exist on either kernel are silently
+                    // dropped (closure-binding economy).
                     for (name, value) in captures {
-                        fiber.capture(&name, value);
+                        fiber.capture(&name, value.clone());
+                        fiber.write_op_template_input(&template.name, &name, value);
                     }
+                    // Fire the Rule 2 write-through commit on the
+                    // op-template kernel — pulls every
+                    // `__write_<X>` and stores its value through
+                    // the cell-bound input slot for `<X>`. No-op
+                    // when the kernel carries no write-throughs.
+                    fiber.commit_op_template_write_throughs(&template.name);
                 }
             }
 

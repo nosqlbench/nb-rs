@@ -48,6 +48,23 @@ pub struct ExecCtx {
     /// binding.
     pub cli_readout_override: Option<String>,
     pub workload_params: HashMap<String, String>,
+    /// SRD-32a Push 3 — workload-root wrapper-composition
+    /// override. Innermost-to-outermost list, threaded
+    /// through to each phase's Activity construction.
+    /// `None` ⇒ activities use the resolver's built-in
+    /// default-order tiebreaker.
+    pub wrappers_override: Option<Vec<String>>,
+    /// SRD-32a Push 3 — CLI `--wrap-default-order` override.
+    /// Innermost-to-outermost list that REPLACES the
+    /// resolver's built-in `DEFAULT_ORDER` tiebreaker for
+    /// this run. Validated against the constraint graph at
+    /// resolver construction; a malformed list aborts the
+    /// session at activity start. Distinct from
+    /// `wrappers_override`: that pins the per-op stack
+    /// directly (must be a permutation of triggered
+    /// wrappers); this only changes the tiebreaker the
+    /// resolver uses when constraints leave order ambiguous.
+    pub wrap_default_order: Option<Vec<String>>,
     pub program: Arc<nbrs_variates::kernel::GkProgram>,
     pub gk_lib_paths: Vec<PathBuf>,
     pub workload_dir: Option<PathBuf>,
@@ -446,6 +463,7 @@ fn execute_node<'a>(
                     return dispatch_comprehension(
                         ctx, steps,
                         TerminalAction::Phase(name), depth + 1, false,
+                        "for_each",
                     ).await
                         .map_err(|e| enrich_with_yaml_location(ctx, &needle, e));
                 } else {
@@ -483,9 +501,21 @@ fn execute_node<'a>(
                         let steps = runtime_iterate(
                             ctx, &canonical, &parent, &parent_coords, clauses, filter, order, None,
                         ).map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?;
+                        // Single-clause Cartesian = `for_each`
+                        // (one iter var per step); multi-clause
+                        // Cartesian = `for_combinations` (full
+                        // dependent-tuple product). The SRD-44a
+                        // discriminator surface tracks that
+                        // distinction explicitly.
+                        let kind = if clauses.len() == 1 {
+                            "for_each"
+                        } else {
+                            "for_combinations"
+                        };
                         return dispatch_comprehension(
                             ctx, steps,
                             TerminalAction::Children(children), depth + 1, false,
+                            kind,
                         ).await
                             .map_err(|e| enrich_with_yaml_location(ctx, &needle, e));
                     }
@@ -514,9 +544,22 @@ fn execute_node<'a>(
                                 ctx, &canonical, &parent, &parent_coords, sub, filter, order,
                                 Some((i, total)),
                             ).map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?;
+                            // for_each_union sub-spaces are
+                            // for_each / for_combinations bodies
+                            // sequenced under a `union` envelope
+                            // (SRD-18e). Tag each iteration with
+                            // its sub-space's intrinsic shape so
+                            // the JSONL log discriminates the same
+                            // way a non-union comprehension would.
+                            let union_kind = if sub.len() == 1 {
+                                "for_each"
+                            } else {
+                                "for_combinations"
+                            };
                             dispatch_comprehension(
                                 ctx, steps,
                                 TerminalAction::Children(children), depth + 1, false,
+                                union_kind,
                             ).await
                                 .map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?;
                         }
@@ -693,6 +736,7 @@ fn dispatch_comprehension<'a>(
     terminal: TerminalAction<'a>,
     depth: usize,
     sequential_only: bool,
+    kind: &'static str,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
     use crate::scheduler::ConcurrencyLimit;
     Box::pin(async move {
@@ -712,7 +756,7 @@ fn dispatch_comprehension<'a>(
 
         if serial {
             for step in &steps {
-                run_one_iteration(ctx, step, &terminal, depth).await?;
+                run_one_iteration(ctx, step, &terminal, depth, kind).await?;
             }
             return Ok(());
         }
@@ -753,7 +797,7 @@ fn dispatch_comprehension<'a>(
             set.spawn(async move {
                 let _permit = permit;
                 let terminal = owned_terminal.borrow();
-                run_one_iteration(&mut task_ctx, &step, &terminal, depth).await
+                run_one_iteration(&mut task_ctx, &step, &terminal, depth, kind).await
             });
         }
 
@@ -882,11 +926,15 @@ async fn run_do_loop(
 
     // Persistent loop kernel: one fork from the do-loop scope's
     // canonical program, bound once from the parent. Lives for
-    // the loop's whole duration.
-    let mut loop_kernel = nbrs_variates::kernel::GkKernel::from_program(
+    // the loop's whole duration. SRD-67 Phase 3 — route the
+    // `from_program → bind_outer_scope` sequence through the
+    // typed bridge so the rebind primitive sits behind a single
+    // entry point.
+    let mut loop_kernel = nbrs_variates::subcontext::bind_program_under_parent(
+        &parent,
         canonical.program().clone(),
+        Vec::new(),
     );
-    loop_kernel.bind_outer_scope(&parent);
 
     let mut counter_value: u64 = 0;
     loop {
@@ -928,11 +976,40 @@ async fn run_do_loop(
         let arc_loop = std::sync::Arc::new(std::mem::replace(
             &mut loop_kernel,
             // Placeholder — overwritten on reclaim. Cheap dummy.
-            nbrs_variates::kernel::GkKernel::from_program(canonical.program().clone()),
+            nbrs_variates::subcontext::instance_program(canonical.program().clone()),
         ));
         ctx.current_parent_kernel = Some(arc_loop.clone());
 
+        // SRD-44a Push 3 — emit `scope_enter` for THIS do-loop
+        // iteration. Coords carry the counter binding (when one
+        // is declared); path captures the enclosing scope chain
+        // so resume can locate which loop, in which outer
+        // iteration, was mid-flight on crash.
+        let kind: &'static str = if invert { "do_until" } else { "do_while" };
+        let mut iter_coords = std::collections::BTreeMap::new();
+        if let Some(c) = counter {
+            iter_coords.insert(
+                c.to_string(),
+                serde_json::Value::from(counter_value),
+            );
+        }
+        let path: Vec<std::collections::BTreeMap<String, serde_json::Value>> = arc_loop
+            .scope_coordinates()
+            .iter()
+            .rev()
+            .filter(|c| !c.is_empty())
+            .map(|c| coord_to_btree(c))
+            .collect();
+        if let Some(writer) = ctx.checkpoint_writer.as_ref() {
+            writer.emit_scope_enter(kind, iter_coords.clone(), path.clone());
+        }
+
         let res = execute_tree_at(ctx, children, depth).await;
+
+        if let Some(writer) = ctx.checkpoint_writer.as_ref() {
+            let outcome = if res.is_ok() { "completed" } else { "interrupted" };
+            writer.emit_scope_exit(kind, iter_coords, path, outcome);
+        }
 
         ctx.current_parent_kernel = prior_parent;
         if counter.is_some() { ctx.pop_label(); }
@@ -972,11 +1049,22 @@ async fn run_one_iteration(
     step: &nbrs_variates::comprehension::IterationStep,
     terminal: &TerminalAction<'_>,
     depth: usize,
+    kind: &'static str,
 ) -> Result<(), String> {
     let prior_parent = ctx.current_parent_kernel.take();
     ctx.current_parent_kernel = Some(step.bound_kernel.clone());
     for (var, value) in &step.bindings {
         ctx.push_label(var, &value.to_display_string());
+    }
+
+    // SRD-44a Push 3 — emit `scope_enter` for THIS iteration of
+    // the comprehension. The walker enters one scope per iteration
+    // (each iteration's coordinates pin a unique sub-tree); the
+    // matching `scope_exit` fires on the way out below regardless
+    // of whether the body succeeded.
+    let (enter_coords, enter_path) = scope_event_coords(&step.coord_path);
+    if let Some(writer) = ctx.checkpoint_writer.as_ref() {
+        writer.emit_scope_enter(kind, enter_coords.clone(), enter_path.clone());
     }
 
     // SRD-63 Push 9a: fire `Event::EachStart` for this
@@ -1044,9 +1132,60 @@ async fn run_one_iteration(
         Some(&ctx.sqlite_reporter),
     );
 
+    // SRD-44a Push 3 — mirror `scope_enter` with `scope_exit`,
+    // tagged with the iteration's outcome. `completed` when the
+    // terminal action returned `Ok`, `interrupted` when the body
+    // errored or was unwound (a stop signal propagates as an
+    // `Err` here).
+    if let Some(writer) = ctx.checkpoint_writer.as_ref() {
+        let outcome = if res.is_ok() { "completed" } else { "interrupted" };
+        writer.emit_scope_exit(kind, enter_coords, enter_path, outcome);
+    }
+
     for _ in &step.bindings { ctx.pop_label(); }
     ctx.current_parent_kernel = prior_parent;
     res
+}
+
+/// Translate an `IterationStep`'s root-first coord chain into
+/// the SRD-44a `scope_enter` / `scope_exit` shape: the chain's
+/// last entry becomes the event's `coords` (THIS iteration's
+/// own bindings); everything before it, reversed, becomes the
+/// leaf-first `path` of enclosing scopes' coords.
+///
+/// Empty `ScopeCoord` entries (scenario nodes that own no
+/// comprehension vars) are filtered from `path` so a chain that
+/// passes through a non-iterating scope doesn't render an empty
+/// `{}` on disk — same convention
+/// [`format_scope_coordinate_path`] uses for human display.
+fn scope_event_coords(
+    coord_path: &[nbrs_variates::kernel::ScopeCoord],
+) -> (
+    std::collections::BTreeMap<String, serde_json::Value>,
+    Vec<std::collections::BTreeMap<String, serde_json::Value>>,
+) {
+    let coords = coord_path.last()
+        .map(coord_to_btree)
+        .unwrap_or_default();
+    let path: Vec<_> = if coord_path.len() <= 1 {
+        Vec::new()
+    } else {
+        coord_path[..coord_path.len() - 1]
+            .iter()
+            .rev()
+            .filter(|c| !c.is_empty())
+            .map(coord_to_btree)
+            .collect()
+    };
+    (coords, path)
+}
+
+fn coord_to_btree(
+    coord: &nbrs_variates::kernel::ScopeCoord,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    coord.vars.iter()
+        .map(|(k, v)| (k.clone(), v.to_json_value()))
+        .collect()
 }
 
 /// Empty-bindings sentinel used by `run_phase` when the
@@ -1297,25 +1436,25 @@ async fn run_phase(
             .map(|idx| ctx.scope_tree.nodes[idx].pragmas.clone())
             .unwrap_or_default();
 
-        let mut kernel = if let Some(idx) = phase_idx {
+        // Resolve the phase scope's program (compile-and-cache
+        // on first hit) and rebind it under the parent kernel.
+        // SRD-67 Phase 3 — the `from_program → bind_outer_scope`
+        // pair routes through `bind_program_under_parent` so the
+        // cache-and-rebind primitive sits behind a single typed
+        // entry point.
+        let phase_program = if let Some(idx) = phase_idx {
             let node = &ctx.scope_tree.nodes[idx];
             if let Some(canonical) = node.cached_kernel.get() {
-                // Cache hit: rebind path. Build a fresh kernel
-                // from the canonical's program; the freshly-
-                // allocated state is empty and will be populated
-                // below.
-                nbrs_variates::kernel::GkKernel::from_program(canonical.program().clone())
+                canonical.program().clone()
             } else {
                 // First call for this phase — compile, install
                 // the just-compiled kernel as this scope's
                 // canonical instance (so `lookup_name` can read
-                // its folded constants), then build a fresh
-                // execution kernel from its program for this
-                // iteration. Subsequent iterations all hit the
-                // OnceLock cache hit branch above. The program
-                // is iter-invariant (iter vars flow as wires;
-                // dataset specs interpolate at eval), so the
-                // same program serves every iteration.
+                // its folded constants). Subsequent iterations
+                // all hit the OnceLock cache hit branch above.
+                // The program is iter-invariant (iter vars flow
+                // as wires; dataset specs interpolate at eval),
+                // so the same program serves every iteration.
                 let compiled = crate::bindings::compile_from_scope(
                     &scope,
                     ctx.workload_dir.as_deref(),
@@ -1327,7 +1466,7 @@ async fn run_phase(
                 ).map_err(|e| format!("{gk_context}: {e}"))?;
                 let prog = compiled.program().clone();
                 let _ = node.cached_kernel.set(std::sync::Arc::new(compiled));
-                nbrs_variates::kernel::GkKernel::from_program(prog)
+                prog
             }
         } else {
             // Phase not in the scope tree (shouldn't happen for
@@ -1342,13 +1481,19 @@ async fn run_phase(
                 cursor_limit,
                 &phase_pragmas,
             ).map_err(|e| format!("{gk_context}: {e}"))?
+            .program()
+            .clone()
         };
 
         // Wire inherited values + iter-var values from the
         // parent scope's per-branch kernel via standard GK
         // chain composition. Single call, single source of
         // values — SRD-16 §"Visibility Rules".
-        kernel.bind_outer_scope(parent_kernel);
+        let mut kernel = nbrs_variates::subcontext::bind_program_under_parent(
+            parent_kernel,
+            phase_program,
+            Vec::new(),
+        );
 
         // ─── Plan B: Init-Binding Contract (scope-activation) ─────
         //
@@ -1893,6 +2038,11 @@ async fn run_phase(
     let mut activity = Activity::with_params_and_sigdigs(
         config, &labels, op_sequence, ctx.workload_params.clone(), sigdigs,
     );
+    // SRD-32a Push 3 — propagate the workload-root
+    // wrapper-order override and CLI default-order tiebreaker
+    // from the run context.
+    activity.set_wrappers_override(ctx.wrappers_override.clone());
+    activity.set_wrap_default_order(ctx.wrap_default_order.clone());
     // Wire the phase component back onto the activity so the
     // fiber pool can declare its `concurrency` control here
     // (SRD 23 §"Fiber executor").

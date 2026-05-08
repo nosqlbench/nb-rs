@@ -52,6 +52,25 @@ pub struct GkKernel {
     /// Leaf-first scope-coordinate path. Maintained as an
     /// invariant — see struct docs.
     scope_coords: Vec<super::ScopeCoord>,
+    /// SRD-67 Phase 5 — Rule 2 write-through bindings carried
+    /// alongside the kernel for per-cycle commit. Each entry pairs
+    /// an export name (which the kernel exposes as a cell-bound
+    /// input slot) with the synthetic `__write_<name>` source
+    /// output the rewrite emitted. Empty for the vast majority
+    /// of kernels; populated by the SRD-67 builder when result-
+    /// bindings or `shared` collisions trigger Rule 2.
+    write_throughs: Vec<KernelWriteThrough>,
+}
+
+/// SRD-67 Phase 5 — local data shape of a write-through binding
+/// the kernel carries. Mirrors `subcontext::WriteThroughBinding`
+/// but lives at this layer so [`GkKernel`] avoids a cyclic
+/// dependency on the subcontext module (which already depends on
+/// kernel types).
+#[derive(Debug, Clone)]
+pub struct KernelWriteThrough {
+    pub export_name: String,
+    pub source_output: String,
 }
 
 impl std::fmt::Debug for GkKernel {
@@ -168,6 +187,7 @@ impl GkKernel {
             state,
             constants_folded,
             scope_coords: Vec::new(),
+            write_throughs: Vec::new(),
         };
         k.refresh_scope_coordinates();
         Ok(k)
@@ -217,7 +237,7 @@ impl GkKernel {
     /// §"Cache-and-rebind contract"): a phase scope compiles once,
     /// caches its program, and instantiates a fresh kernel per
     /// `run_phase` call against the cached program.
-    pub fn from_program(program: Arc<GkProgram>) -> Self {
+    pub(crate) fn from_program(program: Arc<GkProgram>) -> Self {
         let mut state = program.create_state();
         // Populate buffers for folded constants so get_constant()
         // works on the new kernel — mirrors the seeding done in
@@ -237,6 +257,7 @@ impl GkKernel {
             state,
             constants_folded: 0, // already folded; see program contents
             scope_coords: Vec::new(),
+            write_throughs: Vec::new(),
         };
         k.refresh_scope_coordinates();
         k
@@ -245,6 +266,59 @@ impl GkKernel {
     /// The shared immutable program.
     pub fn program(&self) -> &Arc<GkProgram> {
         &self.program
+    }
+
+    /// SRD-67 Phase 5 — attach Rule 2 write-through bindings to
+    /// this kernel. Per-cycle eval calls
+    /// [`Self::commit_write_throughs`] after the inputs flowing
+    /// into the result-binding expressions are written; the
+    /// commit walks each binding, pulls its synthetic source
+    /// output, and stores the value back through the cell-bound
+    /// input slot for `export_name`. Because the slot was
+    /// attached to the parent's `SharedCell` at
+    /// `bind_outer_scope` time, the write fans through.
+    ///
+    /// The bridge (`build_kernel_under_parent_full`) sets these
+    /// in one shot at construction; per-cycle code never mutates
+    /// them.
+    pub fn set_write_throughs(&mut self, write_throughs: Vec<KernelWriteThrough>) {
+        self.write_throughs = write_throughs;
+    }
+
+    /// The Rule 2 write-through bindings carried by this kernel.
+    /// Empty for kernels without result-bindings or `shared`
+    /// collisions.
+    pub fn write_throughs(&self) -> &[KernelWriteThrough] {
+        &self.write_throughs
+    }
+
+    /// SRD-67 Phase 5 — per-cycle commit. Pulls each write-
+    /// through's synthetic source output and stores its value
+    /// through the corresponding cell-bound input slot for the
+    /// declared export name. Reads of that name in the parent or
+    /// in sibling kernels share the same cell and observe the
+    /// write on the next read.
+    ///
+    /// No-op when the kernel carries no write-throughs.
+    pub fn commit_write_throughs(&mut self) {
+        if self.write_throughs.is_empty() {
+            return;
+        }
+        // Two-pass: pull each value first (each pull mutates the
+        // state), collect, then write through. Avoids overlapping
+        // borrows on `self.state` / `self.program`.
+        let mut pending: Vec<(usize, Value)> = Vec::with_capacity(self.write_throughs.len());
+        let bindings = self.write_throughs.clone();
+        for wt in &bindings {
+            let Some(idx) = self.program.find_input(&wt.export_name) else {
+                continue;
+            };
+            let value = self.state.pull(&self.program, &wt.source_output).clone();
+            pending.push((idx, value));
+        }
+        for (idx, value) in pending {
+            self.state.set_input(idx, value);
+        }
     }
 
     /// Set source schemas on the program (called by the compiler).
@@ -366,7 +440,7 @@ impl GkKernel {
     ///
     /// Call this after construction, before moving the kernel
     /// into an `OpBuilder`.
-    pub fn bind_outer_scope(&mut self, outer: &GkKernel) {
+    pub(crate) fn bind_outer_scope(&mut self, outer: &GkKernel) {
         for name in outer.program.output_names() {
             let Some(inner_idx) = self.program.find_input(name) else { continue };
             // If outer has a shared cell for this name, share it.

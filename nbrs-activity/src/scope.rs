@@ -788,16 +788,34 @@ pub fn build_do_loop_scope_kernel(
         source.push_str("final __empty := 0\n");
     }
 
-    let mut kernel = nbrs_variates::dsl::compile::compile_gk_with_libs(
-        &source,
-        workload_dir,
-        gk_lib_paths,
-        &[],
-        strict,
+    // SRD-67 Phase 2 — migrate the do-loop synthesiser to the
+    // SubcontextBuilder protocol. The bridge
+    // (`build_kernel_under_parent`) wraps a transient
+    // `ScopeKernel<RootMarker>` around the borrowed parent so
+    // builder-side validation (Rule 1 import resolution, Rule 2
+    // shared-export collision rewrite, FinalShadow) runs against
+    // the parent's program shape, then re-applies
+    // `bind_outer_scope` against the live parent so the child's
+    // input slots pick up real outer-scope values. Any compile-
+    // time failure surfaces as `ContractViolation`; we map it to
+    // the legacy synthesiser's String-error contract.
+    //
+    // `gk_lib_paths` / `workload_dir` / `strict` aren't yet
+    // threaded through the builder bridge (the bridge uses the
+    // default `compile_ast` path inside finalize); this is fine
+    // for the do-loop's current source shape — it emits only
+    // simple `extern <name>: <type>` and `final <name> := <lit>`
+    // lines, no module imports / lib references / strict-mode
+    // hints. If the synthesiser ever emits richer source, the
+    // bridge will need extending. Recorded as a Phase 3 follow-up.
+    let _ = (gk_lib_paths, workload_dir, strict);
+    let mut kernel = nbrs_variates::subcontext::build_kernel_under_parent(
+        parent_kernel,
         context,
-    ).map_err(|e| format!("{context}: do-loop scope synthesis: {e}"))?;
-    kernel.mark_inherited_outputs(inherited_names);
-    kernel.bind_outer_scope(parent_kernel);
+        source,
+        inherited_names,
+    )
+    .map_err(|e| format!("{context}: do-loop scope synthesis: {e}"))?;
     propagate_parent_inputs(&mut kernel, parent_kernel);
     Ok(kernel)
 }
@@ -1209,18 +1227,83 @@ pub fn build_op_template_scope_kernel(
         }
     }
 
-    let mut kernel = nbrs_variates::dsl::compile::compile_gk_with_libs(
-        &source,
-        workload_dir,
+    // SRD-67 Phase 3 — route op-template scope synthesis through
+    // the SubcontextBuilder bridge. The Phase-9 op-template
+    // kernel needs the same `compile_gk_with_libs` knobs the
+    // legacy direct call took (lib paths, strict, source dir,
+    // context label); those flow through `CompileOptions`. The
+    // bridge applies `mark_inherited_outputs` and
+    // `bind_outer_scope` against the live parent so per-cycle
+    // values reach the inner kernel's input slots; the trailing
+    // `propagate_parent_inputs` keeps cascade-extern'd inputs
+    // flowing through (until Rule 4 / Rule 5 absorb them).
+    let compile_options = nbrs_variates::subcontext::CompileOptions {
+        workload_dir: workload_dir.map(|p| p.to_path_buf()),
         gk_lib_paths,
-        &[],
         strict,
-        context,
-    ).map_err(|e| format!("{context}: op-template scope synthesis: {e}"))?;
-    kernel.mark_inherited_outputs(inherited_names);
-    kernel.bind_outer_scope(parent_kernel);
+        required_outputs: Vec::new(),
+        context_label: Some(context.to_string()),
+    };
+
+    // SRD-67 Phase 5 — fold the SRD-66 `result:` source through
+    // `add_result_bindings`. The builder walks the source's free
+    // identifiers, injects magic externs (`body` / `count` /
+    // `ok`) it actually references, and registers each LHS as
+    // an export. Rule 2 in finalize rewrites any LHS that
+    // collides with a parent `shared` export into a write-
+    // through; the kernel carries the bindings forward via
+    // `set_write_throughs` so the per-cycle dispenser can
+    // commit. Map-shape entries (already flattened to
+    // `<name> := <source>` in the workload model) flow
+    // through unchanged; path expressions surface as unbound-
+    // identifier compile errors with the SRD-66 deferred-
+    // structural-body-wire diagnostic.
+    let result_source: Option<String> =
+        op.result.as_ref().map(collect_result_bindings_source).filter(|s| !s.trim().is_empty());
+
+    let (mut kernel, _write_throughs) =
+        nbrs_variates::subcontext::build_kernel_under_parent_full(
+            parent_kernel,
+            context,
+            source,
+            result_source.as_deref(),
+            inherited_names,
+            compile_options,
+        )
+        .map_err(|e| format!("{context}: op-template scope synthesis: {e}"))?;
     propagate_parent_inputs(&mut kernel, parent_kernel);
     Ok(kernel)
+}
+
+/// Flatten a [`nbrs_workload::model::ResultSpec`] into a single
+/// GK source string suitable for
+/// [`nbrs_variates::subcontext::SubcontextBuilder::add_result_bindings`].
+/// String-shape entries pass through verbatim; map-shape entries
+/// emit `<name> := <source>` lines (the same projection the
+/// SRD-66 schema specifies); list-shape entries recurse.
+///
+/// Path-expression and built-in short forms (`count` / `ok`) in
+/// map-shape entries land as bare GK expressions — `count` and
+/// `ok` resolve to the magic-extern wires
+/// [`SubcontextBuilder::add_result_bindings`] injects, while
+/// path expressions like `rows[0].field` produce an unbound-
+/// identifier compile error. The latter surfaces SRD-66's
+/// "path expressions deferred until structural-body wire lands"
+/// diagnostic.
+fn collect_result_bindings_source(spec: &nbrs_workload::model::ResultSpec) -> String {
+    let mut out = String::new();
+    spec.walk_fragments(|frag| match frag {
+        nbrs_workload::model::ResultFragment::Source(src) => {
+            out.push_str(src);
+            if !src.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+        nbrs_workload::model::ResultFragment::Named { name, source } => {
+            out.push_str(&format!("{name} := {source}\n"));
+        }
+    });
+    out
 }
 
 
@@ -1556,11 +1639,18 @@ pub fn build_scope(
         // wrappers (metrics, validation) pull against — mark each
         // declared result wire as required so the kernel exposes
         // an extern slot for it on the post-execute write path.
-        for wire in op.result.keys() {
-            if !exclude.contains(wire) {
-                scope.add_required_output(wire);
-            }
-        }
+        // SRD-66: result-wire names are already declared as
+        // wires through the op's `bindings:` block (when the
+        // workload uses `extern X: T` for shared-cell writes)
+        // or are independent of the op-template kernel (when
+        // the wire is consumed only by the result dispenser's
+        // capture map). Marking them as required outputs here
+        // would double-declare the `__port_*` for any name
+        // that's also an extern, so the kernel-synthesis-side
+        // wiring is left to Push 2's full kernel-driven path
+        // (the SRD-66 §"Compilation lifecycle" closure-binding
+        // rule). This branch intentionally does nothing for now.
+        let _ = op.result.as_ref();
         crate::bindings::collect_param_bindings_into(&op.params, exclude, &mut scope.required_outputs);
     }
 

@@ -580,6 +580,17 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     let phase_order = workload.phase_order;
     let scenarios = workload.scenarios;
     let workload_readouts = workload.readouts.clone();
+    // SRD-32a Push 3 — workload-root wrapper override.
+    // Innermost-to-outermost list, extracted once and
+    // installed onto every Activity via `set_wrappers_override`
+    // before `run_with_driver` runs the cascade. Per-op
+    // `wrappers:` overrides on individual templates shadow
+    // this entry; CLI flags (not yet implemented) would set
+    // it independently on the Activity.
+    let workload_wrappers_override: Option<Vec<String>> = workload.wrappers
+        .as_ref()
+        .filter(|c| !c.order.is_empty())
+        .map(|c| c.order.clone());
     // SRD-63 §8 / Push 8: extract the CLI `--readout=<body>`
     // override before any binder is built. Resolved through
     // the same `resolve_flag` helper as `--session-path`,
@@ -587,6 +598,39 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // when set. `None` ⇒ workload bindings + builtin
     // defaults run unchanged.
     let cli_readout_override = crate::session::resolve_flag(&args[..], "--readout");
+
+    // SRD-32a Push 3 — CLI overrides for wrapper composition
+    // ordering. Two flags:
+    //
+    // - `--wrap-order=<list>` — innermost-to-outermost
+    //   permutation that applies to every op in this run.
+    //   Workload-root and per-op blocks shadow it (config-
+    //   locality wins, SRD-04 Rule 5). When neither workload-
+    //   level override is set, this CLI value plumbs through
+    //   to `Activity::wrappers_override` for every phase.
+    // - `--wrap-default-order=<list>` — replaces the
+    //   resolver's *built-in* default-order tiebreaker for
+    //   the run. Useful when the operator wants a permanent
+    //   tilt (e.g. always put validate outside throttle in
+    //   their environment) without editing every workload.
+    //   Validated against the constraint graph at session
+    //   start; an inconsistent list is a hard error.
+    //
+    // Both flags accept a comma-separated list. Empty / unset
+    // ⇒ runtime default applies.
+    let cli_wrap_order: Option<Vec<String>> = crate::session::resolve_flag(&args[..], "--wrap-order")
+        .map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
+        .filter(|v: &Vec<String>| !v.is_empty());
+    let cli_wrap_default_order: Option<Vec<String>> = crate::session::resolve_flag(&args[..], "--wrap-default-order")
+        .map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
+        .filter(|v: &Vec<String>| !v.is_empty());
+
+    // Effective workload-level wrapper override: workload's
+    // own `wrappers: { order: [...] }` block wins over the
+    // CLI flag (config-locality, SRD-04 Rule 5). Per-op
+    // overrides on individual ParsedOps shadow either.
+    let workload_wrappers_override: Option<Vec<String>> =
+        workload_wrappers_override.or(cli_wrap_order);
     // Unified report block (SRD-46). Tables auto-render at
     // end-of-run; plot specs persist into the session db so
     // post-hoc `nbrs report ...` can replay them. Empty
@@ -701,8 +745,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             .map(|s| {
                 let p = std::path::PathBuf::from(s);
                 if p.is_file() { p }
-                else if p.is_dir() { p.join("checkpoint.json") }
-                else { std::path::PathBuf::from("logs").join(s).join("checkpoint.json") }
+                else if p.is_dir() { p.join("checkpoint.jsonl") }
+                else { std::path::PathBuf::from("logs").join(s).join("checkpoint.jsonl") }
             });
         let resume_latest = params.get("resume_latest")
             .map(|s| s != "false" && s != "0")
@@ -718,7 +762,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     if target.is_absolute() { target }
                     else { std::path::PathBuf::from("logs").join(target) }
                 })
-                .map(|d| d.join("checkpoint.json"));
+                .map(|d| d.join("checkpoint.jsonl"));
             explicit.or(resolved)
         } else {
             explicit
@@ -922,7 +966,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // visible to every descendant kernel that
     // `bind_outer_scope`s through this workload kernel in
     // turn (per SRD-16 §"Single Name-Resolution Surface").
-    kernel.bind_outer_scope(&params_kernel);
+    nbrs_variates::subcontext::chain_kernel_under_parent(&mut kernel, &params_kernel);
 
     // Canonical workload-scope kernel for the scope tree (SRD
     // 18b §"Iteration variables as scope outputs"). Built from
@@ -932,7 +976,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // Installed below once the scope tree is constructed.
     let workload_canonical_kernel: std::sync::Arc<nbrs_variates::kernel::GkKernel> =
         std::sync::Arc::new(
-            nbrs_variates::kernel::GkKernel::from_program(kernel.program().clone())
+            nbrs_variates::subcontext::instance_program(kernel.program().clone())
         );
 
 
@@ -1517,15 +1561,15 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             }
         };
 
-        // --- Checkpoint writer + resume plan (SRD-44) ---
+        // --- Checkpoint writer + resume plan (SRD-44 / SRD-44a) ---
         //
-        // The writer file lives at `<session-dir>/checkpoint.json`
-        // and is rewritten atomically on every flush. Resume from
+        // The writer file lives at `<session-dir>/checkpoint.jsonl`
+        // — an append-only JSONL event log per SRD-44a. Resume from
         // an explicit prior session is wired through the
         // `--resume <session>` / `--resume-latest` CLI surface
         // (see runner CLI parsing); for a fresh session the writer
         // starts empty and the plan reruns everything.
-        let checkpoint_path = session.output_dir.join("checkpoint.json");
+        let checkpoint_path = session.output_dir.join("checkpoint.jsonl");
         // `resume_target` was resolved at the top of run(),
         // before Session::new repointed `logs/latest` at the new
         // session id. SRD-44 §"Resume CLI surface".
@@ -1641,6 +1685,25 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                  {skip} skip, {mismatch} mismatched, {cursor} cursor-resume");
         }
 
+        // SRD-35 Push D: seed the resource pool's per-key
+        // `pending_uses` counter before any phase runs. The
+        // walker is a pure read of the pre-mapped tree +
+        // session-level params; it doesn't instantiate any
+        // adapter or open any resource. After this, the pool
+        // can close `Shared`/`PerScenario` entries the moment
+        // their last predicted phase detaches, instead of
+        // holding them until session end.
+        let resource_pool = Arc::new(crate::resource_pool::ResourcePool::new());
+        if let Some(tree) = pre_mapped_tree.as_ref() {
+            crate::resource_pool::pre_map_pending_uses(
+                &resource_pool,
+                tree,
+                &phases,
+                &driver,
+                &merged_params,
+            )?;
+        }
+
         if let Some(scene_tree) = pre_mapped_tree {
             crate::scene_tree::install_global(scene_tree);
         }
@@ -1669,6 +1732,8 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 workload_readouts: workload_readouts.clone(),
                 cli_readout_override: cli_readout_override.clone(),
                 workload_params: workload_params.clone(),
+                wrappers_override: workload_wrappers_override.clone(),
+                wrap_default_order: cli_wrap_default_order.clone(),
                 program: program.clone(),
                 gk_lib_paths: gk_lib_paths.clone(),
                 workload_dir: workload_dir.map(|p| p.to_path_buf()),
@@ -1715,12 +1780,13 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 checkpoint_writer: Some(checkpoint_writer.clone()),
                 resume_plan: resume_plan.clone(),
                 sqlite_reporter: sqlite_reporter.clone(),
-                // SRD-35 Push A: one resource pool per
-                // session, owning the lifecycle of every
-                // shared driver-side resource the
-                // executor attaches to during phase
-                // activation.
-                resource_pool: Arc::new(crate::resource_pool::ResourcePool::new()),
+                // SRD-35: one resource pool per session,
+                // owning the lifecycle of every shared
+                // driver-side resource the executor attaches
+                // to during phase activation. Pre-seeded
+                // with `pending_uses` per shared key by
+                // `pre_map_pending_uses` above (Push D).
+                resource_pool: resource_pool.clone(),
             };
             let scheduler = crate::scheduler::build(&schedule_spec);
             let scheduler_result = scheduler.run(
@@ -1846,6 +1912,13 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         let mut activity = Activity::with_params_and_sigdigs(
             config, &labels, op_sequence, workload_params, sigdigs,
         );
+        // SRD-32a Push 3 — propagate the workload-root
+        // wrapper-order override before run_with_driver
+        // walks the cascade.
+        activity.set_wrappers_override(workload_wrappers_override.clone());
+        // CLI `--wrap-default-order` — replaces the resolver's
+        // built-in DEFAULT_ORDER tiebreaker for this run.
+        activity.set_wrap_default_order(cli_wrap_default_order.clone());
 
         // Attach the single activity as a component of the session
         // tree so the session-level scheduler captures its metrics

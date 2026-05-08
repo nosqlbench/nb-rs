@@ -126,7 +126,7 @@ impl HasGkMatter for ParsedOp {
         // result: declarations expose result-body fields as
         // GK wires — a definition by construction (the
         // wire didn't exist before this op).
-        if !self.result.is_empty() {
+        if self.result.as_ref().is_some_and(|r| !r.is_empty()) {
             return GkMatter::Definitions;
         }
 
@@ -218,7 +218,7 @@ impl HasGkMatter for Workload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MetricSpec, ResultWireSpec};
+    use crate::model::{MetricSpec, ResultSpec};
 
     fn empty_op(name: &str) -> ParsedOp {
         ParsedOp::simple(name, "noop")
@@ -291,8 +291,9 @@ mod tests {
     #[test]
     fn parsed_op_with_result_is_definitions() {
         let mut op = empty_op("x");
-        op.result.insert("rows_returned".into(),
-            ResultWireSpec::String("count".into()));
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert("rows_returned".into(), "count".into());
+        op.result = Some(ResultSpec::Map(entries));
         assert_eq!(op.gk_matter(), GkMatter::Definitions);
     }
 

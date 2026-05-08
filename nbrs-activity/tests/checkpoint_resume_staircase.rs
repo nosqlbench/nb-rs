@@ -81,7 +81,7 @@ fn staircase_failures_resume_correctly() {
     // -------------------------------------------------------------
     run_with(None);
     let session_dir = read_logs_latest(&dir);
-    let cp_path = session_dir.join("checkpoint.json");
+    let cp_path = session_dir.join("checkpoint.jsonl");
     let saved1 = storage::read(&cp_path).expect("read 1").expect("present 1");
     assert_eq!(saved1.invocation, 1);
     assert_eq!(find_phase(&saved1, "phase1").status, PhaseStatus::Failed,

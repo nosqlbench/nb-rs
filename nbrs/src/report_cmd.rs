@@ -357,7 +357,7 @@ fn die(prefix: &str, msg: &str) -> ! {
 ///
 /// Session-resolution flags (`--session-path`, `--session`,
 /// `--session-name`) are honoured for the workload-discovery
-/// fallback (via `<session>/checkpoint.json::workload_path`).
+/// fallback (via `<session>/checkpoint.jsonl::workload_path`).
 fn run_rename(
     args: &[String],
     session_dir: &std::path::Path,
@@ -476,7 +476,7 @@ fn parse_rename_args(args: &[String]) -> Result<RenameArgs, String> {
 ///
 /// Order of precedence:
 /// 1. `--workload <path>` if explicitly passed.
-/// 2. `<session>/checkpoint.json::workload_path`, when the
+/// 2. `<session>/checkpoint.jsonl::workload_path`, when the
 ///    session was launched with a workload-file invocation
 ///    that recorded the path.
 /// 3. Error with a remediation hint.
@@ -493,36 +493,20 @@ fn resolve_workload_for_add(
         }
         return Ok(path);
     }
-    let checkpoint = session_dir.join("checkpoint.json");
-    if !checkpoint.exists() {
-        return Err(format!(
-            "no --workload <path> given and no checkpoint.json in \
-             session at {}; pass --workload <file.yaml> to point at \
-             the workload to mutate",
-            session_dir.display(),
-        ));
-    }
-    let bytes = std::fs::read(&checkpoint)
-        .map_err(|e| format!("read {}: {e}", checkpoint.display()))?;
-    let v: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("parse {}: {e}", checkpoint.display()))?;
-    let path_str = v.get("workload_path")
-        .and_then(|s| s.as_str())
-        .or_else(|| v.get("workload").and_then(|s| s.as_str()))
-        .ok_or_else(|| format!(
-            "checkpoint.json at {} has no `workload_path` field; \
-             pass --workload <file.yaml> explicitly",
-            checkpoint.display(),
-        ))?;
-    let path = std::path::PathBuf::from(path_str);
-    if !path.exists() {
-        return Err(format!(
-            "workload path '{}' from checkpoint.json no longer exists; \
-             pass --workload <file.yaml> to override",
-            path.display(),
-        ));
-    }
-    Ok(path)
+    // Pre-SRD-44a, this fallback tried to read a
+    // `workload_path` field from `checkpoint.json`, but the
+    // checkpoint schema (then or now) never carries that
+    // field, so the fallback path could only ever return an
+    // error. SRD-44a converted the file to a JSONL event log,
+    // which makes a one-shot `serde_json::from_slice` parse
+    // wrong anyway. Surface the missing-flag diagnostic
+    // directly until a future event type carries the workload
+    // path explicitly.
+    Err(format!(
+        "no --workload <path> given; pass --workload <file.yaml> to \
+         point at the workload to mutate (session at {})",
+        session_dir.display(),
+    ))
 }
 
 /// Pass-through for the flag-form invocation: the user typed

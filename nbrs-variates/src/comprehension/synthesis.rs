@@ -245,18 +245,30 @@ pub fn synthesize_for_each_scope(
         source.push_str("final __empty := 0\n");
     }
 
-    let mut kernel = crate::dsl::compile::compile_gk_with_libs(
-        &source,
-        workload_dir,
+    // SRD-67 Phase 3 — route through the
+    // `SubcontextBuilder` bridge so finalize handles import /
+    // export validation, Rule 2 collision detection, and
+    // `mark_inherited_outputs` in one place. The for_each
+    // synthesiser threads `gk_lib_paths` / `workload_dir` /
+    // `strict` through `CompileOptions` so the underlying
+    // `compile_gk_with_libs` invocation is byte-identical to
+    // the legacy direct call.
+    let compile_options = crate::subcontext::CompileOptions {
+        workload_dir: workload_dir.map(|p| p.to_path_buf()),
         gk_lib_paths,
-        &[],
         strict,
+        required_outputs: Vec::new(),
+        context_label: Some(context.to_string()),
+    };
+    let (mut kernel, _write_throughs) = crate::subcontext::build_kernel_under_parent_with_options(
+        parent_kernel,
         context,
-    ).map_err(|e| format!("{context}: for_each scope synthesis: {e}"))?;
+        source,
+        inherited_names,
+        compile_options,
+    )
+    .map_err(|e| format!("{context}: for_each scope synthesis: {e}"))?;
 
-    kernel.mark_inherited_outputs(inherited_names);
-
-    kernel.bind_outer_scope(parent_kernel);
     propagate_parent_inputs(&mut kernel, parent_kernel);
 
     Ok(kernel)

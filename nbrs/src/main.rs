@@ -9,6 +9,7 @@
 //!   nbrs file.yaml scenario_name [param=value ...]
 
 mod bench;
+mod checkpoint_cmd;
 mod cli;
 mod cli_spec;
 mod completion;

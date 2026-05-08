@@ -498,15 +498,22 @@ guarantee.
 
 ## v2: Canonical metricsql backend
 
-**Status:** in flight (scoped 2026-05-04). The current
-report-DSL grammar (`<metric> over <x> [by <series>] [where
-<k>=<v>] [agg=<fn>]`) and its bespoke SQL builders in
-`plot_metrics.rs` / `summary.rs` are being replaced wholesale
-by a metricsql-backed pipeline. **One query language across
-the whole system** — `nbrs metrics query`, the continuous-
-query runtime (SRD-48), and `nbrs report` all consume the
-same `parse → evaluate → SqliteDataSource` path defined by
-SRD-47 / SRD-48.
+**Status:** Pushes A and B shipped; Push C partial as of
+2026-05-08. The legacy report-DSL grammar (`<metric> over
+<x> [by <series>] [where <k>=<v>] [agg=<fn>]`) is no longer
+the canonical surface — every report block in the canonical
+`full_cql_vector.yaml` workload now uses metricsql directly
+through the new `y:` / `x:` / `series:` directives. The
+metricsql-backed pipeline (`parse → evaluate →
+SqliteDataSource`) is wired into both `nbrs metrics query`
+and the report renderers (`plot_metrics.rs` /
+`summary.rs`); `nbrs report` consumes the same pipeline,
+giving operators **one query language across the whole
+system**. The legacy DSL keywords (`over` / `by` / `where`
+/ `agg=`) still parse for back-compat with un-migrated
+workloads in `examples/workloads/` and
+`adapters/cql/workloads/backup.yaml`; their removal is the
+remaining Push C work.
 
 ### Why
 
@@ -526,123 +533,180 @@ SRD-47 / SRD-48.
 
 **Three layers, each with its own push:**
 
-#### Push A — Canonical metric names (writer-side)
+#### Push A — Canonical metric names (writer-side) — SHIPPED
 
 Every stored family name conforms to PromQL's identifier
-grammar `[a-zA-Z_:][a-zA-Z0-9_:]*`. The two non-conforming
-characters in nb-rs's current corpus (`@` and `.`) are
-rewritten:
+grammar `[a-zA-Z_:][a-zA-Z0-9_:]*`. The implementation went
+**further than the original spec** by lifting the per-`k`
+variants into label dimensions instead of mangling them
+into the family name:
 
-| Today | Canonical |
-|-------|-----------|
-| `recall@1.mean`            | `recall_at_1_mean`            |
-| `recall@1.p99`             | `recall_at_1_p99`             |
-| `recall@10.mean`           | `recall_at_10_mean`           |
-| `recall@<N>.<stat>`        | `recall_at_<N>_<stat>`        |
-| `control.concurrency`      | `control_concurrency`         |
-| `control_info.concurrency` | `control_info_concurrency`    |
-| `cycles_total`             | unchanged                     |
+| Pre-v2 | Implemented |
+|--------|-------------|
+| `recall@1.mean`            | `recall` (family) + `{k="1", r="1", name="recall"}` labels |
+| `recall@10.p99`            | `recall` (family) + `{k="10", r="10", name="recall"}` labels — with `p99` carried by the summary's stat-suffix resolution |
+| `recall@<N>.<stat>`        | `recall{k="<N>", r="<N>"}`; query for the stat is `<stat>(recall{...})` style |
+| `control.concurrency`      | `control_concurrency` (family-name flatten as spec'd)         |
+| `control_info.concurrency` | `control_info_concurrency`                                    |
+| `cycles_total`             | unchanged                                                     |
 | `cycles_servicetime`       | unchanged (summary; queried as `cycles_servicetime_p99` etc. via stat-suffix resolution) |
-| `errors_total`, `result_*` | unchanged                     |
+| `errors_total`, `result_*` | unchanged                                                     |
 
-The change lives in `nbrs-metrics/src/reporters/sqlite.rs` (and
-any in-memory metric-name producers — recall observers, the
-control-info reporter, etc.). Stored summary-vs-gauge model
-is unchanged; only the family-name string canonicalizes.
+The label-bearing form is more PromQL-natural — operators
+write `avg(recall{k="10"}) by (limit, profile)` instead of
+selecting from a fan-out of per-`k` family names. The
+`recall_at_<N>_<stat>` shape was scoped out and never
+shipped; the bare-family + labels shape is canonical.
 
-**Migration policy:** existing `metrics.db` files become
-unreadable by the new code. `metrics.db` is a session-scoped
-artifact (per SRD-45) — sessions don't persist across nb-rs
-upgrades, so this is tolerable. No legacy-name fallback.
+The change lives in `nbrs-activity/src/validation.rs`
+(`ValidationMetrics::new` builds the labelled stats family),
+the recall observer in
+`nbrs-activity/src/observer.rs`, and the control reporter
+in `nbrs-metrics/src/controls.rs`. Stored summary-vs-gauge
+model is unchanged; only the family-name shape canonicalizes.
 
-**Acceptance:** `cargo test --workspace` green; a fresh run
-produces only conformant family names; `SELECT name FROM
-metric_family` shows zero `@` or `.` characters.
+**Migration policy:** existing `metrics.db` files written
+with `@`/`.` family names are unreadable by the new code.
+`metrics.db` is a session-scoped artifact (per SRD-45) —
+sessions don't persist across nb-rs upgrades, so this is
+tolerable. No legacy-name fallback.
 
-#### Push B — Report renderers consume `Vec<Series>`
+#### Push B — Report renderers consume `Vec<Series>` — SHIPPED
 
-`plot_metrics.rs` and `summary.rs` stop building SQL. They
-parse the report-body string as metricsql (`nbrs_metricsql::
-parse`), evaluate it via `evaluate` or `evaluate_range`
+`plot_metrics.rs` and `summary.rs` parse the report-body
+string, extract metricsql expressions via `nbrs_metricsql::
+parse`, evaluate them via `evaluate` / `evaluate_range`
 against `SqliteDataSource`, and consume the returned
-`Vec<Series>`.
+`Vec<Series>`. Both renderers route through this path; the
+SQL builders in plot_metrics now sit alongside the
+metricsql path during the Push C transition.
 
 **Render-side directives** (which label is X-axis, which is
 the series discriminator, palette, axis labels, etc.) live
 *outside* the query string — not embedded in it. Plot bodies
-become two-part:
+in implementation use **per-axis** keys (`y:` / `y2:` /
+`y3:` / `y4:`) carrying the metricsql expressions, with
+SRD-65's multi-axis surface layered on top. The originally-
+spec'd `query:` key was retired in favor of `y:` because
+multi-axis charts need one query per axis:
 
 ```yaml
-plot recall_at_k10
-  query: avg(recall_at_10_mean{k="10"}) by (limit, profile)
-  x: limit
-  series: profile
-  label: "Recall@10 vs limit, per profile"
+plot recall_10_mean
+  label "10-recall@R, oracles & PVS"
+  legend: br
+  x: r
+  x-legend: "R"
+  x-ticks: avg(recall{k="10",profile=~"label.*"}) by (k,r)
+  y1: avg(recall{k="10",phase="ann_query",profile=~"label.*"}) by (k,r,optimize_for)
+  y2: avg(recall{k="10",phase="pvs_query",profile=~"default"}) by (k,r,optimize_for)
+  y3: avg(overscan{k="10",phase="ann_query",profile=~"label.*"}) by (k,r)
+  y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]", overscan]
+  y-ranges: [[0.0,1.0]]
+  y-labels: [recall, overscan]
+  with-table: true
+  style profile=default:line=dotted
 ```
 
-The `query:` is opaque to the report parser — it's metricsql,
-parsed at render time. The other keys are render metadata
-in the same flat directive vocabulary the existing parser
-already supports (`label`, `palette`, `xscale`, `yscale`,
-etc.). New keys: `query`, `x`, `series`.
+`y:` (= `y1:`) is the primary-axis query; `y2:` … `y4:`
+are secondary-axis queries (SRD-65). `x:` is either an
+axis-label key (a label name carried on the points to
+project against) or itself a metricsql expression for an
+x-axis-as-data plot. `series:` (where present — usually
+implied by `by (...)` in the metricsql) names the series
+discriminator.
 
-**Tables work the same way:** `query:` returns
-`Vec<Series>`; the renderer projects each series's
-`group_labels` to columns and the (one) sample value to the
-cell.
+The metricsql expressions are opaque to the report parser
+— they're parsed at render time. Other directives (`label`,
+`palette`, `legend`, `xscale`, `yscale`, `with-table`, the
+SRD-65 multi-axis vocabulary) sit in the same flat
+directive surface.
+
+**Tables work the same way:** the body carries one or more
+`query <name>: <metricsql>` lines (one query per output
+column). Each evaluates to `Vec<Series>`; the renderer
+projects each series's `group_labels` to columns and the
+(one) sample value to the cell.
 
 **Range-vector tables:** when a report wants a time-series
-table, `query:` is evaluated as a range query (anchor over
-the session window with a step); each series's samples
+table, the metricsql is evaluated as a range query (anchor
+over the session window with a step); each series's samples
 become rows.
 
 **Acceptance:** every report from `full_cql_vector.yaml`
-re-renders to a numerically-equivalent (within Kahan
-tolerance) plot/table; visual diff acceptable.
+re-renders correctly; the canonical workload is fully
+migrated to the new shape.
 
-#### Push C — DSL deletion + workload YAML rewrite
+#### Push C — DSL deletion + workload YAML rewrite — PARTIAL
 
-After Push B lands, the report-DSL parser at
-`nbrs-workload/src/report.rs:121-300` (the body-line
-walker that interprets `over` / `by` / `where` / `agg=`)
-deletes. The YAML chunker — the part that splits a `report:`
-block into named items by the `plot`/`table`/`text`/`file`
-keywords — stays. Everything inside an item's body is now
-just key:value directives, with `query:` carrying the
-metricsql.
+**What's shipped:**
 
-Workload YAMLs (`adapters/cql/workloads/*.yaml`) get one
-sweep to rewrite every report body. Translations:
+- `adapters/cql/workloads/full_cql_vector.yaml` — the
+  canonical workload — is fully migrated to the new
+  metricsql + `y:` / `x:` / `series:` shape. No legacy
+  `over` / `by` / `where` / `agg=` directives remain in
+  any active block.
+- The new directive surface (`y:`, `y2:`, `y3:`, `y4:`,
+  `x:`, `x-ticks:`, `x-legend:`, `y-legends:`, `y-ranges:`,
+  `y-labels:`, plus the SRD-65 multi-axis stack) is fully
+  parsed and rendered.
+- `query <name>: <metricsql>` table-column form is wired.
 
-| DSL form | metricsql |
-|----------|-----------|
-| `recall@10.mean over limit` | `query: recall_at_10_mean`<br>`x: limit` |
-| `mean recall@10 over limit by profile where k=10` | `query: avg(recall_at_10_mean{k="10"}) by (limit, profile)`<br>`x: limit`<br>`series: profile` |
-| `recall@1 over limit where k=1 and profile=default` | `query: recall_at_1_mean{k="1", profile="default"}`<br>`x: limit` |
-| `recall@N where ...` (table) | `query: avg(recall_at_<N>_mean{...}) by (...)` |
+**What's left:**
 
-**No backwards compatibility shim.** Loading a workload
-with the old `over`/`by`/`where` syntax surfaces a parse
-error pointing at SRD-46 v2. Same policy as the legacy
-`plot:` / `summary:` keys (per §"Invariants").
+- Migrate the back-compat workloads — `examples/workloads/
+  summary.yaml`, `examples/workloads/summary_gk_context.yaml`,
+  `examples/workloads/summary_aggregates.yaml`,
+  `examples/workloads/report_text_file_demo.yaml`,
+  `adapters/cql/workloads/backup.yaml` — off the legacy DSL.
+  These workloads are example/test scaffolding rather than
+  shipping configurations; they're the last live consumers
+  of `over` / `by` / `where`.
+- Once those migrate, **delete the legacy DSL parser** at
+  `nbrs/src/plot_metrics.rs:128-449` (the
+  `parse_spec`/`parse_over` walkers and the
+  `over`/`by`/`where`/`agg=` directive matchers in the
+  per-line dispatch loop). The SRD's original "delete at
+  `nbrs-workload/src/report.rs:121-300`" location was
+  wrong — the DSL parsing always lived in the renderer
+  (plot_metrics), not in the workload chunker. The chunker
+  in `nbrs-workload/src/report.rs::parse_group` (line 467)
+  stays; it only splits items by kind keyword.
 
-**Acceptance:** `nbrs report all` against
-`full_cql_vector.yaml` produces the same set of artifacts
-as the v1 path did; the DSL parser is removed; ~150 lines
-of grammar-walking code in `report.rs` deletes.
+**Translation reference for the remaining migrations:**
+
+| Legacy DSL form | New metricsql + directives |
+|-----------------|----------------------------|
+| `recall@10.mean over limit` | `y: avg(recall{k="10"}) by (limit)`<br>`x: limit` |
+| `mean recall@10 over limit by profile where k=10` | `y: avg(recall{k="10"}) by (limit, profile)`<br>`x: limit`<br>`series: profile` |
+| `recall@1 over limit where k=1, profile=default` | `y: avg(recall{k="1", profile="default"}) by (limit)`<br>`x: limit` |
+| `recall@N` (table) | `query recall: avg(recall{k="N"}) by (...)` |
+
+**No backwards compatibility shim** once Push C completes.
+Loading a workload with the old `over`/`by`/`where` syntax
+will surface a parse error pointing at SRD-46 v2 — same
+policy as the legacy `plot:` / `summary:` keys
+(per §"Invariants"). Until the DSL parser is removed, the
+old syntax keeps parsing for the grace window.
+
+**Acceptance:** `nbrs report all` against every active
+workload produces correct artifacts; the legacy DSL is
+removed from `plot_metrics.rs`; the example workloads have
+been rewritten or deleted.
 
 ### Push order and gating
 
-Pushes are ordered A → B → C with a gate between each:
+Pushes were ordered A → B → C with gates between each:
 
-- A unblocks B (B can't query the new names until they exist).
-- B unblocks C (C's YAML rewrite produces metricsql, which
+- A unblocked B (B couldn't query the new names until they
+  existed).
+- B unblocked C (C's YAML rewrite produces metricsql, which
   needs B's renderer to consume it).
-- Each push commits independently. Between pushes, runs
-  produce conformant data but reports still use the old
-  renderer (after A) or use metricsql via new
-  query-renderer keys (after B); the old DSL stays parseable
-  until C.
+- Each push committed independently.
+
+Pushes A and B shipped fully; Push C is partially complete
+— the canonical workload is on the new surface but
+back-compat workloads remain, and the legacy DSL parser
+stays live until the last back-compat workload migrates.
 
 ### Out of scope
 

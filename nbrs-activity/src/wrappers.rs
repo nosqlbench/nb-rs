@@ -615,7 +615,24 @@ impl OpDispenser for EmitDispenser {
 ///   follow-up adds the GK-eval-against-result-context path.
 pub struct ResultDispenser {
     inner: Arc<dyn OpDispenser>,
+    /// Map-shape `count` / `ok` / path-expr declarations that
+    /// stay on the dispenser's evaluator (SRD-40b §5.1
+    /// backwards compat). SRD-66 string-shape and gk-call
+    /// entries are NOT here — they're compiled into the
+    /// op-template kernel's body via SRD-67 Phase 5
+    /// `add_result_bindings` and evaluated by GK; the dispenser
+    /// just feeds them inputs through the
+    /// `populate_kernel_inputs` flag.
     specs: Vec<ResultSlot>,
+    /// SRD-67 Phase 5 — when the op's `result:` source contains
+    /// any string-shape or gk-call entries, the dispenser writes
+    /// the magic pre-bound inputs (`body` / `count` / `ok`) into
+    /// `OpResult.captures` so the activity loop can feed them
+    /// into the op-template kernel before the result-binding
+    /// expressions evaluate. The kernel's closure-binding
+    /// economy ignores writes for slots it doesn't reference,
+    /// so unconditional writes are safe.
+    populate_kernel_inputs: bool,
 }
 
 /// Parsed form of one `result:` declaration.
@@ -727,36 +744,39 @@ fn resolve_path<'a>(
     Some(cur)
 }
 
-/// Decode one `(name, ResultWireSpec)` pair into a `ResultSlot`.
-/// Unknown / unparseable sources land as `None` (caller logs and
-/// drops them — SRD-40b §5.1 calls for "log a warning and skip"
-/// over a hard failure here, since the value mechanism is
-/// supposed to be best-effort per cycle).
+/// Decode one `(name, source-string)` pair from a SRD-66
+/// map-shape `result:` fragment into a `ResultSlot`. Unknown
+/// / unparseable sources land as `None` (caller logs and
+/// drops them — SRD-40b §5.1 calls for "log a warning and
+/// skip" over a hard failure here, since the value mechanism
+/// is supposed to be best-effort per cycle).
+///
+/// String-shape and list-shape `result:` fragments don't go
+/// through this function — they compile into the auxiliary
+/// kernel under SRD-66 §"Compilation lifecycle" (TBD when
+/// the structural-body Value variant lands).
 fn decode_slot(
     name: &str,
-    spec: &nbrs_workload::model::ResultWireSpec,
+    raw_source: &str,
 ) -> Option<ResultSlot> {
-    let raw = spec.source().trim();
-    let default = match spec {
-        nbrs_workload::model::ResultWireSpec::Object { default: Some(d), .. } => {
-            Some(nbrs_variates::node::Value::Str(d.clone()))
-        }
-        _ => None,
-    };
+    let raw = raw_source.trim();
     let source = if raw == "count" {
         ResultSource::Count
     } else if raw == "ok" {
         ResultSource::Ok
     } else if raw.contains('(') {
-        // GK-call form — DEFERRED. Phase E (or a follow-up) will
-        // wire this up to a per-cycle GK eval against an extended
-        // scope that exposes the result body. For now we keep the
-        // declaration parseable so workloads don't break, and log
-        // a single warning at init time when the slot is decoded.
+        // SRD-66 Surface 1 — GK-expression form. The full
+        // kernel-driven path (compile auxiliary kernel,
+        // wire body/count/ok externs via the closure-binding
+        // rule, evaluate per-cycle) is staged behind this
+        // diagnostic until the structural-body Value variant
+        // and op-template kernel extension land. Today the
+        // form is recognised but evaluates to its default.
         crate::diag!(
             crate::observer::LogLevel::Warn,
-            "result wire '{name}': gk-call source '{raw}' is not yet \
-             supported — slot will resolve to its default (or skip).",
+            "result wire '{name}': GK-expression source '{raw}' is not yet \
+             evaluated end-to-end — slot will resolve to its default. \
+             SRD-66 Push 2 follow-up wires the kernel-driven path.",
         );
         ResultSource::GkCall(raw.to_string())
     } else {
@@ -773,33 +793,88 @@ fn decode_slot(
             }
         }
     };
-    Some(ResultSlot { wire: name.to_string(), source, default })
+    Some(ResultSlot { wire: name.to_string(), source, default: None })
 }
 
 impl ResultDispenser {
     /// Wrap an inner dispenser with result-as-GK exposure for the
-    /// op template's `result:` declarations. Returns the inner
-    /// dispenser unchanged when `result:` is empty (no overhead
-    /// for ops that don't declare wires).
+    /// op template's `result:` declarations (SRD-66). Returns the
+    /// inner dispenser unchanged when `result:` is absent or
+    /// empty (no overhead for ops that don't declare wires).
+    ///
+    /// Vari-structured `ResultSpec` shapes (string / list / map)
+    /// flatten into `(wire, source)` pairs via
+    /// [`ResultSpec::walk_fragments`]. Map-shape entries pass
+    /// through `decode_slot`'s short-form dispatch. String-shape
+    /// fragments are TODO at the kernel-driven path and emit a
+    /// Warn diagnostic per fragment until that path lands.
     pub fn wrap(
         inner: Arc<dyn OpDispenser>,
-        result_decl: &HashMap<String, nbrs_workload::model::ResultWireSpec>,
+        result_spec: Option<&nbrs_workload::model::ResultSpec>,
     ) -> Arc<dyn OpDispenser> {
-        if result_decl.is_empty() {
+        let Some(spec) = result_spec else { return inner; };
+        if spec.is_empty() {
             return inner;
         }
-        let mut specs = Vec::with_capacity(result_decl.len());
-        // Stable iteration order so wire-resolution warnings
-        // (and the per-cycle insertion order) don't depend on
-        // HashMap rehashing.
-        let mut entries: Vec<_> = result_decl.iter().collect();
-        entries.sort_by(|a, b| a.0.cmp(b.0));
-        for (name, spec) in entries {
-            if let Some(slot) = decode_slot(name, spec) {
-                specs.push(slot);
+
+        // SRD-66 / SRD-67 Phase 5 — split the spec into two
+        // populations:
+        //
+        //   * map-shape `count` / `ok` / path-expr entries stay
+        //     on the dispenser as before (legacy SRD-40b §5.1
+        //     dispatch — keeps existing tests' path-expr capture
+        //     semantics until they migrate to the kernel-driven
+        //     form).
+        //   * map-shape gk-call entries AND every entry under
+        //     a string-shape source block are kernel-driven —
+        //     `add_result_bindings` already compiled their
+        //     bindings into the op-template kernel; the
+        //     dispenser only needs to feed `body` / `count` /
+        //     `ok` inputs per cycle.
+        //
+        // The `populate_kernel_inputs` flag fires when ANY
+        // kernel-driven entries exist; the activity loop uses
+        // it (via the captures map's magic keys) to drive the
+        // op-template kernel's `set_input` + `commit_write_throughs`.
+        let mut specs: Vec<ResultSlot> = Vec::new();
+        let mut populate_kernel_inputs = false;
+
+        spec.walk_fragments(|frag| match frag {
+            nbrs_workload::model::ResultFragment::Named { name, source } => {
+                let raw = source.trim();
+                if raw == "count" || raw == "ok" {
+                    if let Some(slot) = decode_slot(name, source) {
+                        specs.push(slot);
+                    }
+                } else if raw.contains('(') {
+                    // gk-call form — kernel-driven via SRD-67
+                    // Phase 5. No dispenser-side dispatch.
+                    populate_kernel_inputs = true;
+                } else {
+                    // Path expression — keep the legacy JSON-path
+                    // path for SRD-40b §5.1 backwards compat.
+                    if let Some(slot) = decode_slot(name, source) {
+                        specs.push(slot);
+                    }
+                }
             }
+            nbrs_workload::model::ResultFragment::Source(_source) => {
+                // String-shape — fully kernel-driven.
+                populate_kernel_inputs = true;
+            }
+        });
+
+        if specs.is_empty() && !populate_kernel_inputs {
+            return inner;
         }
-        Arc::new(Self { inner, specs })
+        // Stable order so wire-resolution warnings (and the
+        // per-cycle insertion order) are reproducible.
+        specs.sort_by(|a, b| a.wire.cmp(&b.wire));
+        Arc::new(Self {
+            inner,
+            specs,
+            populate_kernel_inputs,
+        })
     }
 
     /// Compute the GK value for one slot from the cycle's result.
@@ -863,6 +938,38 @@ impl OpDispenser for ResultDispenser {
                 // logging it here would just add per-cycle session.log
                 // spam without telling the user anything actionable.
             }
+
+            // SRD-67 Phase 5 — magic-extern population. When the
+            // op declares any kernel-driven result-bindings
+            // (string-shape OR map-shape gk-call), inject the
+            // standard `body` / `count` / `ok` inputs into
+            // captures so the activity loop's
+            // `write_op_template_input` step can route them to
+            // the op-template kernel. The closure-binding economy
+            // drops slots the kernel doesn't reference, so this
+            // is safe even if the user's source only references
+            // a subset.
+            if self.populate_kernel_inputs {
+                let count = result.body.as_ref().map(|b| b.element_count()).unwrap_or(0);
+                let body_text = result
+                    .body
+                    .as_ref()
+                    .map(|b| b.to_text())
+                    .unwrap_or_default();
+                result
+                    .captures
+                    .entry("body".to_string())
+                    .or_insert(nbrs_variates::node::Value::Str(body_text));
+                result
+                    .captures
+                    .entry("count".to_string())
+                    .or_insert(nbrs_variates::node::Value::U64(count));
+                result
+                    .captures
+                    .entry("ok".to_string())
+                    .or_insert(nbrs_variates::node::Value::Bool(true));
+            }
+
             let _ = cycle;
             Ok(result)
         })
@@ -1261,7 +1368,8 @@ mod tests {
 
     use crate::adapter::AdapterError;
     use crate::fixture::{ExecCtx, ResolvedPulls};
-    use nbrs_workload::model::ResultWireSpec;
+    #[allow(unused_imports)]
+    use nbrs_workload::model::ResultSpec;
 
     /// Minimal `ResultBody` carrying a JSON value and a configurable
     /// element count, so tests can exercise the `count` built-in.
@@ -1332,6 +1440,16 @@ mod tests {
         }
     }
 
+    /// Build a SRD-66 map-shape `ResultSpec` from
+    /// `(name, source)` pairs.
+    fn map_spec(entries: &[(&str, &str)]) -> nbrs_workload::model::ResultSpec {
+        let mut m = std::collections::BTreeMap::new();
+        for (k, v) in entries {
+            m.insert((*k).to_string(), (*v).to_string());
+        }
+        nbrs_workload::model::ResultSpec::Map(m)
+    }
+
     #[test]
     fn result_dispenser_count_and_path() {
         let inner = Arc::new(FakeInner {
@@ -1341,11 +1459,12 @@ mod tests {
             }),
             error: None,
         });
-        let mut decl: HashMap<String, ResultWireSpec> = HashMap::new();
-        decl.insert("row_count".into(), ResultWireSpec::String("count".into()));
-        decl.insert("first_value".into(), ResultWireSpec::String("rows[0].value".into()));
+        let decl = map_spec(&[
+            ("row_count", "count"),
+            ("first_value", "rows[0].value"),
+        ]);
 
-        let wrapped = ResultDispenser::wrap(inner, &decl);
+        let wrapped = ResultDispenser::wrap(inner, Some(&decl));
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
@@ -1361,10 +1480,9 @@ mod tests {
             body: Some(ResultDispBody { value: serde_json::json!({}), count: 0 }),
             error: None,
         });
-        let mut decl = HashMap::new();
-        decl.insert("succeeded".into(), ResultWireSpec::String("ok".into()));
+        let decl = map_spec(&[("succeeded", "ok")]);
 
-        let wrapped = ResultDispenser::wrap(inner, &decl);
+        let wrapped = ResultDispenser::wrap(inner, Some(&decl));
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
@@ -1385,10 +1503,9 @@ mod tests {
             body: None,
             error: Some("boom"),
         });
-        let mut decl = HashMap::new();
-        decl.insert("succeeded".into(), ResultWireSpec::String("ok".into()));
+        let decl = map_spec(&[("succeeded", "ok")]);
 
-        let wrapped = ResultDispenser::wrap(inner, &decl);
+        let wrapped = ResultDispenser::wrap(inner, Some(&decl));
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
@@ -1397,10 +1514,11 @@ mod tests {
     }
 
     #[test]
-    fn result_dispenser_unresolved_path_uses_default() {
-        // An unresolvable path that has a `default:` falls back to
-        // the default value; one with no default is silently
-        // skipped (warning logged, not asserted here).
+    fn result_dispenser_unresolved_path_skips_silently() {
+        // SRD-66 dropped the legacy `Object { source, default }`
+        // form. An unresolvable path now logs a Warn and the
+        // wire is absent from the captures map (no default
+        // fallback).
         let inner = Arc::new(FakeInner {
             body: Some(ResultDispBody {
                 value: serde_json::json!({"rows": []}),
@@ -1408,30 +1526,17 @@ mod tests {
             }),
             error: None,
         });
-        let mut decl = HashMap::new();
-        decl.insert(
-            "missing_with_default".into(),
-            ResultWireSpec::Object {
-                source: "rows[0].value".into(),
-                default: Some("none".into()),
-            },
-        );
-        decl.insert(
-            "missing_no_default".into(),
-            ResultWireSpec::String("rows[0].value".into()),
-        );
+        let decl = map_spec(&[
+            ("missing", "rows[0].value"),
+        ]);
 
-        let wrapped = ResultDispenser::wrap(inner, &decl);
+        let wrapped = ResultDispenser::wrap(inner, Some(&decl));
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let result = rt.block_on(wrapped.execute(0, &ctx)).unwrap();
 
-        match &result.captures["missing_with_default"] {
-            nbrs_variates::node::Value::Str(s) => assert_eq!(s, "none"),
-            other => panic!("expected default Str, got {other:?}"),
-        }
-        assert!(!result.captures.contains_key("missing_no_default"));
+        assert!(!result.captures.contains_key("missing"));
     }
 
     #[test]
@@ -1441,7 +1546,7 @@ mod tests {
             error: None,
         });
         let inner_ptr = Arc::as_ptr(&inner);
-        let wrapped = ResultDispenser::wrap(inner.clone(), &HashMap::new());
+        let wrapped = ResultDispenser::wrap(inner.clone(), None);
         // Empty declaration short-circuits — the wrapper returns
         // the inner Arc itself, not a fresh `ResultDispenser`.
         assert_eq!(Arc::as_ptr(&wrapped), inner_ptr);
@@ -1459,9 +1564,8 @@ mod tests {
                 Box::pin(async move { Ok(OpResult::skipped()) })
             }
         }
-        let mut decl = HashMap::new();
-        decl.insert("c".into(), ResultWireSpec::String("count".into()));
-        let wrapped = ResultDispenser::wrap(Arc::new(SkipInner), &decl);
+        let decl = map_spec(&[("c", "count")]);
+        let wrapped = ResultDispenser::wrap(Arc::new(SkipInner), Some(&decl));
         let (fields, pulls) = empty_ctx();
         let ctx = ExecCtx::new(&fields, &pulls);
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();

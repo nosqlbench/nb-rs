@@ -40,6 +40,17 @@ pub trait ResultBody: Send + Sync + fmt::Debug {
     /// Size in bytes of the result payload, if known.
     /// Used by the result traverser for throughput metrics.
     fn byte_count(&self) -> Option<u64> { None }
+
+    /// SRD-66 §"Surface 1" body projection — return the body's
+    /// canonical text representation for use by result-binding
+    /// expressions (the magic `body: Str` extern). Default
+    /// implementation falls back to `serde_json::to_string`
+    /// over `to_json()`; adapters with native text bodies (e.g.
+    /// `TextBody`, the CQL describe row) override to return
+    /// the underlying text directly.
+    fn to_text(&self) -> String {
+        serde_json::to_string(&self.to_json()).unwrap_or_default()
+    }
 }
 
 /// Simple text result body.
@@ -51,6 +62,7 @@ impl ResultBody for TextBody {
         serde_json::Value::String(self.0.clone())
     }
     fn as_any(&self) -> &dyn Any { self }
+    fn to_text(&self) -> String { self.0.clone() }
 }
 
 /// The result of a successful operation.
@@ -237,6 +249,27 @@ pub trait DriverAdapter: Send + Sync + 'static {
         &self,
         _parent: &std::sync::Arc<std::sync::RwLock<nbrs_metrics::component::Component>>,
     ) {}
+
+    /// Async teardown hook fired by the resource pool when a
+    /// shared adapter's last reference detaches (or at session
+    /// shutdown). Default: no-op — drop is enough for adapters
+    /// whose underlying driver closes synchronously in its
+    /// destructor.
+    ///
+    /// Override to await a driver-specific close handshake.
+    /// The CQL adapter's override calls
+    /// `Session::close().await` (which wraps
+    /// `cass_session_close`) inside a 5-second timeout so a
+    /// hung node doesn't pin the runtime.
+    ///
+    /// The future returned here borrows `&self` for the
+    /// duration of the await; callers keep the adapter Arc
+    /// alive across the await so the borrow stays valid.
+    fn shutdown<'a>(
+        &'a self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async {})
+    }
 }
 
 /// Adapter display preference for TUI activation.

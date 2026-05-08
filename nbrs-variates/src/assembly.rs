@@ -886,8 +886,18 @@ impl GkAssembler {
                     }
                 };
 
-                // Printf accepts any input type — skip type checking for it
-                let skip_type_check = all_nodes[node_idx].node.meta().name == "printf";
+                // Printf accepts any input type — skip type checking for it.
+                // `pick` is also type-flexible: its selector wires must be
+                // Bool but its value wires can be any type so long as they
+                // share a common type at eval — uniformity is enforced at
+                // eval time (SRD-66 §"Surface 3"). The variadic ctor can't
+                // know the value-half port type at construction, so we
+                // declare placeholder ports and skip the assembler check;
+                // the per-eval validator catches mismatches with a clear
+                // panic via `enrich_eval_panic`.
+                let node_name_for_typing = &all_nodes[node_idx].node.meta().name;
+                let skip_type_check = node_name_for_typing == "printf"
+                    || node_name_for_typing == "pick";
 
                 if skip_type_check || source_type == expected_type {
                     node_wiring.push(source);
