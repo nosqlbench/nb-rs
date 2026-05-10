@@ -39,3 +39,29 @@ pub mod log_levels;
 pub mod metrics;
 #[cfg(feature = "vectordata")]
 pub mod vectors;
+
+/// Env-gated debug-level diagnostic for selection / matching nodes.
+///
+/// Returns true when `NBRS_DEBUG_NODES` is set to a non-empty,
+/// non-`"0"` value. Cached on first read so the variable can be set
+/// once at process start and the per-cycle check is a load.
+///
+/// Used by `regex_match`, `exactly_one_value`, and `pick` to emit
+/// pre-eval / pre-panic context (input shape, match result, selector
+/// states) when probe phases produce surprising values. The user's
+/// expected workflow:
+///
+/// ```sh
+/// NBRS_DEBUG_NODES=1 nbrs run my-workload …
+/// ```
+///
+/// then read the stderr trace to see what each matching node saw.
+pub fn debug_nodes_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("NBRS_DEBUG_NODES")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false)
+    })
+}

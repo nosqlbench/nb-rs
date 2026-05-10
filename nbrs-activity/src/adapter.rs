@@ -16,6 +16,12 @@ use std::fmt;
 // alongside `use nbrs_activity::adapter::{OpDispenser, ResolvedFields, ...}`.
 pub use crate::fixture::ExecCtx;
 
+// Re-export GkKernel so adapter `map_op` impls can name the
+// `parent: &GkKernel` parameter type without each adapter crate
+// taking a direct nbrs-variates dependency. SRD-68 §"Adapter API
+// surface" pins this as the canonical import path for adapters.
+pub use nbrs_variates::kernel::GkKernel;
+
 /// Trait for adapter-specific result bodies.
 ///
 /// The adapter defines its own concrete result type and implements
@@ -178,8 +184,23 @@ pub trait DriverAdapter: Send + Sync + 'static {
     ///
     /// Init-time work: parse the op, prepare statements, pre-compute
     /// bind-point resolution, validate field names, attach metrics.
-    fn map_op(&self, template: &nbrs_workload::model::ParsedOp)
-        -> Result<Box<dyn OpDispenser>, String>;
+    ///
+    /// `parent` is the phase scope kernel — the GK context the op
+    /// template's matter (phase `bindings:`, `result:` block, etc.)
+    /// should attach to. Adapters that need their own GK context
+    /// for op-template-scope name resolution clone the Arc and
+    /// either retain it directly (no op-level matter) or use it as
+    /// the parent in a SRD-67 `build_subscope` call to materialise
+    /// their canonical kernel (op-level matter present); adapters
+    /// with no GK needs ignore the parameter. The Arc lets the
+    /// dispenser own a long-lived reference to the canonical
+    /// kernel without re-cloning state. See SRD-68 §"Adapter API
+    /// surface".
+    fn map_op(
+        &self,
+        template: &nbrs_workload::model::ParsedOp,
+        parent: std::sync::Arc<GkKernel>,
+    ) -> Result<Box<dyn OpDispenser>, String>;
 
     /// Default metric names to display on the status line for this adapter.
     ///
@@ -355,6 +376,51 @@ pub trait OpDispenser: Send + Sync {
         self.inner_dispenser().and_then(|inner| inner.describe())
     }
 
+    /// Render the actual op the dispenser would fire for the given
+    /// cycle — the dryrun-equivalent view of the statement after
+    /// every bind point is interpolated.
+    ///
+    /// Pairs with [`Self::describe`]: `describe()` returns the
+    /// op-template (placeholders intact) so the operator can match
+    /// the failure to the workload yaml; `describe_resolved(wires)`
+    /// returns what was *actually* sent for this cycle, so the
+    /// operator can immediately tell whether bindpoints resolved to
+    /// expected values, whether the wrong dialect's branch fired,
+    /// whether quoting / escaping is broken, etc.
+    ///
+    /// SRD-68 Push 5: takes the dispenser's bound `WireSource`
+    /// (same surface adapters use at cycle time) so the rendered
+    /// view comes from the canonical resolution path — no
+    /// synthesis-layer ResolvedFields detour.
+    ///
+    /// Returns `None` when the dispenser can't usefully render the
+    /// resolved form (e.g. opaque request bodies, dispensers without
+    /// per-cycle interpolation). The default delegates to the inner
+    /// dispenser; leaf dispensers should override when they have a
+    /// useful per-cycle rendering.
+    fn describe_resolved(&self, wires: &dyn crate::wires::WireSource) -> Option<String> {
+        self.inner_dispenser().and_then(|inner| inner.describe_resolved(wires))
+    }
+
+    /// SRD-68 invariant I-3 — the dispenser's canonical GK kernel,
+    /// established at construction by `map_op` from its parent
+    /// (with optional matter assembly via `build_subscope`).
+    /// Returns `None` for dispensers that don't own a kernel
+    /// (adapters with no GK needs, or wrappers that delegate to
+    /// an inner dispenser).
+    ///
+    /// The executor walks `Some` returns at fiber spawn to
+    /// materialise per-fiber subscope kernels — one per dispenser,
+    /// indexed parallel to the dispenser registry. At cycle time
+    /// the firing fiber's slot for this dispenser is handed in
+    /// via `ExecCtx::wires` so cycle-time reads stay on the SRD-68
+    /// I-1 single resolution surface.
+    ///
+    /// Default: delegate to inner dispenser if any, else `None`.
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<GkKernel>> {
+        self.inner_dispenser().and_then(|inner| inner.canonical_kernel())
+    }
+
     /// Snapshot adapter-specific metrics for inclusion in the capture
     /// snapshot.
     ///
@@ -451,10 +517,12 @@ pub trait WrappingDispenser: OpDispenser {}
 /// string rendering is deferred until first access to avoid wasted
 /// work for adapters that bind typed values natively (e.g., CQL).
 ///
-/// For ops with `for_each` batch expansion, `batch_fields` contains
-/// the expanded field sets — one per iteration of the for_each.
-/// The adapter uses these to build a batch statement. The primary
-/// `names`/`values` contain the fields from the base cycle.
+/// SRD-68 Push 5: this struct survives as an in-adapter rendering
+/// container (stdout/testkit/plotter build one locally from
+/// [`crate::wires::resolve_op_fields_via_wires`] when they need
+/// name-keyed value access). Adapters that bind typed values
+/// natively (CQL prepared params, vector arguments) read directly
+/// through `wires.get(name)` and don't construct this type.
 pub struct ResolvedFields {
     /// Field names in op template declaration order.
     pub names: Vec<String>,
@@ -462,16 +530,6 @@ pub struct ResolvedFields {
     pub values: Vec<nbrs_variates::node::Value>,
     /// Lazily rendered string representations, parallel to `names`.
     strings: OnceLock<Vec<String>>,
-    /// Expanded field sets for batch ops (one per for_each iteration).
-    /// Empty for non-batch ops.
-    pub batch_fields: Vec<ResolvedFieldSet>,
-}
-
-/// A single set of resolved field values (used in batch expansion).
-#[derive(Clone)]
-pub struct ResolvedFieldSet {
-    pub names: Vec<String>,
-    pub values: Vec<nbrs_variates::node::Value>,
 }
 
 impl fmt::Debug for ResolvedFields {
@@ -489,7 +547,6 @@ impl Clone for ResolvedFields {
             names: self.names.clone(),
             values: self.values.clone(),
             strings: self.strings.clone(),
-            batch_fields: self.batch_fields.clone(),
         }
     }
 }
@@ -497,7 +554,7 @@ impl Clone for ResolvedFields {
 impl ResolvedFields {
     /// Create with names and typed values. Strings are lazily rendered.
     pub fn new(names: Vec<String>, values: Vec<nbrs_variates::node::Value>) -> Self {
-        Self { names, values, strings: OnceLock::new(), batch_fields: Vec::new() }
+        Self { names, values, strings: OnceLock::new() }
     }
 
     /// Access the lazily-rendered string representations.

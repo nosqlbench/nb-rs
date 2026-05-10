@@ -64,6 +64,7 @@ pub struct CompileOptions {
     pub strict: bool,
     pub required_outputs: Vec<String>,
     pub context_label: Option<String>,
+    pub cursor_limit: Option<u64>,
 }
 
 impl CompileOptions {
@@ -73,6 +74,7 @@ impl CompileOptions {
             && !self.strict
             && self.required_outputs.is_empty()
             && self.context_label.is_none()
+            && self.cursor_limit.is_none()
     }
 }
 
@@ -282,8 +284,16 @@ impl<P> SubcontextBuilder<P> {
         // actually references AND that aren't already declared
         // locally (the body might re-declare via `extern body`
         // explicitly — let that win).
+        // SRD-66 §"Surface 4 §Open: body type" resolved to
+        // `Value::Json` — body is a structural value the
+        // workload assertively unwraps via `exactly_one_value`.
+        // The Json shape preserves row × column structure so
+        // shape-mismatch diagnostics can name actual
+        // dimensions; for unary results, `exactly_one_value`
+        // collapses to a `Str` carrier which downstream
+        // string predicates (regex_match, etc.) consume.
         let magic_externs: &[(&str, PortType, &str)] = &[
-            ("body", PortType::Str, "String"),
+            ("body", PortType::Json, "Json"),
             ("count", PortType::U64, "u64"),
             ("ok", PortType::Bool, "bool"),
         ];
@@ -397,14 +407,29 @@ impl<P> SubcontextBuilder<P> {
         //
         // * `final` parent → `FinalShadow` error (immutable,
         //   can't be redefined).
-        // * `shared` parent → record the export as a write-
-        //   through candidate. The kernel-synthesis rewrite
-        //   below renames the child's binding LHS to
+        // * `shared` cell visible at parent → record the export
+        //   as a write-through candidate. The kernel-synthesis
+        //   rewrite below renames the child's binding LHS to
         //   `__write_<name>` and inserts an `extern <name>`
-        //   declaration so `bind_outer_scope` can attach the
-        //   parent's `SharedCell`.
-        // * No parent export → child-only export, registered
-        //   locally (no rewrite).
+        //   declaration; spawn's typed cell-attach pass then
+        //   wires the input slot to the parent's `SharedCell`.
+        //
+        //   "Visible at parent" walks the typed
+        //   `shared_cells_in_scope()` enumeration so an ancestral
+        //   `shared X` cell propagates transitively even when an
+        //   intermediate scope's body never names X. Without
+        //   this, Rule 2 silently no-ops for grand-children and
+        //   their write-throughs go nowhere.
+        //
+        // * No parent export and no in-scope cell → child-only
+        //   export, registered locally (no rewrite).
+        drop(parent_inner);
+        let in_scope_cells = parent.shared_cells_in_scope();
+        let in_scope_cells_by_name: std::collections::HashMap<&str, &super::kernel::SharedCellInScope> = in_scope_cells
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+        let parent_inner = parent.lock_inner();
         let mut write_through_specs: Vec<(String, PortType)> = Vec::new();
         for exp in &exports {
             let parent_modifier = parent_inner.program().output_modifier(&exp.name);
@@ -414,19 +439,13 @@ impl<P> SubcontextBuilder<P> {
                     site: context.clone(),
                 });
             }
-            if parent_modifier.is_shared() && parent_outputs.contains(&exp.name) {
-                // Pick the port type from the parent's input slot
-                // (the canonical typed source — `shared X := <lit>`
-                // declares the slot's port type at compile). Fall
-                // back to the export spec's port type if the parent
-                // doesn't expose an input (defensive — shared
-                // outputs always have a backing input slot per
-                // `compile.rs::CycleBinding`).
-                let pt = parent_inner
-                    .program()
-                    .input_port_type(&exp.name)
-                    .unwrap_or(exp.port_type);
-                write_through_specs.push((exp.name.clone(), pt));
+            if let Some(in_scope) = in_scope_cells_by_name.get(exp.name.as_str()) {
+                // Port type comes from the typed in-scope record
+                // (sourced from the cell-bound input slot at the
+                // owning ancestor). Authoritative; falls back to
+                // the export spec's declared port type only if
+                // the lookup somehow misses — never observed.
+                write_through_specs.push((exp.name.clone(), in_scope.port_type));
             }
         }
         drop(parent_inner);
@@ -591,13 +610,14 @@ impl<P> SubcontextBuilder<P> {
                 .context_label
                 .as_deref()
                 .unwrap_or(context.label.as_str());
-            compile_gk_with_libs(
+            crate::dsl::compile::compile_gk_with_libs_and_limit(
                 &src,
                 compile_options.workload_dir.as_deref(),
                 compile_options.gk_lib_paths.clone(),
                 &compile_options.required_outputs,
                 compile_options.strict,
                 context_label,
+                compile_options.cursor_limit,
             )
             .map_err(ContractViolation::Compile)?
         };
@@ -608,6 +628,24 @@ impl<P> SubcontextBuilder<P> {
         // ownership of the program Arc).
         if !inherited_outputs.is_empty() {
             kernel.mark_inherited_outputs(inherited_outputs);
+        }
+
+        // ----- Bake Rule 2 write-throughs into the program. -----
+        // The program is the single source of truth for these
+        // bindings: any kernel built from this program (including
+        // per-fiber re-instances via `bind_program_under_parent`)
+        // will inherit them via `from_program`'s automatic seeding,
+        // eliminating the side-channel that used to thread
+        // write-throughs through the activity-layer scope tree.
+        let kernel_write_throughs: Vec<crate::kernel::KernelWriteThrough> = write_throughs
+            .iter()
+            .map(|wt| crate::kernel::KernelWriteThrough {
+                export_name: wt.export_name.clone(),
+                source_output: wt.source_output.clone(),
+            })
+            .collect();
+        if !kernel_write_throughs.is_empty() {
+            kernel.bake_write_throughs(kernel_write_throughs);
         }
 
         // ----- Validate that every declared import shows up as

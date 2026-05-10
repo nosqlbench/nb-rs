@@ -57,12 +57,15 @@ mod engines;
 mod gkkernel;
 mod scope_coords;
 mod manifest;
+mod api;
+mod api_impl;
 
 pub use program::*;
 pub use engines::*;
 pub use gkkernel::*;
 pub use scope_coords::{ScopeCoord, format_scope_coordinate_path};
 pub use manifest::{extract_manifest, ManifestEntry};
+pub use api::{Construction, Dataflow, Metadata, WireKey};
 
 use crate::node::Value;
 
@@ -150,19 +153,19 @@ mod tests {
         let mut state = program.create_state();
 
         // Default values for capture inputs
-        assert_eq!(state.get_input(1), &Value::F64(0.0));
-        assert_eq!(state.get_input(2), &Value::Str("anonymous".into()));
+        assert_eq!(state.get_input(1), Value::F64(0.0));
+        assert_eq!(state.get_input(2), Value::Str("anonymous".into()));
 
         // Set capture inputs individually
         state.set_input(1, Value::F64(1234.56));
         state.set_input(2, Value::Str("token_abc".into()));
-        assert_eq!(state.get_input(1), &Value::F64(1234.56));
-        assert_eq!(state.get_input(2), &Value::Str("token_abc".into()));
+        assert_eq!(state.get_input(1), Value::F64(1234.56));
+        assert_eq!(state.get_input(2), Value::Str("token_abc".into()));
 
         // Capture inputs persist when coordinates change
         state.set_inputs(&[42]);
-        assert_eq!(state.get_input(1), &Value::F64(1234.56));
-        assert_eq!(state.get_input(2), &Value::Str("token_abc".into()));
+        assert_eq!(state.get_input(1), Value::F64(1234.56));
+        assert_eq!(state.get_input(2), Value::Str("token_abc".into()));
     }
 
     #[test]
@@ -181,11 +184,11 @@ mod tests {
         let mut state = program.create_state();
 
         state.set_input(1, Value::Str("alice".into()));
-        assert_eq!(state.get_input(1), &Value::Str("alice".into()));
+        assert_eq!(state.get_input(1), Value::Str("alice".into()));
 
         // Reset only capture inputs (from coord_count onward)
         state.reset_inputs_from(1);
-        assert_eq!(state.get_input(1), &Value::Str("anon".into()));
+        assert_eq!(state.get_input(1), Value::Str("anon".into()));
     }
 
     #[test]
@@ -207,8 +210,8 @@ mod tests {
         state.set_input(1, Value::Str("alice".into()));
 
         state.invalidate_all();
-        assert_eq!(state.get_input(0), &Value::U64(0));
-        assert_eq!(state.get_input(1), &Value::Str("anon".into()));
+        assert_eq!(state.get_input(0), Value::U64(0));
+        assert_eq!(state.get_input(1), Value::Str("anon".into()));
     }
 
     #[test]

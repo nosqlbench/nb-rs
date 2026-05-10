@@ -873,15 +873,14 @@ impl Activity {
         // alive.
         let mut dispenser_components: Vec<std::sync::Arc<std::sync::RwLock<
             nbrs_metrics::component::Component>>> = Vec::new();
-        // Per-template list of GK output names that must appear in
-        // `ResolvedFields` for the inner adapter (op-field bind
-        // points only). Wrapper-side reads (validation, conditional,
-        // throttle) go through the per-template `pull_plans_per_template`
-        // PullPlan instead — see SRD 31 §"Pull plan vs bind plan".
-        let mut field_pulls_per_template: Vec<Vec<String>> = Vec::new();
+        // Per-template wrapper pull plan. Wrapper-side reads
+        // (validation, conditional, throttle) go through this
+        // `PullPlan` against the firing fiber's state — see
+        // SRD 31 §"Pull plan vs bind plan". Adapter-side reads
+        // moved to the generic `crate::wires::WireSource` surface
+        // at SRD-68 Push 5; the legacy `field_pulls` /
+        // `bind_plans` / `batch_configs` lists are retired.
         let mut pull_plans_per_template: Vec<crate::fixture::PullPlan> = Vec::new();
-        let mut bind_plans_per_template: Vec<Option<crate::synthesis::BindPlan>> = Vec::new();
-        let mut batch_configs_per_template: Vec<crate::synthesis::BatchConfig> = Vec::new();
         for template in templates {
             // Resolve adapter: per-template override or default
             let adapter_name = template.params.get("adapter")
@@ -1031,7 +1030,7 @@ impl Activity {
                 }
             }
 
-            match adapter.map_op(template) {
+            match adapter.map_op(template, op_builder.canonical_kernel_for_op(&template.name)) {
                 Ok(d) => {
                     let raw = Arc::from(d);
 
@@ -1293,37 +1292,6 @@ impl Activity {
                     // `if`, throttle `delay`). See SRD 31 §"Pull plan
                     // vs bind plan".
                     pull_plans_per_template.push(fx.seal());
-
-                    // Collect names that must appear in
-                    // ResolvedFields for the inner adapter's op-field
-                    // substitution. Wrapper-only names (validation,
-                    // condition, delay) are NOT in this list — they
-                    // ride the PullPlan.
-                    let mut field_pulls = Vec::new();
-                    for value in template.op.values() {
-                        if let Some(s) = value.as_str() {
-                            for name in nbrs_workload::bindpoints::referenced_bindings(s) {
-                                if !field_pulls.contains(&name) {
-                                    field_pulls.push(name);
-                                }
-                            }
-                        }
-                    }
-                    field_pulls_per_template.push(field_pulls);
-
-                    // Pre-build the bind plan and batch config once per template.
-                    // These were previously built per-cycle inside the resolver.
-                    let stmt_field = template.op.get("stmt")
-                        .or_else(|| template.op.get("prepared"))
-                        .or_else(|| template.op.get("raw"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let bind_names = nbrs_workload::bindpoints::referenced_bindings(stmt_field);
-                    let bind_plan = crate::synthesis::BindPlan::new(&bind_names, &program);
-                    bind_plans_per_template.push(bind_plan);
-
-                    let batch_config = crate::synthesis::BatchConfig::from_params(&template.params);
-                    batch_configs_per_template.push(batch_config);
                 }
                 Err(e) => {
                     crate::diag!(crate::observer::LogLevel::Error, "error: adapter.map_op failed for '{}': {e}", template.name);
@@ -1334,10 +1302,7 @@ impl Activity {
         let dispensers = Arc::new(dispensers);
         // Register dispensers for adapter-specific metrics capture
         activity.metrics.set_dispensers(dispensers.clone());
-        let field_pulls_per_template = Arc::new(field_pulls_per_template);
         let pull_plans_per_template = Arc::new(pull_plans_per_template);
-        let bind_plans_per_template = Arc::new(bind_plans_per_template);
-        let batch_configs_per_template = Arc::new(batch_configs_per_template);
         let validation_metrics = Arc::new(validation_metrics);
         // Share the validation-metrics handle with ActivityMetrics so
         // the progress thread (below) can read live relevancy aggregates.
@@ -1500,20 +1465,14 @@ impl Activity {
         let pool_spawner: crate::fiber_pool::FiberSpawner = {
             let activity = activity.clone();
             let dispensers_outer = dispensers.clone();
-            let field_pulls_outer = field_pulls_per_template.clone();
             let pull_plans_outer = pull_plans_per_template.clone();
-            let bind_plans_outer = bind_plans_per_template.clone();
-            let batch_configs_outer = batch_configs_per_template.clone();
             let op_builder_outer = op_builder.clone();
             let rate_limiter_outer = rate_limiter.clone();
             let phase_arc_outer = phase_name_arc.clone();
             Box::new(move |stop: crate::fiber_pool::StopFlag| {
                 let activity = activity.clone();
                 let dispensers = dispensers_outer.clone();
-                let field_pulls = field_pulls_outer.clone();
                 let pull_plans = pull_plans_outer.clone();
-                let bind_plans = bind_plans_outer.clone();
-                let batch_configs = batch_configs_outer.clone();
                 let op_builder = op_builder_outer.clone();
                 let rate_limiter = rate_limiter_outer.clone();
                 let phase_arc = phase_arc_outer.clone();
@@ -1534,9 +1493,8 @@ impl Activity {
                         phase_arc,
                         async move {
                             executor_task(
-                                activity, dispensers, field_pulls, pull_plans,
-                                bind_plans, batch_configs, op_builder,
-                                rate_limiter, stop,
+                                activity, dispensers, pull_plans,
+                                op_builder, rate_limiter, stop,
                             ).await;
                         },
                     );
@@ -1957,8 +1915,6 @@ impl Activity {
 ///
 /// Groups are determined at init time by analyzing capture
 /// declarations and references across templates.
-// `field_pulls`: per-template names that must populate
-// `ResolvedFields` for the inner adapter (op-field bind points only).
 // `pull_plans`: per-template wrapper-side `PullPlan`s, sealed at init.
 // Drives cycle-time reads for validation / conditional / throttle
 // wrappers via memoized `PullHandle`s. See SRD 31 §"Pull plan vs bind
@@ -1966,10 +1922,7 @@ impl Activity {
 async fn executor_task(
     activity: Arc<Activity>,
     dispensers: Arc<Vec<Arc<dyn OpDispenser>>>,
-    field_pulls: Arc<Vec<Vec<String>>>,
     pull_plans: Arc<Vec<crate::fixture::PullPlan>>,
-    bind_plans: Arc<Vec<Option<crate::synthesis::BindPlan>>>,
-    batch_configs: Arc<Vec<crate::synthesis::BatchConfig>>,
     op_builder: Arc<crate::synthesis::OpBuilder>,
     // Optional activity-level rate limiter. `acquire` fires
     // once per cycle before adapter dispatch. There is no
@@ -1987,6 +1940,15 @@ async fn executor_task(
     // references like `{table}` in op templates resolve to the
     // current iteration's value.
     let mut fiber = op_builder.create_fiber_builder();
+
+    // SRD-68 Push 3 — materialise per-fiber subscope kernels from
+    // each dispenser's canonical kernel. The fiber holds them as
+    // `Vec<Option<GkKernel>>` indexed parallel to the dispenser
+    // registry; cycle dispatch reads `fiber.per_op_kernel(template_idx)`
+    // to populate `ExecCtx::wires` for the firing dispenser.
+    // Dispensers that return `None` from `canonical_kernel()` get
+    // a `None` slot and the cycle falls back to `NullWireSource`.
+    fiber.attach_dispenser_kernels(&dispensers);
 
     // Create per-fiber source reader (used for all phases).
     // Source-declared phases will eventually use the advancer model,
@@ -2038,51 +2000,13 @@ async fn executor_task(
 
             let (template_idx, template) = activity.op_sequence.get_with_index(cycle);
             fiber.set_source_item(&item);
-            // Wrap synchronous GK eval in catch_unwind so a node-
-            // level panic at cycle time becomes a phase-stopping
-            // error with full context instead of crashing the
-            // runtime. The wrapper cannot recover — fiber state
-            // may be in a partially-mutated state — so we set the
-            // stop flag and break the fiber's loop.
-            let fields = match std::panic::catch_unwind(
-                std::panic::AssertUnwindSafe(|| {
-                    fiber.resolve_cached(
-                        template,
-                        &field_pulls[template_idx],
-                        bind_plans[template_idx].as_ref(),
-                        &batch_configs[template_idx],
-                    )
-                })
-            ) {
-                Ok(f) => f,
-                Err(payload) => {
-                    let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
-                        (*s).to_string()
-                    } else if let Some(s) = payload.downcast_ref::<String>() {
-                        s.clone()
-                    } else {
-                        "<non-string panic payload>".to_string()
-                    };
-                    // Always carry the op-template name and cycle
-                    // so the phase-level stop message can name
-                    // exactly which op fired. A bare "GK eval
-                    // panic" leaves the operator hunting through
-                    // every op in the phase to find the cause.
-                    let full = format!(
-                        "op '{}' at cycle {cycle}: GK eval panic: {msg}",
-                        template.name,
-                    );
-                    activity.metrics.errors_total.inc();
-                    activity.metrics.count_error_type("gk_eval_panic");
-                    activity.stop_flag.store(true, Ordering::Relaxed);
-                    if let Ok(mut slot) = activity.stop_reason.lock()
-                        && slot.is_none()
-                    {
-                        *slot = Some(format!("[gk_eval_panic] {full}"));
-                    }
-                    break;
-                }
-            };
+            // SRD-68 Push 5: `ctx.fields` is no longer the
+            // resolution surface for adapters or wrappers — they
+            // read everything through `ctx.wires` (the bound GK
+            // context). The empty `ResolvedFields` satisfies the
+            // `ExecCtx` struct-shape contract until the field is
+            // removed from the trait surface entirely.
+            let fields = crate::adapter::ResolvedFields::new(Vec::new(), Vec::new());
 
             // Resolve the wrapper-side pull plan against this
             // fiber's GkState (one indexed pull per registered
@@ -2096,12 +2020,35 @@ async fn executor_task(
             // that kernel's state. Flattened op-templates fall
             // through to the main kernel (the workload program)
             // — same call site, the lookup is idempotent.
-            let pulls = fiber.resolve_pulls_for_op(
-                &template.name,
+            let pulls = fiber.resolve_pulls_for_idx(
+                template_idx,
                 &pull_plans[template_idx],
             );
             let dispenser = &dispensers[template_idx];
-            let exec_ctx = crate::fixture::ExecCtx::new(&fields, &pulls);
+            // SRD-68 invariant I-2: cycle-time reads against the
+            // firing dispenser's per-fiber kernel slot, exposed
+            // through the narrow `WireSource` trait. `CycleWires`
+            // wraps the per-fiber kernel handle for the cycle's
+            // duration so `WireSource::get` can drive output pulls
+            // (`pull(&mut state, …)` through interior mutability)
+            // alongside input/constant lookups. Dispensers with
+            // no canonical kernel (legacy adapters, wrapper
+            // delegates) fall through to the `NullWireSource`
+            // baseline `ExecCtx::new` provides.
+            // SRD-68 invariant I-2 with phase-binding fallback:
+            // chain the per-op kernel to the fiber's main kernel
+            // so a `{name}` reference that the op-template program
+            // didn't extern (typically a phase-level binding the
+            // op-template scope synthesiser couldn't see at build
+            // time) still resolves through the fiber's main GK
+            // context. Single resolution surface preserved — the
+            // chain is hidden inside `WireSource::get`.
+            let (per_op, main) = fiber.cycle_kernels_mut(template_idx);
+            let cycle_wires = match per_op {
+                Some(p) => crate::wires::CycleWires::with_fallback(p, main),
+                None => crate::wires::CycleWires::new(main),
+            };
+            let exec_ctx = crate::fixture::ExecCtx::with_wires(&fields, &pulls, &cycle_wires);
             let service_start = Instant::now();
             let mut tries = 1u32;
             let (success, captures, skipped) = loop {
@@ -2140,10 +2087,14 @@ async fn executor_task(
                                 && slot.is_none()
                             {
                                 let op_shape = dispenser.describe()
-                                    .map(|d| format!("\n    op-shape: {d}"))
+                                    .map(|d| format!("\n    op-template: {d}"))
+                                    .unwrap_or_default();
+                                let op_resolved = dispenser
+                                    .describe_resolved(exec_ctx.wires)
+                                    .map(|d| format!("\n    op-resolved: {d}"))
                                     .unwrap_or_default();
                                 *slot = Some(format!(
-                                    "[{}] op '{}' at cycle {}: {}{op_shape}",
+                                    "[{}] op '{}' at cycle {}: {}{op_shape}{op_resolved}",
                                     inner.error_name,
                                     template.name,
                                     cycle,
@@ -2184,16 +2135,37 @@ async fn executor_task(
                     // through parent `shared` cells. Slots that
                     // don't exist on either kernel are silently
                     // dropped (closure-binding economy).
+                    let debug_nodes = nbrs_variates::nodes::debug_nodes_enabled();
+                    if debug_nodes {
+                        crate::observer::log(
+                            crate::observer::LogLevel::Debug,
+                            &format!(
+                                "activity.cycle: op '{}' captures={:?}",
+                                template.name,
+                                captures.keys().collect::<Vec<_>>()
+                            ),
+                        );
+                    }
                     for (name, value) in captures {
                         fiber.capture(&name, value.clone());
-                        fiber.write_op_template_input(&template.name, &name, value);
+                        let wrote = fiber.write_op_template_input_for_idx(template_idx, &name, value);
+                        if debug_nodes {
+                            crate::observer::log(
+                                crate::observer::LogLevel::Debug,
+                                &format!(
+                                    "activity.cycle: op '{}' write_op_template_input \
+                                     name='{}' wrote={}",
+                                    template.name, name, wrote
+                                ),
+                            );
+                        }
                     }
                     // Fire the Rule 2 write-through commit on the
                     // op-template kernel — pulls every
                     // `__write_<X>` and stores its value through
                     // the cell-bound input slot for `<X>`. No-op
                     // when the kernel carries no write-throughs.
-                    fiber.commit_op_template_write_throughs(&template.name);
+                    fiber.commit_op_template_write_throughs_for_idx(template_idx);
                 }
             }
 
@@ -2321,8 +2293,11 @@ mod tests {
 
     impl DriverAdapter for CountingDriverAdapter {
         fn name(&self) -> &str { "counting" }
-        fn map_op(&self, _template: &nbrs_workload::model::ParsedOp)
-            -> Result<Box<dyn OpDispenser>, String> {
+        fn map_op(
+            &self,
+            _template: &nbrs_workload::model::ParsedOp,
+            _parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+        ) -> Result<Box<dyn OpDispenser>, String> {
             Ok(Box::new(CountingDispenser { count: self.count.clone() }))
         }
     }
@@ -2357,8 +2332,11 @@ mod tests {
 
     impl DriverAdapter for FailThenSucceedDriverAdapter {
         fn name(&self) -> &str { "fail-then-succeed" }
-        fn map_op(&self, _template: &nbrs_workload::model::ParsedOp)
-            -> Result<Box<dyn OpDispenser>, String> {
+        fn map_op(
+            &self,
+            _template: &nbrs_workload::model::ParsedOp,
+            _parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+        ) -> Result<Box<dyn OpDispenser>, String> {
             Ok(Box::new(FailThenSucceedDispenser {
                 fails_remaining: self.fails_remaining.clone(),
                 total_calls: self.total_calls.clone(),
@@ -2390,14 +2368,14 @@ mod tests {
         }
     }
 
-    /// Build a minimal GK program (single identity node) for tests.
-    fn test_program() -> Arc<nbrs_variates::kernel::GkProgram> {
+    /// Build a minimal GK root kernel (single identity node) for tests.
+    fn test_kernel() -> nbrs_variates::kernel::GkKernel {
         use nbrs_variates::assembly::{GkAssembler, WireRef};
         use nbrs_variates::nodes::identity::Identity;
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
         asm.add_node("id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
         asm.add_output("id", WireRef::node("id"));
-        asm.compile().unwrap().into_program()
+        asm.compile().unwrap()
     }
 
     #[tokio::test]
@@ -2413,7 +2391,7 @@ mod tests {
         let activity = Activity::new(config, &Labels::of("session", "test"), seq);
 
         let (adapter, count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::from_program(test_program()))).await;
+        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
 
         assert_eq!(count.load(Ordering::Relaxed), 100);
     }
@@ -2433,7 +2411,7 @@ mod tests {
         let activity = Activity::new(config, &Labels::of("session", "s1"), seq);
 
         let (adapter, total_calls) = FailThenSucceedDriverAdapter::new(2);
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::from_program(test_program()))).await;
+        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
 
         assert_eq!(total_calls.load(Ordering::Relaxed), 3);
     }
@@ -2453,7 +2431,7 @@ mod tests {
         let shared_metrics = activity.shared_metrics();
 
         let (adapter, _count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::from_program(test_program()))).await;
+        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
 
         assert_eq!(shared_metrics.cycles_total.get(), 50);
         let frame = shared_metrics.capture(std::time::Duration::from_secs(1));
@@ -2538,7 +2516,7 @@ mod tests {
         let activity = Activity::new(config, &Labels::of("session", "s1"), seq);
 
         let (adapter, count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::from_program(test_program()))).await;
+        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
 
         assert_eq!(count.load(Ordering::Relaxed), 10);
     }
@@ -2559,7 +2537,7 @@ mod tests {
         let activity = Activity::new(config, &Labels::of("session", "s1"), seq);
 
         let (adapter, count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::from_program(test_program()))).await;
+        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
 
         assert_eq!(count.load(Ordering::Relaxed), 12);
     }
@@ -2588,7 +2566,7 @@ mod tests {
         activity.attach_component(component.clone());
 
         let (adapter, _count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::from_program(test_program()))).await;
+        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
 
         // After the activity runs, the rate control is on the
         // component and reports the configured target via its
@@ -2624,7 +2602,7 @@ mod tests {
         activity.attach_component(component.clone());
 
         let (adapter, _count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::from_program(test_program()))).await;
+        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
 
         let guard = component.read().unwrap();
         assert!(
@@ -2682,7 +2660,7 @@ mod tests {
         });
 
         let (adapter, _count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::from_program(test_program()))).await;
+        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
         let _ = writer.await;
 
         let guard = component.read().unwrap();
@@ -2718,7 +2696,7 @@ mod tests {
         activity.attach_component(component.clone());
 
         let (adapter, _count) = CountingDriverAdapter::new();
-        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::from_program(test_program()))).await;
+        activity.run_with_driver(Arc::new(adapter), Arc::new(crate::synthesis::OpBuilder::new(test_kernel()))).await;
 
         // After run completes the control is still on the
         // component (structural declaration survives execution).

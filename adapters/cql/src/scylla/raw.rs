@@ -21,14 +21,15 @@ use super::{ScyllaResultBody, format_cql_error, op_error};
 pub(super) struct ScyllaRawDispenser {
     session: Arc<Session>,
     consistency: Consistency,
-    /// Op-template field name carrying the statement text (raw /
-    /// simple). Looked up in `ResolvedFields` at cycle time.
-    field_name: String,
+    /// Original statement template, with `{name}` placeholders
+    /// intact. Rendered at cycle time through the generic GK
+    /// wires API (SRD-68 Push 5).
+    stmt_template: String,
 }
 
 impl ScyllaRawDispenser {
-    pub fn new(session: Arc<Session>, consistency: Consistency, field_name: String) -> Self {
-        Self { session, consistency, field_name }
+    pub fn new(session: Arc<Session>, consistency: Consistency, stmt_template: String) -> Self {
+        Self { session, consistency, stmt_template }
     }
 }
 
@@ -38,21 +39,18 @@ impl OpDispenser for ScyllaRawDispenser {
         _cycle: u64,
         ctx: &'a nbrs_activity::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
-        let fields = ctx.fields;
+        let wires = ctx.wires;
         Box::pin(async move {
-            let text = fields.get_str(&self.field_name).ok_or_else(|| op_error(
-                "missing_stmt",
-                format!("op missing '{}' field at cycle time", self.field_name),
-                false,
-            ))?;
+            let text = nbrs_activity::wires::substitute_via_wires(&self.stmt_template, wires)
+                .map_err(|e| op_error("bind_error", e, false))?;
 
-            let mut stmt = Statement::new(text.to_string());
+            let mut stmt = Statement::new(text.clone());
             stmt.set_consistency(self.consistency);
 
             let result = self.session.query_unpaged(stmt, ()).await
                 .map_err(|e| op_error(
                     "cql_error",
-                    format_cql_error(&e.to_string(), text),
+                    format_cql_error(&e.to_string(), &text),
                     false,
                 ))?;
 

@@ -62,7 +62,21 @@ impl RegexMatch {
 impl GkNode for RegexMatch {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Bool(self.re.is_match(inputs[0].as_str()));
+        let input = inputs[0].as_str();
+        let matched = self.re.is_match(input);
+        if crate::nodes::debug_nodes_enabled() {
+            // Snippet trims to the first 200 chars so describe-keyspace
+            // bodies don't flood stderr; full length is reported alongside.
+            let snippet: String = input.chars().take(200).collect();
+            let ellipsis = if input.len() > snippet.len() { "…" } else { "" };
+            crate::audit::debug(&format!(
+                "regex_match: pattern={:?} input.len={} matched={matched} input.snippet={:?}{ellipsis}",
+                self.re.as_str(),
+                input.len(),
+                snippet,
+            ));
+        }
+        outputs[0] = Value::Bool(matched);
     }
 }
 

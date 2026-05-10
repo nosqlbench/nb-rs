@@ -28,6 +28,26 @@ use super::program::GkProgram;
 /// per binding declaration.
 pub type SharedCell = Arc<Mutex<Value>>;
 
+/// One named shared cell propagated through the parent → child
+/// scope chain. Carried on `GkKernel` (and surfaced through
+/// `ScopeKernel::shared_cells_in_scope`) so a descendant whose
+/// program declares a matching input slot can attach the cell —
+/// even when intermediate scopes' bodies never name it and so
+/// have no input slot for it themselves.
+///
+/// Without this carrier, an ancestral `shared X := …` cell
+/// becomes invisible past the first intermediate scope under
+/// the closure-binding economy. With it, every spawn step
+/// computes "every cell visible at this scope" and threads the
+/// full set forward — the cascade is transitive by
+/// construction.
+#[derive(Clone, Debug)]
+pub struct SharedCellEntry {
+    pub name: String,
+    pub port_type: crate::node::PortType,
+    pub cell: SharedCell,
+}
+
 /// Build the rich diagnostic message for a node-level eval panic.
 /// Includes the node's function name, every output it feeds, the
 /// input values it was called with, and the program's diagnostic
@@ -263,25 +283,38 @@ impl GkState {
 
     /// Set a single input by index, dirtying only dependent nodes.
     ///
-    /// If the slot has a `SharedCell` attached (from
-    /// `bind_outer_scope` wiring `shared`-modifier outputs from
-    /// an outer kernel), the new value is also written through
-    /// the cell so other kernels sharing it see the update on
-    /// their next `refresh_shared`.
+    /// Single-register semantics: a cell-bound slot's only
+    /// register IS the cell — `set_input` writes through the
+    /// cell. A non-cell slot's register is the local
+    /// `inputs[idx]` array. There's no second snapshot kept in
+    /// lockstep with the cell; reads always go to whichever is
+    /// the slot's register.
+    ///
+    /// Dependents-marking is the dependent-list invalidation
+    /// strategy carried by `GkState`; it's the write-side
+    /// half of the engine's dirty-tracking. Other engines
+    /// (`RawState`, `ProvScanState`) implement different
+    /// strategies — see their own `set_inputs` impls.
     pub fn set_input(&mut self, idx: usize, value: Value) {
-        if self.core.inputs[idx] != value {
-            self.core.inputs[idx] = value.clone();
-            if idx < self.input_dependents.len() {
-                for &node_idx in &self.input_dependents[idx] {
-                    self.core.node_clean[node_idx] = false;
-                }
+        let changed = if let Some(cell) = self.core.shared_cells.get(idx).and_then(|c| c.as_ref()) {
+            // Cell-bound slot: the cell is the register. We do
+            // NOT mirror the value into `inputs[idx]`; that
+            // array slot is unused for cell-bound inputs.
+            let mut guard = cell.lock().unwrap();
+            let changed = *guard != value;
+            *guard = value;
+            changed
+        } else {
+            let changed = self.core.inputs[idx] != value;
+            if changed {
+                self.core.inputs[idx] = value;
             }
-        }
-        // Write-through to the shared cell, if any. The Mutex
-        // serializes concurrent writers; semantic is last-write-
-        // wins (SRD-16 §"Mutability Rules: Shared Mutable").
-        if let Some(cell) = self.core.shared_cells.get(idx).and_then(|c| c.as_ref()) {
-            *cell.lock().unwrap() = value;
+            changed
+        };
+        if changed && idx < self.input_dependents.len() {
+            for &node_idx in &self.input_dependents[idx] {
+                self.core.node_clean[node_idx] = false;
+            }
         }
         // Non-deterministic nodes must always re-evaluate.
         for &idx in &self.nondeterministic_nodes {
@@ -289,51 +322,42 @@ impl GkState {
         }
     }
 
-    /// Read the snapshot value of an input by index.
+    /// Read the value of an input by index.
     ///
-    /// Lower-level accessor returning a borrow into the kernel's
-    /// local input array — for non-shared slots this is the
-    /// canonical value; for `shared`-bound slots it's a snapshot
-    /// updated when *this* kernel calls `set_input`, but
-    /// potentially stale relative to writes by other kernels
-    /// sharing the same cell. Callers wanting a guaranteed-fresh
-    /// cross-kernel read should use [`crate::kernel::GkKernel::lookup`]
-    /// or `pull` — both go through the cell transparently.
-    pub fn get_input(&self, idx: usize) -> &Value {
-        &self.core.inputs[idx]
+    /// Single-register read: cell-bound slots return the cell's
+    /// current value; non-cell slots return the local register.
+    /// One canonical value per slot, no stale snapshot.
+    pub fn get_input(&self, idx: usize) -> Value {
+        self.core.read_input(idx)
     }
 
-    /// Cell-aware read of an input by index. Goes through the
-    /// `SharedCell` Mutex when the slot is shared, returning the
-    /// canonical cross-kernel value.
+    /// Alias for [`Self::get_input`]; kept for legacy callers
+    /// that picked the more explicit name. Both read the cell
+    /// when one is attached.
     pub fn read_input_value(&self, idx: usize) -> Value {
         self.core.read_input(idx)
     }
 
     /// Attach a `SharedCell` to an input slot.
     ///
-    /// After this call, `set_input` on the slot writes through
-    /// to the cell (in addition to the local snapshot), and
-    /// `refresh_shared` reads cell updates back into the local
-    /// snapshot. This is the wiring done by
-    /// [`crate::kernel::GkKernel::bind_outer_scope`] for
-    /// `shared`-modifier outputs in the outer kernel.
+    /// After this call the cell becomes the slot's sole
+    /// register: reads via `read_input` go through the cell,
+    /// `set_input` writes through the cell. The local
+    /// `inputs[idx]` array entry for this slot is unused for
+    /// cell-bound slots — there is no second register kept in
+    /// lockstep.
     ///
-    /// Initializes the slot's snapshot from the cell's current
-    /// value, so subsequent reads see the right value without
-    /// an explicit `refresh_shared`.
+    /// Dependents are dirtied because the slot's effective
+    /// value just changed from the local default to whatever
+    /// the cell currently holds.
     pub fn attach_shared_cell(&mut self, idx: usize, cell: SharedCell) {
-        let cell_value = cell.lock().unwrap().clone();
         if idx >= self.core.shared_cells.len() {
             self.core.shared_cells.resize(idx + 1, None);
         }
         self.core.shared_cells[idx] = Some(cell);
-        if self.core.inputs[idx] != cell_value {
-            self.core.inputs[idx] = cell_value;
-            if idx < self.input_dependents.len() {
-                for &node_idx in &self.input_dependents[idx] {
-                    self.core.node_clean[node_idx] = false;
-                }
+        if idx < self.input_dependents.len() {
+            for &node_idx in &self.input_dependents[idx] {
+                self.core.node_clean[node_idx] = false;
             }
         }
     }
@@ -349,8 +373,19 @@ impl GkState {
     /// boundaries to prevent capture leakage across stanzas.
     /// `from_idx` is typically `coord_count` (skip coordinates,
     /// reset only capture inputs).
+    ///
+    /// Cell-bound slots are skipped: the cell is cross-kernel
+    /// shared state with its own lifecycle (managed by the
+    /// owning ancestor scope), and a stanza-local reset must
+    /// not clobber other kernels' views.
     pub fn reset_inputs_from(&mut self, from_idx: usize) {
         for i in from_idx..self.core.inputs.len() {
+            // Cell-bound slots: the cell is the register, owned
+            // by the ancestor that declared `shared X := init`.
+            // Don't touch.
+            if self.core.shared_cells.get(i).is_some_and(|c| c.is_some()) {
+                continue;
+            }
             if self.core.inputs[i] != self.core.input_defaults[i] {
                 self.core.inputs[i] = self.core.input_defaults[i].clone();
                 if i < self.input_dependents.len() {

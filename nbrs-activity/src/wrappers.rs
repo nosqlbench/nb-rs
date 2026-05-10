@@ -951,15 +951,24 @@ impl OpDispenser for ResultDispenser {
             // a subset.
             if self.populate_kernel_inputs {
                 let count = result.body.as_ref().map(|b| b.element_count()).unwrap_or(0);
-                let body_text = result
+                // SRD-66 §"Surface 4 §Open: body type" resolved
+                // to `Value::Json` — body rides the kernel as a
+                // structural value so `exactly_one_value(body)`
+                // can walk row × column shape (per
+                // `nbrs-variates::nodes::exactly_one`). For ops
+                // whose body has no structural projection the
+                // adapter's `to_json()` returns a JSON String,
+                // which `exactly_one_value` collapses to
+                // `Value::Str`.
+                let body_json = result
                     .body
                     .as_ref()
-                    .map(|b| b.to_text())
-                    .unwrap_or_default();
+                    .map(|b| b.to_json())
+                    .unwrap_or(serde_json::Value::Null);
                 result
                     .captures
                     .entry("body".to_string())
-                    .or_insert(nbrs_variates::node::Value::Str(body_text));
+                    .or_insert(nbrs_variates::node::Value::Json(body_json));
                 result
                     .captures
                     .entry("count".to_string())

@@ -37,6 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use nbrs_activity::adapter::{
     AdapterError, DriverAdapter, ExecutionError, OpDispenser, OpResult, ResolvedFields, TextBody,
 };
+use nbrs_activity::wires::resolve_op_fields_via_wires;
 use nbrs_activity::observer::LogLevel;
 use nbrs_workload::model::ParsedOp;
 
@@ -339,7 +340,11 @@ impl StdoutAdapter {
 impl DriverAdapter for StdoutAdapter {
     fn name(&self) -> &str { "stdout" }
 
-    fn map_op(&self, template: &ParsedOp) -> Result<Box<dyn OpDispenser>, String> {
+    fn map_op(
+        &self,
+        template: &ParsedOp,
+        parent: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
+    ) -> Result<Box<dyn OpDispenser>, String> {
         // SRD-40b §9: per-op-template channel routing. The
         // op-template parameter `stdout: <channel>` selects where
         // rendered output goes for this template. Absent → terminal.
@@ -352,6 +357,16 @@ impl DriverAdapter for StdoutAdapter {
                 template.name
             )),
         };
+        // SRD-68 Push 5: snapshot the op-field templates at
+        // construction. At cycle time the dispenser walks this list
+        // and resolves each field's `{name}` references through the
+        // generic GK wires API (`wires.get` for pure-token positions,
+        // `substitute_via_wires` for embedded references). No
+        // synthesis-layer ResolvedFields needed — wires answers
+        // every name directly.
+        let op_fields: Vec<(String, serde_json::Value)> = template.op.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         Ok(Box::new(StdoutDispenser {
             writer: self.writer.clone(),
             format: self.format,
@@ -362,6 +377,8 @@ impl DriverAdapter for StdoutAdapter {
             header_emitted: self.header_emitted.clone(),
             color: self.color,
             channel,
+            canonical_kernel: parent,
+            op_fields,
         }))
     }
 
@@ -391,27 +408,55 @@ pub struct StdoutDispenser {
     color: bool,
     /// Per-op channel routing. SRD-40b §9.
     channel: StdoutChannel,
+    /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
+    /// Stored so the per-fiber fan-out can build per-fiber kernels
+    /// from this dispenser's slot via the standard `build_subscope`
+    /// path (see `OpDispenser::canonical_kernel`).
+    canonical_kernel: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
+    /// Op-field templates snapshotted at `map_op` (name + raw
+    /// JSON value from the parsed op). At cycle time each entry
+    /// is resolved against the per-fiber wires: pure-token
+    /// strings (`{name}`) preserve their typed `Value` via
+    /// `wires.get`; embedded references (`{a}/{b}` etc.) render
+    /// through `substitute_via_wires`. SRD-68 invariant I-1: the
+    /// generic GK API answers every name; no synthesis-layer
+    /// ResolvedFields is consulted.
+    op_fields: Vec<(String, serde_json::Value)>,
 }
 
 impl OpDispenser for StdoutDispenser {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::GkKernel>> {
+        Some(&self.canonical_kernel)
+    }
     fn execute<'a>(
         &'a self,
         _cycle: u64,
         ctx: &'a nbrs_activity::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
-        let fields = ctx.fields;
+        let wires = ctx.wires;
         Box::pin(async move {
+            // SRD-68 Push 5: resolve each op field through the
+            // generic wires API. No ctx.fields lookup.
+            let resolved = match resolve_op_fields_via_wires(&self.op_fields, wires) {
+                Ok(r) => r,
+                Err(msg) => return Err(ExecutionError::Op(AdapterError {
+                    error_name: "BindError".into(),
+                    message: msg,
+                    retryable: false,
+                })),
+            };
+
             // Apply field filter if configured
             let filtered;
             let render_fields = if self.fields_filter.is_empty() {
-                fields
+                &resolved
             } else {
-                let mut names = Vec::new();
+                let mut names: Vec<String> = Vec::new();
                 let mut values = Vec::new();
-                for (i, name) in fields.names.iter().enumerate() {
+                for (i, name) in resolved.names.iter().enumerate() {
                     if self.fields_filter.iter().any(|f| f == name) {
                         names.push(name.clone());
-                        values.push(fields.values[i].clone());
+                        values.push(resolved.values[i].clone());
                     }
                 }
                 filtered = ResolvedFields::new(names, values);
@@ -516,6 +561,17 @@ mod tests {
         ResolvedFields::new(
             fields.iter().map(|(k, _)| k.to_string()).collect(),
             fields.iter().map(|(_, v)| nbrs_variates::node::Value::Str(v.to_string())).collect(),
+        )
+    }
+
+    /// Minimal kernel used as the `parent` argument to `map_op`
+    /// in tests that don't need a richer GK context. SRD-68 Push 2:
+    /// the `parent` parameter is plumbed through every `map_op`
+    /// signature as `Arc<GkKernel>`; tests pass this fixture so
+    /// they don't need to stand up the full activity-init pipeline.
+    fn test_kernel() -> std::sync::Arc<nbrs_variates::kernel::GkKernel> {
+        std::sync::Arc::new(
+            nbrs_variates::dsl::compile::compile_gk("inputs := (cycle)\n").unwrap()
         )
     }
 
@@ -627,15 +683,20 @@ mod tests {
             format: StdoutFormat::Assignments,
             ..Default::default()
         });
-        let template = ParsedOp::simple("test", "key={key}");
-        let dispenser = adapter.map_op(&template).unwrap();
-        let fields = test_fields(&[("key", "value42")]);
+        // Literal stmt — exercises the format renderer without
+        // requiring a wires source for substitution.
+        let template = ParsedOp::simple("test", "key=value42");
+        let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
+
+        let mut k = nbrs_variates::dsl::compile::compile_gk("inputs := (cycle)\n").unwrap();
+        let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
-        let ctx = nbrs_activity::adapter::ExecCtx::new(&fields, &pulls);
+        let empty = ResolvedFields::new(Vec::new(), Vec::new());
+        let ctx = nbrs_activity::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
         dispenser.execute(0, &ctx).await.unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("key=value42"));
+        assert!(content.contains("key=value42"), "got: {content:?}");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -649,22 +710,46 @@ mod tests {
             header: true,
             ..Default::default()
         });
-        let template = ParsedOp::simple("test", "test");
-        let dispenser = adapter.map_op(&template).unwrap();
+        // Op template carries explicit `name` and `age` fields with
+        // bind-point references; per-cycle values come from a GK
+        // kernel whose `cycle` input drives the strings.
+        let mut template = ParsedOp::simple("test", "test");
+        template.op.remove("stmt");
+        template.op.insert("name".into(), serde_json::Value::String("{name}".into()));
+        template.op.insert("age".into(),  serde_json::Value::String("{age}".into()));
+        let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
 
-        let fields1 = test_fields(&[("name", "alice"), ("age", "30")]);
-        let fields2 = test_fields(&[("name", "bob"), ("age", "25")]);
+        // Two compiled kernels — one per row's wire values.
+        let mut k1 = nbrs_variates::dsl::compile::compile_gk(
+            "inputs := (cycle)\n\
+             name := \"alice\"\n\
+             age := \"30\"\n",
+        ).unwrap();
+        let mut k2 = nbrs_variates::dsl::compile::compile_gk(
+            "inputs := (cycle)\n\
+             name := \"bob\"\n\
+             age := \"25\"\n",
+        ).unwrap();
+        let cw1 = nbrs_activity::wires::CycleWires::new(&mut k1);
+        let cw2 = nbrs_activity::wires::CycleWires::new(&mut k2);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
-        let ctx1 = nbrs_activity::adapter::ExecCtx::new(&fields1, &pulls);
-        let ctx2 = nbrs_activity::adapter::ExecCtx::new(&fields2, &pulls);
+        let empty = ResolvedFields::new(Vec::new(), Vec::new());
+        let ctx1 = nbrs_activity::adapter::ExecCtx::with_wires(&empty, &pulls, &cw1);
+        let ctx2 = nbrs_activity::adapter::ExecCtx::with_wires(&empty, &pulls, &cw2);
         dispenser.execute(0, &ctx1).await.unwrap();
         dispenser.execute(1, &ctx2).await.unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
-        assert_eq!(lines[0], "name,age", "first line should be header");
-        assert_eq!(lines[1], "alice,30");
-        assert_eq!(lines[2], "bob,25");
+        // CSV header pairs match HashMap iteration order; assert
+        // membership rather than position so the test isn't tied
+        // to non-deterministic op-field ordering.
+        assert!(lines[0].contains("name") && lines[0].contains("age"),
+            "header row should list both fields: {:?}", lines[0]);
+        assert!(content.contains("alice") && content.contains("30"),
+            "row 1 should render name=alice, age=30: {content:?}");
+        assert!(content.contains("bob") && content.contains("25"),
+            "row 2 should render name=bob, age=25: {content:?}");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -742,10 +827,17 @@ mod tests {
         assert!(template.params.get("stdout").is_none(),
             "guard: this test relies on the param being absent");
 
-        let dispenser = adapter.map_op(&template).unwrap();
-        let fields = test_fields(&[("k", "default_terminal_marker_abc")]);
+        // Re-bind the template stmt to the marker so the rendered
+        // line carries it (op-field text is the source of truth).
+        let mut template = template;
+        template.op.insert("stmt".into(),
+            serde_json::Value::String("default_terminal_marker_abc".into()));
+        let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
+        let mut k = nbrs_variates::dsl::compile::compile_gk("inputs := (cycle)\n").unwrap();
+        let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
-        let ctx = nbrs_activity::adapter::ExecCtx::new(&fields, &pulls);
+        let empty = ResolvedFields::new(Vec::new(), Vec::new());
+        let ctx = nbrs_activity::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
         dispenser.execute(0, &ctx).await.unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
@@ -776,17 +868,20 @@ mod tests {
             ..Default::default()
         });
 
-        // Op template requests the eventlog channel.
-        let mut template = ParsedOp::simple("eventlog_op", "ignored");
+        // Op template carries the marker as literal stmt text and
+        // requests the eventlog channel.
+        let mut template = ParsedOp::simple("eventlog_op", "v_routed_to_eventlog_xyz123");
         template.params.insert(
             "stdout".into(),
             serde_json::Value::String("eventlog".into()),
         );
 
-        let dispenser = adapter.map_op(&template).unwrap();
-        let fields = test_fields(&[("k", "v_routed_to_eventlog_xyz123")]);
+        let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
+        let mut k = nbrs_variates::dsl::compile::compile_gk("inputs := (cycle)\n").unwrap();
+        let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
-        let ctx = nbrs_activity::adapter::ExecCtx::new(&fields, &pulls);
+        let empty = ResolvedFields::new(Vec::new(), Vec::new());
+        let ctx = nbrs_activity::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
         let result = dispenser.execute(0, &ctx).await.unwrap();
 
         // The OpResult body still carries the rendered text so
@@ -826,16 +921,18 @@ mod tests {
             filename: path.to_str().unwrap().into(),
             ..Default::default()
         });
-        let mut template = ParsedOp::simple("silent_op", "ignored");
+        let mut template = ParsedOp::simple("silent_op", "must_not_appear_unique_marker_pq987");
         template.params.insert(
             "stdout".into(),
             serde_json::Value::String("silent".into()),
         );
 
-        let dispenser = adapter.map_op(&template).unwrap();
-        let fields = test_fields(&[("k", "must_not_appear_unique_marker_pq987")]);
+        let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
+        let mut k = nbrs_variates::dsl::compile::compile_gk("inputs := (cycle)\n").unwrap();
+        let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
-        let ctx = nbrs_activity::adapter::ExecCtx::new(&fields, &pulls);
+        let empty = ResolvedFields::new(Vec::new(), Vec::new());
+        let ctx = nbrs_activity::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
         dispenser.execute(0, &ctx).await.unwrap();
 
         let file_contents = std::fs::read_to_string(&path).unwrap_or_default();
@@ -853,7 +950,7 @@ mod tests {
         let adapter = StdoutAdapter::new();
         let mut template = ParsedOp::simple("bad", "ignored");
         template.params.insert("stdout".into(), serde_json::Value::String("nope".into()));
-        let err = match adapter.map_op(&template) {
+        let err = match adapter.map_op(&template, test_kernel()) {
             Ok(_) => panic!("unknown channel must error"),
             Err(e) => e,
         };
@@ -866,7 +963,7 @@ mod tests {
         let adapter = StdoutAdapter::new();
         let mut template = ParsedOp::simple("bad", "ignored");
         template.params.insert("stdout".into(), serde_json::Value::Bool(true));
-        let err = match adapter.map_op(&template) {
+        let err = match adapter.map_op(&template, test_kernel()) {
             Ok(_) => panic!("non-string channel must error"),
             Err(e) => e,
         };

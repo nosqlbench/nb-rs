@@ -2758,6 +2758,7 @@ dependencies = [
  "nbrs-activity",
  "nbrs-variates",
  "nbrs-workload",
+ "serde_json",
 ]
 
 [[package]]

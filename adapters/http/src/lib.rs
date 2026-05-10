@@ -122,7 +122,11 @@ impl DriverAdapter for HttpAdapter {
         Some(&["method", "content_type", "uri", "url", "body", "headers"])
     }
 
-    fn map_op(&self, template: &ParsedOp) -> Result<Box<dyn OpDispenser>, String> {
+    fn map_op(
+        &self,
+        template: &ParsedOp,
+        parent: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
+    ) -> Result<Box<dyn OpDispenser>, String> {
         // Extract static method from template (default GET)
         let method = template.op.get("method")
             .and_then(|v: &serde_json::Value| v.as_str())
@@ -135,56 +139,112 @@ impl DriverAdapter for HttpAdapter {
             .unwrap_or("application/json")
             .to_string();
 
+        // SRD-68 Push 5: snapshot the per-cycle field templates at
+        // map_op. Each is rendered through `substitute_via_wires`
+        // at execute — the generic GK API resolves bind points by
+        // name, no synthesis-layer ResolvedFields involvement.
+        // `url` is an alias for `uri`; honour whichever appears.
+        let uri_template = template.op.get("uri")
+            .or_else(|| template.op.get("url"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let body_template = template.op.get("body")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let headers_template = template.op.get("headers")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
         Ok(Box::new(HttpDispenser {
             client: self.client.clone(),
             base_url: self.base_url.clone(),
             method,
             content_type,
+            canonical_kernel: parent,
+            uri_template,
+            body_template,
+            headers_template,
         }))
     }
 }
 
 /// Op dispenser for the HTTP adapter. Pre-analyzes method and content type
-/// at init time; resolves URI and body from fields per-cycle.
+/// at init time; resolves URI and body from wires per-cycle.
 struct HttpDispenser {
     client: reqwest::Client,
     base_url: Option<String>,
     method: String,
     content_type: String,
+    /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
+    canonical_kernel: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
+    /// Cycle-time templates rendered through `substitute_via_wires`.
+    /// `uri` is mandatory; `body` and `headers` are optional.
+    uri_template: Option<String>,
+    body_template: Option<String>,
+    headers_template: Option<String>,
 }
 
+
 impl OpDispenser for HttpDispenser {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::GkKernel>> {
+        Some(&self.canonical_kernel)
+    }
+
     fn execute<'a>(
         &'a self,
         _cycle: u64,
         ctx: &'a nbrs_activity::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
-        let fields = ctx.fields;
+        let wires = ctx.wires;
         Box::pin(async move {
-            let uri = fields.get_str("uri")
-                .or_else(|| fields.get_str("url"))
+            let uri_template = self.uri_template.as_deref()
                 .ok_or_else(|| ExecutionError::Op(AdapterError {
                     error_name: "missing_field".into(),
                     message: "HTTP op requires a 'uri' or 'url' field".into(),
                     retryable: false,
                 }))?;
 
+            // SRD-68 Push 5: render each per-cycle template via the
+            // generic wires API. Bind-point resolution failures are
+            // returned as op errors so the error router decides.
+            let uri = nbrs_activity::wires::substitute_via_wires(uri_template, wires)
+                .map_err(|e| ExecutionError::Op(AdapterError {
+                    error_name: "BindError".into(),
+                    message: format!("uri: {e}"),
+                    retryable: false,
+                }))?;
+
             let full_url = if let Some(ref base) = self.base_url {
                 if uri.starts_with("http://") || uri.starts_with("https://") {
-                    uri.to_string()
+                    uri.clone()
                 } else {
                     format!("{}{}", base.trim_end_matches('/'), uri)
                 }
             } else {
-                uri.to_string()
+                uri.clone()
             };
 
-            let body = fields.get_str("body").map(|s| s.to_string());
+            let body = match &self.body_template {
+                Some(t) => Some(nbrs_activity::wires::substitute_via_wires(t, wires)
+                    .map_err(|e| ExecutionError::Op(AdapterError {
+                        error_name: "BindError".into(),
+                        message: format!("body: {e}"),
+                        retryable: false,
+                    }))?),
+                None => None,
+            };
 
-            // Parse additional headers from fields
-            let extra_headers: Vec<(String, String)> = fields.get_str("headers")
-                .map(|h| {
-                    h.lines()
+            // Parse additional headers from the rendered headers
+            // field. Per-line `Name: Value` entries.
+            let extra_headers: Vec<(String, String)> = match &self.headers_template {
+                Some(t) => {
+                    let rendered = nbrs_activity::wires::substitute_via_wires(t, wires)
+                        .map_err(|e| ExecutionError::Op(AdapterError {
+                            error_name: "BindError".into(),
+                            message: format!("headers: {e}"),
+                            retryable: false,
+                        }))?;
+                    rendered.lines()
                         .filter_map(|line| {
                             let mut parts = line.splitn(2, ':');
                             let name = parts.next()?.trim().to_string();
@@ -192,8 +252,9 @@ impl OpDispenser for HttpDispenser {
                             Some((name, value))
                         })
                         .collect()
-                })
-                .unwrap_or_default();
+                }
+                None => Vec::new(),
+            };
 
             let mut builder = match self.method.as_str() {
                 "GET" => self.client.get(&full_url),

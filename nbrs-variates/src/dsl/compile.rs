@@ -980,6 +980,7 @@ impl Compiler {
                         "u64" => crate::node::PortType::U64,
                         "f64" => crate::node::PortType::F64,
                         "bool" => crate::node::PortType::Bool,
+                        "json" | "Json" => crate::node::PortType::Json,
                         _ => crate::node::PortType::Str,
                     };
                     let (default_value, kind) = match &port.default {
@@ -1282,6 +1283,7 @@ impl Compiler {
                         "u64" => crate::node::PortType::U64,
                         "f64" => crate::node::PortType::F64,
                         "bool" => crate::node::PortType::Bool,
+                        "json" | "Json" => crate::node::PortType::Json,
                         _ => crate::node::PortType::Str,
                     };
                     let (default_value, kind) = match &port.default {
@@ -2142,5 +2144,48 @@ mod tests {
         assert!(init_set.contains("a"), "init 'a' should be tracked");
         assert!(init_set.contains("b"), "init 'b' should be tracked");
         assert!(!init_set.contains("c"), "non-init 'c' must not be tracked");
+    }
+
+    #[test]
+    fn str_concat_via_plus_operator() {
+        // `+` between Str-typed operands lowers to str_concat.
+        let src = r#"
+            inputs := (cycle)
+            greeting := "hello, " + "world"
+        "#;
+        let mut kernel = compile_gk(src).unwrap();
+        kernel.set_inputs(&[0]);
+        assert_eq!(kernel.pull("greeting").as_str(), "hello, world");
+    }
+
+    #[test]
+    fn str_concat_flattens_chained_plus() {
+        // `"a" + b + "c"` flattens into a single str_concat node
+        // (rather than a chain of binary concatenations) so the
+        // assembler sees the full operand list at once.
+        let src = r#"
+            inputs := (cycle)
+            x := "id="
+            y := 42
+            z := " end"
+            out := x + y + z
+        "#;
+        let mut kernel = compile_gk(src).unwrap();
+        kernel.set_inputs(&[0]);
+        assert_eq!(kernel.pull("out").as_str(), "id=42 end");
+    }
+
+    #[test]
+    fn str_concat_mixed_str_and_numeric() {
+        // Numeric operand on the right is rendered as decimal text;
+        // the Str path wins because the left side is Str.
+        let src = r#"
+            inputs := (cycle)
+            n := 7
+            out := "n=" + n
+        "#;
+        let mut kernel = compile_gk(src).unwrap();
+        kernel.set_inputs(&[0]);
+        assert_eq!(kernel.pull("out").as_str(), "n=7");
     }
 }

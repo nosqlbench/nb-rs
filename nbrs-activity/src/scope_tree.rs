@@ -579,6 +579,11 @@ impl ScopeTree {
     /// omitted from the map; their dispensers reach the parent
     /// kernel through the standard `nearest_materialised`
     /// fall-through.
+    ///
+    /// Rule 2 write-through bindings ride on the program itself
+    /// (baked in by the SRD-67 builder's finalize step). Any
+    /// kernel built from the program inherits them automatically
+    /// via `GkKernel::from_program` — no side channel.
     pub fn op_template_programs_for_phase(
         &self,
         phase_idx: ScopeNodeIdx,
@@ -1142,7 +1147,7 @@ mod tests {
         // the inherited extern is populated with the parent's
         // value.
         match kernel.get_input("k_values") {
-            Some(nbrs_variates::node::Value::Str(s)) => assert_eq!(&**s, "1, 10"),
+            Some(nbrs_variates::node::Value::Str(s)) => assert_eq!(s.as_str(), "1, 10"),
             other => panic!("expected Str(\"1, 10\"), got {other:?}"),
         }
 

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use crate::node::{GkNode, Value};
 use super::{WireSource, InputDef};
 use super::program::GkProgram;
-use super::engines::GkState;
+use super::engines::{GkState, SharedCellEntry};
 
 /// Auto-create `SharedCell`s for `shared`-modifier outputs that
 /// have a backing input slot on this kernel. Call once at
@@ -25,7 +25,7 @@ fn seed_shared_cells(state: &mut GkState, program: &GkProgram) {
     for name in program.shared_outputs() {
         let Some(idx) = program.find_input(name) else { continue };
         if state.shared_cell(idx).is_some() { continue; } // already seeded
-        let init_value = state.get_input(idx).clone();
+        let init_value = state.get_input(idx);
         state.attach_shared_cell(idx, Arc::new(Mutex::new(init_value)));
     }
 }
@@ -60,6 +60,20 @@ pub struct GkKernel {
     /// of kernels; populated by the SRD-67 builder when result-
     /// bindings or `shared` collisions trigger Rule 2.
     write_throughs: Vec<KernelWriteThrough>,
+    /// Shared cells visible at this kernel's scope but with no
+    /// matching input slot on this kernel's program (closure-
+    /// binding economy elided the slot). Carried as a transit
+    /// channel so a descendant whose program DOES declare the
+    /// slot can attach the same cell handle.
+    ///
+    /// `bind_outer_scope` is the single writer: when binding
+    /// child to parent, it attaches every parent-visible cell
+    /// to whatever child input slot exists, and stores the
+    /// remaining unattached cells here for further propagation.
+    /// The activity layer never sees this directly — the typed
+    /// `ScopeKernel::shared_cells_in_scope` returns the merged
+    /// view.
+    transit_cells: Vec<SharedCellEntry>,
 }
 
 /// SRD-67 Phase 5 — local data shape of a write-through binding
@@ -68,7 +82,7 @@ pub struct GkKernel {
 /// dependency on the subcontext module (which already depends on
 /// kernel types).
 #[derive(Debug, Clone)]
-pub struct KernelWriteThrough {
+pub(crate) struct KernelWriteThrough {
     pub export_name: String,
     pub source_output: String,
 }
@@ -188,6 +202,7 @@ impl GkKernel {
             constants_folded,
             scope_coords: Vec::new(),
             write_throughs: Vec::new(),
+            transit_cells: Vec::new(),
         };
         k.refresh_scope_coordinates();
         Ok(k)
@@ -205,6 +220,26 @@ impl GkKernel {
         for name in names {
             program.mark_inherited(&name);
         }
+    }
+
+    /// Bake Rule 2 write-through bindings onto the underlying
+    /// program. Must be called immediately after construction,
+    /// before the `Arc<GkProgram>` is shared. Panics if the Arc
+    /// has other references. Also updates this kernel's own
+    /// `write_throughs` field so the just-built kernel matches
+    /// what later `from_program` callers will see.
+    ///
+    /// The single legitimate caller is the SRD-67 builder's
+    /// finalize step. The bake-into-program approach replaces
+    /// the prior side-channel where the activity layer carried
+    /// write-throughs alongside the program; now any kernel
+    /// built from the program inherits the bindings via
+    /// `from_program`'s automatic seeding.
+    pub(crate) fn bake_write_throughs(&mut self, write_throughs: Vec<KernelWriteThrough>) {
+        let program = Arc::get_mut(&mut self.program)
+            .expect("bake_write_throughs called after program was shared");
+        program.set_write_throughs(write_throughs.clone());
+        self.write_throughs = write_throughs;
     }
 
     /// Apply output binding modifiers to the program.
@@ -252,12 +287,19 @@ impl GkKernel {
             }
         }
         seed_shared_cells(&mut state, &program);
+        // Auto-seed the kernel's Rule 2 write-through bindings
+        // from the program. The program is the single source of
+        // truth; any kernel built from it inherits the same
+        // bindings — eliminating the side-channel that the
+        // activity-layer fiber-rebuild path used to need.
+        let write_throughs = program.write_throughs().to_vec();
         let mut k = Self {
             program,
             state,
             constants_folded: 0, // already folded; see program contents
             scope_coords: Vec::new(),
-            write_throughs: Vec::new(),
+            write_throughs,
+            transit_cells: Vec::new(),
         };
         k.refresh_scope_coordinates();
         k
@@ -281,14 +323,14 @@ impl GkKernel {
     /// The bridge (`build_kernel_under_parent_full`) sets these
     /// in one shot at construction; per-cycle code never mutates
     /// them.
-    pub fn set_write_throughs(&mut self, write_throughs: Vec<KernelWriteThrough>) {
+    pub(crate) fn set_write_throughs(&mut self, write_throughs: Vec<KernelWriteThrough>) {
         self.write_throughs = write_throughs;
     }
 
     /// The Rule 2 write-through bindings carried by this kernel.
     /// Empty for kernels without result-bindings or `shared`
     /// collisions.
-    pub fn write_throughs(&self) -> &[KernelWriteThrough] {
+    pub(crate) fn write_throughs(&self) -> &[KernelWriteThrough] {
         &self.write_throughs
     }
 
@@ -301,19 +343,45 @@ impl GkKernel {
     ///
     /// No-op when the kernel carries no write-throughs.
     pub fn commit_write_throughs(&mut self) {
+        let debug = crate::nodes::debug_nodes_enabled();
         if self.write_throughs.is_empty() {
+            if debug {
+                crate::audit::debug("commit_write_throughs: kernel has zero bindings — no-op");
+            }
             return;
         }
         // Two-pass: pull each value first (each pull mutates the
-        // state), collect, then write through. Avoids overlapping
-        // borrows on `self.state` / `self.program`.
+        // state), collect, then write to the slot. Avoids
+        // overlapping borrows on `self.state` / `self.program`.
+        // For cell-bound slots `set_input` writes through the
+        // cell (single-register: cell IS the slot's register);
+        // for non-cell slots it updates the local register.
         let mut pending: Vec<(usize, Value)> = Vec::with_capacity(self.write_throughs.len());
         let bindings = self.write_throughs.clone();
+        if debug {
+            crate::audit::debug(&format!(
+                "commit_write_throughs: {} binding(s)",
+                bindings.len()
+            ));
+        }
         for wt in &bindings {
             let Some(idx) = self.program.find_input(&wt.export_name) else {
+                if debug {
+                    crate::audit::debug(&format!(
+                        "commit_write_throughs: skip {} — no input slot",
+                        wt.export_name
+                    ));
+                }
                 continue;
             };
             let value = self.state.pull(&self.program, &wt.source_output).clone();
+            if debug {
+                crate::audit::debug(&format!(
+                    "commit_write_throughs: {} → {}",
+                    wt.export_name,
+                    value.to_display_string()
+                ));
+            }
             pending.push((idx, value));
         }
         for (idx, value) in pending {
@@ -345,8 +413,9 @@ impl GkKernel {
         self.state.set_inputs(coords);
     }
 
-    /// Read an input value by name.
-    pub fn get_input(&self, name: &str) -> Option<&Value> {
+    /// Read an input value by name. Cell-aware: cell-bound
+    /// slots return the cell's current value.
+    pub fn get_input(&self, name: &str) -> Option<Value> {
         self.program.find_input(name)
             .map(|idx| self.state.get_input(idx))
     }
@@ -440,28 +509,178 @@ impl GkKernel {
     ///
     /// Call this after construction, before moving the kernel
     /// into an `OpBuilder`.
-    pub(crate) fn bind_outer_scope(&mut self, outer: &GkKernel) {
-        for name in outer.program.output_names() {
-            let Some(inner_idx) = self.program.find_input(name) else { continue };
-            // If outer has a shared cell for this name, share it.
-            // Otherwise, fall through to the value-copy path.
-            if let Some(outer_idx) = outer.program.find_input(name)
-                && let Some(cell) = outer.state.shared_cell(outer_idx)
-            {
-                self.state.attach_shared_cell(inner_idx, cell);
-                continue;
+    /// Materialize a sub-scope kernel under this kernel as
+    /// parent. THE single primitive for parent → child kernel
+    /// construction with cell propagation.
+    ///
+    /// Per SRD-67's "parent supervises sub-context construction":
+    /// only the parent has the right to materialize a sub-scope
+    /// kernel. The parent owns the cell cascade, the value-copy
+    /// path for outputs, the scope-coordinate plumbing, and any
+    /// pre-bind iter-var injection. Every other code path that
+    /// needs a parent-bound child kernel routes through here —
+    /// the underlying `bind_outer_scope` step is private to
+    /// this impl and not callable from anywhere else in the
+    /// crate.
+    ///
+    /// `iter_bindings` lets callers inject iter-var values
+    /// before binding, matching `for_iteration`'s contract:
+    /// values must be installed BEFORE
+    /// `refresh_scope_coordinates` runs so the own-coord
+    /// snapshot sees them.
+    ///
+    /// # Side-channel lock
+    ///
+    /// `bind_outer_scope` is private to this impl block. The
+    /// following must NOT compile (anyone trying to bypass the
+    /// typed primitive should be caught at the compiler):
+    ///
+    /// ```compile_fail,E0624
+    /// use nbrs_variates::kernel::GkKernel;
+    /// use nbrs_variates::dsl::compile::compile_gk;
+    /// let parent = compile_gk("inputs := (cycle)\n").unwrap();
+    /// let mut child = compile_gk("inputs := (cycle)\n").unwrap();
+    /// child.bind_outer_scope(&parent); // ← private; refuses to compile
+    /// ```
+    pub(crate) fn materialize_subscope(
+        &self,
+        program: Arc<GkProgram>,
+        iter_bindings: &[(String, Value)],
+    ) -> GkKernel {
+        let mut child = GkKernel::from_program(program);
+        for (var, value) in iter_bindings {
+            if let Some(idx) = child.program.find_input(var) {
+                child.state.set_input(idx, value.clone());
             }
+        }
+        child.bind_outer_scope(self);
+        child
+    }
+
+    /// Late-binding form of [`Self::materialize_subscope`]: the
+    /// child kernel is already constructed (typically because
+    /// it was built earlier from a different program path), and
+    /// the parent now adopts it. Equivalent to running
+    /// `materialize_subscope` against the child's program but
+    /// preserves any pre-existing input values the child holds.
+    ///
+    /// Used for the workload-bindings ↔ workload-params
+    /// composition step (`runner.rs`) and a couple of legacy
+    /// comprehension paths that build a child kernel before the
+    /// parent is available.
+    pub(crate) fn adopt_subscope(&self, child: &mut GkKernel) {
+        child.bind_outer_scope(self);
+    }
+
+    /// Produce a fresh kernel that mirrors this one's program
+    /// AND its full shared-cell view (own input-slot cells +
+    /// transit cells). The cell handles are Arc-shared; the
+    /// returned kernel reads/writes the same cells as `self`.
+    ///
+    /// Used by the typed-builder bridge
+    /// (`build_kernel_under_parent_full`) when it needs an
+    /// `Arc<ScopeKernel<RootMarker>>` standing in for a borrowed
+    /// `&GkKernel` — the wrapping must reflect the LIVE parent's
+    /// cell view, not just its program shape, otherwise Rule 2
+    /// in the builder's finalize sees no cells and produces no
+    /// write-throughs.
+    pub(crate) fn snapshot_with_cells(&self) -> GkKernel {
+        let mut snapshot = GkKernel::from_program(self.program.clone());
+        snapshot.transit_cells = self.transit_cells.clone();
+        // Re-attach every cell from `self`'s input slots onto
+        // the matching input slot of `snapshot`. Slot indices
+        // and names are isomorphic since the program is the
+        // same Arc.
+        for name in self.program.input_names() {
+            let Some(idx) = self.program.find_input(&name) else { continue };
+            let Some(cell) = self.state.shared_cell(idx) else { continue };
+            snapshot.state.attach_shared_cell(idx, cell);
+        }
+        snapshot
+    }
+
+    fn bind_outer_scope(&mut self, outer: &GkKernel) {
+        // Step 1 — typed shared-cell cascade. Compute every
+        // cell visible at the outer scope: cells on outer's
+        // own input slots (its `shared X := …` declarations
+        // and any cells inherited from its own ancestors that
+        // landed on slots) PLUS outer's transit cells (cells
+        // outer carried forward as a transit because outer's
+        // program had no matching slot). Together these are
+        // every cell a descendant could legitimately bind to.
+        //
+        // Attach each cell to whichever child input slot
+        // exists; drop cells whose name the child has already
+        // attached itself to (idempotent reattach with the
+        // same handle is a no-op, but a name collision with
+        // a DIFFERENT cell would be a contract violation —
+        // not observed in practice). Cells with no matching
+        // child slot are stored on the child as transit so
+        // a deeper descendant can pick them up.
+        let outer_cells = outer.shared_cells_in_scope();
+        let mut transit_forward: Vec<SharedCellEntry> = Vec::new();
+        let mut attached_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for entry in outer_cells {
+            if let Some(idx) = self.program.find_input(&entry.name) {
+                self.state.attach_shared_cell(idx, entry.cell.clone());
+                attached_names.insert(entry.name);
+            } else {
+                transit_forward.push(entry);
+            }
+        }
+        self.transit_cells = transit_forward;
+
+        // Step 2 — value-copy path for non-cell outputs.
+        // Walks outer's outputs (the canonical iter-var /
+        // const propagation surface) and snapshots each into
+        // a matching child input. Cell-bound names are
+        // already wired in Step 1; this loop's set_input
+        // call would just overwrite the snapshot the cell
+        // already populated, so we skip names we already
+        // attached.
+        for name in outer.program.output_names() {
+            if attached_names.contains(name) { continue; }
+            let Some(inner_idx) = self.program.find_input(name) else { continue };
             if let Some(value) = outer.lookup(name) {
                 self.state.set_input(inner_idx, value);
             }
         }
-        // Maintain the scope-coordinates invariant: the path
-        // is now `[own] ++ outer.scope_coordinates()`. Refresh
-        // own (extern values may have just been populated by
-        // the loop above), then prepend outer's frozen path.
+
+        // Step 3 — scope-coordinates plumbing. Path is now
+        // `[own] ++ outer.scope_coordinates()`. Refresh own
+        // (extern values may have just been populated above),
+        // then prepend outer's frozen path.
         self.refresh_scope_coordinates();
         let outer_path = outer.scope_coordinates().to_vec();
         self.scope_coords.extend(outer_path);
+    }
+
+    /// Every shared cell visible at this kernel's scope —
+    /// own input slots' attached cells unioned with the
+    /// transit cells inherited from ancestors. The typed
+    /// `ScopeKernel::shared_cells_in_scope` delegates here.
+    ///
+    /// Used by `bind_outer_scope` to compute the parent's
+    /// full visible cell set and propagate it to the child.
+    /// Public for the typed surface; semantics are the same
+    /// as the typed accessor.
+    pub fn shared_cells_in_scope(&self) -> Vec<SharedCellEntry> {
+        let mut by_name: std::collections::HashMap<String, SharedCellEntry> =
+            std::collections::HashMap::new();
+        for entry in &self.transit_cells {
+            by_name.insert(entry.name.clone(), entry.clone());
+        }
+        for name in self.program.input_names() {
+            let Some(idx) = self.program.find_input(&name) else { continue };
+            let Some(cell) = self.state.shared_cell(idx) else { continue };
+            let port_type = self
+                .program
+                .input_port_type(&name)
+                .unwrap_or(crate::node::PortType::Str);
+            by_name.insert(name.clone(), SharedCellEntry { name, port_type, cell });
+        }
+        by_name.into_values().collect()
     }
 
     /// Construct a per-iteration kernel: clone `canonical`'s
@@ -486,22 +705,10 @@ impl GkKernel {
         parent: &Arc<GkKernel>,
         bindings: &[(String, Value)],
     ) -> Arc<GkKernel> {
-        let mut k = GkKernel::from_program(canonical.program().clone());
-        // Iter-var values must be installed *before*
-        // `bind_outer_scope` runs `refresh_scope_coordinates`,
-        // otherwise the own-coord snapshot it takes sees the
-        // default (None) for every iter-var slot and the
-        // resulting `scope_coordinates()` path is missing this
-        // scope's own stratum entirely. The iter-var names
-        // aren't in `parent`'s output set, so the subsequent
-        // `bind_outer_scope` call doesn't overwrite them.
-        for (var, value) in bindings {
-            if let Some(idx) = k.program().find_input(var) {
-                k.state().set_input(idx, value.clone());
-            }
-        }
-        k.bind_outer_scope(parent);
-        Arc::new(k)
+        // Routes through the parent's typed materialization
+        // primitive so cell propagation is uniform with every
+        // other parent → child path.
+        Arc::new(parent.materialize_subscope(canonical.program().clone(), bindings))
     }
 
     /// Recompute this kernel's *own* scope coordinates from

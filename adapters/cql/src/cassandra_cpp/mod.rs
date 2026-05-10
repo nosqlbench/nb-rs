@@ -227,6 +227,152 @@ unsafe impl Sync for CqlAdapter {}
 /// Collapse a multi-line statement to a single line for
 /// error-diagnostic display: trim each line, drop empty
 /// lines, and join with a single space. Truncates at a
+/// SRD-68 Push 5c — walk a CQL statement text and resolve every
+/// `{name}` placeholder, classifying each into one of two buckets:
+///
+/// - **Structural** — `lookup(name)` returns `Some(v)` against the
+///   dispenser's canonical kernel at construction time. The value
+///   is stable for the duration of a phase activation (workload
+///   param, iter var, cascaded extern) and CAN'T be a `?` marker
+///   in CQL's prepared-statement grammar (table names, keyspace,
+///   option values). Substitute the value as text inline.
+///
+/// - **Per-cycle** — `lookup(name)` returns `None`. The name is
+///   either an output binding (phase `bindings:` LHS, `result:`
+///   LHS) that varies per cycle, or a coordinate / capture port.
+///   Replace with `?`; remember the name in `bind_names` in
+///   declaration order so the dispenser can pull the value via
+///   `wires.get(name)` at cycle time.
+///
+/// Honours the same brace-discipline as
+/// `nbrs_workload::bindpoints::extract_bind_points`: `{` followed
+/// by `'`/`"` is a CQL map-literal opener (emit the brace,
+/// continue scanning so nested `{name}` placeholders inside still
+/// resolve); depth-tracking finds the true matching `}`;
+/// inline-expression `{{...}}` and qualifier-prefixed
+/// `{bind:name}` shapes pass through unchanged.
+fn resolve_structural_and_mark_remaining<F>(
+    template: &str,
+    mut lookup: F,
+) -> (String, Vec<String>)
+where
+    F: FnMut(&str) -> Option<nbrs_variates::node::Value>,
+{
+    let chars: Vec<char> = template.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(template.len());
+    let mut bind_names: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < n {
+        // `\{` / `\}` — pass through, two chars.
+        if chars[i] == '\\' && i + 1 < n && (chars[i + 1] == '{' || chars[i + 1] == '}') {
+            out.push(chars[i]);
+            out.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+        // `{{ ... }}` — inline-expression form, pass through.
+        if i + 1 < n && chars[i] == '{' && chars[i + 1] == '{' {
+            let start = i;
+            let mut j = i + 2;
+            while j + 1 < n && !(chars[j] == '}' && chars[j + 1] == '}') {
+                j += 1;
+            }
+            let end = (j + 2).min(n);
+            for k in start..end { out.push(chars[k]); }
+            i = end;
+            continue;
+        }
+        if chars[i] != '{' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        // CQL map / JSON object literal: `{` followed by `'`/`"`.
+        // Emit just the `{` and continue scanning so any nested
+        // `{name}` placeholders inside still resolve.
+        if i + 1 < n && (chars[i + 1] == '\'' || chars[i + 1] == '"') {
+            out.push('{');
+            i += 1;
+            continue;
+        }
+        let body_start = i + 1;
+        let mut j = body_start;
+        let mut depth: u32 = 1;
+        while j < n {
+            if chars[j] == '{' { depth += 1; }
+            if chars[j] == '}' { depth -= 1; if depth == 0 { break; } }
+            j += 1;
+        }
+        if j >= n {
+            out.push('{');
+            i += 1;
+            continue;
+        }
+        let body: String = chars[body_start..j].iter().collect();
+        let body = body.trim();
+        let after = j + 1;
+        if body.is_empty() {
+            out.push('{');
+            out.push('}');
+            i = after;
+            continue;
+        }
+        // Qualifier-prefixed (`{bind:name}`, etc.) and non-bare
+        // identifiers pass through verbatim — same discipline as
+        // `nbrs_activity::wires::substitute_via_wires`.
+        if body.contains(':') || !body.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            || !body.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            out.push('{');
+            out.push_str(body);
+            out.push('}');
+            i = after;
+            continue;
+        }
+        // Bare identifier — try construction-time lookup. Some →
+        // structural inline; None → per-cycle `?` marker.
+        match lookup(body) {
+            Some(v) => {
+                // Structural: substitute the value as text. If
+                // the workload-author wrote `'{name}'` with
+                // surrounding quotes (the typical CQL pattern for
+                // string-typed values), the substituted display
+                // form lands inside those quotes — same shape as
+                // the legacy text-mutation pass.
+                out.push_str(&v.to_display_string());
+            }
+            None => {
+                // Per-cycle binding becomes a `?` marker. If the
+                // workload wrapped this placeholder in matching
+                // quotes (`'{name}'`), strip them — CQL `?`
+                // markers stand in place of the entire quoted
+                // string literal, never inside quotes. Mirrors
+                // the legacy `replace_bind_points_with_markers`
+                // quoted-form-first heuristic.
+                let next_after = chars.get(after).copied();
+                let last_emitted = out.chars().last();
+                let strip_quotes = match (last_emitted, next_after) {
+                    (Some('\''), Some('\'')) => true,
+                    (Some('"'), Some('"')) => true,
+                    _ => false,
+                };
+                if strip_quotes {
+                    out.pop();
+                    out.push('?');
+                    bind_names.push(body.to_string());
+                    i = after + 1;
+                    continue;
+                }
+                out.push('?');
+                bind_names.push(body.to_string());
+            }
+        }
+        i = after;
+    }
+    (out, bind_names)
+}
+
 /// generous bound so a hand-rolled `BATCH` with thousands
 /// of statements doesn't blow the error message size.
 fn flatten_one_line(s: &str) -> String {
@@ -546,7 +692,11 @@ impl DriverAdapter for CqlAdapter {
             .controls().declare(trace_control);
     }
 
-    fn map_op(&self, template: &ParsedOp) -> Result<Box<dyn OpDispenser>, String> {
+    fn map_op(
+        &self,
+        template: &ParsedOp,
+        parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+    ) -> Result<Box<dyn OpDispenser>, String> {
         // Find the statement text and determine execution mode from the field name.
         let (stmt_text, mode, field_name) = STMT_FIELD_NAMES.iter()
             .find_map(|key| -> Option<(String, &str, String)> {
@@ -556,10 +706,33 @@ impl DriverAdapter for CqlAdapter {
             })
             .ok_or_else(|| "CQL op requires a 'poll:', 'raw:', 'simple:', 'prepared:', or 'stmt:' field".to_string())?;
 
-        // Extract bind point names from the statement text ({name} patterns)
-        // and build the CQL-parameterized version with ? markers for prepared mode.
-        let bind_names: Vec<String> = nbrs_workload::bindpoints::referenced_bindings(&stmt_text);
-        let prepared_text = nbrs_workload::bindpoints::replace_bind_points_with_markers(&stmt_text);
+        // SRD-68 Push 5c — construction-time structural resolution
+        // for prepared mode. Walk every `{name}` in the statement
+        // text against the dispenser's canonical kernel:
+        //   - If `canonical.lookup(name)` returns `Some(v)` the
+        //     name resolves to a stable-per-phase-activation value
+        //     (workload param, iter var, cascaded extern). Inline
+        //     `v.to_display_string()` directly into the SQL — the
+        //     CQL prepared-statement compiler can't accept `?`
+        //     markers for structural positions like keyspace /
+        //     table / option values.
+        //   - Else the name is a per-cycle output binding (phase
+        //     `bindings:` LHS, `result:` LHS). Mark it with `?`
+        //     and remember its name for cycle-time `wires.get`
+        //     binding.
+        // The result is a CQL-parameterised `prepared_text` plus
+        // `bind_names` in `?`-position order.
+        //
+        // The dispenser is now self-sufficient — it doesn't
+        // depend on the upstream `resolve_placeholders_via_kernel`
+        // mutation pass having pre-resolved structural names. When
+        // that pass lands its validator-only form (Push 5c step 3)
+        // the dispenser keeps working unchanged.
+        let parent_for_lookup = parent.clone();
+        let (prepared_text, bind_names) = resolve_structural_and_mark_remaining(
+            &stmt_text,
+            |name| parent_for_lookup.lookup(name),
+        );
 
         let session = SessionHandle(&self.session as *const cass::Session);
         let consistency = self.consistency;
@@ -568,6 +741,9 @@ impl DriverAdapter for CqlAdapter {
         // batch: <integer> — batch size (rows per batch), type defaults to unlogged.
         // batchtype: logged|unlogged|counter — overrides batch type.
         let has_batch = template.params.contains_key("batch");
+        let batch_size: usize = template.params.get("batch")
+            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+            .unwrap_or(0) as usize;
         let batch_type = template.params.get("batchtype")
             .and_then(|v| v.as_str())
             .map(|s| match s.to_lowercase().as_str() {
@@ -577,12 +753,22 @@ impl DriverAdapter for CqlAdapter {
             })
             .unwrap_or(cass::BatchType::UNLOGGED);
 
+        // SRD-68 invariant I-3: dispenser owns its canonical kernel.
+        // For Push 2b, no op-level GK matter is assembled here yet —
+        // the canonical kernel is the parent (phase scope) directly.
+        // Push 3 will fan out per-fiber kernels from this canonical;
+        // a follow-up will let CQL ops with their own `bindings:` /
+        // `result:` block materialise a child subscope via
+        // `parent.build_subscope(matter)`.
+        let canonical_kernel = parent;
+
         match mode {
             "raw" => {
                 Ok(Box::new(CqlRawDispenser {
                     session,
                     field_name,
                     stmt_template: stmt_text.clone(),
+                    canonical_kernel,
                     trace_rate_bits: self.trace_rate_bits.clone(),
                     trace_log: self.trace_log.clone(),
                 }))
@@ -592,6 +778,7 @@ impl DriverAdapter for CqlAdapter {
                     session,
                     field_name,
                     stmt_template: stmt_text.clone(),
+                    canonical_kernel,
                     trace_rate_bits: self.trace_rate_bits.clone(),
                     trace_log: self.trace_log.clone(),
                 }))
@@ -605,6 +792,8 @@ impl DriverAdapter for CqlAdapter {
                         stmt_text: prepared_text.clone(),
                         stmt_field: "stmt".to_string(),
                         bind_names,
+                        canonical_kernel,
+                        batch_size: if batch_size == 0 { 1 } else { batch_size },
                         prepared: std::sync::OnceLock::new(),
                         batch_type,
                         rows_timer: nbrs_metrics::instruments::timer::Timer::new(
@@ -620,6 +809,7 @@ impl DriverAdapter for CqlAdapter {
                         session,
                         field_name,
                         stmt_template: stmt_text.clone(),
+                        canonical_kernel,
                         trace_rate_bits: self.trace_rate_bits.clone(),
                         trace_log: self.trace_log.clone(),
                     }))
@@ -629,6 +819,7 @@ impl DriverAdapter for CqlAdapter {
                         consistency,
                         stmt_text: prepared_text,
                         bind_names,
+                        canonical_kernel,
                         prepared: std::sync::OnceLock::new(),
                         binders: std::sync::OnceLock::new(),
                         trace_rate_bits: self.trace_rate_bits.clone(),
@@ -720,6 +911,14 @@ struct CqlRawDispenser {
     /// the fully-interpolated text from `ctx.fields`; this
     /// field is informational only.
     stmt_template: String,
+    /// SRD-68 invariant I-3: dispenser-owned canonical GK
+    /// kernel for op-template-scope name resolution. Push 2b
+    /// stores the parent reference directly; Push 3 will fan
+    /// out per-fiber kernels from this canonical via
+    /// `build_subscope` for cycle-time reads through the
+    /// narrow `WireSource` trait.
+    #[allow(dead_code)]
+    canonical_kernel: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
     /// Live tracing probability (f64 bits). Loaded per execute;
     /// `cql_trace_rate` control writes here.
     trace_rate_bits: Arc<AtomicU64>,
@@ -740,20 +939,46 @@ impl OpDispenser for CqlRawDispenser {
         Some(format!("CQL raw: {}", flatten_one_line(&self.stmt_template)))
     }
 
+    fn describe_resolved(&self, wires: &dyn nbrs_activity::wires::WireSource) -> Option<String> {
+        // SRD-68 Push 5: render the post-substitution statement
+        // through the same `substitute_via_wires` path the cycle
+        // uses so the operator sees exactly what was sent. Bind
+        // failures (unresolved name) surface in the message; the
+        // describe-resolved is best-effort, so a None on error is
+        // fine.
+        nbrs_activity::wires::substitute_via_wires(&self.stmt_template, wires)
+            .ok()
+            .map(|s| format!("CQL raw: {}", flatten_one_line(&s)))
+    }
+
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::GkKernel>> {
+        Some(&self.canonical_kernel)
+    }
+
     fn execute<'a>(
         &'a self,
         cycle: u64,
         ctx: &'a nbrs_activity::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
-        let fields = ctx.fields;
+        let wires = ctx.wires;
         Box::pin(async move {
-            // Read the fully-interpolated statement from the resolved field
-            let stmt_text = fields.get_str(&self.field_name)
-                .ok_or_else(|| ExecutionError::Op(AdapterError {
-                    error_name: "missing_field".into(),
-                    message: format!("CQL op missing '{}' field", self.field_name),
-                    retryable: false,
-                }))?;
+            // SRD-68 Push 5: cycle-time bind-point resolution
+            // through the dispenser's per-fiber GK kernel via the
+            // narrow `WireSource` trait. Walks the pristine
+            // statement template stored at construction and
+            // resolves each `{name}` against the per-fiber kernel
+            // slot that the executor handed in via
+            // `ExecCtx::wires`. Single resolution surface per
+            // SRD-68 invariant I-1; legacy `fields.get_str` path
+            // retired for CQL raw mode.
+            let stmt_text_owned = nbrs_activity::wires::substitute_via_wires(
+                &self.stmt_template, wires,
+            ).map_err(|msg| ExecutionError::Op(AdapterError {
+                error_name: "unresolved_bind_point".into(),
+                message: msg,
+                retryable: false,
+            }))?;
+            let stmt_text: &str = stmt_text_owned.as_str();
 
             // Sparse-tracing decision per execute. Atomic load is
             // cheap (single 64-bit read); the RNG roll only fires
@@ -869,6 +1094,10 @@ struct CqlPreparedDispenser {
     stmt_text: String,
     /// Names of bind point fields to extract from ResolvedFields.
     bind_names: Vec<String>,
+    /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
+    /// See `CqlRawDispenser::canonical_kernel`.
+    #[allow(dead_code)]
+    canonical_kernel: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
     /// Prepared once on first execute, then lock-free reads thereafter.
     prepared: std::sync::OnceLock<Arc<cass::PreparedStatement>>,
     /// Type-aware binders built once from prepared statement metadata.
@@ -906,13 +1135,49 @@ impl OpDispenser for CqlPreparedDispenser {
         Some(format!("CQL prepared: {}", flatten_one_line(&self.stmt_text)))
     }
 
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::GkKernel>> {
+        Some(&self.canonical_kernel)
+    }
+
+    fn describe_resolved(&self, wires: &dyn nbrs_activity::wires::WireSource) -> Option<String> {
+        // SRD-68 Push 5: walk the prepared text and replace each
+        // `?` placeholder with the bound name's value pulled
+        // through the dispenser's wires surface. The output is
+        // not a literal replayable SQL statement (vector / blob
+        // literals need adapter-side encoding), but it's an
+        // honest representation of what the bind step received
+        // for this cycle. String-typed values get single-quoted
+        // so operators can spot quoting / escape issues at a
+        // glance.
+        let mut out = String::with_capacity(self.stmt_text.len() + 64);
+        let mut bind_idx = 0usize;
+        for ch in self.stmt_text.chars() {
+            if ch == '?' {
+                if let Some(name) = self.bind_names.get(bind_idx) {
+                    let rendered = match wires.get(name) {
+                        Some(nbrs_variates::node::Value::Str(s)) => format!("'{s}'"),
+                        Some(v) => v.to_display_string(),
+                        None => format!("{{?{name}}}"),
+                    };
+                    out.push_str(&rendered);
+                } else {
+                    out.push('?');
+                }
+                bind_idx += 1;
+            } else {
+                out.push(ch);
+            }
+        }
+        Some(format!("CQL prepared: {}", flatten_one_line(&out)))
+    }
+
 
     fn execute<'a>(
         &'a self,
         cycle: u64,
         ctx: &'a nbrs_activity::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
-        let fields = ctx.fields;
+        let wires = ctx.wires;
         Box::pin(async move {
             let prepared = self.get_prepared().await?;
 
@@ -936,9 +1201,15 @@ impl OpDispenser for CqlPreparedDispenser {
                     retryable: false,
                 }))?;
 
+            // SRD-68 Push 5b: cycle-time `?`-parameter binding
+            // through the dispenser's per-fiber GK kernel via the
+            // narrow `WireSource` trait. `wires.get(bind_name)`
+            // returns the typed `Value` for the position's bind
+            // point — same name resolution surface the raw mode
+            // uses, no adapter-specific fields path.
             for (bind_idx, name) in self.bind_names.iter().enumerate() {
-                if let Some(value) = fields.get_value(name) {
-                    binders[bind_idx](&mut stmt, bind_idx, value)
+                if let Some(value) = wires.get(name) {
+                    binders[bind_idx](&mut stmt, bind_idx, &value)
                         .map_err(|e| ExecutionError::Op(AdapterError {
                             error_name: "bind_error".into(),
                             message: format!("bind position {bind_idx} ('{name}'): {e}"),
@@ -987,8 +1258,8 @@ impl OpDispenser for CqlPreparedDispenser {
                     if trace_this {
                         if let Some(log) = self.trace_log.as_ref() {
                             let binds = self.bind_names.iter()
-                                .map(|name| match fields.get_value(name) {
-                                    Some(v) => tracing::format_bind_value(name, v),
+                                .map(|name| match wires.get(name) {
+                                    Some(v) => tracing::format_bind_value(name, &v),
                                     None => format!("{name}=<missing>"),
                                 })
                                 .collect();
@@ -1019,8 +1290,8 @@ impl OpDispenser for CqlPreparedDispenser {
                         && let Some(log) = self.trace_log.as_ref()
                     {
                         let binds = self.bind_names.iter()
-                            .map(|name| match fields.get_value(name) {
-                                Some(v) => tracing::format_bind_value(name, v),
+                            .map(|name| match wires.get(name) {
+                                Some(v) => tracing::format_bind_value(name, &v),
                                 None => format!("{name}=<missing>"),
                             })
                             .collect();
@@ -1077,8 +1348,17 @@ struct CqlBatchDispenser {
     /// The op field name carrying the statement (for finding it in resolved fields).
     #[allow(dead_code)]
     stmt_field: String,
-    #[allow(dead_code)] // retained for diagnostics
     bind_names: Vec<String>,
+    /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
+    /// See `CqlRawDispenser::canonical_kernel`.
+    #[allow(dead_code)]
+    canonical_kernel: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+    /// Batch row count from `batch: N` op param. Per the SRD-68
+    /// invariant "batch is an iteration container, each row is
+    /// another pull," the dispenser internally advances the
+    /// kernel coord N times per fiber-cycle, calling
+    /// `wires.get(bind_name)` for each row's typed values.
+    batch_size: usize,
     /// Prepared once on first execute, then lock-free reads thereafter.
     prepared: std::sync::OnceLock<Arc<cass::PreparedStatement>>,
     batch_type: cass::BatchType,
@@ -1127,6 +1407,46 @@ impl OpDispenser for CqlBatchDispenser {
         Some(format!("CQL batch: {}", flatten_one_line(&self.stmt_text)))
     }
 
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::GkKernel>> {
+        Some(&self.canonical_kernel)
+    }
+
+    fn describe_resolved(&self, wires: &dyn nbrs_activity::wires::WireSource) -> Option<String> {
+        // SRD-68 Push 5: render the head row by pulling each
+        // bind name through the wires surface. The footer reports
+        // the configured batch size so the operator sees how many
+        // rows the failing batch was sized for. Wires reflect the
+        // current per-fiber coord; for diagnostic intent that is
+        // close enough — the row in question is whatever was last
+        // active, and the operator's interest is whether the bind
+        // values look right at all.
+        let mut out = String::with_capacity(self.stmt_text.len() + 64);
+        let mut bind_idx = 0usize;
+        for ch in self.stmt_text.chars() {
+            if ch == '?' {
+                if let Some(name) = self.bind_names.get(bind_idx) {
+                    let rendered = match wires.get(name) {
+                        Some(nbrs_variates::node::Value::Str(s)) => format!("'{s}'"),
+                        Some(v) => v.to_display_string(),
+                        None => format!("{{?{name}}}"),
+                    };
+                    out.push_str(&rendered);
+                } else {
+                    out.push('?');
+                }
+                bind_idx += 1;
+            } else {
+                out.push(ch);
+            }
+        }
+        let suffix = if self.batch_size > 1 {
+            format!("  -- batch_size={}", self.batch_size)
+        } else {
+            String::new()
+        };
+        Some(format!("CQL batch: {}{}", flatten_one_line(&out), suffix))
+    }
+
 
     fn status_counters(&self) -> Vec<(&str, u64)> {
         let total = self.rows_total.load(std::sync::atomic::Ordering::Relaxed);
@@ -1162,7 +1482,7 @@ impl OpDispenser for CqlBatchDispenser {
         cycle: u64,
         ctx: &'a nbrs_activity::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
-        let fields = ctx.fields;
+        let wires = ctx.wires;
         Box::pin(async move {
             let prepared = self.get_prepared().await?;
             let mut batch = self.session.get().batch(self.batch_type);
@@ -1175,16 +1495,10 @@ impl OpDispenser for CqlBatchDispenser {
             let trace_this = trace_rate > 0.0
                 && rand::random::<f64>() < trace_rate;
 
-            // Bind typed values positionally to the prepared statement.
-            // batch_fields carries typed GK values per row (from BindPlan),
-            // with names matching the bind point names in `?` position order.
-            // Build per-position binder functions from prepared statement
-            // metadata. Each binder knows the CQL column type and applies
-            // the correct conversion from GK Value. Built once per prepare,
-            // applied per row with zero branching on type.
-            // Build per-position type-aware binders from prepared metadata.
-            // Query the CQL column type for each `?` position via the
-            // FFI and create a conversion function that coerces GK values.
+            // Per-position type-aware binders, built once from
+            // prepared statement metadata. Each binder coerces
+            // a GK `Value` to the CQL column type for its `?`
+            // position.
             let binders: Vec<Box<dyn Fn(&mut cass::Statement, usize, &nbrs_variates::node::Value)
                 -> Result<(), cass::Error> + Send + Sync>> =
                 (0..self.bind_names.len()).map(|i| {
@@ -1193,9 +1507,20 @@ impl OpDispenser for CqlBatchDispenser {
                     make_binder(vt)
                 }).collect();
 
-            let bind_row = |row_values: &[nbrs_variates::node::Value]|
-                -> Result<cass::Statement, ExecutionError>
-            {
+            // SRD-68 Push 5b' batch contract: "each iteration of
+            // the batch is considered another pull, just as if
+            // the operation inside the batch were separate. It
+            // is simply an iteration container." Drive the
+            // `batch_size` rows by advancing the per-fiber
+            // kernel coord via `wires.advance(coord)` and
+            // pulling each bind name via `wires.get(name)` for
+            // the row's typed values. Same single resolution
+            // surface (per SRD-68 invariant I-1) the prepared
+            // single-cycle path uses; no parallel fields/pulls
+            // path.
+            for row_idx in 0..self.batch_size {
+                let row_coord = cycle + row_idx as u64;
+                wires.advance(row_coord);
                 let mut stmt = prepared.bind();
                 let _ = stmt.set_consistency(self.consistency)
                     .map_err(|e| ExecutionError::Op(AdapterError {
@@ -1204,48 +1529,28 @@ impl OpDispenser for CqlBatchDispenser {
                         retryable: false,
                     }))?;
                 if trace_this {
-                    // Set tracing on each statement before adding
-                    // it to the batch — the cpp-driver attaches
-                    // the flag at the statement level. The batch
-                    // future returns one server-side trace UUID
-                    // covering the whole batch dispatch.
                     let _ = stmt.set_tracing(true);
                 }
-                for (idx, value) in row_values.iter().enumerate() {
-                    binders[idx](&mut stmt, idx, value)
-                        .map_err(|e| ExecutionError::Op(AdapterError {
-                            error_name: "bind_error".into(),
-                            message: format!("bind position {idx}: {e}"),
-                            retryable: false,
-                        }))?;
+                for (idx, name) in self.bind_names.iter().enumerate() {
+                    if let Some(value) = wires.get(name) {
+                        binders[idx](&mut stmt, idx, &value)
+                            .map_err(|e| ExecutionError::Op(AdapterError {
+                                error_name: "bind_error".into(),
+                                message: format!(
+                                    "bind position {idx} ('{name}') row {row_idx}: {e}"
+                                ),
+                                retryable: false,
+                            }))?;
+                    }
                 }
-                Ok(stmt)
-            };
-
-            let row_count;
-            if fields.batch_fields.is_empty() {
-                // Single row from base fields — bind by position
-                let stmt = bind_row(&fields.values)?;
                 batch.add_statement(stmt)
                     .map_err(|e| ExecutionError::Op(AdapterError {
                         error_name: "batch_error".into(),
-                        message: format!("add_statement: {e}"),
+                        message: format!("add_statement (row {row_idx}): {e}"),
                         retryable: false,
                     }))?;
-                row_count = 1;
-            } else {
-                // Multiple rows — each batch_fields entry has typed values
-                for field_set in &fields.batch_fields {
-                    let stmt = bind_row(&field_set.values)?;
-                    batch.add_statement(stmt)
-                        .map_err(|e| ExecutionError::Op(AdapterError {
-                            error_name: "batch_error".into(),
-                            message: format!("add_statement: {e}"),
-                            retryable: false,
-                        }))?;
-                }
-                row_count = fields.batch_fields.len();
             }
+            let row_count = self.batch_size;
 
             // Capture metadata for the trace log before dispatch.
             // `started_at` is the wall-clock for the

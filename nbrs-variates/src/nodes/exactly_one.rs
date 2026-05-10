@@ -61,6 +61,20 @@ impl GkNode for ExactlyOneValue {
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let body = &inputs[0];
+        if crate::nodes::debug_nodes_enabled() {
+            // Per-cycle visibility into what the structural unwrap
+            // saw and produced. Body's display form is truncated for
+            // long Json arrays so the trace stays scannable.
+            let body_disp = body.to_display_string();
+            let snippet: String = body_disp.chars().take(400).collect();
+            let ellipsis = if body_disp.len() > snippet.len() { "…" } else { "" };
+            eprintln!(
+                "[DEBUG] exactly_one_value: body.variant={:?} body.len={} snippet={}{ellipsis}",
+                body.port_type(),
+                body_disp.len(),
+                snippet,
+            );
+        }
         outputs[0] = match body {
             // Already-scalar values pass through unchanged. They came
             // from a body projection that already collapsed the row ×
@@ -99,16 +113,113 @@ impl GkNode for ExactlyOneValue {
                  op produced no result to unwrap"
             ),
 
-            // TODO(SRD-66 Push 2): once a `Json`/structural body Value
-            // variant lands, walk row × column structure and panic with
-            // the SRD-66 §"Surface 4" shape diagnostic naming actual
-            // dimensions. The Bytes/Json/Ext/Handle paths below should
-            // be replaced by structural inspection when that variant
-            // settles. For Push 1 we accept these as scalar pass-through
-            // — the typical case is the upstream `body` projection has
-            // already collapsed shape into one of these scalar carriers.
-            Value::Bytes(_) | Value::Json(_) | Value::Ext(_) | Value::Handle(_) => body.clone(),
+            // SRD-66 §"Surface 4 §Semantics" — structural body
+            // walk: an `Array` is the row dimension, an `Object`
+            // is the column dimension within each row, and the
+            // single leaf cell is what we return. Unary shape =
+            // 1 row × 1 column × 1 leaf. The path matches CQL
+            // adapter projection: `[{"create_statement":"..."}]`
+            // is the canonical describe-keyspace shape — one row
+            // (array len 1), one column (object key count 1),
+            // one leaf (the schema text).
+            //
+            // The leaf maps back to the matching Value variant:
+            // JSON String → Value::Str, JSON Number → Value::F64
+            // / Value::U64 (per int-ness), JSON Bool → Value::Bool,
+            // JSON Null → panic (no value to unwrap).
+            Value::Json(j) => unwrap_unary_json(j),
+
+            // Other carriers — not part of the structural body
+            // shape. Pass through (the upstream projection
+            // already collapsed shape into a scalar carrier).
+            // Bytes / Ext / Handle would never ride the `body`
+            // wire (PortType::Json) but kept for completeness in
+            // case `exactly_one_value` is applied to non-body
+            // wires.
+            Value::Bytes(_) | Value::Ext(_) | Value::Handle(_) => body.clone(),
         };
+    }
+}
+
+/// Walk a JSON value asserting unary row × column × leaf shape.
+/// Returns the matching `Value` variant for the leaf cell.
+///
+/// The shape diagnostic names actual dimensions when the input
+/// doesn't match the unary contract.
+fn unwrap_unary_json(j: &serde_json::Value) -> Value {
+    use serde_json::Value as J;
+    // Row dimension: an array. Length 0 / >1 → shape error.
+    let row = match j {
+        J::Array(arr) => match arr.len() {
+            0 => panic!(
+                "exactly_one_value: expected unary structure (1 row × 1 column), \
+                 found 0 rows"
+            ),
+            1 => &arr[0],
+            n => panic!(
+                "exactly_one_value: expected unary structure (1 row × 1 column), \
+                 found {n} rows"
+            ),
+        },
+        // No row wrapper — treat the whole value as the single
+        // row and continue to column inspection. Adapters that
+        // produce a single-row unwrapped projection (rare; CQL
+        // doesn't) take this path naturally.
+        other => other,
+    };
+    // Column dimension: an object. Length 0 / >1 → shape error.
+    let leaf = match row {
+        J::Object(obj) => match obj.len() {
+            0 => panic!(
+                "exactly_one_value: expected unary structure (1 row × 1 column), \
+                 found 1 row × 0 columns"
+            ),
+            1 => obj.values().next().expect("len==1"),
+            n => panic!(
+                "exactly_one_value: expected unary structure (1 row × 1 column), \
+                 found 1 row × {n} columns"
+            ),
+        },
+        // No column wrapper — the row IS the leaf. Common for
+        // non-tabular bodies (e.g. a HTTP body that's a bare
+        // string).
+        other => other,
+    };
+    match leaf {
+        J::String(s) => Value::Str(s.clone()),
+        J::Bool(b) => Value::Bool(*b),
+        J::Number(n) => {
+            if let Some(u) = n.as_u64() {
+                Value::U64(u)
+            } else if let Some(f) = n.as_f64() {
+                Value::F64(f)
+            } else {
+                panic!("exactly_one_value: numeric leaf is not representable as u64 or f64: {n}")
+            }
+        }
+        J::Null => panic!(
+            "exactly_one_value: leaf cell is null; expected a non-null value"
+        ),
+        // Nested structural leaf — the body has more than two
+        // levels of nesting. Not a unary shape per the SRD; the
+        // diagnostic names what was found.
+        J::Array(_) | J::Object(_) => panic!(
+            "exactly_one_value: leaf cell is itself structural ({}); \
+             expected a scalar (string, number, or boolean)",
+            describe_json_kind(leaf)
+        ),
+    }
+}
+
+fn describe_json_kind(j: &serde_json::Value) -> &'static str {
+    use serde_json::Value as J;
+    match j {
+        J::Null => "null",
+        J::Bool(_) => "bool",
+        J::Number(_) => "number",
+        J::String(_) => "string",
+        J::Array(_) => "array",
+        J::Object(_) => "object",
     }
 }
 
@@ -222,5 +333,77 @@ mod tests {
     #[should_panic(expected = "exactly_one_value: empty body")]
     fn rejects_none() {
         run(Value::None);
+    }
+
+    // ---------------------------------------------------------------
+    // SRD-66 §"Surface 4 §Semantics" — structural Json walk
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn unwraps_unary_json_describe_keyspace_shape() {
+        // Canonical CQL `DESCRIBE KEYSPACE` projection: array of
+        // one row, each row an object with one text column.
+        let j = serde_json::json!([
+            {"create_statement": "VIRTUAL TABLE system_views.sai_column_indexes (\n  ...\n)"}
+        ]);
+        let out = run(Value::Json(j));
+        let s = out.as_str();
+        assert!(s.starts_with("VIRTUAL TABLE"), "got: {s:?}");
+    }
+
+    #[test]
+    fn unwraps_unary_json_string_leaf() {
+        // Bare scalar wrapped in array → object → string.
+        let j = serde_json::json!([{"value": "hello"}]);
+        let out = run(Value::Json(j));
+        assert_eq!(out.as_str(), "hello");
+    }
+
+    #[test]
+    fn unwraps_unary_json_numeric_leaf() {
+        let j = serde_json::json!([{"n": 42}]);
+        let out = run(Value::Json(j));
+        assert_eq!(out.as_u64(), 42);
+    }
+
+    #[test]
+    fn unwraps_unary_json_bool_leaf() {
+        let j = serde_json::json!([{"b": true}]);
+        let out = run(Value::Json(j));
+        assert!(out.as_bool());
+    }
+
+    #[test]
+    #[should_panic(expected = "found 0 rows")]
+    fn rejects_empty_json_array() {
+        run(Value::Json(serde_json::json!([])));
+    }
+
+    #[test]
+    #[should_panic(expected = "found 2 rows")]
+    fn rejects_multi_row_json() {
+        let j = serde_json::json!([{"a": 1}, {"a": 2}]);
+        run(Value::Json(j));
+    }
+
+    #[test]
+    #[should_panic(expected = "found 1 row × 2 columns")]
+    fn rejects_multi_column_json() {
+        let j = serde_json::json!([{"a": 1, "b": 2}]);
+        run(Value::Json(j));
+    }
+
+    #[test]
+    #[should_panic(expected = "leaf cell is null")]
+    fn rejects_json_null_leaf() {
+        let j = serde_json::json!([{"a": null}]);
+        run(Value::Json(j));
+    }
+
+    #[test]
+    #[should_panic(expected = "leaf cell is itself structural")]
+    fn rejects_json_nested_structural_leaf() {
+        let j = serde_json::json!([{"a": {"nested": 1}}]);
+        run(Value::Json(j));
     }
 }

@@ -244,14 +244,26 @@ bindings: |
 
 scenarios:
 
+  # `default` runs when the operator invokes without an
+  # explicit `scenario=`. Aliases `fulltest` so the natural
+  # `nbrs run workload=full_cql_vector.yaml dryrun=…` invocation
+  # exercises a coherent scenario tree (with the for-loops
+  # that bind `{profile}` / `{table}` / `{optimize_for}`),
+  # not the runtime-auto-generated flat phase list (which
+  # invokes every phase at the top level without those
+  # iteration variables and immediately fails to resolve
+  # `{table}` in the schema phase).
+  default:
+    - scenario: fulltest
+
   fulltest:
-    - phase: detect_dialect
+    - detect_dialect
     - scenario: test_oracles
     - scenario: test_fknn
 
   # Per-profile partition test (label_00..label_11)
   test_oracles:
-    - phase: detect_dialect
+    - detect_dialect
     - for: "profile in matching_profiles('{dataset}', '{oracles_prefix}')"
       phases:
         - for: "optimize_for in {optimize_for_values}, table in vec_{profile}_{optimize_for}"
@@ -279,7 +291,7 @@ scenarios:
   # that differed only in their metric labels. Mirrors the
   # `test_oracles` shape.
   test_fknn:
-    - phase: detect_dialect
+    - detect_dialect
     - for: "profile in {fknn_profile}, optimize_for in {optimize_for_values}, table in fknn_{profile}_{optimize_for}"
       phases:
         - teardown
@@ -291,7 +303,7 @@ scenarios:
             - pvs_query
 
   await_fknn:
-    - phase: detect_dialect
+    - detect_dialect
     - for: "profile in {fknn_profile}, table in fknn_{profile}, optimize_for in {optimize_for_values}"
       phases:
         - await_index
@@ -363,9 +375,15 @@ phases:
       describe_system_views:
         raw: "DESCRIBE KEYSPACE system_views"
         result: |
-          schema_text            := exactly_one_value(body)
-          has_sai_column_indexes := log_info(regex_match(schema_text, "(?im)^\s*(VIRTUAL\s+)?TABLE\s+system_views\.sai_column_indexes\s*\("))
-          has_indexes            := log_info(regex_match(schema_text, "(?im)^\s*(VIRTUAL\s+)?TABLE\s+system_views\.indexes\s*\("))
+          # `DESCRIBE KEYSPACE` returns multi-row. Flatten the
+          # JSON leaves (including embedded newlines inside
+          # `create_statement` columns) into one big text the
+          # regex can scan. CQL emits `CREATE TABLE …` and
+          # `CREATE VIRTUAL TABLE …`, so the pattern allows
+          # the optional CREATE prefix.
+          schema_text            := log_info("JSON_TEXT: " + json_text(body))
+          has_sai_column_indexes := log_info(regex_match(schema_text, "(?im)^\s*(?:CREATE\s+)?(?:VIRTUAL\s+)?TABLE\s+system_views\.sai_column_indexes\s*\("))
+          has_indexes            := log_info(regex_match(schema_text, "(?im)^\s*(?:CREATE\s+)?(?:VIRTUAL\s+)?TABLE\s+system_views\.indexes\s*\("))
 
   await_index:
     concurrency: 1

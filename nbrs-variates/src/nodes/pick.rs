@@ -82,6 +82,26 @@ impl GkNode for PickN {
         let n = self.n;
         debug_assert_eq!(inputs.len(), 2 * n, "pick arity mismatch at eval");
 
+        if crate::nodes::debug_nodes_enabled() {
+            let sels: Vec<String> = inputs
+                .iter()
+                .take(n)
+                .enumerate()
+                .map(|(i, v)| format!("b{i}={}", v.to_display_string()))
+                .collect();
+            let vals: Vec<String> = inputs
+                .iter()
+                .skip(n)
+                .enumerate()
+                .map(|(i, v)| format!("v{i}={}", v.to_display_string()))
+                .collect();
+            crate::audit::debug(&format!(
+                "pick: selectors=[{}] values=[{}]",
+                sels.join(", "),
+                vals.join(", "),
+            ));
+        }
+
         // Validate selectors are Bool.
         for (i, sel) in inputs.iter().take(n).enumerate() {
             if !matches!(sel, Value::Bool(_)) {

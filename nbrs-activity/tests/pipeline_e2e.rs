@@ -46,13 +46,20 @@ impl RecordingAdapter {
 impl DriverAdapter for RecordingAdapter {
     fn name(&self) -> &str { &self.name }
 
-    fn map_op(&self, _template: &nbrs_workload::model::ParsedOp)
-        -> Result<Box<dyn OpDispenser>, String>
+    fn map_op(
+        &self,
+        template: &nbrs_workload::model::ParsedOp,
+        _parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+    ) -> Result<Box<dyn OpDispenser>, String>
     {
+        let stmt_template = template.op.get("stmt")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         Ok(Box::new(RecordingDispenser {
             adapter_name: self.name.clone(),
             log: self.log.clone(),
             call_count: self.call_count.clone(),
+            stmt_template,
         }))
     }
 }
@@ -61,6 +68,10 @@ struct RecordingDispenser {
     adapter_name: String,
     log: Arc<Mutex<Vec<String>>>,
     call_count: Arc<AtomicU64>,
+    /// Cached `stmt:` template — rendered per cycle through the
+    /// generic GK wires API so the test exercises the same
+    /// resolution surface production code uses.
+    stmt_template: Option<String>,
 }
 
 /// A result body with structured JSON and real element/byte counts.
@@ -84,15 +95,32 @@ impl OpDispenser for RecordingDispenser {
         cycle: u64,
         ctx: &'a nbrs_activity::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
-        let fields = ctx.fields;
+        let wires = ctx.wires;
         let adapter_name = self.adapter_name.clone();
         let log = self.log.clone();
         let call_count = self.call_count.clone();
 
-        // Read the stmt field if present (uses lazy string rendering)
-        let stmt = fields.get_str("stmt").unwrap_or("(none)").to_string();
+        // Render stmt template through the generic wires API.
+        // Bind-resolution errors (e.g. unresolved capture
+        // qualifier) are returned as op errors so the error
+        // router can stop the phase — matches legacy behaviour
+        // that panicked from `substitute_bind_points_with_state`.
+        let stmt_result: Result<String, String> = match &self.stmt_template {
+            Some(t) => nbrs_activity::wires::substitute_via_wires(t, wires),
+            None => Ok("(none)".to_string()),
+        };
 
         Box::pin(async move {
+            let stmt = match stmt_result {
+                Ok(s) => s,
+                Err(msg) => return Err(ExecutionError::Op(
+                    nbrs_activity::adapter::AdapterError {
+                        error_name: "BindError".into(),
+                        message: msg,
+                        retryable: false,
+                    },
+                )),
+            };
             call_count.fetch_add(1, Ordering::Relaxed);
             log.lock().unwrap().push(format!("{adapter_name}:{cycle}:{stmt}"));
 
@@ -122,11 +150,11 @@ impl OpDispenser for RecordingDispenser {
 // Helper: minimal GK program
 // =========================================================================
 
-fn test_program() -> Arc<nbrs_variates::kernel::GkProgram> {
+fn test_kernel() -> nbrs_variates::kernel::GkKernel {
     let mut asm = GkAssembler::new(vec!["cycle".into()]);
     asm.add_node("id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
     asm.add_output("id", WireRef::node("id"));
-    asm.compile().unwrap().into_program()
+    asm.compile().unwrap()
 }
 
 // =========================================================================
@@ -168,7 +196,7 @@ ops:
     assert_eq!(seq.stanza_length(), 2);
     let activity = Activity::new(config, &Labels::of("session", "test"), seq);
 
-    activity.run_with_adapters(adapters, "alpha", std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::from_program(test_program()))).await;
+    activity.run_with_adapters(adapters, "alpha", std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::new(test_kernel()))).await;
 
     let entries = log.lock().unwrap().clone();
     assert_eq!(entries.len(), 4, "expected 4 ops (2 stanzas × 2 ops), got {}", entries.len());
@@ -213,7 +241,7 @@ ops:
     let shared_metrics = {
         let activity = Activity::new(config, &Labels::of("session", "test"), seq);
         let metrics = activity.shared_metrics();
-        activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::from_program(test_program()))).await;
+        activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::new(test_kernel()))).await;
         metrics
     };
 
@@ -249,7 +277,7 @@ ops:
     let seq = OpSequence::from_ops(ops, SequencerType::Bucket);
     let activity = Activity::new(config, &Labels::of("session", "test"), seq);
 
-    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::from_program(test_program()))).await;
+    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::new(test_kernel()))).await;
 
     let entries = log.lock().unwrap().clone();
     assert_eq!(entries.len(), 2);
@@ -284,7 +312,7 @@ ops:
     let activity = Activity::new(config, &Labels::of("session", "test"), seq);
     let metrics = activity.shared_metrics();
 
-    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::from_program(test_program()))).await;
+    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::new(test_kernel()))).await;
 
     // Each op returns element_count=3, byte_count=128
     assert_eq!(metrics.result_elements.get(), 30, "10 ops × 3 elements each");
@@ -326,7 +354,7 @@ ops:
     // checking that the activity completes without error (the capture
     // extraction code runs). For a deeper test, we'd need a multi-op
     // stanza where the second op reads from the capture context.
-    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::from_program(test_program()))).await;
+    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::new(test_kernel()))).await;
 
     // Verify the op executed
     let entries = log.lock().unwrap().clone();
@@ -338,10 +366,15 @@ ops:
 
 #[tokio::test]
 async fn capture_flows_between_ops_in_stanza() {
-    // Two ops in a stanza: first returns captures, second should see them.
-    // We verify indirectly: the activity completes (no panic from capture
-    // resolution) and both ops execute.
-
+    // `{capture:name}` references aren't currently implemented (the
+    // resolver returns an unresolved-bind-point error, propagated as
+    // a phase-stopping panic). This test asserts that contract: when
+    // the read op references `{capture:user_id}`, it fails fast with
+    // a clear error instead of silently substituting the placeholder
+    // text into the rendered SQL.
+    //
+    // When captures land, this test should be updated to verify the
+    // first op's outputs flow into the second op via the real path.
     let yaml = r#"
 ops:
   write:
@@ -364,10 +397,16 @@ ops:
     let seq = OpSequence::from_ops(ops, SequencerType::Bucket);
     let activity = Activity::new(config, &Labels::of("session", "test"), seq);
 
-    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::from_program(test_program()))).await;
+    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::new(test_kernel()))).await;
 
+    // Only the first op (write) executes; the read op's
+    // `{capture:user_id}` reference fails fast and stops the phase.
     let entries = log.lock().unwrap().clone();
-    assert_eq!(entries.len(), 2, "both ops should execute");
+    assert_eq!(
+        entries.len(), 1,
+        "expected only the write op to execute; the read op's \
+         unresolved capture should have stopped the phase"
+    );
 }
 
 // =========================================================================
@@ -414,7 +453,7 @@ ops:
     let activity = Activity::new(config, &Labels::of("session", "test"), seq);
     let metrics = activity.shared_metrics();
 
-    activity.run_with_adapters(adapters, "db", std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::from_program(test_program()))).await;
+    activity.run_with_adapters(adapters, "db", std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::new(test_kernel()))).await;
 
     let entries = log.lock().unwrap().clone();
     assert_eq!(entries.len(), 6);

@@ -955,29 +955,30 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     let params_kernel = crate::params::build_workload_params_kernel(&workload_params)
         .map_err(|e| format!("workload params kernel: {e}"))?;
 
-    let mut kernel = compile_bindings_with_libs_excluding(
-        &all_ops_for_compile, workload_dir, gk_lib_paths.clone(), strict, &[], &config_refs,
-        "outer workload bindings", cursor_limit, &workload_params,
-        workload_level_gk.as_deref(),
-    ).map_err(|e| format!("outer workload bindings: {e}"))?;
-
-    // Chain the workload kernel through the params kernel:
-    // names declared on params flow in via `bind_outer_scope`,
-    // visible to every descendant kernel that
-    // `bind_outer_scope`s through this workload kernel in
-    // turn (per SRD-16 §"Single Name-Resolution Surface").
-    nbrs_variates::subcontext::chain_kernel_under_parent(&mut kernel, &params_kernel);
-
-    // Canonical workload-scope kernel for the scope tree (SRD
-    // 18b §"Iteration variables as scope outputs"). Built from
-    // the same compiled program; lives behind `Arc` so the scope
-    // tree can answer `lookup_name(...)` queries via the
-    // GK-native `get_constant` path with no sidecar cache.
-    // Installed below once the scope tree is constructed.
+    // Build the workload kernel directly as a subscope of the
+    // params kernel via the typed GkKernel-controlled
+    // construction path. Cells from params flow in via the
+    // cascade — no late-binding step required.
+    // Build the workload kernel as a subscope of the params
+    // kernel and share ONE Arc across both consumers (the
+    // scope tree's canonical reference AND the OpBuilder's
+    // source kernel). A second materialize_subscope would
+    // produce a sibling kernel with its own freshly-seeded
+    // shared cells — disconnected from the canonical, so
+    // result-binding writes from one chain wouldn't be visible
+    // to the other. Sharing the Arc keeps the cell handles
+    // identical end-to-end: detect_dialect's writes reach
+    // await_index's reads through the same Mutex<Value>.
     let workload_canonical_kernel: std::sync::Arc<nbrs_variates::kernel::GkKernel> =
         std::sync::Arc::new(
-            nbrs_variates::subcontext::instance_program(kernel.program().clone())
+            compile_bindings_with_libs_excluding(
+                &params_kernel,
+                &all_ops_for_compile, workload_dir, gk_lib_paths.clone(), strict, &[], &config_refs,
+                "outer workload bindings", cursor_limit, &workload_params,
+                workload_level_gk.as_deref(),
+            ).map_err(|e| format!("outer workload bindings: {e}"))?
         );
+    let kernel = workload_canonical_kernel.clone();
 
 
     // Extract output manifest and folded constant values from outer kernel
@@ -1946,7 +1947,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
 
         let stopped = activity.run_with_driver(
             adapter,
-            Arc::new(crate::synthesis::OpBuilder::from_program(program)),
+            builder.clone(),
         ).await;
 
         // Workload-end lifecycle boundary for the single-activity
@@ -2280,38 +2281,63 @@ struct DryRunAdapter {
 impl crate::adapter::DriverAdapter for DryRunAdapter {
     fn name(&self) -> &str { "dry-run" }
 
-    fn map_op(&self, _template: &nbrs_workload::model::ParsedOp)
-        -> Result<Box<dyn crate::adapter::OpDispenser>, String>
+    fn map_op(
+        &self,
+        template: &nbrs_workload::model::ParsedOp,
+        parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+    ) -> Result<Box<dyn crate::adapter::OpDispenser>, String>
     {
         let mode = self.mode.clone();
-        Ok(Box::new(DryRunDispenser { mode }))
+        let op_fields: Vec<(String, serde_json::Value)> = template.op.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        Ok(Box::new(DryRunDispenser { mode, op_fields, canonical_kernel: parent }))
     }
 }
 
 struct DryRunDispenser {
     mode: String,
+    /// Op-field templates snapshotted at `map_op`, resolved per
+    /// cycle through the generic GK wires API.
+    op_fields: Vec<(String, serde_json::Value)>,
+    /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
+    canonical_kernel: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
 }
 
 impl crate::adapter::OpDispenser for DryRunDispenser {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_variates::kernel::GkKernel>> {
+        Some(&self.canonical_kernel)
+    }
+
     fn execute<'a>(&'a self, _cycle: u64, ctx: &'a crate::fixture::ExecCtx<'a>)
         -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::adapter::OpResult, crate::adapter::ExecutionError>> + Send + 'a>>
     {
         let mode = &self.mode;
-        let fields = ctx.fields;
+        let wires = ctx.wires;
         Box::pin(async move {
+            let resolved = match crate::wires::resolve_op_fields_via_wires(&self.op_fields, wires) {
+                Ok(r) => r,
+                Err(msg) => {
+                    return Err(crate::adapter::ExecutionError::Op(crate::adapter::AdapterError {
+                        error_name: "BindError".into(),
+                        message: msg,
+                        retryable: false,
+                    }));
+                }
+            };
             match mode.as_str() {
                 "emit" => {
-                    if let Some(stmt) = fields.get_str("stmt")
-                        .or_else(|| fields.get_str("raw"))
-                        .or_else(|| fields.get_str("prepared"))
+                    if let Some(stmt) = resolved.get_str("stmt")
+                        .or_else(|| resolved.get_str("raw"))
+                        .or_else(|| resolved.get_str("prepared"))
                     {
                         println!("{stmt}");
                     } else {
-                        println!("{}", fields.strings().join("\n"));
+                        println!("{}", resolved.strings().join("\n"));
                     }
                 }
                 "json" => {
-                    println!("{}", fields.to_json());
+                    println!("{}", resolved.to_json());
                 }
                 _ => {} // silent
             }

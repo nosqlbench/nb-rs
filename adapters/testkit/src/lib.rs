@@ -190,7 +190,11 @@ impl ModelAdapter {
 impl DriverAdapter for ModelAdapter {
     fn name(&self) -> &str { "testkit" }
 
-    fn map_op(&self, template: &ParsedOp) -> Result<Box<dyn OpDispenser>, String> {
+    fn map_op(
+        &self,
+        template: &ParsedOp,
+        parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+    ) -> Result<Box<dyn OpDispenser>, String> {
         // The yaml parser routes unknown top-level op keys into
         // `template.op`, while a nested `params:` block lands in
         // `template.params`. Both are valid ways to declare
@@ -205,6 +209,11 @@ impl DriverAdapter for ModelAdapter {
         // Per-op semaphore: independent ops simulate independent
         // backends, each with their own capacity ceiling.
         let semaphore = model_params.capacity.map(|n| Arc::new(Semaphore::new(n)));
+        // SRD-68 Push 5: snapshot op-field templates for cycle-time
+        // resolution through the generic wires API.
+        let op_fields: Vec<(String, serde_json::Value)> = template.op.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         Ok(Box::new(ModelDispenser {
             writer: self.writer.clone(),
             format: self.format,
@@ -213,6 +222,8 @@ impl DriverAdapter for ModelAdapter {
             model_params,
             semaphore,
             in_flight: Arc::new(AtomicUsize::new(0)),
+            canonical_kernel: parent,
+            op_fields,
         }))
     }
 }
@@ -233,6 +244,12 @@ struct ModelDispenser {
     /// before latency-sleep completion). Used for the overload check
     /// and diagnostic output.
     in_flight: Arc<AtomicUsize>,
+    /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
+    canonical_kernel: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+    /// Op-field templates snapshotted at `map_op`. Resolved per
+    /// cycle via the generic `wires` API; the rendered text feeds
+    /// the trace writer and the OpResult body.
+    op_fields: Vec<(String, serde_json::Value)>,
 }
 
 /// RAII guard that decrements the in-flight counter on drop, so the
@@ -247,14 +264,24 @@ impl Drop for InFlightGuard {
 }
 
 impl OpDispenser for ModelDispenser {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_variates::kernel::GkKernel>> {
+        Some(&self.canonical_kernel)
+    }
+
     fn execute<'a>(
         &'a self,
         cycle: u64,
         ctx: &'a nbrs_activity::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
-        let fields = ctx.fields;
+        let wires = ctx.wires;
         Box::pin(async move {
-            let text = self.format.render(fields, ",");
+            let resolved = nbrs_activity::wires::resolve_op_fields_via_wires(&self.op_fields, wires)
+                .map_err(|msg| ExecutionError::Op(AdapterError {
+                    error_name: "BindError".into(),
+                    message: msg,
+                    retryable: false,
+                }))?;
+            let text = self.format.render(&resolved, ",");
 
             // Write the resolved op (same as stdout). Done before
             // any saturation simulation so the trace reflects the
@@ -480,6 +507,14 @@ mod tests {
     use super::*;
     use nbrs_activity::adapter::ResolvedFields;
 
+    /// Minimal kernel used as the `parent` argument to `map_op`
+    /// in tests that don't need a richer GK context (SRD-68 Push 2).
+    fn test_kernel() -> std::sync::Arc<nbrs_variates::kernel::GkKernel> {
+        std::sync::Arc::new(
+            nbrs_variates::dsl::compile::compile_gk("inputs := (cycle)\n").unwrap()
+        )
+    }
+
     #[test]
     fn parse_latency_ms() {
         assert_eq!(parse_latency("5ms"), Some(5.0));
@@ -557,7 +592,7 @@ mod tests {
         op.params.insert("result-capacity".into(), serde_json::Value::from(1));
         op.params.insert("result-overload".into(), serde_json::Value::from(2));
 
-        let dispenser: Arc<dyn OpDispenser> = Arc::from(adapter.map_op(&op).unwrap());
+        let dispenser: Arc<dyn OpDispenser> = Arc::from(adapter.map_op(&op, test_kernel()).unwrap());
         let fields = Arc::new(ResolvedFields::new(
             vec!["stmt".into()],
             vec![nbrs_variates::node::Value::Str("SELECT 1;".into())],
@@ -589,7 +624,7 @@ mod tests {
     async fn model_dispenser_basic() {
         let adapter = ModelAdapter::new();
         let template = nbrs_workload::model::ParsedOp::simple("test", "SELECT 1;");
-        let dispenser = adapter.map_op(&template).unwrap();
+        let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
         let fields = ResolvedFields::new(
             vec!["stmt".into()],
             vec![nbrs_variates::node::Value::Str("SELECT 1;".into())],
@@ -631,7 +666,7 @@ mod tests {
         let adapter = ModelAdapter::new();
         let mut template = nbrs_workload::model::ParsedOp::simple("test", "SELECT 1;");
         template.params = params;
-        let dispenser = adapter.map_op(&template).unwrap();
+        let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
 
         let fields = ResolvedFields::new(
             vec!["stmt".into()],

@@ -59,6 +59,8 @@
 //!   trait surface.
 
 pub mod cycle;
+pub mod wires;
+pub mod binder;
 pub mod adapter;
 pub mod opseq;
 pub mod activity;

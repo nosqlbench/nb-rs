@@ -319,13 +319,14 @@ pub fn compile_bindings_with_path(ops: &[ParsedOp], source_dir: Option<&std::pat
 /// Each path in `gk_lib_paths` is searched (in order) for `.gk` module
 /// files after `source_dir` but before the embedded stdlib.
 pub fn compile_bindings_with_libs(
+    parent: &GkKernel,
     ops: &[ParsedOp],
     source_dir: Option<&std::path::Path>,
     gk_lib_paths: Vec<std::path::PathBuf>,
     strict: bool,
 ) -> Result<GkKernel, String> {
     compile_bindings_with_libs_excluding(
-        ops, source_dir, gk_lib_paths, strict, &[], &[], "(gk)", None,
+        parent, ops, source_dir, gk_lib_paths, strict, &[], &[], "(gk)", None,
         &std::collections::HashMap::new(),
         None,
     )
@@ -395,6 +396,7 @@ pub(crate) fn prepend_effective_pragmas(
 /// validation and accepts additional required output names (for GK config
 /// expression references like `cycles={train_count}`).
 pub fn compile_bindings_with_libs_excluding(
+    parent: &GkKernel,
     ops: &[ParsedOp],
     source_dir: Option<&std::path::Path>,
     gk_lib_paths: Vec<std::path::PathBuf>,
@@ -499,9 +501,27 @@ pub fn compile_bindings_with_libs_excluding(
             }
             _ => scope.emit(),
         };
-        return nbrs_variates::dsl::compile_gk_with_libs_and_limit(
-            &source, source_dir, gk_lib_paths, &scope_required, strict, context, cursor_limit,
-        );
+        // Build the workload kernel as a subscope of the
+        // params kernel via the typed GkKernel-controlled
+        // subcontext-from-source path. The cell cascade flows
+        // automatically; no late-binding required.
+        let opts = nbrs_variates::subcontext::CompileOptions {
+            workload_dir: source_dir.map(|p| p.to_path_buf()),
+            gk_lib_paths,
+            strict,
+            required_outputs: scope_required,
+            context_label: Some(context.to_string()),
+            cursor_limit,
+        };
+        let matter = nbrs_variates::subcontext::GkMatter::builder()
+            .label(context)
+            .source(source)
+            .options(opts)
+            .build()
+            .map_err(|e| format!("{e:?}"))?;
+        return parent
+            .build_subscope(matter)
+            .map_err(|e| format!("{e:?}"));
     }
 
     // Legacy mode: translate semicolon-chain bindings into GK source
@@ -580,7 +600,23 @@ pub fn compile_bindings_with_libs_excluding(
     }
 
     let gk_source = gk_lines.join("\n");
-    nbrs_variates::dsl::compile_gk_with_libs_and_limit(&gk_source, source_dir, gk_lib_paths, &required, strict, context, cursor_limit)
+    let opts = nbrs_variates::subcontext::CompileOptions {
+        workload_dir: source_dir.map(|p| p.to_path_buf()),
+        gk_lib_paths,
+        strict,
+        required_outputs: required,
+        context_label: Some(context.to_string()),
+        cursor_limit,
+    };
+    let matter = nbrs_variates::subcontext::GkMatter::builder()
+        .label(context)
+        .source(gk_source)
+        .options(opts)
+        .build()
+        .map_err(|e| format!("{e:?}"))?;
+    parent
+        .build_subscope(matter)
+        .map_err(|e| format!("{e:?}"))
 }
 
 /// Compile all bindings from a set of ParsedOps into a GK kernel.

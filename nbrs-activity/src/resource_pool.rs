@@ -1707,8 +1707,11 @@ mod tests {
     struct LegacyDummy;
     impl crate::adapter::DriverAdapter for LegacyDummy {
         fn name(&self) -> &str { "legacy_dummy" }
-        fn map_op(&self, _template: &nbrs_workload::model::ParsedOp)
-            -> Result<Box<dyn crate::adapter::OpDispenser>, String>
+        fn map_op(
+            &self,
+            _template: &nbrs_workload::model::ParsedOp,
+            _parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+        ) -> Result<Box<dyn crate::adapter::OpDispenser>, String>
         { Err("dummy".into()) }
     }
 

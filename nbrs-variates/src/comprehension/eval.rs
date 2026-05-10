@@ -185,7 +185,7 @@ pub fn pre_evaluate_clause(
     let interpolated = interpolate_with_lookup(
         &text,
         |name| {
-            parent_kernel.get_constant(name)
+            parent_kernel.get_constant(name).cloned()
                 .or_else(|| parent_kernel.get_input(name))
                 .filter(|v| !matches!(v, Value::None))
                 .map(|v| v.to_display_string())
@@ -1255,13 +1255,15 @@ where
         // to false, skip this tuple; if true (or filter absent),
         // emit it.
         if let Some(predicate) = filter {
-            let mut kernel = GkKernel::from_program(canonical.program().clone());
-            kernel.bind_outer_scope(parent);
-            for (var, value) in prefix {
-                if let Some(slot) = kernel.program().find_input(var) {
-                    kernel.state().set_input(slot, value.clone());
-                }
-            }
+            // Iter-var values from the prefix flow through the
+            // parent's typed materialize step; this also gives
+            // the cell cascade the prefix snapshot before the
+            // bind, matching for_iteration's contract.
+            let bindings_owned: Vec<(String, Value)> = prefix
+                .iter()
+                .map(|(v, val)| ((*v).to_string(), val.clone()))
+                .collect();
+            let kernel = parent.materialize_subscope(canonical.program().clone(), &bindings_owned);
             let interpolated = interpolate_via_kernel(predicate, &kernel)
                 .map_err(|e| format!("comprehension filter '{predicate}': {e}"))?;
             let result = crate::dsl::compile::eval_const_expr(&interpolated)
@@ -1283,13 +1285,11 @@ where
         }
         return Ok(());
     }
-    let mut kernel = GkKernel::from_program(canonical.program().clone());
-    kernel.bind_outer_scope(parent);
-    for (var, value) in prefix {
-        if let Some(slot) = kernel.program().find_input(var) {
-            kernel.state().set_input(slot, value.clone());
-        }
-    }
+    let bindings_owned: Vec<(String, Value)> = prefix
+        .iter()
+        .map(|(v, val)| ((*v).to_string(), val.clone()))
+        .collect();
+    let kernel = parent.materialize_subscope(canonical.program().clone(), &bindings_owned);
 
     let clause = &clauses[idx];
     match &clause.source {
@@ -1695,10 +1695,10 @@ mod tests {
         let parent = crate::dsl::compile::compile_gk(
             "final k_values := \"1, 10\"\n"
         ).unwrap();
-        let mut child = crate::dsl::compile::compile_gk(
+        let child_program = crate::dsl::compile::compile_gk(
             "extern k_values: String\n"
-        ).unwrap();
-        child.bind_outer_scope(&parent);
+        ).unwrap().program().clone();
+        let child = parent.materialize_subscope(child_program, &[]);
         let out = interpolate_via_kernel("values={k_values}", &child).unwrap();
         assert_eq!(out, "values=1, 10");
     }

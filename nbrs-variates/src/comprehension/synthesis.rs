@@ -259,15 +259,18 @@ pub fn synthesize_for_each_scope(
         strict,
         required_outputs: Vec::new(),
         context_label: Some(context.to_string()),
+        cursor_limit: None,
     };
-    let (mut kernel, _write_throughs) = crate::subcontext::build_kernel_under_parent_with_options(
-        parent_kernel,
-        context,
-        source,
-        inherited_names,
-        compile_options,
-    )
-    .map_err(|e| format!("{context}: for_each scope synthesis: {e}"))?;
+    let matter = crate::subcontext::GkMatter::builder()
+        .label(context)
+        .source(source)
+        .inherited_outputs(inherited_names)
+        .options(compile_options)
+        .build()
+        .map_err(|e| format!("{context}: for_each scope synthesis: {e}"))?;
+    let mut kernel = parent_kernel
+        .build_subscope(matter)
+        .map_err(|e| format!("{context}: for_each scope synthesis: {e}"))?;
 
     propagate_parent_inputs(&mut kernel, parent_kernel);
 
@@ -566,14 +569,11 @@ impl Iterator for ComprehensionIter {
 
     fn next(&mut self) -> Option<Self::Item> {
         let tuple = self.tuples.next()?;
-        let mut child = GkKernel::from_program(self.canonical.program().clone());
-        child.bind_outer_scope(&self.parent);
+        let bindings: Vec<(String, crate::node::Value)> = tuple.into_iter().collect();
+        let mut child = self
+            .parent
+            .materialize_subscope(self.canonical.program().clone(), &bindings);
         propagate_parent_inputs(&mut child, &self.parent);
-        for (var, value) in tuple {
-            if let Some(slot) = child.program().find_input(&var) {
-                child.state().set_input(slot, value);
-            }
-        }
         Some(child)
     }
 

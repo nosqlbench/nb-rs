@@ -82,6 +82,22 @@ fn wrap_to_f64(inner: Expr) -> Expr {
     })
 }
 
+/// Flatten an `+`-tree of Str operands into a single sequence.
+///
+/// `"a" + b + "c"` parses as `BinOp(BinOp("a", +, b), +, "c")`; this
+/// walks the left/right spines and emits each leaf so the str_concat
+/// desugar can produce a single variadic node instead of a chain of
+/// 2-arg concats.
+fn flatten_str_add(expr: &Expr, out: &mut Vec<Expr>) {
+    match expr {
+        Expr::BinOp(l, BinOpKind::Add, r) => {
+            flatten_str_add(l, out);
+            flatten_str_add(r, out);
+        }
+        _ => out.push(expr.clone()),
+    }
+}
+
 /// Infer the output `PortType` of an expression without compiling it.
 ///
 /// Uses heuristics to determine whether an expression produces a u64 or f64
@@ -137,7 +153,11 @@ fn infer_expr_type(
                 _ => {
                     let lt = infer_expr_type(lhs, asm, input_names);
                     let rt = infer_expr_type(rhs, asm, input_names);
-                    if lt == PortType::F64 || rt == PortType::F64 {
+                    if matches!(op, BinOpKind::Add)
+                        && (lt == PortType::Str || rt == PortType::Str)
+                    {
+                        PortType::Str
+                    } else if lt == PortType::F64 || rt == PortType::F64 {
                         PortType::F64
                     } else {
                         PortType::U64
@@ -271,6 +291,19 @@ impl Compiler {
                     .map(|s| s.params.iter().map(|p| p.slot_type).collect())
                     .unwrap_or_default();
 
+                // For functions whose arity declares variadic wires
+                // (e.g. `pick(b0, b1, …, bN-1, v0, v1, …, vN-1)`),
+                // the params spec typically lists only one entry —
+                // signature is "all positions are wires." Honour
+                // that so trailing literal arguments are promoted
+                // to anonymous const-wire nodes instead of being
+                // collected as build-time const_args (which the
+                // variadic ctor would silently drop, producing a
+                // truncated node with the wrong shape).
+                let variadic_wires = sig
+                    .map(|s| matches!(s.arity, super::registry::Arity::VariadicWires { .. }))
+                    .unwrap_or(false);
+
                 // Cursor into the param list.  We advance it for each call arg.
                 let mut param_cursor = 0usize;
 
@@ -281,12 +314,16 @@ impl Compiler {
                     };
 
                     // Determine the expected slot type for this argument
-                    // position, if known from the signature.
+                    // position, if known from the signature. For
+                    // variadic-wires functions, positions past the
+                    // explicit params list are still wires.
                     let expected_slot = param_slot_types.get(param_cursor).copied();
                     param_cursor += 1;
 
                     // Helper: is this arg position expected to be a wire input?
-                    let wants_wire = expected_slot.map(|s| s.is_wire()).unwrap_or(false);
+                    let wants_wire = expected_slot
+                        .map(|s| s.is_wire())
+                        .unwrap_or(variadic_wires);
 
                     match expr {
                         Expr::Ident(id, _) => {
@@ -567,6 +604,28 @@ impl Compiler {
                 // the other is f64, the u64 operand is auto-widened via to_f64.
                 let lhs_type = infer_expr_type(lhs, asm, &self.input_names);
                 let rhs_type = infer_expr_type(rhs, asm, &self.input_names);
+
+                // Str + anything → str_concat. Either side being Str
+                // routes the `+` operator to the variadic concat node.
+                // Adjacent Str+ operations are flattened so
+                // `"a" + b + "c"` lowers to a single
+                // `str_concat("a", b, "c")` call.
+                if matches!(op, BinOpKind::Add)
+                    && (lhs_type == PortType::Str || rhs_type == PortType::Str)
+                {
+                    let mut operands: Vec<Expr> = Vec::new();
+                    flatten_str_add(lhs, &mut operands);
+                    flatten_str_add(rhs, &mut operands);
+                    let mut wire_refs = Vec::with_capacity(operands.len());
+                    for operand in &operands {
+                        wire_refs.push(self.compile_binop_operand(asm, operand)?);
+                    }
+                    let node = build_node("str_concat", &wire_refs, &[])?;
+                    let name = &targets[0];
+                    asm.add_node(name, node, wire_refs);
+                    self.all_names.push(name.clone());
+                    return Ok(());
+                }
 
                 let (func_name, need_widen_lhs, need_widen_rhs) = match op {
                     BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul |

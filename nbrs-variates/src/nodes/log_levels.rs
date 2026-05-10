@@ -18,15 +18,11 @@
 //! the detected facts at session start without a custom readout is
 //! the load-bearing use case.
 //!
-//! TODO(SRD-66 Push 2 / SRD-41): the diag emission below uses
-//! `eprintln!` because `nbrs-variates` does not currently depend on
-//! `tracing` and depending on `nbrs-activity`'s diag pipeline would
-//! introduce a circular crate dependency. Push 2 (or a follow-up
-//! whenever `tracing` joins the dependency list, or when SRD-41 lands
-//! a level-aware façade in `nbrs-variates`) should replace these
-//! stderr lines with a structured tracing emit so logging-level
-//! filters apply automatically. The pass-through eval contract stays
-//! the same.
+//! Diag emission routes through [`crate::audit`] so the activity
+//! runner's installed sink forwards every line to
+//! `nbrs_activity::observer::log` and into `session.log` alongside
+//! the rest of the run trace. With no sink installed (unit tests,
+//! dryrun, pre-init) lines fall back to stderr.
 
 use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, Value};
 
@@ -40,15 +36,6 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
-    fn label(self) -> &'static str {
-        match self {
-            LogLevel::Debug => "DEBUG",
-            LogLevel::Info => "INFO",
-            LogLevel::Warn => "WARN",
-            LogLevel::Error => "ERROR",
-        }
-    }
-
     fn func_name(self) -> &'static str {
         match self {
             LogLevel::Debug => "log_debug",
@@ -61,8 +48,8 @@ impl LogLevel {
 
 /// Pass-through logger node. Construction wires through whatever
 /// `PortType` the input declares (defaulting to Str — the most common
-/// case for probe-phase result wires). Eval emits one stderr line and
-/// returns the value unchanged.
+/// case for probe-phase result wires). Eval emits one diag line via
+/// [`crate::audit`] and returns the value unchanged.
 pub struct LogPassthrough {
     meta: NodeMeta,
     level: LogLevel,
@@ -88,17 +75,23 @@ impl GkNode for LogPassthrough {
     }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        // Format value for the diag line. Preserves the existing
-        // `Value::to_display_string` rendering so vector wires print
-        // as JSON arrays, scalars print as their natural form, etc.
-        // TODO(SRD-66 Push 2 / SRD-41): replace eprintln with the
-        // tracing/diag façade. See module-level TODO.
-        eprintln!(
-            "[{level}] {func}: {value}",
-            level = self.level.label(),
+        // Route through `crate::audit` so the activity runner's
+        // installed sink forwards the line to `observer::log` and
+        // it lands in `session.log` alongside every other run-level
+        // entry. Falls back to stderr when no sink is installed
+        // (unit tests, dryrun, pre-init).
+        let msg = format!(
+            "{func}: {value}",
             func = self.level.func_name(),
             value = inputs[0].to_display_string()
         );
+        let audit_level = match self.level {
+            LogLevel::Debug => crate::audit::LogLevel::Debug,
+            LogLevel::Info  => crate::audit::LogLevel::Info,
+            LogLevel::Warn  => crate::audit::LogLevel::Warn,
+            LogLevel::Error => crate::audit::LogLevel::Error,
+        };
+        crate::audit::log(audit_level, &msg);
         outputs[0] = inputs[0].clone();
     }
 }

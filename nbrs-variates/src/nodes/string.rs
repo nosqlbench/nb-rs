@@ -313,6 +313,18 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
         },
+        FuncSig {
+            name: "str_concat", category: C::String, outputs: 1,
+            description: "concatenate N inputs as strings",
+            help: "Concatenate variadic wire inputs into a single string.\nEach value is rendered to its display form: strings pass through,\nnumerics format as decimal, bools as true/false, JSON via to_string.\nThis is the desugared form of `+` between Str-typed operands\nin the DSL: `\"a\" + b + \"c\"` lowers to `str_concat(\"a\", b, \"c\")`.\nParameters:\n  input... — wire inputs (any type)\nExample: str_concat(\"id=\", id, \" v=\", val)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: false, example: "\"hello\"", constraint: None },
+            ],
+            arity: Arity::VariadicWires { min_wires: 0 },
+            commutativity: crate::node::Commutativity::Positional,
+            default_resolver: None,
+        },
     ]
 }
 
@@ -494,10 +506,69 @@ impl GkNode for FileLineAt {
     }
 }
 
+// =================================================================
+// StrConcat: variadic string concatenation
+// =================================================================
+
+/// Concatenate N wire inputs into a single Str output.
+///
+/// Each input is rendered to its display form: Str passes through,
+/// numerics format as decimal, Bool as `true`/`false`, Json via
+/// `to_string`. Mixed-type inputs are accepted — the assembler skips
+/// type checking for str_concat (like printf), so any upstream wire
+/// type composes.
+///
+/// Used by the DSL desugar of `+` between Str-typed operands; also
+/// callable directly as `str_concat(a, b, c, ...)`.
+///
+/// Signature: `str_concat(in_0, in_1, ...) -> (String)`
+pub struct StrConcat {
+    meta: NodeMeta,
+}
+
+impl StrConcat {
+    pub fn new(wire_count: usize) -> Self {
+        let inputs: Vec<Port> = (0..wire_count)
+            .map(|i| Port::new(format!("in_{i}"), PortType::Str))
+            .collect();
+        let slots: Vec<Slot> = inputs.iter().map(|p| Slot::Wire(p.clone())).collect();
+        Self {
+            meta: NodeMeta {
+                name: "str_concat".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: slots,
+            },
+        }
+    }
+}
+
+fn value_to_display(val: &Value) -> String {
+    match val {
+        Value::Str(s) => s.clone(),
+        Value::U64(v) => v.to_string(),
+        Value::F64(v) => v.to_string(),
+        Value::Bool(v) => v.to_string(),
+        Value::Json(j) => j.to_string(),
+        Value::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
+        _ => format!("{val:?}"),
+    }
+}
+
+impl GkNode for StrConcat {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let mut out = String::new();
+        for v in inputs {
+            out.push_str(&value_to_display(v));
+        }
+        outputs[0] = Value::Str(out);
+    }
+}
+
 /// Try to build a string node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "combinations" => Some(Ok(Box::new(Combinations::new(
             consts.first().map(|c| c.as_str()).unwrap_or("a-z"),
@@ -511,6 +582,7 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
             let path = consts.first().map(|c| c.as_str()).unwrap_or("");
             Some(FileLineAt::new(path).map(|n| Box::new(n) as Box<dyn crate::node::GkNode>))
         }
+        "str_concat" => Some(Ok(Box::new(StrConcat::new(wires.len())))),
         _ => None,
     }
 }
@@ -636,5 +708,42 @@ mod tests {
         let mut out = [Value::None];
         node.eval(&[Value::U64(42)], &mut out);
         assert_eq!(out[0].as_str(), "forty-two");
+    }
+
+    // --- StrConcat tests ---
+
+    #[test]
+    fn str_concat_basic() {
+        let node = StrConcat::new(2);
+        let mut out = [Value::None];
+        node.eval(
+            &[Value::Str("hello ".into()), Value::Str("world".into())],
+            &mut out,
+        );
+        assert_eq!(out[0].as_str(), "hello world");
+    }
+
+    #[test]
+    fn str_concat_mixed_types() {
+        let node = StrConcat::new(4);
+        let mut out = [Value::None];
+        node.eval(
+            &[
+                Value::Str("id=".into()),
+                Value::U64(42),
+                Value::Str(" v=".into()),
+                Value::F64(3.14),
+            ],
+            &mut out,
+        );
+        assert_eq!(out[0].as_str(), "id=42 v=3.14");
+    }
+
+    #[test]
+    fn str_concat_empty() {
+        let node = StrConcat::new(0);
+        let mut out = [Value::None];
+        node.eval(&[], &mut out);
+        assert_eq!(out[0].as_str(), "");
     }
 }

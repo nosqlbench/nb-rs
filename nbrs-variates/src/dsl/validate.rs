@@ -245,7 +245,22 @@ pub(crate) fn types_compatible(lit_type: &str, declared: &str) -> bool {
 /// Collect all identifier references from an expression tree (no validation).
 pub(crate) fn collect_references(expr: &Expr, referenced: &mut HashSet<String>) {
     match expr {
-        Expr::Ident(name, _) => { referenced.insert(name.clone()); }
+        Expr::Ident(name, _) => {
+            // The lexer/parser has no `BoolLit` variant — `true`
+            // and `false` arrive as `Expr::Ident`, and every
+            // typed evaluator (try_fold_shared_init,
+            // evaluate_default_expr, the BinOp folders) checks
+            // for the literal name before treating an Ident as
+            // a wire reference. The inferred-inputs pass must
+            // match: without this filter, `shared X := false`
+            // adds a stray input slot named `false` (init 0)
+            // because the unfiltered RHS reference looked like
+            // a wire name. Symptoms surfaced as a bogus
+            // `false=0` line in the kernel-input dump.
+            if name != "true" && name != "false" {
+                referenced.insert(name.clone());
+            }
+        }
         Expr::Call(call) => {
             for arg in &call.args {
                 let inner = match arg {

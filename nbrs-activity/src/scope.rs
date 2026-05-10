@@ -809,13 +809,15 @@ pub fn build_do_loop_scope_kernel(
     // hints. If the synthesiser ever emits richer source, the
     // bridge will need extending. Recorded as a Phase 3 follow-up.
     let _ = (gk_lib_paths, workload_dir, strict);
-    let mut kernel = nbrs_variates::subcontext::build_kernel_under_parent(
-        parent_kernel,
-        context,
-        source,
-        inherited_names,
-    )
-    .map_err(|e| format!("{context}: do-loop scope synthesis: {e}"))?;
+    let matter = nbrs_variates::subcontext::GkMatter::builder()
+        .label(context)
+        .source(source)
+        .inherited_outputs(inherited_names)
+        .build()
+        .map_err(|e| format!("{context}: do-loop scope synthesis: {e}"))?;
+    let mut kernel = parent_kernel
+        .build_subscope(matter)
+        .map_err(|e| format!("{context}: do-loop scope synthesis: {e}"))?;
     propagate_parent_inputs(&mut kernel, parent_kernel);
     Ok(kernel)
 }
@@ -1170,8 +1172,6 @@ pub fn build_op_template_scope_kernel(
             emitted.insert(name.clone());
             inherited_names.push(name.clone());
         } else if let Some(parent_idx) = parent_kernel.program().find_input(name) {
-            eprintln!("DBG parent input '{}' idx={parent_idx} kind={:?}",
-                name, parent_kernel.program().input_kind(parent_idx));
             // Parent INPUT — for non-Coordinate inputs (iteration
             // vars, capture ports) emit an explicit `extern` so the
             // inner kernel's input classification matches the
@@ -1243,6 +1243,7 @@ pub fn build_op_template_scope_kernel(
         strict,
         required_outputs: Vec::new(),
         context_label: Some(context.to_string()),
+        cursor_limit: None,
     };
 
     // SRD-67 Phase 5 — fold the SRD-66 `result:` source through
@@ -1261,15 +1262,19 @@ pub fn build_op_template_scope_kernel(
     let result_source: Option<String> =
         op.result.as_ref().map(collect_result_bindings_source).filter(|s| !s.trim().is_empty());
 
-    let (mut kernel, _write_throughs) =
-        nbrs_variates::subcontext::build_kernel_under_parent_full(
-            parent_kernel,
-            context,
-            source,
-            result_source.as_deref(),
-            inherited_names,
-            compile_options,
-        )
+    let mut matter_builder = nbrs_variates::subcontext::GkMatter::builder()
+        .label(context)
+        .source(source)
+        .inherited_outputs(inherited_names)
+        .options(compile_options);
+    if let Some(rb) = result_source {
+        matter_builder = matter_builder.result_bindings(rb);
+    }
+    let matter = matter_builder
+        .build()
+        .map_err(|e| format!("{context}: op-template scope synthesis: {e}"))?;
+    let mut kernel = parent_kernel
+        .build_subscope(matter)
         .map_err(|e| format!("{context}: op-template scope synthesis: {e}"))?;
     propagate_parent_inputs(&mut kernel, parent_kernel);
     Ok(kernel)
@@ -1685,33 +1690,26 @@ pub fn build_scope(
 /// INTO ks.{table} ...`) must be substituted away before that
 /// conversion runs, since CQL doesn't permit `?` for table
 /// names.
-/// Resolve every `{name}` placeholder in the op fields and
-/// op-level params of `ops` against the populated parent
-/// kernel — the **single name-resolution surface** per SRD-16.
+/// SRD-68 Push 5c — validate-only walk. Same semantic as
+/// [`resolve_placeholders_via_kernel`] but DOES NOT mutate the op
+/// strings. Walks every `{name}` placeholder in the ops' op fields
+/// and op-level params, accumulating diagnostics for unresolved
+/// references; returns `Result<(), String>` describing any
+/// unresolved bindpoints.
 ///
-/// All static-per-iteration values (iter vars, cascaded workload
-/// params, ancestor scope outputs) reach the leaf phase via the
-/// `bind_outer_scope` chain and are answered by
-/// [`GkKernel::lookup`] uniformly. There is no parallel HashMap
-/// of values; there is no fresh-state pull; there is no silent
-/// default. A placeholder either resolves through the kernel,
-/// is a per-cycle binding produced by this phase's own
-/// `bindings:` block (in which case it stays in the string for
-/// dispenser-time resolution), or is an error — caller surfaces
-/// as a phase-level diagnostic.
-///
-/// Errors enumerate the unresolved placeholder, the field path,
-/// and the names actually in scope at this kernel so the operator
-/// can spot a typo or a missing cascade without instrumenting.
-pub fn resolve_placeholders_via_kernel(
-    ops: &mut [ParsedOp],
+/// Used at phase activation as the single workload-load-time
+/// validation step. Adapters now do their own cycle-time
+/// resolution (CQL: construction-time structural via
+/// `canonical_kernel.lookup` + cycle-time per-cycle via
+/// `WireSource::get`; non-CQL: cycle-time via
+/// `synthesis::resolve_cached →
+/// substitute_bind_points_with_state` against `main_kernel`).
+/// Mutation of the workload model is no longer load-bearing —
+/// only the diagnostic surface is.
+pub fn validate_placeholders_via_kernel(
+    ops: &[ParsedOp],
     kernel: &nbrs_variates::kernel::GkKernel,
 ) -> Result<(), String> {
-    // Names produced by this phase's own `bindings:` block —
-    // those are per-cycle wires the dispenser resolves at
-    // execute time, so an unresolved placeholder for one of
-    // them is *expected* and stays in the string. Anything
-    // else has to come through the kernel.
     let per_cycle_names = collect_phase_binding_lhs_names(ops);
 
     let mut errors: Vec<String> = Vec::new();
@@ -1724,28 +1722,25 @@ pub fn resolve_placeholders_via_kernel(
         names.sort();
         names
     };
-    for op in ops.iter_mut() {
+    for op in ops.iter() {
         let op_name = op.name.clone();
-        for (key, value) in op.op.iter_mut() {
+        for (key, value) in op.op.iter() {
             let path = format!("op '{op_name}' field '{key}'");
+            // Clone-then-discard: `resolve_placeholders_in_json`
+            // requires `&mut serde_json::Value` but we don't
+            // care about its mutations — only the `errors` it
+            // accumulates. The clone is shallow per JSON value
+            // and runs once per field at workload-load time.
+            let mut throwaway = value.clone();
             resolve_placeholders_in_json(
-                value, kernel, &per_cycle_names, &path, &mut errors,
+                &mut throwaway, kernel, &per_cycle_names, &path, &mut errors,
             );
         }
-        for (key, value) in op.params.iter_mut() {
-            // Params can legitimately reference per-cycle phase
-            // bindings — `relevancy.expected: "{ground_truth}"`
-            // is the canonical case (SRD 33 §"Ground Truth Flow").
-            // The validation wrapper registers `ground_truth`
-            // against the phase kernel (where it's an output) at
-            // activity construction; until then, the placeholder
-            // stays in the JSON value for the fixture/handle path
-            // to consume. Apply the same `per_cycle_names` allow-
-            // list as op fields — anything unresolved that *isn't*
-            // a per-cycle binding remains a hard error.
+        for (key, value) in op.params.iter() {
             let path = format!("op '{op_name}' param '{key}'");
+            let mut throwaway = value.clone();
             resolve_placeholders_in_json(
-                value, kernel, &per_cycle_names, &path, &mut errors,
+                &mut throwaway, kernel, &per_cycle_names, &path, &mut errors,
             );
         }
     }
@@ -1767,6 +1762,78 @@ pub fn resolve_placeholders_via_kernel(
     ));
     Err(out)
 }
+
+/// SRD-68 Push 5c — resolve `{name}` placeholders in a single
+/// op's `params` against `kernel`. Used by validation wrappers
+/// at construction time to pre-resolve config like `relevancy.k`
+/// = `"{k}"` against their dispenser's canonical kernel, so the
+/// downstream spec parsers see a literal value (`10`) rather
+/// than a surviving placeholder string.
+///
+/// Per-cycle binding LHS names pass through unchanged — the
+/// wrapper resolves those via wires at cycle time (e.g.
+/// `relevancy.expected = "{ground_truth}"` stays as-is so the
+/// wrapper can register it on the fixture's pull plan and
+/// read it per cycle).
+///
+/// Single-op variant of the legacy bulk-mutation pass; the
+/// per-template granularity lets each wrapper resolve against
+/// its own dispenser's canonical kernel rather than a shared
+/// activity-layer parent.
+pub fn resolve_placeholders_in_op_params(
+    op: &mut ParsedOp,
+    kernel: &nbrs_variates::kernel::GkKernel,
+) -> Result<(), String> {
+    let per_cycle_names = collect_phase_binding_lhs_names(std::slice::from_ref(op));
+
+    let mut errors: Vec<String> = Vec::new();
+    let in_scope = || -> Vec<String> {
+        let prog = kernel.program();
+        let mut names: Vec<String> = prog.output_names().iter().map(|s| s.to_string()).collect();
+        for n in prog.input_names() {
+            if !names.contains(&n) { names.push(n); }
+        }
+        names.sort();
+        names
+    };
+    let op_name = op.name.clone();
+    for (key, value) in op.params.iter_mut() {
+        let path = format!("op '{op_name}' param '{key}'");
+        resolve_placeholders_in_json(
+            value, kernel, &per_cycle_names, &path, &mut errors,
+        );
+    }
+    if errors.is_empty() {
+        return Ok(());
+    }
+    let in_scope_str = in_scope().join(", ");
+    let mut out = String::from(
+        "param-placeholder resolution failed:\n"
+    );
+    for e in &errors {
+        out.push_str("  - ");
+        out.push_str(e);
+        out.push('\n');
+    }
+    out.push_str(&format!(
+        "  in-scope names at this kernel: [{in_scope_str}]"
+    ));
+    Err(out)
+}
+
+// SRD-68 Push 5 cleanup: the legacy
+// `resolve_placeholders_via_kernel` (op-field text mutation) and
+// `resolve_placeholders_in_params_only` (bulk op-params mutation)
+// are both retired. The executor calls
+// [`validate_placeholders_via_kernel`] (pure walker) at workload
+// load to surface unresolved-bindpoint diagnostics; adapters
+// resolve op-field placeholders themselves at construction (CQL
+// prepared via `resolve_structural_and_mark_remaining`) or at
+// cycle time (CQL raw via `substitute_via_wires`); validation
+// wrappers resolve their own op.params at construction via
+// [`resolve_placeholders_in_op_params`] against the dispenser's
+// own canonical kernel. The workload model is no longer mutated
+// — `OpDispenser::describe()` returns pristine yaml.
 
 /// Scan `ops`' `bindings:` text for the LHS names that get
 /// produced as per-cycle wires. The scan is intentionally

@@ -280,14 +280,38 @@ pub trait OpConsumer: Sized {
 pub struct ExecCtx<'a> {
     pub fields: &'a crate::adapter::ResolvedFields,
     pub pulls:  &'a ResolvedPulls,
+    /// Narrow read surface for op-template name resolution against
+    /// the dispenser's bound GK context (SRD-68 invariants I-1 + I-2).
+    /// During the SRD-68 migration this defaults to a no-op
+    /// `NullWireSource` for legacy call sites; adapters that own a
+    /// kernel construct via [`Self::with_wires`].
+    pub wires:  &'a dyn crate::wires::WireSource,
 }
 
 impl<'a> ExecCtx<'a> {
+    /// Legacy constructor — defaults `wires` to a no-op
+    /// [`crate::wires::NullWireSource`]. Used by call sites that
+    /// haven't migrated to SRD-68's dispenser-owned-kernel model
+    /// yet. Adapters that own a kernel handle should call
+    /// [`Self::with_wires`] instead.
     pub fn new(
         fields: &'a crate::adapter::ResolvedFields,
         pulls:  &'a ResolvedPulls,
     ) -> Self {
-        Self { fields, pulls }
+        Self { fields, pulls, wires: &crate::wires::NULL_WIRES }
+    }
+
+    /// Construct an `ExecCtx` with an explicit `WireSource` — the
+    /// SRD-68 path. The `wires` value should be the per-fiber
+    /// kernel slot for the firing dispenser, narrowed to the
+    /// `WireSource` trait so adapter code never sees `GkKernel`
+    /// internals.
+    pub fn with_wires(
+        fields: &'a crate::adapter::ResolvedFields,
+        pulls:  &'a ResolvedPulls,
+        wires:  &'a dyn crate::wires::WireSource,
+    ) -> Self {
+        Self { fields, pulls, wires }
     }
 }
 

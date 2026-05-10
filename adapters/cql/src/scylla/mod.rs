@@ -100,7 +100,11 @@ impl DriverAdapter for ScyllaCqlAdapter {
         crate::common::default_status_metrics()
     }
 
-    fn map_op(&self, template: &ParsedOp) -> Result<Box<dyn OpDispenser>, String> {
+    fn map_op(
+        &self,
+        template: &ParsedOp,
+        _parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+    ) -> Result<Box<dyn OpDispenser>, String> {
         let (stmt_text, stmt_field) = STMT_FIELD_NAMES.iter()
             .find_map(|key| -> Option<(String, &'static str)> {
                 let v = template.op.get(*key)?;
@@ -127,7 +131,7 @@ impl DriverAdapter for ScyllaCqlAdapter {
             OpMode::Raw => Ok(Box::new(raw::ScyllaRawDispenser::new(
                 self.session.clone(),
                 self.consistency,
-                stmt_field.to_string(),
+                stmt_text,
             ))),
             OpMode::Prepared => Ok(Box::new(prepared::ScyllaPreparedDispenser::new(
                 self.session.clone(),
@@ -144,11 +148,18 @@ impl DriverAdapter for ScyllaCqlAdapter {
                         _         => scylla::statement::batch::BatchType::Unlogged,
                     })
                     .unwrap_or(scylla::statement::batch::BatchType::Unlogged);
+                // `batch: <N>` op param is the row count; fall back
+                // to `batch-size:` for parity with the older docs.
+                let batch_size: usize = template.params.get("batch")
+                    .or_else(|| template.params.get("batch-size"))
+                    .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())))
+                    .unwrap_or(1) as usize;
                 Ok(Box::new(batch::ScyllaBatchDispenser::new(
                     self.session.clone(),
                     self.consistency,
                     prepared_text,
                     bind_names,
+                    batch_size,
                     batch_type,
                 )))
             }

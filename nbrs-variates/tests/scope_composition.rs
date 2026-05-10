@@ -10,7 +10,8 @@
 use nbrs_variates::dsl::compile::compile_gk;
 use nbrs_variates::dsl::ast::BindingModifier;
 use nbrs_variates::node::Value;
-use nbrs_variates::subcontext::chain_kernel_under_parent;
+use nbrs_variates::kernel::Construction;
+use nbrs_variates::subcontext::GkMatter;
 
 // =========================================================================
 // bind_outer_scope: basic wiring
@@ -24,13 +25,12 @@ fn bind_outer_scope_wires_constants() {
         count := 1000
     "#).unwrap();
 
-    let mut inner = compile_gk(r#"
+    let inner_program = compile_gk(r#"
         inputs := (cycle)
         extern dim: u64
         extern count: u64
-    "#).unwrap();
-
-    chain_kernel_under_parent(&mut inner, &outer);
+    "#).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
 
     let dim_idx = inner.program().find_input("dim").unwrap();
     let count_idx = inner.program().find_input("count").unwrap();
@@ -46,12 +46,11 @@ fn bind_outer_scope_only_matches_by_name() {
     "#).unwrap();
 
     // Inner has an extern named 'offset' — not in outer scope
-    let mut inner = compile_gk(r#"
+    let inner_program = compile_gk(r#"
         inputs := (cycle)
         extern offset: u64
-    "#).unwrap();
-
-    chain_kernel_under_parent(&mut inner, &outer);
+    "#).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
 
     // 'offset' should still be at its default (None for extern)
     let idx = inner.program().find_input("offset").unwrap();
@@ -65,13 +64,12 @@ fn bind_outer_scope_does_not_affect_coordinates() {
         dim := 128
     "#).unwrap();
 
-    let mut inner = compile_gk(r#"
+    let inner_program = compile_gk(r#"
         inputs := (cycle)
         extern dim: u64
         h := hash(cycle)
-    "#).unwrap();
-
-    chain_kernel_under_parent(&mut inner, &outer);
+    "#).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
 
     // Coordinate input should still work normally
     inner.set_inputs(&[42]);
@@ -93,13 +91,12 @@ fn scope_values_extracts_bound_inputs() {
         count := 500
     "#).unwrap();
 
-    let mut inner = compile_gk(r#"
+    let inner_program = compile_gk(r#"
         inputs := (cycle)
         extern dim: u64
         extern count: u64
-    "#).unwrap();
-
-    chain_kernel_under_parent(&mut inner, &outer);
+    "#).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
 
     let values = inner.scope_values();
     // Should have entries for dim and count (and possibly cycle default)
@@ -115,12 +112,11 @@ fn scope_values_empty_when_no_externs() {
         dim := 128
     "#).unwrap();
 
-    let mut inner = compile_gk(r#"
+    let inner_program = compile_gk(r#"
         inputs := (cycle)
         h := hash(cycle)
-    "#).unwrap();
-
-    chain_kernel_under_parent(&mut inner, &outer);
+    "#).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
 
     // Inner has no externs, so scope_values only has coordinate defaults
     let values = inner.scope_values();
@@ -151,11 +147,11 @@ fn inner_scope_shadows_outer_binding() {
     assert_eq!(inner.get_constant("dim").unwrap().as_u64(), 256);
 
     // Inner scope has no extern for dim — bind_outer_scope won't wire it
-    let mut inner2 = compile_gk(r#"
+    let inner2_program = compile_gk(r#"
         inputs := (cycle)
         dim := 256
-    "#).unwrap();
-    chain_kernel_under_parent(&mut inner2, &outer);
+    "#).unwrap().program().clone();
+    let mut inner2 = outer.subscope(GkMatter::builder().program(inner2_program).build().unwrap()).unwrap();
     // dim is still 256 (inner definition), not 128 (outer)
     assert_eq!(inner2.get_constant("dim").unwrap().as_u64(), 256);
 }
@@ -322,14 +318,13 @@ fn full_scope_pipeline_outer_to_inner() {
     "#).unwrap();
 
     // Inner scope uses outer constants via extern + GK wire
-    let mut inner = compile_gk(r#"
+    let inner_program = compile_gk(r#"
         inputs := (cycle)
         extern dim: u64
         extern base_count: u64
         id := hash(cycle) + base_count
-    "#).unwrap();
-
-    chain_kernel_under_parent(&mut inner, &outer);
+    "#).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
 
     // Verify both externs were bound correctly
     inner.set_inputs(&[0]);
@@ -357,12 +352,12 @@ fn scope_pipeline_with_shared_and_final() {
     assert_eq!(prog.output_modifier("normal"), BindingModifier::NONE);
 
     // Inner scope sees the outer's constants via bind
-    let mut inner = compile_gk(r#"
+    let inner_program = compile_gk(r#"
         inputs := (cycle)
         extern error_budget: u64
         extern max_dim: u64
-    "#).unwrap();
-    chain_kernel_under_parent(&mut inner, &outer);
+    "#).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
 
     let eb_idx = inner.program().find_input("error_budget").unwrap();
     let md_idx = inner.program().find_input("max_dim").unwrap();
@@ -382,22 +377,22 @@ fn sequential_inner_scopes_are_independent() {
     "#).unwrap();
 
     // First inner scope
-    let mut inner1 = compile_gk(r#"
+    let inner1_program = compile_gk(r#"
         inputs := (cycle)
         extern seed: u64
         h := hash(seed)
-    "#).unwrap();
-    chain_kernel_under_parent(&mut inner1, &outer);
+    "#).unwrap().program().clone();
+    let mut inner1 = outer.subscope(GkMatter::builder().program(inner1_program).build().unwrap()).unwrap();
     inner1.set_inputs(&[0]);
     let v1 = inner1.pull("h").as_u64();
 
     // Second inner scope — should produce identical result
-    let mut inner2 = compile_gk(r#"
+    let inner2_program = compile_gk(r#"
         inputs := (cycle)
         extern seed: u64
         h := hash(seed)
-    "#).unwrap();
-    chain_kernel_under_parent(&mut inner2, &outer);
+    "#).unwrap().program().clone();
+    let mut inner2 = outer.subscope(GkMatter::builder().program(inner2_program).build().unwrap()).unwrap();
     inner2.set_inputs(&[0]);
     let v2 = inner2.pull("h").as_u64();
 
@@ -645,12 +640,11 @@ fn shared_inner_write_propagates_to_outer_via_cell() {
         shared counter := 5
     "#).unwrap();
 
-    let mut inner = compile_gk(r#"
+    let inner_program = compile_gk(r#"
         inputs := (cycle)
         extern counter: u64
-    "#).unwrap();
-
-    chain_kernel_under_parent(&mut inner, &outer);
+    "#).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
 
     // Inner's lookup goes through the cell — sees initial 5.
     assert_eq!(inner.lookup("counter").unwrap().as_u64(), 5);
@@ -672,17 +666,16 @@ fn shared_two_inners_see_each_others_writes_via_cell() {
         shared budget := 100
     "#).unwrap();
 
-    let mut a = compile_gk(r#"
+    let a_program = compile_gk(r#"
         inputs := (cycle)
         extern budget: u64
-    "#).unwrap();
-    let mut b = compile_gk(r#"
+    "#).unwrap().program().clone();
+    let b_program = compile_gk(r#"
         inputs := (cycle)
         extern budget: u64
-    "#).unwrap();
-
-    chain_kernel_under_parent(&mut a, &outer);
-    chain_kernel_under_parent(&mut b, &outer);
+    "#).unwrap().program().clone();
+    let mut a = outer.subscope(GkMatter::builder().program(a_program).build().unwrap()).unwrap();
+    let mut b = outer.subscope(GkMatter::builder().program(b_program).build().unwrap()).unwrap();
 
     // Both start at 100 — `lookup` reads the cell.
     assert_eq!(a.lookup("budget").unwrap().as_u64(), 100);
@@ -715,17 +708,16 @@ fn shared_last_write_wins_under_concurrent_writers() {
         shared status := "init"
     "#).unwrap();
 
-    let mut a = compile_gk(r#"
+    let a_program = compile_gk(r#"
         inputs := (cycle)
         extern status: String
-    "#).unwrap();
-    let mut b = compile_gk(r#"
+    "#).unwrap().program().clone();
+    let b_program = compile_gk(r#"
         inputs := (cycle)
         extern status: String
-    "#).unwrap();
-
-    chain_kernel_under_parent(&mut a, &outer);
-    chain_kernel_under_parent(&mut b, &outer);
+    "#).unwrap().program().clone();
+    let mut a = outer.subscope(GkMatter::builder().program(a_program).build().unwrap()).unwrap();
+    let mut b = outer.subscope(GkMatter::builder().program(b_program).build().unwrap()).unwrap();
 
     let a_idx = a.program().find_input("status").unwrap();
     let b_idx = b.program().find_input("status").unwrap();

@@ -895,9 +895,38 @@ impl GkAssembler {
                 // declare placeholder ports and skip the assembler check;
                 // the per-eval validator catches mismatches with a clear
                 // panic via `enrich_eval_panic`.
+                //
+                // The `log_*` family is also type-polymorphic by intent:
+                // `log_info(regex_match(...))` is the canonical SRD-66
+                // probe-phase shape, where the input is Bool. Without
+                // skipping the check, the assembler inserts a Bool→Str
+                // adapter that converts the value, breaking the
+                // result-binding writeback (the cell receives Str("false")
+                // instead of Bool(false), and downstream `pick` rejects
+                // it as non-bool). The eval is a pass-through, so the
+                // actual value flows through unchanged.
+                // `exactly_one_value` is similarly type-polymorphic:
+                // its eval inspects the actual `Value` variant and
+                // walks structural shape (Json / VecF32 / VecI32) or
+                // passes through scalars. The declared input port
+                // type is a placeholder. Without the skip, an
+                // upstream `Json` body (the magic `body` extern's
+                // declared type) gets coerced to `Str` via the
+                // `JsonToStr` adapter — at which point the SRD-66
+                // probe shape `regex_match(exactly_one_value(body), …)`
+                // sees JSON-serialised text with `\n` literal
+                // escapes, and `^`-anchored regexes never match
+                // inside `create_statement` columns.
                 let node_name_for_typing = &all_nodes[node_idx].node.meta().name;
                 let skip_type_check = node_name_for_typing == "printf"
-                    || node_name_for_typing == "pick";
+                    || node_name_for_typing == "pick"
+                    || node_name_for_typing == "log_debug"
+                    || node_name_for_typing == "log_info"
+                    || node_name_for_typing == "log_warn"
+                    || node_name_for_typing == "log_error"
+                    || node_name_for_typing == "exactly_one_value"
+                    || node_name_for_typing == "json_text"
+                    || node_name_for_typing == "str_concat";
 
                 if skip_type_check || source_type == expected_type {
                     node_wiring.push(source);

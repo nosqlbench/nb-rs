@@ -347,8 +347,21 @@ impl PlotterAdapter {
 
 impl DriverAdapter for PlotterAdapter {
     fn name(&self) -> &str { "plotter" }
-    fn map_op(&self, _t: &ParsedOp) -> Result<Box<dyn OpDispenser>, String> {
-        Ok(Box::new(PlotterDispenser { data: self.data.clone() }))
+    fn map_op(
+        &self,
+        template: &ParsedOp,
+        parent: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
+    ) -> Result<Box<dyn OpDispenser>, String> {
+        // SRD-68 Push 5: snapshot the op-field templates at map_op.
+        // Each entry is resolved through `wires` per cycle.
+        let op_fields: Vec<(String, serde_json::Value)> = template.op.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        Ok(Box::new(PlotterDispenser {
+            data: self.data.clone(),
+            canonical_kernel: parent,
+            op_fields,
+        }))
     }
     fn display_preference(&self) -> nbrs_activity::adapter::DisplayPreference {
         nbrs_activity::adapter::DisplayPreference::Off
@@ -362,15 +375,33 @@ impl Drop for PlotterAdapter {
     }
 }
 
-struct PlotterDispenser { data: Arc<Mutex<PlotData>> }
+struct PlotterDispenser {
+    data: Arc<Mutex<PlotData>>,
+    /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
+    canonical_kernel: std::sync::Arc<nbrs_activity::adapter::GkKernel>,
+    /// Op-field templates snapshotted at `map_op`. Resolved per
+    /// cycle via the generic `wires` API; typed `Value`s feed the
+    /// numeric plot data store.
+    op_fields: Vec<(String, serde_json::Value)>,
+}
 
 impl OpDispenser for PlotterDispenser {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_activity::adapter::GkKernel>> {
+        Some(&self.canonical_kernel)
+    }
+
     fn execute<'a>(&'a self, _cycle: u64, ctx: &'a nbrs_activity::adapter::ExecCtx<'a>)
         -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>>
     {
-        let fields = ctx.fields;
+        let wires = ctx.wires;
         Box::pin(async move {
-            self.data.lock().unwrap().record(fields);
+            let resolved = nbrs_activity::wires::resolve_op_fields_via_wires(&self.op_fields, wires)
+                .map_err(|msg| ExecutionError::Op(nbrs_activity::adapter::AdapterError {
+                    error_name: "BindError".into(),
+                    message: msg,
+                    retryable: false,
+                }))?;
+            self.data.lock().unwrap().record(&resolved);
             Ok(OpResult { body: None, captures: HashMap::new(), skipped: false })
         })
     }

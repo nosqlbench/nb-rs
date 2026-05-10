@@ -930,11 +930,9 @@ async fn run_do_loop(
     // `from_program → bind_outer_scope` sequence through the
     // typed bridge so the rebind primitive sits behind a single
     // entry point.
-    let mut loop_kernel = nbrs_variates::subcontext::bind_program_under_parent(
-        &parent,
-        canonical.program().clone(),
-        Vec::new(),
-    );
+    let mut loop_kernel = parent.build_subscope(
+        nbrs_variates::subcontext::GkMatter::builder().program(canonical.program().clone()).build().unwrap(),
+    ).expect("subscope from program is infallible");
 
     let mut counter_value: u64 = 0;
     loop {
@@ -975,8 +973,12 @@ async fn run_do_loop(
         }
         let arc_loop = std::sync::Arc::new(std::mem::replace(
             &mut loop_kernel,
-            // Placeholder — overwritten on reclaim. Cheap dummy.
-            nbrs_variates::subcontext::instance_program(canonical.program().clone()),
+            // Placeholder — overwritten on reclaim. Constructed
+            // via the typed subscope path against the canonical;
+            // shares cells but is otherwise throwaway.
+            canonical.build_subscope(
+                nbrs_variates::subcontext::GkMatter::builder().program(canonical.program().clone()).build().unwrap(),
+            ).expect("program-form subscope is infallible"),
         ));
         ctx.current_parent_kernel = Some(arc_loop.clone());
 
@@ -1348,7 +1350,19 @@ async fn run_phase(
             "phase '{phase_name}': no current_parent_kernel — \
              single-resolution-path requires the populated parent kernel",
         ))?;
-        crate::scope::resolve_placeholders_via_kernel(&mut ops, parent_kernel)
+        // SRD-68 Push 5c-cleanup: NO mutation of the workload
+        // model. Op fields stay pristine (the dispenser handles
+        // resolution at construction or cycle time per its
+        // adapter shape); op params are pre-resolved at
+        // wrapper construction time using the dispenser's own
+        // canonical kernel (see validation.rs::wrap and the
+        // sibling helpers in `crate::scope::resolve_placeholders_in_op_params`).
+        // The workload-load step here just validates that every
+        // referenced name resolves at the phase scope kernel —
+        // unresolved references surface with a workload-load
+        // diagnostic naming the field path and the in-scope
+        // names. No text is rewritten.
+        crate::scope::validate_placeholders_via_kernel(&ops, parent_kernel)
             .map_err(|e| format!("phase '{phase_name}': {e}"))?;
 
         // Rewrite inline expressions ({{expr}} → {__expr_N}) in op templates.
@@ -1489,11 +1503,9 @@ async fn run_phase(
         // parent scope's per-branch kernel via standard GK
         // chain composition. Single call, single source of
         // values — SRD-16 §"Visibility Rules".
-        let mut kernel = nbrs_variates::subcontext::bind_program_under_parent(
-            parent_kernel,
-            phase_program,
-            Vec::new(),
-        );
+        let mut kernel = parent_kernel.build_subscope(
+            nbrs_variates::subcontext::GkMatter::builder().program(phase_program).build().unwrap(),
+        ).expect("program-form subscope is infallible");
 
         // ─── Plan B: Init-Binding Contract (scope-activation) ─────
         //
@@ -1597,8 +1609,16 @@ async fn run_phase(
         (op_builder, ops, runtime_extents)
     } else {
         // Workload-kernel fallback: no per-iteration values to
-        // inject, so a no-scope-values wrapper is sufficient.
-        let mut b = OpBuilder::from_program(ctx.program.clone());
+        // inject. Materialize a fresh subscope of the live
+        // parent kernel using the workload program — the only
+        // sanctioned construction path. Cells flow forward via
+        // the cascade.
+        let parent = ctx.current_parent_kernel.as_ref()
+            .expect("workload-kernel fallback requires an installed parent kernel");
+        let workload_subscope = parent.build_subscope(
+            nbrs_variates::subcontext::GkMatter::builder().program(ctx.program.clone()).build().unwrap(),
+        ).expect("program-form subscope is infallible");
+        let mut b = OpBuilder::new(workload_subscope);
         if let Some(phase_idx) = ctx.scope_tree.phase_node_by_name(phase_name) {
             let map = ctx.scope_tree.op_template_programs_for_phase(phase_idx);
             if !map.is_empty() {

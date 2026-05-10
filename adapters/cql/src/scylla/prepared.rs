@@ -69,15 +69,17 @@ impl OpDispenser for ScyllaPreparedDispenser {
         _cycle: u64,
         ctx: &'a nbrs_activity::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
-        let fields = ctx.fields;
+        let wires = ctx.wires;
         Box::pin(async move {
             let prepared = self.get_prepared().await?;
 
-            // Pull values by bind-point name in `?` order. Avoids
-            // shipping non-bind fields (e.g. the stmt text itself)
-            // through the binder.
+            // SRD-68 Push 5: pull values by bind-point name in `?`
+            // order through the generic wires API. Empty string is
+            // the legacy fallback for an unresolved bind name; the
+            // GK compiler should have provisioned every name, but
+            // an absent name shouldn't fail-stop the cycle.
             let bind_values: Vec<Value> = self.bind_names.iter()
-                .map(|name| fields.get_value(name).cloned().unwrap_or(Value::Str(String::new())))
+                .map(|name| wires.get(name).unwrap_or(Value::Str(String::new())))
                 .collect();
             let col_specs = prepared.get_variable_col_specs();
             let row = binders::build_row(col_specs, &bind_values)

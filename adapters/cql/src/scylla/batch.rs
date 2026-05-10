@@ -28,11 +28,14 @@ pub(super) struct ScyllaBatchDispenser {
     session: Arc<Session>,
     consistency: Consistency,
     stmt_text: String,
-    /// Bind-point names in `?` order. Used in the single-row
-    /// fallback (`fields.batch_fields` empty) to look up values
-    /// by name; multi-row mode uses `batch_fields` directly,
-    /// whose values are already plan-aligned.
+    /// Bind-point names in `?` order. Each row's values come from
+    /// `wires.get(name)` after `wires.advance(coord)` per row
+    /// (SRD-68 invariant: "each iteration of the batch is
+    /// considered another pull").
     bind_names: Vec<String>,
+    /// Batch row count from `batch: N` op param. Mirrors the
+    /// cassandra-cpp adapter: 0 → single-row fallback.
+    batch_size: usize,
     batch_type: BatchType,
     prepared: std::sync::OnceLock<Arc<PreparedStatement>>,
 }
@@ -43,6 +46,7 @@ impl ScyllaBatchDispenser {
         consistency: Consistency,
         stmt_text: String,
         bind_names: Vec<String>,
+        batch_size: usize,
         batch_type: BatchType,
     ) -> Self {
         Self {
@@ -50,6 +54,7 @@ impl ScyllaBatchDispenser {
             consistency,
             stmt_text,
             bind_names,
+            batch_size: if batch_size == 0 { 1 } else { batch_size },
             batch_type,
             prepared: std::sync::OnceLock::new(),
         }
@@ -75,36 +80,33 @@ impl ScyllaBatchDispenser {
 impl OpDispenser for ScyllaBatchDispenser {
     fn execute<'a>(
         &'a self,
-        _cycle: u64,
+        cycle: u64,
         ctx: &'a nbrs_activity::adapter::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
-        let fields = ctx.fields;
+        let wires = ctx.wires;
         Box::pin(async move {
             let prepared = self.get_prepared().await?;
             let col_specs = prepared.get_variable_col_specs();
 
-            // Build one row per ResolvedFieldSet. Single-row mode
-            // (no batch_fields) pulls bind values by name from
-            // `fields` to skip the stmt-text and other non-bind
-            // op fields.
-            // Materialize bind_values up front so the borrowed
-            // slice cells in NbrsCell::F32Slice / I32Slice stay
-            // valid for the lifetime of the batch call.
-            let single_row_values: Vec<Value>;
-            let rows: Vec<Vec<binders::NbrsCell<'_>>> = if fields.batch_fields.is_empty() {
-                single_row_values = self.bind_names.iter()
-                    .map(|n| fields.get_value(n).cloned().unwrap_or(Value::Str(String::new())))
+            // SRD-68 batch contract: each iteration of the batch is
+            // another pull. Advance the per-fiber wire coord and
+            // re-read bind values per row; build one row per cycle
+            // step. Materialize all bind values up front so any
+            // borrowed-slice NbrsCells stay valid through `batch()`.
+            let mut row_value_sets: Vec<Vec<Value>> = Vec::with_capacity(self.batch_size);
+            for row_idx in 0..self.batch_size {
+                let row_coord = cycle + row_idx as u64;
+                wires.advance(row_coord);
+                let row_values: Vec<Value> = self.bind_names.iter()
+                    .map(|n| wires.get(n).unwrap_or(Value::Str(String::new())))
                     .collect();
-                vec![binders::build_row(col_specs, &single_row_values)
-                    .map_err(|e| op_error("bind_error", e, false))?]
-            } else {
-                let mut out = Vec::with_capacity(fields.batch_fields.len());
-                for set in &fields.batch_fields {
-                    out.push(binders::build_row(col_specs, &set.values)
-                        .map_err(|e| op_error("bind_error", e, false))?);
-                }
-                out
-            };
+                row_value_sets.push(row_values);
+            }
+            let mut rows: Vec<Vec<binders::NbrsCell<'_>>> = Vec::with_capacity(self.batch_size);
+            for values in &row_value_sets {
+                rows.push(binders::build_row(col_specs, values)
+                    .map_err(|e| op_error("bind_error", e, false))?);
+            }
             let row_count = rows.len();
 
             // Build the batch — one entry per bound row, each

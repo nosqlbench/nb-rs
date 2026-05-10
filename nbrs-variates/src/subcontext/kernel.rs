@@ -25,8 +25,8 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
-use crate::kernel::GkKernel;
-use crate::node::Value;
+use crate::kernel::{GkKernel, SharedCell};
+use crate::node::{PortType, Value};
 
 use super::builder::SubcontextBuilder;
 use super::error::{ContractViolation, SourceContext};
@@ -83,7 +83,66 @@ impl<M> std::fmt::Debug for ScopeKernel<M> {
     }
 }
 
+/// One shared cell visible at a parent scope, reified for
+/// transitive cross-binding. Returned by
+/// [`ScopeKernel::shared_cells_in_scope`].
+///
+/// Carries the name a child must use to bind to the cell,
+/// the port type (so Rule 2 / `extern` synthesis at finalize
+/// can declare a typed input slot), and the cell handle (so
+/// spawn can attach it to the child's matching input).
+///
+/// "In scope" semantics: a cell visible at the parent is one
+/// the parent itself can read or write at this scope —
+/// covering both:
+///
+/// 1. Cells the parent declared via its own program
+///    (`shared X := <init>` produces a cell-bound input slot).
+/// 2. Cells inherited from the parent's own ancestors
+///    (attached during the parent's spawn). Without this
+///    case, a `shared` cell at the workload root would not
+///    propagate to grand-children whose immediate parent's
+///    body never references the name.
+///
+/// Both cases are answered by walking the parent's input
+/// slots and reading [`crate::kernel::engines::Engines::shared_cell`].
+#[derive(Clone)]
+pub struct SharedCellInScope {
+    pub name: String,
+    pub port_type: PortType,
+    pub cell: SharedCell,
+}
+
+impl std::fmt::Debug for SharedCellInScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedCellInScope")
+            .field("name", &self.name)
+            .field("port_type", &self.port_type)
+            .finish()
+    }
+}
+
 impl<M> ScopeKernel<M> {
+    /// Enumerate every shared cell visible at this scope.
+    /// Delegates to [`GkKernel::shared_cells_in_scope`] —
+    /// the carrier lives at the kernel layer so it survives
+    /// any wrap/unwrap dance the activity layer does. The
+    /// `SharedCellInScope` re-export is kept for callers in
+    /// the SRD-67 builder; it's a thin alias over the kernel
+    /// layer's [`SharedCellEntry`].
+    pub fn shared_cells_in_scope(&self) -> Vec<SharedCellInScope> {
+        let inner = self.lock_inner();
+        inner
+            .shared_cells_in_scope()
+            .into_iter()
+            .map(|e| SharedCellInScope {
+                name: e.name,
+                port_type: e.port_type,
+                cell: e.cell,
+            })
+            .collect()
+    }
+
     /// Internal constructor — only callers within the crate (the
     /// builder / spawn path; tests via `Self::wrap_for_test`)
     /// produce a `ScopeKernel` directly. Public callers go
@@ -213,21 +272,24 @@ impl<M> ScopeKernel<M> {
         }
 
         // ----- Cross-binding resolution -----
-        // Honours Rule 1 (import resolution against parent
-        // exports — validated at finalize), Rule 2 (write-through
-        // rewrite for shared exports — the rewrite happens at
-        // finalize; spawn carries the resulting bindings forward
-        // so per-cycle eval fans values through the parent's
-        // `SharedCell`s via [`Self::commit_write_throughs`]),
-        // Rule 4 (coordinate routing — handled inside
-        // `bind_outer_scope` via the existing IterationExtern
-        // input-kind), and Rule 5 (closure-binding economy —
-        // an unreferenced import has no input slot, so
-        // `bind_outer_scope` is a no-op for it).
+        // Single chokepoint: `bind_outer_scope` walks every
+        // cell visible at the parent (own slots + transit
+        // cells inherited from ancestors), attaches each to
+        // any matching child slot, and forwards the rest as
+        // transit on the child kernel. This is the transitive
+        // cascade — an ancestral `shared X` cell remains
+        // visible to deep descendants regardless of how many
+        // intermediate scopes' bodies skip the name.
+        //
+        // Honours Rule 1 (import resolution validated at
+        // finalize), Rule 2 (write-through rewrite produces
+        // the matching child input slot finalize-side),
+        // Rule 4 (coordinate routing via IterationExtern
+        // input-kind), Rule 5 (closure-binding economy —
+        // unreferenced names skip cell attachment but still
+        // ride the transit channel for grand-children).
         let parent_inner = self.lock_inner();
-
-        let mut child_kernel = GkKernel::from_program(artifact.program.clone());
-        child_kernel.bind_outer_scope(&parent_inner);
+        let child_kernel = parent_inner.materialize_subscope(artifact.program.clone(), &[]);
         drop(parent_inner);
 
         let child_site = artifact.context.clone();
@@ -291,7 +353,7 @@ impl<M> ScopeKernel<M> {
 /// In Phase 4 once the migration completes, the workload-root
 /// path will produce a `ScopeKernel<RootMarker>` directly from
 /// the workload-load entry point.
-pub fn wrap_root_kernel(kernel: GkKernel, label: impl Into<String>) -> Arc<ScopeKernel<RootMarker>> {
+pub(crate) fn wrap_root_kernel(kernel: GkKernel, label: impl Into<String>) -> Arc<ScopeKernel<RootMarker>> {
     let label = label.into();
     let name = ChildName::from_segments([label.clone()]);
     let site = SourceContext::new(label);
@@ -320,181 +382,263 @@ pub fn wrap_root_kernel(kernel: GkKernel, label: impl Into<String>) -> Arc<Scope
 ///    scope values, not the `from_program` clone's default-zero
 ///    state.
 ///
-/// The transient `ScopeKernel<RootMarker>` carries its own
-/// named-child registry — this bridge does NOT register the
-/// child against any caller-visible parent registry; that
-/// responsibility belongs to the call site (Phase 4 narrows
-/// it).
-pub fn build_kernel_under_parent(
-    parent: &GkKernel,
-    label: &str,
-    body_source: String,
-    inherited_outputs: Vec<String>,
-) -> Result<GkKernel, ContractViolation> {
-    let (kernel, _wts) = build_kernel_under_parent_with_options(
-        parent,
-        label,
-        body_source,
-        inherited_outputs,
-        super::builder::CompileOptions::default(),
-    )?;
-    Ok(kernel)
+/// Typed gk matter accepted by both kernel-construction
+/// paths — root and subscope. Opaque externally: the only way
+/// to obtain a `GkMatter` value is via [`GkMatter::builder`].
+///
+/// Internally carries one of three input forms — fresh source,
+/// pre-parsed statements (the "module parser" output), or a
+/// pre-compiled program. The builder validates that exactly
+/// one form is provided.
+pub struct GkMatter<'a> {
+    pub(crate) inner: GkMatterInner<'a>,
 }
 
-/// SRD-67 Phase 3 extension — same as [`build_kernel_under_parent`]
-/// but threads [`super::builder::CompileOptions`] (lib paths,
-/// strict, required-output filter, source dir, context label)
-/// through the builder. Used by the for_each / op-template /
-/// phase-scope migrations to preserve byte-identical
-/// `compile_gk_with_libs` invocations.
-///
-/// SRD-67 Phase 5 — also returns the [`WriteThroughBinding`]
-/// vector finalize produced. Op-template synthesisers that fold
-/// SRD-66 `result:` source through
-/// [`SubcontextBuilder::add_result_bindings`] need these
-/// bindings at runtime to drive `commit_write_throughs`.
-pub fn build_kernel_under_parent_with_options(
-    parent: &GkKernel,
-    label: &str,
-    body_source: String,
-    inherited_outputs: Vec<String>,
-    compile_options: super::builder::CompileOptions,
-) -> Result<(GkKernel, Vec<WriteThroughBinding>), ContractViolation> {
-    build_kernel_under_parent_full(
-        parent,
-        label,
-        body_source,
-        None,
-        inherited_outputs,
-        compile_options,
-    )
+pub(crate) enum GkMatterInner<'a> {
+    Source(SourceMatter),
+    Statements(StatementsMatter),
+    Program(ProgramMatter<'a>),
 }
 
-/// SRD-67 Phase 5 — full bridge entry point that accepts an
-/// optional `result_bindings` source folded through
-/// [`SubcontextBuilder::add_result_bindings`] before finalize.
-///
-/// Returns the bound child kernel plus the
-/// [`WriteThroughBinding`]s the Rule 2 rewrite produced (empty
-/// when no result-LHS collides with a parent `shared` export).
-pub fn build_kernel_under_parent_full(
-    parent: &GkKernel,
-    label: &str,
-    body_source: String,
-    result_bindings: Option<&str>,
-    inherited_outputs: Vec<String>,
-    compile_options: super::builder::CompileOptions,
-) -> Result<(GkKernel, Vec<WriteThroughBinding>), ContractViolation> {
-    use super::module::BodyFragment;
-    // The builder needs an Arc<ScopeKernel<P>>. Construct a
-    // transient one whose inner is a `from_program` clone of the
-    // parent — sufficient for builder-side checks that read
-    // program shape (output names + modifiers + input ports).
-    // The bridge re-runs `bind_outer_scope` against the original
-    // `parent` below so the child's runtime sees live values.
-    let transient_parent_kernel = GkKernel::from_program(parent.program().clone());
-    let transient_parent = wrap_root_kernel(transient_parent_kernel, format!("{label}__transient"));
+pub(crate) struct SourceMatter {
+    pub(crate) label: String,
+    pub(crate) body: String,
+    pub(crate) result_bindings: Option<String>,
+    pub(crate) inherited_outputs: Vec<String>,
+    pub(crate) options: super::builder::CompileOptions,
+}
 
-    let mut builder = transient_parent.clone().subcontext_builder();
-    builder
-        .context(SourceContext::new(label.to_string()))
-        .mark_inherited_outputs(inherited_outputs)
-        .with_compile_options(compile_options)
-        .body(BodyFragment::GkSource(body_source));
-    if let Some(src) = result_bindings {
-        builder.add_result_bindings(src)?;
+pub(crate) struct StatementsMatter {
+    pub(crate) label: String,
+    pub(crate) statements: Vec<crate::dsl::ast::Statement>,
+    pub(crate) result_bindings: Option<String>,
+    pub(crate) inherited_outputs: Vec<String>,
+    pub(crate) options: super::builder::CompileOptions,
+}
+
+pub(crate) struct ProgramMatter<'a> {
+    pub(crate) program: Arc<crate::kernel::GkProgram>,
+    pub(crate) iter_bindings: &'a [(String, Value)],
+}
+
+impl<'a> GkMatter<'a> {
+    /// Begin building gk matter. The builder is the only
+    /// constructor of `GkMatter`; the variants and their
+    /// fields are not exposed.
+    #[inline]
+    pub fn builder() -> GkMatterBuilder<'a> {
+        GkMatterBuilder::new()
     }
-    let module = builder.finalize()?;
-
-    // Build the child `GkKernel` directly from the closed
-    // program (rather than going through `spawn` against the
-    // transient), then apply `bind_outer_scope` against the
-    // **live** parent — this is the same final sequence the
-    // legacy `build_do_loop_scope_kernel` executed and preserves
-    // byte-identical runtime behaviour. Spawn's Rule 2 hook is
-    // not strictly needed here because the do-loop synthesiser
-    // doesn't currently produce shared-export collisions
-    // (cascade externs only); if it later does, a follow-up can
-    // wire `commit_write_throughs` into the do-loop's per-
-    // iteration evaluation.
-    let mut child_kernel = GkKernel::from_program(module.program.clone());
-    child_kernel.bind_outer_scope(parent);
-    // Drop the transient-parent registry entries — the bridge's
-    // child-name was synthetic, never user-visible.
-    drop(transient_parent);
-    let write_throughs = module.write_throughs.clone();
-    // SRD-67 Phase 5 — fold the write-throughs onto the kernel
-    // so per-cycle code can call
-    // [`GkKernel::commit_write_throughs`] without threading the
-    // bindings as a side channel.
-    let kernel_wts: Vec<crate::kernel::KernelWriteThrough> = write_throughs
-        .iter()
-        .map(|wt| crate::kernel::KernelWriteThrough {
-            export_name: wt.export_name.clone(),
-            source_output: wt.source_output.clone(),
-        })
-        .collect();
-    child_kernel.set_write_throughs(kernel_wts);
-    Ok((child_kernel, write_throughs))
 }
 
-/// SRD-67 Phase 3 — bind a pre-compiled child program under a
-/// borrowed parent kernel. This is the "compiled once, bound
-/// per-fiber" shape used by the phase-scope cache-and-rebind
-/// path (SRD-13c §"Per-Scope Canonical Kernel Cache") and by
-/// `OpBuilder::create_fiber_builder`'s per-op-template instancing
-/// loop. Encapsulates the `from_program → bind_outer_scope`
-/// sequence so callers stop reaching into both APIs directly;
-/// Phase 4 narrows the underlying surface to `pub(crate)`.
-///
-/// The optional `inherited_outputs` is applied via
-/// `mark_inherited_outputs` before the bind, mirroring the
-/// `build_kernel_under_parent` flow. Callers that already marked
-/// the program at compile-time (the typical phase-cache cache-hit
-/// path) pass an empty vec.
-pub fn bind_program_under_parent(
-    parent: &GkKernel,
-    program: Arc<crate::kernel::GkProgram>,
+/// Builder for [`GkMatter`]. Configure exactly one input form
+/// (source, pre-parsed statements, or program), plus optional
+/// metadata, then call [`Self::build`].
+#[derive(Default)]
+pub struct GkMatterBuilder<'a> {
+    label: Option<String>,
+    body: Option<String>,
+    statements: Option<Vec<crate::dsl::ast::Statement>>,
+    program: Option<Arc<crate::kernel::GkProgram>>,
+    iter_bindings: &'a [(String, Value)],
+    result_bindings: Option<String>,
     inherited_outputs: Vec<String>,
-) -> GkKernel {
-    let mut child_kernel = GkKernel::from_program(program);
-    if !inherited_outputs.is_empty() {
-        child_kernel.mark_inherited_outputs(inherited_outputs);
+    options: super::builder::CompileOptions,
+}
+
+impl<'a> GkMatterBuilder<'a> {
+    fn new() -> Self {
+        Self::default()
     }
-    child_kernel.bind_outer_scope(parent);
-    child_kernel
+
+    /// Diagnostic label for this matter. Surfaces in compile
+    /// errors and the `__transient` parent name during the
+    /// SubcontextBuilder dance.
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// Provide gk source as a string. Mutually exclusive with
+    /// [`Self::statements`] and [`Self::program`].
+    pub fn source(mut self, body: impl Into<String>) -> Self {
+        self.body = Some(body.into());
+        self
+    }
+
+    /// Provide gk source as pre-parsed AST statements. Mutually
+    /// exclusive with [`Self::source`] and [`Self::program`].
+    /// Use when the caller has already run the module parser
+    /// (e.g. when synthesising scope source from a structured
+    /// model and wanting to skip a string round-trip).
+    pub fn statements(mut self, stmts: Vec<crate::dsl::ast::Statement>) -> Self {
+        self.statements = Some(stmts);
+        self
+    }
+
+    /// Provide a pre-compiled program. Mutually exclusive with
+    /// [`Self::source`] and [`Self::statements`]. Used for per-
+    /// fiber state forks, comprehension iteration, and other
+    /// call sites that hold a compiled program directly.
+    pub fn program(mut self, program: Arc<crate::kernel::GkProgram>) -> Self {
+        self.program = Some(program);
+        self
+    }
+
+    /// Iter-var bindings applied before the parent binds the
+    /// child. Only meaningful for the program form.
+    pub fn iter_bindings(mut self, bindings: &'a [(String, Value)]) -> Self {
+        self.iter_bindings = bindings;
+        self
+    }
+
+    /// SRD-66 result-binding source. Folded through
+    /// [`super::SubcontextBuilder::add_result_bindings`] at
+    /// finalize. Only meaningful for source / statements forms.
+    pub fn result_bindings(mut self, src: impl Into<String>) -> Self {
+        self.result_bindings = Some(src.into());
+        self
+    }
+
+    /// Names to pass through `mark_inherited_outputs` so the
+    /// scope tree can distinguish own exports from cascade-
+    /// inherited names. Source / statements forms only.
+    pub fn inherited_outputs(mut self, names: Vec<String>) -> Self {
+        self.inherited_outputs = names;
+        self
+    }
+
+    /// Compile-time knobs (lib paths, strict mode, required
+    /// outputs, cursor limit). Source / statements forms only.
+    pub fn options(mut self, options: super::builder::CompileOptions) -> Self {
+        self.options = options;
+        self
+    }
+
+    /// Validate and produce typed matter. Errors when zero or
+    /// more than one input form is configured.
+    pub fn build(self) -> Result<GkMatter<'a>, String> {
+        let forms = [self.body.is_some(), self.statements.is_some(), self.program.is_some()];
+        let count = forms.iter().filter(|x| **x).count();
+        if count == 0 {
+            return Err("GkMatter::builder: no input form set (use .source / .statements / .program)".into());
+        }
+        if count > 1 {
+            return Err("GkMatter::builder: multiple input forms set; choose exactly one".into());
+        }
+        let label = self.label.unwrap_or_else(|| "(matter)".to_string());
+        let inner = if let Some(body) = self.body {
+            GkMatterInner::Source(SourceMatter {
+                label,
+                body,
+                result_bindings: self.result_bindings,
+                inherited_outputs: self.inherited_outputs,
+                options: self.options,
+            })
+        } else if let Some(stmts) = self.statements {
+            GkMatterInner::Statements(StatementsMatter {
+                label,
+                statements: stmts,
+                result_bindings: self.result_bindings,
+                inherited_outputs: self.inherited_outputs,
+                options: self.options,
+            })
+        } else {
+            // program
+            GkMatterInner::Program(ProgramMatter {
+                program: self.program.expect("program form set per count above"),
+                iter_bindings: self.iter_bindings,
+            })
+        };
+        Ok(GkMatter { inner })
+    }
 }
 
-/// SRD-67 Phase 4 — instantiate a parentless `GkKernel` from a
-/// previously-compiled program. Replaces direct
-/// `GkKernel::from_program` calls in `nbrs-activity`; the
-/// underlying constructor is `pub(crate)` after Phase 4.
-///
-/// This is the "no-parent" sibling of [`bind_program_under_parent`]:
-/// used by call sites that need a fresh state on top of an
-/// existing program but have no outer scope to chain through
-/// (e.g. workload-canonical kernels, fiber-builder construction,
-/// `mem::replace` placeholders). Per SRD-67's lifecycle rule —
-/// "compile once, spawn once, fiber-state separately" — this
-/// surfaces the per-instance state-clone primitive without
-/// re-opening the legacy public API.
-pub fn instance_program(program: Arc<crate::kernel::GkProgram>) -> GkKernel {
-    GkKernel::from_program(program)
+impl GkKernel {
+    /// THE subscope-construction path. Per the kernel-construction
+    /// invariant, this is the ONE method through which a parent
+    /// kernel produces a child. `compile_gk` produces root
+    /// kernels; everything else is a subscope and routes here.
+    ///
+    /// Cell propagation, scope-coordinate plumbing, and Rule 2
+    /// write-throughs flow from `self` (the parent) into the
+    /// returned child. Returns the child kernel plus any
+    /// write-through bindings finalize produced (empty for the
+    /// program-matter form, populated for the source-matter
+    /// form when a result-LHS collides with a parent `shared`
+    /// cell).
+    pub fn build_subscope(
+        &self,
+        matter: GkMatter<'_>,
+    ) -> Result<GkKernel, ContractViolation> {
+        use super::module::BodyFragment;
+        match matter.inner {
+            GkMatterInner::Program(p) => {
+                Ok(self.materialize_subscope(p.program, p.iter_bindings))
+            }
+            GkMatterInner::Source(s) => {
+                let transient = self.transient_typed_parent(&s.label);
+                let mut builder = transient.clone().subcontext_builder();
+                builder
+                    .context(SourceContext::new(s.label.clone()))
+                    .mark_inherited_outputs(s.inherited_outputs)
+                    .with_compile_options(s.options)
+                    .body(BodyFragment::GkSource(s.body));
+                if let Some(src) = s.result_bindings {
+                    builder.add_result_bindings(&src)?;
+                }
+                let module = builder.finalize()?;
+                let child = self.materialize_subscope(module.program.clone(), &[]);
+                drop(transient);
+                Ok(child)
+            }
+            GkMatterInner::Statements(s) => {
+                let transient = self.transient_typed_parent(&s.label);
+                let mut builder = transient.clone().subcontext_builder();
+                builder
+                    .context(SourceContext::new(s.label.clone()))
+                    .mark_inherited_outputs(s.inherited_outputs)
+                    .with_compile_options(s.options)
+                    .body(BodyFragment::Statements(s.statements));
+                if let Some(src) = s.result_bindings {
+                    builder.add_result_bindings(&src)?;
+                }
+                let module = builder.finalize()?;
+                let child = self.materialize_subscope(module.program.clone(), &[]);
+                drop(transient);
+                Ok(child)
+            }
+        }
+    }
+
+    /// Snapshot a typed `ScopeKernel<RootMarker>` over `self`'s
+    /// live cell view, used as the transient parent the
+    /// SubcontextBuilder validates against.
+    fn transient_typed_parent(&self, label: &str) -> Arc<ScopeKernel<RootMarker>> {
+        wrap_root_kernel(self.snapshot_with_cells(), format!("{label}__transient"))
+    }
 }
 
-/// SRD-67 Phase 4 — chain `child` to receive imports from
-/// `parent`. Replaces direct `GkKernel::bind_outer_scope` calls
-/// in `nbrs-activity` (the underlying method is `pub(crate)`
-/// after Phase 4).
-///
-/// Used at workload-root construction time: after the
-/// workload-bindings kernel is compiled, it chains through the
-/// workload-params kernel so descendant kernels see params via
-/// the standard scope-chain. This is a top-level chain step,
-/// not a synthesiser call — the typed
-/// [`SubcontextBuilder`] / [`ScopeKernel::spawn`] path is for
-/// child-kernel construction; this entry handles the
-/// compose-already-built-roots case.
-pub fn chain_kernel_under_parent(child: &mut GkKernel, parent: &GkKernel) {
-    child.bind_outer_scope(parent);
-}
+// `bind_program_under_parent` and the `build_kernel_under_parent_*`
+// family of free-function bridges are removed. Per the kernel-
+// construction invariant, only two paths exist:
+//
+//   1. Root kernel built from source via `compile_gk` (and family).
+//   2. Subscope kernel materialized by a parent kernel via
+//      [`GkKernel::materialize_subscope`], [`GkKernel::adopt_subscope`],
+//      or [`GkKernel::build_subscope_from_source`] — all methods on
+//      `GkKernel` itself, parent-supervised, typed.
+//
+// External callers go through these GkKernel-controlled paths
+// directly; no free-function bridges remain.
+
+// `instance_program` is removed. The two sanctioned construction
+// paths are:
+//
+//   1. Root kernel built from source via `compile_gk` family.
+//   2. Subscope kernel materialized by an existing parent
+//      kernel via `GkKernel::materialize_subscope` or
+//      `GkKernel::build_subscope_from_source`.
+//
+// Tests that need a kernel from pre-compiled program matter use
+// `GkAssembler::compile()` (which returns a root kernel) directly.

@@ -373,6 +373,91 @@ fn value_to_json(v: &Value) -> serde_json::Value {
     }
 }
 
+/// Flatten a JSON tree into a single newline-separated text by
+/// concatenating every leaf value's textual form.
+///
+/// Walks the tree depth-first; for each leaf:
+///   - Strings emit their text verbatim (newlines inside the
+///     string survive — important when the JSON carries
+///     multi-line content like CQL `create_statement`).
+///   - Numbers / booleans emit their natural string form.
+///   - Nulls are skipped.
+/// Successive leaves are joined with `\n`.
+///
+/// Use case: probe-phase regex matches over a multi-row body.
+/// `regex_match(json_text(body), "(?im)^TABLE …")` lets the
+/// regex see the actual newlines inside `create_statement`-shape
+/// columns; the previous `regex_match(exactly_one_value(body), …)`
+/// shape silently degrades when the body isn't unary AND when
+/// the upstream wire is forced through a `JsonToStr` adapter
+/// that escapes newlines as `\n` literals.
+pub struct JsonText {
+    meta: NodeMeta,
+}
+
+impl Default for JsonText {
+    fn default() -> Self { Self::new() }
+}
+
+impl JsonText {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "json_text".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Json))],
+            },
+        }
+    }
+}
+
+impl GkNode for JsonText {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let text = match &inputs[0] {
+            Value::Json(j) => {
+                let mut buf = String::new();
+                walk_json_leaves(j, &mut buf);
+                buf
+            }
+            // Non-Json values pass through their display form —
+            // a Str input is already textual; numeric/bool
+            // scalars render naturally. Useful when the upstream
+            // wire is heterogeneous (e.g. a body extern that
+            // sometimes carries a string, sometimes a JSON
+            // value).
+            other => other.to_display_string(),
+        };
+        outputs[0] = Value::Str(text);
+    }
+}
+
+fn walk_json_leaves(j: &serde_json::Value, out: &mut String) {
+    use serde_json::Value as J;
+    match j {
+        J::String(s) => {
+            if !out.is_empty() { out.push('\n'); }
+            out.push_str(s);
+        }
+        J::Number(n) => {
+            if !out.is_empty() { out.push('\n'); }
+            out.push_str(&n.to_string());
+        }
+        J::Bool(b) => {
+            if !out.is_empty() { out.push('\n'); }
+            out.push_str(if *b { "true" } else { "false" });
+        }
+        J::Null => {}
+        J::Array(arr) => {
+            for item in arr { walk_json_leaves(item, out); }
+        }
+        J::Object(obj) => {
+            for value in obj.values() { walk_json_leaves(value, out); }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Signature declarations for the DSL registry
 // ---------------------------------------------------------------------------
@@ -406,6 +491,18 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             help: "Serialize a JSON value to a compact string representation.\nProduces minified JSON with no extra whitespace.\nParameters:\n  input — JSON wire input\nExample: json_to_str(to_json(hash(cycle)))  // \"42\"",
+            default_resolver: None,
+        },
+        FuncSig {
+            name: "json_text", category: C::Json,
+            outputs: 1, description: "flatten JSON leaves into newline-joined text",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "body", constraint: None },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Walk a JSON tree depth-first and concatenate every leaf value's\ntextual form into a newline-separated string. Strings keep any\nembedded newlines verbatim — multi-line content like CQL\n`create_statement` survives intact, so line-anchored regex\npatterns match against the actual schema text.\n\nUse for probe-phase regex matches over multi-row result\nbodies, e.g. `regex_match(json_text(body), \"(?im)^TABLE …\")`.\nParameters:\n  input — JSON wire input (the magic `body` extern shape).\nExample: json_text(body)  // multi-line text suitable for regex",
             default_resolver: None,
         },
         FuncSig {
@@ -685,6 +782,7 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts
     match name {
         "to_json" => Some(Ok(Box::new(ToJson::new(crate::node::PortType::U64)))),
         "json_to_str" => Some(Ok(Box::new(JsonToStr::new()))),
+        "json_text" => Some(Ok(Box::new(JsonText::new()))),
         "escape_json" => Some(Ok(Box::new(EscapeJson::new()))),
         "json_merge" => Some(Ok(Box::new(JsonMerge::new()))),
         "array_len" => Some(Ok(Box::new(ArrayLen::new()))),
@@ -703,6 +801,52 @@ crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `json_text` flattens a multi-row describe-keyspace body
+    /// to newline-joined leaves. The actual newlines INSIDE
+    /// `create_statement` strings survive verbatim, so a
+    /// line-anchored regex can match the table-declaration
+    /// line. This is the workload-of-record probe shape:
+    /// `regex_match(json_text(body), "(?im)^…TABLE foo\(…")`.
+    #[test]
+    fn json_text_flattens_multirow_describe_for_regex() {
+        let body = Value::Json(serde_json::json!([
+            {
+                "keyspace_name": "system_views",
+                "type": "table",
+                "name": "sai_column_indexes",
+                "create_statement": "CREATE TABLE system_views.sai_column_indexes (\n    keyspace_name text,\n    table_name text\n);"
+            },
+            {
+                "keyspace_name": "system_views",
+                "type": "table",
+                "name": "indexes",
+                "create_statement": "CREATE VIRTUAL TABLE system_views.indexes (\n    keyspace_name text\n);"
+            },
+        ]));
+
+        let node = JsonText::new();
+        let mut out = [Value::None];
+        node.eval(&[body], &mut out);
+
+        let text = match &out[0] {
+            Value::Str(s) => s.clone(),
+            other => panic!("expected Str, got {other:?}"),
+        };
+
+        // The actual schema-text newlines are intact (not the
+        // `\n` literal escape sequences a JSON-stringification
+        // would produce).
+        assert!(text.contains("CREATE TABLE system_views.sai_column_indexes (\n"));
+        assert!(text.contains("CREATE VIRTUAL TABLE system_views.indexes (\n"));
+
+        // The workload's intended regex (with the CREATE-prefix
+        // fix) matches the flattened text.
+        let pat = regex::Regex::new(
+            r"(?im)^\s*(?:CREATE\s+)?(?:VIRTUAL\s+)?TABLE\s+system_views\.sai_column_indexes\s*\("
+        ).unwrap();
+        assert!(pat.is_match(&text), "regex should match the flattened schema text");
+    }
 
     #[test]
     fn json_object_basic() {

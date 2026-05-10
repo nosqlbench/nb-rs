@@ -9,7 +9,8 @@
 
 use nbrs_variates::dsl::compile::{compile_gk, compile_gk_strict};
 use nbrs_variates::dsl::ast::BindingModifier;
-use nbrs_variates::subcontext::chain_kernel_under_parent;
+use nbrs_variates::kernel::Construction;
+use nbrs_variates::subcontext::GkMatter;
 
 // =========================================================================
 // Lexer / Parser adversarial inputs
@@ -431,8 +432,8 @@ fn bind_outer_scope_copies_constants() {
         inputs := (cycle)
         extern dim: u64
     "#;
-    let mut inner = compile_gk(inner_src).unwrap();
-    chain_kernel_under_parent(&mut inner, &outer);
+    let inner_program = compile_gk(inner_src).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
 
     // Verify the extern input was populated from outer scope
     let idx = inner.program().find_input("dim").unwrap();
@@ -458,9 +459,9 @@ fn bind_outer_scope_ignores_nonmatching() {
         inputs := (cycle)
         h := hash(cycle)
     "#;
-    let mut inner = compile_gk(inner_src).unwrap();
+    let inner_program = compile_gk(inner_src).unwrap().program().clone();
     // Should not panic
-    chain_kernel_under_parent(&mut inner, &outer);
+    let _inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
 }
 
 // =========================================================================

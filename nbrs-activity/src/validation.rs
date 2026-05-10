@@ -360,6 +360,25 @@ impl ValidatingDispenser {
         program: Option<&nbrs_variates::kernel::GkProgram>,
         fx: &mut crate::fixture::ScopeFixture,
     ) -> Result<(Arc<dyn OpDispenser>, Option<Arc<ValidationMetrics>>), String> {
+        // SRD-68 Push 5c-cleanup: validation wrapper does its own
+        // construction-time resolution of `{name}` placeholders
+        // in op.params against the dispenser's canonical kernel.
+        // This replaces the legacy `resolve_placeholders_in_params_only`
+        // bulk pass at the executor layer — each wrapper now
+        // resolves against its own dispenser's canonical kernel
+        // rather than a shared activity-layer parent. Per-cycle
+        // binding names (e.g. `relevancy.expected = "{ground_truth}"`)
+        // pass through unchanged; the wrapper registers them on
+        // the fixture for cycle-time pulls below.
+        let template_owned: nbrs_workload::model::ParsedOp;
+        let template = if let Some(canonical) = inner.canonical_kernel() {
+            let mut t = template.clone();
+            crate::scope::resolve_placeholders_in_op_params(&mut t, canonical.as_ref())?;
+            template_owned = t;
+            &template_owned
+        } else {
+            template
+        };
         let assertions = parse_assertions(template);
         let relevancy = parse_relevancy(template, program)?;
         let strict = template.params.get("strict")
@@ -422,7 +441,6 @@ impl OpDispenser for ValidatingDispenser {
         ctx: &'a crate::fixture::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         Box::pin(async move {
-            let fields = ctx.fields;
             let result = self.inner.execute(cycle, ctx).await?;
 
             // Phase 1: Field assertions. Track failed predicates
@@ -458,11 +476,12 @@ impl OpDispenser for ValidatingDispenser {
                 // Hard error if ground truth or actual results are empty
                 if expected_raw.is_empty() {
                     let binding_name = config.expected_binding.trim_matches(|c| c == '{' || c == '}');
+                    let available: Vec<String> = ctx.wires.names().collect();
                     return Err(ExecutionError::Op(crate::adapter::AdapterError {
                         error_name: "relevancy_error".into(),
                         message: format!(
                             "relevancy: no ground truth for '{binding_name}'. \
-                             Available fields: {fields:?}. \
+                             Available wires: {available:?}. \
                              Ensure the binding exists in the GK program.",
                         ),
                         retryable: false,
@@ -799,11 +818,13 @@ fn parse_relevancy(
 /// Accepts only a JSON integer or a literal numeric string.
 /// `{name}` placeholders are *not* resolved here: the SRD-16
 /// single read path means every placeholder must already have
-/// been resolved by [`crate::scope::resolve_placeholders_via_kernel`]
-/// before this function runs. Surviving `{…}` shapes are a
-/// workload bug and surface as `Err`. The caller decides
-/// whether the parameter is required or optional — `None` here
-/// means "absent," not "unresolvable."
+/// been resolved by
+/// [`crate::scope::resolve_placeholders_in_op_params`] (called
+/// from `ValidatingDispenser::wrap` against the dispenser's own
+/// canonical kernel — SRD-68 Push 5c-cleanup). Surviving `{…}`
+/// shapes are a workload bug and surface as `Err`. The caller
+/// decides whether the parameter is required or optional —
+/// `None` here means "absent," not "unresolvable."
 fn parse_count_param(
     val: Option<&serde_json::Value>,
     field_label: &str,

@@ -149,6 +149,19 @@ pub struct GkProgram {
     /// value at scope-init time. Plan A (compile-time) and Plan B
     /// (scope-activation) checks both consult this set.
     pub(crate) init_outputs: std::collections::HashSet<String>,
+    /// Rule 2 write-through bindings produced when this program
+    /// was synthesized by the SRD-67 builder's finalize step.
+    /// Each entry pairs an export name (a cell-bound input slot
+    /// on this program) with the synthetic `__write_<name>`
+    /// source output the rewrite emitted.
+    ///
+    /// Carried on the program — not just on the kernel — so any
+    /// kernel built from this program automatically inherits the
+    /// bindings. Without this, the per-fiber rebuild path
+    /// (`bind_program_under_parent` from a cached program) would
+    /// produce a kernel with empty write-throughs and the
+    /// per-cycle commit would silently no-op.
+    pub(crate) write_throughs: Vec<crate::kernel::KernelWriteThrough>,
 }
 
 unsafe impl Send for GkProgram {}
@@ -204,6 +217,7 @@ impl GkProgram {
             inherited_outputs: std::collections::HashSet::new(),
             cursor_schemas: Vec::new(),
             init_outputs: std::collections::HashSet::new(),
+            write_throughs: Vec::new(),
         }
     }
 
@@ -231,6 +245,7 @@ impl GkProgram {
             inherited_outputs: std::collections::HashSet::new(),
             cursor_schemas: Vec::new(),
             init_outputs: std::collections::HashSet::new(),
+            write_throughs: Vec::new(),
         }
     }
 
@@ -238,6 +253,26 @@ impl GkProgram {
     /// init-binding contract (SRD 11) is checked against this set.
     pub(crate) fn mark_init_output(&mut self, name: &str) {
         self.init_outputs.insert(name.to_string());
+    }
+
+    /// Set the program's Rule 2 write-through bindings. Called
+    /// once by the SRD-67 builder's finalize step right after
+    /// compile, while the program Arc is still uniquely owned.
+    /// Every kernel built from this program afterwards inherits
+    /// the bindings via `from_program`'s automatic seeding.
+    pub(crate) fn set_write_throughs(
+        &mut self,
+        write_throughs: Vec<crate::kernel::KernelWriteThrough>,
+    ) {
+        self.write_throughs = write_throughs;
+    }
+
+    /// Read this program's Rule 2 write-through bindings.
+    /// Used by `GkKernel::from_program` to auto-seed the
+    /// kernel's `write_throughs` field, so the per-fiber
+    /// re-instance path picks them up without a side channel.
+    pub fn write_throughs(&self) -> &[crate::kernel::KernelWriteThrough] {
+        &self.write_throughs
     }
 
     /// Read the set of names declared with the `init` keyword.

@@ -43,7 +43,7 @@ ops:
     let kernel = asm.compile().unwrap();
 
     let builder = Arc::new(OpBuilder::new(kernel));
-    let program = builder.program();
+
 
     let config = ActivityConfig {
         name: "test".into(),
@@ -61,7 +61,7 @@ ops:
         ..Default::default()
     }));
 
-    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::from_program(program))).await;
+    activity.run_with_driver(adapter, builder.clone()).await;
 
     let content = std::fs::read_to_string(&path).unwrap();
     let lines: Vec<&str> = content.lines().collect();
@@ -98,7 +98,7 @@ ops:
     asm.add_output("bucket", WireRef::node("bucket"));
     let kernel = asm.compile().unwrap();
     let builder = Arc::new(OpBuilder::new(kernel));
-    let program = builder.program();
+
 
     let config = ActivityConfig {
         name: "readtest".into(),
@@ -116,7 +116,7 @@ ops:
         ..Default::default()
     }));
 
-    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::from_program(program))).await;
+    activity.run_with_driver(adapter, builder.clone()).await;
 
     let content = std::fs::read_to_string(&path).unwrap();
     let lines: Vec<&str> = content.lines().collect();
@@ -151,7 +151,7 @@ ops:
     asm.add_output("id", WireRef::node("id"));
     let kernel = asm.compile().unwrap();
     let builder = Arc::new(OpBuilder::new(kernel));
-    let program = builder.program();
+
 
     let config = ActivityConfig {
         name: "weighted".into(),
@@ -171,7 +171,7 @@ ops:
         ..Default::default()
     }));
 
-    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::from_program(program))).await;
+    activity.run_with_driver(adapter, builder.clone()).await;
 
     let content = std::fs::read_to_string(&path).unwrap();
     let lines: Vec<&str> = content.lines().collect();
@@ -203,7 +203,7 @@ ops:
     asm.add_output("user_id", WireRef::node("user_id"));
     let kernel = asm.compile().unwrap();
     let builder = Arc::new(OpBuilder::new(kernel));
-    let program = builder.program();
+
 
     let config = ActivityConfig {
         name: "jsontest".into(),
@@ -221,7 +221,7 @@ ops:
         ..Default::default()
     }));
 
-    activity.run_with_driver(adapter, std::sync::Arc::new(nbrs_activity::synthesis::OpBuilder::from_program(program))).await;
+    activity.run_with_driver(adapter, builder.clone()).await;
 
     let content = std::fs::read_to_string(&path).unwrap();
     let lines: Vec<&str> = content.lines().collect();

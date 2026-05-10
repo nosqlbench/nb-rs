@@ -103,12 +103,14 @@ mod tests;
 pub use builder::{CompileOptions, SubcontextBuilder};
 pub use error::{ContractViolation, SourceContext};
 pub use kernel::{
-    bind_program_under_parent, build_kernel_under_parent, build_kernel_under_parent_full,
-    build_kernel_under_parent_with_options, chain_kernel_under_parent, instance_program,
-    wrap_root_kernel, Child, RootMarker,
-    ScopeKernel,
+    Child, GkMatter, GkMatterBuilder, RootMarker,
 };
-pub use module::{BodyFragment, ScopeContract, ScopeModule, WriteThroughBinding};
+pub(crate) use kernel::GkMatterInner;
+pub use kernel::{
+    ScopeKernel, SharedCellInScope,
+};
+pub use module::{BodyFragment, ScopeContract, ScopeModule};
+pub(crate) use module::WriteThroughBinding;
 pub use name::ChildName;
 pub use pull::{NamedPullConsumer, PullConsumer, RegisteredPullConsumer};
 pub use spec::{ExportClassification, ExportSpec, ImportClassification, ImportSpec};
