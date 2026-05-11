@@ -850,8 +850,14 @@ mod tests {
 
     #[tokio::test]
     async fn eventlog_channel_routes_to_observer_log_not_file() {
+        // The captured-logs sink is process-wide (OnceLock) and
+        // shared across every channel-routing test in this
+        // module — see `install_capturing_observer`. Don't
+        // `clear()` it: under cargo's parallel test runner that
+        // race-wipes a sibling test's marker between its push
+        // and its read. Each test's marker is unique, so we
+        // just search for ours and ignore anything else present.
         let sink = install_capturing_observer();
-        sink.lock().unwrap().clear();
 
         // Configure the adapter to write to a temp file so we
         // can assert the file is *not* touched when the channel
@@ -913,8 +919,10 @@ mod tests {
 
     #[tokio::test]
     async fn silent_channel_writes_nothing_anywhere() {
+        // Don't `clear()` the shared sink — see the parallel
+        // sibling test for the reason. Marker matching is
+        // unique-per-test.
         let sink = install_capturing_observer();
-        sink.lock().unwrap().clear();
 
         let path = std::env::temp_dir().join("nb_silent_test.txt");
         let adapter = StdoutAdapter::with_config(StdoutConfig {

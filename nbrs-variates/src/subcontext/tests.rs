@@ -281,7 +281,7 @@ fn parent_shared_export_collision_rewrites_to_cell_write() {
         .iter()
         .any(|n| *n == "__write_X"));
     // The export name surfaced as an input slot (so spawn's
-    // bind_outer_scope can attach the parent's cell).
+    // materialize_wiring_from_outer can attach the parent's cell).
     assert!(module.program().find_input("X").is_some());
 
     // Spawn and commit. After commit, the parent should see X = 42.
@@ -824,7 +824,7 @@ fn shared_cell_cascade_survives_for_iteration_through_silent_intermediates() {
     //   phase op       writes __write_flag → flag
     //
     // Pre-fix, the cell would be lost at the first silent
-    // intermediate. Post-fix, every layer's `bind_outer_scope`
+    // intermediate. Post-fix, every layer's `materialize_wiring_from_outer`
     // forwards the cell as transit even when no slot exists,
     // so the leaf phase's slot picks it up via the cascade.
     use crate::kernel::GkKernel;
@@ -890,13 +890,13 @@ fn shared_cell_cascade_survives_legacy_bind_program_under_parent_chain() {
     // for_each kernels are NOT built through the typed
     // `ScopeKernel::spawn` — they go through the
     // `bind_program_under_parent` bridge (`from_program +
-    // bind_outer_scope`). This test asserts the cascade
+    // materialize_wiring_from_outer`). This test asserts the cascade
     // survives that bridge end-to-end.
     //
-    // Pre-fix, `bind_outer_scope` walked only outer's
+    // Pre-fix, `materialize_wiring_from_outer` walked only outer's
     // `output_names()` and missed any cell whose name wasn't
     // re-declared as an output on every intermediate scope.
-    // Post-fix, `bind_outer_scope` itself owns the typed
+    // Post-fix, `materialize_wiring_from_outer` itself owns the typed
     // cell-cascade primitive (`shared_cells_in_scope` walks
     // input slots + transit cells), so the activity layer's
     // existing call sites pick the fix up automatically.
@@ -927,7 +927,7 @@ fn shared_cell_cascade_survives_legacy_bind_program_under_parent_chain() {
 
     // Verify the leaf's `counter` input slot is wired to
     // root's shared cell — via two layers of
-    // `bind_outer_scope` with mid acting as a transit
+    // `materialize_wiring_from_outer` with mid acting as a transit
     // station for the cell.
     leaf.set_write_throughs(vec![crate::kernel::KernelWriteThrough {
         export_name: "counter".to_string(),
@@ -1018,7 +1018,7 @@ fn parent_shared_cell_cascades_to_grandchild_through_silent_intermediate() {
 #[test]
 fn bind_program_under_parent_rebinds_compiled_program() {
     // The rebind helper is the post-Phase-3 entry point for the
-    // `from_program → bind_outer_scope` pair used by the phase-
+    // `from_program → materialize_wiring_from_outer` pair used by the phase-
     // scope cache-and-rebind path and the OpBuilder's per-op-
     // template instancing loop. Verify it produces a kernel
     // whose `lookup` resolves a parent constant — the same

@@ -66,6 +66,13 @@ pub struct ExecCtx {
     /// resolver uses when constraints leave order ambiguous.
     pub wrap_default_order: Option<Vec<String>>,
     pub program: Arc<nbrs_variates::kernel::GkProgram>,
+    /// SRD-13f Push D: workload-level `bindings:` GK source.
+    /// Threaded through here so phase-scope and op-template
+    /// scope compiles can include the same workload-level
+    /// bindings as local matter — fiber.main_kernel then
+    /// evaluates them per cycle on its own state (no shared
+    /// workload-root ticking, which would race across fibers).
+    pub workload_level_gk: Option<String>,
     pub gk_lib_paths: Vec<PathBuf>,
     pub workload_dir: Option<PathBuf>,
     pub strict: bool,
@@ -119,7 +126,7 @@ pub struct ExecCtx {
     /// dispatcher to the per-branch `GkKernel` it owns; cleared
     /// (or restored) when the dispatcher unwinds. When `Some`,
     /// the leaf-phase compile path uses this kernel's manifest
-    /// for auto-extern wiring and calls `bind_outer_scope`
+    /// for auto-extern wiring and calls `materialize_wiring_from_outer`
     /// against it directly — iteration vars and inherited
     /// values both flow through the standard GK chain. When
     /// `None`, the leaf phase falls back to the workload-level
@@ -715,7 +722,7 @@ impl OwnedTerminal {
 /// the level's `schedule=` policy. Each iteration:
 ///
 /// 1. Builds a fresh per-branch `GkKernel` via `from_program`.
-/// 2. `bind_outer_scope(parent_kernel)` for inheritance.
+/// 2. `materialize_wiring_from_outer(parent_kernel)` for inheritance.
 /// 3. `set_input` for each iteration-variable value.
 /// 4. Pushes itself as `ctx.current_parent_kernel` so leaf
 ///    phases (and any nested comprehensions) inherit through
@@ -927,7 +934,7 @@ async fn run_do_loop(
     // Persistent loop kernel: one fork from the do-loop scope's
     // canonical program, bound once from the parent. Lives for
     // the loop's whole duration. SRD-67 Phase 3 — route the
-    // `from_program → bind_outer_scope` sequence through the
+    // `from_program → materialize_wiring_from_outer` sequence through the
     // typed bridge so the rebind primitive sits behind a single
     // entry point.
     let mut loop_kernel = parent.build_subscope(
@@ -1043,7 +1050,7 @@ async fn run_do_loop(
 /// The bound kernel comes from the GK-side
 /// [`nbrs_variates::comprehension::IterationStep`] — same
 /// kernel both pre-map and runtime see for the same iteration
-/// position. No `from_program`/`bind_outer_scope`/`set_input`
+/// position. No `from_program`/`materialize_wiring_from_outer`/`set_input`
 /// dance here; that recipe is owned by `GkKernel::for_iteration`
 /// and reached via `iterate_scope`.
 async fn run_one_iteration(
@@ -1216,7 +1223,7 @@ async fn run_phase(
     // Derive iteration-variable values from the current parent
     // kernel's namespace. Names visible at the parent scope —
     // own outputs (folded constants from `final` bindings) plus
-    // inherited extern inputs (populated by `bind_outer_scope`
+    // inherited extern inputs (populated by `materialize_wiring_from_outer`
     // chain or per-iteration `set_input` from the dispatcher)
     // — flow through a single `GkKernel::lookup` call per name,
     // which is the canonical scope-aware reader (SRD-16
@@ -1362,7 +1369,23 @@ async fn run_phase(
         // unresolved references surface with a workload-load
         // diagnostic naming the field path and the in-scope
         // names. No text is rewritten.
-        crate::scope::validate_placeholders_via_kernel(&ops, parent_kernel)
+        // SRD-13f Push D: validate against the phase scope-tree
+        // kernel when one is installed — that kernel owns phase-
+        // level bindings (`c := (cycle)`) so a placeholder like
+        // `{c}` resolves there. Pre-Push-D, phase bindings were
+        // merged into `op.bindings` at parse time, so
+        // `collect_phase_binding_lhs_names(&ops)` (inside the
+        // validator) recognised them as per-cycle declarations
+        // and let the workload-root kernel pass validation. After
+        // Push D phase bindings live only on their own scope's
+        // kernel; validating against the workload root would
+        // wrongly reject any op-field reference to a phase
+        // binding.
+        let validation_kernel = ctx.scope_tree.phase_node_by_name(phase_name)
+            .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get())
+            .map(|k| k.as_ref())
+            .unwrap_or(parent_kernel);
+        crate::scope::validate_placeholders_via_kernel(&ops, validation_kernel)
             .map_err(|e| format!("phase '{phase_name}': {e}"))?;
 
         // Rewrite inline expressions ({{expr}} → {__expr_N}) in op templates.
@@ -1452,7 +1475,7 @@ async fn run_phase(
 
         // Resolve the phase scope's program (compile-and-cache
         // on first hit) and rebind it under the parent kernel.
-        // SRD-67 Phase 3 — the `from_program → bind_outer_scope`
+        // SRD-67 Phase 3 — the `from_program → materialize_wiring_from_outer`
         // pair routes through `bind_program_under_parent` so the
         // cache-and-rebind primitive sits behind a single typed
         // entry point.
@@ -1477,6 +1500,7 @@ async fn run_phase(
                     &gk_context,
                     cursor_limit,
                     &phase_pragmas,
+                    ctx.workload_level_gk.as_deref(),
                 ).map_err(|e| format!("{gk_context}: {e}"))?;
                 let prog = compiled.program().clone();
                 let _ = node.cached_kernel.set(std::sync::Arc::new(compiled));
@@ -1494,6 +1518,7 @@ async fn run_phase(
                 &gk_context,
                 cursor_limit,
                 &phase_pragmas,
+                ctx.workload_level_gk.as_deref(),
             ).map_err(|e| format!("{gk_context}: {e}"))?
             .program()
             .clone()
@@ -1591,7 +1616,7 @@ async fn run_phase(
         // them on the OpBuilder. Each fiber instances one
         // GkKernel per program at fiber creation time, bound to
         // the main kernel via the canonical
-        // `from_program + bind_outer_scope` recipe (SRD-13c
+        // `from_program + materialize_wiring_from_outer` recipe (SRD-13c
         // §"Per-Scope Canonical Kernel Cache"). Flattened
         // op-templates produce no entry — their dispensers fall
         // back to the activity-wide kernel via the standard

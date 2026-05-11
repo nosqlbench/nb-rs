@@ -2035,18 +2035,18 @@ async fn executor_task(
             // no canonical kernel (legacy adapters, wrapper
             // delegates) fall through to the `NullWireSource`
             // baseline `ExecCtx::new` provides.
-            // SRD-68 invariant I-2 with phase-binding fallback:
-            // chain the per-op kernel to the fiber's main kernel
-            // so a `{name}` reference that the op-template program
-            // didn't extern (typically a phase-level binding the
-            // op-template scope synthesiser couldn't see at build
-            // time) still resolves through the fiber's main GK
-            // context. Single resolution surface preserved — the
-            // chain is hidden inside `WireSource::get`.
-            let (per_op, main) = fiber.cycle_kernels_mut(template_idx);
-            let cycle_wires = match per_op {
-                Some(p) => crate::wires::CycleWires::with_fallback(p, main),
-                None => crate::wires::CycleWires::new(main),
+            // SRD-13f / SRD-68: cycle-time wire reads go through a
+            // single kernel handle — the dispenser's per-fiber
+            // op-template kernel. Every visible cross-scope wire
+            // was wired into that kernel at construction (cells
+            // for shared, folded constants for workload params,
+            // construction-time slot setup + per-cycle refresh in
+            // `set_inputs` for other parent outputs). The local
+            // read API resolves every name; the wires layer never
+            // composes chains externally.
+            let cycle_wires = match fiber.per_op_kernel_mut(template_idx) {
+                Some(p) => crate::wires::CycleWires::new(p),
+                None => crate::wires::CycleWires::new(fiber.main_kernel_mut()),
             };
             let exec_ctx = crate::fixture::ExecCtx::with_wires(&fields, &pulls, &cycle_wires);
             let service_start = Instant::now();

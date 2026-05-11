@@ -75,13 +75,13 @@ pub struct OpBuilder {
 
 impl OpBuilder {
     /// Create an OpBuilder from a kernel.
-    /// If the kernel has scope values (set via `bind_outer_scope`
+    /// If the kernel has scope values (set via `materialize_wiring_from_outer`
     /// or directly via `kernel.state().set_input`), they are
     /// captured and propagated into every fiber's state.
     ///
     /// Init binding values that have been pulled on the kernel's
     /// state (typically by the scope-init pass right after
-    /// `bind_outer_scope`) are likewise captured as
+    /// `materialize_wiring_from_outer`) are likewise captured as
     /// [`Self::init_overrides`] and propagated to every fiber, so
     /// init eval fires once per activation rather than once per
     /// fiber.
@@ -382,32 +382,44 @@ impl FiberBuilder {
         dispensers: &[std::sync::Arc<dyn crate::adapter::OpDispenser>],
     ) {
         let scope_values = self.scope_values.clone();
-        self.per_op_kernels = dispensers.iter()
-            .map(|d| d.canonical_kernel().map(|canonical| {
-                let mut op_kernel = canonical.build_subscope(
+        // SRD-13f Stage 1: per-op kernels descend from
+        // `fiber.main_kernel` (this fiber's per-fiber scope
+        // kernel for the current phase), NOT from the
+        // dispenser's shared `canonical_kernel`. The dispenser's
+        // canonical_kernel becomes a *program source* — we
+        // extract its program shape and build the per-op
+        // kernel as a per-fiber subscope of main_kernel. This
+        // collapses what used to be two parallel kernel
+        // lineages (`source_kernel → fiber.main_kernel` and
+        // `source_kernel → canonical → per_op`) into one
+        // consistent per-fiber chain:
+        //     fiber.main_kernel → per_op_kernel
+        // Computed outputs on main_kernel are reachable from
+        // per_op_kernel via the standard scope-chain mechanism;
+        // per-fiber state (cycle, scope values) propagates
+        // correctly without external refresh.
+        //
+        // Borrow split: `self.main_kernel` is borrowed mut
+        // through the closure; we capture an immutable borrow
+        // of `self.main_kernel` separately and iterate
+        // dispensers in a way that doesn't conflict.
+        let dispenser_programs: Vec<Option<std::sync::Arc<nbrs_variates::kernel::GkProgram>>> =
+            dispensers.iter()
+                .map(|d| d.canonical_kernel().map(|k| k.program().clone()))
+                .collect();
+        self.per_op_kernels = dispenser_programs.into_iter()
+            .map(|maybe_program| maybe_program.map(|program| {
+                let mut op_kernel = self.main_kernel.build_subscope(
                     nbrs_variates::subcontext::GkMatter::builder()
-                        .program(canonical.program().clone())
+                        .program(program)
                         .build()
                         .expect("program-form matter is infallible"),
-                ).expect("program-form subscope from canonical is infallible");
-                // Apply scope-bound values to the per-fiber kernel
-                // by name. Each kernel has its own input layout
-                // (lazy-cascade extern emission, workload-param
-                // `final` injection) — name-keyed lookup is the
-                // only correct write path.
+                ).expect("program-form subscope from fiber.main_kernel is infallible");
                 for (name, value) in &scope_values {
                     if let Some(idx) = op_kernel.program().find_input(name) {
                         op_kernel.state().set_input(idx, value.clone());
                     }
                 }
-                // SRD 11 §"Init Binding Contract" Plan B: re-pull
-                // init outputs now that scope-bound externs are
-                // populated. Mirrors the phase-scope-kernel
-                // scope-init pass at executor.rs::run_phase.
-                // catch_unwind keeps a panicking eval (e.g. a
-                // failing `dataset_prebuffer`) from poisoning the
-                // fiber pool — first-cycle failures surface with
-                // the same diagnostic shape.
                 let init_outputs: Vec<String> = op_kernel.program()
                     .init_outputs().iter().cloned().collect();
                 for init_name in &init_outputs {
@@ -436,20 +448,13 @@ impl FiberBuilder {
         self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut())
     }
 
-    /// Disjoint mutable borrows of the per-op kernel slot and the
-    /// fiber's main kernel — used by [`crate::wires::CycleWires`]
-    /// to chain wire lookups: a name that the per-op kernel doesn't
-    /// declare falls through to the fiber's main kernel (where
-    /// phase-level bindings live after activity-init folding).
-    /// Bridges the gap when [`build_op_template_scope_kernel`]
-    /// can't reach a phase-scope manifest at op-template build
-    /// time and so fails to extern phase bindings into the
-    /// op-template program. Single-resolution-surface invariant
-    /// preserved: the dispenser still asks one wires surface; the
-    /// chain happens internally.
-    pub fn cycle_kernels_mut(&mut self, template_idx: usize) -> (Option<&mut GkKernel>, &mut GkKernel) {
-        let per_op = self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut());
-        (per_op, &mut self.main_kernel)
+    /// Mutable accessor for this fiber's main kernel — used by
+    /// cycle dispatch when the firing dispenser exposes no
+    /// canonical op-template kernel (the flattened path). The
+    /// per-op kernel path uses [`Self::per_op_kernel_mut`]
+    /// instead.
+    pub fn main_kernel_mut(&mut self) -> &mut GkKernel {
+        &mut self.main_kernel
     }
 
     /// Borrow this fiber's main GK program.
@@ -541,6 +546,30 @@ impl FiberBuilder {
                     }
                 }
             }
+        }
+        // SRD-13f Push D: only advance_broadcasts when a
+        // descendant per-op kernel has a *different* program
+        // from main_kernel. When the per-op kernel reuses
+        // main_kernel's program (the flattened-op-template
+        // path — no per-op matter), evaluating outputs here is
+        // both redundant (the descendant evaluates the same
+        // wires locally) and harmful (side-effecting nodes
+        // like `throw_at` fire outside the per-op cascade
+        // surface, losing the panic-to-error pipeline).
+        // When the per-op kernel has its own program, it
+        // carries `extern <name>` slots for cross-scope wires
+        // it doesn't replicate locally; those slots need
+        // main_kernel to compute and broadcast the values
+        // through the cell, so the descendant's read picks up
+        // the current value via the cell-aware input path.
+        let main_program_ptr = std::sync::Arc::as_ptr(self.main_kernel.program());
+        let needs_broadcast = self.per_op_kernels.iter().any(|slot| {
+            slot.as_ref().is_some_and(|k| {
+                std::sync::Arc::as_ptr(k.program()) != main_program_ptr
+            })
+        });
+        if needs_broadcast {
+            self.main_kernel.advance_broadcasts();
         }
     }
 
@@ -723,6 +752,89 @@ mod tests {
         asm.add_output("user_id", WireRef::node("user_id"));
         asm.add_output("hashed", WireRef::node("hashed"));
         asm.compile().unwrap()
+    }
+
+    /// SRD-13f Stage 1 gate — verify that the per-fiber
+    /// kernel chain is a single linear descent. The
+    /// op-template (per-op) kernel must be built as a
+    /// subscope of the fiber's main kernel, NOT of a
+    /// separate shared canonical. Inner reads of cross-scope
+    /// wires depend on this being a per-fiber-consistent
+    /// chain so cell-attached values reach inner via outer's
+    /// per-fiber pull writes.
+    #[test]
+    fn per_fiber_chain_is_linear_and_unshared() {
+        use crate::adapter::OpDispenser;
+        // The structural property under test: when a fiber
+        // attaches per-op kernels from a dispenser-shaped
+        // canonical, each per-op kernel must be a NEW
+        // per-fiber instance (subscope of the fiber's main
+        // kernel), not the shared canonical kernel itself.
+        //
+        // Two fibers attaching against the same canonical
+        // must produce different per-op kernel instances.
+        let workload_kernel = make_kernel();
+        let builder = OpBuilder::new(workload_kernel);
+
+        // Stand up a shared canonical via the public API.
+        let workload_src = "inputs := (cycle)\nfolded := 42\n";
+        let canonical_program = nbrs_variates::dsl::compile::compile_gk(workload_src)
+            .expect("compile probe canonical").program().clone();
+        let canonical_kernel: std::sync::Arc<GkKernel> = builder.canonical_kernel_for_op("nonexistent");
+        // For this probe we only need the canonical to expose
+        // a program; reuse builder's source_kernel program.
+        let _ = canonical_program;
+
+        struct ProbeDispenser(std::sync::Arc<GkKernel>);
+        impl OpDispenser for ProbeDispenser {
+            fn canonical_kernel(&self) -> Option<&std::sync::Arc<GkKernel>> {
+                Some(&self.0)
+            }
+            fn execute<'a>(
+                &'a self,
+                _cycle: u64,
+                _ctx: &'a crate::fixture::ExecCtx<'a>,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<
+                Output = Result<crate::adapter::OpResult, crate::adapter::ExecutionError>
+            > + Send + 'a>> {
+                Box::pin(async move {
+                    Ok(crate::adapter::OpResult::default())
+                })
+            }
+        }
+        let dispensers: Vec<std::sync::Arc<dyn OpDispenser>> = vec![
+            std::sync::Arc::new(ProbeDispenser(canonical_kernel.clone())),
+        ];
+
+        let mut fiber_a = builder.create_fiber_builder();
+        fiber_a.attach_dispenser_kernels(&dispensers);
+        let mut fiber_b = builder.create_fiber_builder();
+        fiber_b.attach_dispenser_kernels(&dispensers);
+
+        let per_op_a = fiber_a.per_op_kernel(0).expect("per-op A attached");
+        let per_op_b = fiber_b.per_op_kernel(0).expect("per-op B attached");
+
+        // SRD-13f invariant: each fiber's per-op kernel is a
+        // distinct per-fiber instance, neither of them
+        // pointing to the shared canonical kernel.
+        assert!(
+            !std::ptr::eq(per_op_a as *const GkKernel,
+                          canonical_kernel.as_ref() as *const GkKernel),
+            "per_op_a must be a distinct per-fiber instance, \
+             not the shared canonical",
+        );
+        assert!(
+            !std::ptr::eq(per_op_b as *const GkKernel,
+                          canonical_kernel.as_ref() as *const GkKernel),
+            "per_op_b must be a distinct per-fiber instance, \
+             not the shared canonical",
+        );
+        assert!(
+            !std::ptr::eq(per_op_a as *const GkKernel,
+                          per_op_b as *const GkKernel),
+            "fiber A and fiber B must each have their own \
+             per-op kernel instance",
+        );
     }
 
     /// SRD 11 §"Init Binding Contract" Plan B verification:

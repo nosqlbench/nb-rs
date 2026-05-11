@@ -354,9 +354,109 @@ pub fn compile_from_scope(
     context: &str,
     cursor_limit: Option<u64>,
     pragmas: &nbrs_variates::dsl::pragmas::PragmaSet,
+    workload_level_gk: Option<&str>,
 ) -> Result<GkKernel, String> {
-    let body = scope.emit();
+    let mut body = scope.emit();
     let required = scope.required_outputs();
+
+    // SRD-13f Push D: include the workload-level `bindings:` GK
+    // source as part of every phase-scope program. Each
+    // descendant scope's program needs the workload-level
+    // bindings as local matter so per-fiber main_kernel can
+    // evaluate them on its own state per cycle. The workload-
+    // root kernel still owns the canonical workload-scope set;
+    // this is the cascade copy — descendants don't reach back
+    // to a shared workload-root kernel for per-cycle eval
+    // (which would race across fibers). "Bindings are bindings"
+    // at the YAML model layer; the GK kernel synthesis replicates
+    // them down the chain so each scope's kernel can evaluate
+    // them locally.
+    //
+    // Extern declarations in scope.emit() that conflict with
+    // workload-level bindings (cycle, shared cells, computed
+    // outputs) would produce duplicate `__port_<name>` nodes
+    // at GK assembly. Strip every extern whose name is also
+    // declared in workload_level_gk (or is the universal
+    // `cycle` coordinate).
+    fn collect_workload_decl_names(workload_gk: &str) -> std::collections::HashSet<String> {
+        let mut names = std::collections::HashSet::new();
+        names.insert("cycle".to_string());
+        for line in workload_gk.lines() {
+            let trimmed = line.trim_start();
+            // `inputs := (a, b, c)` declares each name as a coord.
+            if let Some(rest) = trimmed.strip_prefix("inputs") {
+                if let Some(eq) = rest.find(":=") {
+                    let rhs = rest[eq + 2..].trim();
+                    let inner = rhs.trim_start_matches('(').trim_end_matches(')');
+                    for name in inner.split(',') {
+                        let n = name.trim();
+                        if !n.is_empty() {
+                            names.insert(n.to_string());
+                        }
+                    }
+                }
+                continue;
+            }
+            if let Some(eq) = trimmed.find(":=") {
+                let lhs = trimmed[..eq].trim();
+                // Strip optional modifier prefix (`shared`,
+                // `final`, `init`, `volatile`, `cursor`).
+                let bare = lhs
+                    .split_whitespace()
+                    .last()
+                    .unwrap_or(lhs);
+                if !bare.is_empty() {
+                    names.insert(bare.to_string());
+                }
+            }
+        }
+        names
+    }
+    let strip_conflicting_externs = |s: &str, names: &std::collections::HashSet<String>| -> String {
+        s.lines()
+            .filter(|line| {
+                let t = line.trim_start();
+                if let Some(rest) = t.strip_prefix("extern ") {
+                    let name = rest.split(':').next().unwrap_or("").trim();
+                    let name = name.split_whitespace().next().unwrap_or("");
+                    return !names.contains(name);
+                }
+                true
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    if let Some(workload_gk) = workload_level_gk {
+        let trimmed = workload_gk.trim();
+        if !trimmed.is_empty() {
+            let decl_names = collect_workload_decl_names(workload_gk);
+            body = strip_conflicting_externs(&body, &decl_names);
+            if !body.is_empty() && !body.ends_with('\n') {
+                body.push('\n');
+            }
+            body.push_str(workload_gk);
+            if !body.ends_with('\n') {
+                body.push('\n');
+            }
+        }
+    }
+    // Ensure the universal `cycle` coordinate is declared. When
+    // workload_level_gk supplied `inputs := (cycle)` we already
+    // have it; otherwise the auto-extern path may have produced
+    // `extern cycle: u64` (which makes cycle a non-Coordinate
+    // input — set_inputs in `FiberBuilder::set_source_item`
+    // would skip propagation). Convert that to a proper
+    // Coordinate declaration so per-cycle ticking works.
+    let has_inputs_decl = body.lines()
+        .any(|line| line.trim_start().starts_with("inputs :="));
+    let body = if has_inputs_decl {
+        body
+    } else {
+        let cycle_only: std::collections::HashSet<String> =
+            std::iter::once("cycle".to_string()).collect();
+        let stripped = strip_conflicting_externs(&body, &cycle_only);
+        format!("inputs := (cycle)\n{stripped}")
+    };
     let source = prepend_effective_pragmas(pragmas, &body);
     nbrs_variates::dsl::compile_gk_with_libs_and_limit(
         &source, source_dir, gk_lib_paths, &required, strict, context, cursor_limit,
@@ -449,50 +549,33 @@ pub fn compile_bindings_with_libs_excluding(
                 scope_required.push(name.clone());
             }
         }
-        for name in workload_params.keys() {
+        // SRD-13f Push D: sort workload-param keys before
+        // appending so the resulting `required_outputs` Vec is
+        // deterministic across processes. HashMap iteration is
+        // randomised per process; `compile_filtered` walks
+        // `required_outputs` in order to call `add_output`, so a
+        // non-deterministic iteration here drives a non-
+        // deterministic `output_order` in the compiled program,
+        // which in turn produces a non-deterministic
+        // `canonical_hash` (the checkpoint phase-identity hash)
+        // and breaks the resume-skip path across processes.
+        let mut param_names: Vec<&String> = workload_params.keys().collect();
+        param_names.sort();
+        for name in param_names {
             if !scope_required.contains(name) {
                 scope_required.push(name.clone());
             }
         }
 
-        // Workload-level `bindings:` (top-level YAML block) are
-        // already propagated into every op's `bindings` field by
-        // `merge_bindings` at YAML-parse time, so they reach this
-        // function as Inherited GK source on the ops and land in
-        // `scope.bindings` via Step 1 of `build_scope`. The
-        // dedicated `workload_level_gk` parameter is therefore
-        // redundant for source assembly: appending it verbatim
-        // here would duplicate every workload-level binding line
-        // and surface as `duplicate node name` at GK assembly.
-        //
-        // (The parameter is kept on the function signature so
-        // future callers that *don't* go through `merge_bindings`
-        // — e.g. if a non-YAML loader is added — still have an
-        // explicit place to inject workload-scope source. Today
-        // it's a no-op for the YAML path.)
-        // Workload-level `bindings:` (top-level YAML block) reach
-        // this function via two paths:
-        //
-        // 1. **Op-merge**: `merge_bindings` at YAML-parse time
-        //    propagates them onto each op whose own bindings are
-        //    empty. Step 1 of `build_scope` then ingests them
-        //    from the first op's GkSource into `scope.bindings`.
-        //
-        // 2. **`workload_level_gk` parameter**: the runner passes
-        //    them in directly, for the case where (1) didn't
-        //    fire — e.g. a workload with `bindings:` and only
-        //    phased ops where every phase needs its own kernel,
-        //    so the OUTER `all_ops_for_compile` is empty.
-        //
-        // When (1) fires, scope already has the bindings; appending
-        // the same text via (2) would duplicate every line and
-        // surface as `duplicate node name` at GK assembly. So we
-        // gate (2) on whether the scope already ingested any
-        // workload-level GK source.
-        let scope_already_has_gk = ops.iter().any(|op|
-            matches!(&op.bindings, BindingsDef::GkSource(s) if !s.trim().is_empty()));
+        // SRD-13f Push D: workload-level `bindings:` reach the
+        // workload-root kernel exclusively through the explicit
+        // `workload_level_gk` parameter now. The parser no
+        // longer folds them into per-op bindings, so the prior
+        // duplication-guarding gate (against the parse-time
+        // merge surfacing the same lines via op.bindings) is no
+        // longer needed. Append unconditionally when present.
         let source = match workload_level_gk {
-            Some(extra) if !extra.trim().is_empty() && !scope_already_has_gk => {
+            Some(extra) if !extra.trim().is_empty() => {
                 let mut s = scope.emit();
                 if !s.is_empty() && !s.ends_with('\n') { s.push('\n'); }
                 s.push_str(extra);
@@ -534,18 +617,20 @@ pub fn compile_bindings_with_libs_excluding(
         }
     }
 
-    let mut required: Vec<String> = Vec::new();
-    for op in ops {
-        for value in op.op.values() {
-            if let Some(s) = value.as_str() {
-                for name in nbrs_workload::bindpoints::referenced_bindings(s) {
-                    if !required.contains(&name) && !exclude.contains(&name) {
-                        required.push(name);
-                    }
-                }
-            }
-        }
-    }
+    // SRD-13f: the workload-root compile owns workload-scope
+    // bindings only. Op-field references resolve at the
+    // op-template scope kernel, which has the appropriate
+    // manifest. Collecting them as "required" here forced the
+    // workload-root compile to validate names whose owning
+    // scope is deeper in the tree.
+    //
+    // `required` retains only the caller's `extra_required`
+    // (config refs from the runner) which ARE workload-root
+    // concerns.
+    let required: Vec<String> = extra_required.iter()
+        .filter(|n| !exclude.contains(n))
+        .cloned()
+        .collect();
 
     let mut gk_lines: Vec<String> = Vec::new();
     gk_lines.push("inputs := (cycle)".into());
@@ -579,26 +664,11 @@ pub fn compile_bindings_with_libs_excluding(
         }
     }
 
-    // Coordinates declared by the legacy chain emitter above —
-    // the GK compiler auto-exposes each as a passthrough output,
-    // so a template referencing `{<coord>}` resolves without a
-    // user-declared binding. Used to filter the missing-binding
-    // check below.
-    let coord_names: HashSet<String> = ["cycle".to_string()].into_iter().collect();
-
-    let mut missing: Vec<String> = Vec::new();
-    for name in &required {
-        if !all_bindings.contains_key(name) && !coord_names.contains(name) {
-            missing.push(name.clone());
-        }
-    }
-    if !missing.is_empty() {
-        return Err(format!(
-            "undeclared bind point references: {}. Add these to your bindings section.",
-            missing.join(", ")
-        ));
-    }
-
+    // SRD-13f: the missing-binding check that used to run
+    // here validated op-field references against workload-
+    // root bindings. Op-field references belong to the
+    // op-template scope kernel, which validates them at its
+    // own synthesis layer. Removed from this compile.
     let gk_source = gk_lines.join("\n");
     let opts = nbrs_variates::subcontext::CompileOptions {
         workload_dir: source_dir.map(|p| p.to_path_buf()),
@@ -812,6 +882,49 @@ fn translate_legacy_func(name: &str, args: &[String]) -> (String, Vec<String>) {
 /// Strip Java long literal suffix (e.g., "1000000000L" → "1000000000")
 fn strip_java_long_suffix(arg: &str) -> &str {
     arg.strip_suffix('L').or_else(|| arg.strip_suffix('l')).unwrap_or(arg)
+}
+
+/// SRD-13f Push D: translate a Map-form bindings block (legacy
+/// semicolon-chain syntax, e.g. `{user_id: "Hash(); Mod(1000000)"}`)
+/// into GK source lines. Returns one or more `name := func(args)`
+/// lines per entry — multi-step chains expand to intermediate
+/// `__chain_<name>_<i> := ...` wires.
+///
+/// Does NOT prepend `inputs := (cycle)`; that's owned by the
+/// enclosing scope's emit. Intended for routing workload-level
+/// `bindings:` directly to the workload-root kernel without
+/// going through the parser merge (which retired in Push D).
+pub fn legacy_chain_map_to_gk_lines(
+    map: &std::collections::HashMap<String, String>,
+) -> Result<String, String> {
+    let mut gk_lines: Vec<String> = Vec::new();
+    for (binding_name, expr) in map {
+        let chain = parse_binding_chain(expr);
+        if chain.is_empty() {
+            return Err(format!("empty binding expression for '{binding_name}'"));
+        }
+        let mut prev_wire = "cycle".to_string();
+        for (i, func) in chain.iter().enumerate() {
+            let is_last = i == chain.len() - 1;
+            let target = if is_last {
+                binding_name.clone()
+            } else {
+                format!("__chain_{binding_name}_{i}")
+            };
+            let (func_name, extra_args) = translate_legacy_func(&func.name, &func.args);
+            let mut call_args = vec![prev_wire.clone()];
+            for arg in &func.args {
+                call_args.push(strip_java_long_suffix(arg.trim()).to_string());
+            }
+            call_args.extend(extra_args);
+            gk_lines.push(format!(
+                "{target} := {func_name}({args})",
+                args = call_args.join(", ")
+            ));
+            prev_wire = target;
+        }
+    }
+    Ok(gk_lines.join("\n"))
 }
 
 

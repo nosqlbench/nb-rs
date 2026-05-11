@@ -7,7 +7,7 @@
 //! and the parent kernel, this module emits the GK source for
 //! the comprehension scope's own kernel — the kernel that holds
 //! every name visible at this scope so spec interpolation,
-//! child `bind_outer_scope` chains, and dynamic-control resolution
+//! child `materialize_wiring_from_outer` chains, and dynamic-control resolution
 //! all answer through one canonical state holder
 //! (SRD-16 §"Single Name-Resolution Surface").
 //!
@@ -31,7 +31,7 @@
 //! ```
 //!
 //! The `extern` declarations install passthrough nodes so each
-//! name is both an input slot (bound by `bind_outer_scope` on
+//! name is both an input slot (bound by `materialize_wiring_from_outer` on
 //! children) and an output (visible to descendants). Iter vars
 //! get their slots populated per-iteration by the executor's
 //! `set_input` writes; everything else flows in once at scope
@@ -68,7 +68,7 @@ use super::eval::{enumerate_tuples, pre_evaluate_clause, value_to_gk_type_name};
 /// Returns a kernel with:
 /// - One output per name visible at this scope (via the extern
 ///   passthroughs).
-/// - `bind_outer_scope(parent)` already called.
+/// - `materialize_wiring_from_outer(parent)` already called.
 /// - Parent's input-slot values propagated (so cascade names
 ///   reach this kernel even when the parent inherited them
 ///   itself rather than declaring them).
@@ -77,6 +77,7 @@ use super::eval::{enumerate_tuples, pre_evaluate_clause, value_to_gk_type_name};
 /// tuple's typed values on this kernel's input slots before
 /// evaluating children. See [`super::iterate`] for the
 /// one-call ergonomic that handles iteration plus binding.
+#[allow(clippy::too_many_arguments)]
 pub fn synthesize_for_each_scope(
     bindings: &[(String, String)],
     parent_manifest: &[ManifestEntry],
@@ -86,6 +87,14 @@ pub fn synthesize_for_each_scope(
     workload_dir: Option<&std::path::Path>,
     strict: bool,
     context: &str,
+    // SRD-13f Push E: optional phase-level `bindings:` GK source
+    // folded into the for_each scope kernel. Used when a phase
+    // declares both `for_each:` and `bindings:` — the bindings
+    // live ON the for_each scope's kernel (one kernel per phase
+    // scope, carrying both the iter-var externs and the phase-
+    // level bindings). When `None`, no phase bindings are folded
+    // in (scenario-level for_each, or phase without own bindings).
+    phase_bindings: Option<&str>,
 ) -> Result<GkKernel, String> {
     // `bindings` is `[(var, spec_expr)]` per scalar variable.
     // Parallel-iter clauses contribute one entry per
@@ -241,6 +250,26 @@ pub fn synthesize_for_each_scope(
         inherited_names.push(name);
     }
 
+    // SRD-13f Push E: append phase-level `bindings:` source
+    // after the extern cascade. Phase bindings can reference
+    // iter vars (now externs above) and any cascaded parent
+    // name; the GK compiler resolves both. Name-collision with
+    // an iter var surfaces as a `duplicate node name` compile
+    // error from the assembler — preferred over a silent
+    // shadow.
+    if let Some(body) = phase_bindings {
+        let trimmed = body.trim();
+        if !trimmed.is_empty() {
+            if !source.ends_with('\n') && !source.is_empty() {
+                source.push('\n');
+            }
+            source.push_str(body);
+            if !source.ends_with('\n') {
+                source.push('\n');
+            }
+        }
+    }
+
     if source.is_empty() {
         source.push_str("final __empty := 0\n");
     }
@@ -279,7 +308,7 @@ pub fn synthesize_for_each_scope(
 
 /// Copy parent kernel's currently-set input-slot values into the
 /// inner kernel's input slots by name. Companion to
-/// [`GkKernel::bind_outer_scope`] which only walks parent
+/// [`GkKernel::materialize_wiring_from_outer`] which only walks parent
 /// outputs; this extends the chain so cascade-extern'd inputs
 /// propagate too. Without it, names that the parent kernel
 /// inherited from *its* parent would stop at the parent and
@@ -312,6 +341,160 @@ pub fn workload_param_type_name(value: &str) -> &'static str {
     } else {
         "String"
     }
+}
+
+/// Format a typed `Value` as a GK source literal — the value
+/// is fold-eligible when emitted as `final <name> := <literal>`.
+/// Used by the per-iteration synthesizer (SRD-13f Gate 2:
+/// iter-vars as `final const` matter in the comprehension's
+/// inner scope).
+pub fn format_value_as_gk_literal(v: &Value) -> String {
+    match v {
+        Value::U64(n) => n.to_string(),
+        Value::F64(f) => {
+            // Always include decimal point so the parser sees
+            // an f64 literal, not an integer.
+            if f.fract() == 0.0 && f.is_finite() {
+                format!("{f:.1}")
+            } else {
+                format!("{f}")
+            }
+        }
+        Value::Bool(b) => b.to_string(),
+        Value::Str(s) => {
+            let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+            format!("\"{escaped}\"")
+        }
+        // Fallback — render display form as a quoted string.
+        // Comprehension iter-vars in practice are scalar
+        // primitives (u64/f64/Str/bool); richer types would
+        // need first-class GK literal grammar.
+        _ => {
+            let display = v.to_display_string();
+            let escaped = display.replace('\\', "\\\\").replace('"', "\\\"");
+            format!("\"{escaped}\"")
+        }
+    }
+}
+
+/// SRD-13f Gate 2 — per-iteration synthesis of the
+/// comprehension's inner-scope kernel. Iter-vars are emitted
+/// as `final <var> := <literal>` so they fold into the
+/// compiled program as constants; matter-AST classification
+/// matches the design's "named coordinates *are* inner scope
+/// matter as const and final values" rule.
+///
+/// Returns a fully-built per-fiber kernel for this iteration:
+/// the literal values are folded at compile, the kernel is
+/// then bound to `parent` via `build_subscope`.
+///
+/// The structural cascade (workload params, parent outputs
+/// and inputs the scope's body needs to expose to descendants)
+/// is the same as [`synthesize_for_each_scope`]; only the
+/// iter-var emission style differs.
+#[allow(clippy::too_many_arguments)]
+pub fn synthesize_for_each_iteration(
+    iter_values: &[(String, Value)],
+    parent_manifest: &[ManifestEntry],
+    parent_kernel: &GkKernel,
+    workload_params: &HashMap<String, String>,
+    gk_lib_paths: Vec<std::path::PathBuf>,
+    workload_dir: Option<&std::path::Path>,
+    strict: bool,
+    context: &str,
+) -> Result<GkKernel, String> {
+    let iter_var_names: HashSet<String> =
+        iter_values.iter().map(|(n, _)| n.clone()).collect();
+
+    let mut source = String::new();
+    let mut emitted: HashSet<String> = HashSet::new();
+    let mut inherited_names: Vec<String> = Vec::new();
+
+    // Iter-vars as folded constants — the SRD-13f Gate 2
+    // requirement. Each iteration produces a different
+    // compiled program with its iter-var values baked in.
+    for (var, value) in iter_values {
+        let literal = format_value_as_gk_literal(value);
+        source.push_str(&format!("final {var} := {literal}\n"));
+        emitted.insert(var.clone());
+    }
+
+    // Workload params — same `final` form they always take.
+    for (name, value) in workload_params {
+        if emitted.contains(name) { continue; }
+        if iter_var_names.contains(name) { continue; }
+        let literal = format_workload_param_as_gk_literal(value);
+        source.push_str(&format!("final {name} := {literal}\n"));
+        emitted.insert(name.clone());
+    }
+
+    // Parent-manifest cascade: every output that the parent
+    // exposes flows through this scope so descendants can
+    // see them via the standard materialize_wiring_from_outer chain.
+    let parent_program = parent_kernel.program();
+    let cascade_skip = |emitted: &HashSet<String>, name: &str| -> bool {
+        if emitted.contains(name) { return true; }
+        if iter_var_names.contains(name) { return true; }
+        if name == "cycle" { return true; }
+        if name.starts_with("__") && !name.starts_with("__cursor_extent_") {
+            return true;
+        }
+        false
+    };
+    for name in parent_program.output_names() {
+        let owned = name.to_string();
+        if cascade_skip(&emitted, &owned) { continue; }
+        let (node_idx, port_idx) = parent_program.resolve_output_by_index(
+            parent_program.output_index(&owned).unwrap()
+        );
+        let port_type = parent_program.node_meta(node_idx).outs[port_idx].typ;
+        let type_name = port_type_to_extern_name(port_type);
+        source.push_str(&format!("extern {owned}: {type_name}\n"));
+        emitted.insert(owned.clone());
+        inherited_names.push(owned);
+    }
+    for name in parent_program.input_names() {
+        if cascade_skip(&emitted, &name) { continue; }
+        let port_type = parent_program.input_port_type(&name)
+            .unwrap_or(PortType::Str);
+        let type_name = port_type_to_extern_name(port_type);
+        source.push_str(&format!("extern {name}: {type_name}\n"));
+        emitted.insert(name.clone());
+        inherited_names.push(name);
+    }
+    // Pull in any manifest entries the parent program didn't
+    // already expose as outputs (defensive; the iterating
+    // scope shouldn't drop visibility a downstream scope
+    // would expect to see).
+    for entry in parent_manifest {
+        if cascade_skip(&emitted, &entry.name) { continue; }
+        let type_name = port_type_to_extern_name(entry.port_type);
+        source.push_str(&format!("extern {}: {type_name}\n", entry.name));
+        emitted.insert(entry.name.clone());
+        inherited_names.push(entry.name.clone());
+    }
+
+    if source.is_empty() {
+        source.push_str("final __empty := 0\n");
+    }
+
+    let compile_options = crate::subcontext::CompileOptions {
+        workload_dir: workload_dir.map(|p| p.to_path_buf()),
+        gk_lib_paths,
+        strict,
+        required_outputs: Vec::new(),
+        context_label: Some(context.to_string()),
+        cursor_limit: None,
+    };
+    let matter = crate::subcontext::GkMatter::builder()
+        .label(context)
+        .source(source)
+        .inherited_outputs(inherited_names)
+        .options(compile_options)
+        .build()
+        .map_err(|e| format!("{context}: per-iteration synthesis: {e}"))?;
+    parent_kernel.build_subscope(matter)
+        .map_err(|e| format!("{context}: per-iteration synthesis: {e:?}"))
 }
 
 /// Format a workload-param string as a GK literal (for emission
@@ -364,7 +547,7 @@ pub fn collect_leaf_placeholders(texts: &[String]) -> HashSet<String> {
 /// - Compiled from the comprehension's synthesized GK source
 ///   (one canonical program shared across iterations via
 ///   `Arc<GkProgram>`).
-/// - Wired to `parent` via [`GkKernel::bind_outer_scope`] plus
+/// - Wired to `parent` via [`GkKernel::materialize_wiring_from_outer`] plus
 ///   [`propagate_parent_inputs`] so cascade names reach this
 ///   layer regardless of where they were declared.
 /// - Populated with the iteration's typed coordinate values on
@@ -430,6 +613,7 @@ pub fn iterate(
     let canonical_kernel = synthesize_for_each_scope(
         &representative, &parent_manifest, parent,
         workload_params, gk_lib_paths, workload_dir, strict, context,
+        None,
     )?;
     let canonical = Arc::new(canonical_kernel);
 
@@ -1227,5 +1411,49 @@ mod tests {
             (2, 20, 100), (2, 20, 200),
             (3, 30, 100), (3, 30, 200),
         ]);
+    }
+
+    /// SRD-13f Gate 2 invariant: per-iteration synthesis emits
+    /// iter-vars as `final const` matter — they fold into the
+    /// program's constant buffer and do NOT appear as input
+    /// slots. Asserted directly on the kernel produced by
+    /// `synthesize_for_each_iteration`.
+    #[test]
+    fn iter_var_as_final_const() {
+        use crate::kernel::extract_manifest;
+        let parent = crate::dsl::compile::compile_gk("final __anchor := 0\n").unwrap();
+        let parent_manifest = extract_manifest(parent.program());
+        let workload_params: HashMap<String, String> = HashMap::new();
+
+        let iter0 = synthesize_for_each_iteration(
+            &[("x".to_string(), Value::U64(1))],
+            &parent_manifest,
+            &parent,
+            &workload_params,
+            Vec::new(),
+            None,
+            false,
+            "gate2 iter0",
+        ).expect("synthesize iter0");
+
+        assert_eq!(iter0.get_constant("x"), Some(&Value::U64(1)),
+            "x must fold to U64(1) as a final-const in iter0");
+        assert!(iter0.program().find_input("x").is_none(),
+            "x must NOT appear as an input slot — it's matter, not extern");
+
+        let iter1 = synthesize_for_each_iteration(
+            &[("x".to_string(), Value::U64(2))],
+            &parent_manifest,
+            &parent,
+            &workload_params,
+            Vec::new(),
+            None,
+            false,
+            "gate2 iter1",
+        ).expect("synthesize iter1");
+
+        assert_eq!(iter1.get_constant("x"), Some(&Value::U64(2)),
+            "x must fold to U64(2) in iter1 — per-iteration recompile");
+        assert!(iter1.program().find_input("x").is_none());
     }
 }

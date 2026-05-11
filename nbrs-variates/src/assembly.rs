@@ -285,7 +285,7 @@ impl GkAssembler {
     /// `kind` controls the lifecycle classification used by the
     /// init-binding contract (see [SRD 11](../../../docs/sysref/11_gk_evaluation.md)
     /// §"Effectively-Const Nodes"): `IterationExtern` for slots
-    /// populated by `bind_outer_scope`, `CapturePort` for slots
+    /// populated by `materialize_wiring_from_outer`, `CapturePort` for slots
     /// written by capture extraction.
     pub fn add_input(&mut self, name: impl Into<String>, default: crate::node::Value, port_type: crate::node::PortType, kind: crate::kernel::InputKind) -> &mut Self {
         self.input_defs.push(crate::kernel::InputDef {
@@ -358,7 +358,7 @@ impl GkAssembler {
         let resolved = self.resolve_with_log(log.as_deref_mut())?;
         let _coord_names = resolved.input_names();
         let modifiers = resolved.output_modifiers.clone();
-        let mut kernel = GkKernel::new_with_inputs(
+        let kernel = GkKernel::new_with_inputs(
             resolved.nodes,
             resolved.wiring,
             resolved.input_defs,
@@ -366,13 +366,11 @@ impl GkAssembler {
             resolved.output_map,
             resolved.output_order,
             resolved.init_outputs,
+            modifiers,
             &resolved.source,
             &resolved.context,
             log,
         ).map_err(AssemblyError::Other)?;
-        if !modifiers.is_empty() {
-            kernel.set_output_modifiers(&modifiers);
-        }
         Ok(kernel)
     }
 
@@ -402,7 +400,7 @@ impl GkAssembler {
         }
 
         let modifiers = resolved.output_modifiers.clone();
-        let mut kernel = GkKernel::new_strict_with_inputs(
+        let kernel = GkKernel::new_strict_with_inputs(
             resolved.nodes,
             resolved.wiring,
             resolved.input_defs,
@@ -410,13 +408,11 @@ impl GkAssembler {
             resolved.output_map,
             resolved.output_order,
             resolved.init_outputs,
+            modifiers,
             &resolved.source,
             &resolved.context,
             None,
         ).map_err(AssemblyError::Other)?;
-        if !modifiers.is_empty() {
-            kernel.set_output_modifiers(&modifiers);
-        }
         Ok(kernel)
     }
 

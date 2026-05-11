@@ -25,7 +25,7 @@
 //! ## Invariant
 //!
 //! Every kernel that has been *initialised in its scope* —
-//! either via [`super::GkKernel::bind_outer_scope`] (post-bind
+//! either via [`super::GkKernel::materialize_wiring_from_outer`] (post-bind
 //! the path is `[own] ++ outer.scope_coordinates()`), or as a
 //! root scope (path is `[own]` if non-empty, else empty) —
 //! has [`super::GkKernel::scope_coordinates`] populated. This

@@ -8,7 +8,7 @@
 //! output of a [`crate::kernel::GkProgram`]. Synthesizers that
 //! emit GK source for descendant scopes consume manifests to
 //! decide which names a child can extern from a parent (auto-
-//! extern + `bind_outer_scope`) and what type to declare each
+//! extern + `materialize_wiring_from_outer`) and what type to declare each
 //! extern as.
 //!
 //! Lives in the kernel module because the data it carries is

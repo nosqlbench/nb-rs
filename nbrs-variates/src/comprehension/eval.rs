@@ -10,7 +10,7 @@
 //! needs to turn that text into a list of typed values to
 //! enumerate over. That's what [`evaluate_spec`] does, given a
 //! GK kernel that holds the in-scope name space (own outputs +
-//! inherited externs from `bind_outer_scope`).
+//! inherited externs from `materialize_wiring_from_outer`).
 //!
 //! ## Pipeline
 //!
@@ -1195,7 +1195,7 @@ pub fn collect_string_interp_refs(src: &str, refs: &mut HashSet<String>) {
 /// Walks the dependent-tuple tree depth-first using fresh
 /// per-branch kernels. Each branch installs the prior clauses'
 /// typed values as inputs on a fresh kernel
-/// ([`GkKernel::from_program`] + [`GkKernel::bind_outer_scope`]),
+/// ([`GkKernel::from_program`] + [`GkKernel::materialize_wiring_from_outer`]),
 /// then evaluates the next clause's spec against that kernel.
 /// This is the kernel-per-logical-subspace rule from SRD-18b
 /// §"Dependent Tuple Iteration".
@@ -1387,7 +1387,7 @@ where
 ///
 /// Lookup goes through `GkKernel::lookup`, which checks own
 /// outputs (folded constants) first then extern input slots
-/// populated by `bind_outer_scope` from a parent kernel, or by
+/// populated by `materialize_wiring_from_outer` from a parent kernel, or by
 /// the dependent-tuple dispatcher's per-clause `set_input`
 /// writes. Inner shadows outer per SRD-16 §"Visibility Rules:
 /// Shadowing".

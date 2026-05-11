@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::dsl::ast::{Arg, CallExpr, Expr, ExternPort, GkFile, Statement};
-use crate::dsl::compile::{compile_ast, compile_ast_with_libs, compile_gk_with_libs};
+use crate::dsl::compile::{compile_ast, compile_ast_with_libs};
 use crate::dsl::lexer::{lex, Span};
 use crate::dsl::parser::parse;
 use crate::node::PortType;
@@ -352,7 +352,7 @@ impl<P> SubcontextBuilder<P> {
     /// the body's `X := <expr>` is rewritten before compile to:
     ///
     /// 1. `extern X: <type>` — opens an input slot the parent's
-    ///    `SharedCell` attaches to via `bind_outer_scope`.
+    ///    `SharedCell` attaches to via `materialize_wiring_from_outer`.
     /// 2. `__write_X := <expr>` — a synthetic local computation
     ///    that produces the value to write through.
     ///
@@ -666,7 +666,7 @@ impl<P> SubcontextBuilder<P> {
 
         // ----- Validate Rule 2 invariants: the rewrite must
         // have produced (1) a child input slot for the export
-        // name (so `bind_outer_scope` attaches the cell), and
+        // name (so `materialize_wiring_from_outer` attaches the cell), and
         // (2) the synthetic `__write_<name>` output. -----
         for wt in &write_throughs {
             if kernel.program().find_input(&wt.export_name).is_none() {

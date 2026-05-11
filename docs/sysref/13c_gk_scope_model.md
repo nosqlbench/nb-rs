@@ -169,6 +169,22 @@ to redefine it in a phase `bindings:` block is a compile error.
 
 ### Default: Immutable Propagation
 
+> **Superseded by [SRD-13f §"Architectural model"](13f_cross_scope_wire_materialization.md#architectural-model)
+> + [§"Plan to true-up"](13f_cross_scope_wire_materialization.md#plan-to-true-up).**
+> The snapshot-at-scope-creation rule below was the legacy
+> default; SRD-13f reframes it. The read invariant is uniform
+> across all visible cross-scope wires — inner reads return
+> outer's current value via construction-time wiring (cells
+> for shared, value-only cells / per-cycle refresh for
+> non-shared). "Snapshot" is one specific materialization
+> choice the matter interpreter makes for strictly-constant
+> wires, not a general visibility rule. The `shared` modifier
+> controls only the *write* path; read mediation is uniform.
+> The "Plan to true-up" section in SRD-13f documents the
+> push-by-push migration (Pushes A–F) that landed the
+> SRD-13f model in code; all pushes are shipped as of the
+> SRD-13f §"Plan to true-up" status board.
+
 Outer scope values are propagated to the inner scope as
 **immutable snapshot inputs**. The inner scope reads them but
 cannot modify them. The values are copied once at inner scope

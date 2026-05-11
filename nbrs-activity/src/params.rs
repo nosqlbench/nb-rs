@@ -11,7 +11,7 @@
 //! standalone GK kernel — the **workload-params kernel** —
 //! which sits at the root of the scope chain. Every kernel
 //! built downstream (workload-level bindings, phase ops,
-//! comprehensions, leaf phases) `bind_outer_scope`s through
+//! comprehensions, leaf phases) `materialize_wiring_from_outer`s through
 //! it, so `{name}` references in any descendant resolve via
 //! standard GK name resolution.
 //!
@@ -54,12 +54,12 @@ use nbrs_variates::kernel::GkKernel;
 
 /// Build the workload-params kernel from a params map. The
 /// resulting kernel exposes one `final <name> := <literal>`
-/// binding per param; consumers `bind_outer_scope` to it to
+/// binding per param; consumers `materialize_wiring_from_outer` to it to
 /// inherit every workload param at once.
 ///
 /// Empty params produces a kernel with a single
 /// `final __empty := 0` placeholder so descendant scopes can
-/// always `bind_outer_scope` to it without a "no kernel"
+/// always `materialize_wiring_from_outer` to it without a "no kernel"
 /// special case.
 pub fn build_workload_params_kernel(
     params: &HashMap<String, String>,
@@ -199,7 +199,7 @@ mod tests {
     fn compiles_with_no_params_using_placeholder() {
         let kernel = build_workload_params_kernel(&HashMap::new()).unwrap();
         // `__empty` is folded — kernel compiles and is
-        // bind_outer_scope-eligible. We don't assert the
+        // materialize_wiring_from_outer-eligible. We don't assert the
         // placeholder is queryable since callers should
         // ignore it.
         let _ = kernel;

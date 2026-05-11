@@ -13,7 +13,7 @@ use super::engines::{GkState, SharedCellEntry};
 
 /// Auto-create `SharedCell`s for `shared`-modifier outputs that
 /// have a backing input slot on this kernel. Call once at
-/// construction so subsequent `bind_outer_scope` from inner
+/// construction so subsequent `materialize_wiring_from_outer` from inner
 /// kernels can pick the cells up via `outer.shared_cell(idx)`
 /// without mutating outer.
 ///
@@ -39,7 +39,7 @@ fn seed_shared_cells(state: &mut GkState, program: &GkProgram) {
 ///   chain: leaf-first list of [`super::ScopeCoord`] from the kernel's
 ///   own scope up through every enclosing comprehension. Root-scope
 ///   kernels (no parent) start with their own coords (or empty).
-///   [`Self::bind_outer_scope`] re-computes the path so post-bind it
+///   [`Self::materialize_wiring_from_outer`] re-computes the path so post-bind it
 ///   includes the outer's chain. Consumers (presentation layer,
 ///   inspector, scope-aware diagnostics) call
 ///   [`Self::scope_coordinates`] without needing to walk the scope
@@ -66,7 +66,7 @@ pub struct GkKernel {
     /// channel so a descendant whose program DOES declare the
     /// slot can attach the same cell handle.
     ///
-    /// `bind_outer_scope` is the single writer: when binding
+    /// `materialize_wiring_from_outer` is the single writer: when binding
     /// child to parent, it attaches every parent-visible cell
     /// to whatever child input slot exists, and stores the
     /// remaining unattached cells here for further propagation.
@@ -117,6 +117,7 @@ impl GkKernel {
         let order: Vec<String> = output_map.keys().cloned().collect();
         Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, order,
                        std::collections::HashSet::new(),
+                       HashMap::new(),
                        source, context, None, false).unwrap()
     }
 
@@ -133,11 +134,12 @@ impl GkKernel {
         output_map: HashMap<String, (usize, usize)>,
         output_order: Vec<String>,
         init_outputs: std::collections::HashSet<String>,
+        output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
         source: &str,
         context: &str,
         log: Option<&mut crate::dsl::events::CompileEventLog>,
     ) -> Result<Self, String> {
-        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, init_outputs, source, context, log, false)
+        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, init_outputs, output_modifiers, source, context, log, false)
     }
 
     /// Construct with strict mode.
@@ -149,11 +151,12 @@ impl GkKernel {
         output_map: HashMap<String, (usize, usize)>,
         output_order: Vec<String>,
         init_outputs: std::collections::HashSet<String>,
+        output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
         source: &str,
         context: &str,
         log: Option<&mut crate::dsl::events::CompileEventLog>,
     ) -> Result<Self, String> {
-        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, init_outputs, source, context, log, true)
+        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, init_outputs, output_modifiers, source, context, log, true)
     }
 
     fn new_impl(
@@ -164,6 +167,7 @@ impl GkKernel {
         output_map: HashMap<String, (usize, usize)>,
         output_order: Vec<String>,
         init_outputs: std::collections::HashSet<String>,
+        output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
         source: &str,
         context: &str,
         log: Option<&mut crate::dsl::events::CompileEventLog>,
@@ -177,6 +181,15 @@ impl GkKernel {
         // check (Plan A) can validate each one's upstream chain.
         for name in &init_outputs {
             program.mark_init_output(name);
+        }
+        // SRD-13f Push D: install output modifiers BEFORE fold so
+        // the lifecycle classifier sees `volatile`. Without this,
+        // a `volatile` binding's producing node defaults to
+        // CompileConst, fold replaces it with a literal, and the
+        // workload's `volatile` declaration loses its "exclude
+        // from program identity" guarantee.
+        for (name, modifier) in &output_modifiers {
+            program.set_output_modifier(name, *modifier);
         }
         let constants_folded = if strict {
             program.fold_init_constants_strict(log, true)?
@@ -196,6 +209,7 @@ impl GkKernel {
             }
         }
         seed_shared_cells(&mut state, &program);
+        state.core.seed_output_cells(&program);
         let mut k = Self {
             program,
             state,
@@ -242,27 +256,6 @@ impl GkKernel {
         self.write_throughs = write_throughs;
     }
 
-    /// Apply output binding modifiers to the program.
-    ///
-    /// Must be called immediately after construction, before the
-    /// `Arc<GkProgram>` is shared. Panics if the Arc has other
-    /// references.
-    ///
-    /// After applying modifiers, re-seeds shared cells: the
-    /// state was constructed before any modifier was set on the
-    /// program, so its initial seeding pass found no shared
-    /// outputs. Now that the modifiers are in place, any
-    /// `shared`-modifier output that has a backing input slot
-    /// gets a `SharedCell` attached.
-    pub(crate) fn set_output_modifiers(&mut self, modifiers: &std::collections::HashMap<String, crate::dsl::ast::BindingModifier>) {
-        let program = Arc::get_mut(&mut self.program)
-            .expect("set_output_modifiers called after program was shared");
-        for (name, modifier) in modifiers {
-            program.set_output_modifier(name, *modifier);
-        }
-        seed_shared_cells(&mut self.state, &self.program);
-    }
-
     /// Construct a fresh kernel from a previously-compiled
     /// `Arc<GkProgram>`. The state is freshly created and seeded
     /// the same way the standard new-kernel path does, so callers
@@ -287,6 +280,7 @@ impl GkKernel {
             }
         }
         seed_shared_cells(&mut state, &program);
+        state.core.seed_output_cells(&program);
         // Auto-seed the kernel's Rule 2 write-through bindings
         // from the program. The program is the single source of
         // truth; any kernel built from it inherits the same
@@ -318,11 +312,16 @@ impl GkKernel {
     /// output, and stores the value back through the cell-bound
     /// input slot for `export_name`. Because the slot was
     /// attached to the parent's `SharedCell` at
-    /// `bind_outer_scope` time, the write fans through.
+    /// `materialize_wiring_from_outer` time, the write fans through.
     ///
     /// The bridge (`build_kernel_under_parent_full`) sets these
     /// in one shot at construction; per-cycle code never mutates
     /// them.
+    // Used only by the SRD-67 subcontext tests today — the
+    // production path auto-seeds write-throughs in
+    // `from_program`, never needing a post-construction setter.
+    // Kept for the test surface; dead-code-lint silenced.
+    #[allow(dead_code)]
     pub(crate) fn set_write_throughs(&mut self, write_throughs: Vec<KernelWriteThrough>) {
         self.write_throughs = write_throughs;
     }
@@ -330,6 +329,7 @@ impl GkKernel {
     /// The Rule 2 write-through bindings carried by this kernel.
     /// Empty for kernels without result-bindings or `shared`
     /// collisions.
+    #[allow(dead_code)]
     pub(crate) fn write_throughs(&self) -> &[KernelWriteThrough] {
         &self.write_throughs
     }
@@ -459,7 +459,7 @@ impl GkKernel {
     /// Resolution order:
     /// 1. Folded output buffer (compile-time constants).
     /// 2. Cell-aware input read (covers extern values bound via
-    ///    `bind_outer_scope`, auto-passthrough outputs from
+    ///    `materialize_wiring_from_outer`, auto-passthrough outputs from
     ///    `inputs := (...)` / `extern`, and `shared`-cell-backed
     ///    slots — the cell is queried on every read so reads
     ///    pick up writes from sibling kernels intrinsically).
@@ -519,7 +519,7 @@ impl GkKernel {
     /// path for outputs, the scope-coordinate plumbing, and any
     /// pre-bind iter-var injection. Every other code path that
     /// needs a parent-bound child kernel routes through here —
-    /// the underlying `bind_outer_scope` step is private to
+    /// the underlying `materialize_wiring_from_outer` step is private to
     /// this impl and not callable from anywhere else in the
     /// crate.
     ///
@@ -531,7 +531,7 @@ impl GkKernel {
     ///
     /// # Side-channel lock
     ///
-    /// `bind_outer_scope` is private to this impl block. The
+    /// `materialize_wiring_from_outer` is private to this impl block. The
     /// following must NOT compile (anyone trying to bypass the
     /// typed primitive should be caught at the compiler):
     ///
@@ -540,7 +540,7 @@ impl GkKernel {
     /// use nbrs_variates::dsl::compile::compile_gk;
     /// let parent = compile_gk("inputs := (cycle)\n").unwrap();
     /// let mut child = compile_gk("inputs := (cycle)\n").unwrap();
-    /// child.bind_outer_scope(&parent); // ← private; refuses to compile
+    /// child.materialize_wiring_from_outer(&parent); // ← private; refuses to compile
     /// ```
     pub(crate) fn materialize_subscope(
         &self,
@@ -553,23 +553,8 @@ impl GkKernel {
                 child.state.set_input(idx, value.clone());
             }
         }
-        child.bind_outer_scope(self);
+        child.materialize_wiring_from_outer(self);
         child
-    }
-
-    /// Late-binding form of [`Self::materialize_subscope`]: the
-    /// child kernel is already constructed (typically because
-    /// it was built earlier from a different program path), and
-    /// the parent now adopts it. Equivalent to running
-    /// `materialize_subscope` against the child's program but
-    /// preserves any pre-existing input values the child holds.
-    ///
-    /// Used for the workload-bindings ↔ workload-params
-    /// composition step (`runner.rs`) and a couple of legacy
-    /// comprehension paths that build a child kernel before the
-    /// parent is available.
-    pub(crate) fn adopt_subscope(&self, child: &mut GkKernel) {
-        child.bind_outer_scope(self);
     }
 
     /// Produce a fresh kernel that mirrors this one's program
@@ -599,7 +584,19 @@ impl GkKernel {
         snapshot
     }
 
-    fn bind_outer_scope(&mut self, outer: &GkKernel) {
+    /// SRD-13f §"The cross-scope wiring operation is matter-AST-
+    /// driven at construction": materialize this kernel's input-
+    /// slot wiring against `outer`'s exports. Reads `self.program`'s
+    /// matter (its extern / shared / coord declarations) to decide
+    /// each slot's materialization gradient — cell-attach for
+    /// shared and computed outputs, value-copy for passthrough,
+    /// transit-forward for cells with no matching local slot.
+    ///
+    /// Private; the only sanctioned construction path is
+    /// `build_subscope` (which calls `materialize_subscope` /
+    /// `adopt_subscope` internally). External callers don't see
+    /// this operation directly.
+    fn materialize_wiring_from_outer(&mut self, outer: &GkKernel) {
         // Step 1 — typed shared-cell cascade. Compute every
         // cell visible at the outer scope: cells on outer's
         // own input slots (its `shared X := …` declarations
@@ -631,18 +628,43 @@ impl GkKernel {
         }
         self.transit_cells = transit_forward;
 
-        // Step 2 — value-copy path for non-cell outputs.
-        // Walks outer's outputs (the canonical iter-var /
-        // const propagation surface) and snapshots each into
-        // a matching child input. Cell-bound names are
-        // already wired in Step 1; this loop's set_input
-        // call would just overwrite the snapshot the cell
-        // already populated, so we skip names we already
-        // attached.
+        // Step 2 — SRD-13f read invariant. For each output on
+        // outer that matches an input slot on inner:
+        //
+        // - If the name also exists as an *input slot* on
+        //   outer (i.e. it's a passthrough output backed by
+        //   an input slot — `extern X: T`, `shared X :=
+        //   <lit>`, coord inputs like `cycle`), the canonical
+        //   storage is the input slot. Step 1 already
+        //   attached the cell for shared / iter-var slots;
+        //   for plain passthrough we value-copy the current
+        //   slot value. Cycle-derived coord propagation goes
+        //   through the explicit set_inputs path on the
+        //   inner kernel, not through this bind step.
+        //
+        // - Otherwise the name is a truly-computed output
+        //   (node-backed, no input slot on outer). Attach
+        //   outer's output broadcast cell to inner's input
+        //   slot. Outer's `pull` writes the freshly computed
+        //   value through the cell; inner reads through
+        //   `read_input` transparently. The read invariant
+        //   from SRD-13f §"The read invariant" holds because
+        //   the chain restructure in `nbrs-activity` ensures
+        //   inner and outer are per-fiber kernels in the
+        //   same lineage — no shared-kernel race on the
+        //   cell.
         for name in outer.program.output_names() {
             if attached_names.contains(name) { continue; }
             let Some(inner_idx) = self.program.find_input(name) else { continue };
-            if let Some(value) = outer.lookup(name) {
+            let outer_has_slot = outer.program.find_input(name).is_some();
+            if outer_has_slot {
+                if let Some(value) = outer.lookup(name) {
+                    self.state.set_input(inner_idx, value);
+                }
+            } else if let Some(cell) = outer.state.core.output_cell(&outer.program, name) {
+                self.state.attach_shared_cell(inner_idx, cell);
+                attached_names.insert(name.to_string());
+            } else if let Some(value) = outer.lookup(name) {
                 self.state.set_input(inner_idx, value);
             }
         }
@@ -656,12 +678,59 @@ impl GkKernel {
         self.scope_coords.extend(outer_path);
     }
 
+    /// SRD-13f Push B.2 — advance this kernel's broadcast
+    /// state: pull every output that has an attached
+    /// broadcast cell, forcing the eval cone to recompute
+    /// against current inputs and writing the fresh value
+    /// through the cell. Descendant kernels with input slots
+    /// cell-attached to these outputs then observe the
+    /// current value on their next `read_input` without any
+    /// per-fiber-write coordination.
+    ///
+    /// Intended to run once per cycle on each per-fiber outer
+    /// kernel whose outputs are visible to inner scopes. The
+    /// alternative — validity-bit + auto-pull-on-stale-read
+    /// — would put the trigger fully inside the GK engine
+    /// (so inner reads transparently fetch fresh values),
+    /// but requires the engine to track upstream dependencies
+    /// across the cell boundary. This eager-broadcast form
+    /// is simpler and lives entirely within the kernel's own
+    /// surface: callers ask the kernel to advance its
+    /// broadcasts; the kernel does the pulls; cells receive
+    /// the values.
+    pub fn advance_broadcasts(&mut self) {
+        let program = self.program.clone();
+        let n_outputs = program.output_names().len();
+        for i in 0..n_outputs {
+            if self.state.core.output_cells.get(i)
+                .and_then(|c| c.as_ref()).is_some()
+            {
+                let name = program.output_names()[i].to_string();
+                // SRD-13f Push D: some workload-level bindings
+                // intentionally panic at specific cycles
+                // (`throw_at(cycle, threshold, ...)` for the
+                // resume-test fixture). Those panics belong to
+                // the per-op evaluation path — the op's wire
+                // resolution pulls the same wire and the
+                // cascade catches the panic as a per-op error.
+                // Here in the eager-broadcast pre-step we
+                // suppress panics so the descendant pull path
+                // remains the canonical error-handling site.
+                let state = &mut self.state;
+                let prog = &program;
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    state.pull(prog, &name);
+                }));
+            }
+        }
+    }
+
     /// Every shared cell visible at this kernel's scope —
     /// own input slots' attached cells unioned with the
     /// transit cells inherited from ancestors. The typed
     /// `ScopeKernel::shared_cells_in_scope` delegates here.
     ///
-    /// Used by `bind_outer_scope` to compute the parent's
+    /// Used by `materialize_wiring_from_outer` to compute the parent's
     /// full visible cell set and propagate it to the child.
     /// Public for the typed surface; semantics are the same
     /// as the typed accessor.
@@ -698,7 +767,7 @@ impl GkKernel {
     /// Owning the recipe here ensures both consumers produce
     /// identical kernels for identical inputs; previously each
     /// site reimplemented the three-step `from_program` →
-    /// `bind_outer_scope` → `set_input` dance and could (and
+    /// `materialize_wiring_from_outer` → `set_input` dance and could (and
     /// did) drift.
     pub fn for_iteration(
         canonical: &Arc<GkKernel>,
@@ -714,7 +783,7 @@ impl GkKernel {
     /// Recompute this kernel's *own* scope coordinates from
     /// the current state and overwrite [`Self::scope_coords`]
     /// with `[own]`. Used at construction time and at the start
-    /// of [`Self::bind_outer_scope`] before extending with the
+    /// of [`Self::materialize_wiring_from_outer`] before extending with the
     /// outer chain. Internal — callers want
     /// [`Self::scope_coordinates`].
     fn refresh_scope_coordinates(&mut self) {
@@ -748,7 +817,7 @@ impl GkKernel {
     /// The leaf-first scope coordinate path — see the
     /// [`super::scope_coords`] module doc for the formal
     /// definition. Always reflects the current binding state:
-    /// after [`Self::bind_outer_scope`] the path includes the
+    /// after [`Self::materialize_wiring_from_outer`] the path includes the
     /// outer kernel's full chain; for root scopes the path is
     /// just this kernel's own coords (or empty).
     pub fn scope_coordinates(&self) -> &[super::ScopeCoord] {
@@ -760,7 +829,7 @@ impl GkKernel {
     // cell's Mutex automatically, no scope-exit copy needed. See
     // SRD-16 §"Mutability Rules: Shared Mutable".
 
-    /// Extract the scope values that were set via `bind_outer_scope`.
+    /// Extract the scope values that were set via `materialize_wiring_from_outer`.
     /// Returns `[(name, value)]` for inputs that are not at their
     /// default. Used by `OpBuilder` to inject the same values into
     /// every fiber's state, including per-op-template kernels

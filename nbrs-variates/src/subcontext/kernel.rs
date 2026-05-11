@@ -239,7 +239,7 @@ impl<M> ScopeKernel<M> {
     /// binding is resolved.
     ///
     /// Phase 1 implementation: applies Rules 1, 4, and 5 by
-    /// delegating to the existing `bind_outer_scope`. Rule 2
+    /// delegating to the existing `materialize_wiring_from_outer`. Rule 2
     /// (write-through rewrite) and Rule 3 (init pull post-bind)
     /// surface as diagnostics / TODOs for Phase 2 — the kernel
     /// synthesis change required to rewrite assignment LHS into
@@ -272,7 +272,7 @@ impl<M> ScopeKernel<M> {
         }
 
         // ----- Cross-binding resolution -----
-        // Single chokepoint: `bind_outer_scope` walks every
+        // Single chokepoint: `materialize_wiring_from_outer` walks every
         // cell visible at the parent (own slots + transit
         // cells inherited from ancestors), attaches each to
         // any matching child slot, and forwards the rest as
@@ -316,7 +316,7 @@ impl<M> ScopeKernel<M> {
     /// Per-cycle Rule 2 commit: pulls every write-through's
     /// synthetic source output (`__write_<X>`) and stores its
     /// value through the corresponding child input slot for
-    /// `<X>`. Because `bind_outer_scope` attached the parent's
+    /// `<X>`. Because `materialize_wiring_from_outer` attached the parent's
     /// `SharedCell` to that slot, the write propagates to the
     /// cell, where it becomes visible to the parent and to any
     /// sibling that shares the same cell.
@@ -377,7 +377,7 @@ pub(crate) fn wrap_root_kernel(kernel: GkKernel, label: impl Into<String>) -> Ar
 ///    to the freshly-compiled program.
 /// 3. Construct the child `GkKernel` from the closed program.
 ///    Spawn-time cross-binding (cell attachment via
-///    `bind_outer_scope`) is applied against the **original**
+///    `materialize_wiring_from_outer`) is applied against the **original**
 ///    parent kernel so the child's input slots see live outer-
 ///    scope values, not the `from_program` clone's default-zero
 ///    state.
@@ -625,8 +625,8 @@ impl GkKernel {
 //
 //   1. Root kernel built from source via `compile_gk` (and family).
 //   2. Subscope kernel materialized by a parent kernel via
-//      [`GkKernel::materialize_subscope`], [`GkKernel::adopt_subscope`],
-//      or [`GkKernel::build_subscope_from_source`] — all methods on
+//      [`GkKernel::materialize_subscope`] or
+//      [`GkKernel::build_subscope_from_source`] — all methods on
 //      `GkKernel` itself, parent-supervised, typed.
 //
 // External callers go through these GkKernel-controlled paths

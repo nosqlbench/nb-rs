@@ -137,7 +137,7 @@ impl<M> std::fmt::Debug for ExportHandle<M> {
 /// export. The child's compiled program produces a synthetic
 /// output named [`Self::source_output`] (typically
 /// `__write_<X>`); spawn wires the parent's `SharedCell` into
-/// the child's `X` input slot via `bind_outer_scope`. After
+/// the child's `X` input slot via `materialize_wiring_from_outer`. After
 /// per-cycle eval, [`super::ScopeKernel::commit_write_throughs`]
 /// pulls the synthetic output and stores its value through the
 /// child's input slot, which propagates to the cell.

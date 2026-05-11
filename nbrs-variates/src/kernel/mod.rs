@@ -93,7 +93,7 @@ pub enum InputKind {
     /// Dimensional input declared by `inputs := (cycle, ...)` —
     /// dynamic, reset every cycle.
     Coordinate,
-    /// External slot populated by `bind_outer_scope` from an
+    /// External slot populated by `materialize_wiring_from_outer` from an
     /// enclosing `for_each` / `for_combinations` clause —
     /// effectively-const for the duration of one scope activation.
     IterationExtern,

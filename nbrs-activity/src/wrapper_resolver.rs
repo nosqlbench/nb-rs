@@ -682,13 +682,8 @@ fn validate_order_against_registry(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Tests in this module are unit-level against synthetic
-    // registries — they don't rely on the production
-    // wrapper registrations. Integration tests covering the
-    // production registry sit in `wrappers.rs` alongside the
-    // existing wrapper tests.
-}
+// Tests in this module are unit-level against synthetic
+// registries — they don't rely on the production
+// wrapper registrations. Integration tests covering the
+// production registry sit in `wrappers.rs` alongside the
+// existing wrapper tests.

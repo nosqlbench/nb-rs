@@ -698,11 +698,11 @@ impl DriverAdapter for CqlAdapter {
         parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
     ) -> Result<Box<dyn OpDispenser>, String> {
         // Find the statement text and determine execution mode from the field name.
-        let (stmt_text, mode, field_name) = STMT_FIELD_NAMES.iter()
-            .find_map(|key| -> Option<(String, &str, String)> {
+        let (stmt_text, mode) = STMT_FIELD_NAMES.iter()
+            .find_map(|key| -> Option<(String, &str)> {
                 let v = template.op.get(*key)?;
                 let text = v.as_str()?;
-                Some((text.to_string(), *key, key.to_string()))
+                Some((text.to_string(), *key))
             })
             .ok_or_else(|| "CQL op requires a 'poll:', 'raw:', 'simple:', 'prepared:', or 'stmt:' field".to_string())?;
 
@@ -766,7 +766,6 @@ impl DriverAdapter for CqlAdapter {
             "raw" => {
                 Ok(Box::new(CqlRawDispenser {
                     session,
-                    field_name,
                     stmt_template: stmt_text.clone(),
                     canonical_kernel,
                     trace_rate_bits: self.trace_rate_bits.clone(),
@@ -776,7 +775,6 @@ impl DriverAdapter for CqlAdapter {
             "simple" => {
                 Ok(Box::new(CqlRawDispenser {
                     session,
-                    field_name,
                     stmt_template: stmt_text.clone(),
                     canonical_kernel,
                     trace_rate_bits: self.trace_rate_bits.clone(),
@@ -807,7 +805,6 @@ impl DriverAdapter for CqlAdapter {
                     // No bind points — execute as raw (DDL, simple queries)
                     Ok(Box::new(CqlRawDispenser {
                         session,
-                        field_name,
                         stmt_template: stmt_text.clone(),
                         canonical_kernel,
                         trace_rate_bits: self.trace_rate_bits.clone(),
@@ -901,8 +898,6 @@ impl SessionHandle {
 /// - `prepared:`/`stmt:` mode when there are no bind points (DDL)
 struct CqlRawDispenser {
     session: SessionHandle,
-    /// The op field name that carries the statement ("raw", "simple", "prepared", "stmt").
-    field_name: String,
     /// Statement template captured at `map_op` time —
     /// retains the `{name}` bind-point placeholders the
     /// operator wrote in the workload yaml. Used by

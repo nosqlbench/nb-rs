@@ -269,3 +269,56 @@ phases:
 
     let _ = std::fs::remove_file(&path);
 }
+
+/// SRD-13f Push E: a phase declaring BOTH `for_each:` and
+/// `bindings:` folds the bindings into the for_each scope
+/// kernel. The phase-level `bindings:` references the iter var,
+/// and resolves per-iteration to the correct value. Pre-Push E,
+/// the install loop's for_each branch silently dropped the
+/// phase's `bindings:` block (only the parser-merge fallback
+/// kept those workloads working incidentally — and Push D
+/// retired that fallback).
+#[test]
+fn phase_with_for_each_and_bindings_folds_bindings_into_loop_scope() {
+    let yaml = r#"
+scenarios:
+  default: [run]
+
+phases:
+  run:
+    adapter: stdout
+    cycles: 1
+    concurrency: 1
+    for_each: "k in 1, 2, 3"
+    bindings: |
+      doubled := mul(k, 2)
+    ops:
+      out:
+        stmt: "k={k} doubled={doubled}"
+"#;
+    let path = write_workload("phase_for_each_bindings", yaml);
+    let session = SessionGuard::new("phase_for_each_bindings");
+    let output = nbrs()
+        .args(["run", &format!("workload={}", path.display()), "scenario=default"])
+        .arg("--session-path")
+        .arg(&session.path)
+        .output()
+        .expect("nbrs failed to start");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(output.status.success(),
+        "nbrs failed:\nstdout: {stdout}\nstderr: {stderr}");
+
+    let lines: Vec<&str> = stdout.lines()
+        .filter(|l| l.starts_with("k="))
+        .collect();
+    assert_eq!(lines.len(), 3,
+        "expected one line per iter-var value (3 lines), got {}:\n{stdout}",
+        lines.len());
+    for expected in ["k=1 doubled=2", "k=2 doubled=4", "k=3 doubled=6"] {
+        assert!(lines.iter().any(|l| l.trim() == expected),
+            "missing line '{expected}':\n{stdout}");
+    }
+
+    let _ = std::fs::remove_file(&path);
+}

@@ -414,7 +414,7 @@ fn evaluate_default_expr(
 /// no cross-scope mutability today).
 ///
 /// Literal-init shared bindings compile to an input slot +
-/// passthrough output, so `bind_outer_scope` can wire a
+/// passthrough output, so `materialize_wiring_from_outer` can wire a
 /// `SharedCell` between this slot and inner kernels' matching
 /// inputs. Non-literal shared bindings retain the
 /// computation-node shape; full cross-scope mutability for
@@ -899,7 +899,7 @@ impl Compiler {
                 }
                 Statement::CycleBinding(b) => {
                     // `shared X := <literal>` compiles to an input
-                    // slot + passthrough output, so `bind_outer_scope`
+                    // slot + passthrough output, so `materialize_wiring_from_outer`
                     // can wire a `SharedCell` for cross-scope
                     // mutability (SRD-16 §"Mutability Rules: Shared
                     // Mutable"). Single-target bindings only — tuple
@@ -974,7 +974,7 @@ impl Compiler {
                     // port (dynamic — written by capture extraction);
                     // no default makes this an iteration extern
                     // (effectively-const, populated by
-                    // `bind_outer_scope` from a parent for_each /
+                    // `materialize_wiring_from_outer` from a parent for_each /
                     // for_combinations clause).
                     let port_type = match port.typ.as_str() {
                         "u64" => crate::node::PortType::U64,
@@ -1331,7 +1331,29 @@ impl Compiler {
         // pruned by DCE, leaving the cursor extent unresolved.
         match required_outputs {
             Some(required) => {
-                for name in required {
+                // SRD-13f Push D / SRD-44: `volatile` bindings stay
+                // exposed as outputs even when the caller's
+                // required list doesn't mention them. The author
+                // declared the wire as volatile to mark it as
+                // non-deterministic across invocations — losing
+                // it from the output set (DCE) would also lose
+                // the "exclude from program identity" guarantee,
+                // because the lifecycle classifier would no
+                // longer find a volatile output pointing at the
+                // producing node.
+                let mut required_owned: Vec<String> = required.to_vec();
+                for stmt in &file.statements {
+                    if let crate::dsl::ast::Statement::CycleBinding(b) = stmt
+                        && b.modifier.is_volatile()
+                    {
+                        for t in &b.targets {
+                            if !required_owned.iter().any(|n| n == t) {
+                                required_owned.push(t.clone());
+                            }
+                        }
+                    }
+                }
+                for name in &required_owned {
                     if self.all_names.contains(name) {
                         asm.add_output(name, WireRef::node(name));
                     }

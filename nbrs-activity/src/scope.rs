@@ -22,8 +22,10 @@ use nbrs_variates::comprehension::{
 /// Where a binding was declared — its provenance in the scope chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindingOrigin {
-    /// Declared at workload level, inherited by this phase via
-    /// `merge_bindings` during YAML parsing.
+    /// Declared at a YAML level outside the op (today only block
+    /// sugar, since SRD-13f Push D retired the workload/phase
+    /// parser-merge into ops). Reaches the op via
+    /// `inline_block_sugar_into_op` during YAML parsing.
     Inherited,
     /// Declared at phase level (the phase has its own `bindings:` block).
     Phase,
@@ -669,7 +671,153 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
 /// `kernel.state().set_input` and evaluates the condition
 /// expression against the kernel via `interpolate_via_kernel` +
 /// `eval_const_expr`. Children inherit `counter` (and any
-/// inherited names) through standard `bind_outer_scope`.
+/// inherited names) through standard `materialize_wiring_from_outer`.
+/// Synthesize the GK scope kernel for a phase that carries its own
+/// `bindings:` block.
+///
+/// The phase scope owns this kernel as part of its closure lifetime
+/// (per the GK builder/walk/instancing protocol): a phase whose YAML
+/// declared `bindings: |` produces matter that the parent kernel's
+/// `build_subscope` materializes into a layered kernel. Op-template
+/// scopes that descend from this phase find these bindings as
+/// outputs of their parent kernel and `extern` them through the
+/// standard manifest cascade.
+///
+/// Phases without bindings AND without `for_each:` produce no install
+/// spec — their scope-tree node carries an empty `cached_kernel` and
+/// the parent walker resolves through to the nearest ancestor with a
+/// kernel. The closure invariant ("every scope has a kernel
+/// reference") still holds; the reference is just the parent's,
+/// matter-gated as the GK APIs prescribe.
+///
+/// Source emitted (in order):
+///
+/// ```text
+///   final <workload_param> := <literal>     # cascaded params
+///   extern <ancestor_output>: <type>        # cascaded outputs/inputs
+///   <phase_bindings_body>                   # phase-declared bindings
+/// ```
+///
+/// The phase's bindings body is appended verbatim so the GK compiler
+/// classifies them per the same rules as op-level bindings (init /
+/// shared / final detection, type inference). Iteration coordinate
+/// (`cycle`) cascades from the parent — we never re-declare it here.
+pub fn build_phase_scope_kernel(
+    bindings: &nbrs_workload::model::BindingsDef,
+    parent_manifest: &[crate::runner::ManifestEntry],
+    parent_kernel: &nbrs_variates::kernel::GkKernel,
+    workload_params: &HashMap<String, String>,
+    gk_lib_paths: Vec<std::path::PathBuf>,
+    workload_dir: Option<&std::path::Path>,
+    strict: bool,
+    context: &str,
+) -> Result<nbrs_variates::kernel::GkKernel, String> {
+    use nbrs_workload::model::BindingsDef;
+
+    let body_text: String = match bindings {
+        BindingsDef::GkSource(s) => s.clone(),
+        BindingsDef::Map(m) => {
+            let mut out = String::new();
+            for (name, expr) in m {
+                out.push_str(&format!("{name} := {expr}\n"));
+            }
+            out
+        }
+    };
+
+    let mut source = String::new();
+    let mut emitted: HashSet<String> = HashSet::new();
+    let mut inherited_names: Vec<String> = Vec::new();
+
+    // Cascade every workload param through this phase scope so
+    // descendants see them via materialize_wiring_from_outer. Same shape as
+    // build_do_loop_scope_kernel.
+    for (name, value) in workload_params {
+        let type_name = workload_param_type_name(value);
+        source.push_str(&format!("extern {name}: {type_name}\n"));
+        emitted.insert(name.clone());
+        inherited_names.push(name.clone());
+    }
+
+    // Cascade every name visible at the parent — outputs first,
+    // then inputs not already covered. Same chain-extension story
+    // as `build_do_loop_scope_kernel`.
+    let parent_program = parent_kernel.program();
+    let skip_cascade = |emitted: &HashSet<String>, name: &str| -> bool {
+        emitted.contains(name) || name == "cycle" || name.starts_with("__")
+    };
+    for name in parent_program.output_names() {
+        let owned = name.to_string();
+        if skip_cascade(&emitted, &owned) { continue; }
+        // Locally-declared phase bindings shadow ancestor names —
+        // skip the cascade for any name the phase body assigns.
+        if scan_locally_declared_idents(&body_text).contains(&owned) { continue; }
+        let (node_idx, port_idx) = parent_program.resolve_output_by_index(
+            parent_program.output_index(&owned).unwrap()
+        );
+        let port_type = parent_program.node_meta(node_idx).outs[port_idx].typ;
+        let type_name = match port_type {
+            nbrs_variates::node::PortType::U64 => "u64",
+            nbrs_variates::node::PortType::F64 => "f64",
+            nbrs_variates::node::PortType::Str => "String",
+            nbrs_variates::node::PortType::Bool => "bool",
+            _ => "String",
+        };
+        source.push_str(&format!("extern {owned}: {type_name}\n"));
+        emitted.insert(owned.clone());
+        inherited_names.push(owned);
+    }
+    for name in parent_program.input_names() {
+        if skip_cascade(&emitted, &name) { continue; }
+        if scan_locally_declared_idents(&body_text).contains(&name) { continue; }
+        let port_type = parent_program.input_port_type(&name)
+            .unwrap_or(nbrs_variates::node::PortType::Str);
+        let type_name = match port_type {
+            nbrs_variates::node::PortType::U64 => "u64",
+            nbrs_variates::node::PortType::F64 => "f64",
+            nbrs_variates::node::PortType::Str => "String",
+            nbrs_variates::node::PortType::Bool => "bool",
+            _ => "String",
+        };
+        source.push_str(&format!("extern {name}: {type_name}\n"));
+        emitted.insert(name.clone());
+        inherited_names.push(name);
+    }
+
+    // Append the phase's own bindings body verbatim. The GK
+    // compiler classifies each statement (init / shared / final)
+    // per the standard rules.
+    if !source.ends_with('\n') && !source.is_empty() {
+        source.push('\n');
+    }
+    source.push_str(&body_text);
+    if !source.ends_with('\n') {
+        source.push('\n');
+    }
+
+    let _ = parent_manifest; // reserved for future strict cross-scope checks
+    let compile_options = nbrs_variates::subcontext::CompileOptions {
+        workload_dir: workload_dir.map(|p| p.to_path_buf()),
+        gk_lib_paths,
+        strict,
+        required_outputs: Vec::new(),
+        context_label: Some(context.to_string()),
+        cursor_limit: None,
+    };
+    let matter = nbrs_variates::subcontext::GkMatter::builder()
+        .label(context)
+        .source(source)
+        .inherited_outputs(inherited_names)
+        .options(compile_options)
+        .build()
+        .map_err(|e| format!("{context}: phase scope synthesis: {e}"))?;
+    let mut kernel = parent_kernel
+        .build_subscope(matter)
+        .map_err(|e| format!("{context}: phase scope synthesis: {e}"))?;
+    propagate_parent_inputs(&mut kernel, parent_kernel);
+    Ok(kernel)
+}
+
 pub fn build_do_loop_scope_kernel(
     counter: Option<&str>,
     condition: &str,
@@ -727,7 +875,7 @@ pub fn build_do_loop_scope_kernel(
     }
 
     // Cascade every workload param through this do-loop scope
-    // so descendants see them via bind_outer_scope. Declared as
+    // so descendants see them via materialize_wiring_from_outer. Declared as
     // `extern` (not `final`) so the value flows in from the
     // workload root via the standard GK scope chain — the
     // intermediate kernel doesn't re-declare the value at every
@@ -795,7 +943,7 @@ pub fn build_do_loop_scope_kernel(
     // builder-side validation (Rule 1 import resolution, Rule 2
     // shared-export collision rewrite, FinalShadow) runs against
     // the parent's program shape, then re-applies
-    // `bind_outer_scope` against the live parent so the child's
+    // `materialize_wiring_from_outer` against the live parent so the child's
     // input slots pick up real outer-scope values. Any compile-
     // time failure surfaces as `ContractViolation`; we map it to
     // the legacy synthesiser's String-error contract.
@@ -927,60 +1075,11 @@ fn scan_locally_declared_idents(src: &str) -> HashSet<String> {
     out
 }
 
-/// Classification of how a name resolves against a parent
-/// scope, per SRD-13d §"Phase 9 follow-ups" §2 (cross-scope
-/// per-cycle value contract). Used by
-/// [`build_op_template_scope_kernel`] to validate that an
-/// op-template's references to parent names are stable across
-/// the per-cycle execution loop.
-#[derive(Debug, Clone, Copy)]
-enum ParentRefKind {
-    /// Parent has the name as a kernel INPUT (a coord like
-    /// `cycle`, or a workload-param-injected slot). Per-cycle
-    /// freshness is intrinsic — `FiberBuilder::set_inputs`
-    /// writes to every kernel directly.
-    Input,
-    /// Parent has the name as an output declared with the
-    /// `shared` modifier. The `SharedCell` mechanism delivers
-    /// live cross-scope reads (SRD-13c §"Mutability Rules:
-    /// Shared Mutable").
-    SharedOutput,
-    /// Parent has the name as an output that's been folded to
-    /// a compile-time constant. The bind-time snapshot is the
-    /// final value — per-cycle changes are impossible by
-    /// construction.
-    ConstantOutput,
-    /// Parent has the name as an output that depends on
-    /// per-cycle inputs and isn't `shared`. Reading it from an
-    /// op-template scope produces a stale snapshot at the bind
-    /// boundary; live updates would require `shared` in the
-    /// parent. This is the failure mode the contract check
-    /// rejects.
-    DynamicOutput,
-}
-
-/// Classify a name against the parent kernel for the SRD-13c
-/// cross-scope visibility contract. Names not known to the
-/// parent (worth a pass-through to workload params or local
-/// declaration) return `None`.
-fn classify_parent_ref(
-    name: &str,
-    parent_kernel: &nbrs_variates::kernel::GkKernel,
-    parent_manifest_by_name: &HashMap<&str, &crate::runner::ManifestEntry>,
-) -> Option<ParentRefKind> {
-    let parent_program = parent_kernel.program();
-    if parent_program.find_input(name).is_some() {
-        return Some(ParentRefKind::Input);
-    }
-    let entry = parent_manifest_by_name.get(name)?;
-    if entry.modifier.is_shared() {
-        return Some(ParentRefKind::SharedOutput);
-    }
-    if parent_kernel.get_constant(name).is_some() {
-        return Some(ParentRefKind::ConstantOutput);
-    }
-    Some(ParentRefKind::DynamicOutput)
-}
+// SRD-13c `ParentRefKind` classification and the
+// `classify_parent_ref` helper were retired by SRD-13f. The
+// snapshot-vs-shared contract they enforced is superseded by
+// uniform construction-time wiring + per-cycle refresh on
+// non-shared parent outputs (SRD-13f §"Materialization gradient").
 
 /// SRD-13d Phase 9 — synthesize a per-op-template kernel for a
 /// materialised op-template scope.
@@ -998,7 +1097,7 @@ fn classify_parent_ref(
 ///    workload-init time with a clear message pointing at the
 ///    `shared` modifier path.
 /// 3. Emits the op's own bindings.
-/// 4. Compiles + `bind_outer_scope`s to the parent kernel and
+/// 4. Compiles + `materialize_wiring_from_outer`s to the parent kernel and
 ///    propagates inherited inputs.
 pub fn build_op_template_scope_kernel(
     op: &nbrs_workload::model::ParsedOp,
@@ -1019,43 +1118,17 @@ pub fn build_op_template_scope_kernel(
     let mut emitted: HashSet<String> = HashSet::new();
     let mut inherited_names: Vec<String> = Vec::new();
 
-    // Collect names this op explicitly references — op fields,
-    // condition, delay, metric values, plus identifier tokens
-    // appearing in the bindings body (a textual scan; the GK
-    // compiler will validate each one structurally downstream).
-    let mut referenced: Vec<String> = Vec::new();
-    for value in op.op.values() {
-        if let Some(s) = value.as_str() {
-            for n in nbrs_workload::bindpoints::referenced_bindings(s) {
-                if !referenced.contains(&n) {
-                    referenced.push(n);
-                }
-            }
-        }
-    }
-    if let Some(ref s) = op.condition {
-        let n = s.trim().trim_start_matches('{').trim_end_matches('}');
-        if !n.is_empty() && !referenced.iter().any(|r| r == n) {
-            referenced.push(n.to_string());
-        }
-    }
-    if let Some(ref s) = op.delay {
-        let n = s.trim().trim_start_matches('{').trim_end_matches('}');
-        if !n.is_empty() && !referenced.iter().any(|r| r == n) {
-            referenced.push(n.to_string());
-        }
-    }
-    for spec in op.metrics.values() {
-        let trimmed = spec.value.trim();
-        let bare = !trimmed.is_empty()
-            && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_');
-        if bare && !referenced.iter().any(|r| r == trimmed) {
-            referenced.push(trimmed.to_string());
-        }
-    }
-    // Body text — scan for identifier tokens. Names declared by
-    // the op's own bindings get filtered out below (they shadow
-    // parent visibility per SRD-13c §"Shadowing").
+    // SRD-13f: every parent-visible wire the op template
+    // references — whether in body, condition, delay, metric
+    // values, op fields (`stmt`, `uri`, `body`, etc.), or
+    // string-interpolation arguments inside the body — gets
+    // wired into the local op-template kernel at construction.
+    // Local reads on the op-template kernel then resolve every
+    // such name through the local read API, with construction-
+    // time wiring guaranteeing the read invariant (inner reads
+    // return the value that outer would return — see SRD-13f
+    // §"The read invariant"). The wires layer takes one kernel
+    // handle and never composes chains externally.
     let body_text: String = match &op.bindings {
         BindingsDef::GkSource(s) => s.clone(),
         BindingsDef::Map(m) => {
@@ -1066,21 +1139,63 @@ pub fn build_op_template_scope_kernel(
             out
         }
     };
+
+    // SRD-13f Push D: declare the parent's coordinate inputs
+    // (typically just `cycle`) on this op-template kernel.
+    // Pre-Push-D, the workload-level `inputs := (cycle)` line
+    // was merged into op.bindings and arrived via body_text,
+    // so the kernel always had a Coordinate slot. After Push D
+    // body_text no longer carries it, so we emit the declaration
+    // explicitly — without it the op-template kernel has no
+    // input slot for cycle and the runtime's per-cycle
+    // `set_inputs` writes go nowhere.
+    let body_has_inputs_decl = body_text.lines()
+        .any(|line| line.trim_start().starts_with("inputs :="));
+    if !body_has_inputs_decl {
+        let parent_coord_names: Vec<String> = parent_kernel.program()
+            .input_names()
+            .into_iter()
+            .take(parent_kernel.program().coord_count())
+            .collect();
+        if !parent_coord_names.is_empty() {
+            source.push_str(&format!("inputs := ({})\n", parent_coord_names.join(", ")));
+            for name in &parent_coord_names {
+                emitted.insert(name.clone());
+            }
+        }
+    }
     let body_idents = scan_idents_in_gk_source(&body_text);
     let body_locally_declared = scan_locally_declared_idents(&body_text);
+    let mut referenced: Vec<String> = Vec::new();
+    // Op field references — `stmt`, `uri`, `body`, etc. carry
+    // `{name}` placeholders the dispenser substitutes at cycle
+    // time. Those wires must be reachable on the op-template
+    // kernel so the dispenser's single-kernel-handle wires
+    // surface resolves them through the local read API.
+    for value in op.op.values() {
+        if let Some(s) = value.as_str() {
+            for n in nbrs_workload::bindpoints::referenced_bindings(s) {
+                if !body_locally_declared.contains(&n)
+                    && !referenced.iter().any(|r| r == &n)
+                {
+                    referenced.push(n);
+                }
+            }
+        }
+    }
     for ident in &body_idents {
         if body_locally_declared.contains(ident) { continue; }
         if !referenced.iter().any(|r| r == ident) {
             referenced.push(ident.clone());
         }
     }
-    // Also pick up `{name}` string-interpolation references in
-    // the body (e.g. `dataset_prebuffer("{dataset}:{profile}")`).
-    // The GK compiler desugars those into wires that need a
-    // matching extern; without this scan, the cascade misses
-    // them and the compiler defaults the auto-extern to u64,
-    // landing a Str value into a u64 slot at bind-time and
-    // panicking via an inserted `__u64_to_string` adapter.
+    // String-interpolation references inside the body (e.g.
+    // `dataset_prebuffer("{dataset}:{profile}")`). The GK compiler
+    // desugars those into wires that need a matching extern;
+    // without this scan, the cascade misses them and the compiler
+    // defaults the auto-extern to u64, landing a Str value into a
+    // u64 slot at bind-time and panicking via an inserted
+    // `__u64_to_string` adapter.
     let mut interp_refs: HashSet<String> = HashSet::new();
     collect_string_interp_refs(&body_text, &mut interp_refs);
     for ident in interp_refs {
@@ -1089,36 +1204,44 @@ pub fn build_op_template_scope_kernel(
             referenced.push(ident);
         }
     }
-
-    // Per SRD-13c cross-scope visibility contract: classify each
-    // parent reference and error on Dynamic-without-shared.
-    // Workload params + op-local declarations are exempt.
-    for name in &referenced {
-        if body_locally_declared.contains(name) { continue; }
-        if workload_params.contains_key(name) { continue; }
-        let Some(kind) = classify_parent_ref(name, parent_kernel, &manifest_by_name) else {
-            // Name not in parent manifest — leave it to the GK
-            // compiler's auto-extern + downstream "unresolved"
-            // diagnostic. Avoids false positives for names that
-            // come from the GK stdlib or that the parent provides
-            // through a different surface.
-            continue;
-        };
-        if matches!(kind, ParentRefKind::DynamicOutput) {
-            return Err(format!(
-                "{context}: op '{op_name}' references parent wire '{name}' which \
-                 is a per-cycle-changing output without the `shared` modifier. \
-                 Op-template scopes get a one-shot snapshot of parent outputs \
-                 at scope creation (SRD-13c §\"Default: Immutable Propagation\"); \
-                 per-cycle freshness across scope boundaries requires the parent \
-                 to declare the binding `shared` (SRD-13c §\"Mutability Rules: \
-                 Shared Mutable\"). Either: (a) mark `shared {name} := …` in the \
-                 parent scope, (b) restate the binding locally in this op, or \
-                 (c) move the op's reference to a parent-scope binding instead.",
-                op_name = op.name,
-            ));
+    if let Some(ref s) = op.condition {
+        let n = s.trim().trim_start_matches('{').trim_end_matches('}');
+        if !n.is_empty() && !body_locally_declared.contains(n)
+            && !referenced.iter().any(|r| r == n)
+        {
+            referenced.push(n.to_string());
         }
     }
+    if let Some(ref s) = op.delay {
+        let n = s.trim().trim_start_matches('{').trim_end_matches('}');
+        if !n.is_empty() && !body_locally_declared.contains(n)
+            && !referenced.iter().any(|r| r == n)
+        {
+            referenced.push(n.to_string());
+        }
+    }
+    for spec in op.metrics.values() {
+        let trimmed = spec.value.trim();
+        let bare = !trimmed.is_empty()
+            && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_');
+        if bare && !body_locally_declared.contains(trimmed)
+            && !referenced.iter().any(|r| r == trimmed)
+        {
+            referenced.push(trimmed.to_string());
+        }
+    }
+
+    // SRD-13f: parent-ref classification no longer gates
+    // extern emission. The legacy "DynamicOutput without
+    // shared" rejection assumed snapshot semantics for
+    // non-shared cross-scope reads (SRD-13c §"Default:
+    // Immutable Propagation"). SRD-13f reframes that rule:
+    // the read invariant is uniform across all visible
+    // parent outputs — inner reads return outer's current
+    // value — and the construction-time wiring (cell
+    // attachment for shared, per-cycle refresh for non-shared
+    // pending the full cell mechanism in Push B.2) keeps the
+    // invariant intact. No external pre-check needed.
 
     // Emit extern decls only for names the op references and
     // that the parent provides. Lazy cascade — keeps the
@@ -1141,7 +1264,7 @@ pub fn build_op_template_scope_kernel(
             // The cascade still needs to record this as an
             // inherited name so `mark_inherited_outputs` includes
             // it — the inner kernel will re-publish it as an
-            // (auto-extern) input/output and bind_outer_scope
+            // (auto-extern) input/output and materialize_wiring_from_outer
             // will value-copy at construction time.
             inherited_names.push(name.clone());
             continue;
@@ -1175,7 +1298,7 @@ pub fn build_op_template_scope_kernel(
             // Parent INPUT — for non-Coordinate inputs (iteration
             // vars, capture ports) emit an explicit `extern` so the
             // inner kernel's input classification matches the
-            // parent's, and bind_outer_scope can value-copy or
+            // parent's, and materialize_wiring_from_outer can value-copy or
             // shared-cell-attach. For Coordinate inputs (e.g. the
             // implicit `cycle` coord), DON'T emit — let the GK
             // auto-extern path classify them as Coordinate too,
@@ -1200,15 +1323,23 @@ pub fn build_op_template_scope_kernel(
         }
     }
 
-    // Cascade workload params through this op-template scope so
-    // descendants see them via bind_outer_scope. Same shape as
-    // build_do_loop_scope_kernel.
+    // SRD-13f Push A: workload params are root-level context
+    // wires — they must appear on every scope's kernel program
+    // as inlined constants (materialization gradient §"Inlined
+    // constant"). The per-name loop above emits them as `final`
+    // for body-referenced params; this cascade catches the rest
+    // so every workload param lands on this op-template kernel
+    // as a folded constant. The previous emission shape
+    // (`extern X: type`) was wrong — it forced a runtime input
+    // slot, which (a) prevented `init` bindings from folding
+    // against the param's value at compile time and (b) routed
+    // a compile-time-constant value through the runtime input
+    // path. `final` is the correct materialization.
     for (name, value) in workload_params {
         if emitted.contains(name) { continue; }
-        let type_name = workload_param_type_name(value);
-        source.push_str(&format!("extern {name}: {type_name}\n"));
+        let literal = format_workload_param_as_gk_literal(value);
+        source.push_str(&format!("final {name} := {literal}\n"));
         emitted.insert(name.clone());
-        inherited_names.push(name.clone());
     }
     if body_text.trim().is_empty() {
         // No own bindings — the kernel just re-exports parent.
@@ -1233,7 +1364,7 @@ pub fn build_op_template_scope_kernel(
     // legacy direct call took (lib paths, strict, source dir,
     // context label); those flow through `CompileOptions`. The
     // bridge applies `mark_inherited_outputs` and
-    // `bind_outer_scope` against the live parent so per-cycle
+    // `materialize_wiring_from_outer` against the live parent so per-cycle
     // values reach the inner kernel's input slots; the trailing
     // `propagate_parent_inputs` keeps cascade-extern'd inputs
     // flowing through (until Rule 4 / Rule 5 absorb them).
@@ -1440,7 +1571,7 @@ pub fn build_scope(
             // Without this, names like `optimize_for` flow
             // through to the GK compiler unresolved and get
             // auto-externed at the compiler's default type
-            // (u64); `bind_outer_scope` then writes the
+            // (u64); `materialize_wiring_from_outer` then writes the
             // parent's Str value into the u64-typed slot, and
             // a `__u64_to_string` adapter inserted by type
             // dispatch panics at runtime on `as_u64()`. The
@@ -1516,7 +1647,16 @@ pub fn build_scope(
     // (their workload params come via the parent-scope
     // kernel's manifest, not local injection).
     let defined = scope.defined_names(); // refresh after externs
-    for (name, value) in workload_params {
+    // SRD-13f Push D: sort by name so program build order is
+    // deterministic across processes. HashMap iteration is
+    // randomized per process (Rust default hasher); pre-Push-D
+    // this didn't show up because workload-level bindings
+    // reached the workload-root via op-source ingestion (parse
+    // order, deterministic). Post-Push-D workload_params is the
+    // direct injection path, so its order matters.
+    let mut params_sorted: Vec<(&String, &String)> = workload_params.iter().collect();
+    params_sorted.sort_by(|a, b| a.0.cmp(b.0));
+    for (name, value) in params_sorted {
         if !defined.contains(name) {
             scope.add_param_binding(name, value);
         }
@@ -2067,9 +2207,21 @@ fn resolve_placeholders_in_string(
             i = after;
             continue;
         }
-        // Bare ident — try kernel lookup. Then error.
+        // Bare ident — try kernel lookup. Computed outputs
+        // (node-backed) aren't found by `lookup` (it only reads
+        // input slots + constants), but they ARE valid wires
+        // visible at this scope — accept them by checking
+        // `resolve_output`. Per-cycle resolution at dispenser
+        // time handles the actual pull.
         match kernel.lookup(body) {
             Some(v) => out.push_str(&v.to_display_string()),
+            None if kernel.program().resolve_output(body).is_some() => {
+                // Defer to per-cycle resolution. Emit the
+                // placeholder unchanged.
+                out.push('{');
+                out.push_str(body);
+                out.push('}');
+            }
             None => {
                 errors.push(format!(
                     "{field_path}: '{{{body}}}' did not resolve in scope and is \
@@ -2529,7 +2681,15 @@ mod tests {
     }
 
     #[test]
-    fn op_template_referencing_dynamic_output_errors() {
+    fn op_template_referencing_dynamic_output_accepted_per_srd_13f() {
+        // SRD-13f retires SRD-13c's "DynamicOutput without
+        // shared" rejection. The read invariant is uniform —
+        // inner reads of cross-scope wires return outer's
+        // current value via construction-time wiring (cells
+        // for shared, per-cycle refresh / planned cell
+        // mechanism for non-shared). The op-template
+        // synthesiser accepts the reference; the wiring keeps
+        // the invariant intact at cycle time.
         let parent = parent_kernel_with_load();
         let manifest = nbrs_variates::kernel::extract_manifest(parent.program())
             .into_iter()
@@ -2537,20 +2697,21 @@ mod tests {
                 name: e.name, port_type: e.port_type, modifier: e.modifier,
             })
             .collect::<Vec<_>>();
-        // `load` depends on cycle, isn't shared — DynamicOutput.
-        // Should error per SRD-13c default-immutable-propagation
-        // contract.
         let op = op_with_body("forecast_op",
             "forecast := mul(load, 2)\n");
-        let result = build_op_template_scope_kernel(
+        let kernel = build_op_template_scope_kernel(
             &op, &manifest, &parent,
             &HashMap::new(),
             Vec::new(), None, false, "test",
-        );
-        let err = result.expect_err("dynamic-output reference should error");
-        assert!(err.contains("load"), "err should name the wire: {err}");
-        assert!(err.contains("shared"), "err should mention shared: {err}");
-        assert!(err.contains("forecast_op"), "err should name the op: {err}");
+        ).expect("op-template kernel synth should accept dynamic parent ref");
+        // The op-template kernel carries `load` as an extern
+        // input — the construction-time wiring set up the slot;
+        // per-cycle refresh keeps it current with outer.
+        assert!(kernel.program().find_input("load").is_some(),
+            "extern load slot should land on op-template kernel");
+        // And `forecast`, the op-local binding, is an output.
+        assert!(kernel.program().output_names().iter().any(|n| *n == "forecast"),
+            "op-local binding should be an output");
     }
 
     #[test]

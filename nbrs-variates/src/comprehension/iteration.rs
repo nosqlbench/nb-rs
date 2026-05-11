@@ -88,11 +88,34 @@ pub struct IterationStep {
 /// [`Iterator`] surface. `collect()` to materialise for
 /// concurrent fan-out (`tokio::JoinSet`); iterate directly for
 /// serial / pre-map walks.
+/// Per-iteration kernel constructor — closes over whatever
+/// context the caller needs (typically the per-iteration
+/// synthesizer's parent_manifest / workload_params / lib
+/// paths / etc.). When `None`, falls back to the legacy
+/// `GkKernel::for_iteration` path that reuses the
+/// canonical's compiled program and sets iter-var values
+/// via `set_input`.
+///
+/// SRD-13f Gate 2: the activity layer wires the per-fiber
+/// closure to call [`super::synthesize_for_each_iteration`],
+/// which emits source with `final <var> := <literal>` for
+/// each iter-var so the matter-AST classification matches
+/// the design ("named coordinates *are* inner scope matter
+/// as const and final values").
+pub type IterationKernelFn =
+    Box<dyn FnMut(&[(String, Value)]) -> Arc<GkKernel> + Send>;
+
 pub struct ScopeIterations {
     canonical: Arc<GkKernel>,
     parent: Arc<GkKernel>,
     parent_coords: Vec<ScopeCoord>,
     tuples: std::vec::IntoIter<Vec<(String, Value)>>,
+    /// Optional override for per-iteration kernel construction
+    /// (SRD-13f Gate 2). When `Some`, called per iteration
+    /// with the iter-var values; the returned kernel becomes
+    /// `IterationStep::bound_kernel`. When `None`, the
+    /// legacy `for_iteration` path is used.
+    build_iteration_kernel: Option<IterationKernelFn>,
 }
 
 impl Iterator for ScopeIterations {
@@ -100,7 +123,11 @@ impl Iterator for ScopeIterations {
 
     fn next(&mut self) -> Option<Self::Item> {
         let typed = self.tuples.next()?;
-        let bound_kernel = GkKernel::for_iteration(&self.canonical, &self.parent, &typed);
+        let bound_kernel = if let Some(builder) = self.build_iteration_kernel.as_mut() {
+            builder(&typed)
+        } else {
+            GkKernel::for_iteration(&self.canonical, &self.parent, &typed)
+        };
         let mut coord_path = self.parent_coords.clone();
         coord_path.push(ScopeCoord::from(typed.iter().cloned()));
         Some(IterationStep { bindings: typed, bound_kernel, coord_path })
@@ -108,6 +135,18 @@ impl Iterator for ScopeIterations {
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.tuples.size_hint()
+    }
+}
+
+impl ScopeIterations {
+    /// Install the per-iteration kernel constructor (SRD-13f
+    /// Gate 2). Callers that route per-iteration kernels
+    /// through [`super::synthesize_for_each_iteration`]
+    /// build a closure capturing the needed context and pass
+    /// it here.
+    pub fn with_iteration_kernel_fn(mut self, f: IterationKernelFn) -> Self {
+        self.build_iteration_kernel = Some(f);
+        self
     }
 }
 
@@ -157,5 +196,6 @@ where
         parent: parent.clone(),
         parent_coords: parent_coords.to_vec(),
         tuples: tuples.into_iter(),
+        build_iteration_kernel: None,
     })
 }

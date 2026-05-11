@@ -612,7 +612,7 @@ impl ScopeTree {
 
     /// Walk ancestors of `idx` looking for the nearest scope
     /// node that has a kernel installed. Used at routing time
-    /// to find the kernel a for_each scope's `bind_outer_scope`
+    /// to find the kernel a for_each scope's `materialize_wiring_from_outer`
     /// should chain from. Workload root always has a kernel
     /// installed (per M3.1), so this never returns `None` for
     /// any descendant of the root.
@@ -746,7 +746,7 @@ impl ScopeTree {
     /// authoritative answer for "what is `<name>` at this
     /// scope?" — every name visible at this scope (own outputs
     /// plus parent-inherited values bound via
-    /// [`GkKernel::bind_outer_scope`]) resolves through the
+    /// [`GkKernel::materialize_wiring_from_outer`]) resolves through the
     /// standard GK API on this one kernel. Callers don't walk
     /// the scope tree to do name resolution; GK's auto-extern +
     /// outer-scope wiring already encapsulates the layering.
@@ -1096,7 +1096,7 @@ mod tests {
         // After install, the cached kernel answers the name via
         // the standard GK API. No tree-walking on the caller
         // side — the kernel encapsulates its own scope, and
-        // composition (auto-extern + bind_outer_scope) is what
+        // composition (auto-extern + materialize_wiring_from_outer) is what
         // makes parent values reachable. This test only verifies
         // the install primitive; the GK side already has its own
         // tests for composition.
@@ -1113,7 +1113,7 @@ mod tests {
     }
 
     #[test]
-    fn for_each_scope_kernel_inherits_parent_via_bind_outer_scope() {
+    fn for_each_scope_kernel_inherits_parent_via_materialize_wiring_from_outer() {
         // M3.2 end-to-end: build a parent kernel that exposes a
         // workload-style param as an output, synthesize a
         // for_each scope kernel that references that param plus
@@ -1141,9 +1141,10 @@ mod tests {
             None,
             false,
             "test",
+            None,
         ).expect("synthesis should succeed");
 
-        // After `bind_outer_scope` (called inside the helper),
+        // After `materialize_wiring_from_outer` (called inside the helper),
         // the inherited extern is populated with the parent's
         // value.
         match kernel.get_input("k_values") {
@@ -1162,7 +1163,7 @@ mod tests {
 
         // GK's `extern` declaration auto-installs a passthrough
         // node that exposes the name as an output too — so
-        // children's `bind_outer_scope(this_scope)` sees both
+        // children's `materialize_wiring_from_outer(this_scope)` sees both
         // `k_values` and `k` in this scope's manifest and the
         // chain inheritance flows through standard GK API
         // without any caller-side scope walking.
@@ -1199,6 +1200,7 @@ mod tests {
             None,
             false,
             "test",
+            None,
         ).expect("synthesis should succeed");
 
         // Assert k's input port is u64-typed, not String.
@@ -1243,6 +1245,7 @@ mod tests {
             None,
             false,
             "test",
+            None,
         ).expect("synthesis should succeed");
 
         let manifest = crate::runner::extract_manifest(kernel.program());

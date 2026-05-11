@@ -20,7 +20,7 @@
 //! ## Phase scope
 //!
 //! Phase 1 (shipped) is **additive** — it coexists with the
-//! existing `bind_outer_scope` / `from_program` / `compile_gk`
+//! existing `materialize_wiring_from_outer` / `from_program` / `compile_gk`
 //! machinery. Phase 2 (this push) lands Rule 2 (write-through
 //! rewrite for shared exports) end-to-end and migrates the
 //! do-loop synthesiser to the builder protocol; the other
@@ -39,7 +39,7 @@
 //!   [`WriteThroughBinding`] on the artifact. Per-cycle eval
 //!   calls [`ScopeKernel::commit_write_throughs`] to fan values
 //!   through the parent's `SharedCell`.
-//! * Rule 4 — coordinate routing handled by `bind_outer_scope`'s
+//! * Rule 4 — coordinate routing handled by `materialize_wiring_from_outer`'s
 //!   IterationExtern input-kind.
 //! * Rule 5 — closure-binding economy: unused imports surface as
 //!   finalize diagnostics rather than errors.
@@ -59,7 +59,7 @@
 //! ## Walled-off invariant (SRD-67 Phase 4)
 //!
 //! Per SRD-67 §"Walled-off invariant", the legacy
-//! cross-binding primitives `GkKernel::bind_outer_scope` and
+//! cross-binding primitives `GkKernel::materialize_wiring_from_outer` and
 //! `GkKernel::from_program` are `pub(crate)` after Phase 4.
 //! External consumers must go through the typed surface:
 //! [`SubcontextBuilder`] / [`ScopeKernel::spawn`] for child
@@ -71,13 +71,13 @@
 //! of them starts compiling, the seal is broken and a Phase 4
 //! invariant has regressed.
 //!
-//! `bind_outer_scope` is not public:
+//! `materialize_wiring_from_outer` is not public:
 //!
 //! ```compile_fail
 //! use nbrs_variates::dsl::compile::compile_gk;
 //! let mut inner = compile_gk("inputs := (cycle)\n").unwrap();
 //! let outer = compile_gk("inputs := (cycle)\n").unwrap();
-//! inner.bind_outer_scope(&outer); // pub(crate) — must not compile
+//! inner.materialize_wiring_from_outer(&outer); // pub(crate) — must not compile
 //! ```
 //!
 //! `GkKernel::from_program` is not public:
@@ -110,7 +110,6 @@ pub use kernel::{
     ScopeKernel, SharedCellInScope,
 };
 pub use module::{BodyFragment, ScopeContract, ScopeModule};
-pub(crate) use module::WriteThroughBinding;
 pub use name::ChildName;
 pub use pull::{NamedPullConsumer, PullConsumer, RegisteredPullConsumer};
 pub use spec::{ExportClassification, ExportSpec, ImportClassification, ImportSpec};

@@ -22,7 +22,7 @@ pub(crate) enum EvalLifecycle {
     /// Foldable at GK compile time. No dependency on extern slots
     /// or cycle inputs.
     CompileConst,
-    /// Foldable at scope activation, after `bind_outer_scope`
+    /// Foldable at scope activation, after `materialize_wiring_from_outer`
     /// populates iteration externs. Effectively-const for the
     /// duration of one activation.
     ScopeInit,
@@ -134,7 +134,7 @@ pub struct GkProgram {
     /// specs reference them. Set by intermediate-scope synthesis
     /// (for_each / for_combinations / do-loop) when auto-cascading
     /// workload params or other inherited values: an `extern` is
-    /// declared so `bind_outer_scope` can wire the value, but the
+    /// declared so `materialize_wiring_from_outer` can wire the value, but the
     /// scope itself doesn't *own* the name. Display layers
     /// (scenario tree pre-map, TUI per-scope listing) use this
     /// to distinguish "names defined here" from "names visible
@@ -271,7 +271,7 @@ impl GkProgram {
     /// Used by `GkKernel::from_program` to auto-seed the
     /// kernel's `write_throughs` field, so the per-fiber
     /// re-instance path picks them up without a side channel.
-    pub fn write_throughs(&self) -> &[crate::kernel::KernelWriteThrough] {
+    pub(crate) fn write_throughs(&self) -> &[crate::kernel::KernelWriteThrough] {
         &self.write_throughs
     }
 
@@ -323,7 +323,7 @@ impl GkProgram {
 
     /// Mark `name` as an inherited (cascade-propagated) output —
     /// declared on this program only to flow the value through
-    /// to descendants via `bind_outer_scope`, not because this
+    /// to descendants via `materialize_wiring_from_outer`, not because this
     /// scope's own bindings or specs reference it.
     pub fn mark_inherited(&mut self, name: &str) {
         self.inherited_outputs.insert(name.to_string());
@@ -384,11 +384,18 @@ impl GkProgram {
             })
             .collect();
         // Add any outputs not in the declaration order (shouldn't happen,
-        // but defensive against manual assembler use)
-        for (name, &(ni, pi)) in output_map {
-            if !output_order.contains(name) {
-                list.push((name.clone(), ni, pi));
-            }
+        // but defensive against manual assembler use). Sort the
+        // tail by name so the ordering is deterministic across
+        // processes — HashMap iteration is per-process-randomised,
+        // and a deterministic tail keeps the canonical-program
+        // identity (and therefore checkpoint phase-hash) stable
+        // across resume invocations.
+        let mut tail: Vec<(&String, &(usize, usize))> = output_map.iter()
+            .filter(|(name, _)| !output_order.contains(*name))
+            .collect();
+        tail.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, &(ni, pi)) in tail {
+            list.push((name.clone(), ni, pi));
         }
         list
     }
@@ -443,6 +450,11 @@ impl GkProgram {
             node_clean: vec![false; node_count],
             inputs, input_defaults,
             shared_cells: vec![None; input_count],
+            // SRD-13f Push B.2: cells allocated lazily by
+            // `seed_output_cells` (called from kernel
+            // constructors). Start with an empty Vec — the
+            // seed pass sizes it to match output count.
+            output_cells: Vec::new(),
             input_scratch: vec![Value::None; max_inputs],
         }
     }
@@ -475,6 +487,11 @@ impl GkProgram {
             node_clean: vec![false; node_count],
             inputs, input_defaults,
             shared_cells: vec![None; input_count],
+            // SRD-13f Push B.2: cells allocated lazily by
+            // `seed_output_cells` (called from kernel
+            // constructors). Start with an empty Vec — the
+            // seed pass sizes it to match output count.
+            output_cells: Vec::new(),
             input_scratch: vec![Value::None; max_inputs],
         };
 
@@ -544,6 +561,10 @@ impl GkProgram {
     }
 
     /// Find the output index for a name (for building memoized getters).
+    pub(crate) fn output_list(&self) -> &[(String, usize, usize)] {
+        &self.output_list
+    }
+
     pub fn output_index(&self, name: &str) -> Option<usize> {
         self.output_list.iter().position(|(n, _, _)| n == name)
     }
@@ -557,7 +578,7 @@ impl GkProgram {
     /// constant equivalence. Two programs that produce the
     /// same `canonical_hash` are functionally equivalent at
     /// compile time; their runtime instances would differ
-    /// only by parent-bound values, which `bind_outer_scope`
+    /// only by parent-bound values, which `materialize_wiring_from_outer`
     /// handles. Cheap (one hash compare); doesn't allocate
     /// state. The pre-walker uses this to flatten one scope
     /// into another that materialises identical content.
@@ -978,6 +999,32 @@ impl GkProgram {
                 {
                     lifecycle[i] = EvalLifecycle::Dynamic;
                 }
+            }
+
+            // SRD-13f Push D / SRD-44: `volatile` is the
+            // author's explicit declaration that this wire's
+            // value is non-deterministic across invocations
+            // (e.g. a sequence-next fixture, an env-derived
+            // value) and MUST NOT be const-folded into the
+            // workload's identity. Mark the producing node as
+            // Dynamic so the fold pass leaves it alone — the
+            // canonical_hash then sees the node-type + wiring
+            // shape but never the value, keeping the workload
+            // identity stable across processes (resume-skip
+            // identity matching depends on this).
+            //
+            // Walk output_modifiers directly (not output_list)
+            // so volatile bindings DCE-pruned out of the
+            // exposed output list still mark their producing
+            // node Dynamic — the modifier was the author's
+            // intent at the source layer, independent of
+            // whether the binding survived DCE as a kernel
+            // output.
+            if self.output_modifiers.iter().any(|(name, m)| {
+                m.is_volatile()
+                    && self.output_map.get(name).map(|(ni, _)| *ni == i).unwrap_or(false)
+            }) {
+                lifecycle[i] = EvalLifecycle::Dynamic;
             }
         }
 

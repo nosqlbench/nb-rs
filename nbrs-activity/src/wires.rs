@@ -132,108 +132,54 @@ impl WireSource for GkKernel {
 /// surface as an unresolved-bindpoint error per SRD-68 I-1.
 pub struct CycleWires<'a> {
     kernel: std::sync::Mutex<&'a mut GkKernel>,
-    /// Optional chained fallback — typically the fiber's main
-    /// kernel. Consulted only when `kernel`'s `lookup`/`pull`
-    /// returns `None`, which surfaces when an op-template
-    /// references a phase-level binding that
-    /// [`crate::scope::build_op_template_scope_kernel`] couldn't
-    /// extern into the op-template program (the phase-scope
-    /// manifest wasn't visible at op-template build time). The
-    /// fallback ensures the single resolution-surface invariant
-    /// stays satisfied — adapter code still calls one
-    /// `wires.get`; the chain happens internally.
-    fallback: Option<std::sync::Mutex<&'a mut GkKernel>>,
 }
 
 impl<'a> CycleWires<'a> {
     /// Wrap a per-fiber kernel handle for cycle-time reads. The
     /// caller — typically the executor's cycle dispatch — holds
     /// the only outstanding borrow on the kernel for the duration
-    /// of this cycle.
+    /// of this cycle. Reads through `WireSource::get` resolve
+    /// every visible name through this kernel's local read API;
+    /// SRD-13f's construction-time wiring + per-cycle refresh
+    /// keeps the local view consistent with the owning scope's
+    /// kernel without external chain composition.
     pub fn new(kernel: &'a mut GkKernel) -> Self {
-        Self { kernel: std::sync::Mutex::new(kernel), fallback: None }
-    }
-
-    /// Wrap a primary per-op kernel with a fallback kernel for
-    /// names the primary doesn't carry. The fallback is the
-    /// fiber's main kernel — phase bindings folded into the
-    /// activity's source kernel land here even when the
-    /// op-template scope's program doesn't extern them.
-    pub fn with_fallback(primary: &'a mut GkKernel, fallback: &'a mut GkKernel) -> Self {
-        Self {
-            kernel: std::sync::Mutex::new(primary),
-            fallback: Some(std::sync::Mutex::new(fallback)),
-        }
+        Self { kernel: std::sync::Mutex::new(kernel) }
     }
 }
 
 impl<'a> WireSource for CycleWires<'a> {
     fn get(&self, name: &str) -> Option<Value> {
-        {
-            let mut k = self.kernel.lock().expect("CycleWires mutex poisoned");
-            if k.program().resolve_output(name).is_some() {
-                return Some(k.pull(name).clone());
-            }
-            if let Some(v) = k.lookup(name) {
-                return Some(v);
-            }
+        let mut k = self.kernel.lock().expect("CycleWires mutex poisoned");
+        // Output pull first: a name declared by the program's
+        // bindings is an output; the pull memoizes through the
+        // eval cone. Fall through to lookup for inputs and
+        // scope-init constants. No external chain composition —
+        // construction-time wiring set up every visible wire
+        // (SRD-13f).
+        if k.program().resolve_output(name).is_some() {
+            return Some(k.pull(name).clone());
         }
-        if let Some(fallback) = &self.fallback {
-            let mut fb = fallback.lock().expect("CycleWires fallback mutex poisoned");
-            if fb.program().resolve_output(name).is_some() {
-                return Some(fb.pull(name).clone());
-            }
-            return fb.lookup(name);
-        }
-        None
+        k.lookup(name)
     }
 
     fn names(&self) -> Box<dyn Iterator<Item = String> + '_> {
         let k = self.kernel.lock().expect("CycleWires mutex poisoned");
         let program = k.program();
-        let mut names: Vec<String> = program.output_names()
+        let outputs: Vec<String> = program.output_names()
             .iter().map(|s| s.to_string()).collect();
-        for input in program.input_names() {
-            let s = input.to_string();
-            if !names.contains(&s) {
-                names.push(s);
-            }
-        }
-        if let Some(fallback) = &self.fallback {
-            let fb = fallback.lock().expect("CycleWires fallback mutex poisoned");
-            let fp = fb.program();
-            for n in fp.output_names() {
-                let s = n.to_string();
-                if !names.contains(&s) {
-                    names.push(s);
-                }
-            }
-            for n in fp.input_names() {
-                let s = n.to_string();
-                if !names.contains(&s) {
-                    names.push(s);
-                }
-            }
-        }
-        Box::new(names.into_iter())
+        let inputs_only: Vec<String> = program.input_names()
+            .iter()
+            .filter(|n| !outputs.contains(n))
+            .cloned()
+            .collect();
+        Box::new(outputs.into_iter().chain(inputs_only))
     }
 
     fn advance(&self, coord: u64) {
-        // Mutate both kernels' coord inputs so subsequent reads
-        // (primary or fallback) reflect the advanced coord.
-        // Single-fiber-per-cycle ownership means both Mutexes
-        // are uncontended.
-        {
-            let mut k = self.kernel.lock().expect("CycleWires mutex poisoned");
-            if k.program().coord_count() > 0 {
-                k.state().set_inputs(&[coord]);
-            }
-        }
-        if let Some(fallback) = &self.fallback {
-            let mut fb = fallback.lock().expect("CycleWires fallback mutex poisoned");
-            if fb.program().coord_count() > 0 {
-                fb.state().set_inputs(&[coord]);
-            }
+        let mut k = self.kernel.lock().expect("CycleWires mutex poisoned");
+        if k.program().coord_count() > 0 {
+            k.state().set_inputs(&[coord]);
         }
     }
 }
@@ -730,7 +676,7 @@ mod tests {
              extern optimize_for: String\n",
         ).unwrap();
         // Populate the input slot the way the phase kernel does
-        // after `bind_outer_scope` from the for_each bound_kernel.
+        // after `materialize_wiring_from_outer` from the for_each bound_kernel.
         let opt_idx = parent.program().find_input("optimize_for")
             .expect("optimize_for input slot");
         parent.state().set_input(opt_idx, Value::Str("RECALL".into()));
@@ -764,7 +710,7 @@ mod tests {
     fn extern_decl_only_produces_input_no_output() {
         // Diagnostic: an `extern <name>: <type>` declaration by
         // itself creates an INPUT but does NOT publish a matching
-        // output. So `bind_outer_scope` (which walks outer's
+        // output. So `materialize_wiring_from_outer` (which walks outer's
         // outputs) wouldn't find this name and wouldn't propagate
         // it to descendants. The synthesis pipeline avoids this by
         // also calling `mark_inherited_outputs` on the kernel
@@ -774,7 +720,7 @@ mod tests {
         // surprised — `cycle_wires_resolves_iter_var_through_subscope_chain`
         // passes only because the `String` extern's auto-passthrough
         // output (added by the compiler when the name appears in the
-        // body) gives bind_outer_scope something to walk. With ONLY
+        // body) gives materialize_wiring_from_outer something to walk. With ONLY
         // an extern decl, there's no body reference, no auto-passthrough,
         // and the chain breaks.
         use nbrs_variates::dsl::compile::compile_gk;

@@ -868,7 +868,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // (`crate::params::build_workload_params_kernel`) installs
     // every workload param as a `final <name> := <literal>`
     // binding on the workload-root kernel. Descendant scopes
-    // see those bindings via `bind_outer_scope` + standard GK
+    // see those bindings via `materialize_wiring_from_outer` + standard GK
     // scope-chain lookup. The legacy
     // `rewrite_workload_param_idents_in_bindings` text pass
     // (which substituted `{name}` → literal value before
@@ -895,9 +895,23 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // GK's standard string-interpolation handles `{name}` at
     // compile time against the `final <name> := <literal>`
     // bindings that workload-params injection installs (M3.6 path).
+    // SRD-13f Push D: workload-level `bindings:` reach the
+    // workload-root kernel ONLY through this explicit channel
+    // now. The parser no longer merges workload bindings into
+    // ops (`nbrs_workload::parse::inline_block_sugar_into_op`
+    // is the only remaining parser-time inlining; it operates
+    // on block-level YAML sugar, not workload-level). Both
+    // BindingsDef forms route through here:
+    //   - GkSource: pass through verbatim.
+    //   - Map: legacy semicolon-chain syntax translated to GK
+    //     source lines via `legacy_chain_map_to_gk_lines`.
     let workload_level_gk: Option<String> = match &workload.bindings {
         nbrs_workload::model::BindingsDef::GkSource(s) if !s.trim().is_empty()
             => Some(s.clone()),
+        nbrs_workload::model::BindingsDef::Map(m) if !m.is_empty() => {
+            Some(crate::bindings::legacy_chain_map_to_gk_lines(m)
+                .map_err(|e| format!("workload-level bindings: {e}"))?)
+        }
         _ => None,
     };
 
@@ -948,7 +962,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // canonical home for every declared workload parameter —
     // one `final <name> := <literal>` per param, compiled into
     // a stand-alone kernel whose outputs every descendant
-    // `bind_outer_scope`s through. Replaces the prior approach
+    // `materialize_wiring_from_outer`s through. Replaces the prior approach
     // of patching params into multiple places (per-op binding
     // text substitution, per-kernel `final` injection in
     // `build_scope`). See `nbrs-activity::params`.
@@ -969,6 +983,18 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // to the other. Sharing the Arc keeps the cell handles
     // identical end-to-end: detect_dialect's writes reach
     // await_index's reads through the same Mutex<Value>.
+    // SRD-13f Push D: the workload-root kernel still owns the
+    // canonical workload-scope bindings, but descendant kernels
+    // (phase kernel, op-template kernel) carry a cascade copy
+    // of the workload-level GK source as local matter — so
+    // fiber.main_kernel evaluates dynamic workload bindings
+    // (e.g. cycle-dependent) on its own state per cycle. See
+    // `compile_from_scope` (and its callers in
+    // `executor.rs::run_phase`) for the cascade-copy plumbing.
+    // No eager pull at workload-root construction: that would
+    // (a) fire side-effecting nodes like `throw_at` outside the
+    // phase cascade context, and (b) cache stale values for
+    // cycle-dependent bindings.
     let workload_canonical_kernel: std::sync::Arc<nbrs_variates::kernel::GkKernel> =
         std::sync::Arc::new(
             compile_bindings_with_libs_excluding(
@@ -1286,7 +1312,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         // for_combinations nodes. Each kernel re-exports its
         // iteration variables and any referenced inherited
         // values as outputs (`final x := x` passthrough), so
-        // children's standard `bind_outer_scope(parent)`
+        // children's standard `materialize_wiring_from_outer(parent)`
         // chains inheritance through arbitrary nesting depth
         // — no caller-side scope-tree walking for name
         // resolution at runtime.
@@ -1303,6 +1329,16 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 idx: crate::scope_tree::ScopeNodeIdx,
                 iter_vars: Vec<String>,
                 spec_exprs: Vec<String>,
+                /// SRD-13f Push E: phase-level `bindings:` folded
+                /// into the for_each scope kernel when the phase
+                /// declares both `for_each:` AND `bindings:`. The
+                /// single install at the phase node materializes
+                /// one kernel carrying both the iter-var
+                /// declarations AND the phase-level bindings.
+                /// Empty for pure-comprehension scope nodes
+                /// (scenario-level `for_each:`) and for phase
+                /// nodes without own bindings.
+                phase_bindings: nbrs_workload::model::BindingsDef,
             },
             DoLoop {
                 idx: crate::scope_tree::ScopeNodeIdx,
@@ -1318,6 +1354,18 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             OpTemplate {
                 idx: crate::scope_tree::ScopeNodeIdx,
                 op: nbrs_workload::model::ParsedOp,
+            },
+            /// SRD-13d Phase 9 — install a phase-scope kernel
+            /// for a phase that declares its own `bindings:`
+            /// block (and no `for_each:` — that case is owned
+            /// by the for_each install spec at the same node).
+            /// Phases without bindings AND without for_each
+            /// emit no install spec; the closure-lifetime
+            /// kernel reference is the parent's by walker
+            /// fall-through.
+            PhaseBindings {
+                idx: crate::scope_tree::ScopeNodeIdx,
+                bindings: nbrs_workload::model::BindingsDef,
             },
         }
         let install_specs: Vec<InstallSpec> = scope_tree.iter_dfs()
@@ -1343,6 +1391,12 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         idx,
                         iter_vars: vars,
                         spec_exprs: specs,
+                        // Scope-tree Comprehension nodes (scenario-
+                        // level `for_each:`) carry no phase-level
+                        // bindings; the wrapping phase has its own
+                        // scope-tree node and its own install spec
+                        // (PhaseBindings or another ForComprehension).
+                        phase_bindings: nbrs_workload::model::BindingsDef::default(),
                     })
                 }
                 crate::scope_tree::ScopeKind::DoWhile { condition, counter } => {
@@ -1360,32 +1414,58 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     })
                 }
                 crate::scope_tree::ScopeKind::Phase { name } => {
-                    // Phase-level for_each: if this phase
-                    // declares `for_each: "var in expr"`, treat
-                    // it as a single-clause tuple comprehension.
-                    // The Phase scope-tree node hosts the
-                    // synthesized kernel; the executor's Phase
-                    // handler routes through dispatch_comprehension
-                    // with TerminalAction::Phase.
-                    phases.get(name.as_str())
-                        .and_then(|p| p.for_each.as_ref())
-                        .map(|spec| {
-                            // Parse "var in expr"; if malformed,
-                            // synthesis produces an empty kernel
-                            // and the runtime reports the proper
-                            // error.
-                            let (var, expr) = if let Some(pos) = spec.find(" in ") {
-                                let (lhs, rhs) = spec.split_at(pos);
-                                (lhs.trim().to_string(), rhs[" in ".len()..].trim().to_string())
-                            } else {
-                                (String::new(), spec.clone())
-                            };
-                            InstallSpec::ForComprehension {
-                                idx,
-                                iter_vars: vec![var],
-                                spec_exprs: vec![expr],
-                            }
+                    // Phase-scope kernel installation, matter-gated
+                    // per SRD-13d / SRD-67. Three cases:
+                    //
+                    //   1. Phase declares `for_each:` — treat as
+                    //      a single-clause tuple comprehension.
+                    //      The for_each scope owns the phase
+                    //      node's kernel; phase `bindings:` (if
+                    //      also present) need to fold into that
+                    //      scope's matter (deferred — the legacy
+                    //      parser-merge path keeps the bindings
+                    //      reachable via op-bindings until the
+                    //      for_each-with-bindings synthesizer
+                    //      lands).
+                    //
+                    //   2. Phase declares only `bindings:` — own
+                    //      subscope from those bindings layered
+                    //      over the parent kernel.
+                    //
+                    //   3. Neither — no install spec; phase
+                    //      scope's closure inherits the parent's
+                    //      kernel reference via the walker's
+                    //      fall-through (the matter-gated
+                    //      pass-through).
+                    let phase = phases.get(name.as_str())?;
+                    if let Some(spec) = phase.for_each.as_ref() {
+                        let (var, expr) = if let Some(pos) = spec.find(" in ") {
+                            let (lhs, rhs) = spec.split_at(pos);
+                            (lhs.trim().to_string(), rhs[" in ".len()..].trim().to_string())
+                        } else {
+                            (String::new(), spec.clone())
+                        };
+                        // SRD-13f Push E: phases declaring both
+                        // `for_each:` and `bindings:` fold the
+                        // bindings into the for_each scope kernel
+                        // (one kernel, one install). Pure-for_each
+                        // phases (no bindings) pass an empty
+                        // `BindingsDef`, which `synthesize_for_each_scope`
+                        // treats as no-op.
+                        Some(InstallSpec::ForComprehension {
+                            idx,
+                            iter_vars: vec![var],
+                            spec_exprs: vec![expr],
+                            phase_bindings: phase.bindings.clone(),
                         })
+                    } else if !phase.bindings.is_empty() {
+                        Some(InstallSpec::PhaseBindings {
+                            idx,
+                            bindings: phase.bindings.clone(),
+                        })
+                    } else {
+                        None
+                    }
                 }
                 crate::scope_tree::ScopeKind::OpTemplate { name } => {
                     // SRD-13d Phase 9: install a per-op kernel
@@ -1434,6 +1514,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 InstallSpec::ForComprehension { idx, .. } => *idx,
                 InstallSpec::DoLoop { idx, .. } => *idx,
                 InstallSpec::OpTemplate { idx, .. } => *idx,
+                InstallSpec::PhaseBindings { idx, .. } => *idx,
             };
             // Nearest installed ancestor — skips Scenario /
             // IncludedScenario nodes that don't install kernels
@@ -1457,9 +1538,26 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             );
 
             let result = match install_spec {
-                InstallSpec::ForComprehension { iter_vars, spec_exprs, .. } => {
+                InstallSpec::ForComprehension { iter_vars, spec_exprs, phase_bindings, .. } => {
                     let bindings: Vec<(String, String)> = iter_vars.iter().cloned()
                         .zip(spec_exprs.iter().cloned()).collect();
+                    // SRD-13f Push E: translate phase-level
+                    // `bindings:` into the GK source the
+                    // for_each synthesiser folds in. GkSource
+                    // form passes verbatim; Map form serialises
+                    // to `name := expr\n` lines.
+                    let phase_bindings_source = match phase_bindings {
+                        nbrs_workload::model::BindingsDef::GkSource(s)
+                            if !s.trim().is_empty() => Some(s),
+                        nbrs_workload::model::BindingsDef::Map(m) if !m.is_empty() => {
+                            let mut out = String::new();
+                            for (name, expr) in &m {
+                                out.push_str(&format!("{name} := {expr}\n"));
+                            }
+                            Some(out)
+                        }
+                        _ => None,
+                    };
                     nbrs_variates::comprehension::synthesize_for_each_scope(
                         &bindings,
                         &parent_manifest,
@@ -1469,6 +1567,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         workload_dir_owned.as_deref(),
                         strict,
                         &context,
+                        phase_bindings_source.as_deref(),
                     )
                 }
                 InstallSpec::DoLoop { counter, condition, .. } => {
@@ -1488,10 +1587,31 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     // SRD-13d Phase 9 — synthesize the op-
                     // template kernel layered over the parent.
                     // Includes op-level bindings + cascaded
-                    // parent externs; bind_outer_scope chains
+                    // parent externs; materialize_wiring_from_outer chains
                     // values in at runtime.
                     crate::scope::build_op_template_scope_kernel(
                         &op,
+                        &parent_manifest,
+                        &parent_kernel,
+                        &workload_params,
+                        gk_lib_paths.clone(),
+                        workload_dir_owned.as_deref(),
+                        strict,
+                        &context,
+                    )
+                }
+                InstallSpec::PhaseBindings { bindings, .. } => {
+                    // SRD-13d Phase 9 — synthesize the phase-
+                    // scope kernel from the phase's `bindings:`
+                    // block, layered over the parent. Phase
+                    // outputs (e.g. `load`, `latency_curve`)
+                    // appear in the phase kernel's manifest so
+                    // descendant op-template scopes can extern
+                    // them through the standard cascade. No
+                    // legacy fallback needed — the GK chain is
+                    // the single resolution surface.
+                    crate::scope::build_phase_scope_kernel(
+                        &bindings,
                         &parent_manifest,
                         &parent_kernel,
                         &workload_params,
@@ -1736,6 +1856,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 wrappers_override: workload_wrappers_override.clone(),
                 wrap_default_order: cli_wrap_default_order.clone(),
                 program: program.clone(),
+                workload_level_gk: workload_level_gk.clone(),
                 gk_lib_paths: gk_lib_paths.clone(),
                 workload_dir: workload_dir.map(|p| p.to_path_buf()),
                 strict,
@@ -1764,7 +1885,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 // scopes (saving/restoring at each recursion
                 // boundary). Leaf phases at the workload level
                 // therefore also flow through the standard GK
-                // chain (`bind_outer_scope` from workload kernel)
+                // chain (`materialize_wiring_from_outer` from workload kernel)
                 // rather than the legacy flat
                 // `outer_manifest` / `outer_scope_values` data
                 // path.
@@ -2662,11 +2783,41 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
         scan_op(op, &mut refs);
     }
 
+    // SRD-13f Push D: workload-level `bindings:` are no longer
+    // folded into ops at YAML parse time — they live on
+    // `workload.bindings` and reach descendants via the GK
+    // kernel chain. The unused-param validator must scan them
+    // directly here, otherwise a workload param consumed only
+    // from workload-level bindings (`row := char_buf(..., cols)`)
+    // looks unreferenced.
+    match &workload.bindings {
+        nbrs_workload::model::BindingsDef::GkSource(s) => {
+            scan_param_refs(s, &mut refs);
+            scan_expression_idents(s, &mut refs.direct);
+        }
+        nbrs_workload::model::BindingsDef::Map(m) => {
+            for v in m.values() { scan_param_refs(v, &mut refs); }
+        }
+    }
+
     // Scan phases
     for phase in workload.phases.values() {
         if let Some(s) = &phase.cycles { scan_param_refs(s, &mut refs); }
         if let Some(s) = &phase.concurrency { scan_param_refs(s, &mut refs); }
         if let Some(s) = &phase.for_each { scan_param_refs(s, &mut refs); }
+        // SRD-13f Push D parallel: phase-level `bindings:` also
+        // sit on their own scope post-Push-D; scan for param
+        // refs so a phase-binding-only consumer doesn't falsely
+        // trip the unused-param check.
+        match &phase.bindings {
+            nbrs_workload::model::BindingsDef::GkSource(s) => {
+                scan_param_refs(s, &mut refs);
+                scan_expression_idents(s, &mut refs.direct);
+            }
+            nbrs_workload::model::BindingsDef::Map(m) => {
+                for v in m.values() { scan_param_refs(v, &mut refs); }
+            }
+        }
         for op in &phase.ops {
             scan_op(op, &mut refs);
         }

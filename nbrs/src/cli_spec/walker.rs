@@ -285,21 +285,6 @@ mod tests {
 
     #[test]
     fn descends_into_subcommand() {
-        let root = Command {
-            name: "nbrs",
-            help: "",
-            category: Category::Tools,
-            level: Level::Secondary,
-            flags: Vec::new(),
-            positionals: Vec::new(),
-            subcommands: vec![cmd_leaf("metrics",
-                vec![cmd_leaf("list", vec![flag_value("--db")]).flags.remove(0)])],
-            handler: None,
-            raw_args: false,
-            completion_override: None,
-        };
-        // Above is wrong shape (subcommand should be a Command, not a Flag);
-        // build it correctly:
         let list = cmd_leaf("list", vec![flag_value("--db")]);
         let metrics = Command {
             name: "metrics", help: "",

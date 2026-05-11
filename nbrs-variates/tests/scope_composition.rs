@@ -4,7 +4,7 @@
 //! Integration tests for GK scope composition (sysref 16).
 //!
 //! Tests the GK API primitives that enable scope composition:
-//! bind_outer_scope, scope_values, shared/final modifiers,
+//! materialize_wiring_from_outer, scope_values, shared/final modifiers,
 //! and extern input wiring.
 
 use nbrs_variates::dsl::compile::compile_gk;
@@ -14,11 +14,11 @@ use nbrs_variates::kernel::Construction;
 use nbrs_variates::subcontext::GkMatter;
 
 // =========================================================================
-// bind_outer_scope: basic wiring
+// materialize_wiring_from_outer: basic wiring
 // =========================================================================
 
 #[test]
-fn bind_outer_scope_wires_constants() {
+fn materialize_wiring_from_outer_wires_constants() {
     let outer = compile_gk(r#"
         inputs := (cycle)
         dim := 128
@@ -39,7 +39,7 @@ fn bind_outer_scope_wires_constants() {
 }
 
 #[test]
-fn bind_outer_scope_only_matches_by_name() {
+fn materialize_wiring_from_outer_only_matches_by_name() {
     let outer = compile_gk(r#"
         inputs := (cycle)
         dim := 128
@@ -58,7 +58,7 @@ fn bind_outer_scope_only_matches_by_name() {
 }
 
 #[test]
-fn bind_outer_scope_does_not_affect_coordinates() {
+fn materialize_wiring_from_outer_does_not_affect_coordinates() {
     let outer = compile_gk(r#"
         inputs := (cycle)
         dim := 128
@@ -96,7 +96,7 @@ fn scope_values_extracts_bound_inputs() {
         extern dim: u64
         extern count: u64
     "#).unwrap().program().clone();
-    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
+    let inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
 
     let values = inner.scope_values();
     // Should have entries for dim and count (and possibly cycle default)
@@ -116,7 +116,7 @@ fn scope_values_empty_when_no_externs() {
         inputs := (cycle)
         h := hash(cycle)
     "#).unwrap().program().clone();
-    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
+    let inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
 
     // Inner has no externs, so scope_values only has coordinate defaults
     let values = inner.scope_values();
@@ -146,12 +146,12 @@ fn inner_scope_shadows_outer_binding() {
     "#).unwrap();
     assert_eq!(inner.get_constant("dim").unwrap().as_u64(), 256);
 
-    // Inner scope has no extern for dim — bind_outer_scope won't wire it
+    // Inner scope has no extern for dim — materialize_wiring_from_outer won't wire it
     let inner2_program = compile_gk(r#"
         inputs := (cycle)
         dim := 256
     "#).unwrap().program().clone();
-    let mut inner2 = outer.subscope(GkMatter::builder().program(inner2_program).build().unwrap()).unwrap();
+    let inner2 = outer.subscope(GkMatter::builder().program(inner2_program).build().unwrap()).unwrap();
     // dim is still 256 (inner definition), not 128 (outer)
     assert_eq!(inner2.get_constant("dim").unwrap().as_u64(), 256);
 }
@@ -442,7 +442,7 @@ fn extern_kernel_has_source() {
 
 // All read-side checks go through `lookup()`, the canonical
 // two-tier read on `GkKernel`. That exercises the same path
-// that `interpolate_via_kernel`, `bind_outer_scope`, and
+// that `interpolate_via_kernel`, `materialize_wiring_from_outer`, and
 // `propagate_shared_to` use, so a regression in any of them
 // would surface here too.
 
@@ -514,7 +514,7 @@ fn extern_default_visible_through_passthrough_output() {
     // The auto-passthrough output named after the extern should
     // surface the default value through `lookup` (the canonical
     // two-tier read). Any caller using `interpolate_via_kernel`
-    // or `bind_outer_scope` against this kernel sees the default.
+    // or `materialize_wiring_from_outer` against this kernel sees the default.
     let kernel = compile_gk(r#"
         inputs := (cycle)
         extern budget: u64 = 100
@@ -612,7 +612,7 @@ fn extern_default_bool_false_works() {
 // Per SRD-16 §"Mutability Rules: Shared Mutable", a literal-init
 // `shared` binding gives outer scope a real input slot AND a
 // passthrough output. Outer's construction auto-creates a
-// SharedCell on the slot; inner `bind_outer_scope` shares the
+// SharedCell on the slot; inner `materialize_wiring_from_outer` shares the
 // cell so writes from any kernel propagate to the others.
 
 #[test]
@@ -675,7 +675,7 @@ fn shared_two_inners_see_each_others_writes_via_cell() {
         extern budget: u64
     "#).unwrap().program().clone();
     let mut a = outer.subscope(GkMatter::builder().program(a_program).build().unwrap()).unwrap();
-    let mut b = outer.subscope(GkMatter::builder().program(b_program).build().unwrap()).unwrap();
+    let b = outer.subscope(GkMatter::builder().program(b_program).build().unwrap()).unwrap();
 
     // Both start at 100 — `lookup` reads the cell.
     assert_eq!(a.lookup("budget").unwrap().as_u64(), 100);

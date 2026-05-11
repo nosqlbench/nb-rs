@@ -28,7 +28,7 @@
 //!   injections for workload params the spec interpolates, etc.
 //! - The **executor** (`nbrs-activity::executor`) needs to
 //!   enumerate the iteration tuples, drive the per-iteration
-//!   `bind_outer_scope`, and run the children.
+//!   `materialize_wiring_from_outer`, and run the children.
 //!
 //! Each subsystem currently carries its own representation of
 //! the same shape (`ScenarioNode::ForEach{,Combinations,Union}`,
@@ -65,8 +65,10 @@ pub use eval::{
     pre_evaluate_clause, value_to_gk_type_name,
 };
 pub use synthesis::{
-    collect_leaf_placeholders, format_workload_param_as_gk_literal,
-    iterate, propagate_parent_inputs, scan_one, synthesize_for_each_scope,
+    collect_leaf_placeholders, format_value_as_gk_literal,
+    format_workload_param_as_gk_literal,
+    iterate, propagate_parent_inputs, scan_one,
+    synthesize_for_each_iteration, synthesize_for_each_scope,
     workload_param_type_name, ComprehensionIter,
 };
 pub use order::{apply_order, Tuple};

@@ -44,20 +44,29 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
     // Stage 4: Parse ops from blocks or top-level
     let mut all_ops = Vec::new();
 
+    // SRD-13f Push D: workload-level `bindings:` live ONLY on
+    // `Workload.bindings` and compile directly to the
+    // workload-root GK kernel. They no longer fold into ops at
+    // parse time — descendant ops resolve workload-level wires
+    // through the GK kernel chain (workload-root → ... → op
+    // kernel) via the SRD-13f cell-on-outputs cascade. So we
+    // pass an empty `BindingsDef` to every op-producing path
+    // here: block-level YAML bindings (parse_blocks) are the
+    // only remaining parser-time "sugar" that expands into ops.
     if let Some(blocks_val) = obj.get("blocks") {
-        parse_blocks(blocks_val, &doc_bindings, &doc_params, &doc_tags, &mut all_ops)?;
+        parse_blocks(blocks_val, &doc_params, &doc_tags, &mut all_ops)?;
     }
 
-    // Also check for top-level ops (no blocks)
+    // Top-level ops (no blocks): no block sugar to inline.
     for key in ["ops", "op", "operations", "statements", "statement"] {
         if let Some(ops_val) = obj.get(key)
             && obj.get("blocks").is_none() {
-                parse_ops_field(ops_val, "block0", &doc_bindings, &doc_params, &doc_tags, &mut all_ops)?;
+                parse_ops_field(ops_val, "block0", &BindingsDef::default(), &doc_params, &doc_tags, &mut all_ops)?;
             }
     }
 
     // Stage 5: Parse phases
-    let (mut phases, phase_order) = parse_phases(obj.get("phases"), &doc_bindings, &doc_params, &doc_tags)?;
+    let (mut phases, phase_order) = parse_phases(obj.get("phases"), &doc_params, &doc_tags)?;
 
     // Stage 6: Auto-tag all ops (top-level and phase inline ops)
     for op in &mut all_ops {
@@ -841,7 +850,6 @@ fn parse_combination_specs(val: &JVal) -> Vec<(String, String)> {
 /// Returns the phase map and a Vec preserving YAML definition order.
 fn parse_phases(
     val: Option<&JVal>,
-    doc_bindings: &BindingsDef,
     doc_params: &HashMap<String, JVal>,
     doc_tags: &HashMap<String, String>,
 ) -> Result<(HashMap<String, WorkloadPhase>, Vec<String>), String> {
@@ -882,18 +890,16 @@ fn parse_phases(
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // Phase-level YAML `bindings:` block. Captured raw on
-        // the phase AST so SRD-13d's `HasGkMatter` impl can
-        // classify it correctly and a future runtime can layer
-        // a phase kernel between workload and op kernels.
+        // SRD-13f Push D: phase-level AND workload-level
+        // `bindings:` are captured on their own scope's AST
+        // only — they do NOT fold into per-op bindings.
+        // Workload bindings live on `Workload.bindings` and
+        // compile to the workload-root kernel; phase bindings
+        // live on `WorkloadPhase.bindings` and compile to the
+        // phase kernel. Both reach ops through the GK kernel
+        // chain (cell-on-outputs cascade, SRD-13f Push B.2),
+        // not parser-time concat.
         let phase_bindings_only = extract_bindings(phase_obj.get("bindings"));
-        // Legacy merge: combine workload + phase bindings into
-        // the bindings the parser hands to each op. SRD-13d
-        // phases 3–9 will remove this merge in favour of
-        // proper kernel chaining; today's runtime still
-        // expects per-op bindings to carry phase-level
-        // declarations.
-        let phase_bindings = merge_bindings(doc_bindings, &phase_bindings_only);
 
         // Parse inline ops if present
         let mut inline_ops = Vec::new();
@@ -904,7 +910,11 @@ fn parse_phases(
                     t.insert("phase".to_string(), phase_name.clone());
                     t
                 };
-                parse_ops_field(ops_val, phase_name, &phase_bindings, doc_params, &phase_tags, &mut inline_ops)?;
+                // Phase inline ops carry zero "outer YAML
+                // bindings sugar" — they're directly under the
+                // phase, no block wrapper. Workload + phase
+                // bindings reach them via the GK kernel chain.
+                parse_ops_field(ops_val, phase_name, &BindingsDef::default(), doc_params, &phase_tags, &mut inline_ops)?;
                 break;
             }
         }
@@ -999,7 +1009,6 @@ fn parse_phases(
 
 fn parse_blocks(
     blocks_val: &JVal,
-    doc_bindings: &BindingsDef,
     doc_params: &HashMap<String, JVal>,
     doc_tags: &HashMap<String, String>,
     all_ops: &mut Vec<ParsedOp>,
@@ -1007,7 +1016,7 @@ fn parse_blocks(
     match blocks_val {
         JVal::Object(map) => {
             for (block_name, block_val) in map {
-                parse_single_block(block_name, block_val, doc_bindings, doc_params, doc_tags, all_ops)?;
+                parse_single_block(block_name, block_val, doc_params, doc_tags, all_ops)?;
             }
         }
         JVal::Array(arr) => {
@@ -1016,7 +1025,7 @@ fn parse_blocks(
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| format!("block{}", i + 1));
-                parse_single_block(&name, block_val, doc_bindings, doc_params, doc_tags, all_ops)?;
+                parse_single_block(&name, block_val, doc_params, doc_tags, all_ops)?;
             }
         }
         _ => {}
@@ -1027,7 +1036,6 @@ fn parse_blocks(
 fn parse_single_block(
     block_name: &str,
     block_val: &JVal,
-    doc_bindings: &BindingsDef,
     doc_params: &HashMap<String, JVal>,
     doc_tags: &HashMap<String, String>,
     all_ops: &mut Vec<ParsedOp>,
@@ -1037,8 +1045,14 @@ fn parse_single_block(
         None => return Ok(()),
     };
 
-    // Merge block-level properties with doc-level (block overrides doc)
-    let block_bindings = merge_bindings(doc_bindings, &extract_bindings(obj.get("bindings")));
+    // SRD-13f Push D: workload-level `bindings:` no longer
+    // merge into block-level. Blocks are YAML organizational
+    // sugar (not a GK scope), so a block's own `bindings:` is
+    // *syntactic sugar* expanded into each enclosed op's
+    // `op.bindings` at parse time — it does not cross any
+    // kernel boundary, and the only "merge" left is this
+    // block-sugar → op inlining inside `normalize_op_object`.
+    let block_bindings = extract_bindings(obj.get("bindings"));
     let block_params = merge_value_maps(doc_params, &extract_value_map(obj.get("params")));
     let mut block_tags = merge_string_maps(doc_tags, &extract_string_map(obj.get("tags")));
     block_tags.insert("block".to_string(), block_name.to_string());
@@ -1236,8 +1250,15 @@ fn normalize_op_object(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    // Extract recognized fields
-    let mut op_bindings = merge_bindings(parent_bindings, &extract_bindings(map.get("bindings")));
+    // SRD-13f Push D: workload-level and phase-level
+    // `bindings:` no longer touch ops at parse time — they
+    // compile to their own kernels and reach ops via the GK
+    // kernel chain. `parent_bindings` here carries ONLY
+    // block-level YAML sugar (blocks are not a GK scope; their
+    // `bindings:` field is a copy-paste reducer over each
+    // enclosed op's bindings). The expansion below is the only
+    // remaining parser-time inlining.
+    let mut op_bindings = inline_block_sugar_into_op(parent_bindings, &extract_bindings(map.get("bindings")));
     let op_params = merge_value_maps(parent_params, &extract_value_map(map.get("params")));
     let mut op_tags = merge_string_maps(parent_tags, &extract_string_map(map.get("tags")));
     op_tags.insert("block".to_string(), block_name.to_string());
@@ -1742,18 +1763,31 @@ fn extract_bindings(val: Option<&JVal>) -> BindingsDef {
     }
 }
 
-/// Merge bindings from parent and child levels.
+/// SRD-13f Push D: inline a block's YAML-level `bindings:`
+/// sugar into one of its enclosed ops.
 ///
-/// GkSource at child level completely replaces parent (no merging).
-/// Map at child level merges with parent map at key level.
-/// If parent is GkSource and child is empty, parent is inherited.
-fn merge_bindings(parent: &BindingsDef, child: &BindingsDef) -> BindingsDef {
-    match (parent, child) {
-        // Child GK source replaces everything
+/// Blocks are not a GK scope — they're YAML authoring sugar
+/// (named groups for tag-filtering + shared defaults). A
+/// block-level `bindings:` field is *syntactic sugar* meaning
+/// "every op underneath has these bindings as part of its own
+/// op-level bindings." This helper does that expansion at
+/// parse time.
+///
+/// Semantics (preserves prior `merge_bindings` shape for the
+/// only call site that still uses it):
+/// - The op's own GkSource fully shadows the block's sugar
+///   (the op declares its full binding set explicitly).
+/// - Op Map merges with block Map (op keys override block).
+/// - Empty op inherits the block sugar verbatim.
+///
+/// No cross-scope semantics: workload-level and phase-level
+/// `bindings:` no longer flow through this helper. They reach
+/// ops via the GK kernel chain.
+fn inline_block_sugar_into_op(block_sugar: &BindingsDef, op_own: &BindingsDef) -> BindingsDef {
+    match (block_sugar, op_own) {
         (_, BindingsDef::GkSource(s)) if !s.trim().is_empty() => {
             BindingsDef::GkSource(s.clone())
         }
-        // Child map merges with parent map
         (BindingsDef::Map(p), BindingsDef::Map(c)) => {
             let mut merged = p.clone();
             for (k, v) in c {
@@ -1761,9 +1795,7 @@ fn merge_bindings(parent: &BindingsDef, child: &BindingsDef) -> BindingsDef {
             }
             BindingsDef::Map(merged)
         }
-        // Empty child inherits parent
-        (_, BindingsDef::Map(c)) if c.is_empty() => parent.clone(),
-        // Otherwise child wins
+        (_, BindingsDef::Map(c)) if c.is_empty() => block_sugar.clone(),
         (_, child) => child.clone(),
     }
 }
@@ -2127,7 +2159,10 @@ ops:
 
     #[test]
     fn parse_gk_source_bindings() {
-        // Native GK grammar: explicit named wires, full DAG
+        // SRD-13f Push D: workload-level `bindings:` live on
+        // `Workload.bindings` and reach ops via the GK kernel
+        // chain at runtime — they are NOT folded into per-op
+        // bindings at parse time.
         let yaml = r#"
 bindings: |
   // Explicit wiring — every intermediate is named
@@ -2143,27 +2178,34 @@ bindings: |
 ops:
   insert: "INSERT INTO users (id, code) VALUES ({user_id}, '{code}');"
 "#;
-        let ops = parse_ops(yaml).unwrap();
-        assert_eq!(ops.len(), 1);
-        match &ops[0].bindings {
+        let workload = parse_workload(yaml, &HashMap::new()).unwrap();
+        match &workload.bindings {
             BindingsDef::GkSource(src) => {
                 assert!(src.contains("inputs := (cycle)"));
                 assert!(src.contains("user_id := mod(h, 1000000)"));
             }
-            BindingsDef::Map(_) => panic!("expected GkSource, got Map"),
+            BindingsDef::Map(_) => panic!("expected GkSource at workload level, got Map"),
         }
+        assert_eq!(workload.ops.len(), 1);
+        // Op carries no workload bindings — they reach it via
+        // the GK kernel chain, not via parse-time merge.
+        assert!(workload.ops[0].bindings.is_empty());
     }
 
     #[test]
     fn parse_map_bindings_still_works() {
+        // SRD-13f Push D: Map-form workload bindings live on
+        // `Workload.bindings`, not on per-op bindings.
         let yaml = r#"
 bindings:
   id: "Hash(); Mod(100)"
 ops:
   op1: "SELECT * FROM t WHERE id={id};"
 "#;
-        let ops = parse_ops(yaml).unwrap();
-        assert_eq!(ops[0].bindings.as_map()["id"], "Hash(); Mod(100)");
+        let workload = parse_workload(yaml, &HashMap::new()).unwrap();
+        assert_eq!(workload.bindings.as_map()["id"], "Hash(); Mod(100)");
+        // The op itself carries no merged-in workload bindings.
+        assert!(workload.ops[0].bindings.is_empty());
     }
 
     #[test]

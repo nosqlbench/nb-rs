@@ -414,11 +414,11 @@ fn extern_string_input() {
 }
 
 // =========================================================================
-// Scope composition: bind_outer_scope
+// Scope composition: materialize_wiring_from_outer
 // =========================================================================
 
 #[test]
-fn bind_outer_scope_copies_constants() {
+fn materialize_wiring_from_outer_copies_constants() {
     // Outer kernel has a constant
     let outer_src = r#"
         inputs := (cycle)
@@ -447,7 +447,7 @@ fn bind_outer_scope_copies_constants() {
 }
 
 #[test]
-fn bind_outer_scope_ignores_nonmatching() {
+fn materialize_wiring_from_outer_ignores_nonmatching() {
     let outer_src = r#"
         inputs := (cycle)
         dim := 128

@@ -14,7 +14,7 @@ use super::program::GkProgram;
 /// A cross-kernel mutable cell for a `shared`-modifier wire.
 ///
 /// When a `shared` output in an outer scope is bound into an
-/// inner kernel via `bind_outer_scope`, both kernels' input
+/// inner kernel via `materialize_wiring_from_outer`, both kernels' input
 /// slots reference the same `SharedCell`. Writes from inner via
 /// `set_input` flow through to the cell; reads on either side
 /// pick up the latest value (with `refresh_shared` re-reading
@@ -133,6 +133,21 @@ pub struct EngineCore {
     /// the slot is bound to a shared cell; writes propagate
     /// through the cell to whatever other kernels share it.
     pub(crate) shared_cells: Vec<Option<SharedCell>>,
+    /// SRD-13f Push B.2 — per-output broadcast cell. Indexed
+    /// by output position in `program.output_list`. `Some(cell)`
+    /// = the output broadcasts its value to descendants via
+    /// the cell whenever the owner pulls the output; `None` =
+    /// no broadcast subscribers were set up (no descendant
+    /// scope binds against this output's name).
+    ///
+    /// `materialize_wiring_from_outer` plumbs the same `Arc<SharedCell>`
+    /// onto the matching input slot on the inner kernel — at
+    /// that point both ends share the storage. Inner reads
+    /// transparently through the cell on every `read_input`;
+    /// outer's `pull` writes the freshly computed value into
+    /// the cell so subsequent inner reads return the current
+    /// value with no traversal.
+    pub(crate) output_cells: Vec<Option<SharedCell>>,
     /// Pre-allocated scratch buffer for node input gathering.
     pub(crate) input_scratch: Vec<Value>,
 }
@@ -224,7 +239,53 @@ impl EngineCore {
             .get(output_name)
             .unwrap_or_else(|| panic!("unknown output variate: {output_name}"));
         self.eval_node(program, node_idx);
+        // SRD-13f Push B.2: broadcast the freshly computed
+        // value through this output's cell (if attached) so
+        // descendant kernels that bound their matching input
+        // slot to the same cell see the current value on
+        // their next read.
+        if let Some(output_idx) = program.output_index(output_name)
+            && let Some(Some(cell)) = self.output_cells.get(output_idx)
+        {
+            let v = self.buffers[node_idx][port_idx].clone();
+            *cell.lock().unwrap() = v;
+        }
         &self.buffers[node_idx][port_idx]
+    }
+
+    /// SRD-13f Push B.2 — allocate broadcast cells for every
+    /// output in `program`. Idempotent: if cells are already
+    /// allocated (size matches the program's output count),
+    /// the call is a no-op. Initial cell value is taken from
+    /// the current buffer (typically `Value::None` at
+    /// construction, before any pull has fired).
+    ///
+    /// Called from kernel constructors and from
+    /// `materialize_wiring_from_outer`-style operations that materialize
+    /// new descendants — the inner side needs the cell to
+    /// exist before it can attach to its input slot.
+    pub(crate) fn seed_output_cells(&mut self, program: &GkProgram) {
+        let n = program.output_names().len();
+        if self.output_cells.len() == n { return; }
+        self.output_cells = (0..n).map(|i| {
+            let name = &program.output_list()[i].0;
+            let (node_idx, port_idx) = program.output_map[name];
+            // Defensive bounds-check: some construction paths
+            // (raw state, partial programs) may not populate
+            // buffers for every node referenced in the output
+            // map. Seed with `Value::None` rather than panic.
+            let init = self.buffers.get(node_idx)
+                .and_then(|b| b.get(port_idx))
+                .cloned()
+                .unwrap_or(Value::None);
+            Some(std::sync::Arc::new(std::sync::Mutex::new(init)))
+        }).collect();
+    }
+
+    /// Output broadcast cell for the named output, if seeded.
+    pub(crate) fn output_cell(&self, program: &GkProgram, name: &str) -> Option<SharedCell> {
+        let idx = program.output_index(name)?;
+        self.output_cells.get(idx).and_then(|c| c.clone())
     }
 }
 
@@ -363,7 +424,7 @@ impl GkState {
     }
 
     /// Returns the `SharedCell` attached to an input slot, if any.
-    /// Used by `bind_outer_scope` to share an existing cell with
+    /// Used by `materialize_wiring_from_outer` to share an existing cell with
     /// inner kernels.
     pub fn shared_cell(&self, idx: usize) -> Option<SharedCell> {
         self.core.shared_cells.get(idx).and_then(|c| c.clone())
