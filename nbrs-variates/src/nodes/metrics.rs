@@ -192,6 +192,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "metric_window", category: C::Context, outputs: 1,
@@ -209,6 +210,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -216,7 +218,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Build a metric node from function name and const args.
 pub(crate) fn build_node(
     name: &str,
-    _wires: &[crate::assembly::WireRef],
+    _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType],
     consts: &[crate::dsl::factory::ConstArg],
 ) -> Option<Result<Box<dyn GkNode>, String>> {
     match name {

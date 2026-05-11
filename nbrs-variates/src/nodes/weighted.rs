@@ -356,6 +356,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Weighted string selection from a compact spec string.\nSpec format: \"value:weight,value:weight,...\" — weights are relative.\nParameters:\n  input — u64 wire input (typically hashed)\n  spec  — comma-separated value:weight pairs\nExample: weighted_strings(hash(cycle), \"red:3,green:2,blue:1\")",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "weighted_u64", category: C::Weighted,
@@ -370,6 +371,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Weighted u64 selection from a compact spec string.\nSpec format: \"value:weight,value:weight,...\" — values are parsed as u64.\nParameters:\n  input — u64 wire input (typically hashed)\n  spec  — comma-separated value:weight pairs (e.g. \"10:0.5,20:0.3,30:0.2\")\nExample: weighted_u64(hash(cycle), \"100:5,200:3,300:2\")",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "weighted_pick", category: C::Weighted,
@@ -387,6 +389,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Weighted categorical selection from inline weight/value pairs.\nUses the alias method for O(1) lookup after initialization.\nParameters:\n  input      — u64 wire input (typically hashed)\n  weight,val — repeating pairs: f64 weight, u64 value\nWeights are relative (need not sum to 1).\nExample: weighted_pick(hash(cycle), 3.0, 100, 1.0, 200, 1.0, 300)\nTheory: the alias method pre-computes a table so each lookup is\nconstant-time regardless of the number of categories.",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "dynamic_weighted_select", category: C::Weighted,
@@ -406,6 +409,7 @@ pub fn signatures() -> &'static [FuncSig] {
                    weights_spec — String wire input (e.g. \"alpha:0.3;beta:0.5;gamma:0.2\")\n\n\
                    Example: dynamic_weighted_select(hash(cycle), my_weights)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -413,7 +417,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a weighted-selection node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "weighted_strings" => Some(Ok(Box::new(WeightedStrings::new(
             consts.first().map(|c| c.as_str()).unwrap_or(""),

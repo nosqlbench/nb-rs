@@ -1553,6 +1553,7 @@ macro_rules! sig_handle_indexed {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: Some($resolver),
+            output_type: crate::dsl::registry::OutputType::Fixed,
         }
     };
 }
@@ -1569,6 +1570,7 @@ macro_rules! sig_handle_metadata {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: Some($resolver),
+            output_type: crate::dsl::registry::OutputType::Fixed,
         }
     };
 }
@@ -1590,6 +1592,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "dataset_group_open", category: C::RealData, outputs: 1,
@@ -1602,6 +1605,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
 
         // ===== Per-cycle facet accessors (typed-vector outputs) =====
@@ -1681,6 +1685,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: Some(DefaultResolver::Group),
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "dataset_profile_name_at", category: C::RealData, outputs: 1,
@@ -1694,6 +1699,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: Some(DefaultResolver::Group),
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "profile_base_count", category: C::RealData, outputs: 1,
@@ -1707,6 +1713,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: Some(DefaultResolver::Group),
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "profile_facets", category: C::RealData, outputs: 1,
@@ -1720,6 +1727,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: Some(DefaultResolver::Group),
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
 
         // ===== Side-effect resolver =====
@@ -1732,6 +1740,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -1741,7 +1750,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Returns `None` if the name is not handled by this module.
 /// All functions in this module are feature-gated on `vectordata`.
 #[cfg(feature = "vectordata")]
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     // Every dataset function in this module now takes its
     // `source` (and any other previously-const string params)
     // as a Wire input, so `consts` is unused — the spec arrives

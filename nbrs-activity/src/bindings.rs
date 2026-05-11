@@ -152,117 +152,6 @@ pub fn compile_bindings(ops: &[ParsedOp]) -> Result<GkKernel, String> {
     compile_bindings_with_path(ops, None)
 }
 
-/// Compile bindings, excluding named bind points from the "undeclared" check.
-/// Used when workload params will be resolved at cycle time, not via GK.
-pub fn compile_bindings_excluding(ops: &[ParsedOp], exclude: &[String]) -> Result<GkKernel, String> {
-    compile_bindings_excluding_with_path(ops, None, exclude)
-}
-
-pub fn compile_bindings_excluding_with_path(ops: &[ParsedOp], source_dir: Option<&std::path::Path>, exclude: &[String]) -> Result<GkKernel, String> {
-    // Delegate to the standard compilation, but filter out excluded
-    // names from the required-bindings collection.
-    compile_bindings_excluding_impl(ops, source_dir, false, exclude)
-}
-
-fn compile_bindings_excluding_impl(
-    ops: &[ParsedOp],
-    source_dir: Option<&std::path::Path>,
-    strict: bool,
-    exclude: &[String],
-) -> Result<GkKernel, String> {
-    use nbrs_workload::model::BindingsDef;
-    use nbrs_workload::bindpoints;
-
-    let gk_source = ops.iter().find_map(|op| {
-        if let BindingsDef::GkSource(src) = &op.bindings {
-            if !src.trim().is_empty() { Some(src.clone()) } else { None }
-        } else {
-            None
-        }
-    });
-
-    if let Some(source) = gk_source {
-        let mut required: Vec<String> = Vec::new();
-        for op in ops {
-            // Scan op fields for bind point references
-            for value in op.op.values() {
-                if let Some(s) = value.as_str() {
-                    for name in bindpoints::referenced_bindings(s) {
-                        if !required.contains(&name) && !exclude.contains(&name) {
-                            required.push(name);
-                        }
-                    }
-                }
-            }
-            // Scan params for bind point references (e.g., relevancy.expected)
-            collect_param_bindings(&op.params, exclude, &mut required);
-        }
-        return nbrs_variates::dsl::compile_gk_with_outputs(&source, source_dir, &required, strict);
-    }
-
-    // Legacy mode: same as compile_bindings_with_opts but filter required
-    let mut all_bindings: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for op in ops {
-        if let BindingsDef::Map(map) = &op.bindings {
-            for (name, expr) in map {
-                all_bindings.entry(name.clone()).or_insert_with(|| expr.clone());
-            }
-        }
-    }
-
-    let mut required: Vec<String> = Vec::new();
-    for op in ops {
-        for value in op.op.values() {
-            if let Some(s) = value.as_str() {
-                for name in bindpoints::referenced_bindings(s) {
-                    if !required.contains(&name) && !exclude.contains(&name) {
-                        required.push(name);
-                    }
-                }
-            }
-        }
-    }
-
-    let mut gk_lines: Vec<String> = Vec::new();
-    gk_lines.push("inputs := (cycle)".into());
-
-    for (binding_name, expr) in &all_bindings {
-        let chain = parse_binding_chain(expr);
-        if chain.is_empty() {
-            return Err(format!("empty binding expression for '{binding_name}'"));
-        }
-        let mut prev_wire = "cycle".to_string();
-        for (i, func) in chain.iter().enumerate() {
-            let is_last = i == chain.len() - 1;
-            let target = if is_last {
-                binding_name.clone()
-            } else {
-                format!("__chain_{binding_name}_{i}")
-            };
-            let (func_name, extra_args) = translate_legacy_func(&func.name, &func.args);
-            let mut call_args = vec![prev_wire.clone()];
-            for arg in &func.args {
-                call_args.push(strip_java_long_suffix(arg.trim()).to_string());
-            }
-            call_args.extend(extra_args);
-            gk_lines.push(format!("{target} := {func_name}({})", call_args.join(", ")));
-            prev_wire = target;
-        }
-    }
-
-    // Check for required bindings that have no GK source
-    let missing: Vec<&String> = required.iter()
-        .filter(|r| !all_bindings.contains_key(*r) && *r != "cycle")
-        .collect();
-    if !missing.is_empty() {
-        return Err(format!("undeclared bind point references: {}. Add these to your bindings section.",
-            missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
-    }
-
-    let gk_source = gk_lines.join("\n");
-    nbrs_variates::dsl::compile_gk_with_outputs(&gk_source, source_dir, &required, strict)
-}
-
 /// Scan op params for bind point references (recursively through JSON values).
 fn collect_param_bindings(
     params: &HashMap<String, serde_json::Value>,
@@ -312,24 +201,6 @@ fn collect_json_bindings(
 
 pub fn compile_bindings_with_path(ops: &[ParsedOp], source_dir: Option<&std::path::Path>) -> Result<GkKernel, String> {
     compile_bindings_with_opts(ops, source_dir, false)
-}
-
-/// Compile all bindings with additional GK library directories.
-///
-/// Each path in `gk_lib_paths` is searched (in order) for `.gk` module
-/// files after `source_dir` but before the embedded stdlib.
-pub fn compile_bindings_with_libs(
-    parent: &GkKernel,
-    ops: &[ParsedOp],
-    source_dir: Option<&std::path::Path>,
-    gk_lib_paths: Vec<std::path::PathBuf>,
-    strict: bool,
-) -> Result<GkKernel, String> {
-    compile_bindings_with_libs_excluding(
-        parent, ops, source_dir, gk_lib_paths, strict, &[], &[], "(gk)", None,
-        &std::collections::HashMap::new(),
-        None,
-    )
 }
 
 /// Compile a GK kernel from a pre-built `BindingScope`.
@@ -392,193 +263,116 @@ pub(crate) fn prepend_effective_pragmas(
     out
 }
 
-/// Like `compile_bindings_with_libs` but excludes named bind points from
-/// validation and accepts additional required output names (for GK config
-/// expression references like `cycles={train_count}`).
-pub fn compile_bindings_with_libs_excluding(
+/// Build the workload-root [`GkKernel`] as a subscope of the
+/// workload-params kernel.
+///
+/// The workload-root is "just another scope" per SRD-67
+/// §"Composition with SRD-66": it goes through the same
+/// `parent.build_subscope(matter)` protocol every other scope
+/// uses. The specialised content for the root is:
+///
+/// - Op-level bindings (rare at root; most workloads put
+///   bindings at the workload or phase level).
+/// - The workload's `bindings:` block, ingested as Inherited
+///   matter.
+/// - Workload params as `final` bindings — descendants pick
+///   them up via the standard manifest auto-extern.
+/// - DCE filter that retains every workload param plus
+///   caller-supplied config refs (`cycles=` etc.).
+///
+/// Replaces the prior `compile_bindings_with_libs_excluding`
+/// function — the "_excluding" suffix referred to a now-defunct
+/// `exclude` parameter, and the function carried a legacy
+/// semicolon-chain Map-bindings branch that no shipped workload
+/// shape exercises (workload params are always present, so the
+/// `needs_scope` gate always picked the modern path).
+pub fn build_workload_root_kernel(
     parent: &GkKernel,
     ops: &[ParsedOp],
     source_dir: Option<&std::path::Path>,
     gk_lib_paths: Vec<std::path::PathBuf>,
     strict: bool,
-    exclude: &[String],
     extra_required: &[String],
     context: &str,
     cursor_limit: Option<u64>,
     workload_params: &std::collections::HashMap<String, String>,
     workload_level_gk: Option<&str>,
 ) -> Result<GkKernel, String> {
-    use nbrs_workload::model::BindingsDef;
+    // Build the workload-root scope. workload_params get
+    // injected as `final` bindings so descendants resolve them
+    // via the standard manifest auto-extern.
+    let mut scope = crate::scope::build_scope(
+        ops,
+        &std::collections::HashMap::new(), // no iteration vars at outer level
+        &[],                                // no outer manifest (this IS the outer scope)
+        workload_params,
+        &std::collections::HashMap::new(), // phases not needed here
+        None,                               // no phase cycles
+        &[],                                // no excluded names
+        None, // workload-root has no parent program for AST mode
+    )?;
 
-    // Check if any op uses GK source mode. M3.6: also take the
-    // GK/scope path whenever the caller has workload params to
-    // inject — those need to land on this (workload-level) kernel
-    // as `final` bindings even when no op contributes a GK source
-    // (e.g. fully phased workloads where every phase's bindings
-    // get redirected to per-phase compilation).
-    let has_gk = ops.iter().any(|op| matches!(&op.bindings, BindingsDef::GkSource(s) if !s.trim().is_empty()));
-    let has_workload_gk = workload_level_gk.map(|s| !s.trim().is_empty()).unwrap_or(false);
-    let needs_scope = has_gk || has_workload_gk || !workload_params.is_empty();
-
-    if needs_scope {
-        // Build a BindingScope from the ops — all scope rules (shadow
-        // detection, dedup, merge) are handled by the typed model.
-        // M3.6: workload params get injected as `final` bindings on
-        // this (the workload-level) scope, so descendant scopes
-        // pick them up via standard manifest auto-extern.
-        let mut scope = crate::scope::build_scope(
-            ops,
-            &std::collections::HashMap::new(), // no iteration vars at outer level
-            &[],                                // no outer manifest (this IS the outer scope)
-            workload_params,                    // M3.6: every workload param → final binding
-            &std::collections::HashMap::new(), // phases not needed here
-            None,                               // no phase cycles
-            exclude,
-            None, // workload-root: no parent_program (this IS the root)
-        )?;
-        // SRD-13f §"Wire-reference classification" — the workload's
-        // `bindings:` block lives on the workload-root scope as
-        // local matter. Ingest it before validate/emit so the
-        // resulting source is a single coherent scope (replaces
-        // the legacy post-emit source append).
-        if let Some(extra) = workload_level_gk {
-            if !extra.trim().is_empty() {
-                scope.ingest_gk_source(extra, crate::scope::BindingOrigin::Inherited);
-            }
+    // SRD-13f §"Wire-reference classification" — the workload's
+    // `bindings:` block lives on the workload-root scope as
+    // local matter. Ingest before validate/emit so emit()
+    // produces a single coherent source.
+    if let Some(extra) = workload_level_gk {
+        if !extra.trim().is_empty() {
+            scope.ingest_gk_source(extra, crate::scope::BindingOrigin::Inherited);
         }
-        scope.validate().map_err(|e| format!("{context}: {e}"))?;
-
-        // Add extra required outputs (config refs from caller),
-        // plus every workload param so DCE doesn't strip the
-        // ones not referenced by op templates (M3.6: descendant
-        // scopes need every param visible through the manifest,
-        // not just the ones this workload-level kernel happens
-        // to wire into ops).
-        let mut scope_required = scope.required_outputs();
-        for name in extra_required {
-            if !scope_required.contains(name) {
-                scope_required.push(name.clone());
-            }
-        }
-        // SRD-13f Push D: sort workload-param keys before
-        // appending so the resulting `required_outputs` Vec is
-        // deterministic across processes. HashMap iteration is
-        // randomised per process; `compile_filtered` walks
-        // `required_outputs` in order to call `add_output`, so a
-        // non-deterministic iteration here drives a non-
-        // deterministic `output_order` in the compiled program,
-        // which in turn produces a non-deterministic
-        // `canonical_hash` (the checkpoint phase-identity hash)
-        // and breaks the resume-skip path across processes.
-        let mut param_names: Vec<&String> = workload_params.keys().collect();
-        param_names.sort();
-        for name in param_names {
-            if !scope_required.contains(name) {
-                scope_required.push(name.clone());
-            }
-        }
-
-        // SRD-13f §"Wire-reference classification" — workload-level
-        // bindings were ingested into `scope` above; `emit()` is
-        // now the single source of the resulting program.
-        let source = scope.emit();
-        // Build the workload kernel as a subscope of the
-        // params kernel via the typed GkKernel-controlled
-        // subcontext-from-source path. The cell cascade flows
-        // automatically; no late-binding required.
-        let opts = nbrs_variates::subcontext::CompileOptions {
-            workload_dir: source_dir.map(|p| p.to_path_buf()),
-            gk_lib_paths,
-            strict,
-            required_outputs: scope_required,
-            context_label: Some(context.to_string()),
-            cursor_limit,
-        };
-        let matter = nbrs_variates::subcontext::GkMatter::builder()
-            .label(context)
-            .source(source)
-            .options(opts)
-            .build()
-            .map_err(|e| format!("{e:?}"))?;
-        return parent
-            .build_subscope(matter)
-            .map_err(|e| format!("{e:?}"));
     }
+    scope.validate().map_err(|e| format!("{context}: {e}"))?;
 
-    // Legacy mode: translate semicolon-chain bindings into GK source
-    let mut all_bindings: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for op in ops {
-        if let BindingsDef::Map(map) = &op.bindings {
-            for (name, expr) in map {
-                all_bindings.entry(name.clone()).or_insert_with(|| expr.clone());
-            }
+    // DCE-keepalive list: caller's config refs plus every
+    // workload param. Param names are sorted so the resulting
+    // output order is deterministic across processes (HashMap
+    // iteration is randomised per-process, and `compile_filtered`
+    // calls `add_output` in iteration order — non-determinism
+    // here would surface as a non-deterministic
+    // `canonical_hash` and break checkpoint resume-skip
+    // matching).
+    let mut scope_required = scope.required_outputs();
+    for name in extra_required {
+        if !scope_required.contains(name) {
+            scope_required.push(name.clone());
+        }
+    }
+    let mut param_names: Vec<&String> = workload_params.keys().collect();
+    param_names.sort();
+    for name in param_names {
+        if !scope_required.contains(name) {
+            scope_required.push(name.clone());
         }
     }
 
-    // SRD-13f: the workload-root compile owns workload-scope
-    // bindings only. Op-field references resolve at the
-    // op-template scope kernel, which has the appropriate
-    // manifest. Collecting them as "required" here forced the
-    // workload-root compile to validate names whose owning
-    // scope is deeper in the tree.
-    //
-    // `required` retains only the caller's `extra_required`
-    // (config refs from the runner) which ARE workload-root
-    // concerns.
-    let required: Vec<String> = extra_required.iter()
-        .filter(|n| !exclude.contains(n))
-        .cloned()
-        .collect();
-
-    let mut gk_lines: Vec<String> = Vec::new();
-    gk_lines.push("inputs := (cycle)".into());
-
-    for (binding_name, expr) in &all_bindings {
-        let chain = parse_binding_chain(expr);
-        if chain.is_empty() {
-            return Err(format!("empty binding expression for '{binding_name}'"));
-        }
-
-        let mut prev_wire = "cycle".to_string();
-        for (i, func) in chain.iter().enumerate() {
-            let is_last = i == chain.len() - 1;
-            let target = if is_last {
-                binding_name.clone()
-            } else {
-                format!("__chain_{binding_name}_{i}")
-            };
-
-            let (func_name, extra_args) = translate_legacy_func(&func.name, &func.args);
-            let mut call_args = vec![prev_wire.clone()];
-            for arg in &func.args {
-                call_args.push(strip_java_long_suffix(arg.trim()).to_string());
-            }
-            call_args.extend(extra_args);
-
-            gk_lines.push(format!("{target} := {func_name}({args})",
-                args = call_args.join(", ")));
-
-            prev_wire = target;
-        }
+    // Standard ScopeKernel construction: GkMatter::source +
+    // parent.build_subscope. Identical to every other scope's
+    // build pathway (SRD-67 §"The construction protocol").
+    let mut source = scope.emit();
+    // If the workload's authored matter doesn't declare its
+    // own `inputs := (...)` line, default the workload-root
+    // kernel's coordinate input to `cycle`. The wire name is
+    // a CONVENTION the runner-driver contract relies on
+    // (every dispatch path sets the cycle ordinal on slot 0
+    // via set_inputs); workload authors who need a different
+    // shape can declare their own inputs line explicitly. The
+    // default lets inline workloads (`nbrs run op="c={cycle}"`)
+    // resolve `{cycle}` against the workload-root kernel
+    // without forcing every author to write `inputs := (cycle)`.
+    if !source.lines().any(|l| l.trim_start().starts_with("inputs :=")) {
+        source = format!("inputs := (cycle)\n{source}");
     }
-
-    // SRD-13f: the missing-binding check that used to run
-    // here validated op-field references against workload-
-    // root bindings. Op-field references belong to the
-    // op-template scope kernel, which validates them at its
-    // own synthesis layer. Removed from this compile.
-    let gk_source = gk_lines.join("\n");
     let opts = nbrs_variates::subcontext::CompileOptions {
         workload_dir: source_dir.map(|p| p.to_path_buf()),
         gk_lib_paths,
         strict,
-        required_outputs: required,
+        required_outputs: scope_required,
         context_label: Some(context.to_string()),
         cursor_limit,
     };
     let matter = nbrs_variates::subcontext::GkMatter::builder()
         .label(context)
-        .source(gk_source)
+        .source(source)
         .options(opts)
         .build()
         .map_err(|e| format!("{e:?}"))?;

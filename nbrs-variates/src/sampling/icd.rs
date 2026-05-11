@@ -728,6 +728,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Build a normal (Gaussian) distribution lookup table.\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  mean   — center of the distribution\n  stddev — standard deviation (must be > 0)\nExample: dist_normal(50.0, 10.0) -> lut_sample(hash(cycle))\nTheory: pre-computes the inverse CDF into a table for O(1) sampling.",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "dist_exponential", category: C::Distributions,
@@ -740,6 +741,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Build an exponential distribution lookup table.\nModels time between events (inter-arrival times, latencies).\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  rate — rate parameter lambda (mean = 1/rate, must be > 0)\nExample: dist_exponential(0.5) -> lut_sample(hash(cycle))",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "dist_uniform", category: C::Distributions,
@@ -753,6 +755,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Build a uniform distribution lookup table over [min, max].\nEvery value in the range is equally likely.\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  min — lower bound (inclusive, f64)\n  max — upper bound (exclusive, f64)\nExample: dist_uniform(0.0, 1000.0) -> lut_sample(hash(cycle))",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "dist_pareto", category: C::Distributions,
@@ -766,6 +769,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Build a Pareto (power-law) distribution lookup table.\nModels heavy-tailed phenomena: wealth, file sizes, city populations.\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  scale — minimum value (x_m, must be > 0)\n  shape — tail index (alpha, larger = thinner tail)\nExample: dist_pareto(1.0, 2.0) -> lut_sample(hash(cycle))",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "dist_zipf", category: C::Distributions,
@@ -779,6 +783,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Build a Zipf distribution lookup table over ranks [1, n].\nModels rank-frequency phenomena: word frequency, cache access patterns.\nThe output is a LUT node — feed it into lut_sample to draw values.\nParameters:\n  n        — number of elements (u64, must be > 0)\n  exponent — Zipf exponent s (f64, typically 1.0-2.0; higher = more skewed)\nExample: dist_zipf(1000, 1.07) -> lut_sample(hash(cycle))",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "lut_sample", category: C::Distributions,
@@ -791,6 +796,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Sample from a precomputed lookup table via linear interpolation.\nInput is an f64 in [0, 1]; output is the interpolated table value.\nThis is the runtime half of distribution sampling: build the table\nwith dist_normal/dist_zipf/etc, then sample with lut_sample.\nParameters:\n  input — f64 wire in [0.0, 1.0] (typically from unit_interval)\nExample: lut_sample(unit_interval(hash(cycle)))  // wired to a dist_* LUT",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "icd_normal", category: C::Distributions,
@@ -805,6 +811,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "One-step normal distribution sampling (builds LUT + samples internally).\nConvenience wrapper: equivalent to dist_normal -> lut_sample but\ncombined into a single node for simpler graph construction.\nParameters:\n  input  — u64 wire input (typically hashed)\n  mean   — center of the distribution (f64)\n  stddev — standard deviation (f64, must be > 0)\nExample: icd_normal(hash(cycle), 100.0, 15.0)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "icd_exponential", category: C::Distributions,
@@ -818,6 +825,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "One-step exponential distribution sampling (builds LUT + samples).\nConvenience wrapper for modeling inter-arrival times and latencies.\nParameters:\n  input — u64 wire input (typically hashed)\n  rate  — rate parameter lambda (f64, mean = 1/rate)\nExample: icd_exponential(hash(cycle), 0.1)  // mean = 10.0",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "histribution", category: C::Distributions,
@@ -831,6 +839,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Sample from a discrete histogram distribution.\nParse an inline frequency spec into an alias table at init time.\nTwo formats:\n  Implicit labels: histribution(hash(cycle), \"50 25 13 12\") → outcomes 0-3\n  Explicit labels: histribution(hash(cycle), \"234:50 33:25 17:13 3:12\")\nDelimiters: space, comma, or semicolon.\nOutput is a u64 label.",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "dist_empirical", category: C::Distributions,
@@ -844,6 +853,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Sample from an empirical distribution defined by observed data points.\nThe data string is a space/comma/semicolon-separated list of f64 values.\nAt init time, values are sorted and used as the inverse CDF directly.\nThe input is an f64 in [0,1] (from unit_interval); output is interpolated.\nExample: dist_empirical(unit_interval(hash(cycle)), \"1.2 3.5 5.0 7.8 12.1\")",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -856,7 +866,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// builder logic.
 pub(crate) fn build_node(
     _name: &str,
-    _wires: &[crate::assembly::WireRef],
+    _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType],
     _consts: &[crate::dsl::factory::ConstArg],
 ) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     None

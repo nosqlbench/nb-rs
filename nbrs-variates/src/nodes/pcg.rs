@@ -391,6 +391,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Seekable pseudo-random generator: a pure function from position.\nPCG-RXS-M-XS variant — given the same input, seed, and stream,\nalways returns the same output. Stateless alternative to hash.\nParameters:\n  input  — u64 position (cycle ordinal)\n  seed   — initialization constant\n  stream — stream selector (different streams = independent sequences)\nExample: pcg(cycle, 42, 0)\nTheory: PCG uses a linear congruential core with permuted output;\nthe RXS-M-XS variant supports O(1) seeking to any position.",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "pcg_stream", category: C::Permutation,
@@ -405,6 +406,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "PCG with a runtime (wire) stream ID instead of a fixed constant.\nUse when the stream identity is data-dependent (e.g., derived from\na partition key) and cannot be fixed at assembly time.\nParameters:\n  input  — u64 position (cycle ordinal)\n  stream — u64 wire input selecting the stream\n  seed   — initialization constant (u64)\nExample: pcg_stream(cycle, partition_id, 42)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "cycle_walk", category: C::Permutation,
@@ -421,6 +423,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Bijective permutation of [0, range) via a Feistel network + cycle-walking.\nEvery input maps to a unique output (and vice versa) within [0, range).\nUse to visit every row exactly once in pseudo-random order, or to\ngenerate unique IDs without a tracking structure.\nParameters:\n  input  — u64 wire input (position in [0, range))\n  range  — domain size (u64, must be > 0)\n  seed   — Feistel round key seed (u64)\n  stream — stream selector (u64)\nExample: cycle_walk(cycle, 1000000, 42, 0)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "shuffle", category: C::Permutation,
@@ -436,6 +439,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Bijective permutation: maps [0, size) to [0, size) with no collisions.\nEvery input maps to a unique output and vice versa — a perfect shuffle.\nParameters:\n  input — u64 wire input\n  min   — optional offset added to output (default 0)\n  size  — range size (required)\nExample: shuffle(cycle, 0, 10000)  // permute 0..9999\nTheory: uses a maximal-length LFSR (linear feedback shift register)\nto generate a permutation without storing a full table.",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -443,7 +447,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a PCG or shuffle node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "pcg" => Some(Ok(Box::new(Pcg::new(
             consts.first().map(|c| c.as_u64()).unwrap_or(0),

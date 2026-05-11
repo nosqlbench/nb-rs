@@ -418,6 +418,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "1D Perlin noise: coherent pseudo-random f64 in [-1, 1].\nThe u64 input is scaled to the float domain by frequency.\nNearby inputs produce smoothly varying outputs (spatial correlation).\nParameters:\n  input     — u64 wire input\n  seed      — permutation table seed (u64)\n  frequency — spatial frequency (f64; higher = more detail)\nExample: perlin_1d(cycle, 42, 0.01)  // slow-varying noise",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "perlin_2d", category: C::Noise,
@@ -433,6 +434,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "2D Perlin noise: coherent pseudo-random f64 in [-1, 1].\nTwo u64 coordinate inputs are scaled by frequency.\nProduces spatially correlated values for terrain, textures, etc.\nParameters:\n  x         — u64 x-coordinate wire input\n  y         — u64 y-coordinate wire input\n  seed      — permutation table seed (u64)\n  frequency — spatial frequency (f64)\nExample: perlin_2d(row, col, 42, 0.05)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "simplex_2d", category: C::Noise,
@@ -448,6 +450,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "2D simplex noise: faster than Perlin for 2D+ with fewer directional artifacts.\nOutput is f64 in [-1, 1]. Uses a simplex grid instead of a square grid.\nParameters:\n  x         — u64 x-coordinate wire input\n  y         — u64 y-coordinate wire input\n  seed      — permutation table seed (u64)\n  frequency — spatial frequency (f64)\nExample: simplex_2d(row, col, 99, 0.1)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "fractal_noise_1d", category: C::Noise,
@@ -463,6 +466,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "1D fractal Brownian motion: layered Perlin noise with decreasing\namplitude at each octave. Produces rich, natural-looking signals.\nOutput is f64, roughly in [-1, 1].\nParameters:\n  input     — u64 wire input\n  seed      — permutation table seed (u64)\n  frequency — base spatial frequency (f64)\n  octaves   — number of noise layers (u64, default 4)\nExample: fractal_noise_1d(cycle, 42, 0.02, 4)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "fractal_noise_2d", category: C::Noise,
@@ -479,6 +483,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "2D fractal Brownian motion: layered Perlin noise in 2D.\nProduces terrain-like spatial variation.\nParameters:\n  x, y      — u64 coordinate wire inputs\n  seed      — permutation table seed (u64)\n  frequency — base spatial frequency (f64)\n  octaves   — number of noise layers (u64, default 4)\nExample: fractal_noise_2d(row, col, 42, 0.05, 4)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -486,7 +491,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a noise node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "perlin_1d" => Some(Ok(Box::new(Perlin1D::new(
             consts.first().map(|c| c.as_u64()).unwrap_or(0),

@@ -431,7 +431,10 @@ impl Compiler {
                 // compilation never leaks an outer attribution.
                 let _binding_scope = targets.first().map(|n|
                     crate::dsl::factory::compile_ctx::scoped_binding(n));
-                let node = match build_node(&call.func, &wire_refs, &const_args) {
+                let wire_types: Vec<PortType> = wire_refs.iter()
+                    .map(|w| asm.wire_type(w).unwrap_or(PortType::U64))
+                    .collect();
+                let node = match build_node(&call.func, &wire_refs, &wire_types, &const_args) {
                     Ok(n) => n,
                     Err(e) if e.contains("unknown function") => {
                         // Try module resolution before giving up
@@ -620,7 +623,10 @@ impl Compiler {
                     for operand in &operands {
                         wire_refs.push(self.compile_binop_operand(asm, operand)?);
                     }
-                    let node = build_node("str_concat", &wire_refs, &[])?;
+                    let wire_types: Vec<PortType> = wire_refs.iter()
+                        .map(|w| asm.wire_type(w).unwrap_or(PortType::U64))
+                        .collect();
+                    let node = build_node("str_concat", &wire_refs, &wire_types, &[])?;
                     let name = &targets[0];
                     asm.add_node(name, node, wire_refs);
                     self.all_names.push(name.clone());
@@ -743,7 +749,10 @@ impl Compiler {
                 };
 
                 let wire_refs = vec![lhs_final, rhs_final];
-                let node = build_node(func_name, &wire_refs, &[])?;
+                let wire_types: Vec<PortType> = wire_refs.iter()
+                    .map(|w| asm.wire_type(w).unwrap_or(PortType::U64))
+                    .collect();
+                let node = build_node(func_name, &wire_refs, &wire_types, &[])?;
                 let name = &targets[0];
                 asm.add_node(name, node, wire_refs);
                 self.all_names.push(name.clone());
@@ -757,7 +766,10 @@ impl Compiler {
                 self.compile_binding(asm, &[inner_name.clone()], inner)?;
 
                 let wire_refs = vec![WireRef::node(&zero_name), WireRef::node(&inner_name)];
-                let node = build_node("f64_sub", &wire_refs, &[])?;
+                let wire_types: Vec<PortType> = wire_refs.iter()
+                    .map(|w| asm.wire_type(w).unwrap_or(PortType::U64))
+                    .collect();
+                let node = build_node("f64_sub", &wire_refs, &wire_types, &[])?;
                 let name = &targets[0];
                 asm.add_node(name, node, wire_refs);
                 self.all_names.push(name.clone());
@@ -768,7 +780,10 @@ impl Compiler {
                 self.compile_binding(asm, &[inner_name.clone()], inner)?;
 
                 let wire_refs = vec![WireRef::node(&inner_name)];
-                let node = build_node("u64_not", &wire_refs, &[])?;
+                let wire_types: Vec<PortType> = wire_refs.iter()
+                    .map(|w| asm.wire_type(w).unwrap_or(PortType::U64))
+                    .collect();
+                let node = build_node("u64_not", &wire_refs, &wire_types, &[])?;
                 let name = &targets[0];
                 asm.add_node(name, node, wire_refs);
                 self.all_names.push(name.clone());

@@ -205,6 +205,7 @@ pub fn signatures() -> &'static [FuncSig] {
         arity: Arity::VariadicWires { min_wires: 2 },
         commutativity: Commutativity::Positional,
         default_resolver: None,
+        output_type: crate::dsl::registry::OutputType::Fixed,
     }]
 }
 
@@ -214,7 +215,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// constructor's `assert!`.
 pub(crate) fn build_node(
     name: &str,
-    wires: &[crate::assembly::WireRef],
+    wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType],
     _consts: &[crate::dsl::factory::ConstArg],
 ) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     if name != "pick" {
@@ -325,7 +326,9 @@ mod tests {
         let wires: Vec<crate::assembly::WireRef> = (0..wire_count)
             .map(|i| crate::assembly::WireRef::input(format!("w{i}")))
             .collect();
-        match build_node("pick", &wires, &[]) {
+        let wire_types: Vec<crate::node::PortType> = wires.iter()
+            .map(|_| crate::node::PortType::U64).collect();
+        match build_node("pick", &wires, &wire_types, &[]) {
             Some(Err(msg)) => msg,
             Some(Ok(_)) => panic!("expected build_node to error for {wire_count} wires"),
             None => panic!("pick did not handle the name"),

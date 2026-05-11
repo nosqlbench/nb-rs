@@ -235,6 +235,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Compute the SHA-256 cryptographic digest of a byte buffer.\nOutput is always 32 bytes. Use with to_hex or to_base64 for string output.\nParameters:\n  input — bytes wire input\nExample: sha256(bytes_from_hash(cycle, 64)) -> to_hex(...)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "md5", category: C::Digest,
@@ -247,6 +248,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Compute the MD5 digest of a byte buffer.\nOutput is always 16 bytes. Not cryptographically secure — use for\nchecksums, deduplication keys, or legacy compatibility only.\nParameters:\n  input — bytes wire input\nExample: md5(u64_to_bytes(hash(cycle))) -> to_hex(...)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "to_base64", category: C::Digest, outputs: 1,
@@ -257,6 +259,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "from_base64", category: C::Digest, outputs: 1,
@@ -267,6 +270,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -274,7 +278,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a digest or base64 node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], _consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "sha256" => Some(Ok(Box::new(DigestSha256::new()))),
         "md5" => Some(Ok(Box::new(DigestMd5::new()))),

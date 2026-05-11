@@ -556,6 +556,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "control_u64", category: C::Context, outputs: 1,
@@ -568,6 +569,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "control_bool", category: C::Context, outputs: 1,
@@ -580,6 +582,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "control_str", category: C::Context, outputs: 1,
@@ -592,6 +595,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "control_set", category: C::Context, outputs: 1,
@@ -605,6 +609,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "rate", category: C::Context, outputs: 1,
@@ -615,6 +620,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "concurrency", category: C::Context, outputs: 1,
@@ -625,6 +631,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "phase", category: C::Context, outputs: 1,
@@ -635,6 +642,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "cycle", category: C::Context, outputs: 1,
@@ -645,13 +653,14 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
 
 pub(crate) fn build_node(
     name: &str,
-    _wires: &[crate::assembly::WireRef],
+    _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType],
     consts: &[crate::dsl::factory::ConstArg],
 ) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
@@ -988,7 +997,7 @@ mod tests {
         let _scope = crate::dsl::factory::compile_ctx::scoped_binding("rate_adj");
         let consts = [crate::dsl::factory::ConstArg::Str("rate".into())];
         let node = crate::dsl::factory::build_node(
-            "control_set", &[], &consts,
+            "control_set", &[], &[], &consts,
         ).expect("control_set should build");
         let mut out = [Value::None];
         node.eval(&[Value::F64(4242.0)], &mut out);

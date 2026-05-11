@@ -317,6 +317,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Linear interpolation: output = a + t * (b - a).\nInput must be an f64 in [0,1] (the interpolation parameter t).\nParameters:\n  input — f64 wire in [0.0, 1.0] (e.g., from unit_interval)\n  a     — start value (when t=0)\n  b     — end value (when t=1)\nExample: lerp(unit_interval(hash(cycle)), -50.0, 50.0)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "scale_range", category: C::Interpolation,
@@ -331,6 +332,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Maps a u64 directly to an f64 in [min, max). Equivalent to\nlerp(unit_interval(input), min, max) but fused into one node.\nParameters:\n  input — u64 wire input (typically hashed)\n  min   — lower bound of output range (inclusive)\n  max   — upper bound of output range (exclusive)\nExample: scale_range(hash(cycle), 0.0, 100.0)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "quantize", category: C::Interpolation,
@@ -345,6 +347,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Round an f64 to the nearest multiple of a step size.\nOutput remains f64 at the grid point (unlike discretize which returns a bucket index).\nUseful for snapping coordinates to a tile grid or binning to fixed intervals.\nParameters:\n  input — f64 wire input\n  step  — grid spacing (f64, must be > 0)\nExample: quantize(scale_range(hash(cycle), 0.0, 100.0), 5.0)  // 0, 5, 10, ..., 100",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -352,7 +355,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a lerp node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "lerp" => Some(Ok(Box::new(LerpConst::new(
             consts.first().map(|c| c.as_f64()).unwrap_or(0.0),

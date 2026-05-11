@@ -413,6 +413,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "bytes_from_hash", category: C::ByteBuffers,
@@ -426,6 +427,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Generate N deterministic bytes from a u64 seed via chained hashing.\nEach 8-byte chunk is hash(seed + chunk_index). Fresh per cycle.\nParameters:\n  input — u64 wire input (seed value)\n  size  — number of bytes to generate (u64)\nExample: bytes_from_hash(hash(cycle), 32)  // 32 pseudo-random bytes",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "to_hex", category: C::ByteBuffers, outputs: 1,
@@ -436,6 +438,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "from_hex", category: C::ByteBuffers, outputs: 1,
@@ -446,6 +449,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -453,7 +457,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a byte-buffer node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "bytes_from_hash" => Some(Ok(Box::new(BytesFromHash::new(
             consts.first().map(|c| c.as_u64()).unwrap_or(16) as usize,

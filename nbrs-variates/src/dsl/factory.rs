@@ -107,6 +107,7 @@ pub mod compile_ctx {
 pub(crate) fn build_node(
     func: &str,
     wires: &[WireRef],
+    wire_types: &[crate::node::PortType],
     consts: &[ConstArg],
 ) -> Result<Box<dyn GkNode>, String> {
     // --- Per-module dispatch via inventory ---
@@ -143,7 +144,7 @@ pub(crate) fn build_node(
             return Err(format!("bad constant {func}: {reason}"));
         }
 
-        if let Some(result) = (reg.build)(func, wires, consts) {
+        if let Some(result) = (reg.build)(func, wires, wire_types, consts) {
             return result;
         }
     }

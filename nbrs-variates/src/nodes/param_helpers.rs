@@ -351,6 +351,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "this_or", category: C::Arithmetic, outputs: 1,
@@ -364,6 +365,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "is_positive", category: C::Arithmetic, outputs: 1,
@@ -377,6 +379,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "in_range", category: C::Arithmetic, outputs: 1,
@@ -391,6 +394,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "is_one_of", category: C::Arithmetic, outputs: 1,
@@ -404,6 +408,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::VariadicConsts { min_consts: 1 },
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "matches", category: C::Arithmetic, outputs: 1,
@@ -418,13 +423,14 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
 
 pub(crate) fn build_node(
     name: &str,
-    _wires: &[crate::assembly::WireRef],
+    _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType],
     consts: &[crate::dsl::factory::ConstArg],
 ) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {

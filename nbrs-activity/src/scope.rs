@@ -536,43 +536,83 @@ impl BindingScope {
 /// its interior newlines collapsed to single spaces so the downstream
 /// GK parser sees one-expression-per-line, which is all it supports.
 fn logical_lines(source: &str) -> Vec<String> {
+    // GK grammar uses ONLY `"`-delimited string literals (see
+    // `nbrs-variates/src/dsl/lexer.rs`). Apostrophes (`'`) carry
+    // no special meaning at the lexical level — they appear
+    // verbatim in comments ("the workload's bindings") and
+    // inside double-quoted strings, never as a string delimiter
+    // themselves. Treating `'` as a delimiter here would let a
+    // stray apostrophe in a comment swallow the entire rest of
+    // the source as a single unterminated "string" run, which
+    // then collapses every subsequent binding into one logical
+    // line that the per-line parser sees as a giant comment
+    // and silently drops.
+    //
+    // Comments (`#`-to-EOL and `//`-to-EOL) are NOT skipped at
+    // this level — physical newlines inside them terminate the
+    // logical line uniformly, and the per-line `ingest_gk_source`
+    // pass skips any `#`/`//`-leading line via `trimmed.starts_with`.
+    // What matters at this level is that bracket/string state
+    // doesn't get confused by content inside comments.
     let mut out: Vec<String> = Vec::new();
     let mut buf = String::new();
     let mut depth: i32 = 0;
-    let mut in_str: Option<char> = None;
+    let mut in_str = false;
+    let mut in_line_comment = false;
     let mut chars = source.chars().peekable();
     while let Some(ch) = chars.next() {
-        match in_str {
-            Some(quote) => {
-                buf.push(ch);
-                if ch == '\\' {
-                    // Preserve the escaped character verbatim.
-                    if let Some(nx) = chars.next() {
-                        buf.push(nx);
-                    }
-                } else if ch == quote {
-                    in_str = None;
+        if in_line_comment {
+            buf.push(ch);
+            if ch == '\n' {
+                in_line_comment = false;
+                // Comments live at depth 0 by definition (they're
+                // line-oriented); the newline always terminates
+                // the logical line.
+                if !buf.is_empty() {
+                    out.push(std::mem::take(&mut buf));
                 }
             }
-            None => match ch {
-                '"' | '\'' => { in_str = Some(ch); buf.push(ch); }
-                '(' | '[' | '{' => { depth += 1; buf.push(ch); }
-                ')' | ']' | '}' => {
-                    if depth > 0 { depth -= 1; }
-                    buf.push(ch);
+            continue;
+        }
+        if in_str {
+            buf.push(ch);
+            if ch == '\\' {
+                if let Some(nx) = chars.next() {
+                    buf.push(nx);
                 }
-                '\n' => {
-                    if depth > 0 {
-                        // Still inside brackets — collapse the
-                        // physical newline so the stored line is a
-                        // single-line expression.
-                        buf.push(' ');
-                    } else {
-                        out.push(std::mem::take(&mut buf));
-                    }
+            } else if ch == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => { in_str = true; buf.push(ch); }
+            '#' => {
+                // `#`-to-EOL comment — stop tracking bracket
+                // depth and string state inside it so a stray
+                // apostrophe or `(` in the comment doesn't
+                // imbalance later real-code parsing.
+                in_line_comment = true;
+                buf.push(ch);
+            }
+            '/' if matches!(chars.peek(), Some('/')) => {
+                // `//`-to-EOL comment, same treatment as `#`.
+                in_line_comment = true;
+                buf.push(ch);
+            }
+            '(' | '[' | '{' => { depth += 1; buf.push(ch); }
+            ')' | ']' | '}' => {
+                if depth > 0 { depth -= 1; }
+                buf.push(ch);
+            }
+            '\n' => {
+                if depth > 0 {
+                    buf.push(' ');
+                } else {
+                    out.push(std::mem::take(&mut buf));
                 }
-                _ => buf.push(ch),
-            },
+            }
+            _ => buf.push(ch),
         }
     }
     if !buf.is_empty() {
@@ -1365,6 +1405,43 @@ pub fn build_op_template_scope_kernel(
         {
             referenced.push(trimmed.to_string());
         }
+    }
+
+    // SRD-66 result-bindings: every LHS name a result-binding
+    // declares needs an input slot on this op-template kernel so
+    // the Rule 2 write-through can wire to the parent's SHARED
+    // cell. Without this, the cell-bound slot is never declared,
+    // `add_result_bindings` falls back to PortType::U64 (the
+    // "couldn't classify" default) for the export, and the write-
+    // through stores into a U64-typed view of what's actually a
+    // Bool/Str/etc. cell — surfaces downstream as a "non-bool
+    // type" pick panic.
+    //
+    // String-shape fragments carry full GK source whose LHS we
+    // extract via `scan_locally_declared_idents`. Map-shape
+    // fragments give the name directly.
+    if let Some(rb) = op.result.as_ref() {
+        rb.walk_fragments(|frag| {
+            match frag {
+                nbrs_workload::model::ResultFragment::Source(s) => {
+                    for n in scan_locally_declared_idents(s) {
+                        if !body_locally_declared.contains(&n)
+                            && !referenced.iter().any(|r| r == &n)
+                        {
+                            referenced.push(n);
+                        }
+                    }
+                }
+                nbrs_workload::model::ResultFragment::Named { name, .. } => {
+                    let n = name.to_string();
+                    if !body_locally_declared.contains(&n)
+                        && !referenced.iter().any(|r| r == &n)
+                    {
+                        referenced.push(n);
+                    }
+                }
+            }
+        });
     }
 
     // SRD-13f: parent-ref classification no longer gates
@@ -3307,5 +3384,724 @@ extern keyspace: String
         assert!(err.contains("unresolved wire"), "wrong error: {err}");
         assert!(err.contains("tirp"), "error should mention the typoed name: {err}");
         assert!(err.contains("Visible names"), "error should list visible names: {err}");
+    }
+
+    #[test]
+    fn ingest_preserves_bindings_when_comment_contains_apostrophe() {
+        // Regression: GK grammar uses only `"`-delimited string
+        // literals. `logical_lines` previously treated `'` as a
+        // string delimiter too, which meant an unmatched
+        // apostrophe in a `#` comment (e.g. "the workload's
+        // bindings") put the splitter into a string state that
+        // never closed. The entire rest of the source was
+        // accreted into one logical "line" starting with `#`,
+        // which then got dropped as a comment by the per-line
+        // parser — silently discarding every binding that
+        // followed.
+        //
+        // This was the actual root cause of the full_cql_vector
+        // `await_index` failure: the workload's
+        // `bindings:` block began with a multi-line comment
+        // containing the apostrophe in "full_cql_vector's", so
+        // the `shared has_X := false` declarations never made
+        // it into the workload-root program. Descendant
+        // synthesizers then couldn't cascade has_X as Bool
+        // externs; the compile inferred has_X as Coordinate
+        // U64 inputs from unbound references, and the
+        // per-cycle `set_inputs(&[u64])` clobbered the
+        // SharedCell with `Value::U64(cycle)`.
+        let mut scope = BindingScope::new();
+        let src_with_apostrophe_comment = "# full_cql_vector's bindings block\n\
+                                           shared has_a := true\n\
+                                           shared has_b := false\n";
+        scope.ingest_gk_source(src_with_apostrophe_comment, BindingOrigin::Inherited);
+        let defined = scope.defined_names();
+        assert!(defined.contains("has_a"),
+            "comment with apostrophe must NOT consume subsequent bindings; \
+             expected has_a in defined names, got {defined:?}");
+        assert!(defined.contains("has_b"),
+            "expected has_b in defined names, got {defined:?}");
+
+        let emitted = scope.emit();
+        assert!(emitted.contains("shared has_a := true"),
+            "scope.emit() must include the shared bindings; got:\n{emitted}");
+        assert!(emitted.contains("shared has_b := false"),
+            "scope.emit() must include the shared bindings; got:\n{emitted}");
+    }
+
+    #[test]
+    fn ingest_then_compile_preserves_shared_modifier() {
+        // Mirrors the workload-root compile path in
+        // `compile_bindings_with_libs_excluding`: workload-level
+        // bindings (`shared has_X := false`) get ingested via
+        // `scope.ingest_gk_source(..., Inherited)` before emit.
+        // The resulting source then compiles via the
+        // standard pipeline.
+        //
+        // SRD-13c §"Shared Mutable": `shared X := <literal>`
+        // compiles to an input slot + passthrough output marked
+        // SHARED. The workload-root program's `shared_outputs()`
+        // must include the SHARED-modifier outputs so
+        // `seed_shared_cells` creates a `SharedCell` for each
+        // and descendant kernels can cell-attach via
+        // `materialize_wiring_from_outer`.
+        let mut scope = BindingScope::new();
+        let workload_gk = "shared has_sai_column_indexes := false\n\
+                          shared has_indexes := false\n";
+        scope.ingest_gk_source(workload_gk, BindingOrigin::Inherited);
+        let source = scope.emit();
+        let kernel = nbrs_variates::dsl::compile_gk(&source)
+            .unwrap_or_else(|e| panic!("compile failed for source:\n{source}\nerror: {e}"));
+        let shared = kernel.program().shared_outputs();
+        assert!(
+            shared.iter().any(|n| *n == "has_sai_column_indexes"),
+            "expected `has_sai_column_indexes` in shared_outputs after scope-ingest/emit/compile;\n\
+             got shared_outputs={shared:?}\nemitted source:\n{source}",
+        );
+        assert!(
+            shared.iter().any(|n| *n == "has_indexes"),
+            "expected `has_indexes` in shared_outputs after scope-ingest/emit/compile;\n\
+             got shared_outputs={shared:?}\nemitted source:\n{source}",
+        );
+    }
+
+    #[test]
+    fn build_phase_scope_kernel_cascades_shared_bool_as_extern_bool() {
+        // SRD-13d §1: "The kernel auto-externs every name it
+        // doesn't declare locally; those externs resolve up
+        // through the phase kernel and beyond per the standard
+        // SRD-13c chain."
+        //
+        // SRD-66 §"Surface 2": a workload-root `shared X :=
+        // <literal>` becomes a `SharedCell`-backed slot at the
+        // root. Descendant phases declare `extern X: bool` (or
+        // auto-extern emits it); bind_outer_scope cell-attaches
+        // the slot.
+        //
+        // SRD-13c §"Shared Mutable" step 1: `shared X := <literal>`
+        // produces an input slot Bool (kind=CapturePort) plus a
+        // passthrough output Bool, modifier SHARED.
+        //
+        // This unit-test verifies the documented type-preservation
+        // contract: a phase scope built via build_phase_scope_kernel
+        // against a parent kernel carrying a SHARED Bool output
+        // must produce a phase-scope kernel whose has_X input slot
+        // is type Bool, NOT typed U64 / not classified Coordinate.
+        // Without this property, the SharedCell that bind_outer_scope
+        // attaches gets a slot whose declared type doesn't match
+        // the cell's actual Value variant — downstream consumers
+        // (e.g. pick) see the runtime variant and reject it.
+        let parent = nbrs_variates::dsl::compile_gk(
+            "inputs := (cycle)\nshared has_sai_column_indexes := false\n\
+             shared has_indexes := false\n"
+        ).expect("parent compile");
+        // The phase has its own bindings block (the await_index shape).
+        let phase_bindings = nbrs_workload::model::BindingsDef::GkSource(
+            "target_index_table := pick(has_sai_column_indexes, has_indexes, \
+             \"a\", \"b\")\n".to_string()
+        );
+        let phase_kernel = build_phase_scope_kernel(
+            &phase_bindings,
+            &[],  // outer_manifest (would be populated in real runner, but builder doesn't strictly need it)
+            &parent,
+            &HashMap::new(),
+            Vec::new(),
+            None,
+            false,
+            "test_phase",
+        ).expect("phase kernel build");
+
+        // The phase kernel must have has_X as an input slot.
+        let idx_sai = phase_kernel.program().find_input("has_sai_column_indexes");
+        assert!(idx_sai.is_some(),
+            "phase kernel must have `has_sai_column_indexes` input slot");
+        let idx = idx_sai.unwrap();
+
+        // Type must be Bool (per SRD-13c §"Shared Mutable" step 1
+        // + SRD-66 §"Reading from a downstream phase").
+        let port_type = phase_kernel.program().input_port_type("has_sai_column_indexes");
+        assert_eq!(port_type, Some(nbrs_variates::node::PortType::Bool),
+            "phase kernel's has_sai_column_indexes slot must be Bool, got {port_type:?}");
+
+        // Kind must NOT be Coordinate — cascaded names are IterationExtern
+        // (or CapturePort), not Coordinate. Coordinate would put the slot
+        // in the set_inputs(&[u64]) propagation, breaking the cell-bound
+        // contract per SRD-13c §"Shared Mutable" step 3.
+        let kind = phase_kernel.program().input_kind(idx);
+        assert_ne!(kind, Some(nbrs_variates::kernel::InputKind::Coordinate),
+            "phase kernel's has_sai_column_indexes slot must NOT be Coordinate; got {kind:?}");
+    }
+
+    #[test]
+    fn executor_build_scope_emits_extern_bool_for_cell_backed_shared_wire() {
+        // Reproduces the executor's specific build_scope call
+        // sequence for the consume phase:
+        //
+        //   1. Build the phase scope kernel via build_phase_scope_kernel
+        //      (this is what the runner's install pass does).
+        //   2. Call build_scope(ops, ..., parent_kernel=phase_scope)
+        //      with phase_scope as classifier_kernel — this is
+        //      what executor.rs:1429 does at run_phase time.
+        //   3. compile_from_scope(scope, ...) — produces the
+        //      iter_op_builder kernel that dryrun=gk dumps.
+        //
+        // The integration test
+        // `shared_bool_through_for_each_into_consumer_phase_bindings`
+        // proves this whole sequence produces a kernel with has_X
+        // as `coordinate` U64. This unit test reproduces it without
+        // a subprocess so we can inspect every intermediate state.
+        use nbrs_variates::kernel::extract_manifest;
+
+        // ── workload root ──
+        let root = nbrs_variates::dsl::compile_gk(
+            "shared has_a := true\n\
+             shared has_b := false\n\
+             selector := mod(cycle, 1)\n"
+        ).expect("workload root compile");
+
+        // ── for_each scope ──
+        let for_each = nbrs_variates::comprehension::synthesize_for_each_scope(
+            &[("outer".to_string(), "p1,p2".to_string())],
+            &extract_manifest(root.program()),
+            &root,
+            &HashMap::new(),
+            Vec::new(),
+            None,
+            false,
+            "test_for_each",
+            None,
+        ).expect("for_each synth");
+
+        // ── phase scope kernel (cached_kernel) ──
+        let phase_bindings = nbrs_workload::model::BindingsDef::GkSource(
+            "chosen := pick(has_a, has_b, \"alpha\", \"beta\")\n".to_string()
+        );
+        let phase_scope = build_phase_scope_kernel(
+            &phase_bindings,
+            &[],
+            &for_each,
+            &HashMap::new(),
+            Vec::new(),
+            None,
+            false,
+            "test_phase",
+        ).expect("phase scope synth");
+
+        // ── executor's build_scope call ──
+        let op = ParsedOp::simple("report", "consume chosen={chosen}");
+        let ops = vec![op];
+        let effective_manifest: Vec<crate::runner::ManifestEntry> =
+            extract_manifest(phase_scope.program())
+                .into_iter()
+                .map(|e| crate::runner::ManifestEntry {
+                    name: e.name, port_type: e.port_type, modifier: e.modifier,
+                })
+                .collect();
+        let scope = build_scope(
+            &ops,
+            &HashMap::new(),
+            &effective_manifest,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &[],
+            Some(&phase_scope),
+        ).expect("executor build_scope");
+
+        // ── inspect what build_scope emits ──
+        let emitted = scope.emit();
+
+        // ── compile_from_scope equivalent — uses the SAME compile
+        // path the executor takes (compile_gk_with_libs_and_limit
+        // → compile_filtered with optional required_outputs filter).
+        let required = scope.required_outputs();
+        let executor_kernel = nbrs_variates::dsl::compile_gk_with_libs_and_limit(
+            &emitted,
+            None,
+            Vec::new(),
+            &required,
+            false,
+            "test",
+            None,
+        ).unwrap_or_else(|e| panic!("compile failed: {e}\nemitted source:\n{emitted}\nrequired: {required:?}"));
+
+        // The executor's kernel must have has_a as Bool (or absent
+        // entirely if not referenced). It MUST NOT be Coordinate U64.
+        if let Some(idx) = executor_kernel.program().find_input("has_a") {
+            let typ = executor_kernel.program().input_port_type("has_a");
+            assert_eq!(typ, Some(nbrs_variates::node::PortType::Bool),
+                "executor kernel's has_a slot must be Bool;\n\
+                 got {typ:?}\n\
+                 emitted source:\n{emitted}\n\
+                 input names: {:?}\n\
+                 coord_count: {}",
+                executor_kernel.program().input_names(),
+                executor_kernel.program().coord_count());
+            let kind = executor_kernel.program().input_kind(idx);
+            assert_ne!(kind, Some(nbrs_variates::kernel::InputKind::Coordinate),
+                "executor kernel's has_a slot must NOT be Coordinate;\n\
+                 got {kind:?}\n\
+                 emitted source:\n{emitted}\n\
+                 input names: {:?}\n\
+                 coord_count: {}",
+                executor_kernel.program().input_names(),
+                executor_kernel.program().coord_count());
+        }
+    }
+
+    #[test]
+    fn full_chain_workload_to_executor_scope_preserves_shared_bool() {
+        // Chains through every layer the failing integration test
+        // touches, in-process, with the same shape that triggers
+        // the failure:
+        //
+        //   1. params kernel (workload params as `final` bindings).
+        //   2. workload-root kernel via the `compile_bindings_with_libs_excluding`-style
+        //      flow: build_scope + scope.ingest_gk_source + parent.build_subscope.
+        //   3. for_each scope kernel (outer iter var).
+        //   4. for_each scope kernel (inner with multi-iter clause).
+        //   5. phase scope kernel via build_phase_scope_kernel (consume).
+        //   6. executor's build_scope + compile_gk_with_libs_and_limit.
+        //
+        // Verifies at the END that the consumer phase's executor-
+        // compiled kernel has has_a as Bool/non-Coordinate.
+        use nbrs_workload::model::ParsedOp;
+        use nbrs_variates::kernel::extract_manifest;
+
+        // Step 1: params kernel.
+        let mut workload_params: HashMap<String, String> = HashMap::new();
+        workload_params.insert("dataset".to_string(), "example_dataset".to_string());
+        workload_params.insert("prefix".to_string(), "px_".to_string());
+        let mut sorted: Vec<&String> = workload_params.keys().collect();
+        sorted.sort();
+        let mut params_source = String::new();
+        for k in sorted {
+            params_source.push_str(&format!("final {k} := \"{}\"\n", workload_params[k]));
+        }
+        let params_kernel = nbrs_variates::dsl::compile_gk(&params_source)
+            .expect("params compile");
+
+        // Step 2: workload-root kernel.
+        let mut scope = build_scope(
+            &[] as &[ParsedOp],
+            &HashMap::new(),
+            &[],
+            &workload_params,
+            &HashMap::new(),
+            None,
+            &[],
+            None,
+        ).expect("workload root build_scope");
+        // KEY: the binding RHS uses string interpolation against
+        // workload params. This is what triggers the chain
+        // corruption — without it, the test passes; with it, the
+        // integration test fails.
+        let workload_level_gk = "combo_label := str_concat(\"{dataset}\", \"{prefix}\")\n\
+                                 shared has_a := true\n\
+                                 shared has_b := false\n";
+        scope.ingest_gk_source(workload_level_gk, BindingOrigin::Inherited);
+        let root_source = scope.emit();
+        let root_matter = nbrs_variates::subcontext::GkMatter::builder()
+            .label("test_root")
+            .source(root_source.clone())
+            .options(nbrs_variates::subcontext::CompileOptions {
+                workload_dir: None,
+                gk_lib_paths: Vec::new(),
+                strict: false,
+                required_outputs: scope.required_outputs(),
+                context_label: Some("test_root".to_string()),
+                cursor_limit: None,
+            })
+            .build()
+            .expect("root matter");
+        let root = params_kernel.build_subscope(root_matter).expect("root build");
+
+        // Sanity: has_a SHARED at root.
+        let shared = root.program().shared_outputs();
+        assert!(shared.iter().any(|n| *n == "has_a"),
+            "root should have has_a as SHARED output; got {shared:?}");
+
+        // Step 3: outer for_each scope.
+        let outer_fe = nbrs_variates::comprehension::synthesize_for_each_scope(
+            &[("outer".to_string(), "p1,p2".to_string())],
+            &extract_manifest(root.program()),
+            &root,
+            &workload_params,
+            Vec::new(),
+            None,
+            false,
+            "test_outer_fe",
+            None,
+        ).expect("outer for_each synth");
+
+        // Step 4: inner for_each scope (dependent multi-iter).
+        let inner_fe = nbrs_variates::comprehension::synthesize_for_each_scope(
+            &[
+                ("inner".to_string(), "lo,hi".to_string()),
+                ("label".to_string(), "tag_p1_lo,tag_p1_hi".to_string()),
+            ],
+            &extract_manifest(outer_fe.program()),
+            &outer_fe,
+            &workload_params,
+            Vec::new(),
+            None,
+            false,
+            "test_inner_fe",
+            None,
+        ).expect("inner for_each synth");
+
+        // Step 5: phase scope kernel for consume.
+        let phase_bindings = BindingsDef::GkSource(
+            "chosen := pick(has_a, has_b, \"alpha\", \"beta\")\n".to_string()
+        );
+        let phase_scope = build_phase_scope_kernel(
+            &phase_bindings,
+            &[],
+            &inner_fe,
+            &workload_params,
+            Vec::new(),
+            None,
+            false,
+            "test_consume_phase",
+        ).expect("consume phase synth");
+
+        // Step 6: executor's build_scope on the consume phase.
+        let op = ParsedOp::simple("report", "spc/consume chosen={chosen}");
+        let ops = vec![op];
+        let effective_manifest: Vec<crate::runner::ManifestEntry> =
+            extract_manifest(phase_scope.program())
+                .into_iter()
+                .map(|e| crate::runner::ManifestEntry {
+                    name: e.name, port_type: e.port_type, modifier: e.modifier,
+                })
+                .collect();
+        let exec_scope = build_scope(
+            &ops,
+            &HashMap::new(),
+            &effective_manifest,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &[],
+            Some(&phase_scope),
+        ).expect("executor build_scope");
+
+        let exec_source = exec_scope.emit();
+        let exec_kernel = nbrs_variates::dsl::compile_gk_with_libs_and_limit(
+            &exec_source,
+            None,
+            Vec::new(),
+            &exec_scope.required_outputs(),
+            false,
+            "test_executor",
+            None,
+        ).unwrap_or_else(|e| panic!(
+            "exec compile failed: {e}\nexec source:\n{exec_source}"));
+
+        // The final kernel — what the dryrun=gk dumps — must
+        // have has_a as Bool/non-Coordinate.
+        if let Some(idx) = exec_kernel.program().find_input("has_a") {
+            let typ = exec_kernel.program().input_port_type("has_a");
+            assert_eq!(typ, Some(nbrs_variates::node::PortType::Bool),
+                "FINAL kernel has_a must be Bool, got {typ:?}\n\
+                 exec source:\n{exec_source}\n\
+                 exec input_names: {:?}\n\
+                 exec coord_count: {}",
+                exec_kernel.program().input_names(),
+                exec_kernel.program().coord_count());
+            let kind = exec_kernel.program().input_kind(idx);
+            assert_ne!(kind, Some(nbrs_variates::kernel::InputKind::Coordinate),
+                "FINAL kernel has_a must NOT be Coordinate, got {kind:?}\n\
+                 exec source:\n{exec_source}\n\
+                 exec input_names: {:?}\n\
+                 exec coord_count: {}",
+                exec_kernel.program().input_names(),
+                exec_kernel.program().coord_count());
+        }
+    }
+
+    #[test]
+    fn workload_root_via_compile_bindings_preserves_shared_bool_type() {
+        // Mirrors the runner's WORKLOAD-ROOT build flow:
+        //   compile_bindings_with_libs_excluding(
+        //     parent=params_kernel,
+        //     ops=all_ops,
+        //     workload_params=<non-empty>,
+        //     workload_level_gk=Some(<the bindings: block>),
+        //   )
+        //
+        // The actual function takes a complex set of args; here
+        // we replicate the essential moves to expose what differs
+        // from a direct `compile_gk(source)` invocation.
+        //
+        // SRD-13c §"Shared Mutable" requires has_a to be CapturePort
+        // kind, Bool type on the workload-root program. The
+        // dryrun=gk output of the failing integration test shows
+        // the downstream phase has has_a as Coordinate U64, so
+        // either the workload-root or a downstream synthesizer
+        // emits the wrong source for it.
+        use nbrs_workload::model::ParsedOp;
+
+        let mut workload_params: HashMap<String, String> = HashMap::new();
+        workload_params.insert("dataset".to_string(), "example_dataset".to_string());
+        workload_params.insert("prefix".to_string(), "px_".to_string());
+        workload_params.insert("keyspace".to_string(), "ks1".to_string());
+        workload_params.insert("inner_options".to_string(), "lo,hi".to_string());
+
+        // Workload params reach the root via a sibling params
+        // kernel. Construct one with each param as a final binding.
+        let mut params_source = String::new();
+        let mut sorted: Vec<&String> = workload_params.keys().collect();
+        sorted.sort();
+        for k in sorted {
+            let v = &workload_params[k];
+            params_source.push_str(&format!("final {k} := \"{v}\"\n"));
+        }
+        let params_kernel = nbrs_variates::dsl::compile_gk(&params_source)
+            .expect("params compile");
+
+        // The workload's `bindings:` block. The trigger.
+        let workload_level_gk = "selector := mod(cycle, 1)\n\
+                                 shared has_a := true\n\
+                                 shared has_b := false\n";
+
+        // Build the workload-root scope as compile_bindings_with_libs_excluding does.
+        let mut scope = build_scope(
+            &[] as &[ParsedOp],
+            &HashMap::new(),
+            &[],
+            &workload_params,
+            &HashMap::new(),
+            None,
+            &[],
+            None,
+        ).expect("build_scope");
+        scope.ingest_gk_source(workload_level_gk, BindingOrigin::Inherited);
+
+        // The actual workload-root compile goes through
+        // parent.build_subscope. Build the matter and finalize.
+        let source = scope.emit();
+        let opts = nbrs_variates::subcontext::CompileOptions {
+            workload_dir: None,
+            gk_lib_paths: Vec::new(),
+            strict: false,
+            required_outputs: scope.required_outputs(),
+            context_label: Some("test_workload_root".to_string()),
+            cursor_limit: None,
+        };
+        let matter = nbrs_variates::subcontext::GkMatter::builder()
+            .label("test_workload_root")
+            .source(source.clone())
+            .options(opts)
+            .build()
+            .expect("matter build");
+        let root = params_kernel.build_subscope(matter).expect("workload root build");
+
+        // The workload-root program must have has_a:
+        //   - present as an input slot,
+        //   - typed Bool (SRD-13c §"Shared Mutable" step 1),
+        //   - kind CapturePort (NOT Coordinate),
+        //   - marked SHARED in output_modifier (so seed_shared_cells fires).
+        let has_a_idx = root.program().find_input("has_a")
+            .unwrap_or_else(|| panic!(
+                "workload root missing has_a input;\n\
+                 emitted scope source:\n{source}\n\
+                 input names: {:?}",
+                 root.program().input_names()));
+
+        let typ = root.program().input_port_type("has_a");
+        assert_eq!(typ, Some(nbrs_variates::node::PortType::Bool),
+            "workload root has_a must be Bool;\n\
+             got {typ:?}\n\
+             emitted source:\n{source}\n\
+             input names: {:?}\n\
+             coord_count: {}",
+            root.program().input_names(),
+            root.program().coord_count());
+
+        let kind = root.program().input_kind(has_a_idx);
+        assert_ne!(kind, Some(nbrs_variates::kernel::InputKind::Coordinate),
+            "workload root has_a must NOT be Coordinate;\n\
+             got {kind:?}\n\
+             emitted source:\n{source}\n\
+             input names: {:?}\n\
+             coord_count: {}",
+            root.program().input_names(),
+            root.program().coord_count());
+
+        let modifier = root.program().output_modifier("has_a");
+        assert_eq!(modifier, nbrs_variates::dsl::ast::BindingModifier::SHARED,
+            "workload root has_a output must have SHARED modifier;\n\
+             got {modifier:?}");
+
+        let shared = root.program().shared_outputs();
+        assert!(shared.iter().any(|n| *n == "has_a"),
+            "workload root must have has_a in shared_outputs (so seed_shared_cells creates a cell);\n\
+             got shared_outputs={shared:?}");
+    }
+
+    #[test]
+    fn shared_bool_survives_when_workload_root_also_has_cycle_binding() {
+        // BISECTED INTEGRATION FAILURE: adding any non-shared
+        // workload-level binding that references `cycle`
+        // (e.g. `selector := mod(cycle, 1)`) alongside the
+        // SHARED bool wires causes the consumer phase's phase
+        // scope kernel to have has_X classified as Coordinate
+        // input slots typed U64 instead of cascaded externs
+        // typed Bool.
+        //
+        // Manifests at runtime as: per-cycle `set_inputs(&[u64])`
+        // clobbers the shared cells with `Value::U64(cycle)`,
+        // and `pick(has_X, …)` panics with "non-bool type U64".
+        //
+        // This unit test walks the same scope chain
+        // programmatically and pins the contract at each hop:
+        //   workload root (shared bool + cycle-referencing binding)
+        //     → for_each scope (synthesize_for_each_scope)
+        //       → phase scope (build_phase_scope_kernel)
+        // Asserts has_a stays Bool + non-Coordinate kind at every
+        // layer.
+        use nbrs_variates::kernel::extract_manifest;
+
+        // Step 1: workload root with shared bool AND a
+        // non-shared cycle binding. The trigger.
+        let root = nbrs_variates::dsl::compile_gk(
+            "shared has_a := true\n\
+             shared has_b := false\n\
+             selector := mod(cycle, 1)\n"
+        ).expect("workload root compile");
+
+        // Workload-root contract: has_a is Bool CapturePort slot
+        // (SRD-13c §"Shared Mutable" step 1).
+        let root_has_a_idx = root.program().find_input("has_a")
+            .expect("workload root has_a slot");
+        let root_has_a_type = root.program().input_port_type("has_a");
+        assert_eq!(root_has_a_type, Some(nbrs_variates::node::PortType::Bool),
+            "workload root has_a must be Bool");
+        let root_has_a_kind = root.program().input_kind(root_has_a_idx);
+        assert_ne!(root_has_a_kind, Some(nbrs_variates::kernel::InputKind::Coordinate),
+            "workload root has_a must NOT be Coordinate; got {root_has_a_kind:?}");
+
+        // Step 2: for_each scope.
+        let for_each = nbrs_variates::comprehension::synthesize_for_each_scope(
+            &[("outer".to_string(), "p1,p2".to_string())],
+            &extract_manifest(root.program()),
+            &root,
+            &HashMap::new(),
+            Vec::new(),
+            None,
+            false,
+            "test_for_each",
+            None,
+        ).expect("for_each synth");
+
+        let fe_has_a_idx = for_each.program().find_input("has_a")
+            .expect("for_each has_a slot");
+        let fe_has_a_type = for_each.program().input_port_type("has_a");
+        assert_eq!(fe_has_a_type, Some(nbrs_variates::node::PortType::Bool),
+            "for_each has_a must be Bool, got {fe_has_a_type:?}");
+        let fe_has_a_kind = for_each.program().input_kind(fe_has_a_idx);
+        assert_ne!(fe_has_a_kind, Some(nbrs_variates::kernel::InputKind::Coordinate),
+            "for_each has_a must NOT be Coordinate; got {fe_has_a_kind:?}");
+
+        // Step 3: phase scope with its own bindings via pick.
+        let phase_bindings = nbrs_workload::model::BindingsDef::GkSource(
+            "chosen := pick(has_a, has_b, \"alpha\", \"beta\")\n".to_string()
+        );
+        let phase = build_phase_scope_kernel(
+            &phase_bindings,
+            &[],
+            &for_each,
+            &HashMap::new(),
+            Vec::new(),
+            None,
+            false,
+            "test_phase",
+        ).expect("phase scope synth");
+
+        let phase_has_a_idx = phase.program().find_input("has_a")
+            .expect("phase has_a slot");
+        let phase_has_a_type = phase.program().input_port_type("has_a");
+        assert_eq!(phase_has_a_type, Some(nbrs_variates::node::PortType::Bool),
+            "phase has_a must be Bool; got {phase_has_a_type:?}\n\
+             phase input names: {:?}",
+            phase.program().input_names());
+        let phase_has_a_kind = phase.program().input_kind(phase_has_a_idx);
+        assert_ne!(phase_has_a_kind, Some(nbrs_variates::kernel::InputKind::Coordinate),
+            "phase has_a must NOT be Coordinate; got {phase_has_a_kind:?}\n\
+             phase input names: {:?}\n\
+             coord_count: {}",
+            phase.program().input_names(),
+            phase.program().coord_count());
+    }
+
+    #[test]
+    fn for_each_then_phase_preserves_shared_bool_through_chain() {
+        // The full chain the workload exercises:
+        //   workload root (shared has_X := false)
+        //     → for_each scope (cascades has_X via synthesize_for_each_scope)
+        //       → phase scope await_index (cascades has_X via build_phase_scope_kernel)
+        //
+        // SRD-13c §"Shared Mutable" + SRD-13d §1: at every cascade
+        // hop, has_X stays Bool-typed and non-Coordinate.
+        // bind_outer_scope then cell-attaches at each level so
+        // the original SharedCell reaches the leaf.
+        use nbrs_variates::kernel::extract_manifest;
+        let root = nbrs_variates::dsl::compile_gk(
+            "inputs := (cycle)\nshared has_sai_column_indexes := false\n\
+             shared has_indexes := false\n"
+        ).expect("root compile");
+
+        // for_each scope synthesised via the comprehension
+        // synthesizer (the path runner.rs uses for ForComprehension
+        // install specs). Iter vars are a placeholder so the
+        // builder runs.
+        let for_each_kernel = nbrs_variates::comprehension::synthesize_for_each_scope(
+            &[("dummy_var".to_string(), "1,2".to_string())],
+            &extract_manifest(root.program()),
+            &root,
+            &HashMap::new(),  // workload_params
+            Vec::new(),       // gk_lib_paths
+            None,             // workload_dir
+            false,            // strict
+            "test_for_each",
+            None,             // phase_bindings
+        ).expect("for_each kernel synth");
+
+        // for_each's program must carry has_X as a Bool slot too.
+        let fe_type = for_each_kernel.program().input_port_type("has_sai_column_indexes");
+        assert_eq!(fe_type, Some(nbrs_variates::node::PortType::Bool),
+            "for_each scope's has_sai_column_indexes must be Bool, got {fe_type:?}");
+        let fe_idx = for_each_kernel.program().find_input("has_sai_column_indexes")
+            .expect("for_each has has_sai_column_indexes input");
+        let fe_kind = for_each_kernel.program().input_kind(fe_idx);
+        assert_ne!(fe_kind, Some(nbrs_variates::kernel::InputKind::Coordinate),
+            "for_each scope's has_sai_column_indexes must NOT be Coordinate; got {fe_kind:?}");
+
+        // Now build await_index's phase scope under for_each
+        // (the real scope-tree shape).
+        let phase_bindings = nbrs_workload::model::BindingsDef::GkSource(
+            "target_index_table := pick(has_sai_column_indexes, has_indexes, \
+             \"a\", \"b\")\n".to_string()
+        );
+        let phase_kernel = build_phase_scope_kernel(
+            &phase_bindings,
+            &[],
+            &for_each_kernel,
+            &HashMap::new(),
+            Vec::new(),
+            None,
+            false,
+            "test_await_index",
+        ).expect("phase kernel synth");
+
+        let phase_type = phase_kernel.program().input_port_type("has_sai_column_indexes");
+        assert_eq!(phase_type, Some(nbrs_variates::node::PortType::Bool),
+            "phase scope's has_sai_column_indexes must be Bool, got {phase_type:?}");
+        let phase_idx = phase_kernel.program().find_input("has_sai_column_indexes")
+            .expect("phase has has_sai_column_indexes input");
+        let phase_kind = phase_kernel.program().input_kind(phase_idx);
+        assert_ne!(phase_kind, Some(nbrs_variates::kernel::InputKind::Coordinate),
+            "phase scope's has_sai_column_indexes must NOT be Coordinate; got {phase_kind:?}");
     }
 }

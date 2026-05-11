@@ -982,6 +982,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "clamp_f64", category: C::Conversions,
@@ -996,6 +997,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Clamp an f64 value to [min, max].\nUse after distributions with unbounded tails (normal, Cauchy)\nto enforce domain constraints, or to guard against edge values.\nParameters:\n  input — f64 wire input\n  min   — lower bound (inclusive, f64)\n  max   — upper bound (inclusive, f64)\nExample: clamp_f64(icd_normal(hash(cycle), 50.0, 10.0), 0.0, 100.0)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "to_f64", category: C::Conversions, outputs: 1,
@@ -1006,6 +1008,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "f64_to_u64", category: C::Conversions, outputs: 1,
@@ -1016,6 +1019,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "round_to_u64", category: C::Conversions, outputs: 1,
@@ -1026,6 +1030,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "floor_to_u64", category: C::Conversions, outputs: 1,
@@ -1036,6 +1041,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "ceil_to_u64", category: C::Conversions, outputs: 1,
@@ -1046,6 +1052,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "discretize", category: C::Conversions,
@@ -1062,6 +1069,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Bin a continuous f64 into N equal-width integer buckets.\nInput is an f64 in [0, range); output is a u64 bucket index in [0, buckets).\nOut-of-range inputs are clamped to the first or last bucket.\nParameters:\n  input   — f64 wire input\n  range   — upper bound of the input domain (u64, cast to f64)\n  buckets — number of output bins (u64)\nExample: discretize(scale_range(hash(cycle), 0.0, 100.0), 100, 10)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "format_u64", category: C::Conversions,
@@ -1076,6 +1084,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Format a u64 as a string in the specified radix.\nRadix: 10=decimal (default), 16=hex (0x prefix), 8=octal (0o),\n2=binary (0b). Omit radix for plain decimal.\nParameters:\n  input — u64 wire input\n  radix — optional base (2, 8, 10, or 16; default 10)\nExample: format_u64(hash(cycle), 16)  // \"0x1a2b3c4d\"",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "format_f64", category: C::Conversions,
@@ -1089,6 +1098,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Format an f64 with a fixed number of decimal places.\nPrecision 0 rounds to the nearest integer string.\nParameters:\n  input     — f64 wire input\n  precision — number of decimal digits (u64)\nExample: format_f64(scale_range(hash(cycle), 0.0, 100.0), 2)  // \"73.41\"",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "zero_pad_u64", category: C::Conversions,
@@ -1102,6 +1112,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Zero-pad a u64 to a fixed-width decimal string.\nShorter numbers are left-padded with zeros; longer numbers pass through.\nUseful for fixed-width identifiers, partition keys, or filenames.\nParameters:\n  input — u64 wire input\n  width — minimum string width (u64)\nExample: zero_pad_u64(mod(hash(cycle), 10000), 8)  // \"00004217\"",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -1143,7 +1154,7 @@ impl GkNode for ToF64 {
 /// Try to build a conversion node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "unit_interval" => Some(Ok(Box::new(crate::sampling::icd::UnitInterval::new()))),
         "clamp_f64" => Some(Ok(Box::new(crate::sampling::icd::ClampF64::new(

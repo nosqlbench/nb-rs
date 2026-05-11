@@ -56,13 +56,19 @@ pub struct LogPassthrough {
 }
 
 impl LogPassthrough {
-    pub fn new(level: LogLevel) -> Self {
-        let typ = PortType::Str;
+    /// Construct a log passthrough node typed for `port_type`.
+    /// Both input and output ports take this type — the eval
+    /// clones the input through, so the runtime value retains
+    /// its variant. The registry's `OutputType::SameAsInput(0)`
+    /// declaration drives the build dispatch to call this with
+    /// the resolved input wire's port type, so the wire-level
+    /// type contract matches what flows through at runtime.
+    pub fn new(level: LogLevel, port_type: PortType) -> Self {
         Self {
             meta: NodeMeta {
                 name: level.func_name().into(),
-                outs: vec![Port::new("output", typ)],
-                ins: vec![Slot::Wire(Port::new("value", typ))],
+                outs: vec![Port::new("output", port_type)],
+                ins: vec![Slot::Wire(Port::new("value", port_type))],
             },
             level,
         }
@@ -132,6 +138,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::SameAsInput(0),
         },
         FuncSig {
             name: "log_info",
@@ -150,6 +157,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::SameAsInput(0),
         },
         FuncSig {
             name: "log_warn",
@@ -166,6 +174,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::SameAsInput(0),
         },
         FuncSig {
             name: "log_error",
@@ -182,6 +191,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::SameAsInput(0),
         },
     ]
 }
@@ -189,6 +199,7 @@ pub fn signatures() -> &'static [FuncSig] {
 pub(crate) fn build_node(
     name: &str,
     _wires: &[crate::assembly::WireRef],
+    wire_types: &[crate::node::PortType],
     _consts: &[crate::dsl::factory::ConstArg],
 ) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     let level = match name {
@@ -198,7 +209,14 @@ pub(crate) fn build_node(
         "log_error" => LogLevel::Error,
         _ => return None,
     };
-    Some(Ok(Box::new(LogPassthrough::new(level))))
+    // SRD: per FuncSig.output_type = SameAsInput(0), the
+    // output port type tracks the input wire's type. The
+    // dispatch path passes the resolved input wire type via
+    // `wire_types[0]`. Default to U64 if the wire is unresolved
+    // (forward reference, dangling — rare, surfaces upstream as
+    // a separate compile error).
+    let typ = wire_types.first().copied().unwrap_or(PortType::U64);
+    Some(Ok(Box::new(LogPassthrough::new(level, typ))))
 }
 
 crate::register_nodes!(signatures, build_node);
@@ -210,8 +228,8 @@ mod tests {
     /// Each level passes through the input value verbatim. Stderr
     /// emission is verified at the assembled-graph layer; here we
     /// confirm the eval contract — value in == value out.
-    fn run(level: LogLevel, input: Value) -> Value {
-        let node = LogPassthrough::new(level);
+    fn run(level: LogLevel, port_type: PortType, input: Value) -> Value {
+        let node = LogPassthrough::new(level, port_type);
         let mut out = [Value::None];
         node.eval(&[input], &mut out);
         out.into_iter().next().unwrap()
@@ -219,40 +237,54 @@ mod tests {
 
     #[test]
     fn log_debug_passthrough() {
-        let v = run(LogLevel::Debug, Value::Str("hello".into()));
+        let v = run(LogLevel::Debug, PortType::Str, Value::Str("hello".into()));
         assert_eq!(v.as_str(), "hello");
     }
 
     #[test]
     fn log_info_passthrough() {
-        let v = run(LogLevel::Info, Value::Bool(true));
+        let v = run(LogLevel::Info, PortType::Bool, Value::Bool(true));
         assert!(v.as_bool());
     }
 
     #[test]
     fn log_warn_passthrough() {
-        let v = run(LogLevel::Warn, Value::U64(42));
+        let v = run(LogLevel::Warn, PortType::U64, Value::U64(42));
         assert_eq!(v.as_u64(), 42);
     }
 
     #[test]
     fn log_error_passthrough() {
-        let v = run(LogLevel::Error, Value::F64(1.5));
+        let v = run(LogLevel::Error, PortType::F64, Value::F64(1.5));
         assert_eq!(v.as_f64(), 1.5);
     }
 
     #[test]
     fn log_node_meta_has_one_input_one_output() {
-        let node = LogPassthrough::new(LogLevel::Info);
+        let node = LogPassthrough::new(LogLevel::Info, PortType::Str);
         assert_eq!(node.meta().ins.len(), 1);
         assert_eq!(node.meta().outs.len(), 1);
         assert_eq!(node.meta().name, "log_info");
     }
 
     #[test]
+    fn log_info_meta_tracks_constructor_port_type() {
+        // SRD: log_* declare OutputType::SameAsInput(0). The
+        // constructor takes a port_type and both input and
+        // output ports carry it. Verify the constructor honours
+        // the contract — passing Bool produces Bool ports.
+        let node = LogPassthrough::new(LogLevel::Info, PortType::Bool);
+        assert_eq!(node.meta().outs[0].typ, PortType::Bool);
+        match &node.meta().ins[0] {
+            Slot::Wire(p) => assert_eq!(p.typ, PortType::Bool),
+            other => panic!("expected Slot::Wire, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn build_node_recognises_all_four_levels() {
         for name in &["log_debug", "log_info", "log_warn", "log_error"] {
-            let result = build_node(name, &[], &[]);
+            let result = build_node(name, &[], &[], &[]);
             let node = result
                 .unwrap_or_else(|| panic!("name {name} not handled"))
                 .unwrap_or_else(|e| panic!("build failed for {name}: {e}"));

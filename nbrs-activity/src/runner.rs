@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use crate::activity::{Activity, ActivityConfig};
 use crate::adapter::{find_adapter_registration, registered_adapter_params, registered_driver_names};
-use crate::bindings::compile_bindings_with_libs_excluding;
+use crate::bindings::build_workload_root_kernel;
 use crate::opseq::{OpSequence, SequencerType};
 use crate::synthesis::OpBuilder;
 use nbrs_metrics::labels::Labels;
@@ -997,10 +997,16 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // cycle-dependent bindings.
     let workload_canonical_kernel: std::sync::Arc<nbrs_variates::kernel::GkKernel> =
         std::sync::Arc::new(
-            compile_bindings_with_libs_excluding(
+            build_workload_root_kernel(
                 &params_kernel,
-                &all_ops_for_compile, workload_dir, gk_lib_paths.clone(), strict, &[], &config_refs,
-                "outer workload bindings", cursor_limit, &workload_params,
+                &all_ops_for_compile,
+                workload_dir,
+                gk_lib_paths.clone(),
+                strict,
+                &config_refs,
+                "outer workload bindings",
+                cursor_limit,
+                &workload_params,
                 workload_level_gk.as_deref(),
             ).map_err(|e| format!("outer workload bindings: {e}"))?
         );

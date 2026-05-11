@@ -480,6 +480,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Promote a scalar value to a JSON value.\nU64 -> JSON number, F64 -> JSON number, Bool -> JSON bool,\nStr -> JSON string, Json -> passed through unchanged.\nParameters:\n  input — any wire value\nExample: to_json(hash(cycle))  // JSON number",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "json_to_str", category: C::Json,
@@ -492,6 +493,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Serialize a JSON value to a compact string representation.\nProduces minified JSON with no extra whitespace.\nParameters:\n  input — JSON wire input\nExample: json_to_str(to_json(hash(cycle)))  // \"42\"",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "json_text", category: C::Json,
@@ -504,6 +506,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Walk a JSON tree depth-first and concatenate every leaf value's\ntextual form into a newline-separated string. Strings keep any\nembedded newlines verbatim — multi-line content like CQL\n`create_statement` survives intact, so line-anchored regex\npatterns match against the actual schema text.\n\nUse for probe-phase regex matches over multi-row result\nbodies, e.g. `regex_match(json_text(body), \"(?im)^TABLE …\")`.\nParameters:\n  input — JSON wire input (the magic `body` extern shape).\nExample: json_text(body)  // multi-line text suitable for regex",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "escape_json", category: C::Json, outputs: 1,
@@ -514,6 +517,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "json_merge", category: C::Json, outputs: 1,
@@ -527,6 +531,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "array_len", category: C::Json, outputs: 1,
@@ -537,6 +542,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "array_at", category: C::Json, outputs: 1,
@@ -550,6 +556,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "normalize_vector", category: C::Json, outputs: 1,
@@ -562,6 +569,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "random_vector", category: C::Json, outputs: 1,
@@ -577,6 +585,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -778,7 +787,7 @@ impl GkNode for ArrayAt {
 /// Try to build a JSON node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "to_json" => Some(Ok(Box::new(ToJson::new(crate::node::PortType::U64)))),
         "json_to_str" => Some(Ok(Box::new(JsonToStr::new()))),

@@ -174,6 +174,7 @@ mod tests {
                     arity: Arity::Fixed,
                     commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
                 }]
             }
             fn build(&self, _name: &str, _wc: usize, _consts: &[FactoryArg])
@@ -211,6 +212,7 @@ mod tests {
                     arity: Arity::Fixed,
                     commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
                 }]
             }
             fn build(&self, name: &str, _wc: usize, _consts: &[FactoryArg])
@@ -254,6 +256,7 @@ mod tests {
                     arity: Arity::Fixed,
                     commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
                 }]
             }
             fn build(&self, _: &str, _: usize, _: &[FactoryArg])

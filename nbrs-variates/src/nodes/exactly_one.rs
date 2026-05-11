@@ -263,12 +263,13 @@ pub fn signatures() -> &'static [FuncSig] {
         arity: Arity::Fixed,
         commutativity: crate::node::Commutativity::Positional,
         default_resolver: None,
+        output_type: crate::dsl::registry::OutputType::Fixed,
     }]
 }
 
 pub(crate) fn build_node(
     name: &str,
-    _wires: &[crate::assembly::WireRef],
+    _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType],
     _consts: &[crate::dsl::factory::ConstArg],
 ) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {

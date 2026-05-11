@@ -643,6 +643,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Fair coin flip: deterministically returns 0 or 1 with 50/50 probability.\nEquivalent to mod(hash(input), 2). Use for simple binary decisions\nlike choosing between two data centers or two code paths.\nParameters:\n  input — u64 wire input (hashed internally)\nExample: fair_coin(cycle)  // 0 or 1",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "unfair_coin", category: C::Probability,
@@ -657,6 +658,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Biased coin: returns 1 with probability p, else 0.\nThe input is hashed to [0,1) and compared against p.\nUse for modeling probabilistic events: error injection, cache miss rates.\nParameters:\n  input — u64 wire input (hashed internally)\n  p     — probability of returning 1 (f64 in [0.0, 1.0])\nExample: unfair_coin(cycle, 0.1)  // 10% chance of 1",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "select", category: C::Probability,
@@ -671,6 +673,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Ternary conditional: returns if_true when cond != 0, else if_false.\nAll three inputs are always evaluated (no short-circuit — this is a DAG).\nCombine with fair_coin/unfair_coin/n_of for the condition wire.\nParameters:\n  cond     — u64 condition (0 = false, nonzero = true)\n  if_true  — value returned when cond != 0\n  if_false — value returned when cond == 0\nExample: select(unfair_coin(cycle, 0.1), slow_path, fast_path)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "chance", category: C::Probability,
@@ -685,6 +688,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Like unfair_coin but returns 0.0 or 1.0 as f64.\nUse when the result feeds directly into f64 arithmetic\nwithout needing an explicit type conversion step.\nParameters:\n  input — u64 wire input (hashed internally)\n  p     — probability of returning 1.0 (f64 in [0.0, 1.0])\nExample: chance(cycle, 0.3)  // 30% chance of 1.0, else 0.0",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "n_of", category: C::Probability,
@@ -699,6 +703,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Deterministic fractional selection: exactly n out of every m inputs return 1.\nUnlike unfair_coin (probabilistic), n_of guarantees exact counts\nover each window of m consecutive inputs.\nParameters:\n  input — u64 wire input\n  n     — number of selected inputs per window (u64, n <= m)\n  m     — window size (u64, must be > 0)\nExample: n_of(cycle, 3, 10)  // exactly 3 of every 10 cycles are 1",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "one_of", category: C::Probability,
@@ -712,6 +717,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Uniform selection from a comma-separated list of string values.\nHashes the input, picks one value with equal probability.\nUse for simple categorical selection when all outcomes are equally likely.\nParameters:\n  input  — u64 wire input (hashed internally)\n  values — comma-separated string values\nExample: one_of(cycle, \"red,green,blue\")",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "one_of_weighted", category: C::Probability,
@@ -726,6 +732,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Weighted selection from a \"value:weight,...\" spec string.\nWeights are relative and do not need to sum to 1.\nUse for unequal-probability categorical selection.\nParameters:\n  input — u64 wire input (hashed internally)\n  spec  — comma-separated value:weight pairs\nExample: one_of_weighted(cycle, \"200:80,404:10,500:5,503:5\")",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "blend", category: C::Probability,
@@ -741,6 +748,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Weighted linear blend of two f64 wire inputs.\nResult = a * (1 - mix) + b * mix. At mix=0 you get pure a, at mix=1 pure b.\nParameters:\n  a   — first f64 wire input\n  b   — second f64 wire input\n  mix — blend factor (f64 in [0.0, 1.0])\nExample: blend(fast_latency, slow_latency, 0.3)  // 70% fast, 30% slow",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "default_or", category: C::Probability,
@@ -754,6 +762,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Return the first input if it is not None, otherwise the second.\nUse with extern inputs (captures) that may not have been set yet.\nParameters:\n  value    — primary wire input (may be None if unset)\n  fallback — wire input used when value is None\nExample: default_or(username, \"anonymous\")",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -761,7 +770,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a probability node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "fair_coin" => Some(Ok(Box::new(FairCoin::new()))),
         "unfair_coin" => Some(Ok(Box::new(UnfairCoin::new(

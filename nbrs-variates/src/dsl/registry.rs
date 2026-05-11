@@ -31,7 +31,17 @@ pub struct NodeRegistration {
     ///
     /// Returns `None` if the name is not handled by this module,
     /// or `Some(Ok(node))` / `Some(Err(msg))` if it is.
-    pub build: fn(&str, &[WireRef], &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>>,
+    ///
+    /// `wire_types[i]` is the resolved [`crate::node::PortType`] of
+    /// `wires[i]` — the output type of the upstream node feeding
+    /// that wire input. Modules that build type-polymorphic nodes
+    /// (e.g. `log_info`, whose output type equals its input type)
+    /// read this to construct the node with the correct port
+    /// types. Modules whose nodes have type-fixed signatures can
+    /// ignore the slice. When the assembler can't resolve a
+    /// wire's type (forward reference, dangling), the slot
+    /// defaults to [`crate::node::PortType::U64`].
+    pub build: fn(&str, &[WireRef], &[crate::node::PortType], &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>>,
     /// Optional assembly-time validator for this module's constants.
     ///
     /// The factory calls this **before** `build` whenever the name
@@ -281,6 +291,32 @@ pub enum Arity {
 }
 
 
+/// Output-type contract for a registered function.
+///
+/// Most nodes have fixed port types declared by their constructor's
+/// `NodeMeta`. Some — `log_info`, `identity`, anything documented
+/// as "pass-through" — produce an output whose type matches one
+/// of their inputs. Declaring this here makes the contract visible
+/// to the assembler, the build-node dispatch path, `describe gk
+/// functions`, and any future static analysis, instead of being
+/// buried inside an `eval` that silently passes values through a
+/// wire whose declared type lies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputType {
+    /// Output types are whatever the constructor's `NodeMeta`
+    /// declares — independent of input wire types. The default;
+    /// covers the vast majority of nodes (`hash`, `regex_match`,
+    /// `mod`, …) whose I/O contract is type-fixed.
+    Fixed,
+    /// The function's single output port has the same type as the
+    /// input wire at the given index. The build dispatch resolves
+    /// the wire's type from the assembler and the module's
+    /// `build_node` reads it from the supplied `wire_types` slice
+    /// to construct a port-typed node. Used by pass-through
+    /// nodes (`log_info`, `log_debug`, …).
+    SameAsInput(usize),
+}
+
 /// Description of a registered function's signature.
 pub struct FuncSig {
     /// Function name as used in the DSL.
@@ -312,6 +348,10 @@ pub struct FuncSig {
     /// SRD 53 §"Source-string call-site sugar". `None` means no
     /// auto-promotion — the caller must pass a `Handle` directly.
     pub default_resolver: Option<DefaultResolver>,
+    /// Output-type contract — `Fixed` for the vast majority of
+    /// nodes; `SameAsInput(idx)` for type-polymorphic pass-throughs
+    /// (e.g. `log_info` whose output type tracks its sole input).
+    pub output_type: OutputType,
 }
 
 /// Auto-resolver kind attached to handle-taking functions. Tells the
@@ -372,6 +412,7 @@ impl Clone for FuncSig {
             arity: self.arity.clone(),
             commutativity: self.commutativity.clone(),
             default_resolver: self.default_resolver,
+            output_type: self.output_type,
         }
     }
 }

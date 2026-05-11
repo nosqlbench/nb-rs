@@ -302,6 +302,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Printf-style string formatting with positional wire inputs.\nFormat string uses Rust-style {} placeholders with optional specifiers:\n  {:05} zero-pad, {:.2} precision, {:x} hex, {:X} HEX, {:b} binary, {:o} octal.\nParameters:\n  format   — format string constant (e.g. \"user-{:05}-score-{:.1}\")\n  input... — wire inputs matched positionally to placeholders\nExample: printf(\"id={:08x} val={:.2}\", hash(cycle), score)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -309,7 +310,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a format node from a function name, const args, and wire refs.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "printf" => {
             let fmt = consts.first()

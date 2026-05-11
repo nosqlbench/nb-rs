@@ -26,8 +26,8 @@ params:
   query_concurrency: "20"
   replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
   fknn_profile: default
-#  optimize_for_values: "RECALL"
-  optimize_for_values: "RECALL,LATENCY"
+#  optimize_for_values: "recall"
+  optimize_for_values: "recall,latency"
   vector_idx_suffix: _vector_idx
   meta_idx_suffix: _meta_idx
 
@@ -337,13 +337,13 @@ phases:
           (key text PRIMARY KEY, value vector<float, {dim}>, metadata int)
       create_vector_index:
         raw: |
-          CREATE CUSTOM INDEX IF NOT EXISTS {table}_vector_idx
-          ON {keyspace}.{table} (value) 
-          USING 'StorageAttachedIndex' 
+          CREATE CUSTOM INDEX IF NOT EXISTS {table}{vector_idx_suffix}
+          ON {keyspace}.{table} (value)
+          USING 'StorageAttachedIndex'
           WITH OPTIONS = {'optimize_for': '{optimize_for}', 'similarity_function': '{similarity_function}'}
       create_metadata_index:
         raw: |
-          CREATE CUSTOM INDEX IF NOT EXISTS {table}_meta_idx 
+          CREATE CUSTOM INDEX IF NOT EXISTS {table}{meta_idx_suffix}
           ON {keyspace}.{table} (metadata) USING 'StorageAttachedIndex'
 
   # Anti-DDL: tear down in reverse order (indexes → table).
@@ -352,11 +352,11 @@ phases:
     concurrency: 1
     ops:
       drop_metadata_index:
-        raw: "DROP INDEX IF EXISTS {keyspace}.{table}_meta_idx"
+        raw: "DROP INDEX IF EXISTS {keyspace}.{table}{meta_idx_suffix}"
       drop_vector_index:
         raw: "DROP INDEX IF EXISTS {keyspace}.{table}{vector_idx_suffix}"
       drop_table:
-        raw: "DROP TABLE IF EXISTS {keyspace}.{table}{meta_idx_suffix}"
+        raw: "DROP TABLE IF EXISTS {keyspace}.{table}"
 
   # SRD-66 probe phase: runs once per scenario, before
   # any phase that consumes the dialect facts. Reads the
@@ -404,7 +404,6 @@ phases:
         raw: |
           SELECT index_name FROM {target_index_table}
           WHERE keyspace_name = '{keyspace}'
-            AND table_name = '{table}'
             AND index_name = '{table}{vector_idx_suffix}'
           ALLOW FILTERING
         verify:
@@ -414,7 +413,6 @@ phases:
         raw: |
           SELECT index_name FROM {target_index_table}
           WHERE keyspace_name = '{keyspace}'
-            AND table_name = '{table}'
             AND index_name = '{table}{vector_idx_suffix}'
             AND is_building = true
           ALLOW FILTERING

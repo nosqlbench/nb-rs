@@ -415,6 +415,62 @@ fn coverage_matrix_final_modifier_round_trips() {
 }
 
 #[test]
+fn shared_bool_through_for_each_into_consumer_phase_bindings() {
+    // SRD-66 §"Surface 2" + §"Surface 3" integration:
+    //
+    //   1. Workload-root `shared X := <bool literal>` produces a
+    //      SharedCell-backed Bool input slot at root (SRD-13c
+    //      §"Shared Mutable" step 1 + step 2).
+    //   2. The cell propagates down the scope chain to a consumer
+    //      phase whose own `bindings:` references X via `pick(...)`
+    //      (SRD-13d §1 + SRD-66 §"Surface 3").
+    //   3. The consumer phase reads X as Bool, `pick` selects
+    //      the matching value, the op emits it.
+    //
+    // Failure mode this catches: if any synthesizer in the chain
+    // (synthesize_for_each_scope or build_phase_scope_kernel)
+    // mis-classifies X as a Coordinate-kind U64 input slot, then
+    // the standard per-cycle `set_inputs(&[u64])` propagation
+    // clobbers the cell with `Value::U64(cycle)` and `pick`
+    // panics with "non-bool type U64". The workload completes
+    // (no panic at chain assembly), and the output line carries
+    // the correct picked value (`alpha_table`, since has_a=true
+    // and has_b=false).
+    //
+    // This is the same chain shape that surfaces in
+    // `adapters/cql/workloads/full_cql_vector.yaml`'s
+    // `await_index` phase — minus the CQL driver and minus the
+    // probe-phase result-binding writeback (the writeback is a
+    // separate dimension, exercised by other tests). Here the
+    // workload-root literal is the entire write surface, so the
+    // failure must localise to type preservation through the
+    // scope chain.
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/shared_pick_through_for_each.yaml",
+        &[],
+    );
+    assert!(stderr.contains("all phases complete"),
+        "workload did not complete cleanly. stderr:\n{stderr}\nstdout:\n{stdout}");
+
+    let lines: Vec<&str> = stdout.lines()
+        .filter(|l| l.starts_with("spc/consume "))
+        .collect();
+    // Nested for_each: outer={p1,p2} × inner={lo,hi} = 4 cycles.
+    assert_eq!(lines.len(), 4,
+        "nested for_each should produce 4 consume lines, got {}:\n{stdout}",
+        lines.len());
+
+    // Every iteration must show the picked value — has_a=true
+    // selects index 0 → "alpha_table". If the chain corrupts the
+    // type, pick panics and we'd see fewer than 4 lines (or
+    // none).
+    for line in &lines {
+        assert!(line.contains("chosen=alpha_table"),
+            "pick should select alpha_table (has_a=true); got line: {line}");
+    }
+}
+
+#[test]
 fn coverage_matrix_derived_binding_consumes_shared_cell() {
     // `doubled_count := mul(count_big, 2)` reads the cell
     // value (1000) through standard GK wiring. Output must

@@ -401,6 +401,7 @@ static SIGS: &[FuncSig] = &[
         arity: Arity::Fixed,
         commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
     },
     FuncSig {
         name: "str_ne", category: FuncCategory::Comparison, outputs: 1,
@@ -411,6 +412,7 @@ static SIGS: &[FuncSig] = &[
         arity: Arity::Fixed,
         commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
     },
     // selection
     FuncSig {
@@ -422,6 +424,7 @@ static SIGS: &[FuncSig] = &[
         arity: Arity::Fixed,
         commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
     },
     FuncSig {
         name: "select_f64", category: FuncCategory::Comparison, outputs: 1,
@@ -432,6 +435,7 @@ static SIGS: &[FuncSig] = &[
         arity: Arity::Fixed,
         commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
     },
     FuncSig {
         name: "select_str", category: FuncCategory::Comparison, outputs: 1,
@@ -442,6 +446,7 @@ static SIGS: &[FuncSig] = &[
         arity: Arity::Fixed,
         commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
     },
 ];
 
@@ -460,6 +465,7 @@ const fn cmp_sig(name: &'static str, description: &'static str) -> FuncSig {
         arity: Arity::Fixed,
         commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
     }
 }
 
@@ -476,12 +482,13 @@ const fn cmp_f64_sig(name: &'static str, description: &'static str) -> FuncSig {
         arity: Arity::Fixed,
         commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
     }
 }
 
 pub(crate) fn build_node(
     name: &str,
-    _wires: &[crate::assembly::WireRef],
+    _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType],
     _consts: &[crate::dsl::factory::ConstArg],
 ) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {

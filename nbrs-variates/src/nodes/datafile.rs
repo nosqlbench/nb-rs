@@ -334,6 +334,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Read a column from a CSV file at a cycle-time ordinal.\nThe file is loaded at init time. Header row determines column names.\nOrdinal wraps modulo row count.\nParameters:\n  ordinal  — u64 wire input\n  filename — path to CSV file (const)\n  column   — column name or index (const)\nExample: csv_field(cycle, \"users.csv\", \"username\")",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "csv_row", category: C::Data, outputs: 1,
@@ -347,6 +348,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Read an entire CSV row at ordinal as a comma-separated string.\nSkips header row. Ordinal wraps modulo row count.\nParameters:\n  ordinal  — u64 wire input\n  filename — path to CSV file (const)\nExample: csv_row(cycle, \"data.csv\")",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "csv_row_count", category: C::Data, outputs: 1,
@@ -359,6 +361,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Return the number of data rows (excluding header) in a CSV file.\nEvaluated at init time (constant).\nParameters:\n  filename — path to CSV file (const)\nExample: csv_row_count(\"users.csv\")",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "jsonl_field", category: C::Data, outputs: 1,
@@ -373,6 +376,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Read a field from a JSON Lines file at ordinal.\nEach line is a JSON object. Field is extracted by name or dot-path.\nOrdinal wraps modulo line count.\nParameters:\n  ordinal  — u64 wire input\n  filename — path to JSONL file (const)\n  path     — field name or dot-path (const)\nExample: jsonl_field(cycle, \"events.jsonl\", \"user.name\")",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "jsonl_row", category: C::Data, outputs: 1,
@@ -386,6 +390,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Read an entire JSONL line at ordinal as a raw JSON string.\nOrdinal wraps modulo line count.\nParameters:\n  ordinal  — u64 wire input\n  filename — path to JSONL file (const)\nExample: jsonl_row(cycle, \"events.jsonl\")",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "jsonl_row_count", category: C::Data, outputs: 1,
@@ -398,11 +403,12 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Return the number of non-empty lines in a JSONL file.\nEvaluated at init time (constant).\nParameters:\n  filename — path to JSONL file (const)\nExample: jsonl_row_count(\"events.jsonl\")",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
 
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn GkNode>, String>> {
     match name {
         "csv_field" => {
             let filename = consts.first().map(|c| c.as_str()).unwrap_or("");

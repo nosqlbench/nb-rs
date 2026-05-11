@@ -249,6 +249,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Scale a u64 to epoch milliseconds by multiplying by a factor.\nUse to convert a counter in coarse units to millisecond timestamps.\nParameters:\n  input  — u64 wire input (e.g., a cycle counter)\n  factor — milliseconds per input unit (u64)\nExample: epoch_scale(cycle, 1000)  // treat input as seconds -> millis",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "epoch_offset", category: C::Datetime,
@@ -262,6 +263,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Add a base epoch offset (milliseconds) to a u64 value.\nShifts a relative millisecond value into absolute epoch time.\nParameters:\n  input — u64 wire input (relative millis)\n  base  — epoch milliseconds to add (e.g., 1704067200000 for 2024-01-01)\nExample: epoch_offset(epoch_scale(cycle, 1000), 1704067200000)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "to_timestamp", category: C::Datetime,
@@ -274,6 +276,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Format an epoch-millis u64 as an ISO-8601 timestamp string.\nProduces: \"YYYY-MM-DDThh:mm:ss.mmmZ\" (UTC, no timezone conversion).\nParameters:\n  input — u64 epoch milliseconds\nExample: to_timestamp(epoch_offset(epoch_scale(cycle, 1000), 1704067200000))",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "date_components", category: C::Datetime, outputs: 7,
@@ -284,6 +287,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -291,7 +295,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a datetime node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "epoch_scale" => Some(Ok(Box::new(EpochScale::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
         "epoch_offset" => Some(Ok(Box::new(EpochOffset::new(consts.first().map(|c| c.as_u64()).unwrap_or(0))))),

@@ -142,6 +142,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Substitute all matches of a regex pattern in the input string.\nThe regex is compiled at init time for fast cycle-time evaluation.\nParameters:\n  input       — String wire input\n  pattern     — regex pattern (Rust regex syntax)\n  replacement — replacement string ($1, $2 for capture groups)\nExample: regex_replace(name, \"[^a-zA-Z]\", \"_\")",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "regex_match", category: C::Regex,
@@ -156,6 +157,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Test if a string matches a regex pattern. Returns 1 (match) or 0 (no match).\nThe regex is compiled at init time. Tests for a partial match\n(use ^...$ anchors for a full match).\nParameters:\n  input   — String wire input\n  pattern — regex pattern (Rust regex syntax)\nExample: regex_match(email, \"^[^@]+@[^@]+$\")",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -163,7 +165,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build a regex node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "regex_replace" => Some(Ok(Box::new(RegexReplace::new(
             consts.first().map(|c| c.as_str()).unwrap_or(""),

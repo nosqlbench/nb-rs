@@ -265,6 +265,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Map a u64 to a string via mixed-radix indexing into character sets.\nPattern is semicolon-delimited character set specs per position.\nEach spec uses ranges (A-Z, 0-9) or literal characters.\nA single literal (like -) is emitted as-is without consuming a radix digit.\nParameters:\n  input   — u64 wire input\n  pattern — semicolon-separated charset specs\nExample: combinations(cycle, \"0-9;0-9;0-9;-;0-9;0-9;0-9;0-9\")  // \"372-8419\"",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "number_to_words", category: C::String, outputs: 1,
@@ -275,6 +276,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "hashed_uuid", category: C::String, outputs: 1,
@@ -285,6 +287,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "char_buf", category: C::String, outputs: 1,
@@ -299,6 +302,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "file_line_at", category: C::String, outputs: 1,
@@ -312,6 +316,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "str_concat", category: C::String, outputs: 1,
@@ -324,6 +329,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::VariadicWires { min_wires: 0 },
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -568,7 +574,7 @@ impl GkNode for StrConcat {
 /// Try to build a string node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "combinations" => Some(Ok(Box::new(Combinations::new(
             consts.first().map(|c| c.as_str()).unwrap_or("a-z"),

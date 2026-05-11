@@ -366,6 +366,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: nbrs_variates::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: nbrs_variates::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "side_effect_sequence_next_cycling", category: C::Diagnostic, outputs: 1,
@@ -379,6 +380,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: nbrs_variates::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: nbrs_variates::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "side_effect_sequence_next_noncycling", category: C::Diagnostic, outputs: 1,
@@ -392,6 +394,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: nbrs_variates::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: nbrs_variates::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "side_effect_sequence_reset", category: C::Diagnostic, outputs: 1,
@@ -404,6 +407,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: nbrs_variates::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: nbrs_variates::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -411,6 +415,7 @@ pub fn signatures() -> &'static [FuncSig] {
 pub fn build_node(
     name: &str,
     _wires: &[nbrs_variates::assembly::WireRef],
+    _wire_types: &[nbrs_variates::node::PortType],
     consts: &[nbrs_variates::dsl::ConstArg],
 ) -> Option<Result<Box<dyn GkNode>, String>> {
     match name {

@@ -721,6 +721,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::VariadicWires { min_wires: 0 },
             commutativity: crate::node::Commutativity::AllCommutative,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "product", category: C::Variadic, outputs: 1,
@@ -732,6 +733,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::VariadicWires { min_wires: 0 },
             commutativity: crate::node::Commutativity::AllCommutative,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "min", category: C::Variadic, outputs: 1,
@@ -743,6 +745,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::VariadicWires { min_wires: 0 },
             commutativity: crate::node::Commutativity::AllCommutative,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "max", category: C::Variadic, outputs: 1,
@@ -754,6 +757,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::VariadicWires { min_wires: 0 },
             commutativity: crate::node::Commutativity::AllCommutative,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
 
         // --- Arithmetic ---
@@ -769,6 +773,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Add a constant to a u64 value using wrapping arithmetic.\nUseful for offsetting ranges or shifting cycle ordinals.\nParameters:\n  input  — u64 wire input\n  addend — constant to add (wraps at 2^64)\nExample: add(hash(cycle), 1000000)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "mul", category: C::Arithmetic,
@@ -782,6 +787,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Multiply a u64 value by a constant using wrapping arithmetic.\nUseful for scaling counters or spreading values across a stride.\nParameters:\n  input  — u64 wire input\n  factor — constant multiplier (wraps at 2^64)\nExample: mul(cycle, 7)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "div", category: C::Arithmetic,
@@ -796,6 +802,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Integer division by a constant (truncating toward zero).\nUseful for coarsening values — e.g., grouping cycles into blocks.\nParameters:\n  input   — u64 wire input\n  divisor — constant divisor (must be > 0)\nExample: div(cycle, 100)  // groups into blocks of 100",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "mod", category: C::Arithmetic,
@@ -810,6 +817,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Modular reduction: output = input % modulus, producing [0, K).\nThe most common operation after hash — bounds a hashed value\ninto a usable integer range.\nParameters:\n  input   — u64 wire input (typically hashed)\n  modulus — upper bound (exclusive, must be > 0)\nExample: mod(hash(cycle), 1000)  // yields 0..999",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "mod_wire", category: C::Arithmetic,
@@ -823,6 +831,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Modulo by a wire-fed divisor. Sibling of `mod` for cases where\nthe divisor varies per cycle (e.g. driven by a control or a\nruntime-derived shard count). The divisor port declares a\n`NonZeroU64` constraint, so under `// @pragma: strict_values`\nthe compiler auto-inserts an `assert_u64_nonzero` upstream.\nWithout strict mode the node trusts the divisor; a zero panics.\nParameters:\n  input   — u64 wire input\n  divisor — u64 wire input (non-zero)\nExample: shard := mod_wire(cycle, concurrency())",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "div_wire", category: C::Arithmetic,
@@ -836,6 +845,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Integer division by a wire-fed divisor. Sibling of `div`. Same\nnon-zero contract on the `divisor` wire. Use when the divisor\ngenuinely varies per cycle.\nParameters:\n  input   — u64 wire input\n  divisor — u64 wire input (non-zero)\nExample: bucket := div_wire(cycle, partition_size())",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "clamp", category: C::Arithmetic,
@@ -850,6 +860,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Saturating clamp: values below min become min, above max become max.\nUnlike mod (which wraps), clamp preserves relative ordering within\nthe valid range. Use when you need hard bounds without wrap-around.\nParameters:\n  input — u64 wire input\n  min   — lower bound (inclusive)\n  max   — upper bound (inclusive)\nExample: clamp(hash(cycle), 10, 500)",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "interleave", category: C::Arithmetic,
@@ -863,6 +874,7 @@ pub fn signatures() -> &'static [FuncSig] {
             commutativity: crate::node::Commutativity::Positional,
             help: "Interleave the bits of two u64 values into a single u64 (Morton code).\nBit 0 of a goes to bit 0, bit 0 of b goes to bit 1, bit 1 of a to bit 2, etc.\nUseful for combining two independent coordinates into one value\nthat preserves spatial locality.\nParameters:\n  a — first u64 wire input (even bits in output)\n  b — second u64 wire input (odd bits in output)\nExample: hash(interleave(x_coord, y_coord))",
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "mixed_radix", category: C::Arithmetic, outputs: 0,
@@ -875,6 +887,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::VariadicConsts { min_consts: 1 },
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "identity", category: C::Arithmetic, outputs: 1,
@@ -887,6 +900,7 @@ pub fn signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
             default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
         },
     ]
 }
@@ -894,7 +908,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Try to build an arithmetic node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
-pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType], consts: &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
     match name {
         "add" => Some(Ok(Box::new(AddU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(0))))),
         "mul" => Some(Ok(Box::new(MulU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),

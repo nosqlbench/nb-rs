@@ -94,6 +94,7 @@ pub fn cql_signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: Commutativity::Positional,
     default_resolver: None,
+    output_type: nbrs_variates::dsl::registry::OutputType::Fixed,
         }]
     })
 }
@@ -101,6 +102,7 @@ pub fn cql_signatures() -> &'static [FuncSig] {
 pub(crate) fn cql_build_node(
     name: &str,
     _wires: &[nbrs_variates::assembly::WireRef],
+    _wire_types: &[nbrs_variates::node::PortType],
     _consts: &[nbrs_variates::dsl::ConstArg],
 ) -> Option<Result<Box<dyn GkNode>, String>> {
     match name {
