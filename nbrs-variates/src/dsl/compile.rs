@@ -1037,6 +1037,12 @@ impl Compiler {
         asm.set_context(&self.source_text, &self.context_label);
         let mut kernel = asm.compile_strict(self.strict).map_err(|e| format!("{e}"))?;
 
+        // Retain the parsed AST as live program metadata (SRD-13f
+        // §"Wire-reference classification"). The subscope
+        // synthesizer queries this to integrate parent bindings'
+        // matter into child scopes.
+        kernel.set_ast(std::sync::Arc::new(file.clone()));
+
         // Resolve deferred cursor extents. At this point the kernel has
         // folded any const expressions to constant outputs; we read the
         // aux outputs compiled by process_cursor and update the schema
@@ -1389,6 +1395,12 @@ impl Compiler {
 
         asm.set_context(&self.source_text, &self.context_label);
         let mut kernel = asm.compile_strict(self.strict).map_err(|e| format!("{e}"))?;
+
+        // Retain the parsed AST as live program metadata (SRD-13f
+        // §"Wire-reference classification"). The subscope
+        // synthesizer queries this to integrate parent bindings'
+        // matter into child scopes.
+        kernel.set_ast(std::sync::Arc::new(file.clone()));
 
         // Resolve deferred cursor extents (same logic as in compile()).
         for deferred in &self.deferred_extents {

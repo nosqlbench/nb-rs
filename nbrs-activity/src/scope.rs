@@ -581,6 +581,44 @@ fn logical_lines(source: &str) -> Vec<String> {
     out
 }
 
+/// Format a `Value` as a natural-form string suitable for
+/// passing to [`BindingScope::add_param_binding`]. `add_param_binding`
+/// recognises u64/f64-shaped strings, the literals `true` / `false`,
+/// and quotes everything else.
+///
+/// Returns `None` for value types that can't be represented as a
+/// GK source literal (`Bytes`, `Json`, `Ext`, `Handle`, vectors,
+/// `None`). The synthesizer falls back to extern cascade in
+/// those cases, since promoted-final inlining only works when
+/// the value can round-trip through source.
+fn value_to_param_string(v: &nbrs_variates::node::Value) -> Option<String> {
+    use nbrs_variates::node::Value;
+    match v {
+        Value::U64(n) => Some(n.to_string()),
+        Value::F64(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Str(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Format a single `final name := <literal>` line for raw-source
+/// emission paths (build_phase_scope_kernel, synthesize_for_each_scope).
+/// Mirrors [`BindingScope::add_param_binding`]'s value-formatting
+/// rules but produces a string instead of mutating a scope. Numeric
+/// and boolean values pass through bare; everything else is quoted
+/// with `"`/`\` escaped.
+fn format_param_binding_line(name: &str, value: &str) -> String {
+    if value.parse::<u64>().is_ok() || value.parse::<f64>().is_ok() {
+        format!("final {name} := {value}")
+    } else if value == "true" || value == "false" {
+        format!("final {name} := {value}")
+    } else {
+        let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("final {name} := \"{escaped}\"")
+    }
+}
+
 fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
     // Strip every recognised modifier prefix before classifying;
     // multi-modifier forms like `volatile final` or `final shared`
@@ -729,6 +767,68 @@ pub fn build_phase_scope_kernel(
     let mut emitted: HashSet<String> = HashSet::new();
     let mut inherited_names: Vec<String> = Vec::new();
 
+    // SRD-13f §"Wire-reference classification" — case 3 (local
+    // matter inclusion). Scan the phase body for references that
+    // resolve to non-final cycle bindings in the parent's AST;
+    // pretty-print their inclusion chains and inline as local
+    // matter rather than cascading via extern. Names included
+    // this way are added to `emitted` so the cascade loop below
+    // doesn't re-emit them as externs.
+    {
+        let parent_program = parent_kernel.program();
+        let body_locally_declared = scan_locally_declared_idents(&body_text);
+        let coord_names: HashSet<String> = {
+            let coord_count = parent_program.coord_count();
+            parent_program.input_names().into_iter().take(coord_count).collect()
+        };
+        let mut already_satisfied: HashSet<String> = HashSet::new();
+        already_satisfied.extend(body_locally_declared.iter().cloned());
+        already_satisfied.extend(coord_names.iter().cloned());
+
+        let mut referenced: HashSet<String> = HashSet::new();
+        collect_string_interp_refs(&body_text, &mut referenced);
+        for ident in scan_idents_in_gk_source(&body_text) {
+            if !body_locally_declared.contains(&ident) {
+                referenced.insert(ident);
+            }
+        }
+
+        let mut refs_sorted: Vec<String> = referenced.into_iter().collect();
+        refs_sorted.sort();
+        for name in &refs_sorted {
+            let name = name.as_str();
+            if already_satisfied.contains(name) { continue; }
+            // FINAL/SHARED go through the existing cascade
+            // (case 1 emission lives in that loop below).
+            let modifier = parent_program.output_modifier(name);
+            if modifier == nbrs_variates::dsl::ast::BindingModifier::FINAL
+                || modifier == nbrs_variates::dsl::ast::BindingModifier::SHARED
+            {
+                continue;
+            }
+            let chain = parent_program.local_inclusion_chain(name, &already_satisfied);
+            if chain.is_empty() { continue; }
+            for stmt in chain {
+                let line = nbrs_variates::dsl::pprint::pp_statement(stmt);
+                source.push_str(&line);
+                source.push('\n');
+                match stmt {
+                    nbrs_variates::dsl::ast::Statement::CycleBinding(b) => {
+                        for t in &b.targets {
+                            emitted.insert(t.clone());
+                            already_satisfied.insert(t.clone());
+                        }
+                    }
+                    nbrs_variates::dsl::ast::Statement::InitBinding(b) => {
+                        emitted.insert(b.name.clone());
+                        already_satisfied.insert(b.name.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     // Cascade every workload param through this phase scope so
     // descendants see them via materialize_wiring_from_outer. Same shape as
     // build_do_loop_scope_kernel.
@@ -743,8 +843,19 @@ pub fn build_phase_scope_kernel(
     // then inputs not already covered. Same chain-extension story
     // as `build_do_loop_scope_kernel`.
     let parent_program = parent_kernel.program();
+    // Compute the parent's coordinate-input name set generically.
+    // These names are coordinates at the parent level; they
+    // propagate to descendants via the kernel chain's coord
+    // mechanism, not via `extern` declarations. Coord names are
+    // just wire names — no specific name is privileged.
+    let coord_names: HashSet<String> = {
+        let coord_count = parent_program.coord_count();
+        parent_program.input_names().into_iter().take(coord_count).collect()
+    };
     let skip_cascade = |emitted: &HashSet<String>, name: &str| -> bool {
-        emitted.contains(name) || name == "cycle" || name.starts_with("__")
+        emitted.contains(name)
+            || coord_names.contains(name)
+            || name.starts_with("__")
     };
     for name in parent_program.output_names() {
         let owned = name.to_string();
@@ -752,6 +863,23 @@ pub fn build_phase_scope_kernel(
         // Locally-declared phase bindings shadow ancestor names —
         // skip the cascade for any name the phase body assigns.
         if scan_locally_declared_idents(&body_text).contains(&owned) { continue; }
+        // SRD-13f case 1 — when an upstream output is `final`
+        // AND its value is representable as a GK source literal,
+        // inline it as `final name := <literal>` rather than
+        // cascading via extern. Falls through to extern cascade
+        // when the value isn't representable.
+        let modifier = parent_program.output_modifier(&owned);
+        if modifier == nbrs_variates::dsl::ast::BindingModifier::FINAL {
+            if let Some(value) = parent_kernel.get_constant(&owned) {
+                if let Some(natural) = value_to_param_string(value) {
+                    let line = format_param_binding_line(&owned, &natural);
+                    source.push_str(&line);
+                    source.push('\n');
+                    emitted.insert(owned);
+                    continue;
+                }
+            }
+        }
         let (node_idx, port_idx) = parent_program.resolve_output_by_index(
             parent_program.output_index(&owned).unwrap()
         );
@@ -893,8 +1021,16 @@ pub fn build_do_loop_scope_kernel(
     // — same chain-break story as `build_for_each_scope_kernel`.
     // See that function's comment for the motivating example.
     let parent_program = parent_kernel.program();
+    // Generic coord-set detection — propagation via kernel chain,
+    // not extern cascade. No specific wire name is privileged.
+    let coord_names: HashSet<String> = {
+        let coord_count = parent_program.coord_count();
+        parent_program.input_names().into_iter().take(coord_count).collect()
+    };
     let skip_cascade = |emitted: &HashSet<String>, name: &str| -> bool {
-        emitted.contains(name) || name == "cycle" || name.starts_with("__")
+        emitted.contains(name)
+            || coord_names.contains(name)
+            || name.starts_with("__")
     };
     for name in parent_program.output_names() {
         let owned = name.to_string();
@@ -977,7 +1113,7 @@ pub fn build_do_loop_scope_kernel(
 /// op's bindings body references; the GK compiler does the
 /// authoritative parse downstream — this scan is just a
 /// best-effort first pass for the cross-scope contract check.
-fn scan_idents_in_gk_source(src: &str) -> HashSet<String> {
+pub(crate) fn scan_idents_in_gk_source(src: &str) -> HashSet<String> {
     const KEYWORDS: &[&str] = &[
         "inputs", "extern", "final", "init", "shared", "volatile",
         "true", "false", "as", "in", "for",
@@ -1035,7 +1171,7 @@ fn scan_idents_in_gk_source(src: &str) -> HashSet<String> {
 /// in GK source. Locally-declared names shadow parent-scope
 /// references per SRD-13c §"Shadowing", so the cross-scope
 /// contract check skips them.
-fn scan_locally_declared_idents(src: &str) -> HashSet<String> {
+pub(crate) fn scan_locally_declared_idents(src: &str) -> HashSet<String> {
     let mut out = HashSet::new();
     for line in src.lines() {
         let line = line.trim();
@@ -1451,6 +1587,13 @@ pub fn build_scope(
     phases: &HashMap<String, nbrs_workload::model::WorkloadPhase>,
     phase_cycles: Option<&str>,
     exclude: &[String],
+    // SRD-13f §"Wire-reference classification" — the parent
+    // scope's compiled kernel. The synthesizer reads its
+    // retained AST (for case 3 local-inclusion walks) and its
+    // folded constant state (for case 1 promoted-final
+    // emission). `None` for the workload-root build (it IS the
+    // root; no parent).
+    parent_kernel: Option<&nbrs_variates::kernel::GkKernel>,
 ) -> Result<BindingScope, String> {
     let mut scope = BindingScope::new();
 
@@ -1617,6 +1760,154 @@ pub fn build_scope(
         }
     }
 
+    // SRD-13f §"Wire-reference classification" — case 3 (local
+    // matter inclusion). When the parent program is available
+    // (AST mode), promote non-final referenced names from
+    // cascade-via-extern (case 2) to inline-as-Inherited.
+    //
+    // Rules:
+    // - `final` / `shared` outputs stay cascaded (case 2-like
+    //   for now; promoted-final optimization is a follow-up).
+    // - Cycle bindings / init bindings whose body lives in the
+    //   parent's retained AST get pretty-printed and ingested as
+    //   Inherited. Transitive dependencies (RHS Ident refs)
+    //   walk the same rule via `local_inclusion_chain`.
+    // - Names defined by `extern` ports in the parent stay
+    //   cascaded.
+    //
+    // The auto-extern loop below then runs as-is and fills the
+    // gap for names that didn't have an AST body to pull in.
+    if let Some(parent_kernel_ref) = parent_kernel {
+        let parent_prog = parent_kernel_ref.program();
+        // Propagate the parent's coordinate input names into this
+        // scope when it doesn't already have an `inputs := (...)`
+        // declaration of its own. Without this, an included
+        // binding like `trip := throw_at(cycle, threshold, ...)`
+        // references `cycle` but the auto-extern loop emits
+        // `extern cycle: u64` (extern, not coord); set_inputs
+        // propagation then skips it and per-cycle ticking dies.
+        //
+        // Coord names are just wire names the parent declared as
+        // inputs; the child propagates them by declaring the
+        // same `inputs := (...)` line. Nothing special about any
+        // specific name here.
+        if scope.coordinates.is_none() {
+            let coord_count = parent_prog.coord_count();
+            if coord_count > 0 {
+                let input_names = parent_prog.input_names();
+                let coords: Vec<String> = input_names.into_iter()
+                    .take(coord_count)
+                    .collect();
+                scope.coordinates = Some(format!("inputs := ({})", coords.join(", ")));
+            }
+        }
+
+        // Names already accounted for: defined locally, declared
+        // extern in subscope, or iter-vars. The inclusion-chain
+        // walker uses this as its termination boundary so it
+        // doesn't re-emit names the scope already satisfies.
+        // (Coord input names like the one the workload author
+        // declared via `inputs := (...)` are not special — the
+        // chain walker's `binding_ast_for` returns `None` for
+        // coord inputs since they aren't binding statements, so
+        // they self-terminate without explicit handling here.)
+        let mut already_satisfied: HashSet<String> = HashSet::new();
+        already_satisfied.extend(defined.iter().cloned());
+        already_satisfied.extend(extern_names.iter().cloned());
+        for var in iteration_vars.keys() {
+            already_satisfied.insert(var.clone());
+        }
+
+        // Sort for determinism — HashSet iteration is randomised.
+        // Clone names so the loop body can mutate `referenced`
+        // (collecting transitive refs from included bindings).
+        let mut refs_sorted: Vec<String> = referenced.iter().cloned().collect();
+        refs_sorted.sort();
+        for name in &refs_sorted {
+            let name = name.as_str();
+            if already_satisfied.contains(name) {
+                continue;
+            }
+            let manifest_modifier = outer_manifest.iter()
+                .find(|e| &e.name == name)
+                .map(|e| e.modifier);
+            if let Some(m) = manifest_modifier {
+                use nbrs_variates::dsl::ast::BindingModifier;
+                if m == BindingModifier::SHARED {
+                    // SHARED stays in the cascade path — cells
+                    // synchronise across kernels at runtime via
+                    // SharedCell, not via const inlining.
+                    continue;
+                }
+                if m == BindingModifier::FINAL {
+                    // SRD-13f §"Wire-reference classification" —
+                    // case 1: promoted-final. Read the value from
+                    // the parent kernel's folded-constant state
+                    // and inline it as `final name := <literal>`
+                    // via `add_param_binding`, which handles the
+                    // numeric / boolean / quoted-string formatting
+                    // already used for workload-param injection.
+                    // Falls back to extern cascade when the value
+                    // isn't representable as a GK source literal
+                    // (vectors, JSON, Ext, Handle, Bytes).
+                    if let Some(value) = parent_kernel_ref.get_constant(name) {
+                        if let Some(natural) = value_to_param_string(value) {
+                            scope.add_param_binding(name, &natural);
+                            already_satisfied.insert(name.to_string());
+                            continue;
+                        }
+                    }
+                    continue;
+                }
+            }
+            // Pull the inclusion chain. If the name isn't in the
+            // parent's AST (or it's a final/shared binding in
+            // the AST), the chain is empty — the auto-extern
+            // loop below handles those.
+            let chain = parent_prog.local_inclusion_chain(name, &already_satisfied);
+            if chain.is_empty() {
+                continue;
+            }
+            // Pretty-print each Statement in topological order
+            // and ingest as Inherited. Track bound names so the
+            // chain walker and the auto-extern loop see them
+            // satisfied locally. Walk each binding's RHS to
+            // collect transitive refs into `referenced` — these
+            // are the names the included binding's expression
+            // mentions but doesn't define (e.g. parent `final`
+            // values like `dataset`); the auto-extern loop below
+            // then emits externs for them.
+            for stmt in chain {
+                let line = nbrs_variates::dsl::pprint::pp_statement(stmt);
+                scope.ingest_gk_source(&line, BindingOrigin::Inherited);
+                let body = match stmt {
+                    nbrs_variates::dsl::ast::Statement::CycleBinding(b) => Some(&b.value),
+                    nbrs_variates::dsl::ast::Statement::InitBinding(b) => Some(&b.value),
+                    _ => None,
+                };
+                if let Some(expr) = body {
+                    nbrs_variates::dsl::collect_expr_references(expr, &mut referenced);
+                }
+                match stmt {
+                    nbrs_variates::dsl::ast::Statement::CycleBinding(b) => {
+                        for t in &b.targets {
+                            already_satisfied.insert(t.clone());
+                        }
+                    }
+                    nbrs_variates::dsl::ast::Statement::InitBinding(b) => {
+                        already_satisfied.insert(b.name.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Refresh `defined` set after AST-mode inclusion may have
+    // added Inherited bindings. The auto-extern loop below uses
+    // this updated set to skip names now satisfied locally.
+    let defined = scope.defined_names();
+
     // Generate extern declarations for referenced-but-undefined names
     for entry in outer_manifest {
         let is_iter_var = iteration_vars.contains_key(&entry.name);
@@ -1633,6 +1924,64 @@ pub fn build_scope(
                 _ => "String",
             };
             scope.add_extern(&entry.name, type_name);
+        }
+    }
+
+    // SRD-13f §"Wire-reference classification" — case 4:
+    // unresolved → synthesizer-level validation error. Fires
+    // only on descendant scopes (parent_kernel is Some). The
+    // workload-root build skips this check; the GK compiler's
+    // auto-input-inference path handles unresolved refs there.
+    //
+    // A reference is resolved if any of: defined locally,
+    // declared extern (in subscope or auto-extern'd from outer
+    // manifest), an iteration variable, a workload param key,
+    // a coord name on this scope, or in the outer manifest at
+    // all. Anything else is a typo or missing upstream binding.
+    if parent_kernel.is_some() {
+        let defined_now = scope.defined_names();
+        let extern_now = scope.extern_names();
+        let mut satisfied: HashSet<String> = HashSet::new();
+        satisfied.extend(defined_now.into_iter());
+        satisfied.extend(extern_now.into_iter());
+        for var in iteration_vars.keys() { satisfied.insert(var.clone()); }
+        for name in workload_params.keys() { satisfied.insert(name.clone()); }
+        for entry in outer_manifest { satisfied.insert(entry.name.clone()); }
+        // Coord names from this scope's `inputs := (...)` line.
+        if let Some(coords_line) = &scope.coordinates {
+            if let Some(rhs) = coords_line.split(":=").nth(1) {
+                let inner = rhs.trim()
+                    .trim_start_matches('(')
+                    .trim_end_matches(')');
+                for n in inner.split(',') {
+                    let n = n.trim();
+                    if !n.is_empty() {
+                        satisfied.insert(n.to_string());
+                    }
+                }
+            }
+        }
+        // `referenced` is built from a textual scan that catches
+        // both wire refs and bare identifiers — including GK
+        // function names like `mod`, `hash`, `range` that
+        // appear in binding RHS as call heads. Filter those out
+        // via the registry lookup; only true wire references
+        // should surface as unresolved.
+        let mut unresolved: Vec<&String> = referenced.iter()
+            .filter(|n| !satisfied.contains(n.as_str()))
+            .filter(|n| !n.starts_with("__"))
+            .filter(|n| nbrs_variates::dsl::registry::lookup(n).is_none())
+            .collect();
+        unresolved.sort();
+        if !unresolved.is_empty() {
+            let names: Vec<&str> = unresolved.iter().map(|s| s.as_str()).collect();
+            let mut visible: Vec<&str> = satisfied.iter().map(|s| s.as_str()).collect();
+            visible.sort();
+            return Err(format!(
+                "unresolved wire reference(s) {names:?}: not declared locally, \
+                 not in parent manifest, not a workload param. \
+                 Visible names in this scope: {visible:?}"
+            ));
         }
     }
 
@@ -2470,6 +2819,7 @@ mod tests {
             &HashMap::new(),
             None,
             &[],
+            None,
         ).unwrap();
         scope.validate().unwrap();
         let emitted = scope.emit();
@@ -2496,6 +2846,7 @@ mod tests {
             &HashMap::new(),
             None,
             &[],
+            None,
         ).unwrap();
         scope.validate().unwrap();
         let emitted = scope.emit();
@@ -2526,6 +2877,7 @@ mod tests {
             &HashMap::new(),
             None,
             &[],
+            None,
         ).unwrap();
         scope.validate().unwrap();
         let emitted = scope.emit();
@@ -2549,6 +2901,7 @@ mod tests {
             &HashMap::new(),
             None,
             &[],
+            None,
         ).unwrap();
         let result = scope.validate();
         assert!(result.is_err(), "expected shadow error");
@@ -2582,6 +2935,7 @@ mod tests {
             &HashMap::new(),
             None,
             &[],
+            None,
         ).unwrap();
         // This was the bug: validate() used to fail with false shadow error
         scope.validate().unwrap();
@@ -2850,5 +3204,108 @@ extern keyspace: String
             assert!(outs.iter().any(|o| o == required),
                 "op-template kernel missing '{required}'; outputs: {outs:?}");
         }
+    }
+
+    #[test]
+    fn promoted_final_emits_inline_literal_for_str() {
+        // SRD-13f case 1 — when a referenced name is `final`
+        // upstream and a Str, the synthesizer emits
+        // `final name := "value"` in the child's source rather
+        // than auto-externing it.
+        let parent = nbrs_variates::dsl::compile_gk(
+            "inputs := (cycle)\nfinal dataset := \"sift1m\"\n"
+        ).expect("compile parent");
+        let manifest: Vec<crate::runner::ManifestEntry> =
+            nbrs_variates::kernel::extract_manifest(parent.program())
+                .into_iter()
+                .map(|e| crate::runner::ManifestEntry {
+                    name: e.name, port_type: e.port_type, modifier: e.modifier,
+                })
+                .collect();
+        let ops = vec![make_gk_op("step", "x={dataset}", "inputs := (cycle)")];
+        let scope = build_scope(
+            &ops,
+            &HashMap::new(),
+            &manifest,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &[],
+            Some(&parent),
+        ).expect("build_scope");
+        let emitted = scope.emit();
+        assert!(
+            emitted.contains("final dataset := \"sift1m\""),
+            "expected promoted-final emission, got:\n{emitted}"
+        );
+        assert!(
+            !emitted.contains("extern dataset"),
+            "expected no extern for promoted-final dataset, got:\n{emitted}"
+        );
+    }
+
+    #[test]
+    fn promoted_final_emits_inline_literal_for_u64() {
+        let parent = nbrs_variates::dsl::compile_gk(
+            "inputs := (cycle)\nfinal count := 42\n"
+        ).expect("compile parent");
+        let manifest: Vec<crate::runner::ManifestEntry> =
+            nbrs_variates::kernel::extract_manifest(parent.program())
+                .into_iter()
+                .map(|e| crate::runner::ManifestEntry {
+                    name: e.name, port_type: e.port_type, modifier: e.modifier,
+                })
+                .collect();
+        let ops = vec![make_gk_op("step", "n={count}", "inputs := (cycle)")];
+        let scope = build_scope(
+            &ops,
+            &HashMap::new(),
+            &manifest,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &[],
+            Some(&parent),
+        ).expect("build_scope");
+        let emitted = scope.emit();
+        assert!(
+            emitted.contains("final count := 42"),
+            "expected promoted-final u64 emission, got:\n{emitted}"
+        );
+    }
+
+    #[test]
+    fn unresolved_wire_reference_surfaces_validation_error() {
+        // SRD-13f case 4 — a typo in a `{...}` placeholder (here
+        // `{tirp}` instead of the declared `trip`) is rejected
+        // at the synthesizer level with a structured error,
+        // not via a downstream GK compiler error.
+        let parent = nbrs_variates::dsl::compile_gk(
+            "inputs := (cycle)\nfinal dataset := \"sift1m\"\n"
+        ).expect("compile parent");
+        let manifest: Vec<crate::runner::ManifestEntry> =
+            nbrs_variates::kernel::extract_manifest(parent.program())
+                .into_iter()
+                .map(|e| crate::runner::ManifestEntry {
+                    name: e.name, port_type: e.port_type, modifier: e.modifier,
+                })
+                .collect();
+        let ops = vec![make_gk_op("step", "x={tirp}", "inputs := (cycle)")];
+        let err = match build_scope(
+            &ops,
+            &HashMap::new(),
+            &manifest,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &[],
+            Some(&parent),
+        ) {
+            Ok(_) => panic!("expected unresolved-wire error, got Ok"),
+            Err(e) => e,
+        };
+        assert!(err.contains("unresolved wire"), "wrong error: {err}");
+        assert!(err.contains("tirp"), "error should mention the typoed name: {err}");
+        assert!(err.contains("Visible names"), "error should list visible names: {err}");
     }
 }

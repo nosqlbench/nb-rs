@@ -1856,7 +1856,6 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 wrappers_override: workload_wrappers_override.clone(),
                 wrap_default_order: cli_wrap_default_order.clone(),
                 program: program.clone(),
-                workload_level_gk: workload_level_gk.clone(),
                 gk_lib_paths: gk_lib_paths.clone(),
                 workload_dir: workload_dir.map(|p| p.to_path_buf()),
                 strict,

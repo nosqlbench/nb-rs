@@ -1,8 +1,10 @@
 # 13f: Cross-Scope Wire Materialization
 
-**Status:** normative — all pushes shipped (A, B.1, B.2,
-C, D.1, D.2, E, F) plus the SRD-13c clause update. Per-
-push status is in §"Plan to true-up" below.
+**Status:** normative — original pushes A–F + SRD-13c clause
+update shipped; §"Wire-reference classification (synthesizer
+rule)" added 2026-05-11 as the canonical synthesizer contract.
+Implementation plan for true-up to the synthesizer rule lives
+in `docs/design/srd13f_wire_classification_plan.md`.
 **Owner:** nbrs-variates (kernel construction, cell mechanism,
   matter interpretation), nbrs-activity (scope synthesizers,
   dispenser wires layer)
@@ -199,6 +201,144 @@ accordingly. This:
 - Lets the same wire's materialization change (literal →
   computed) without touching consumers — only the matter and
   interpreter change.
+
+---
+
+## Wire-reference classification (synthesizer rule)
+
+The matter interpreter operates on the kernel layer. Upstream
+of it, the **scope synthesizer** builds each subscope's matter
+from the authored YAML plus the parent's matter/AST. For every
+wire name a subscope's body references, the synthesizer chooses
+exactly one outcome. The rule is intentionally narrow:
+
+> A wire reference is **non-local** if and only if the wire is
+> (a) effectively `final`/`init`/`const` in a parent lineage
+> scope, or (b) explicitly declared `extern` in the subscope's
+> authored matter. Everything else is **local**.
+
+This yields four terminal cases at the synthesizer:
+
+### 1. Promoted-final (compile-time fold)
+
+The referenced wire is effectively `final`/`init`/`const`
+upstream — its value is structurally stable from the moment
+the upstream kernel is compiled.
+
+- Synthesizer emits `final X := <folded-value>` in the
+  subscope's matter.
+- Lands as the **Inlined constant** materialization (see
+  §"Materialization gradient" above).
+- No runtime cascade, no cell, no input slot. The value is
+  part of the subscope's compiled artifact.
+
+### 2. Cascade-on-read (`extern` opt-in)
+
+The subscope's authored matter explicitly says `extern X: T`.
+The author is opting in to "fetch this from the parent every
+time I read it."
+
+- Synthesizer emits `extern X: T` in the subscope's matter
+  unchanged.
+- Subscope kernel keeps an `Arc<GkKernel>` reference to its
+  parent. Reads on the `extern` slot delegate to
+  `parent.pull(X)`.
+- The eval happens **on the parent, with the parent's
+  state.** Single-fiber chains observe parent-private values;
+  concurrent fibers reading a cycle-dependent parent wire
+  serialize through the parent's slot (workload-author's
+  contract — the framework provides the mechanism without
+  per-fiber instancing of the parent).
+
+### 3. Local matter inclusion (the default)
+
+The referenced wire is neither promoted-final nor authored as
+`extern`. The synthesizer **inlines the binding's matter** into
+the subscope, walking transitive references recursively (each
+recursion classified into the same four cases).
+
+- Synthesizer emits the binding's text in the subscope's
+  matter (e.g. `volatile trip := throw_at(cycle, threshold)`).
+- Subscope kernel evaluates the binding locally on its own
+  state. `cycle` and any other per-fiber inputs are read from
+  the subscope's slots; transitive dep wires are resolved
+  through the same four-case rule at each level of inlining.
+- The kernel's existing fold / clean-flag / dirty-flag
+  machinery governs runtime behavior:
+  - Stable-deps bindings fold to const or evaluate-once-and-
+    cache (the "register-stable" property emerges naturally
+    at runtime; not a separate synthesizer category).
+  - Per-fiber-dep bindings re-eval as deps change via the
+    standard dirty-propagation.
+- Side-effecting nullary nodes (e.g.,
+  `side_effect_sequence_next_cycling`) manage their own
+  cross-kernel caching through the node's contract, not the
+  kernel layer.
+
+### 4. Unresolved → matter validation error
+
+The referenced name is found nowhere up the lineage and isn't
+authored as `extern`. This is now a **workload-load-time
+validation error** with concrete provenance:
+
+```
+phase '<name>' (<coord>): unresolved wire reference '<name>'
+  referenced from: op '<op>' field '<field>'
+  in-scope names at this scope and ancestors: [...]
+  → typo? add `extern <name>` if you intend cascade from a
+    runtime-injected wire.
+```
+
+The error surface is load-bearing: prior to this rule the
+synthesizer auto-emitted `extern <name>` for any op-field
+reference that didn't otherwise resolve, then the GK compiler
+either silently defaulted the slot to `Value::None` or failed
+mid-compile with a less-targeted "unknown wire" message. The
+new rule makes `extern` a deliberate author opt-in and turns
+the absence-of-resolution into a single, locatable diagnostic.
+
+### Terminology kept
+
+- **Local binding** — the synthesizer emitted the binding's
+  matter into the subscope's program (case 3). Independent of
+  whether it depends on per-fiber inputs.
+- **Register-stable** — runtime property of a wire whose value
+  does not change between reads (either because it's a folded
+  const, a one-shot eval cached by the clean flag, or a
+  copy-at-construction snapshot). The property emerges from
+  the binding graph; it isn't a separate synthesizer category.
+
+### What's deliberately not in the rule
+
+- No "transitively depends on a per-fiber wire" detection.
+  The local-inclusion mechanism subsumes both the static and
+  the per-fiber-dep cases because the kernel's eval engine
+  handles them uniformly.
+- No per-fiber instancing of upstream kernels. The shared
+  upstream kernel exists for provenance, AST, and case-1
+  promotion / case-2 cascade endpoints; per-fiber correctness
+  for per-fiber-dep bindings comes from case 3 (local
+  inclusion). Concurrent fibers sharing a case-2 cascade on a
+  cycle-dependent parent wire is a workload-author concern;
+  the framework provides the mechanism.
+
+### Where the rule applies
+
+This classification is the synthesizer's job at every scope
+boundary:
+
+- **Workload-root** — no parent. Its matter is the author's
+  full `bindings:` block plus workload-param `final`
+  injections. No classification needed (no upstream).
+- **Phase / for_each / for_combinations / do_while /
+  do_until / op-template** — the synthesizer walks the
+  authored body's references, applies the rule, emits the
+  resulting matter.
+
+The same rule applies whether the immediate parent is the
+workload-root or another comprehension scope. Recursion in
+case 3 walks the lineage until each name terminates in case
+1, 2, or 4.
 
 ---
 

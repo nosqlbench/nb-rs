@@ -13,6 +13,7 @@ pub mod events;
 pub mod const_constraints;
 pub mod pragmas;
 pub mod cursor_sugar;
+pub mod pprint;
 pub(crate) mod factory;
 pub(crate) mod validate;
 
@@ -26,6 +27,24 @@ mod modules;
 mod binding;
 
 pub use compile::{compile_gk, compile_gk_checked, compile_gk_with_path, compile_gk_strict, compile_gk_with_outputs, compile_gk_with_libs, compile_gk_with_libs_and_limit, eval_const_expr};
+
+/// Collect identifier references from an `Expr` tree into `out`.
+///
+/// Walks every `Ident`, function call argument, binary/unary
+/// operand, array element, and field-access source. String-
+/// literal placeholders (`{name}` form) contribute their
+/// identifier-shaped placeholder bodies.
+///
+/// Cross-crate consumers (e.g. nbrs-activity's SRD-13f
+/// synthesizer) use this to discover transitive wire refs from
+/// a binding's RHS without depending on the private `validate`
+/// module.
+pub fn collect_expr_references(
+    expr: &ast::Expr,
+    out: &mut std::collections::HashSet<String>,
+) {
+    validate::collect_references(expr, out);
+}
 
 /// Return the embedded standard library module sources.
 ///

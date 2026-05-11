@@ -122,8 +122,57 @@ pub fn synthesize_for_each_scope(
     // scope outputs").
     let mut inherited_names: Vec<String> = Vec::new();
 
+    // SRD-13f §"Wire-reference classification" — case 3 (local
+    // matter inclusion). Before the per-name cascade loop,
+    // identify which referenced names resolve to non-final
+    // cycle bindings in the parent's AST and inline their
+    // bodies. Names included this way get added to
+    // `emitted_externs` so the cascade loop below skips them.
+    {
+        let parent_program = parent_kernel.program();
+        let mut already_satisfied: HashSet<String> = HashSet::new();
+        for v in &iter_vars { already_satisfied.insert(v.clone()); }
+        let coord_count = parent_program.coord_count();
+        for n in parent_program.input_names().into_iter().take(coord_count) {
+            already_satisfied.insert(n);
+        }
+
+        let mut refs_sorted: Vec<&String> = referenced.iter().collect();
+        refs_sorted.sort();
+        for name in refs_sorted {
+            if already_satisfied.contains(name.as_str()) { continue; }
+            let modifier = parent_program.output_modifier(name);
+            if modifier == crate::dsl::ast::BindingModifier::FINAL
+                || modifier == crate::dsl::ast::BindingModifier::SHARED
+            {
+                continue;
+            }
+            let chain = parent_program.local_inclusion_chain(name, &already_satisfied);
+            if chain.is_empty() { continue; }
+            for stmt in chain {
+                let line = crate::dsl::pprint::pp_statement(stmt);
+                source.push_str(&line);
+                source.push('\n');
+                match stmt {
+                    crate::dsl::ast::Statement::CycleBinding(b) => {
+                        for t in &b.targets {
+                            emitted_externs.insert(t.clone());
+                            already_satisfied.insert(t.clone());
+                        }
+                    }
+                    crate::dsl::ast::Statement::InitBinding(b) => {
+                        emitted_externs.insert(b.name.clone());
+                        already_satisfied.insert(b.name.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     for name in &referenced {
         if iter_vars.iter().any(|v| v == name) { continue; }
+        if emitted_externs.contains(name) { continue; }
         if let Some(entry) = manifest_by_name.get(name.as_str()) {
             let type_name = port_type_to_extern_name(entry.port_type);
             source.push_str(&format!("extern {name}: {type_name}\n"));
@@ -210,14 +259,22 @@ pub fn synthesize_for_each_scope(
     }
 
     let parent_program = parent_kernel.program();
+    // Compute the parent's coordinate-input name set generically.
+    // Coord names propagate via the kernel chain, not via extern
+    // cascade. No specific name is privileged.
+    let coord_names: HashSet<String> = {
+        let coord_count = parent_program.coord_count();
+        parent_program.input_names().into_iter().take(coord_count).collect()
+    };
     let cascade_external = |emitted: &HashSet<String>,
                             iter_vars: &[String],
+                            coord_names: &HashSet<String>,
                             name: &str|
         -> bool
     {
         if emitted.contains(name) { return false; }
         if iter_vars.iter().any(|v| v == name) { return false; }
-        if name == "cycle" { return false; }
+        if coord_names.contains(name) { return false; }
         // Internal compiler-generated names skip the cascade,
         // EXCEPT cursor extent auxiliaries — those are read by
         // the comprehension `all(<cursor>)` form to enumerate
@@ -230,7 +287,22 @@ pub fn synthesize_for_each_scope(
     };
     for name in parent_program.output_names() {
         let owned = name.to_string();
-        if !cascade_external(&emitted_externs, &iter_vars, &owned) { continue; }
+        if !cascade_external(&emitted_externs, &iter_vars, &coord_names, &owned) { continue; }
+        // SRD-13f case 1 — when an upstream output is `final` AND
+        // its value is representable as a GK source literal,
+        // inline it as `final name := <literal>` instead of
+        // cascading via extern. Falls through to extern cascade
+        // when the value isn't representable.
+        let modifier = parent_program.output_modifier(&owned);
+        if modifier == crate::dsl::ast::BindingModifier::FINAL {
+            if let Some(value) = parent_kernel.get_constant(&owned) {
+                if let Some(literal) = format_value_as_final_literal(value) {
+                    source.push_str(&format!("final {owned} := {literal}\n"));
+                    emitted_externs.insert(owned);
+                    continue;
+                }
+            }
+        }
         let (node_idx, port_idx) = parent_program.resolve_output_by_index(
             parent_program.output_index(&owned).unwrap()
         );
@@ -241,7 +313,7 @@ pub fn synthesize_for_each_scope(
         inherited_names.push(owned);
     }
     for name in parent_program.input_names() {
-        if !cascade_external(&emitted_externs, &iter_vars, &name) { continue; }
+        if !cascade_external(&emitted_externs, &iter_vars, &coord_names, &name) { continue; }
         let port_type = parent_program.input_port_type(&name)
             .unwrap_or(PortType::Str);
         let type_name = port_type_to_extern_name(port_type);
@@ -348,6 +420,33 @@ pub fn workload_param_type_name(value: &str) -> &'static str {
 /// Used by the per-iteration synthesizer (SRD-13f Gate 2:
 /// iter-vars as `final const` matter in the comprehension's
 /// inner scope).
+/// SRD-13f case 1 — format a `Value` as a GK source literal for
+/// promoted-final emission. Returns `None` when the value isn't
+/// representable as a literal (`Bytes`, `Json`, `Ext`, `Handle`,
+/// vectors). The synthesizer falls back to extern cascade in
+/// those cases. Distinct from [`format_value_as_gk_literal`]
+/// which has a quoted-display fallback for non-scalar types
+/// (acceptable for iter-vars, wrong for parent constants we
+/// don't fully model).
+pub fn format_value_as_final_literal(v: &Value) -> Option<String> {
+    match v {
+        Value::U64(n) => Some(n.to_string()),
+        Value::F64(f) => {
+            if f.fract() == 0.0 && f.is_finite() {
+                Some(format!("{f:.1}"))
+            } else {
+                Some(format!("{f}"))
+            }
+        }
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Str(s) => {
+            let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+            Some(format!("\"{escaped}\""))
+        }
+        _ => None,
+    }
+}
+
 pub fn format_value_as_gk_literal(v: &Value) -> String {
     match v {
         Value::U64(n) => n.to_string(),
@@ -432,10 +531,15 @@ pub fn synthesize_for_each_iteration(
     // exposes flows through this scope so descendants can
     // see them via the standard materialize_wiring_from_outer chain.
     let parent_program = parent_kernel.program();
+    // Generic coord-set detection — propagation via kernel chain.
+    let coord_names: HashSet<String> = {
+        let coord_count = parent_program.coord_count();
+        parent_program.input_names().into_iter().take(coord_count).collect()
+    };
     let cascade_skip = |emitted: &HashSet<String>, name: &str| -> bool {
         if emitted.contains(name) { return true; }
         if iter_var_names.contains(name) { return true; }
-        if name == "cycle" { return true; }
+        if coord_names.contains(name) { return true; }
         if name.starts_with("__") && !name.starts_with("__cursor_extent_") {
             return true;
         }

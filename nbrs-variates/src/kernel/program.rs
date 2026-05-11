@@ -9,6 +9,7 @@ use std::sync::Arc;
 use crate::node::{GkNode, Value};
 use super::{WireSource, InputDef};
 use super::engines::{GkState, RawState, ProvScanState, EngineCore};
+use crate::dsl::ast::{GkFile, Statement};
 
 /// Evaluation lifecycle classification used by the init-binding
 /// contract (see [SRD 11 §"Three Evaluation Lifecycles"](../../../../docs/sysref/11_gk_evaluation.md)).
@@ -162,6 +163,15 @@ pub struct GkProgram {
     /// produce a kernel with empty write-throughs and the
     /// per-cycle commit would silently no-op.
     pub(crate) write_throughs: Vec<crate::kernel::KernelWriteThrough>,
+    /// Retained AST that produced this program. Live metadata —
+    /// read by the subscope synthesizer (SRD-13f §"Wire-reference
+    /// classification") to integrate parent bindings' matter
+    /// into child scopes. A binding's graph structure may not be
+    /// contiguous in source text, so the AST is the canonical
+    /// view of what defines each binding. `None` only for
+    /// legacy / programmatic construction paths that bypass the
+    /// parser; the DSL entry points always populate this.
+    pub(crate) ast: Option<Arc<GkFile>>,
 }
 
 unsafe impl Send for GkProgram {}
@@ -218,6 +228,7 @@ impl GkProgram {
             cursor_schemas: Vec::new(),
             init_outputs: std::collections::HashSet::new(),
             write_throughs: Vec::new(),
+            ast: None,
         }
     }
 
@@ -246,6 +257,7 @@ impl GkProgram {
             cursor_schemas: Vec::new(),
             init_outputs: std::collections::HashSet::new(),
             write_throughs: Vec::new(),
+            ast: None,
         }
     }
 
@@ -273,6 +285,107 @@ impl GkProgram {
     /// re-instance path picks them up without a side channel.
     pub(crate) fn write_throughs(&self) -> &[crate::kernel::KernelWriteThrough] {
         &self.write_throughs
+    }
+
+    /// Attach the parsed AST as live metadata. Called once by
+    /// every DSL compile entry point right after assembly, while
+    /// the program Arc is still uniquely owned.
+    pub(crate) fn set_ast(&mut self, ast: Arc<GkFile>) {
+        self.ast = Some(ast);
+    }
+
+    /// The retained AST that produced this program, if any.
+    /// SRD-13f §"Wire-reference classification" — the subscope
+    /// synthesizer queries this to integrate parent bindings'
+    /// graph structure into child scopes. Returns `None` for
+    /// programs built via programmatic (non-DSL) paths.
+    pub fn ast(&self) -> Option<&Arc<GkFile>> {
+        self.ast.as_ref()
+    }
+
+    /// Find the `Statement` that defines binding `name` in this
+    /// program's retained AST. Matches both single-target
+    /// `InitBinding`/`CycleBinding` and tuple-target destructuring
+    /// bindings (where `name` is one of several targets). Returns
+    /// `None` if no AST is retained or no binding defines `name`.
+    pub fn binding_ast_for(&self, name: &str) -> Option<&Statement> {
+        let ast = self.ast.as_ref()?;
+        ast.statements.iter().find(|stmt| match stmt {
+            Statement::InitBinding(b) => b.name == name,
+            Statement::CycleBinding(b) => b.targets.iter().any(|t| t == name),
+            _ => false,
+        })
+    }
+
+    /// Compute the transitive closure of bindings needed to
+    /// materialise `name` locally in a descendant scope.
+    /// SRD-13f §"Wire-reference classification" — case 3 (local
+    /// matter inclusion).
+    ///
+    /// Starting from the binding that defines `name`, recursively
+    /// walk the RHS expression tree following `Ident` references.
+    /// For each referenced name, if it's defined by another
+    /// binding in this program's AST AND is not effectively final
+    /// (the four-case rule treats final as a separate cascade),
+    /// include that binding too and recurse.
+    ///
+    /// Termination boundaries:
+    /// - `final` / `shared` outputs (effectively const upstream;
+    ///   caller emits as promoted-final in case 1)
+    /// - `extern` ports (caller handles as case 2 cascade)
+    /// - Input slots (`cycle`, etc.)
+    /// - Names defined nowhere (will surface as unresolved at
+    ///   compile time of the child scope)
+    ///
+    /// Returns the bindings in topological order (dependencies
+    /// first). Names already in `excluded` are not re-walked,
+    /// letting callers express "stop here — this name is locally
+    /// defined / coordinated / already collected".
+    pub fn local_inclusion_chain<'a>(
+        &'a self,
+        name: &str,
+        excluded: &std::collections::HashSet<String>,
+    ) -> Vec<&'a Statement> {
+        let mut out: Vec<&'a Statement> = Vec::new();
+        let mut visited: std::collections::HashSet<String> = excluded.clone();
+        self.collect_chain_into(name, &mut out, &mut visited);
+        out
+    }
+
+    fn collect_chain_into<'a>(
+        &'a self,
+        name: &str,
+        out: &mut Vec<&'a Statement>,
+        visited: &mut std::collections::HashSet<String>,
+    ) {
+        if !visited.insert(name.to_string()) {
+            return;
+        }
+        // `final` / `shared` bindings stop the walk: they're case 1
+        // (promoted-final or shared-cell) at the call site, not
+        // case 3. Skip silently.
+        let modifier = self.output_modifier(name);
+        if modifier == crate::dsl::ast::BindingModifier::FINAL
+            || modifier == crate::dsl::ast::BindingModifier::SHARED
+        {
+            return;
+        }
+        let Some(stmt) = self.binding_ast_for(name) else { return };
+        let value = match stmt {
+            Statement::CycleBinding(b) => &b.value,
+            Statement::InitBinding(b) => &b.value,
+            _ => return,
+        };
+        // Recurse into dependencies first, then push this stmt —
+        // produces topo order (deps before dependents).
+        let mut refs = std::collections::HashSet::new();
+        crate::dsl::validate::collect_references(value, &mut refs);
+        let mut refs_sorted: Vec<String> = refs.into_iter().collect();
+        refs_sorted.sort();
+        for r in refs_sorted {
+            self.collect_chain_into(&r, out, visited);
+        }
+        out.push(stmt);
     }
 
     /// Read the set of names declared with the `init` keyword.
@@ -1519,5 +1632,120 @@ mod canonical_hash_tests {
         let parent = compile_gk("final x := 1\n").expect("parent");
         let inner = compile_gk("final y := 2\n").expect("inner");
         assert!(!inner.program().is_subset_of(parent.program()));
+    }
+}
+
+#[cfg(test)]
+mod ast_metadata_tests {
+    use crate::dsl::compile_gk;
+    use crate::dsl::ast::Statement;
+
+    #[test]
+    fn retained_ast_is_present_after_compile() {
+        let src = "final dataset := \"sift1m\"\ncount := 100\n";
+        let k = compile_gk(src).expect("compile");
+        assert!(k.program().ast().is_some(), "AST should be retained on program");
+    }
+
+    #[test]
+    fn binding_ast_for_finds_init_binding() {
+        let src = "init dataset = \"sift1m\"\nratio := 2.5\n";
+        let k = compile_gk(src).expect("compile");
+        let stmt = k.program().binding_ast_for("dataset")
+            .expect("dataset binding should be retrievable");
+        match stmt {
+            Statement::InitBinding(b) => assert_eq!(b.name, "dataset"),
+            other => panic!("expected InitBinding for 'dataset', got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn binding_ast_for_finds_cycle_binding() {
+        let src = "count := 42\n";
+        let k = compile_gk(src).expect("compile");
+        let stmt = k.program().binding_ast_for("count")
+            .expect("count binding should be retrievable");
+        match stmt {
+            Statement::CycleBinding(b) => {
+                assert!(b.targets.iter().any(|t| t == "count"),
+                    "CycleBinding targets should include 'count'");
+            }
+            other => panic!("expected CycleBinding for 'count', got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn binding_ast_for_unknown_name_returns_none() {
+        let k = compile_gk("final x := 1\n").expect("compile");
+        assert!(k.program().binding_ast_for("does_not_exist").is_none());
+    }
+
+    #[test]
+    fn local_inclusion_chain_includes_transitive_deps() {
+        // `bar` depends on `foo`. Both are cycle bindings.
+        // The chain for `bar` should include `foo` first, `bar` second.
+        let src = "\
+foo := hash(cycle)
+bar := mod(foo, 100)
+";
+        let k = compile_gk(src).expect("compile");
+        let chain = k.program()
+            .local_inclusion_chain("bar", &std::collections::HashSet::new());
+        assert_eq!(chain.len(), 2, "expected 2 bindings in chain, got {}", chain.len());
+        match chain[0] {
+            Statement::CycleBinding(b) => assert!(b.targets.iter().any(|t| t == "foo")),
+            _ => panic!("expected foo first"),
+        }
+        match chain[1] {
+            Statement::CycleBinding(b) => assert!(b.targets.iter().any(|t| t == "bar")),
+            _ => panic!("expected bar second"),
+        }
+    }
+
+    #[test]
+    fn local_inclusion_chain_stops_at_final() {
+        // `seed` is `final` — should NOT appear in the chain
+        // (case 1, promoted-final, is the caller's job).
+        let src = "\
+final seed := 12345
+mixed := hash(seed)
+";
+        let k = compile_gk(src).expect("compile");
+        let chain = k.program()
+            .local_inclusion_chain("mixed", &std::collections::HashSet::new());
+        // Just `mixed` — `seed` is final, walk stops.
+        assert_eq!(chain.len(), 1);
+        match chain[0] {
+            Statement::CycleBinding(b) => assert!(b.targets.iter().any(|t| t == "mixed")),
+            _ => panic!("expected mixed"),
+        }
+    }
+
+    #[test]
+    fn local_inclusion_chain_respects_excluded() {
+        // If `foo` is already locally satisfied (excluded), walk
+        // doesn't include it. `bar` alone should appear.
+        let src = "\
+foo := hash(cycle)
+bar := mod(foo, 100)
+";
+        let k = compile_gk(src).expect("compile");
+        let mut excluded = std::collections::HashSet::new();
+        excluded.insert("foo".to_string());
+        let chain = k.program()
+            .local_inclusion_chain("bar", &excluded);
+        assert_eq!(chain.len(), 1);
+        match chain[0] {
+            Statement::CycleBinding(b) => assert!(b.targets.iter().any(|t| t == "bar")),
+            _ => panic!("expected bar"),
+        }
+    }
+
+    #[test]
+    fn local_inclusion_chain_unknown_name_is_empty() {
+        let k = compile_gk("final x := 1\n").expect("compile");
+        let chain = k.program()
+            .local_inclusion_chain("missing", &std::collections::HashSet::new());
+        assert!(chain.is_empty());
     }
 }

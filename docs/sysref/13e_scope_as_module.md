@@ -9,10 +9,13 @@
   inlining resolver), SRD-13b (combination modes), SRD-13c (GK
   scope model — `bind_outer_scope`, `scope_values`, manifest
   extraction), SRD-13d (op-template scope layer; this SRD
-  generalises its mechanism), SRD-18b (scenario tree, cache-and-
-  rebind primitive), SRD-32 (init-time fixture / pull plan — the
-  read-side analogue of what this SRD specifies for the write
-  side)
+  generalises its mechanism), SRD-13f §"Wire-reference
+  classification" (the synthesizer's four-case rule that decides
+  what matter the ScopeModule carries: promoted-final, authored
+  `extern`, local-inclusion, or unresolved-validation-error),
+  SRD-18b (scenario tree, cache-and-rebind primitive), SRD-32
+  (init-time fixture / pull plan — the read-side analogue of what
+  this SRD specifies for the write side)
 
 ---
 

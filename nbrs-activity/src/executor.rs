@@ -66,13 +66,6 @@ pub struct ExecCtx {
     /// resolver uses when constraints leave order ambiguous.
     pub wrap_default_order: Option<Vec<String>>,
     pub program: Arc<nbrs_variates::kernel::GkProgram>,
-    /// SRD-13f Push D: workload-level `bindings:` GK source.
-    /// Threaded through here so phase-scope and op-template
-    /// scope compiles can include the same workload-level
-    /// bindings as local matter — fiber.main_kernel then
-    /// evaluates them per cycle on its own state (no shared
-    /// workload-root ticking, which would race across fibers).
-    pub workload_level_gk: Option<String>,
     pub gk_lib_paths: Vec<PathBuf>,
     pub workload_dir: Option<PathBuf>,
     pub strict: bool,
@@ -1424,7 +1417,18 @@ async fn run_phase(
                 "phase '{phase_name}': no current_parent_kernel — \
                  workload root install missed at session start (internal bug)."
             ))?;
-        let effective_manifest = crate::runner::extract_manifest(parent_kernel.program());
+        // SRD-13f §"Wire-reference classification" — for case-3
+        // local-inclusion the synthesizer needs the phase scope
+        // kernel (which carries `phase.bindings` as AST) when one
+        // was installed; otherwise the immediate runtime parent
+        // (current_parent_kernel) is the right resolver. Same
+        // lookup pattern as the placeholder validator above.
+        let classifier_kernel: &nbrs_variates::kernel::GkKernel = ctx.scope_tree
+            .phase_node_by_name(phase_name)
+            .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get())
+            .map(|k| k.as_ref())
+            .unwrap_or(parent_kernel);
+        let effective_manifest = crate::runner::extract_manifest(classifier_kernel.program());
 
         // Build typed scope from structured inputs. M3.6:
         // phase-level scope passes empty workload_params —
@@ -1441,6 +1445,7 @@ async fn run_phase(
             &ctx.phases,
             phase.cycles.as_deref(),
             &[], // exclude
+            Some(classifier_kernel),
         )?;
 
         // Validate scope rules (shadow detection, final checks)
@@ -1500,7 +1505,6 @@ async fn run_phase(
                     &gk_context,
                     cursor_limit,
                     &phase_pragmas,
-                    ctx.workload_level_gk.as_deref(),
                 ).map_err(|e| format!("{gk_context}: {e}"))?;
                 let prog = compiled.program().clone();
                 let _ = node.cached_kernel.set(std::sync::Arc::new(compiled));
@@ -1518,7 +1522,6 @@ async fn run_phase(
                 &gk_context,
                 cursor_limit,
                 &phase_pragmas,
-                ctx.workload_level_gk.as_deref(),
             ).map_err(|e| format!("{gk_context}: {e}"))?
             .program()
             .clone()

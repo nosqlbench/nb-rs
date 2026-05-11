@@ -396,6 +396,18 @@ impl GkKernel {
             .set_cursor_schemas(schemas);
     }
 
+    /// Attach the parsed AST as live program metadata. Called by
+    /// every DSL compile entry point immediately after the
+    /// assembler produces the kernel, while the program Arc is
+    /// still uniquely owned. The subscope synthesizer
+    /// (SRD-13f §"Wire-reference classification") queries this
+    /// to integrate parent bindings' matter into child scopes.
+    pub fn set_ast(&mut self, ast: Arc<crate::dsl::ast::GkFile>) {
+        Arc::get_mut(&mut self.program)
+            .expect("set_ast must be called before program is shared")
+            .set_ast(ast);
+    }
+
     /// The per-fiber mutable evaluation state.
     pub fn state(&mut self) -> &mut GkState {
         &mut self.state
