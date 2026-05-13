@@ -261,6 +261,20 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
                 &mut opts, &mut axis_seen, 2, "label",
                 strip_quotes(rest),
             )?;
+        } else if let Some(rest) = line.strip_prefix("y-datapoints:").map(str::trim) {
+            opts.datapoints_mode = DatapointsMode::from_keyword(rest)?;
+        } else if let Some(rest) = line.strip_prefix("y-side:").map(str::trim) {
+            // Workload-level default for every secondary
+            // axis's side. Per-axis `yN-side:` still wins
+            // when set; this fans the value out to any
+            // axis that doesn't carry its own override.
+            let v = rest.to_ascii_lowercase();
+            if v != "left" && v != "right" {
+                return Err(format!(
+                    "y-side: expected `left` or `right`, got `{rest}`"
+                ));
+            }
+            opts.secondary_side_default = Some(v);
         } else if line.starts_with("y-label:")
             || line.starts_with("y-legend:")
             || line.starts_with("y-scale:")
@@ -581,6 +595,21 @@ struct PlotMetricsOpts {
     /// `--y-legend` / `--y1-legend`. `None` ⇒ legacy
     /// auto-generated series names.
     y_legend_format: Option<String>,
+    /// Workload-level default for every secondary axis's
+    /// `side`. Set via `y-side: left|right` in the plot
+    /// body. Per-axis `yN-side:` overrides win when present.
+    /// `None` ⇒ axes fall back to the built-in default
+    /// (`left`).
+    secondary_side_default: Option<String>,
+    /// `y-datapoints: <mode>` directive — controls inline
+    /// numeric annotations at each plotted point.
+    /// Modes:
+    ///   * `inline` (default): label at every point.
+    ///   * `extremes`: only the min and max per series.
+    ///   * `callouts`: like inline but boxed/offset for
+    ///      contrast against the plot line.
+    ///   * `none` / `off`: suppress entirely.
+    datapoints_mode: DatapointsMode,
     /// Per-secondary-axis state. Indexed by `axis_num - 2` so
     /// `secondary_axes[0]` is `y2`, `secondary_axes[1]` is
     /// `y3`, etc. SRD-65: axes are contiguous — no
@@ -707,6 +736,39 @@ enum AxisKey { X, Y, Y2, Y3, Y4 }
 /// mutually exclusive with `Min`/`Max` on the same axis.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum AxisRole { Range, Min, Max }
+
+/// `y-datapoints:` mode — how (or whether) to draw the
+/// numeric value alongside each plotted point.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum DatapointsMode {
+    /// Value text next to every point. Default.
+    #[default]
+    Inline,
+    /// Only the min and max value per series (the
+    /// boundaries of each curve).
+    Extremes,
+    /// Inline label boxed against the chart background so
+    /// it pops against dense data; useful when plot lines
+    /// would otherwise obscure the text.
+    Callouts,
+    /// Suppress numeric annotations entirely.
+    None,
+}
+
+impl DatapointsMode {
+    fn from_keyword(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "inline" => Ok(DatapointsMode::Inline),
+            "extremes" => Ok(DatapointsMode::Extremes),
+            "callouts" => Ok(DatapointsMode::Callouts),
+            "none" | "off" | "false" => Ok(DatapointsMode::None),
+            other => Err(format!(
+                "y-datapoints: expected `inline`, `extremes`, `callouts`, \
+                 or `none`, got `{other}`"
+            )),
+        }
+    }
+}
 
 /// Records which `*-range` / `*-min` / `*-max` directives
 /// have been seen during a single parse, and rejects
@@ -1083,10 +1145,19 @@ fn split_array_value(s: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// Apply `y-ranges: [[a,b], [c,d], …]` positionally to
-/// y1, y2, y3, …. Each element is parsed via
-/// [`parse_range_spec`] — any of `a..b`, `(a, b)`, or
-/// `[a, b]` works.
+/// Apply `y-ranges: [[a,b], [c,d], …]` to y1, y2, y3, ….
+/// Each element is parsed via [`parse_range_spec`] — any of
+/// `a..b`, `(a, b)`, or `[a, b]` works.
+///
+/// Broadcast semantic: when fewer entries are supplied than
+/// there are declared y-axes, the LAST entry fans out to
+/// every remaining axis. So `[[0, 1]]` with three axes pins
+/// y1/y2/y3 all to `[0, 1]` — which combined with the
+/// default left-side projection means every series renders
+/// against that one shared y-coord scale (identity
+/// projection — values read directly off the y axis).
+/// Authors who want per-axis ranges write one entry per
+/// axis explicitly.
 fn apply_y_plural_ranges(
     opts: &mut PlotMetricsOpts,
     axis_seen: &mut AxisDirectiveTracker,
@@ -1094,6 +1165,9 @@ fn apply_y_plural_ranges(
 ) -> Result<(), String> {
     let items = split_array_value(value)
         .map_err(|e| format!("y-ranges: {e}"))?;
+    if items.is_empty() {
+        return Err("y-ranges: empty array".to_string());
+    }
     let max_axes = 1 + opts.secondary_axes.len();
     if items.len() > max_axes {
         return Err(format!(
@@ -1102,21 +1176,36 @@ fn apply_y_plural_ranges(
             items.len(), max_axes,
         ));
     }
-    for (i, item) in items.iter().enumerate() {
-        let (lo, hi) = parse_range_spec(item)
-            .map_err(|e| format!("y-ranges[{i}]: {e}"))?;
-        if i == 0 {
-            axis_seen.note_owned(AxisKey::Y, AxisRole::Range, "y-ranges[0]".to_string())?;
+    // Pre-parse so an invalid range error references the
+    // original index rather than the broadcast position.
+    let parsed: Vec<(Option<f64>, Option<f64>)> = items.iter().enumerate()
+        .map(|(i, item)| parse_range_spec(item)
+            .map_err(|e| format!("y-ranges[{i}]: {e}")))
+        .collect::<Result<_, _>>()?;
+    for axis_idx in 0..max_axes {
+        // Fan-out: explicit entry when present, otherwise
+        // the last entry repeats.
+        let src = parsed.get(axis_idx)
+            .copied()
+            .unwrap_or_else(|| *parsed.last().unwrap());
+        let (lo, hi) = src;
+        let label = if axis_idx < parsed.len() {
+            format!("y-ranges[{axis_idx}]")
+        } else {
+            format!("y-ranges[{}→{axis_idx}]", parsed.len() - 1)
+        };
+        if axis_idx == 0 {
+            axis_seen.note_owned(AxisKey::Y, AxisRole::Range, label)?;
             opts.y_min = lo; opts.y_max = hi;
         } else {
-            let axis_num = i + 1;
+            let axis_num = axis_idx + 1;
             let key = match axis_num {
                 2 => AxisKey::Y2,
                 3 => AxisKey::Y3,
                 4 => AxisKey::Y4,
                 _ => return Err(format!("y-ranges: axis index {axis_num} out of range")),
             };
-            axis_seen.note_owned(key, AxisRole::Range, format!("y-ranges[{i}]"))?;
+            axis_seen.note_owned(key, AxisRole::Range, label)?;
             let axis = opts.ensure_secondary_axis(axis_num)?;
             axis.min = lo;
             axis.max = hi;
@@ -1325,6 +1414,8 @@ impl Default for PlotMetricsOpts {
             legend: None,
             query: None,
             y_legend_format: None,
+            secondary_side_default: None,
+            datapoints_mode: DatapointsMode::Inline,
             secondary_axes: Vec::new(),
             series_overrides: Vec::new(),
             x_ticks: TickSpec::None,
@@ -1891,15 +1982,18 @@ fn run_stored(stored: StoredArgs) {
     // Source the spec list: `workload=<path>` wins (use the
     // workload's `plot:` block); otherwise use the metrics
     // db's `session_metadata` table.
-    let stored_specs: Vec<(String, String)> = match &stored.workload {
-        Some(path) => match load_workload_plots(path) {
-            Ok(specs) => specs,
-            Err(e) => {
-                eprintln!("nbrs plot: workload '{}': {e}", path.display());
-                std::process::exit(1);
+    let stored_specs: Vec<(String, String)> = match load_plot_specs(
+        stored.workload.as_deref(),
+        Some(&db_path),
+    ) {
+        Ok(specs) => specs,
+        Err(e) => {
+            match &stored.workload {
+                Some(path) => eprintln!("nbrs plot: workload '{}': {e}", path.display()),
+                None => eprintln!("nbrs plot: {e}"),
             }
-        },
-        None => read_stored_plots(&db_path),
+            std::process::exit(1);
+        }
     };
     if stored_specs.is_empty() {
         match &stored.workload {
@@ -1987,11 +2081,13 @@ fn run_stored_result(stored: StoredArgs) -> Result<(), String> {
     if !db_path.exists() {
         return Err(format!("metrics db not found at '{}'", db_path.display()));
     }
-    let stored_specs: Vec<(String, String)> = match &stored.workload {
-        Some(path) => load_workload_plots(path)
-            .map_err(|e| format!("workload '{}': {e}", path.display()))?,
-        None => read_stored_plots(&db_path),
-    };
+    let stored_specs: Vec<(String, String)> = load_plot_specs(
+        stored.workload.as_deref(),
+        Some(&db_path),
+    ).map_err(|e| match &stored.workload {
+        Some(path) => format!("workload '{}': {e}", path.display()),
+        None => e,
+    })?;
     if stored_specs.is_empty() {
         return match &stored.workload {
             Some(path) => Err(format!(
@@ -2052,15 +2148,17 @@ fn run_stored_result(stored: StoredArgs) -> Result<(), String> {
 /// callers expect best-effort, not hard errors.
 pub fn list_stored_plot_names(db_path: &Path) -> Vec<String> {
     if !db_path.exists() { return Vec::new(); }
-    read_stored_plots(db_path).into_iter().map(|(n, _)| n).collect()
+    load_plot_specs(None, Some(db_path))
+        .map(|s| s.into_iter().map(|(n, _)| n).collect())
+        .unwrap_or_default()
 }
 
 /// Public listing for shell completion: every named plot in a
 /// workload YAML's `plot:` block. Empty Vec on any error —
 /// completion is best-effort.
 pub fn list_workload_plot_names(workload_path: &Path) -> Vec<String> {
-    load_workload_plots(workload_path)
-        .map(|specs| specs.into_iter().map(|(n, _)| n).collect())
+    load_plot_specs(Some(workload_path), None)
+        .map(|s| s.into_iter().map(|(n, _)| n).collect())
         .unwrap_or_default()
 }
 
@@ -2072,17 +2170,13 @@ pub fn metric_for_plot_name(
     workload_path: Option<&Path>,
     name: &str,
 ) -> Option<String> {
-    let mut spec: Option<String> = None;
-    if let Some(wp) = workload_path
-        && let Ok(plots) = load_workload_plots(wp) {
-        spec = plots.into_iter()
-            .find_map(|(n, s)| if n == name { Some(s) } else { None });
-    }
-    if spec.is_none() {
-        spec = read_stored_plots(db_path).into_iter()
-            .find_map(|(n, s)| if n == name { Some(s) } else { None });
-    }
-    let spec = spec?;
+    let find = |wp: Option<&Path>, dbp: Option<&Path>| -> Option<String> {
+        load_plot_specs(wp, dbp).ok()?.into_iter()
+            .find_map(|(n, s)| if n == name { Some(s) } else { None })
+    };
+    let spec = workload_path
+        .and_then(|wp| find(Some(wp), None))
+        .or_else(|| find(None, Some(db_path)))?;
     parse_spec(&spec).ok().and_then(|o| o.metric)
 }
 
@@ -2137,53 +2231,19 @@ pub fn list_label_keys(db_path: &Path, metric_pattern: Option<&str>) -> Vec<Stri
     keys.into_iter().collect()
 }
 
-/// Read a workload YAML's `report:` block. Returns
-/// `(name, spec)` pairs for every `plot` item, in
-/// declaration order (SRD-46).
-fn load_workload_plots(path: &Path) -> Result<Vec<(String, String)>, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("read: {e}"))?;
-    let workload = nbrs_workload::parse::parse_workload(
-        &text, &std::collections::HashMap::new(),
-    ).map_err(|e| format!("parse: {e}"))?;
-    let entries: Vec<(String, String)> = workload.report.items()
-        .filter(|i| matches!(i.kind, nbrs_workload::report::Kind::Plot))
-        .map(|i| (i.name.clone(), i.body.clone()))
-        .collect();
-    Ok(entries)
-}
-
-fn read_stored_plots(db_path: &Path) -> Vec<(String, String)> {
-    // SRD-46: read `report.<name>` rows whose body starts with
-    // `plot ...`. Strips the kind keyword + name + optional
-    // `label "..."` line so the returned spec is the body the
-    // legacy plot renderer expects.
-    let Ok(conn) = rusqlite::Connection::open(db_path) else { return Vec::new(); };
-    let mut stmt = match conn.prepare(
-        "SELECT key, value FROM session_metadata \
-         WHERE key LIKE 'report.%' ORDER BY rowid"
-    ) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    let mut out = Vec::new();
-    if let Ok(iter) = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    }) {
-        for entry in iter.flatten() {
-            let mut lines = entry.1.lines();
-            let head = match lines.next() { Some(h) => h, None => continue };
-            let name = match head.strip_prefix("plot ") {
-                Some(rest) => rest.trim().to_string(),
-                None => continue, // skip table items
-            };
-            let body: String = lines
-                .filter(|l| !l.starts_with("label ") && !l.starts_with("target "))
-                .collect::<Vec<_>>().join("\n");
-            out.push((name, body));
-        }
-    }
-    out
+/// Source `(name, body)` pairs for every `plot` item — either
+/// from a workload YAML's `report:` block when `workload_path`
+/// is set, or from the metrics db's `session_metadata` table
+/// otherwise. Single chokepoint: delegates to
+/// [`crate::report_cmd::plot_body_specs`] so directive
+/// stripping (`label` / `target` / `with-table` / style
+/// scalars / `{name}` param expansion) happens exactly once,
+/// shared with the report renderer's own item resolution.
+fn load_plot_specs(
+    workload_path: Option<&Path>,
+    db_path: Option<&Path>,
+) -> Result<Vec<(String, String)>, String> {
+    crate::report_cmd::plot_body_specs(workload_path, db_path)
 }
 
 fn derive_stored_output_path(db_path: &Path, name: &str) -> PathBuf {
@@ -3176,13 +3236,15 @@ fn render_plot(
             series: &axis.series,
             legend_format: axis.cfg.legend_format.as_deref(),
             pending: axis.pending,
-            // Effective side: explicit `yN-side:` value
-            // wins; otherwise default per axis index.
-            // Axis 2 (i==0) defaults to right (preserves
-            // the legacy y2-rail layout). Axes 3+ default
-            // to left (the project-into-primary path that
-            // existed before `side:` was introduced).
-            side: axis.cfg.side.as_deref().unwrap_or(if i == 0 { "right" } else { "left" }),
+            // Effective side: explicit `yN-side:` wins;
+            // otherwise fall back to the workload-level
+            // `y-side:` default; otherwise project into the
+            // primary coord (left). Authors who want a
+            // y2-rail layout opt in via `y-side: right` (for
+            // every axis) or `y2-side: right` (just one).
+            side: axis.cfg.side.as_deref()
+                .or(opts.secondary_side_default.as_deref())
+                .unwrap_or("left"),
         })
         .collect();
 
@@ -3271,7 +3333,8 @@ fn render_plot(
             &opts.series_overrides,
             x_log, y_log,
             x_ticks, y_ticks,
-            opts.y_legend_format.as_deref())?;
+            opts.y_legend_format.as_deref(),
+            opts.datapoints_mode)?;
         root.present().map_err(|e| format!("present: {e}"))?;
     } else {
         let root = BitMapBackend::new(out_path, (opts.width, opts.height)).into_drawing_area();
@@ -3282,7 +3345,8 @@ fn render_plot(
             &opts.series_overrides,
             x_log, y_log,
             x_ticks, y_ticks,
-            opts.y_legend_format.as_deref())?;
+            opts.y_legend_format.as_deref(),
+            opts.datapoints_mode)?;
         root.present().map_err(|e| format!("present: {e}"))?;
     }
     Ok(())
@@ -3734,6 +3798,47 @@ fn parse_legend_spec(arg: Option<&str>) -> Result<LegendSpec, String> {
     Ok(LegendSpec::Position(pos))
 }
 
+/// Pick which series points should get a numeric annotation
+/// based on the active `y-datapoints` mode. Returns indices
+/// into the input slice.
+fn datapoint_label_indices(ys: &[f64], mode: DatapointsMode) -> Vec<usize> {
+    match mode {
+        DatapointsMode::None => Vec::new(),
+        DatapointsMode::Inline | DatapointsMode::Callouts => (0..ys.len()).collect(),
+        DatapointsMode::Extremes => {
+            if ys.is_empty() { return Vec::new(); }
+            let mut min_i = 0;
+            let mut max_i = 0;
+            for (i, &y) in ys.iter().enumerate() {
+                if y < ys[min_i] { min_i = i; }
+                if y > ys[max_i] { max_i = i; }
+            }
+            if min_i == max_i { vec![min_i] } else { vec![min_i, max_i] }
+        }
+    }
+}
+
+/// Format a numeric data value for inline label display.
+/// Picks precision adaptively so [0,1] reads with four
+/// decimals (recall-like quantities) and large magnitudes
+/// drop fractional digits.
+fn format_datapoint(y: f64) -> String {
+    let mag = y.abs();
+    if !y.is_finite() {
+        "—".to_string()
+    } else if mag == 0.0 {
+        "0".to_string()
+    } else if mag < 1e-3 {
+        format!("{y:.2e}")
+    } else if mag < 1.0 {
+        format!("{y:.4}")
+    } else if mag < 100.0 {
+        format!("{y:.2}")
+    } else {
+        format!("{y:.0}")
+    }
+}
+
 fn draw_chart<DB>(
     root: &DrawingArea<DB, plotters::coord::Shift>,
     series: &BTreeMap<String, Vec<(f64, f64)>>,
@@ -3757,6 +3862,7 @@ fn draw_chart<DB>(
     x_ticks: &[f64],
     y_ticks: &[f64],
     y_legend_format: Option<&str>,
+    datapoints_mode: DatapointsMode,
 ) -> Result<(), String>
 where
     DB: DrawingBackend,
@@ -3771,10 +3877,17 @@ where
     // their values are read off the legend's `(Rk)` suffixes
     // (rail-tick rendering for axes 3+ is deferred — see
     // SRD-65 followups).
-    let right_label_area = match secondary.len() {
-        0 => 20,
-        1 => 70,
-        n => 70 + 30 * (n as i32 - 1) as i32,
+    // Reserve right-rail space only when some axis is
+    // actually pinned to the right; otherwise a thin
+    // margin is enough (legend / data labels can still
+    // bleed slightly past the plot's right edge).
+    let right_label_area = if secondary.iter().any(|a| a.side == "right") {
+        match secondary.len() {
+            1 => 70,
+            n => 70 + 30 * (n as i32 - 1) as i32,
+        }
+    } else {
+        20
     };
 
     // Axis-2 coord descriptor (the only secondary plotters
@@ -3813,7 +3926,15 @@ where
         .draw()
         .map_err(|e| format!("draw mesh: {e}"))?;
 
-    if let Some(a2) = secondary.first() {
+    // Only draw the right-side rail when axis 2 actually
+    // lives there. With every `side` defaulting to `left`,
+    // an unqualified y2 declaration projects into the
+    // primary coord and the right rail would be an empty
+    // (and misleading) duplicate. Authors who want the rail
+    // back opt in with `y-side: right` (or `y2-side: right`).
+    if let Some(a2) = secondary.first()
+        && a2.side == "right"
+    {
         chart.configure_secondary_axes()
             .y_desc(&a2.label)
             .label_style(("sans-serif", 14))
@@ -3875,8 +3996,9 @@ where
                 ))
                 .map_err(|e| format!("draw dashed line: {e}"))?
                 .label(series_label_for_legend.clone())
-                .legend(move |(x, y)| PathElement::new(
-                    vec![(x, y), (x + 20, y)], color.stroke_width(stroke_width)));
+                .legend(move |(x, y)| plotters::element::DashedPathElement::new(
+                    vec![(x, y), (x + 20, y)], 4, 4,
+                    color.stroke_width(stroke_width)));
             }
             "dotted" => {
                 chart.draw_series(plotters::series::DashedLineSeries::new(
@@ -3884,8 +4006,9 @@ where
                 ))
                 .map_err(|e| format!("draw dotted line: {e}"))?
                 .label(series_label_for_legend.clone())
-                .legend(move |(x, y)| PathElement::new(
-                    vec![(x, y), (x + 20, y)], color.stroke_width(stroke_width)));
+                .legend(move |(x, y)| plotters::element::DashedPathElement::new(
+                    vec![(x, y), (x + 20, y)], 2, 3,
+                    color.stroke_width(stroke_width)));
             }
             _ => {
                 chart.draw_series(LineSeries::new(
@@ -3957,6 +4080,22 @@ where
                     .map(|p| Circle::new(*p, m_size, color.filled())))
                     .map_err(|e| format!("draw circles: {e}"))?;
             }
+        }
+
+        // y-datapoints — numeric value text per the selected
+        // mode. Primary-coord path: text positions in
+        // primary data space (which IS the value space), so
+        // the label uses the same Y as the placement.
+        let label_idxs = datapoint_label_indices(
+            &pts.iter().map(|&(_, y)| y).collect::<Vec<_>>(),
+            datapoints_mode,
+        );
+        if !label_idxs.is_empty() {
+            let style = ("sans-serif", 11).into_font().color(&color);
+            chart.draw_series(label_idxs.into_iter().map(|i| {
+                let (x, y) = pts[i];
+                Text::new(format_datapoint(y), (x, y), style.clone())
+            })).map_err(|e| format!("draw datapoint labels: {e}"))?;
         }
     }
 
@@ -4139,8 +4278,8 @@ where
                     draw_into!(line,
                         format!("draw {} dashed line", axis.name))
                         .label(label.clone())
-                        .legend(move |(x, y)| PathElement::new(
-                            vec![(x, y), (x + 20, y)],
+                        .legend(move |(x, y)| plotters::element::DashedPathElement::new(
+                            vec![(x, y), (x + 20, y)], 4, 4,
                             color.stroke_width(stroke_width)));
                 }
                 "dotted" => {
@@ -4151,8 +4290,8 @@ where
                     draw_into!(line,
                         format!("draw {} dotted line", axis.name))
                         .label(label.clone())
-                        .legend(move |(x, y)| PathElement::new(
-                            vec![(x, y), (x + 20, y)],
+                        .legend(move |(x, y)| plotters::element::DashedPathElement::new(
+                            vec![(x, y), (x + 20, y)], 2, 3,
                             color.stroke_width(stroke_width)));
                 }
                 _ => {
@@ -4234,6 +4373,27 @@ where
                             .map(|p| Circle::new(*p, m_size, color.filled())),
                         format!("draw {} circles", axis.name));
                 }
+            }
+            // y-datapoints — numeric labels for the
+            // projected path. Position uses `projected_pts`;
+            // the label TEXT uses the original (unprojected)
+            // Y so the operator sees the real metric value
+            // regardless of how the curve was rescaled.
+            let original_ys: Vec<f64> = points.iter().map(|&(_, y)| y).collect();
+            let label_idxs = datapoint_label_indices(&original_ys, datapoints_mode);
+            if !label_idxs.is_empty() {
+                let style = ("sans-serif", 11).into_font().color(&color);
+                let labels: Vec<_> = label_idxs.into_iter().map(|i| {
+                    let (x, _) = projected_pts[i];
+                    let y_proj = projected_pts[i].1;
+                    Text::new(
+                        format_datapoint(original_ys[i]),
+                        (x, y_proj),
+                        style.clone(),
+                    )
+                }).collect();
+                draw_into!(labels.into_iter(),
+                    format!("draw {} datapoint labels", axis.name));
             }
         }
         total_secondary_series += axis.series.len();

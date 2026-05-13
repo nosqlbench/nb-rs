@@ -44,45 +44,72 @@ fn render_compact(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let green = if color { "\x1b[32m" } else { "" };
     let reset = if color { "\x1b[0m"  } else { "" };
     let name = ctx.subject_name();
-    let mut tmp = String::with_capacity(48);
-    let _ = write!(&mut tmp, "{green}▶{reset} {name}");
+    let depth_indent = ctx.depth_indent();
+    let mut tmp = String::with_capacity(64);
+    let _ = write!(&mut tmp, "{depth_indent}{green}▶{reset} {name}");
     let len = tmp.len();
     let _ = out.write_str(&tmp);
     len
 }
 
 fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
+    // Same prefix shape as `phase_done` so the START / DONE
+    // pair line up vertically:
+    //   {indent}▶ [idx/total] [name] (coords) starting
+    //   {indent}✓ [idx/total] [name] (coords) 100%
     let color = ctx.use_color();
     let green = if color { "\x1b[32m" } else { "" };
     let bold  = if color { "\x1b[1m"  } else { "" };
+    let dim   = if color { "\x1b[2m"  } else { "" };
+    let blue  = if color { "\x1b[34m" } else { "" };
+    let yellow= if color { "\x1b[33m" } else { "" };
     let reset = if color { "\x1b[0m"  } else { "" };
     let name = ctx.subject_name();
-    let mut tmp = String::with_capacity(96);
-    if let Some((idx, total)) = ctx.subject_seq() {
-        let _ = write!(&mut tmp, "{green}▶{reset} {bold}{name}{reset} ({idx}/{total}) starting");
+    let labels = ctx.subject_labels();
+    let depth_indent = ctx.depth_indent();
+    let seq_part: String = match ctx.subject_seq() {
+        Some((s, t)) => format!("{dim}[{s}/{t}]{reset} "),
+        None => String::new(),
+    };
+    let coords_part: String = if labels.is_empty() {
+        String::new()
     } else {
-        let _ = write!(&mut tmp, "{green}▶{reset} {bold}{name}{reset} starting");
-    }
+        format!(" {bold}{yellow}{labels}{reset}")
+    };
+    let mut tmp = String::with_capacity(160);
+    let _ = write!(
+        &mut tmp,
+        "{depth_indent}{green}▶{reset} {seq_part}{bold}{blue}[{name}]{reset}{coords_part} starting",
+    );
     let len = tmp.len();
     let _ = out.write_str(&tmp);
     len
 }
 
 fn render_expanded(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
+    // Same prefix as Labeled; iter-tuple coords on their own
+    // line below (matching phase_done's Expanded shape).
     let color = ctx.use_color();
     let green = if color { "\x1b[32m" } else { "" };
     let bold  = if color { "\x1b[1m"  } else { "" };
+    let dim   = if color { "\x1b[2m"  } else { "" };
+    let blue  = if color { "\x1b[34m" } else { "" };
+    let yellow= if color { "\x1b[33m" } else { "" };
     let reset = if color { "\x1b[0m"  } else { "" };
     let name = ctx.subject_name();
     let labels = ctx.subject_labels();
-    let mut tmp = String::with_capacity(160);
-    if let Some((idx, total)) = ctx.subject_seq() {
-        let _ = write!(&mut tmp, "{green}▶{reset} {bold}{name}{reset} ({idx}/{total}) starting");
-    } else {
-        let _ = write!(&mut tmp, "{green}▶{reset} {bold}{name}{reset} starting");
-    }
+    let depth_indent = ctx.depth_indent();
+    let seq_part: String = match ctx.subject_seq() {
+        Some((s, t)) => format!("{dim}[{s}/{t}]{reset} "),
+        None => String::new(),
+    };
+    let mut tmp = String::with_capacity(192);
+    let _ = write!(
+        &mut tmp,
+        "{depth_indent}{green}▶{reset} {seq_part}{bold}{blue}[{name}]{reset} starting",
+    );
     if !labels.is_empty() {
-        let _ = write!(&mut tmp, "\n  {labels}");
+        let _ = write!(&mut tmp, "\n{depth_indent}  {bold}{yellow}{labels}{reset}");
     }
     let len = tmp.len();
     let _ = out.write_str(&tmp);
@@ -139,13 +166,15 @@ mod tests {
             seq: Some((3, 8)),
             ..Default::default()
         };
-        assert_eq!(render(&ctx, Lod::Labeled), "▶ run (3/8) starting");
+        // Prefix shape matches phase_done so the start/done
+        // pair line up: ▶ [seq] [name] [(coords)] starting.
+        assert_eq!(render(&ctx, Lod::Labeled), "▶ [3/8] [run] starting");
     }
 
     #[test]
     fn labeled_without_seq() {
         let ctx = TestCtx { name: "setup".into(), ..Default::default() };
-        assert_eq!(render(&ctx, Lod::Labeled), "▶ setup starting");
+        assert_eq!(render(&ctx, Lod::Labeled), "▶ [setup] starting");
     }
 
     #[test]
@@ -167,8 +196,9 @@ mod tests {
             ..Default::default()
         };
         let out = render(&ctx, Lod::Expanded);
-        assert!(out.contains("run (3/8) starting"));
-        assert!(out.contains("(profile=alpha, k=10)"));
+        assert!(out.contains("[3/8]"), "got: {out:?}");
+        assert!(out.contains("[run]"), "got: {out:?}");
+        assert!(out.contains("(profile=alpha, k=10)"), "got: {out:?}");
         assert!(out.lines().count() >= 2);
     }
 }

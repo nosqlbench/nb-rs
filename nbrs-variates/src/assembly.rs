@@ -1143,6 +1143,22 @@ impl GkAssembler {
                         worklist.push(idx);
                     }
             }
+            // Side-effecting nodes are pinned alive regardless
+            // of reachability from a declared output. `log_info`
+            // and friends emit one audit-log line per eval as a
+            // deliberate side effect — DCE-pruning them would
+            // silently drop diagnostic logging the operator
+            // explicitly asked for. The set is closed and
+            // matched by node-meta name so the marker survives
+            // any wiring shape (passthrough, captured-but-unused,
+            // synthesised wrapper, etc.).
+            for (idx, pn) in all_nodes.iter().enumerate() {
+                if matches!(pn.node.meta().name.as_str(),
+                    "log_debug" | "log_info" | "log_warn" | "log_error")
+                {
+                    worklist.push(idx);
+                }
+            }
             // Walk backward through wiring
             while let Some(idx) = worklist.pop() {
                 if reachable[idx] { continue; }

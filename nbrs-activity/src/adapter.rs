@@ -71,6 +71,34 @@ impl ResultBody for TextBody {
     fn to_text(&self) -> String { self.0.clone() }
 }
 
+/// JSON result body. Adapters that natively produce JSON
+/// (HTTP/REST endpoints, the Jolokia JMX bridge, JSON-RPC) wrap
+/// the parsed value here so `verify:` field assertions and
+/// result-binding extractors can address nested keys (`status`,
+/// `value`, etc.) without a re-parse step.
+///
+/// `element_count` follows the JSON-array convention: array
+/// bodies report `array.len()`, scalar/object bodies report `1`.
+/// That makes `await_empty` polling work naturally against
+/// endpoints whose "still running" state is a non-empty array
+/// and "done" state is `[]`.
+#[derive(Debug, Clone)]
+pub struct JsonBody(pub serde_json::Value);
+
+impl ResultBody for JsonBody {
+    fn to_json(&self) -> serde_json::Value { self.0.clone() }
+    fn as_any(&self) -> &dyn Any { self }
+    fn element_count(&self) -> u64 {
+        match &self.0 {
+            serde_json::Value::Array(arr) => arr.len() as u64,
+            _ => 1,
+        }
+    }
+    fn to_text(&self) -> String {
+        serde_json::to_string(&self.0).unwrap_or_default()
+    }
+}
+
 /// The result of a successful operation.
 ///
 /// If you have an `OpResult`, the operation succeeded. Failure is

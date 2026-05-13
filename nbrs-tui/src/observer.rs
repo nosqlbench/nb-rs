@@ -355,12 +355,25 @@ impl nbrs_activity::observer::RunObserver for TuiObserver {
         self.state.send(RunStateCmd::PhaseProgress(update.clone()));
     }
 
+    fn set_status_line(&self, rendered: Option<String>) {
+        // Same actor channel as the log-only observer: route the
+        // pre-rendered status string into RunState so whichever
+        // sink is currently active (LogOnlySink or TuiSink)
+        // can pick it up. The TUI app today still draws from
+        // ActivePhase directly, but exposing the binder output
+        // through the actor means a future "render the same
+        // status string the terminal would" panel works without
+        // re-running the binder.
+        self.state.send(RunStateCmd::SetStatusLine(rendered));
+    }
+
     fn run_finished(&self) {
         self.state.send(RunStateCmd::RunFinished);
     }
 
     fn log(&self, level: nbrs_activity::observer::LogLevel, message: &str) {
         let severity = match level {
+            nbrs_activity::observer::LogLevel::Trace => LogSeverity::Debug,
             nbrs_activity::observer::LogLevel::Debug => LogSeverity::Debug,
             nbrs_activity::observer::LogLevel::Info => LogSeverity::Info,
             nbrs_activity::observer::LogLevel::Warn => LogSeverity::Warn,

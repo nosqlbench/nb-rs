@@ -27,7 +27,7 @@
 //! ```
 
 use nbrs_activity::adapter::{
-    AdapterError, DriverAdapter, ExecutionError, OpDispenser, OpResult, TextBody,
+    AdapterError, DriverAdapter, ExecutionError, JsonBody, OpDispenser, OpResult, ResultBody, TextBody,
 };
 use nbrs_workload::model::ParsedOp;
 
@@ -119,7 +119,11 @@ impl DriverAdapter for HttpAdapter {
     /// than silently becoming ResolvedFields the adapter never
     /// looks at.
     fn known_op_fields(&self) -> Option<&'static [&'static str]> {
-        Some(&["method", "content_type", "uri", "url", "body", "headers"])
+        // `request_timeout_ms` (not `timeout_ms`) to avoid
+        // colliding with the polling wrapper's `timeout_ms`,
+        // which is the loop-level deadline. The HTTP adapter's
+        // value is a single-request budget.
+        Some(&["method", "content_type", "uri", "url", "body", "headers", "request_timeout_ms"])
     }
 
     fn map_op(
@@ -154,6 +158,18 @@ impl DriverAdapter for HttpAdapter {
         let headers_template = template.op.get("headers")
             .and_then(|v| v.as_str())
             .map(String::from);
+        // Per-op timeout override. Cassandra's
+        // `forceKeyspaceCompaction` JMX op is synchronous (blocks
+        // for the entire compaction); the default 30s client
+        // timeout is far too short for any real table size. This
+        // field lets workloads opt into a longer per-request
+        // budget without raising the adapter-wide default.
+        // Named `request_timeout_ms` (not `timeout_ms`) so it
+        // doesn't collide with the polling wrapper's loop-level
+        // `timeout_ms`.
+        let per_op_timeout_ms = template.op.get("request_timeout_ms")
+            .and_then(|v| v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())));
 
         Ok(Box::new(HttpDispenser {
             client: self.client.clone(),
@@ -164,6 +180,7 @@ impl DriverAdapter for HttpAdapter {
             uri_template,
             body_template,
             headers_template,
+            per_op_timeout_ms,
         }))
     }
 }
@@ -182,6 +199,13 @@ struct HttpDispenser {
     uri_template: Option<String>,
     body_template: Option<String>,
     headers_template: Option<String>,
+    /// Optional per-op request timeout override. When set, the
+    /// builder applies `.timeout(...)` on the request — bypassing
+    /// the adapter's client-wide default. Use for long-running
+    /// JMX/REST calls (e.g. Jolokia synchronous
+    /// `forceKeyspaceCompaction`) that legitimately take many
+    /// minutes.
+    per_op_timeout_ms: Option<u64>,
 }
 
 
@@ -276,6 +300,13 @@ impl OpDispenser for HttpDispenser {
                 builder = builder.header(name.as_str(), value.as_str());
             }
 
+            // Per-op timeout override. When unset, reqwest falls
+            // back to the adapter's client-wide default
+            // (`timeout=` in workload params, 30s otherwise).
+            if let Some(ms) = self.per_op_timeout_ms {
+                builder = builder.timeout(std::time::Duration::from_millis(ms));
+            }
+
             if let Some(body_str) = body {
                 builder = builder.body(body_str);
             }
@@ -296,6 +327,18 @@ impl OpDispenser for HttpDispenser {
 
             let status = response.status().as_u16() as i32;
             let success = response.status().is_success();
+            // Capture content-type before consuming the response
+            // body so we can pick the right `ResultBody` shape.
+            // `application/json` (or any `…/json` subtype like
+            // `application/vnd.api+json`) parses into a `JsonBody`
+            // — verify-blocks can then address nested fields
+            // (`field: status, eq: "200"`) instead of substring
+            // matching on the raw text.
+            let content_type_says_json = response.headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|ct| ct.contains("json"))
+                .unwrap_or(false);
             let body_text = response.text().await.map_err(|e| {
                 ExecutionError::Op(AdapterError {
                     error_name: "BodyReadError".into(),
@@ -305,8 +348,34 @@ impl OpDispenser for HttpDispenser {
             })?;
 
             if success {
+                // Promote to `JsonBody` whenever the body parses
+                // as JSON — not just when the server bothered to
+                // set the right Content-Type. Jolokia 1.x and
+                // various JMX bridges return JSON with a
+                // `text/plain` (or missing) content type;
+                // requiring the header would make verify blocks
+                // unable to address nested fields (`field:
+                // status, eq: "200"` → `<not-json>` even though
+                // the body literally is JSON).
+                //
+                // Gate the parse attempt on a cheap prefix check
+                // (`{` / `[` after whitespace) so we don't
+                // serde_json::from_str scan arbitrary text
+                // bodies that happen to start with a digit or a
+                // quoted string. That keeps "parse a scalar like
+                // "42" into a JSON number" — a real risk for
+                // plain-text endpoints — from happening.
+                let looks_like_json = body_text.trim_start()
+                    .starts_with(|c: char| c == '{' || c == '[');
+                let parsed_json = if content_type_says_json || looks_like_json {
+                    serde_json::from_str::<serde_json::Value>(&body_text).ok()
+                } else { None };
+                let body: Box<dyn ResultBody> = match parsed_json {
+                    Some(v) => Box::new(JsonBody(v)),
+                    None => Box::new(TextBody(body_text)),
+                };
                 Ok(OpResult {
-                    body: Some(Box::new(TextBody(body_text))),
+                    body: Some(body),
                     captures: std::collections::HashMap::new(),
                     skipped: false,
                 })

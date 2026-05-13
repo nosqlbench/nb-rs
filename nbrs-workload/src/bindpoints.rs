@@ -83,9 +83,15 @@ pub fn extract_bind_points(value: &str) -> Vec<BindPoint> {
             } else {
                 // Single brace: {name}, {:=expr}, {:=expr:=}, or {expr}
                 // First, peek ahead to check if this is a CQL map literal
-                // (starts with ' or "). If so, skip just the opening brace
-                // and continue scanning — inner {name} refs are still valid.
-                if i + 1 < chars.len() && is_literal_start(chars[i + 1]) {
+                // (starts with ' or ", possibly after whitespace — covers
+                // multi-line CQL maps where the opening `{` sits on its
+                // own line). If so, skip just the opening brace and
+                // continue scanning — inner {name} refs are still valid.
+                let next_nonspace = chars[i + 1..]
+                    .iter()
+                    .find(|c| !c.is_whitespace())
+                    .copied();
+                if matches!(next_nonspace, Some(c) if is_literal_start(c)) {
                     // CQL map literal: {'key': '{value}'} — skip the opening {
                     // but continue scanning so inner bind points are found.
                     i += 1;

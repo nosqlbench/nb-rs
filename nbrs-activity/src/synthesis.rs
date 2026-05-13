@@ -534,6 +534,11 @@ impl FiberBuilder {
                 self.main_kernel.state().set_input(idx, value.clone());
             }
         }
+        // Cell-bound slots on the main kernel are written by
+        // ancestor (workload-level) kernels outside our `set_input`
+        // path; re-dirty their dependents so passthrough outputs
+        // pick up ancestor refreshes on the next pull.
+        self.main_kernel.state().invalidate_cell_bound_dependents();
         // SRD-68 per-fiber kernels: same per-cycle propagation.
         for slot in self.per_op_kernels.iter_mut() {
             if let Some(kernel) = slot {
@@ -545,6 +550,13 @@ impl FiberBuilder {
                         kernel.state().set_input(idx, value.clone());
                     }
                 }
+                // Cell-bound slots are written by ancestor kernels
+                // outside our `set_input` path (phase kernel's
+                // `advance_broadcasts` writes through the cell);
+                // re-dirty their dependents so passthrough outputs
+                // re-evaluate on the next pull instead of returning
+                // the first-cycle memoized value.
+                kernel.state().invalidate_cell_bound_dependents();
             }
         }
         // SRD-13f Push D: only advance_broadcasts when a
@@ -654,11 +666,30 @@ impl FiberBuilder {
         value: Value,
     ) -> bool {
         let Some(kernel) = self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut()) else {
+            if std::env::var("NBRS_DIRTY_DEBUG").is_ok() && name == "body" {
+                eprintln!("DIRTY: write body template={template_idx} NO_KERNEL");
+            }
             return false;
         };
         let Some(idx) = kernel.program().find_input(name) else {
+            if std::env::var("NBRS_DIRTY_DEBUG").is_ok() && name == "body" {
+                let inputs = kernel.program().input_names();
+                eprintln!(
+                    "DIRTY: write body template={template_idx} NO_SLOT in_count={} names={:?}",
+                    inputs.len(), inputs
+                );
+            }
             return false;
         };
+        if std::env::var("NBRS_DIRTY_DEBUG").is_ok() && name == "body" {
+            let input_count = kernel.program().input_names().len();
+            let display = value.to_display_string();
+            let head: String = display.chars().take(48).collect();
+            eprintln!(
+                "DIRTY: write body template={template_idx} idx={idx} in_count={input_count} \
+                 head=\"{head}\""
+            );
+        }
         kernel.state().set_input(idx, value);
         true
     }
@@ -697,6 +728,31 @@ impl FiberBuilder {
             );
         }
         kernel.commit_write_throughs();
+    }
+
+    /// Per-cycle: pull every output of the op-template kernel at
+    /// `template_idx` so side-effecting nodes (`log_info` and
+    /// friends) actually evaluate. Without this, captured wires
+    /// whose only consumer is a write-through are pulled by
+    /// `commit_write_throughs`, but captured wires that aren't
+    /// shared with a parent never get pulled — their compute
+    /// chain (including any side-effecting nodes inside it)
+    /// stays dormant, and the diagnostic the workload asked
+    /// for never fires.
+    ///
+    /// Bounded by the kernel's output count, which for result-
+    /// binding kernels is typically a small handful (the captured
+    /// LHS names plus magic externs). No-op when the kernel has
+    /// no per-template program.
+    pub fn pull_all_op_template_outputs_for_idx(&mut self, template_idx: usize) {
+        let Some(kernel) = self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut()) else {
+            return;
+        };
+        let names: Vec<String> = kernel.output_names()
+            .iter().map(|s| s.to_string()).collect();
+        for name in &names {
+            let _ = kernel.pull(name);
+        }
     }
 
     /// Materialize a [`PullPlan`] against this fiber's main GkState.

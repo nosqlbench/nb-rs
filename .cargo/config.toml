@@ -49,6 +49,7 @@ CASSANDRA_SYS_INCLUDE_PATH = { value = "adapters/cql/target/sysroot/include", re
 # `cargo test --workspace` link the vendor/cassandra-cpp
 # test bins against the sysroot prepared by
 # `bash adapters/cql/build.sh driver`.
+linker = "clang"
 rustflags = [
     "-C", "link-arg=-fuse-ld=mold",
     "-C", "force-frame-pointers=yes",
@@ -63,4 +64,4 @@ split-debuginfo = "unpacked"
 opt-level = 2
 
 [profile.release]
-debug = true
+debug = 0

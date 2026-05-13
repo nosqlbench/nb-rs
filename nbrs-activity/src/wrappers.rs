@@ -332,6 +332,28 @@ pub struct PollingDispenser {
     max_error_retries: u32,
     /// Named metric for the poll elapsed time (e.g., "index_build_time").
     metric_name: Option<String>,
+    /// Threshold for "done": the poll is considered satisfied
+    /// when the inner op's row-count is in `[min_rows, max_rows]`.
+    /// Default `max_rows=0, min_rows=0` reproduces the historical
+    /// `await_empty` semantics (zero rows = done). Use
+    /// `min_rows=1, max_rows=1` for "settled to a single row"
+    /// cases such as SAI's `sai_sstable_count == 1` after
+    /// memtable flush + compaction (without the lower bound the
+    /// poll would exit too early at count=0, before the
+    /// memtable has flushed).
+    min_rows: u64,
+    max_rows: u64,
+    /// Optional JSON-Pointer path (RFC 6901, e.g. `/value`) that
+    /// drills into the result body before computing the count
+    /// for the `[min_rows, max_rows]` check. Use this when the
+    /// op's body wraps the meaningful payload in an envelope —
+    /// notably Jolokia, whose every response is
+    /// `{request, value, status, timestamp}` and the actual
+    /// answer lives under `.value`. When the addressed sub-tree
+    /// is an array, count is its length; a number maps directly
+    /// to count; an object or null maps to 1 / 0. Default `None`
+    /// uses `body.element_count()` as-is.
+    json_path: Option<String>,
     /// Externally visible metrics for the polling operation.
     pub metrics: Arc<PollingMetrics>,
 }
@@ -374,6 +396,9 @@ impl PollingDispenser {
         timeout_ms: u64,
         max_error_retries: u32,
         metric_name: Option<String>,
+        min_rows: u64,
+        max_rows: u64,
+        json_path: Option<String>,
     ) -> (Arc<dyn OpDispenser>, Arc<PollingMetrics>) {
         let metrics = Arc::new(PollingMetrics::new());
         let dispenser = Arc::new(Self {
@@ -382,6 +407,9 @@ impl PollingDispenser {
             timeout: std::time::Duration::from_millis(timeout_ms),
             max_error_retries,
             metric_name,
+            min_rows,
+            max_rows,
+            json_path,
             metrics: metrics.clone(),
         });
         (dispenser, metrics)
@@ -448,15 +476,30 @@ impl OpDispenser for PollingDispenser {
                 };
                 polls += 1;
 
-                // Check condition: empty result body = done
-                let row_count = result.body.as_ref()
-                    .map(|b| b.element_count())
-                    .unwrap_or(0);
-                let is_empty = row_count == 0;
+                // Check condition: row count in [min_rows, max_rows] = done.
+                // Default `min_rows=0, max_rows=0` reproduces the legacy
+                // `await_empty` (exactly 0 = done) semantics.
+                //
+                // When `json_path` is set, the count comes from the
+                // addressed sub-tree of the body's JSON projection
+                // — array length, raw number, or 1 (object) / 0
+                // (null/missing). This is the Jolokia-poll path:
+                // `getCompactions` returns `{value: [...], status: 200, ...}`
+                // and we want the length of `.value`, not 1 (the
+                // envelope object).
+                let row_count = match (&result.body, self.json_path.as_deref()) {
+                    (Some(body), Some(path)) => {
+                        let json = body.to_json();
+                        count_from_json_pointer(&json, path)
+                    }
+                    (Some(body), None) => body.element_count(),
+                    (None, _) => 0,
+                };
+                let is_done = row_count >= self.min_rows && row_count <= self.max_rows;
 
                 self.metrics.poll_metric.store(row_count, std::sync::atomic::Ordering::Relaxed);
 
-                if !is_empty {
+                if !is_done {
                     // Per-poll progress goes to the durable
                     // session log at Debug — direct `eprint!`
                     // here would clobber the TUI's render
@@ -466,12 +509,14 @@ impl OpDispenser for PollingDispenser {
                     let indent = crate::scene_tree::running_phase_indent();
                     crate::diag!(
                         crate::observer::LogLevel::Debug,
-                        "{indent}awaiting: {row_count} task(s) remaining ({:.0}s elapsed)",
+                        "{indent}awaiting: {row_count} row(s), need [{}..={}] ({:.0}s elapsed)",
+                        self.min_rows,
+                        self.max_rows,
                         start.elapsed().as_secs_f64()
                     );
                 }
 
-                if is_empty {
+                if is_done {
                     let elapsed = start.elapsed();
                     let elapsed_secs = elapsed.as_secs_f64();
                     self.metrics.polls_total.fetch_add(polls, std::sync::atomic::Ordering::Relaxed);
@@ -490,10 +535,18 @@ impl OpDispenser for PollingDispenser {
                     captures.insert("poll_count".into(), nbrs_variates::node::Value::U64(polls));
                     captures.insert("poll_elapsed_ms".into(),
                         nbrs_variates::node::Value::U64(elapsed.as_millis() as u64));
-                    // Emit named metric (e.g., "index_build_time") in seconds
+                    // Emit named metric. The recorded value is the
+                    // elapsed wait duration; if `metric_name` carries
+                    // a recognized unit suffix (`_ns` / `_us` / `_ms`
+                    // / `_s` / `_m` / `_h`), the seconds are
+                    // converted so the metric reads in the unit its
+                    // name advertises. Names without a recognized
+                    // suffix fall through as seconds (legacy
+                    // behaviour, used by e.g. `index_build_time`).
                     if let Some(ref name) = self.metric_name {
+                        let value = duration_value_for_metric_name(name, elapsed_secs);
                         captures.insert(name.clone(),
-                            nbrs_variates::node::Value::F64(elapsed_secs));
+                            nbrs_variates::node::Value::F64(value));
                     }
                     return Ok(OpResult {
                         body: None,
@@ -1233,6 +1286,63 @@ impl MetricsDispenser {
 /// Predicate for an SRD-40b §1 "bare binding name": a single
 /// ident-shaped token. Whitespace is allowed around the edges
 /// but not inside.
+/// Convert an elapsed duration in seconds to the unit advertised
+/// by a metric name's suffix. Recognised suffixes:
+///
+/// - `_ns` → nanoseconds
+/// - `_us` → microseconds  (ASCII `u`; not `μ`)
+/// - `_ms` → milliseconds
+/// - `_s`  → seconds (identity)
+/// - `_m`  → minutes
+/// - `_h`  → hours
+///
+/// Names without a recognised suffix fall through as seconds
+/// (preserves the historical contract — e.g. `index_build_time`
+/// used to be emitted raw in seconds and still is).
+///
+/// Longest suffixes are tested first so `_ms` doesn't tail-bind
+/// to a more-permissive `_s` rule by accident.
+fn duration_value_for_metric_name(name: &str, elapsed_secs: f64) -> f64 {
+    if name.ends_with("_ns") { elapsed_secs * 1e9 }
+    else if name.ends_with("_us") { elapsed_secs * 1e6 }
+    else if name.ends_with("_ms") { elapsed_secs * 1e3 }
+    else if name.ends_with("_s")  { elapsed_secs }
+    else if name.ends_with("_m")  { elapsed_secs / 60.0 }
+    else if name.ends_with("_h")  { elapsed_secs / 3600.0 }
+    else { elapsed_secs }
+}
+
+/// Drill into a JSON tree via JSON-Pointer path (RFC 6901, e.g.
+/// `/value`, `/value/results/0`) and reduce the addressed
+/// sub-tree to a u64 count for the polling threshold:
+///
+/// - Array → `len()` (use case: "list of running jobs is empty").
+/// - Number → the integer value (use case: a numeric counter
+///   like `Compaction.PendingTasks.Value` reaches zero).
+/// - Object → 1 (the addressed payload exists; for "wait until
+///   *something* is present" patterns).
+/// - Null / missing path → 0 (treat as "nothing there").
+///
+/// An empty path string addresses the root, matching
+/// `serde_json::Value::pointer("")`'s contract.
+fn count_from_json_pointer(json: &serde_json::Value, path: &str) -> u64 {
+    let Some(v) = json.pointer(path) else { return 0 };
+    match v {
+        serde_json::Value::Array(a) => a.len() as u64,
+        serde_json::Value::Number(n) => {
+            n.as_u64()
+                .or_else(|| n.as_i64().map(|i| i.max(0) as u64))
+                .or_else(|| n.as_f64().map(|f| f.max(0.0) as u64))
+                .unwrap_or(0)
+        }
+        serde_json::Value::Object(_) => 1,
+        serde_json::Value::Bool(b) => if *b { 1 } else { 0 },
+        serde_json::Value::String(s) if s.is_empty() => 0,
+        serde_json::Value::String(_) => 1,
+        serde_json::Value::Null => 0,
+    }
+}
+
 fn is_bare_name(expr: &str) -> bool {
     let trimmed = expr.trim();
     !trimmed.is_empty()
@@ -1302,6 +1412,94 @@ impl OpDispenser for MetricsDispenser {
                         }
                     }
                 }
+            }
+            Ok(result)
+        })
+    }
+}
+
+// =========================================================================
+// MemoDispenser: operator-visible phase memo
+// =========================================================================
+
+/// Op-wrapper whose only side effect is to publish a short
+/// human-visible string to the activity's `memo` ArcSwap.
+///
+/// Two templates are accepted:
+///
+/// - `before`: rendered + stored *before* the inner op runs.
+///   Useful for "now compacting {table}" style state — reads
+///   workload params / cycle wires that exist pre-execution.
+/// - `after`: rendered + stored *after* the inner op returns
+///   Ok. Lets the next-rendered memo reflect the post-op state.
+///
+/// Either or both may be present. A shorthand string form
+/// (`memo: "doing X"`) is parsed as both-templates-the-same.
+///
+/// The wrapper is a no-op on inner errors — the result is
+/// returned unchanged whether or not memo publication happened.
+/// Substitution failures are downgraded to a debug log; we
+/// don't fail an otherwise-good op because the memo couldn't
+/// render.
+pub struct MemoDispenser {
+    inner: Arc<dyn OpDispenser>,
+    before_template: Option<String>,
+    after_template: Option<String>,
+    /// Shared atomic owned by the activity (see
+    /// `Activity::memo`). Cloned into the wrapper at wrap-time
+    /// so writes here are visible to the inline-status thread
+    /// and end-of-phase readout context without a separate
+    /// channel.
+    memo_state: Arc<arc_swap::ArcSwap<String>>,
+}
+
+impl MemoDispenser {
+    pub fn wrap(
+        inner: Arc<dyn OpDispenser>,
+        before_template: Option<String>,
+        after_template: Option<String>,
+        memo_state: Arc<arc_swap::ArcSwap<String>>,
+    ) -> Arc<dyn OpDispenser> {
+        Arc::new(Self {
+            inner,
+            before_template,
+            after_template,
+            memo_state,
+        })
+    }
+
+    fn publish(&self, template: &str, wires: &dyn crate::wires::WireSource) {
+        match crate::wires::substitute_via_wires(template, wires) {
+            Ok(rendered) => {
+                self.memo_state.store(Arc::new(rendered));
+            }
+            Err(e) => {
+                crate::diag!(crate::observer::LogLevel::Debug,
+                    "memo: substitution failed for '{template}': {e}");
+            }
+        }
+    }
+}
+
+impl WrappingDispenser for MemoDispenser {}
+
+impl OpDispenser for MemoDispenser {
+    fn inner_dispenser(&self) -> Option<&dyn OpDispenser> {
+        Some(self.inner.as_ref())
+    }
+
+    fn execute<'a>(
+        &'a self,
+        cycle: u64,
+        ctx: &'a crate::fixture::ExecCtx<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
+        Box::pin(async move {
+            if let Some(t) = &self.before_template {
+                self.publish(t, ctx.wires);
+            }
+            let result = self.inner.execute(cycle, ctx).await?;
+            if let Some(t) = &self.after_template {
+                self.publish(t, ctx.wires);
             }
             Ok(result)
         })
@@ -1431,6 +1629,72 @@ mod tests {
         let fields = crate::adapter::ResolvedFields::new(vec![], vec![]);
         let pulls = ResolvedPulls::empty();
         (fields, pulls)
+    }
+
+    #[tokio::test]
+    async fn memo_wrapper_publishes_before_and_after() {
+        // The wrapper renders both templates through wires and
+        // stores them in the ArcSwap. With no `{name}` tokens
+        // the templates pass through as literals.
+        let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::new()));
+        let inner = Arc::new(FakeInner { body: None, error: None });
+        let dispenser = MemoDispenser::wrap(
+            inner,
+            Some("before-state".into()),
+            Some("after-state".into()),
+            memo.clone(),
+        );
+        let (fields, pulls) = empty_ctx();
+        let ctx = ExecCtx::new(&fields, &pulls);
+        // Execution writes BOTH templates — by the time
+        // execute() returns the after-template has overwritten
+        // the before-template.
+        let _ = dispenser.execute(0, &ctx).await.expect("inner ok");
+        assert_eq!(memo.load().as_str(), "after-state");
+    }
+
+    #[tokio::test]
+    async fn memo_wrapper_only_before_when_after_unset() {
+        // Single-shot: only `before:` configured. The wrapper
+        // writes once and leaves the value in place across
+        // the inner call.
+        let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::new()));
+        let inner = Arc::new(FakeInner { body: None, error: None });
+        let dispenser = MemoDispenser::wrap(
+            inner,
+            Some("ready".into()),
+            None,
+            memo.clone(),
+        );
+        let (fields, pulls) = empty_ctx();
+        let ctx = ExecCtx::new(&fields, &pulls);
+        let _ = dispenser.execute(0, &ctx).await.expect("inner ok");
+        assert_eq!(memo.load().as_str(), "ready");
+    }
+
+    #[tokio::test]
+    async fn memo_wrapper_does_not_run_after_on_inner_error() {
+        // Inner returns Err → wrapper propagates without
+        // running the `after` template. Memo holds the
+        // before-value (which represents the "we tried to do
+        // X" state).
+        let memo = Arc::new(arc_swap::ArcSwap::from_pointee(String::new()));
+        let inner = Arc::new(FakeInner {
+            body: None,
+            error: Some("boom"),
+        });
+        let dispenser = MemoDispenser::wrap(
+            inner,
+            Some("attempting".into()),
+            Some("finished".into()),
+            memo.clone(),
+        );
+        let (fields, pulls) = empty_ctx();
+        let ctx = ExecCtx::new(&fields, &pulls);
+        let res = dispenser.execute(0, &ctx).await;
+        assert!(res.is_err());
+        assert_eq!(memo.load().as_str(), "attempting",
+            "after-template must not run on inner error");
     }
 
     #[test]

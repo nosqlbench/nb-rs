@@ -42,7 +42,15 @@ pub const CORE_OP_PARAMS: &[&str] = &[
     // Batching
     "batch", "batchtype", "max_batch_size",
     // Polling
-    "poll", "poll_interval_ms", "poll_metric_name", "poll_max_error_retries", "timeout_ms",
+    // `poll:` is a single discriminant (string or map); per-knob
+    // config lives nested under it. Flat `poll_*`-prefix keys
+    // were retired so wrapper namespaces don't collide with
+    // adapter fields.
+    "poll",
+    // Operator-visible phase memo. String shorthand or
+    // `{before, after}` map; rendered through wires
+    // substitution before publish.
+    "memo",
     // Op weighting / dry-run
     "ratio", "emit",
     // Adapter selection
@@ -553,6 +561,39 @@ impl OpDispenser for ValidatingDispenser {
                         config.k,
                     );
                     self.metrics.record_relevancy(func.metric_name(), score);
+                    // Generic observability point: a relevancy
+                    // score has been computed. The trace fires
+                    // for ANY relevancy config (recall, precision,
+                    // F1, MRR, AP) — no knowledge of the
+                    // workload's domain. Labels carry whatever
+                    // dimensions the surrounding scope tree
+                    // pushed (phase, profile, optimize_for, k,
+                    // r), so `--trace=` routing/filtering is
+                    // entirely config-driven.
+                    if crate::observer::trace_enabled() {
+                        let intersect = crate::relevancy::intersection_count(
+                            &expected_sorted, &actual_sorted,
+                        );
+                        let stats_labels = self.metrics.relevancy_stats
+                            .get(func.metric_name())
+                            .map(|s| s.labels().clone())
+                            .unwrap_or_default();
+                        crate::observer::trace(
+                            &stats_labels,
+                            &format!(
+                                "event=relevancy.score cycle={cycle} \
+                                 fn={func} k={k} r={r} \
+                                 gt_card={gt} actual_card={ac} \
+                                 intersect={inter} score={score:.6}",
+                                func = func.metric_name(),
+                                k = config.k,
+                                r = config.r.unwrap_or(config.k),
+                                gt = expected_sorted.len(),
+                                ac = actual_sorted.len(),
+                                inter = intersect,
+                            ),
+                        );
+                    }
                 }
             }
 
@@ -583,28 +624,104 @@ impl OpDispenser for ValidatingDispenser {
 
 /// Render a one-line description of an assertion that failed
 /// against `result`. Used by the strict-mode error message so
-/// the workload author sees exactly which predicate fired.
+/// the workload author sees exactly which predicate fired,
+/// what the resolved field value was (or why it couldn't be
+/// resolved), AND the body excerpt — without all three the
+/// operator has to manually re-run with logging cranked up
+/// just to figure out what came back.
 fn describe_assertion_failure(assertion: &AssertionSpec, result: &OpResult) -> String {
+    let body_repr = body_excerpt(result);
+    let body_tail = format!("; body: {body_repr}");
+    let observed_repr = observed_field_repr(&assertion.field, result);
     match &assertion.predicate {
         AssertionPredicate::MinRows(n) => {
             let got = result.body.as_ref()
                 .map(|b| b.element_count())
                 .unwrap_or(0);
-            format!("min_rows: expected ≥{n}, got {got}")
+            format!("min_rows: expected ≥{n}, got {got}{body_tail}")
         }
         AssertionPredicate::Eq(expected) =>
-            format!("field '{}' eq '{}' failed", assertion.field, expected),
+            format!(
+                "field '{}' eq '{}' failed (observed: {observed_repr}){body_tail}",
+                assertion.field, expected
+            ),
         AssertionPredicate::NotNull =>
-            format!("field '{}' must not be null", assertion.field),
+            format!(
+                "field '{}' must not be null (observed: {observed_repr}){body_tail}",
+                assertion.field
+            ),
         AssertionPredicate::IsNull =>
-            format!("field '{}' must be null", assertion.field),
+            format!(
+                "field '{}' must be null (observed: {observed_repr}){body_tail}",
+                assertion.field
+            ),
         AssertionPredicate::Gte(t) =>
-            format!("field '{}' >= {t} failed", assertion.field),
+            format!(
+                "field '{}' >= {t} failed (observed: {observed_repr}){body_tail}",
+                assertion.field
+            ),
         AssertionPredicate::Lte(t) =>
-            format!("field '{}' <= {t} failed", assertion.field),
+            format!(
+                "field '{}' <= {t} failed (observed: {observed_repr}){body_tail}",
+                assertion.field
+            ),
         AssertionPredicate::Contains(sub) =>
-            format!("field '{}' contains '{}' failed", assertion.field, sub),
+            format!(
+                "field '{}' contains '{}' failed (observed: {observed_repr}){body_tail}",
+                assertion.field, sub
+            ),
     }
+}
+
+/// Best-effort description of the observed value of a field.
+/// Falls back to `<absent>` when the body is JSON-shaped but
+/// lacks an addressable field of that name, `<not-json>` when
+/// the body parses to a scalar (no fields can be addressed —
+/// e.g. an HTML error page or a plain-text response), `<no
+/// body>` when the op returned nothing, and a short JSON repr
+/// otherwise (truncated for log readability).
+fn observed_field_repr(field: &str, result: &OpResult) -> String {
+    let Some(body) = &result.body else {
+        return "<no body>".to_string();
+    };
+    let json = body.to_json();
+    if let Some(v) = extract_field_from_json(&json, field) {
+        let repr = match v {
+            serde_json::Value::String(s) => format!("\"{s}\""),
+            other => other.to_string(),
+        };
+        return truncate_for_message(&repr, 160);
+    }
+    // Field couldn't be resolved. Distinguish the two reasons
+    // so the operator knows whether to fix the field name or
+    // fix the upstream response shape.
+    match &json {
+        serde_json::Value::Object(_) | serde_json::Value::Array(_) =>
+            "<absent>".to_string(),
+        _ => "<not-json>".to_string(),
+    }
+}
+
+/// A short excerpt of the response body, embedded in every
+/// strict-mode assertion failure so the operator can see what
+/// actually came back. `<no body>` when absent, otherwise the
+/// body's text form truncated to keep error lines readable.
+fn body_excerpt(result: &OpResult) -> String {
+    let Some(body) = &result.body else {
+        return "<no body>".to_string();
+    };
+    truncate_for_message(&body.to_text(), 512)
+}
+
+/// Truncate a string to `max` chars with an ellipsis tail so
+/// failure messages stay readable. Avoids splitting inside a
+/// UTF-8 codepoint by using `char_indices`.
+fn truncate_for_message(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{cut}…")
 }
 
 /// Parse `verify:` block from a ParsedOp's params.
@@ -1188,6 +1305,55 @@ mod tests {
             AssertionPredicate::MinRows(n) => assert_eq!(*n, 1),
             other => panic!("expected MinRows(1), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn eq_failure_includes_body_and_distinguishes_absent_vs_not_json() {
+        // JSON body that has fields but lacks the one we asked
+        // for: observed reads `<absent>` and the response shape
+        // is echoed in the error so the operator can see why.
+        let result = OpResult {
+            body: Some(Box::new(JsonBody(serde_json::json!({
+                "value": null, "request": {"type": "exec"}
+            })))),
+            captures: HashMap::new(),
+            skipped: false,
+        };
+        let spec = AssertionSpec {
+            field: "status".into(),
+            predicate: AssertionPredicate::Eq("200".into()),
+        };
+        let msg = describe_assertion_failure(&spec, &result);
+        assert!(msg.contains("<absent>"),
+            "json-without-field should read <absent>, got: {msg}");
+        assert!(msg.contains("body: "),
+            "body excerpt missing: {msg}");
+        assert!(msg.contains("\"request\""),
+            "body excerpt should echo the actual JSON: {msg}");
+
+        // Plain-text body: observed reads `<not-json>` so the
+        // operator knows the upstream didn't return JSON at
+        // all — different fix than "field name wrong."
+        #[derive(Debug)]
+        struct PlainBody(String);
+        impl ResultBody for PlainBody {
+            fn to_json(&self) -> serde_json::Value {
+                serde_json::Value::String(self.0.clone())
+            }
+            fn as_any(&self) -> &dyn Any { self }
+            fn to_text(&self) -> String { self.0.clone() }
+        }
+        let text_result = OpResult {
+            body: Some(Box::new(PlainBody(
+                "<html><body>404 Not Found</body></html>".into()))),
+            captures: HashMap::new(),
+            skipped: false,
+        };
+        let msg2 = describe_assertion_failure(&spec, &text_result);
+        assert!(msg2.contains("<not-json>"),
+            "text body should read <not-json>, got: {msg2}");
+        assert!(msg2.contains("404 Not Found"),
+            "body excerpt should include the text: {msg2}");
     }
 
     #[test]

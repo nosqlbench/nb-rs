@@ -40,6 +40,9 @@ pub struct ActivityReadoutContext {
     pub status_metric_chips: String,
     pub depth_indent: String,
     pub use_color: bool,
+    /// Snapshot of the activity's memo at context-build time.
+    /// Empty when no `memo:` wrapper is active on any op.
+    pub memo: String,
 }
 
 impl ReadoutContext for ActivityReadoutContext {
@@ -59,6 +62,7 @@ impl ReadoutContext for ActivityReadoutContext {
     fn use_color(&self) -> bool { self.use_color }
     fn event(&self) -> Event { Event::PhaseEnd }
     fn subject_state(&self) -> LifecycleState { LifecycleState::Completed }
+    fn phase_memo(&self) -> &str { &self.memo }
 }
 
 /// Per-event context for lifecycle fires (Push 9a):
@@ -140,6 +144,9 @@ pub struct InlineRefreshContext {
     pub depth_indent: String,
     pub refresh_tick: u64,
     pub use_color: bool,
+    /// Snapshot of the activity's memo at tick build time.
+    /// Empty when no `memo:` wrapper has published anything.
+    pub memo: String,
 }
 
 impl ReadoutContext for InlineRefreshContext {
@@ -164,6 +171,7 @@ impl ReadoutContext for InlineRefreshContext {
     fn use_color(&self) -> bool { self.use_color }
     fn event(&self) -> Event { Event::Update }
     fn refresh_tick(&self) -> u64 { self.refresh_tick }
+    fn phase_memo(&self) -> &str { &self.memo }
     /// SRD-63 Push 9f: derive ETA from `cycles_total -
     /// ops_finished` divided by the observed throughput
     /// rate (`ops_finished / elapsed`). `None` when the
@@ -264,6 +272,7 @@ pub fn build_inline_refresh_context(
     elapsed_secs: f64,
     refresh_tick: u64,
     status_metrics: &[String],
+    memo: &arc_swap::ArcSwap<String>,
 ) -> InlineRefreshContext {
     // Counter snapshots — must match the prior inline-status
     // formulas so byte equivalence holds.
@@ -341,6 +350,7 @@ pub fn build_inline_refresh_context(
         })
         .unwrap_or((None, String::new()));
 
+    let memo_snapshot: String = memo.load().as_str().to_string();
     InlineRefreshContext {
         phase_name: bare_name.to_string(),
         activity_name: activity_name.to_string(),
@@ -362,5 +372,6 @@ pub fn build_inline_refresh_context(
         depth_indent,
         refresh_tick,
         use_color: crate::observer::use_color(),
+        memo: memo_snapshot,
     }
 }

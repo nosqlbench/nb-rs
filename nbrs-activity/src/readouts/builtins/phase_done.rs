@@ -374,22 +374,31 @@ fn render_labeled_value(
     };
     let chips = ctx.status_metric_chips();
 
-    // Build the final line. The leading-space + trailing
-    // line content matches the previous `crate::diag!` format
-    // string verbatim:
-    //   {depth_indent}{green}✓{reset} {seq_prefix}{bold}{blue}[{name}]{reset}{coords_part} \
-    //    {pct:.0}% {rate_str} ok:{ok_pct:.0}% \
-    //    {err_color}e:{errors} r:{retries}{reset} c:{concurrency}{relevancy_str} \
-    //    {dim}({elapsed:.2}s){reset}
-    //
-    // Multi-line `format!` macros in Rust collapse the
-    // continuation whitespace to a single space; we replicate
-    // that here so byte-equivalence is exact.
-    let mut tmp = String::with_capacity(160);
+    // Memo header (if any) — see phase_status for rationale.
+    // The memo carries the latest published state at phase
+    // end; useful when a phase's last activity (e.g. "compacted
+    // table_X") is the takeaway the operator needs.
+    let memo = ctx.phase_memo();
+    let memo_header = if memo.is_empty() {
+        String::new()
+    } else {
+        let bold_yellow = if color { "\x1b[1;33m" } else { "" };
+        format!("{depth_indent}{bold_yellow}[[ {memo} ]]{reset}\n")
+    };
+
+    // Two-line layout mirroring `phase_status` Labeled:
+    //   line 1: {depth}✓ {seq}[{name}]{coords} {pct}%
+    //   line 2: {depth}    {rate} ok:{ok}% e:{e} r:{r} c:{c}{chips} (elapsed)
+    // Break after the progress percentage keeps the head row
+    // narrow (status glyph + identity + completion) and lets
+    // the tail carry all the throughput/counter detail
+    // without exceeding terminal width.
+    let mut tmp = String::with_capacity(256);
     let _ = write!(
         &mut tmp,
-        "{depth_indent}{green}✓{reset} {seq}{bold}{blue}[{name}]{reset}{coords} \
-{pct:.0}% {rate_str} ok:{ok_pct:.0}% \
+        "{memo_header}\
+{depth_indent}{green}✓{reset} {seq}{bold}{blue}[{name}]{reset}{coords} {pct:.0}%\n\
+{depth_indent}    {rate_str} ok:{ok_pct:.0}% \
 {err_color}e:{errors} r:{retries}{reset} c:{concurrency}{chips} \
 {dim}({elapsed:.2}s){reset}",
         depth_indent = depth_indent,
@@ -495,7 +504,7 @@ mod tests {
         };
         assert_eq!(
             render(&ctx),
-            "✓ [1/2] [setup] 100% 300/s ok:100% e:0 r:0 c:1 (0.01s)"
+            "✓ [1/2] [setup] 100%\n    300/s ok:100% e:0 r:0 c:1 (0.01s)"
         );
     }
 
@@ -516,7 +525,7 @@ mod tests {
         };
         assert_eq!(
             render(&ctx),
-            "✓ [1/8] [run] (profile=alpha), (bucket=1, kind=READ) 100% 16.2K/s ok:100% e:0 r:0 c:1 recall_at_10:79.62% (0.01s)"
+            "✓ [1/8] [run] (profile=alpha), (bucket=1, kind=READ) 100%\n    16.2K/s ok:100% e:0 r:0 c:1 recall_at_10:79.62% (0.01s)"
         );
     }
 
@@ -768,8 +777,11 @@ mod tests {
         };
         let out = render(&ctx);
         // Yellow used (errors > 0) — confirm the ANSI code
-        // sequence appears around the `e:` chunk.
+        // sequence appears around the `e:` chunk. Tail line
+        // carries the counters under the new two-line layout.
         assert!(out.contains("\x1b[33me:1 r:0\x1b[0m"),
             "expected yellow err_color around `e:1 r:0`, got: {out:?}");
+        assert!(out.contains('\n'),
+            "expected two-line break in labeled render: {out:?}");
     }
 }

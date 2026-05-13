@@ -18,12 +18,17 @@ mod inner {
 
     pub struct SqliteReporter {
         conn: Connection,
-        // Caches for deduplication
+        /// `metric_family.name → metric_family.id`.
         family_cache: HashMap<String, i64>,
-        label_key_cache: HashMap<String, i64>,
-        label_value_cache: HashMap<String, i64>,
-        label_set_cache: HashMap<u64, i64>,
-        instance_cache: HashMap<(i64, i64), i64>,
+        /// Canonical spec (OpenMetrics sample identifier:
+        /// `name{k="v",…}`) → `metric_instance.id`. Two label
+        /// dicts that are equal as a mapping produce the same
+        /// spec text → resolve to the same instance id, even
+        /// when constructed in different orders by different
+        /// code paths. This is the canonical identity for the
+        /// post-cutover schema (SRD: hard cutover, denormalised
+        /// — no more `label_set` indirection).
+        instance_cache: HashMap<String, i64>,
     }
 
     impl SqliteReporter {
@@ -40,9 +45,6 @@ mod inner {
             let mut reporter = Self {
                 conn,
                 family_cache: HashMap::new(),
-                label_key_cache: HashMap::new(),
-                label_value_cache: HashMap::new(),
-                label_set_cache: HashMap::new(),
                 instance_cache: HashMap::new(),
             };
             reporter.create_schema()?;
@@ -55,9 +57,6 @@ mod inner {
             let mut reporter = Self {
                 conn,
                 family_cache: HashMap::new(),
-                label_key_cache: HashMap::new(),
-                label_value_cache: HashMap::new(),
-                label_set_cache: HashMap::new(),
                 instance_cache: HashMap::new(),
             };
             reporter.create_schema()?;
@@ -84,11 +83,11 @@ mod inner {
             &mut self,
             labels: &Labels,
         ) -> usize {
-            // Build the AND-of-EXISTS query: for each (k, v) in
-            // labels, the instance's label_set must have an
-            // entry whose label_key.key = k AND label_value.value
-            // = v. Subquery enumerates instance ids matching all
-            // pairs.
+            // For each (k, v) in labels, every kept instance
+            // must own a matching `instance_label` row. Build
+            // the AND-of-EXISTS query against the denormalised
+            // schema — one EXISTS per pair, scanning the
+            // (key, value, instance_id) index.
             let pairs: Vec<(String, String)> = labels.iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect();
@@ -99,11 +98,9 @@ mod inner {
                 let kparam = i * 2 + 1;
                 let vparam = i * 2 + 2;
                 format!(
-                    "EXISTS (SELECT 1 FROM label_set_entry e \
-                     JOIN label_key k ON k.id = e.key_id \
-                     JOIN label_value v ON v.id = e.value_id \
-                     WHERE e.set_id = mi.label_set_id \
-                     AND k.key = ?{kparam} AND v.value = ?{vparam})",
+                    "EXISTS (SELECT 1 FROM instance_label e \
+                     WHERE e.instance_id = mi.id \
+                     AND e.key = ?{kparam} AND e.value = ?{vparam})",
                 )
             }).collect();
             let sql = format!(
@@ -135,26 +132,6 @@ mod inner {
         }
 
         fn create_schema(&mut self) -> Result<(), String> {
-            // Migration step for older databases: add the
-            // created_ms column if it doesn't already exist.
-            // SQLite has no `ADD COLUMN IF NOT EXISTS` until
-            // 3.35; we probe pragma_table_info to check.
-            let has_created_ms: i64 = self.conn.query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('sample_value') WHERE name = 'created_ms'",
-                [], |row| row.get(0),
-            ).unwrap_or(0);
-            if has_created_ms == 0 {
-                // Either the table doesn't exist yet (the
-                // CREATE below handles that) or it's an
-                // older schema. The ALTER fails harmlessly
-                // when the table doesn't exist; the CREATE
-                // below uses IF NOT EXISTS so the new shape
-                // wins.
-                let _ = self.conn.execute(
-                    "ALTER TABLE sample_value ADD COLUMN created_ms INTEGER",
-                    [],
-                );
-            }
             self.conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS metric_family (
                     id INTEGER PRIMARY KEY,
@@ -164,30 +141,30 @@ mod inner {
                     help TEXT,
                     UNIQUE(name, type)
                 );
-                CREATE TABLE IF NOT EXISTS label_key (
-                    id INTEGER PRIMARY KEY,
-                    key TEXT NOT NULL UNIQUE
-                );
-                CREATE TABLE IF NOT EXISTS label_value (
-                    id INTEGER PRIMARY KEY,
-                    value TEXT NOT NULL UNIQUE
-                );
-                CREATE TABLE IF NOT EXISTS label_set (
-                    id INTEGER PRIMARY KEY,
-                    hash INTEGER NOT NULL UNIQUE
-                );
-                CREATE TABLE IF NOT EXISTS label_set_entry (
-                    set_id INTEGER NOT NULL REFERENCES label_set(id),
-                    key_id INTEGER NOT NULL REFERENCES label_key(id),
-                    value_id INTEGER NOT NULL REFERENCES label_value(id)
-                );
+                -- Denormalised metric_instance: identity IS
+                -- the OpenMetrics-canonical sample spec
+                -- (`name{k=\"v\",…}`, sorted by key, OpenMetrics
+                -- escape rules). No `label_set` indirection,
+                -- no `hash` — two label dicts equal as a
+                -- mapping produce equal `spec` text and
+                -- therefore the same row. See
+                -- [`Labels::to_canonical_spec`].
                 CREATE TABLE IF NOT EXISTS metric_instance (
                     id INTEGER PRIMARY KEY,
                     family_id INTEGER NOT NULL REFERENCES metric_family(id),
-                    label_set_id INTEGER NOT NULL REFERENCES label_set(id),
-                    -- Denormalized spec for easy querying without joins.
-                    spec TEXT,
-                    UNIQUE(family_id, label_set_id)
+                    spec TEXT NOT NULL UNIQUE
+                );
+                -- Per-instance label rows. Holds `__name__`
+                -- alongside every other label so queries that
+                -- filter `WHERE key='__name__'` work the same
+                -- way as queries against any other dimension —
+                -- the metric family name surfaces uniformly
+                -- through the label-filter machinery.
+                CREATE TABLE IF NOT EXISTS instance_label (
+                    instance_id INTEGER NOT NULL REFERENCES metric_instance(id),
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    PRIMARY KEY (instance_id, key)
                 );
                 CREATE TABLE IF NOT EXISTS sample_value (
                     instance_id INTEGER NOT NULL REFERENCES metric_instance(id),
@@ -258,35 +235,29 @@ mod inner {
                     key TEXT PRIMARY KEY,
                     value TEXT
                 );
-                -- Indexes for read paths. All `IF NOT EXISTS`
-                -- so existing databases pick them up on next
-                -- open without a separate migration. See
-                -- SRD-47 §\"What's missing right now\" — the
-                -- metricsql DataSource adapter uses these
-                -- to avoid full table scans.
+                -- Indexes for read paths.
                 --
-                -- (label_set_entry.key_id, value_id, set_id):
-                --   matcher resolution — \"which sets have
-                --   label X = value Y\" is the inner loop of
-                --   every selector.
-                CREATE INDEX IF NOT EXISTS idx_label_set_entry_kv
-                    ON label_set_entry(key_id, value_id, set_id);
-                -- (label_set_entry.set_id):
-                --   materializing a result series's labels
-                --   from its label_set_id.
-                CREATE INDEX IF NOT EXISTS idx_label_set_entry_set
-                    ON label_set_entry(set_id);
+                -- (instance_label.key, value, instance_id):
+                --   matcher resolution — \"which instances
+                --   have label X = value Y\" is the inner
+                --   loop of every selector. Includes
+                --   instance_id last so the index covers the
+                --   subquery without a back-fetch.
+                CREATE INDEX IF NOT EXISTS idx_instance_label_kv
+                    ON instance_label(key, value, instance_id);
+                -- (instance_label.instance_id):
+                --   reverse direction — given an instance,
+                --   materialize its full label set.
+                CREATE INDEX IF NOT EXISTS idx_instance_label_instance
+                    ON instance_label(instance_id);
                 -- (sample_value.instance_id, timestamp_ms):
-                --   range scans for time-window queries. Not
-                --   a primary key (would require a schema
-                --   break) but co-locates samples per
-                --   instance in time order.
+                --   range scans for time-window queries.
                 CREATE INDEX IF NOT EXISTS idx_sample_value_inst_ts
                     ON sample_value(instance_id, timestamp_ms);
                 -- (metric_instance.family_id):
-                --   bypasses the UNIQUE composite when only
-                --   the family side is known (e.g. \"all
-                --   instances of `latency`\").
+                --   \"every instance of family X\" — bypasses
+                --   the spec UNIQUE when only the family side
+                --   is known.
                 CREATE INDEX IF NOT EXISTS idx_metric_instance_family
                     ON metric_instance(family_id);
                 -- (exemplar.instance_id, sample_timestamp_ms):
@@ -419,90 +390,74 @@ mod inner {
             id
         }
 
-        fn get_or_insert_label_key(&mut self, key: &str) -> i64 {
-            if let Some(&id) = self.label_key_cache.get(key) {
-                return id;
+        /// Build the canonical label set for `(family_name,
+        /// raw_labels)`: drop the legacy in-code `name` label
+        /// (it duplicated the family name and caused per-call-
+        /// site drift) and pin `__name__` from the family.
+        /// The returned `Labels` is the on-disk view — every
+        /// pair becomes an `instance_label` row.
+        fn canonical_labels(family_name: &str, raw: &Labels) -> Labels {
+            let mut canonical = Labels::empty();
+            for (k, v) in raw.iter() {
+                if k == "name" || k == "__name__" { continue; }
+                canonical = canonical.with(k, v);
             }
-            self.conn.execute(
-                "INSERT OR IGNORE INTO label_key (key) VALUES (?1)",
-                params![key],
-            ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
-            let id: i64 = self.conn.query_row(
-                "SELECT id FROM label_key WHERE key=?1",
-                params![key], |row| row.get(0),
-            ).unwrap_or(0);
-            self.label_key_cache.insert(key.to_string(), id);
-            id
+            canonical.with("__name__", family_name)
         }
 
-        fn get_or_insert_label_value(&mut self, value: &str) -> i64 {
-            if let Some(&id) = self.label_value_cache.get(value) {
+        /// Single chokepoint for `metric_instance` upsert.
+        ///
+        /// 1. Canonicalise labels (`canonical_labels`).
+        /// 2. Build the OpenMetrics-canonical sample spec —
+        ///    `name{k="v",…}`, sorted by key, OpenMetrics
+        ///    escape rules.
+        /// 3. Use the spec as the identity: two label dicts
+        ///    that are equal as a mapping produce the same
+        ///    text and resolve to the same `metric_instance.id`.
+        /// 4. On first sight of a spec, write all
+        ///    `instance_label` rows (including `__name__`) in
+        ///    one shot. Subsequent ticks short-circuit on
+        ///    `instance_cache`.
+        fn upsert_instance(
+            &mut self,
+            family_id: i64,
+            family_name: &str,
+            raw_labels: &Labels,
+        ) -> i64 {
+            let canonical = Self::canonical_labels(family_name, raw_labels);
+            let spec = canonical.to_canonical_spec(family_name);
+            if let Some(&id) = self.instance_cache.get(&spec) {
                 return id;
             }
             self.conn.execute(
-                "INSERT OR IGNORE INTO label_value (value) VALUES (?1)",
-                params![value],
-            ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
+                "INSERT OR IGNORE INTO metric_instance (family_id, spec) VALUES (?1, ?2)",
+                params![family_id, &spec],
+            ).unwrap_or_else(|e| {
+                crate::diag::warn(&format!("warning: metric_instance insert failed: {e}"));
+                0
+            });
             let id: i64 = self.conn.query_row(
-                "SELECT id FROM label_value WHERE value=?1",
-                params![value], |row| row.get(0),
+                "SELECT id FROM metric_instance WHERE spec = ?1",
+                params![&spec], |row| row.get(0),
             ).unwrap_or(0);
-            self.label_value_cache.insert(value.to_string(), id);
-            id
-        }
-
-        fn get_or_insert_label_set(&mut self, labels: &Labels) -> i64 {
-            let hash = labels.identity_hash();
-            if let Some(&id) = self.label_set_cache.get(&hash) {
-                return id;
+            if id != 0 {
+                // Write every label pair. PRIMARY KEY
+                // (instance_id, key) means re-inserts are
+                // INSERT OR IGNORE-safe — duplicate ticks
+                // never write twice.
+                for (k, v) in canonical.sorted_pairs() {
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO instance_label (instance_id, key, value) \
+                         VALUES (?1, ?2, ?3)",
+                        params![id, k, v],
+                    ).unwrap_or_else(|e| {
+                        crate::diag::warn(&format!(
+                            "warning: instance_label insert failed: {e}"));
+                        0
+                    });
+                }
+                self.instance_cache.insert(spec, id);
             }
-            self.conn.execute(
-                "INSERT OR IGNORE INTO label_set (hash) VALUES (?1)",
-                params![hash as i64],
-            ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
-            let set_id: i64 = self.conn.query_row(
-                "SELECT id FROM label_set WHERE hash=?1",
-                params![hash as i64], |row| row.get(0),
-            ).unwrap_or(0);
-
-            // Insert label entries
-            for (k, v) in labels.iter() {
-                let key_id = self.get_or_insert_label_key(k);
-                let val_id = self.get_or_insert_label_value(v);
-                self.conn.execute(
-                    "INSERT OR IGNORE INTO label_set_entry (set_id, key_id, value_id) VALUES (?1, ?2, ?3)",
-                    params![set_id, key_id, val_id],
-                ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
-            }
-
-            self.label_set_cache.insert(hash, set_id);
-            set_id
-        }
-
-        fn get_or_insert_instance(&mut self, family_id: i64, label_set_id: i64, name: &str, labels: &Labels) -> i64 {
-            let key = (family_id, label_set_id);
-            if let Some(&id) = self.instance_cache.get(&key) {
-                return id;
-            }
-            // Build denormalized spec: name{key="value",key="value"}
-            let label_pairs: Vec<String> = labels.iter()
-                .filter(|(k, _)| *k != "name")
-                .map(|(k, v)| format!("{k}=\"{v}\""))
-                .collect();
-            let spec = if label_pairs.is_empty() {
-                name.to_string()
-            } else {
-                format!("{name}{{{}}}", label_pairs.join(","))
-            };
-            self.conn.execute(
-                "INSERT OR IGNORE INTO metric_instance (family_id, label_set_id, spec) VALUES (?1, ?2, ?3)",
-                params![family_id, label_set_id, spec],
-            ).unwrap_or_else(|e| { crate::diag::warn(&format!("warning: sqlite write failed: {e}")); 0 });
-            let id: i64 = self.conn.query_row(
-                "SELECT id FROM metric_instance WHERE family_id=?1 AND label_set_id=?2",
-                params![family_id, label_set_id], |row| row.get(0),
-            ).unwrap_or(0);
-            self.instance_cache.insert(key, id);
             id
         }
 
@@ -525,8 +480,7 @@ mod inner {
             match point.value() {
                 MetricValue::Counter(c) => {
                     let family_id = self.get_or_insert_family(name, "counter", unit);
-                    let label_set_id = self.get_or_insert_label_set(labels);
-                    let instance_id = self.get_or_insert_instance(family_id, label_set_id, name, labels);
+                    let instance_id = self.upsert_instance(family_id, name, labels);
 
                     // OpenMetrics §5.1: counter MAY carry a
                     // `created` instant (series-start). We
@@ -546,8 +500,7 @@ mod inner {
                 }
                 MetricValue::Gauge(g) => {
                     let family_id = self.get_or_insert_family(name, "gauge", unit);
-                    let label_set_id = self.get_or_insert_label_set(labels);
-                    let instance_id = self.get_or_insert_instance(family_id, label_set_id, name, labels);
+                    let instance_id = self.upsert_instance(family_id, name, labels);
 
                     self.conn.execute(
                         "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, mean) \
@@ -557,8 +510,7 @@ mod inner {
                 }
                 MetricValue::Histogram(h) => {
                     let family_id = self.get_or_insert_family(name, "summary", unit);
-                    let label_set_id = self.get_or_insert_label_set(labels);
-                    let instance_id = self.get_or_insert_instance(family_id, label_set_id, name, labels);
+                    let instance_id = self.upsert_instance(family_id, name, labels);
 
                     let r = &h.reservoir;
                     let obs = h.count as i64;
@@ -609,10 +561,7 @@ mod inner {
                             crate::snapshot::BucketBound::PositiveInfinity => "+Inf".to_string(),
                         };
                         let bucket_labels = labels.with("le", le_str);
-                        let label_set_id = self.get_or_insert_label_set(&bucket_labels);
-                        let instance_id = self.get_or_insert_instance(
-                            family_id, label_set_id, name, &bucket_labels,
-                        );
+                        let instance_id = self.upsert_instance(family_id, name, &bucket_labels);
                         self.conn.execute(
                             "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count) \
                              VALUES (?1, ?2, ?3, ?4)",
@@ -624,11 +573,9 @@ mod inner {
                     }
                     // Sibling _sum / _count families.
                     if let Some(sum_value) = h.sum {
-                        let sum_id = self.get_or_insert_family(
-                            &format!("{name}_sum"), family_type, unit);
-                        let label_set_id = self.get_or_insert_label_set(labels);
-                        let instance_id = self.get_or_insert_instance(
-                            sum_id, label_set_id, &format!("{name}_sum"), labels);
+                        let sum_name = format!("{name}_sum");
+                        let sum_id = self.get_or_insert_family(&sum_name, family_type, unit);
+                        let instance_id = self.upsert_instance(sum_id, &sum_name, labels);
                         self.conn.execute(
                             "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, sum) \
                              VALUES (?1, ?2, ?3, ?4)",
@@ -638,11 +585,9 @@ mod inner {
                             0
                         });
                     }
-                    let count_id = self.get_or_insert_family(
-                        &format!("{name}_count"), family_type, unit);
-                    let label_set_id = self.get_or_insert_label_set(labels);
-                    let instance_id = self.get_or_insert_instance(
-                        count_id, label_set_id, &format!("{name}_count"), labels);
+                    let count_name = format!("{name}_count");
+                    let count_id = self.get_or_insert_family(&count_name, family_type, unit);
+                    let instance_id = self.upsert_instance(count_id, &count_name, labels);
                     self.conn.execute(
                         "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count) \
                          VALUES (?1, ?2, ?3, ?4)",
@@ -656,9 +601,7 @@ mod inner {
                     // OpenMetrics §5.6: always-1 metric
                     // whose data lives in the label set.
                     let family_id = self.get_or_insert_family(name, "info", unit);
-                    let label_set_id = self.get_or_insert_label_set(labels);
-                    let instance_id = self.get_or_insert_instance(
-                        family_id, label_set_id, name, labels);
+                    let instance_id = self.upsert_instance(family_id, name, labels);
                     self.conn.execute(
                         "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count) \
                          VALUES (?1, ?2, ?3, 1)",
@@ -678,9 +621,7 @@ mod inner {
                     let family_id = self.get_or_insert_family(name, "stateset", unit);
                     for (state_name, active) in &s.states {
                         let state_labels = labels.with("state", state_name.as_str());
-                        let label_set_id = self.get_or_insert_label_set(&state_labels);
-                        let instance_id = self.get_or_insert_instance(
-                            family_id, label_set_id, name, &state_labels);
+                        let instance_id = self.upsert_instance(family_id, name, &state_labels);
                         let v = if *active { 1.0 } else { 0.0 };
                         self.conn.execute(
                             "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, mean) \
@@ -739,10 +680,7 @@ mod inner {
             let family_id = self.get_or_insert_family(
                 family_name, family_type, sample.unit.as_deref(),
             );
-            let label_set_id = self.get_or_insert_label_set(labels);
-            let instance_id = self.get_or_insert_instance(
-                family_id, label_set_id, family_name, labels,
-            );
+            let instance_id = self.upsert_instance(family_id, family_name, labels);
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
@@ -864,10 +802,7 @@ mod inner {
             // unit is left unspecified here. If the sample-write
             // path wrote it, the cache returns the existing id.
             let family_id = self.get_or_insert_family(family_name, family_type, None);
-            let label_set_id = self.get_or_insert_label_set(instance_labels);
-            let instance_id = self.get_or_insert_instance(
-                family_id, label_set_id, family_name, instance_labels,
-            );
+            let instance_id = self.upsert_instance(family_id, family_name, instance_labels);
             let labels_spec = exemplar.labels.iter()
                 .map(|(k, v)| format!("{k}=\"{v}\""))
                 .collect::<Vec<_>>()
@@ -2365,6 +2300,50 @@ mod inner {
             assert_eq!(n_families, 1);
             assert_eq!(n_instances, 1);
             assert_eq!(n_samples, 3, "three sample rows on the single instance");
+        }
+
+        #[test]
+        fn instance_identity_is_order_independent() {
+            // Regression: two code paths that construct the
+            // same logical label set in different orders MUST
+            // resolve to the same metric_instance.id and the
+            // same `instance_label` row set. Otherwise we
+            // double-count when summing across them.
+            let mut r = SqliteReporter::in_memory().unwrap();
+            use crate::scheduler::Reporter;
+            use std::time::{Duration, Instant};
+            let labels_a = Labels::of("phase", "ann_query")
+                .with("k", "1").with("optimize_for", "recall");
+            let labels_b = Labels::of("optimize_for", "recall")
+                .with("k", "1").with("phase", "ann_query");
+            let mut snap = MetricSet::new(Duration::from_secs(1));
+            snap.insert_counter("recall_mean", labels_a, 10, Instant::now());
+            snap.insert_counter("recall_mean", labels_b, 5, Instant::now());
+            r.report(&snap);
+
+            let n_instances: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM metric_instance \
+                 WHERE family_id = (SELECT id FROM metric_family WHERE name='recall_mean')",
+                [], |row| row.get(0)).unwrap();
+            assert_eq!(n_instances, 1,
+                "the same logical labels in two orders MUST resolve to one instance");
+
+            // Both code paths agree on the canonical spec.
+            let spec: String = r.conn.query_row(
+                "SELECT spec FROM metric_instance",
+                [], |row| row.get(0)).unwrap();
+            // OpenMetrics canonical form: metric name as
+            // prefix, `__name__` excluded from the labels
+            // block, the rest sorted by key.
+            assert_eq!(spec,
+                r#"recall_mean{k="1",optimize_for="recall",phase="ann_query"}"#);
+
+            // `__name__` is stored alongside the other
+            // labels so queries can filter on it uniformly.
+            let n_name_rows: i64 = r.conn.query_row(
+                "SELECT COUNT(*) FROM instance_label WHERE key='__name__'",
+                [], |row| row.get(0)).unwrap();
+            assert_eq!(n_name_rows, 1);
         }
     }
 }

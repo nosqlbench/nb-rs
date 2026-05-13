@@ -7,6 +7,7 @@ pub mod console;
 pub mod openmetrics;
 pub mod openmetrics_parse;
 pub mod csv;
+pub mod per_instance;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 #[cfg(feature = "victoriametrics")]

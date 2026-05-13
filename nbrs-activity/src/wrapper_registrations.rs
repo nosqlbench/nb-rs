@@ -34,6 +34,7 @@ pub const IF_COND: WrapperName = WrapperName::new("if");
 pub const EMIT: WrapperName = WrapperName::new("emit");
 pub const RESULT: WrapperName = WrapperName::new("result");
 pub const METRICS: WrapperName = WrapperName::new("metrics");
+pub const MEMO: WrapperName = WrapperName::new("memo");
 
 // =====================================================
 // Trigger predicates
@@ -51,7 +52,14 @@ fn trigger_validate(template: &ParsedOp) -> bool {
 }
 
 fn trigger_poll(template: &ParsedOp) -> bool {
-    template.params.get("poll").and_then(|v| v.as_str()).is_some()
+    // `poll:` may be either a bare string (mode-only, defaults
+    // for everything else) or a map carrying the full config.
+    // Either form turns the wrapper on.
+    template
+        .params
+        .get("poll")
+        .map(|v| v.is_string() || v.is_object())
+        .unwrap_or(false)
 }
 
 fn trigger_if(template: &ParsedOp) -> bool {
@@ -72,6 +80,18 @@ fn trigger_emit(template: &ParsedOp) -> bool {
 
 fn trigger_metrics(template: &ParsedOp) -> bool {
     !template.metrics.is_empty()
+}
+
+fn trigger_memo(template: &ParsedOp) -> bool {
+    // `memo:` is either a bare string (shorthand — same
+    // template for before+after) or a map with `before:` and/or
+    // `after:` keys. Either form turns the wrapper on. A null /
+    // empty-map value does nothing.
+    template
+        .params
+        .get("memo")
+        .map(|v| v.is_string() || v.is_object())
+        .unwrap_or(false)
 }
 
 // =====================================================
@@ -119,17 +139,27 @@ fn describe_validate(template: &ParsedOp) -> Option<String> {
 }
 
 fn describe_poll(template: &ParsedOp) -> Option<String> {
-    let mode = template.params.get("poll").and_then(|v| v.as_str())?;
-    let interval = template
-        .params
-        .get("poll_interval_ms")
-        .and_then(json_to_u64)
-        .unwrap_or(1000);
-    let timeout = template
-        .params
-        .get("timeout_ms")
-        .and_then(json_to_u64)
-        .unwrap_or(300_000);
+    let poll_val = template.params.get("poll")?;
+    // Two shapes: bare string (mode only) or map (full config).
+    let (mode, interval, timeout): (String, u64, u64) = match poll_val {
+        v if v.is_string() => (
+            v.as_str().unwrap().to_string(),
+            1000,
+            300_000,
+        ),
+        v if v.is_object() => {
+            let m = v.as_object().unwrap();
+            let mode = m
+                .get("mode")
+                .and_then(|x| x.as_str())
+                .unwrap_or("await_empty")
+                .to_string();
+            let interval = m.get("interval_ms").and_then(json_to_u64).unwrap_or(1000);
+            let timeout = m.get("timeout_ms").and_then(json_to_u64).unwrap_or(300_000);
+            (mode, interval, timeout)
+        }
+        _ => return None,
+    };
     Some(format!(
         "poll: every {}ms, timeout {}ms, on `{mode}`",
         interval, timeout
@@ -181,6 +211,25 @@ fn describe_metrics(template: &ParsedOp) -> Option<String> {
     let mut names: Vec<&str> = template.metrics.keys().map(|s| s.as_str()).collect();
     names.sort();
     Some(format!("metrics: emits {}", names.join(", ")))
+}
+
+fn describe_memo(template: &ParsedOp) -> Option<String> {
+    let v = template.params.get("memo")?;
+    if let Some(s) = v.as_str() {
+        if s.is_empty() { return None; }
+        Some(format!("memo: \"{s}\" (before+after)"))
+    } else if let Some(obj) = v.as_object() {
+        let before = obj.get("before").and_then(|x| x.as_str());
+        let after  = obj.get("after").and_then(|x| x.as_str());
+        match (before, after) {
+            (Some(b), Some(a)) => Some(format!("memo: before \"{b}\" / after \"{a}\"")),
+            (Some(b), None)    => Some(format!("memo: before \"{b}\"")),
+            (None, Some(a))    => Some(format!("memo: after \"{a}\"")),
+            (None, None)       => None,
+        }
+    } else {
+        None
+    }
 }
 
 // =====================================================
@@ -278,8 +327,12 @@ inventory::submit! {
     WrapperRegistration {
         name: POLL,
         owned_fields: &[
-            "poll", "poll_interval_ms", "timeout_ms",
-            "poll_max_error_retries", "poll_metric_name",
+            // `poll:` is the single discriminant for the poll
+            // wrapper; every knob (interval_ms, timeout_ms,
+            // min_rows, max_rows, json_path, metric_name,
+            // max_error_retries) lives under it as a map. The
+            // flat `poll_*`-prefix surface was retired.
+            "poll",
         ],
         triggers: trigger_poll,
         requires_inner: &[TRAVERSE],
@@ -359,6 +412,23 @@ inventory::submit! {
         forbids_outer: METRICS_FORBIDS_OUTER,
         mutually_exclusive_with: &[],
         describe_assignment: describe_metrics,
+    }
+}
+
+inventory::submit! {
+    WrapperRegistration {
+        name: MEMO,
+        // `memo:` is the sole discriminant — string shorthand
+        // or `{before, after}` map. No inner/outer constraints:
+        // memo publication is independent of every other
+        // wrapper's behaviour; it sees the same wires every
+        // wrapper sees and writes to its own atomic.
+        owned_fields: &["memo"],
+        triggers: trigger_memo,
+        requires_inner: &[TRAVERSE],
+        forbids_outer: &[],
+        mutually_exclusive_with: &[],
+        describe_assignment: describe_memo,
     }
 }
 
@@ -533,21 +603,6 @@ mod tests {
     }
 
     #[test]
-    fn poll_interval_without_poll_is_misplaced() {
-        let r = WrapperRegistry::from_inventory();
-        let mut t = empty_template("noop");
-        t.params.insert("poll_interval_ms".into(),
-            serde_json::Value::Number(5000.into()));
-        let violations = r.misplaced_fields(&t,
-            |f| t.params.contains_key(f));
-        let names: Vec<(&str, &str)> = violations.iter()
-            .map(|(w, f)| (w.as_str(), *f))
-            .collect();
-        assert!(names.contains(&("poll", "poll_interval_ms")),
-            "expected poll-related misplaced field; got {names:?}");
-    }
-
-    #[test]
     fn strict_without_verify_is_misplaced() {
         let r = WrapperRegistry::from_inventory();
         let mut t = empty_template("noop");
@@ -562,17 +617,25 @@ mod tests {
     }
 
     #[test]
-    fn poll_interval_with_poll_is_not_misplaced() {
+    fn poll_as_map_triggers_wrapper() {
+        // The new contract: poll config is a nested map under
+        // the single `poll:` key. Any flat `poll_*` prefix keys
+        // were retired (so `poll_interval_ms` at op level is
+        // just an unrecognized field, not a misplaced one).
         let r = WrapperRegistry::from_inventory();
         let mut t = empty_template("polled");
-        t.params.insert("poll".into(),
-            serde_json::Value::String("await_empty".into()));
-        t.params.insert("poll_interval_ms".into(),
-            serde_json::Value::Number(5000.into()));
+        let mut cfg = serde_json::Map::new();
+        cfg.insert("mode".into(), serde_json::Value::String("await_empty".into()));
+        cfg.insert("interval_ms".into(), serde_json::Value::Number(5000.into()));
+        cfg.insert("timeout_ms".into(), serde_json::Value::Number(600_000.into()));
+        t.params.insert("poll".into(), serde_json::Value::Object(cfg));
+        // poll: <map> still triggers the wrapper.
+        assert!(trigger_poll(&t));
+        // And `poll:` is the wrapper's only owned field, so it's
+        // never misplaced.
         let violations = r.misplaced_fields(&t,
             |f| t.params.contains_key(f));
-        assert!(violations.is_empty(),
-            "poll_interval_ms with poll triggers ok; got {violations:?}");
+        assert!(violations.is_empty(), "got {violations:?}");
     }
 
     #[test]

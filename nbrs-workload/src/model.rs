@@ -216,7 +216,11 @@ pub struct SummaryConfig {
     /// AND `metricsql_columns` is non-empty, the renderer falls
     /// back to a single un-grouped row showing the average value
     /// across all returned series.
-    pub group_by: String,
+    ///
+    /// Multi-key form: `group_by: k, r, optimize_for` produces
+    /// one table row per distinct tuple — the same series
+    /// breakdown the matching plot draws.
+    pub group_by: Vec<String>,
 }
 
 /// An aggregate expression: either
@@ -291,7 +295,7 @@ impl SummaryConfig {
         let mut aggregates = Vec::new();
         let mut show_details = true;
         let mut metricsql_columns: Vec<(String, String)> = Vec::new();
-        let mut group_by = String::new();
+        let mut group_by: Vec<String> = Vec::new();
 
         // Strip `#` line comments before parsing (SRD-46:
         // report/plot/table bodies all support `#` comments).
@@ -308,7 +312,10 @@ impl SummaryConfig {
             if let Some(rest) = line.strip_prefix("group_by:").map(str::trim)
                 .or_else(|| line.strip_prefix("group-by:").map(str::trim))
             {
-                group_by = rest.to_string();
+                group_by = rest.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
                 continue;
             }
             // `query <col>: <expr>` (multi-column, named) or

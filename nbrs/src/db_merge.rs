@@ -159,89 +159,54 @@ fn merge_one(merged: &Connection, src_path: &Path) -> rusqlite::Result<()> {
         [],
     )?;
 
-    // label_key / label_value / label_set / label_set_entry:
-    // not strictly needed for summary/plot's queries (which
-    // operate off metric_instance.spec), but copy for
-    // completeness so the merged db is self-consistent.
-    merged.execute(
-        "INSERT OR IGNORE INTO main.label_key (key) \
-         SELECT key FROM src.label_key",
-        [],
-    )?;
-    merged.execute(
-        "INSERT OR IGNORE INTO main.label_value (value) \
-         SELECT value FROM src.label_value",
-        [],
-    )?;
-    merged.execute(
-        "INSERT OR IGNORE INTO main.label_set (hash) \
-         SELECT hash FROM src.label_set",
-        [],
-    )?;
-    // label_set_entry has no UNIQUE — best-effort copy with
-    // remapping by hash → new set_id and key/value lookup.
-    // We skip rewiring it precisely because summary/plot
-    // never read it directly. The reporter only needs
-    // metric_instance.spec and sample_value.
-    let _ = merged.execute(
-        "INSERT INTO main.label_set_entry (set_id, key_id, value_id) \
-         SELECT \
-            (SELECT id FROM main.label_set WHERE hash = (SELECT hash FROM src.label_set WHERE id = src.label_set_entry.set_id)), \
-            (SELECT id FROM main.label_key WHERE key = (SELECT key FROM src.label_key WHERE id = src.label_set_entry.key_id)), \
-            (SELECT id FROM main.label_value WHERE value = (SELECT value FROM src.label_value WHERE id = src.label_set_entry.value_id)) \
-         FROM src.label_set_entry",
-        [],
-    );
-
-    // metric_instance: INSERT OR IGNORE with the spec
-    // pre-stripped of session=. Specs that already exist (from
-    // the seed db or earlier merges) collide on the UNIQUE
-    // constraint and are silently skipped — but their family
-    // and label_set lookups happen via name/hash so the new
-    // db's row points to local IDs.
-    //
-    // We do this row-by-row because the spec rewrite isn't
-    // expressible as plain SQL (no regex on this build's
-    // sqlite). Cost is modest — instance counts are small
-    // (one row per distinct label set per metric).
+    // metric_instance: denormalised schema — identity is
+    // `metric_instance.spec` (UNIQUE). Strip `session=…`
+    // before lookup so cross-session merges collapse onto a
+    // single instance per logical label set. We do this
+    // row-by-row because the spec rewrite isn't expressible
+    // as plain SQL on this sqlite build (no regex_replace),
+    // and instance counts are small.
     let mut select = merged.prepare(
-        "SELECT mi.id, mi.spec, mf.name, mf.type, ls.hash \
+        "SELECT mi.id, mi.spec, mf.name, mf.type \
          FROM src.metric_instance mi \
-         JOIN src.metric_family mf ON mi.family_id = mf.id \
-         JOIN src.label_set ls ON mi.label_set_id = ls.id"
+         JOIN src.metric_family mf ON mi.family_id = mf.id"
     )?;
-    let src_rows: Vec<(i64, String, String, String, i64)> = select
+    let src_rows: Vec<(i64, String, String, String)> = select
         .query_map([], |r| Ok((
             r.get::<_, i64>(0)?,
             r.get::<_, String>(1)?,
             r.get::<_, String>(2)?,
             r.get::<_, String>(3)?,
-            r.get::<_, i64>(4)?,
         )))?
         .filter_map(|r| r.ok())
         .collect();
     drop(select);
 
     let mut insert = merged.prepare(
-        "INSERT OR IGNORE INTO main.metric_instance (family_id, label_set_id, spec) \
+        "INSERT OR IGNORE INTO main.metric_instance (family_id, spec) \
          VALUES (\
            (SELECT id FROM main.metric_family WHERE name = ?1 AND type = ?2), \
-           (SELECT id FROM main.label_set WHERE hash = ?3), \
-           ?4)"
+           ?3)"
     )?;
     let mut find_merged_id = merged.prepare(
         "SELECT id FROM main.metric_instance WHERE spec = ?1"
     )?;
+    let mut copy_labels = merged.prepare(
+        "INSERT OR IGNORE INTO main.instance_label (instance_id, key, value) \
+         SELECT ?1, key, value FROM src.instance_label WHERE instance_id = ?2"
+    )?;
 
     let mut remap: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
-    for (src_id, spec, fam_name, fam_type, hash) in src_rows {
+    for (src_id, spec, fam_name, fam_type) in src_rows {
         let stripped = strip_session_label(&spec);
-        insert.execute(params![fam_name, fam_type, hash, stripped])?;
-        let merged_id: i64 = find_merged_id.query_row(params![stripped], |r| r.get(0))?;
+        insert.execute(params![fam_name, fam_type, &stripped])?;
+        let merged_id: i64 = find_merged_id.query_row(params![&stripped], |r| r.get(0))?;
+        copy_labels.execute(params![merged_id, src_id])?;
         remap.insert(src_id, merged_id);
     }
     drop(insert);
     drop(find_merged_id);
+    drop(copy_labels);
 
     // sample_value: insert every row with remapped instance_id.
     let mut select_sv = merged.prepare(

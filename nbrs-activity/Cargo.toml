@@ -33,6 +33,11 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 # See `executor::run_phase` call sites that build `phase_labels`,
 # `gk_context`, and `activity_name`.
 indexmap = "2"
+# Lock-free atomic snapshot publication of the live phase memo
+# (SRD-63 §"Phase memo"). Producers store the latest before/after
+# string; readers (inline status thread, readout context build)
+# load without blocking.
+arc-swap = "1"
 pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 libc = "0.2"
 # Used by `report_anchor::resolve` to read scenario / phase

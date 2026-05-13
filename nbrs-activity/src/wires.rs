@@ -158,9 +158,22 @@ impl<'a> WireSource for CycleWires<'a> {
         // construction-time wiring set up every visible wire
         // (SRD-13f).
         if k.program().resolve_output(name).is_some() {
-            return Some(k.pull(name).clone());
+            let v = k.pull(name).clone();
+            if std::env::var("NBRS_DIRTY_DEBUG").is_ok() && name == "query" {
+                let s = v.to_display_string();
+                let head: String = s.chars().take(64).collect();
+                eprintln!("DIRTY: wires.get(query) OUTPUT head=\"{head}\"");
+            }
+            return Some(v);
         }
-        k.lookup(name)
+        let v = k.lookup(name);
+        if std::env::var("NBRS_DIRTY_DEBUG").is_ok() && name == "query" {
+            let head = v.as_ref()
+                .map(|x| x.to_display_string().chars().take(64).collect::<String>())
+                .unwrap_or_else(|| "<none>".into());
+            eprintln!("DIRTY: wires.get(query) INPUT/CONST head=\"{head}\"");
+        }
+        v
     }
 
     fn names(&self) -> Box<dyn Iterator<Item = String> + '_> {
@@ -274,10 +287,17 @@ pub fn substitute_via_wires(
             i += 1;
             continue;
         }
-        // CQL map / JSON object literal: `{` followed by `'`/`"`.
-        // Emit just the `{` and continue scanning so any nested
-        // `{name}` placeholders inside still resolve.
-        if i + 1 < n && (chars[i + 1] == '\'' || chars[i + 1] == '"') {
+        // CQL map / JSON object literal: `{` followed by
+        // (whitespace?) `'`/`"`. Emit just the `{` and
+        // continue scanning so any nested `{name}` placeholders
+        // inside still resolve. Whitespace tolerance covers
+        // multi-line CQL maps written with the opening brace
+        // on its own line (e.g. `compaction = {\n  'class':
+        // …\n}`).
+        let next_nonspace = chars[i + 1..].iter()
+            .find(|c| !c.is_whitespace())
+            .copied();
+        if matches!(next_nonspace, Some('\'') | Some('"')) {
             out.push('{');
             i += 1;
             continue;

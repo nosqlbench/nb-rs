@@ -248,6 +248,13 @@ pub trait ReadoutContext {
     /// Default false.
     fn use_color(&self) -> bool { false }
 
+    /// Operator-visible phase memo — short string published by
+    /// the `memo` wrapper via `before:` / `after:` templates.
+    /// Default empty (no memo configured / nothing published).
+    /// Surfaced by phase displays as `[[ <memo> ]]` above the
+    /// status line when non-empty.
+    fn phase_memo(&self) -> &str { "" }
+
     // ── Event / refresh ───────────────────────────────────
 
     /// Which slot fired this render. Required: every

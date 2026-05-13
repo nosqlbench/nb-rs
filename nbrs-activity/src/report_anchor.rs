@@ -330,11 +330,7 @@ fn phases_matching_filter(
     let _ = item; // filter awareness deferred — see doc above.
     let mut out = BTreeSet::new();
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT lv.value \
-         FROM label_set_entry lse \
-         JOIN label_key lk ON lk.id = lse.key_id \
-         JOIN label_value lv ON lv.id = lse.value_id \
-         WHERE lk.key = 'phase'",
+        "SELECT DISTINCT value FROM instance_label WHERE key = 'phase'",
     ).map_err(|e| format!("phase distinct query: {e}"))?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0))
         .map_err(|e| format!("phase rows: {e}"))?;
@@ -368,14 +364,15 @@ mod tests {
 
         let conn = rusqlite::Connection::open(&path).unwrap();
         // Minimal schema mirroring the runtime — enough rows
-        // to drive the anchor queries.
+        // to drive the anchor queries. Post-cutover: denormalised
+        // `instance_label` table holds `(instance_id, key, value)`
+        // directly (no `label_set` indirection).
         conn.execute_batch(r#"
             CREATE TABLE session_metadata (key TEXT, value TEXT);
-            CREATE TABLE label_key (id INTEGER PRIMARY KEY, key TEXT);
-            CREATE TABLE label_value (id INTEGER PRIMARY KEY, value TEXT);
-            CREATE TABLE label_set (id INTEGER PRIMARY KEY, hash INTEGER);
-            CREATE TABLE label_set_entry (
-                set_id INTEGER, key_id INTEGER, value_id INTEGER
+            CREATE TABLE instance_label (
+                instance_id INTEGER NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL
             );
         "#).unwrap();
         for s in scenarios {
@@ -384,27 +381,12 @@ mod tests {
                 [s],
             ).unwrap();
         }
-        if !phases.is_empty() {
+        for (i, p) in phases.iter().enumerate() {
+            let id = (i + 1) as i64;
             conn.execute(
-                "INSERT INTO label_key (id, key) VALUES (1, 'phase')",
-                [],
+                "INSERT INTO instance_label (instance_id, key, value) VALUES (?1, 'phase', ?2)",
+                rusqlite::params![id, p],
             ).unwrap();
-            conn.execute(
-                "INSERT INTO label_set (id, hash) VALUES (1, 0)",
-                [],
-            ).unwrap();
-            for (i, p) in phases.iter().enumerate() {
-                let id = (i + 1) as i64;
-                conn.execute(
-                    "INSERT INTO label_value (id, value) VALUES (?1, ?2)",
-                    rusqlite::params![id, p],
-                ).unwrap();
-                conn.execute(
-                    "INSERT INTO label_set_entry (set_id, key_id, value_id) \
-                     VALUES (1, 1, ?1)",
-                    [id],
-                ).unwrap();
-            }
         }
         path
     }

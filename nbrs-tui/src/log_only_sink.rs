@@ -148,6 +148,16 @@ fn run_render_loop(
     stop: Arc<AtomicBool>,
 ) {
     let mut stderr = io::stderr();
+    // The raw status string most recently published by the
+    // actor and reflected on the terminal. We compare against
+    // *this* (not the clamped form actually written to the
+    // surface) so identity checks are stable across ticks.
+    let mut status_published: Option<String> = None;
+    // The clamped, per-line-truncated text actually drawn at
+    // the bottom of the surface. Tracked so the next clear
+    // knows how many rows to climb past. `None` means nothing
+    // is drawn.
+    let mut status_drawn: Option<String> = None;
     while !stop.load(Ordering::Acquire) {
         // Drain any metrics frames that arrived since the last
         // tick — only when a frame channel was actually wired in.
@@ -168,7 +178,23 @@ fn run_render_loop(
         // Drain new log entries.
         let snap = state.load();
         let total = snap.log_seq_total;
-        if total > last_seen {
+        let next_status: Option<String> = snap.status_render.clone();
+        let need_log_emit = total > last_seen;
+        let status_changed = next_status != status_published;
+
+        // If there's a status region currently occupied AND
+        // anything is about to print (log lines or the status
+        // itself changing), wipe it first. We're the only writer
+        // to this surface — clearing here means the cursor
+        // returns to a known starting column before logs append.
+        let must_clear_status =
+            status_drawn.is_some() && (need_log_emit || status_changed);
+        if must_clear_status {
+            clear_status_region(&mut stderr, status_drawn.as_deref());
+            status_drawn = None;
+        }
+
+        if need_log_emit {
             let new_count = total - last_seen;
             let take = new_count.min(LOG_RING_CAPACITY) as usize;
             let ring = &snap.log_messages;
@@ -196,24 +222,104 @@ fn run_render_loop(
                 {
                     let _ = write!(stderr, "\r\n");
                 }
-                // `\r\n` line endings so output stays correct
-                // when the sink supervisor has stdin in raw mode
-                // for the Ctrl-T watcher. In cooked mode the
-                // extra `\r` is a no-op (already at col 0).
-                //
                 // Colorize by severity. `colorize_log_line` is
                 // a no-op on non-tty / NO_COLOR so log captures
                 // stay clean.
                 let painted = nbrs_activity::observer::colorize_log_line(
                     entry_level, &entry.message);
-                let _ = write!(stderr, "{}\r\n", painted);
+                // Split on embedded `\n` so multi-line log
+                // messages (e.g. the two-line phase_done
+                // render) get `\r\n` after every row. Raw mode
+                // needs explicit `\r` to return to col 0; a
+                // bare `\n` leaves the cursor under the
+                // previous row's last character.
+                for row in painted.split('\n') {
+                    let _ = write!(stderr, "{row}\r\n");
+                }
             }
             let _ = stderr.flush();
             last_seen = total;
         }
 
+        // Redraw the status line at the bottom if there is one.
+        // The redraw happens AFTER the log drain so any log
+        // lines just emitted scroll past while the status line
+        // stays visually anchored to the current cursor row.
+        if let Some(s) = &next_status {
+            // Always redraw when the published status changed or
+            // when the previous draw was cleared by a log emit.
+            if status_changed || status_drawn.is_none() {
+                let cols = nbrs_activity::activity::terminal_cols().unwrap_or(200);
+                let clamped = clamp_multiline(s, cols.saturating_sub(1));
+                draw_status_region(&mut stderr, &clamped);
+                status_drawn = Some(clamped);
+            }
+        }
+        status_published = next_status;
+
         std::thread::sleep(POLL_INTERVAL);
     }
+
+    // Sink shutting down — wipe the status region we own so
+    // the post-run terminal state isn't littered with our
+    // final tick's text.
+    if status_drawn.is_some() {
+        clear_status_region(&mut stderr, status_drawn.as_deref());
+    }
+}
+
+/// Clear the status region drawn by [`draw_status_region`].
+/// Counts the embedded `\n`s in the prior render so a multi-
+/// line status (future expansion) clears all of its rows, not
+/// just the bottom one. Single-line callers see `\r\x1b[K`
+/// (the legacy in-place clear).
+fn clear_status_region<W: Write>(out: &mut W, prior: Option<&str>) {
+    let lines = prior.map(|s| s.matches('\n').count() as u16 + 1).unwrap_or(1);
+    if lines > 1 {
+        // Cursor sits at end of the prior render's last row;
+        // climb back to the first row, then `\x1b[J` wipes
+        // from the cursor through end of screen.
+        let _ = write!(out, "\r\x1b[{}A\x1b[J", lines - 1);
+    } else {
+        let _ = write!(out, "\r\x1b[K");
+    }
+    let _ = out.flush();
+}
+
+/// Write the status region. Caller has ensured the cursor is
+/// on a clean row (either freshly cleared by
+/// [`clear_status_region`] or just after a log line's `\r\n`).
+/// No trailing newline so the cursor stays at the end of the
+/// final status row — the next [`clear_status_region`] call
+/// computes its climb from there.
+///
+/// Embedded `\n` row breaks are upgraded to `\r\n` so the
+/// cursor returns to column 0 even when the sink supervisor
+/// has stdin in raw mode for the Ctrl-T watcher.
+fn draw_status_region<W: Write>(out: &mut W, status: &str) {
+    let mut first = true;
+    for row in status.split('\n') {
+        if !first { let _ = write!(out, "\r\n"); }
+        let _ = write!(out, "{row}");
+        first = false;
+    }
+    let _ = out.flush();
+}
+
+/// Clamp each `\n`-delimited row of `s` to `max_cols` columns
+/// independently, then rejoin with `\n`. `\n` itself is not a
+/// visible column and must not consume the budget; per-row
+/// clamping prevents the second line of a two-line status
+/// from being chopped off when the first line is long.
+fn clamp_multiline(s: &str, max_cols: usize) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut first = true;
+    for row in s.split('\n') {
+        if !first { out.push('\n'); }
+        out.push_str(&nbrs_activity::activity::truncate_to_width(row, max_cols));
+        first = false;
+    }
+    out
 }
 
 struct LogOnlySinkHandle {

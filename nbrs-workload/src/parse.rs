@@ -1285,7 +1285,7 @@ fn normalize_op_object(
     // separately below.
     let activity_params = ["ratio", "driver", "space", "instrument", "start-timers", "stop-timers",
         "verify", "relevancy", "strict", "poll", "poll_interval_ms", "timeout_ms", "poll_metric_name", "emit",
-        "batch", "max_batch_size", "batchtype"];
+        "batch", "max_batch_size", "batchtype", "memo"];
 
     let op_fields = if let Some(explicit_op) = op_field_names.iter()
         .find_map(|k| map.get(*k))

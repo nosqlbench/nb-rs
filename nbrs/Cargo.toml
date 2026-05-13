@@ -14,6 +14,18 @@ readme = "README.md"
 name = "nbrs"
 path = "src/main.rs"
 
+[[bin]]
+name = "vectordata-audit"
+path = "src/bin/vectordata_audit.rs"
+
+[[bin]]
+name = "recall-audit"
+path = "src/bin/recall_audit.rs"
+
+[[bin]]
+name = "trace-recall"
+path = "src/bin/trace_recall.rs"
+
 [features]
 # Default: pure-Rust scylla CQL engine. Builds anywhere; needs
 # no C++ toolchain. Publishable to crates.io.
@@ -51,6 +63,13 @@ nbrs-workload = { path = "../nbrs-workload", version = "0.1.1" }
 nbrs-rate = { path = "../nbrs-rate", version = "0.1.1" }
 nbrs-errorhandler = { path = "../nbrs-errorhandler", version = "0.1.1" }
 nbrs-activity = { path = "../nbrs-activity", version = "0.1.1" }
+# Used by the `vectordata-audit` bin to scrutinise dataset
+# relationships through the catalog API (transport- and
+# cache-layout-agnostic). The generic typed surface
+# (`open_facet_typed`, `facet_manifest`, `open_facet_storage`)
+# lets the tool read any facet by name + element type without
+# baking in per-facet helpers.
+vectordata = "1.1.1"
 tokio = { version = "1", features = ["full"] }
 # parking_lot::RwLock used by `RunState` shared with TuiObserver —
 # the std RwLock is writer-preferring on Linux and deadlocks

@@ -565,7 +565,7 @@ impl KindFilter {
 }
 
 #[derive(Debug, Clone)]
-struct ResolvedItem {
+pub(crate) struct ResolvedItem {
     pub name: String,
     pub kind: nbrs_workload::report::Kind,
     pub label: Option<String>,
@@ -603,6 +603,11 @@ struct ResolvedItem {
     /// same markdown file. The table reuses the plot's
     /// query data (each series query becomes one column).
     pub with_table: bool,
+    /// `with-tables: [label1, label2, …]` faceting list —
+    /// when non-empty, the renderer fans out one companion
+    /// table per distinct value tuple of the listed labels
+    /// (in addition to / replacing the singular form).
+    pub with_tables: Vec<String>,
 }
 
 fn extract_workload(args: &[String]) -> (Option<PathBuf>, Vec<String>) {
@@ -680,7 +685,56 @@ fn extract_workload(args: &[String]) -> (Option<PathBuf>, Vec<String>) {
     (workload_path, rest)
 }
 
-fn resolve_items(
+/// Map a parsed [`nbrs_workload::report::ReportItem`] (plus its
+/// effective style and a param map for `{name}` substitution)
+/// into a [`ResolvedItem`]. Single conversion site shared by
+/// both the workload-source path and the session-db fallback —
+/// any new field on `ReportItem` needs to be threaded through
+/// here exactly once.
+fn resolve_item(
+    item: &nbrs_workload::report::ReportItem,
+    style: &nbrs_workload::report::Style,
+    params: &std::collections::HashMap<String, String>,
+) -> ResolvedItem {
+    let expand = |s: &str| nbrs_activity::runner::expand_workload_params(s, params);
+    ResolvedItem {
+        name: item.name.clone(),
+        kind: item.kind,
+        label: item.label.as_deref().map(expand),
+        body: expand(&item.body),
+        palette: style.palette.clone(),
+        line: style.line.clone(),
+        width: style.width,
+        marker: style.marker.clone(),
+        marker_size: style.size,
+        target_file: item.target_file.as_deref().map(expand),
+        series_overrides: style.series.clone(),
+        with_table: item.with_table,
+        with_tables: item.with_tables.clone(),
+    }
+}
+
+/// Filter the resolved items to `Kind::Plot` and project to
+/// `(name, body)` pairs — the shape `plot_metrics` consumes
+/// when looking up a named plot by `--name` or by `all`.
+/// Single source of truth: both the report-rendering pipeline
+/// and the plot-rendering pipeline route through
+/// [`resolve_items`], so `with-table` / `target` / style
+/// directive stripping happens in exactly one place.
+pub(crate) fn plot_body_specs(
+    workload_path: Option<&Path>,
+    session_db: Option<&Path>,
+) -> Result<Vec<(String, String)>, String> {
+    use nbrs_workload::report::Kind;
+    let items = resolve_items(workload_path, session_db)?;
+    Ok(items
+        .into_iter()
+        .filter(|i| matches!(i.kind, Kind::Plot))
+        .map(|i| (i.name, i.body))
+        .collect())
+}
+
+pub(crate) fn resolve_items(
     workload_path: Option<&Path>,
     session_db: Option<&Path>,
 ) -> Result<Vec<ResolvedItem>, String> {
@@ -708,25 +762,7 @@ fn resolve_items(
         for group in &workload.report.groups {
             for item in &group.items {
                 let style = workload.report.effective_style(group, item);
-                let label = item.label.as_deref().map(|s|
-                    nbrs_activity::runner::expand_workload_params(s, &params));
-                let body = nbrs_activity::runner::expand_workload_params(&item.body, &params);
-                let target_file = item.target_file.as_deref().map(|s|
-                    nbrs_activity::runner::expand_workload_params(s, &params));
-                out.push(ResolvedItem {
-                    name: item.name.clone(),
-                    kind: item.kind,
-                    label,
-                    body,
-                    palette: style.palette.clone(),
-                    line: style.line.clone(),
-                    width: style.width,
-                    marker: style.marker.clone(),
-                    marker_size: style.size,
-                    target_file,
-                    series_overrides: style.series.clone(),
-                    with_table: item.with_table,
-                });
+                out.push(resolve_item(item, &style, &params));
             }
         }
         Ok(out)
@@ -779,79 +815,22 @@ fn resolve_items(
             Err(_) => return Ok(Vec::new()),
         };
         let mut out: Vec<ResolvedItem> = Vec::new();
+        let default_style = nbrs_workload::report::Style::default();
         for row in rows.flatten() {
-            if let Some(mut item) = parse_persisted_item(&row.0, &row.1) {
-                // Expand workload-param placeholders.
-                if let Some(label) = item.label.as_deref() {
-                    item.label = Some(nbrs_activity::runner::expand_workload_params(label, &params));
-                }
-                item.body = nbrs_activity::runner::expand_workload_params(&item.body, &params);
-                if let Some(tf) = item.target_file.as_deref() {
-                    item.target_file = Some(nbrs_activity::runner::expand_workload_params(tf, &params));
-                }
-                out.push(item);
+            // The db value is one item's persisted form (header
+            // line + indented directives, per
+            // `ReportItem::to_yaml_directive_string`). Delegate
+            // to the workload-side parser so directive handling
+            // lives in one place and stays in lockstep with the
+            // YAML path.
+            if row.0.strip_prefix("report.").is_none() { continue; }
+            match nbrs_workload::report::parse_persisted_item(&row.1) {
+                Ok(item) => out.push(resolve_item(&item, &default_style, &params)),
+                Err(_) => continue,
             }
         }
         Ok(out)
     }
-}
-
-fn parse_persisted_item(key: &str, value: &str) -> Option<ResolvedItem> {
-    let _name = key.strip_prefix("report.")?;
-    let mut lines = value.lines();
-    let head = lines.next()?;
-    use nbrs_workload::report::Kind;
-    let (kind, name) = if let Some(rest) = head.strip_prefix("plot ") {
-        (Kind::Plot, rest.trim().to_string())
-    } else if let Some(rest) = head.strip_prefix("table ") {
-        (Kind::Table, rest.trim().to_string())
-    } else if let Some(rest) = head.strip_prefix("text ") {
-        (Kind::Text, rest.trim().to_string())
-    } else if let Some(rest) = head.strip_prefix("file ") {
-        (Kind::File, rest.trim().to_string())
-    } else {
-        return None;
-    };
-    let mut label: Option<String> = None;
-    let mut target_file: Option<String> = None;
-    let mut body_lines: Vec<&str> = Vec::new();
-    for line in lines {
-        if let Some(rest) = line.strip_prefix("label ") {
-            let s = rest.trim();
-            let s = s.strip_prefix('"').and_then(|x| x.strip_suffix('"'))
-                .or_else(|| s.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')))
-                .unwrap_or(s);
-            label = Some(s.to_string());
-        } else if let Some(rest) = line.strip_prefix("target ") {
-            target_file = Some(rest.trim().to_string());
-        } else {
-            body_lines.push(line);
-        }
-    }
-    Some(ResolvedItem {
-        name,
-        kind,
-        label,
-        body: body_lines.join("\n"),
-        palette: None,
-        line: None,
-        width: None,
-        marker: None,
-        marker_size: None,
-        target_file,
-        // Persisted item form doesn't carry per-series style;
-        // those live on the workload-source side. Round-trip
-        // through `nbrs report` against a session-db fallback
-        // sees an empty list, which is the correct behavior:
-        // there's no source-of-truth to pull overrides from
-        // here.
-        series_overrides: Vec::new(),
-        // `with-table` is workload-source-only (it controls
-        // whether to ALSO emit a table; the persisted db row
-        // is whatever the renderer chose to save). Db
-        // fallback never auto-emits a companion.
-        with_table: false,
-    })
 }
 
 fn print_listing(items: &[ResolvedItem], filter: KindFilter) {
@@ -1300,12 +1279,49 @@ fn render_one(
             // already failed); the companion's outcome is
             // logged but doesn't replace the plot's
             // success/failure return.
-            if item.with_table && plot_result.is_ok() {
-                if let Err(e) = render_companion_table(n, item, output_root, session_db) {
-                    eprintln!(
-                        "WARNING: companion table for plot '{}' failed: {e}",
-                        item.name,
-                    );
+            if plot_result.is_ok() {
+                if item.with_table {
+                    if let Err(e) = render_companion_table(
+                        n, item, output_root, session_db, &[],
+                    ) {
+                        eprintln!(
+                            "WARNING: companion table for plot '{}' failed: {e}",
+                            item.name,
+                        );
+                    }
+                }
+                if !item.with_tables.is_empty() {
+                    match discover_faceted_tuples(item, session_db) {
+                        Ok(tuples) if tuples.is_empty() => {
+                            eprintln!(
+                                "WARNING: with-tables for plot '{}' found no \
+                                 distinct value tuples for labels {:?}",
+                                item.name, item.with_tables,
+                            );
+                        }
+                        Ok(tuples) => {
+                            for tuple in tuples {
+                                let pairs: Vec<(String, String)> = item.with_tables.iter()
+                                    .cloned().zip(tuple.iter().cloned()).collect();
+                                if let Err(e) = render_companion_table(
+                                    n, item, output_root, session_db, &pairs,
+                                ) {
+                                    eprintln!(
+                                        "WARNING: faceted companion table for \
+                                         plot '{}' ({pairs:?}) failed: {e}",
+                                        item.name,
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "WARNING: with-tables for plot '{}' could not \
+                                 discover label tuples: {e}",
+                                item.name,
+                            );
+                        }
+                    }
                 }
             }
             plot_result
@@ -1337,30 +1353,114 @@ fn render_companion_table(
     item: &ResolvedItem,
     output_root: &Path,
     session_db: Option<&Path>,
+    facet: &[(String, String)],
 ) -> Result<(), String> {
     let columns = extract_y_queries(&item.body);
     if columns.is_empty() {
         return Err("no y/y1/y2/y3/y4 query lines in plot body".into());
     }
-    let group_by = extract_x_query(&item.body)
-        .or_else(|| extract_xticks_query(&item.body))
-        .map(|q| extract_label_keys(&q))
-        .unwrap_or_default();
+    // When faceting, inject the (label=value) constraints
+    // into every column expression so each table sees only
+    // rows that match this facet. Removes the facet labels
+    // from group_by since they're now constant per table.
+    let columns: Vec<(String, String)> = if facet.is_empty() {
+        columns
+    } else {
+        columns.into_iter()
+            .map(|(name, q)| (name, inject_label_matchers(&q, facet)))
+            .collect()
+    };
+    // Group-by: union of every discriminator the plot
+    // actually breaks series on. Otherwise the table
+    // collapses dimensions the plot keeps separate (e.g.
+    // averaging `optimize_for` away when each plot line
+    // shows a distinct value). Sources, in order:
+    //   1. The `x:` value when it's a bare label name —
+    //      the per-row identity in the plot.
+    //   2. Every `by (k1, k2, …)` clause across x-ticks
+    //      and every y* query.
+    let mut group_by: Vec<String> = Vec::new();
+    let push_unique = |k: String, gb: &mut Vec<String>| {
+        if !k.is_empty() && !gb.iter().any(|e| e == &k) {
+            gb.push(k);
+        }
+    };
+    if let Some(x) = extract_x_query(&item.body) {
+        let x_trim = x.trim();
+        // Bare label form: identifier with no whitespace / parens.
+        if !x_trim.is_empty()
+            && !x_trim.contains(|c: char| c.is_whitespace() || c == '(' || c == '{')
+        {
+            push_unique(x_trim.to_string(), &mut group_by);
+        } else {
+            for k in extract_label_keys(&x) {
+                push_unique(k, &mut group_by);
+            }
+        }
+    }
+    if let Some(xt) = extract_xticks_query(&item.body) {
+        for k in extract_label_keys(&xt) {
+            push_unique(k, &mut group_by);
+        }
+    }
+    for (_col, q) in &columns {
+        for k in extract_label_keys(q) {
+            push_unique(k, &mut group_by);
+        }
+    }
+    // Faceting fixes those labels to constant values for
+    // this table; pulling them out of group_by avoids
+    // single-value columns that just repeat the facet.
+    if !facet.is_empty() {
+        let facet_keys: std::collections::HashSet<&str> = facet.iter()
+            .map(|(k, _)| k.as_str()).collect();
+        group_by.retain(|k| !facet_keys.contains(k.as_str()));
+    }
 
-    let mut argv: Vec<String> = vec![
-        format!("--name={}_table", item.name),
-        "--figure-num".into(),
-        // Numbering convention: companion uses the parent
-        // plot's number with an `a` suffix in the heading,
-        // but for the tools that need a numeric arg we
-        // pass the plot's number — the heading is
-        // overridden via --label below.
-        plot_figure_num.to_string(),
-    ];
+    // Encode columns + group_by into a summary spec string
+    // (`query <col>: <expr>` / `group_by: <keys>`). The summary
+    // parser already consumes this form natively (SRD-46 v2),
+    // so the companion-table feature reuses one DSL instead of
+    // a parallel flag surface.
+    let mut spec = String::new();
+    if !group_by.is_empty() {
+        spec.push_str(&format!("group_by: {}\n", group_by.join(",")));
+    }
+    for (col_name, query) in columns {
+        spec.push_str(&format!("query {col_name}: {query}\n"));
+    }
+
     let plot_label = item.label.clone()
         .unwrap_or_else(|| crate::report::prettify_name(&item.name));
-    argv.push("--label".into());
-    argv.push(format!("{plot_label} (data)"));
+    // Facet suffix folded into both the markdown section
+    // name (so each table gets its own anchor / file slot)
+    // and the heading label (so the operator can see which
+    // slice they're looking at).
+    let facet_suffix_name = if facet.is_empty() {
+        String::new()
+    } else {
+        let mut s = String::new();
+        for (_k, v) in facet {
+            s.push('_');
+            s.push_str(&sanitize_for_anchor(v));
+        }
+        s
+    };
+    let facet_suffix_label = if facet.is_empty() {
+        String::new()
+    } else {
+        let parts: Vec<String> = facet.iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        format!(" [{}]", parts.join(", "))
+    };
+    let mut argv: Vec<String> = vec![
+        format!("--name={}_table{facet_suffix_name}", item.name),
+        "--figure-num".into(),
+        plot_figure_num.to_string(),
+        "--label".into(),
+        format!("{plot_label} (data){facet_suffix_label}"),
+    ];
     if let Some(target) = item.target_file.as_deref() {
         argv.push("--report".into());
         argv.push(output_root.join(target).to_string_lossy().into_owned());
@@ -1369,41 +1469,270 @@ fn render_companion_table(
         argv.push("--db".into());
         argv.push(db.to_string_lossy().into_owned());
     }
-    if !group_by.is_empty() {
-        argv.push("--group-by".into());
-        argv.push(group_by.join(","));
-    }
-    for (col_name, query) in columns {
-        argv.push("--column".into());
-        argv.push(format!("{col_name}={query}"));
-    }
+    argv.push(spec);
     crate::summary::summary_command(&argv);
     Ok(())
 }
 
+/// Inject `key="value"` matchers into the first metric
+/// selector in a metricsql expression. Used to scope each
+/// faceted companion table to a single (label=value) tuple
+/// without re-implementing metricsql parsing.
+///
+/// Targets the first `{ … }` block. Inserts before the
+/// closing brace (or replaces an empty `{}` with the
+/// matchers). When no `{ … }` exists, wraps the bare
+/// metric name with one.
+fn inject_label_matchers(expr: &str, pairs: &[(String, String)]) -> String {
+    if pairs.is_empty() { return expr.to_string(); }
+    let inj: String = pairs.iter()
+        .map(|(k, v)| format!("{k}=\"{v}\""))
+        .collect::<Vec<_>>().join(",");
+    if let Some(open) = expr.find('{') {
+        // Find the matching close at depth 0 in label space.
+        let after_open = &expr[open + 1..];
+        if let Some(close_rel) = after_open.find('}') {
+            let close = open + 1 + close_rel;
+            let inner = expr[open + 1..close].trim();
+            let mut out = String::with_capacity(expr.len() + inj.len() + 2);
+            out.push_str(&expr[..open + 1]);
+            if !inner.is_empty() {
+                out.push_str(inner);
+                out.push(',');
+            }
+            out.push_str(&inj);
+            out.push_str(&expr[close..]);
+            return out;
+        }
+    }
+    // No selector — bolt one on at the end of the bare
+    // metric name. Heuristic: drop a `{inj}` right after the
+    // first identifier we can find.
+    let mut chars = expr.chars().enumerate().peekable();
+    let mut ident_end: Option<usize> = None;
+    while let Some(&(i, c)) = chars.peek() {
+        if c.is_alphanumeric() || c == '_' || c == ':' {
+            chars.next();
+            ident_end = Some(i + c.len_utf8());
+        } else if ident_end.is_some() {
+            break;
+        } else {
+            chars.next();
+        }
+    }
+    match ident_end {
+        Some(end) => format!("{}{{{inj}}}{}", &expr[..end], &expr[end..]),
+        None => expr.to_string(),
+    }
+}
+
+/// Reduce a label value to a token usable in an anchor /
+/// filename suffix: keep alphanumerics + `_`, replace
+/// everything else with `_`.
+fn sanitize_for_anchor(v: &str) -> String {
+    v.chars().map(|c| {
+        if c.is_alphanumeric() || c == '_' { c } else { '_' }
+    }).collect()
+}
+
+/// Discover the distinct value tuples for the given label
+/// keys by running the plot's first metricsql query against
+/// the session db and gathering each result series's labels.
+/// Returns one `Vec<String>` per distinct tuple, with the
+/// values in the same order as `item.with_tables`.
+fn discover_faceted_tuples(
+    item: &ResolvedItem,
+    session_db: Option<&Path>,
+) -> Result<Vec<Vec<String>>, String> {
+    use std::collections::BTreeSet;
+    let db_path = match session_db {
+        Some(p) => p.to_path_buf(),
+        None => PathBuf::from("logs/latest/metrics.db"),
+    };
+    if !db_path.exists() {
+        return Err(format!("session db '{}' missing", db_path.display()));
+    }
+    let columns = extract_y_queries(&item.body);
+    let first = columns.first()
+        .ok_or_else(|| "plot has no y queries — nothing to facet over".to_string())?;
+    let expr = &first.1;
+
+    use nbrs_metricsql::adapters::sqlite::SqliteDataSource;
+    use nbrs_metricsql::eval::{EvalContext, evaluate};
+    let ds = SqliteDataSource::open(&db_path)
+        .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?;
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| format!("open db: {e}"))?;
+    let (min_ts, max_ts): (i64, i64) = conn.query_row(
+        "SELECT COALESCE(MIN(timestamp_ms), 0), COALESCE(MAX(timestamp_ms), 0) FROM sample_value",
+        [], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).map_err(|e| format!("read time bounds: {e}"))?;
+    if max_ts == 0 { return Ok(Vec::new()); }
+    let ctx = EvalContext {
+        data: &ds,
+        start_ms: min_ts,
+        end_ms: max_ts,
+        step_ms: 60_000,
+        lookback_ms: Some(300_000),
+        query_start_ms: Some(min_ts),
+        query_end_ms: Some(max_ts),
+    };
+    let parsed = nbrs_metricsql::parse(expr)
+        .map_err(|e| format!("parse '{expr}': {e}"))?;
+    let series = evaluate(&ctx, &parsed)
+        .map_err(|e| format!("evaluate '{expr}': {e}"))?;
+    let mut seen: BTreeSet<Vec<String>> = BTreeSet::new();
+    for s in series {
+        let tuple: Vec<String> = item.with_tables.iter()
+            .map(|k| s.labels.iter()
+                .find(|(lk, _)| lk == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default())
+            .collect();
+        if tuple.iter().all(|v| !v.is_empty()) {
+            seen.insert(tuple);
+        }
+    }
+    Ok(seen.into_iter().collect())
+}
+
 /// Pull every `y[N]: <query>` line out of a plot body,
 /// returning `(column_name, query)` pairs. The column name
-/// for `y` / `y1` is `recall_y1` (etc.) — namespaced so
-/// the companion table's column headings stay distinct
-/// from any other columns the user might add.
+/// is sourced from the plot's legend declarations so the
+/// companion table's headers mirror the plot legend:
+///   1. Per-axis `yN-legend:` template (singular) wins.
+///   2. Positional `y-legends: [t1, t2, t3]` (axis index).
+///   3. Bare axis tag (`y1` / `y2` / …) when no legend
+///      template is declared.
+/// `[placeholder]` tokens (e.g. `[optimize_for]`) are
+/// stripped — the table already breaks down by those labels
+/// in their own columns, so leaving the placeholder text
+/// would make headers noisier than they need to be.
 fn extract_y_queries(body: &str) -> Vec<(String, String)> {
+    let axis_tag = |prefix: &str| -> &'static str {
+        match prefix {
+            "y:" | "y1:" => "y1",
+            "y2:" => "y2",
+            "y3:" => "y3",
+            "y4:" => "y4",
+            _ => unreachable!(),
+        }
+    };
+    // Pre-scan for legend declarations.
+    let mut per_axis_legend: std::collections::HashMap<&'static str, String> =
+        std::collections::HashMap::new();
+    let mut positional: Vec<String> = Vec::new();
+    for line in body.lines() {
+        let line = line.trim();
+        for pfx in ["y-legend:", "y1-legend:", "y2-legend:", "y3-legend:", "y4-legend:"] {
+            if let Some(rest) = line.strip_prefix(pfx) {
+                let key = match pfx {
+                    "y-legend:" | "y1-legend:" => "y1",
+                    "y2-legend:" => "y2",
+                    "y3-legend:" => "y3",
+                    "y4-legend:" => "y4",
+                    _ => unreachable!(),
+                };
+                per_axis_legend.insert(key, strip_outer_quotes(rest.trim()).to_string());
+            }
+        }
+        if let Some(rest) = line.strip_prefix("y-legends:") {
+            // `[a, b, "c d", …]` — same shape as the plot
+            // parser's `split_array_value`. Quoted entries
+            // keep their inner whitespace; unquoted bare
+            // tokens are trimmed.
+            let trimmed = rest.trim();
+            if let Some(inner) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                positional = split_legend_array(inner);
+            }
+        }
+    }
     let mut out = Vec::new();
     for line in body.lines() {
         let line = line.trim();
         for prefix in ["y:", "y1:", "y2:", "y3:", "y4:"] {
             if let Some(rest) = line.strip_prefix(prefix) {
-                let key = match prefix {
-                    "y:" | "y1:" => "y1",
-                    "y2:" => "y2",
-                    "y3:" => "y3",
-                    "y4:" => "y4",
-                    _ => unreachable!(),
+                let key = axis_tag(prefix);
+                let axis_idx: usize = match key {
+                    "y1" => 0,
+                    "y2" => 1,
+                    "y3" => 2,
+                    "y4" => 3,
+                    _ => 0,
                 };
-                out.push((key.to_string(), rest.trim().to_string()));
+                let col_name = per_axis_legend.get(key)
+                    .cloned()
+                    .or_else(|| positional.get(axis_idx).cloned())
+                    .unwrap_or_else(|| key.to_string());
+                let col_name = strip_legend_placeholders(&col_name);
+                out.push((col_name, rest.trim().to_string()));
                 break;
             }
         }
     }
+    out
+}
+
+/// Strip a single layer of `"…"` or `'…'` from a token.
+fn strip_outer_quotes(s: &str) -> &str {
+    let s = s.trim();
+    s.strip_prefix('"').and_then(|t| t.strip_suffix('"'))
+        .or_else(|| s.strip_prefix('\'').and_then(|t| t.strip_suffix('\'')))
+        .unwrap_or(s)
+}
+
+/// Drop `[placeholder]` tokens from a legend template — the
+/// companion table breaks down by those labels in their own
+/// columns, so the placeholder text in the header would just
+/// duplicate that information.
+fn strip_legend_placeholders(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut depth: i32 = 0;
+    for c in s.chars() {
+        match c {
+            '[' => depth += 1,
+            ']' => { if depth > 0 { depth -= 1; } }
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    // Collapse the residual whitespace / dangling separators
+    // left by the placeholder removal.
+    let cleaned = out
+        .replace('_', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("_");
+    if cleaned.is_empty() { "value".to_string() } else { cleaned }
+}
+
+/// Split `y-legends:` array contents on top-level commas,
+/// preserving quoted entries verbatim (sans outer quotes).
+fn split_legend_array(inner: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut in_quote: Option<char> = None;
+    let mut depth: i32 = 0;
+    let push = |buf: &mut String, out: &mut Vec<String>| {
+        let trimmed = strip_outer_quotes(buf.trim()).to_string();
+        if !trimmed.is_empty() { out.push(trimmed); }
+        buf.clear();
+    };
+    for c in inner.chars() {
+        if let Some(q) = in_quote {
+            current.push(c);
+            if c == q { in_quote = None; }
+            continue;
+        }
+        match c {
+            '"' | '\'' => { in_quote = Some(c); current.push(c); }
+            '[' | '(' => { depth += 1; current.push(c); }
+            ']' | ')' => { depth -= 1; current.push(c); }
+            ',' if depth == 0 => push(&mut current, &mut out),
+            _ => current.push(c),
+        }
+    }
+    push(&mut current, &mut out);
     out
 }
 

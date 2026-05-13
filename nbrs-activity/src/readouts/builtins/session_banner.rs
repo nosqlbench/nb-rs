@@ -46,8 +46,14 @@ fn render_compact(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     if name.is_empty() {
         return 0;
     }
-    let _ = out.write_str(name);
-    name.len()
+    let color = ctx.use_color();
+    let bold  = if color { "\x1b[1m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
+    let mut tmp = String::with_capacity(name.len() + 8);
+    let _ = write!(&mut tmp, "{bold}{name}{reset}");
+    let len = tmp.len();
+    let _ = out.write_str(&tmp);
+    len
 }
 
 fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
@@ -56,11 +62,21 @@ fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     if name.is_empty() && workload.is_empty() {
         return 0;
     }
-    let mut tmp = String::with_capacity(96);
+    // Per docs/guide/color_style.md: `session:` is HEADER
+    // (bold white), name is bold (identity), file path is
+    // MUTED (dim).
+    let color = ctx.use_color();
+    let bold  = if color { "\x1b[1m" } else { "" };
+    let dim   = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
+    let mut tmp = String::with_capacity(128);
     if workload.is_empty() {
-        let _ = write!(&mut tmp, "session: {name}");
+        let _ = write!(&mut tmp, "{bold}session:{reset} {bold}{name}{reset}");
     } else {
-        let _ = write!(&mut tmp, "session: {name} ({workload})");
+        let _ = write!(
+            &mut tmp,
+            "{bold}session:{reset} {bold}{name}{reset} {dim}({workload}){reset}",
+        );
     }
     let len = tmp.len();
     let _ = out.write_str(&tmp);
@@ -73,10 +89,14 @@ fn render_expanded(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize 
     if name.is_empty() && workload.is_empty() {
         return 0;
     }
-    let mut tmp = String::with_capacity(160);
+    let color = ctx.use_color();
+    let bold  = if color { "\x1b[1m" } else { "" };
+    let dim   = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
+    let mut tmp = String::with_capacity(192);
     let _ = write!(
         &mut tmp,
-        "session\n  scenario: {n}\n  workload: {w}",
+        "{bold}session{reset}\n  {dim}scenario:{reset} {n}\n  {dim}workload:{reset} {w}",
         n = if name.is_empty() { "<unnamed>" } else { name },
         w = if workload.is_empty() { "<inline>" } else { workload },
     );

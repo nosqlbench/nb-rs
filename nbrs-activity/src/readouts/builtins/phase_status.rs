@@ -111,13 +111,23 @@ fn render_labeled(
     ctx: &dyn ReadoutContext,
     out: &mut dyn ReadoutBuf,
 ) -> usize {
+    // Palette per docs/guide/color_style.md:
+    //   spinner → cyan (motion cue)
+    //   activity name → bold + INFO (sky/blue)
+    //   bar / rate / ok% / c: / ETA → MUTED (dim)
+    //   pct → default (the headline number; not styled)
+    //   e:N r:N → WARN (yellow) when >0, MUTED when 0
+    //   memo header → EMPHASIS (bold yellow) — sits above
     let color = ctx.use_color();
-    let cyan  = if color { "\x1b[36m" } else { "" };
-    let dim   = if color { "\x1b[2m"  } else { "" };
-    let reset = if color { "\x1b[0m"  } else { "" };
+    let cyan   = if color { "\x1b[36m"   } else { "" };
+    let dim    = if color { "\x1b[2m"    } else { "" };
+    let bold   = if color { "\x1b[1m"    } else { "" };
+    let blue   = if color { "\x1b[34m"   } else { "" };
+    let yellow = if color { "\x1b[33m"   } else { "" };
+    let reset  = if color { "\x1b[0m"    } else { "" };
 
     let total_extent = ctx.cycles_total();
-    let started      = ctx.ops_started();
+    let _started     = ctx.ops_started();
     let finished     = ctx.ops_finished();
     let ops_completed= ctx.cycles_completed();
     let successes    = ctx.ops_ok();
@@ -126,8 +136,16 @@ fn render_labeled(
     let elapsed      = ctx.elapsed_secs();
     let concurrency  = ctx.concurrency();
 
+    // Progress percentage uses *completed* cycles, not
+    // dispatched ones. The previous `ops_started`-based
+    // formula reported 100% the moment the only fiber
+    // dispatched its sole op — for long synchronous calls
+    // (jolokia_compact, schema migrations) the bar pinned at
+    // 100% for the whole wait. `cycles_completed` matches
+    // what `phase_done` reports and what rate / ETA derive
+    // from, so the running bar and the final DONE line agree.
     let pct: f64 = if total_extent > 0 {
-        started as f64 * 100.0 / total_extent as f64
+        ops_completed as f64 * 100.0 / total_extent as f64
     } else {
         0.0
     };
@@ -140,27 +158,39 @@ fn render_labeled(
     let rate_str = format_rate(rate);
 
     let spinner = spinner_frame(ctx.refresh_tick());
+    // Bar styling: bright-white braille dots on a dark-grey
+    // truecolor background. The background makes the empty
+    // leading cells visible as a defined region instead of
+    // a gap — so an early-phase 5% bar reads as `▮▯▯▯▯▯▯▯▯▯`
+    // rather than `▮          ` (where the trailing cells
+    // were braille blanks against the terminal default
+    // background).
     let bar = if total_extent > 0 {
-        format!(" {dim}{}{reset}", braille_bar(pct, 10))
+        let bg = if color { "\x1b[48;2;50;50;50m" } else { "" };
+        let fg = if color { "\x1b[97m"            } else { "" };
+        format!(" {bg}{fg}{}{reset}", braille_bar(pct, 10))
     } else {
         String::new()
     };
-    // SRD-63 Push 9f: read ETA from the context's accessor
-    // rather than recomputing from `finished`/`rate`. Falls
-    // back to the inline derivation when the context returns
-    // `None` so contexts that haven't been updated to populate
-    // `eta_secs` (mock test contexts) keep working.
+    // Time span: cumulative elapsed / ETA remaining, packed
+    // into a single dim parenthesised pair. The slash reads
+    // as past→future without needing a label. When ETA can't
+    // be computed (no extent / no progress) the span
+    // degenerates to just elapsed.
+    let elapsed_str = format_eta(elapsed);
     let eta = match ctx.eta_secs() {
-        Some(secs) => format!(" {dim}ETA {}{reset}", format_eta(secs)),
+        Some(secs) =>
+            format!(" {dim}({elapsed_str}/{}){reset}", format_eta(secs)),
         None if total_extent > 0 && rate > 0.0 => {
             let remaining = total_extent.saturating_sub(finished) as f64;
-            format!(" {dim}ETA {}{reset}", format_eta(remaining / rate))
+            format!(" {dim}({elapsed_str}/{}){reset}", format_eta(remaining / rate))
         }
-        None => String::new(),
+        None =>
+            format!(" {dim}({elapsed_str}){reset}"),
     };
 
     let seq_prefix: String = match ctx.subject_seq() {
-        Some((s, t)) => format!("[{s}/{t}] "),
+        Some((s, t)) => format!("{dim}[{s}/{t}]{reset} "),
         None => String::new(),
     };
     let depth_indent = ctx.depth_indent();
@@ -169,22 +199,39 @@ fn render_labeled(
     let adapter_status = ctx.adapter_counters_text();
     let batch_info = ctx.batch_info_text();
 
-    let mut tmp = String::with_capacity(192);
+    // Counters tone follows the rule from phase_done: yellow
+    // when something abnormal (errors/retries > 0), dim when
+    // clean. ok% gets the same treatment so a 100% / 99%
+    // distinction reads at a glance.
+    let err_tone   = if errors > 0 || retries > 0 { yellow } else { dim };
+    let ok_tone    = if ok_pct >= 100.0 { dim } else { yellow };
+
+    // Memo header (if any): operator-visible state string
+    // published by the `memo:` wrapper. Sits ABOVE the regular
+    // status line in EMPHASIS color so it's hard to miss.
+    let memo = ctx.phase_memo();
+    let memo_header = if memo.is_empty() {
+        String::new()
+    } else {
+        let bold_yellow = if color { "\x1b[1;33m" } else { "" };
+        format!("{depth_indent}{bold_yellow}[[ {memo} ]]{reset}\n")
+    };
+
+    // Two-line layout: break after the progress percentage so
+    // the head line stays narrow (spinner/bar/name/pct) and
+    // the tail line carries the counters and emphasized
+    // metrics. Indentation on the second line aligns roughly
+    // under the activity name. The surface sink
+    // (`LogOnlySink`) handles multi-line region clearing.
+    let mut tmp = String::with_capacity(320);
     let _ = write!(
         &mut tmp,
-        "{depth_indent}{cyan}{spinner}{reset}{bar} {seq_prefix}{activity_name} \
-         {pct:.0}% {rate_str} ok:{ok_pct:.0}% e:{errors} r:{retries} c:{concurrency}\
+        "{memo_header}\
+{depth_indent}{cyan}{spinner}{reset}{bar} {seq_prefix}{bold}{blue}{activity_name}{reset} {pct:.0}%\n\
+{depth_indent}    {dim}{rate_str}{reset} {ok_tone}ok:{ok_pct:.0}%{reset} \
+{err_tone}e:{errors} r:{retries}{reset} {dim}c:{concurrency}{reset}\
 {adapter_status}{batch_info}{chips}{eta}",
     );
-    // The prior implementation lived inside an indented
-    // `format!` macro: Rust's macro multi-line continuation
-    // collapses leading whitespace after `\` to a single
-    // space. Reproduce that here so the output is byte-
-    // identical to the prior eprint!.
-    // (The format! string above is intentionally laid out
-    // so that there are no `\` continuations — every space
-    // is in the literal payload, and chip / adapter /
-    // batch / eta concatenate without inserted whitespace.)
     let len = tmp.len();
     let _ = out.write_str(&tmp);
     len
@@ -205,7 +252,7 @@ fn render_expanded(
     let reset = if color { "\x1b[0m"  } else { "" };
 
     let total_extent = ctx.cycles_total();
-    let started      = ctx.ops_started();
+    let _started     = ctx.ops_started();
     let finished     = ctx.ops_finished();
     let ops_completed= ctx.cycles_completed();
     let successes    = ctx.ops_ok();
@@ -214,8 +261,11 @@ fn render_expanded(
     let elapsed      = ctx.elapsed_secs();
     let concurrency  = ctx.concurrency();
 
+    // See `render_labeled` — pct must use completed cycles so
+    // dispatched-but-not-yet-returned ops don't pin the bar
+    // at 100% during long synchronous waits.
     let pct: f64 = if total_extent > 0 {
-        started as f64 * 100.0 / total_extent as f64
+        ops_completed as f64 * 100.0 / total_extent as f64
     } else { 0.0 };
     let ok_pct: f64 = if ops_completed > 0 {
         successes as f64 * 100.0 / ops_completed as f64
@@ -275,11 +325,12 @@ fn render_compact(
     out: &mut dyn ReadoutBuf,
 ) -> usize {
     let total_extent = ctx.cycles_total();
-    let started      = ctx.ops_started();
     let finished     = ctx.ops_finished();
+    let ops_completed= ctx.cycles_completed();
     let elapsed      = ctx.elapsed_secs();
+    // Pct from completed cycles — see `render_labeled`.
     let pct: f64 = if total_extent > 0 {
-        started as f64 * 100.0 / total_extent as f64
+        ops_completed as f64 * 100.0 / total_extent as f64
     } else {
         0.0
     };
@@ -386,14 +437,68 @@ mod tests {
         // Spinner frame at tick=0 is ⠋. Pct 50%. Rate 50/s.
         assert!(out.starts_with("⠋"),
             "spinner frame missing: {out}");
-        assert!(out.contains(" 50% 50/s ok:100% e:0 r:0 c:1"),
-            "labeled body wrong: {out}");
-        assert!(out.contains(" ETA "),
-            "ETA missing for finite-rate phase: {out}");
+        // Two-line layout: head ends with " 50%\n",
+        // tail begins with the indented counters.
+        assert!(out.contains(" 50%\n"),
+            "two-line break after pct missing: {out:?}");
+        assert!(out.contains("50/s ok:100% e:0 r:0 c:1"),
+            "labeled body wrong: {out:?}");
+        // Time span: `(elapsed/eta)`. Both 1s here (elapsed=1,
+        // remaining=cycles_total/rate=50/50=1s).
+        assert!(out.contains("(1s/1s)"),
+            "elapsed/ETA span missing for finite-rate phase: {out:?}");
+    }
+
+    #[test]
+    fn memo_header_renders_above_status_when_non_empty() {
+        // Memo wrapper publishes "compacting tableX"; the
+        // status readout must surface it as
+        // `[[ compacting tableX ]]` on its own line above the
+        // regular two-line body. Empty memo (default) renders
+        // nothing extra (the other tests guard that path).
+        struct MemoCtx;
+        impl ReadoutContext for MemoCtx {
+            fn subject_name(&self) -> &str { "x" }
+            fn activity_name(&self) -> &str { "x" }
+            fn subject_seq(&self) -> Option<(usize, usize)> { None }
+            fn subject_labels(&self) -> &str { "" }
+            fn cycles_completed(&self) -> u64 { 1 }
+            fn cycles_total(&self) -> u64 { 1 }
+            fn ops_started(&self) -> u64 { 1 }
+            fn ops_finished(&self) -> u64 { 1 }
+            fn ops_ok(&self) -> u64 { 1 }
+            fn errors(&self) -> u64 { 0 }
+            fn retries(&self) -> u64 { 0 }
+            fn concurrency(&self) -> usize { 1 }
+            fn elapsed_secs(&self) -> f64 { 1.0 }
+            fn consumed(&self) -> u64 { 1 }
+            fn status_metric_chips(&self) -> String { String::new() }
+            fn depth_indent(&self) -> &str { "" }
+            fn use_color(&self) -> bool { false }
+            fn event(&self) -> Event { Event::Update }
+            fn refresh_tick(&self) -> u64 { 0 }
+            fn phase_memo(&self) -> &str { "compacting tableX" }
+        }
+        let ctx = MemoCtx;
+        let mut s = String::new();
+        let mut buf = StringBuf::new(&mut s);
+        PhaseStatus.render(
+            &ctx, Lod::Labeled, ContentMode::Value,
+            &ReadoutOptions::new(), &mut buf,
+        );
+        assert!(s.starts_with("[[ compacting tableX ]]\n"),
+            "memo header must lead the output, got: {s:?}");
+        // Body still present below the header.
+        assert!(s.contains("100%"),
+            "regular status body missing: {s:?}");
     }
 
     #[test]
     fn labeled_no_eta_when_no_extent() {
+        // When cycles_total=0 there's no `/ETA` half of the
+        // span; the time pair degenerates to elapsed-only —
+        // `(0s)` here since the test fixture has elapsed=0.
+        // The slash MUST NOT appear in this branch.
         let ctx = TestCtx {
             phase_name: "x".into(),
             activity_name: "x".into(),
@@ -401,8 +506,12 @@ mod tests {
             ..Default::default()
         };
         let out = render(&ctx, Lod::Labeled);
-        assert!(!out.contains("ETA "),
-            "ETA should be suppressed when cycles_total=0: {out}");
+        // The time span itself collapses to elapsed-only;
+        // `(0s)` appears, but no `0s/...` ETA half.
+        assert!(out.contains("(0s)"),
+            "elapsed-only time span missing: {out}");
+        assert!(!out.contains("0s/"),
+            "ETA half should be suppressed when cycles_total=0: {out}");
     }
 
     #[test]
@@ -431,9 +540,13 @@ mod tests {
 
     #[test]
     fn compact_is_short_and_starts_with_spinner() {
+        // Pct is driven by cycles_completed (completed cycles),
+        // NOT ops_started — dispatched-but-not-returned ops
+        // don't count toward the displayed percentage.
         let ctx = TestCtx {
             phase_name: "x".into(),
             cycles_total: 10,
+            cycles_completed: 5,
             ops_started: 5,
             ops_finished: 5,
             elapsed_secs: 1.0,
@@ -443,6 +556,29 @@ mod tests {
         assert!(out.starts_with("⠋"),
             "compact missing spinner: {out}");
         assert_eq!(out, "⠋ 50% 5/s");
+    }
+
+    #[test]
+    fn pct_uses_completed_not_started() {
+        // Regression guard for the off-by-one bug: a single
+        // long-running op is dispatched (ops_started=1) but
+        // hasn't returned yet (ops_finished=0,
+        // cycles_completed=0). Pct must read 0%, not 100%.
+        let ctx = TestCtx {
+            phase_name: "x".into(),
+            cycles_total: 1,
+            cycles_completed: 0,
+            ops_started: 1,
+            ops_finished: 0,
+            elapsed_secs: 5.0,
+            ..Default::default()
+        };
+        let labeled = render(&ctx, Lod::Labeled);
+        assert!(labeled.contains(" 0%\n"),
+            "in-flight op should read 0%, not 100%: {labeled:?}");
+        let compact = render(&ctx, Lod::Compact);
+        assert!(compact.contains(" 0% "),
+            "compact in-flight should also read 0%: {compact:?}");
     }
 
     #[test]

@@ -55,19 +55,38 @@ fn render_labeled_value(
     opts: &ReadoutOptions,
     out: &mut dyn ReadoutBuf,
 ) -> usize {
+    // Color palette per docs/guide/color_style.md:
+    //   [ok] → OK (green), [!!] → ERROR (red),
+    //   [..] → INFO (sky), [  ] → MUTED (dim),
+    //   phase name → bold INFO, duration → MUTED.
+    let color = ctx.use_color();
+    let bold   = if color { "\x1b[1m"  } else { "" };
+    let dim    = if color { "\x1b[2m"  } else { "" };
+    let yellow = if color { "\x1b[33m" } else { "" };
+    let blue   = if color { "\x1b[34m" } else { "" };
+    let green  = if color { "\x1b[32m" } else { "" };
+    let red    = if color { "\x1b[1;31m" } else { "" };
+    let reset  = if color { "\x1b[0m"  } else { "" };
+
     // Status marker mirrors the TUI observer's existing
     // bracket vocabulary — same characters so the
     // post-run summary reads the same whether it routed
     // through the legacy direct emit or through the
     // engine. (Push 8b's whole point.)
     let (marker, suffix) = match ctx.subject_state() {
-        LifecycleState::Completed   => ("[ok]", String::new()),
-        LifecycleState::Running     => ("[..]", " (still running)".to_string()),
-        LifecycleState::Pending     => ("[  ]", " (not run)".to_string()),
-        LifecycleState::Failed(err) => ("[!!]", format!(" ({err})")),
+        LifecycleState::Completed   =>
+            (format!("{green}[ok]{reset}"), String::new()),
+        LifecycleState::Running     =>
+            (format!("{blue}[..]{reset}"),
+             format!(" {dim}(still running){reset}")),
+        LifecycleState::Pending     =>
+            (format!("{dim}[  ]{reset}"),
+             format!(" {dim}(not run){reset}")),
+        LifecycleState::Failed(err) =>
+            (format!("{red}[!!]{reset}"), format!(" ({err})")),
     };
     let seq_part: String = match ctx.subject_seq() {
-        Some((s, t)) => format!("[{s}/{t}] "),
+        Some((s, t)) => format!("{dim}[{s}/{t}]{reset} "),
         None => String::new(),
     };
     let depth_indent = ctx.depth_indent();
@@ -84,18 +103,31 @@ fn render_labeled_value(
     let labels_part = if labels.is_empty() || !show_labels {
         String::new()
     } else {
-        format!(" ({labels})")
+        format!(" {bold}{yellow}({labels}){reset}")
     };
     let elapsed = ctx.elapsed_secs();
     let dur_part = if elapsed > 0.0 {
-        format!(" {elapsed:.2}s")
+        format!(" {dim}{elapsed:.2}s{reset}")
     } else {
         String::new()
     };
-    let mut tmp = String::with_capacity(64);
+
+    // Memo header: phase displays surface the latest published
+    // memo as `[[ <memo> ]]` above the bracket-form row.
+    // Empty memo → no header. Bold yellow per the style guide's
+    // EMPHASIS tier.
+    let memo = ctx.phase_memo();
+    let memo_header = if memo.is_empty() {
+        String::new()
+    } else {
+        let bold_yellow = if color { "\x1b[1;33m" } else { "" };
+        format!("{depth_indent}{bold_yellow}[[ {memo} ]]{reset}\n")
+    };
+
+    let mut tmp = String::with_capacity(160);
     let _ = write!(
         &mut tmp,
-        "{depth_indent}{marker} {seq_part}{phase_name}{labels_part}{dur_part}{suffix}",
+        "{memo_header}{depth_indent}{marker} {seq_part}{bold}{blue}{phase_name}{reset}{labels_part}{dur_part}{suffix}",
     );
     let len = tmp.len();
     let _ = out.write_str(&tmp);
@@ -252,6 +284,54 @@ mod tests {
             );
             assert_eq!(n, 0, "{lod:?} should render zero bytes");
         }
+    }
+
+    #[test]
+    fn colorized_emits_ansi_for_status_and_name() {
+        // When use_color is on, the bracket marker, phase
+        // name, and duration MUST carry ANSI codes per
+        // docs/guide/color_style.md. This is a regression
+        // guard — pre-Push the post-run summary went to the
+        // surface as plain text even on a TTY.
+        struct TestCtxColor;
+        impl ReadoutContext for TestCtxColor {
+            fn subject_name(&self) -> &str { "setup" }
+            fn subject_seq(&self) -> Option<(usize, usize)> { Some((1, 2)) }
+            fn subject_labels(&self) -> &str { "" }
+            fn cycles_completed(&self) -> u64 { 0 }
+            fn cycles_total(&self) -> u64 { 0 }
+            fn ops_ok(&self) -> u64 { 0 }
+            fn errors(&self) -> u64 { 0 }
+            fn retries(&self) -> u64 { 0 }
+            fn concurrency(&self) -> usize { 1 }
+            fn elapsed_secs(&self) -> f64 { 0.5 }
+            fn consumed(&self) -> u64 { 0 }
+            fn status_metric_chips(&self) -> String { String::new() }
+            fn depth_indent(&self) -> &str { "" }
+            fn use_color(&self) -> bool { true }
+            fn event(&self) -> crate::readouts::Event {
+                crate::readouts::Event::PhaseEnd
+            }
+            fn subject_state(&self) -> LifecycleState {
+                LifecycleState::Completed
+            }
+        }
+        let ctx = TestCtxColor;
+        let mut s = String::new();
+        let mut buf = StringBuf::new(&mut s);
+        PhaseSummary.render(
+            &ctx, Lod::Labeled, ContentMode::Value,
+            &ReadoutOptions::new(), &mut buf,
+        );
+        // Green wrapper around the [ok] marker.
+        assert!(s.contains("\x1b[32m[ok]\x1b[0m"),
+            "expected green [ok] marker, got: {s:?}");
+        // Bold + blue around the phase name.
+        assert!(s.contains("\x1b[1m\x1b[34msetup\x1b[0m"),
+            "expected bold-blue phase name, got: {s:?}");
+        // Dim duration tail.
+        assert!(s.contains("\x1b[2m0.50s\x1b[0m"),
+            "expected dim duration, got: {s:?}");
     }
 
     #[test]

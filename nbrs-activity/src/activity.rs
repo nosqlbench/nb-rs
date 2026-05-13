@@ -427,12 +427,15 @@ impl ActivityMetrics {
             for (name, val) in &candidates {
                 if !seen.contains(name.as_str()) && glob_match(pat, name) {
                     seen.insert(name.clone());
-                    out.push(format!(" {name}:{val}"));
+                    let label = chip_display_label(name);
+                    out.push(format!(" {label}:{val}"));
                 }
             }
         }
         out
     }
+
+
 
     /// Collect status counters from all registered dispensers.
     pub fn collect_status_counters(&self) -> Vec<(String, u64)> {
@@ -449,6 +452,22 @@ impl ActivityMetrics {
         counters
     }
 
+}
+
+/// Map a canonical status-chip metric name to its short display
+/// label. Keeps the underlying pattern-matching identity stable
+/// (workloads' `status_metrics: ["latency_*"]` keeps working)
+/// while the operator-facing chip stays terse — `P50` / `P99` /
+/// `Pmax` / `Pmean` instead of `latency_p50` / etc. Identity
+/// passthrough for any name without a shortcut.
+fn chip_display_label(name: &str) -> &str {
+    match name {
+        "latency_p50"  => "P50",
+        "latency_p99"  => "P99",
+        "latency_max"  => "Pmax",
+        "latency_mean" => "Pmean",
+        other => other,
+    }
 }
 
 /// [`DynamicCapture`] adapter for [`ActivityMetrics`]. Captures the
@@ -578,6 +597,14 @@ pub struct Activity {
     /// this changes the tiebreaker used when constraints
     /// leave order ambiguous.
     pub wrap_default_order: Option<Vec<String>>,
+    /// Phase memo — a short operator-visible string that the
+    /// `memo` wrapper publishes via `before:` / `after:`
+    /// templates. Read by the inline-status readout and
+    /// rendered as `[[ <memo> ]]` above the status line when
+    /// non-empty. Lock-free atomic so the inline thread can
+    /// load it every tick without blocking the executor.
+    /// Default empty.
+    pub memo: Arc<arc_swap::ArcSwap<String>>,
 }
 
 /// Invoke [`DriverAdapter::declare_controls`] for each unique adapter
@@ -675,6 +702,7 @@ impl Activity {
             component: None,
             wrappers_override: None,
             wrap_default_order: None,
+            memo: Arc::new(arc_swap::ArcSwap::from_pointee(String::new())),
         }
     }
 
@@ -1104,10 +1132,16 @@ impl Activity {
                         })
                         .collect();
                     if !assignments.is_empty() {
-                        crate::diag!(crate::observer::LogLevel::Info,
+                        // Per-op wrapper assignments are a diagnostic
+                        // useful when chasing a wrapper-composition
+                        // bug, not part of normal operator output.
+                        // `nbrs describe` renders the same stack on
+                        // demand (see nbrs/src/describe.rs); session.log
+                        // still captures this for postmortem.
+                        crate::diag!(crate::observer::LogLevel::Debug,
                             "op '{}' wrappers (innermost → outermost):", template.name);
                         for (i, (_, line)) in assignments.iter().enumerate() {
-                            crate::diag!(crate::observer::LogLevel::Info,
+                            crate::diag!(crate::observer::LogLevel::Debug,
                                 "  {}. {}", i + 1, line);
                         }
                     }
@@ -1158,33 +1192,70 @@ impl Activity {
                                 }
                             }
                             crate::wrapper_registrations::POLL => {
-                                let interval = template.params.get("poll_interval_ms")
-                                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok())
-                                        .or_else(|| v.as_u64()))
-                                    .unwrap_or(1000);
-                                let timeout = template.params.get("timeout_ms")
-                                    .and_then(|v| v.as_str().and_then(|s| s.parse().ok())
-                                        .or_else(|| v.as_u64()))
-                                    .unwrap_or(300_000);
+                                // Poll config reader: `poll:` is either
+                                // a string (mode only, all-defaults) or
+                                // a map (`{mode, interval_ms, timeout_ms,
+                                // max_rows, min_rows, json_path,
+                                // metric_name, max_error_retries}`). All
+                                // poll knobs live UNDER `poll:` — no
+                                // flat `poll_*` prefix keys at op
+                                // level, so the wrapper's namespace
+                                // doesn't collide with adapter fields
+                                // (e.g. HTTP's `request_timeout_ms`).
+                                let poll_val = template.params.get("poll");
+                                let cfg = poll_val.and_then(|v| v.as_object());
+                                let get_u64 = |k: &str, default: u64| -> u64 {
+                                    cfg.and_then(|m| m.get(k))
+                                        .and_then(|v| v.as_u64()
+                                            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())))
+                                        .unwrap_or(default)
+                                };
+                                let get_u32 = |k: &str, default: u32| -> u32 {
+                                    cfg.and_then(|m| m.get(k))
+                                        .and_then(|v| v.as_u64().map(|n| n as u32)
+                                            .or_else(|| v.as_str().and_then(|s| s.parse::<u32>().ok())))
+                                        .unwrap_or(default)
+                                };
+                                let get_str = |k: &str| -> Option<String> {
+                                    cfg.and_then(|m| m.get(k))
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string())
+                                };
+                                let interval = get_u64("interval_ms", 1000);
+                                let timeout = get_u64("timeout_ms", 300_000);
                                 // SRD-03 §"Status-Determination
                                 // Invariant — Retries Within": bounded
                                 // retry budget for retryable inner
                                 // errors. Default 0 (strict). Operators
                                 // raise this when long fixture readiness
                                 // checks tolerate transient blips.
-                                let max_error_retries = template.params.get("poll_max_error_retries")
-                                    .and_then(|v| v.as_str().and_then(|s| s.parse::<u32>().ok())
-                                        .or_else(|| v.as_u64().map(|n| n as u32)))
-                                    .unwrap_or(0);
-                                let metric_name = template.params.get("poll_metric_name")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string());
+                                let max_error_retries = get_u32("max_error_retries", 0);
+                                let metric_name = get_str("metric_name");
+                                // `min_rows` / `max_rows` — completion
+                                // window: poll considered done when
+                                // row count is in the closed interval
+                                // `[min..=max]`. Defaults `min=0, max=0`
+                                // reproduce `await_empty` (exactly 0 =
+                                // done). For "settled to N rows" cases
+                                // (e.g. SAI's `sai_sstable_count == 1`
+                                // after memtable flush + compaction)
+                                // use `min=1, max=1`.
+                                let min_rows = get_u64("min_rows", 0);
+                                let max_rows = get_u64("max_rows", 0);
+                                // `json_path` — optional JSON Pointer
+                                // (RFC 6901, e.g. `/value`) drilled
+                                // into the body before counting. Lets
+                                // the count check address a nested
+                                // field — load-bearing for envelope
+                                // responses like Jolokia's
+                                // `{value, status, …}`.
+                                let json_path = get_str("json_path");
                                 let (d, _pm) = crate::wrappers::PollingDispenser::wrap(
-                                    current.clone(), interval, timeout, max_error_retries, metric_name,
+                                    current.clone(), interval, timeout, max_error_retries, metric_name, min_rows, max_rows, json_path.clone(),
                                 );
                                 crate::diag!(crate::observer::LogLevel::Debug,
-                                    "  op '{}': polling enabled (interval={}ms, timeout={}ms, max_error_retries={})",
-                                    template.name, interval, timeout, max_error_retries);
+                                    "  op '{}': polling enabled (interval={}ms, timeout={}ms, max_error_retries={}, rows=[{}..={}], json_path={:?})",
+                                    template.name, interval, timeout, max_error_retries, min_rows, max_rows, json_path);
                                 current = d;
                                 false
                             }
@@ -1273,6 +1344,43 @@ impl Activity {
                                     }
                                 }
                             }
+                            crate::wrapper_registrations::MEMO => {
+                                // Memo wrapper: parse `memo:` (string
+                                // shorthand or `{before, after}` map),
+                                // wrap with cloned ArcSwap handle.
+                                let (before, after) = match template.params.get("memo") {
+                                    Some(serde_json::Value::String(s)) => {
+                                        // Shorthand: same template for
+                                        // before AND after.
+                                        (Some(s.clone()), Some(s.clone()))
+                                    }
+                                    Some(serde_json::Value::Object(obj)) => {
+                                        let b = obj.get("before")
+                                            .and_then(|v| v.as_str())
+                                            .map(String::from);
+                                        let a = obj.get("after")
+                                            .and_then(|v| v.as_str())
+                                            .map(String::from);
+                                        (b, a)
+                                    }
+                                    _ => (None, None),
+                                };
+                                if before.is_none() && after.is_none() {
+                                    crate::diag!(crate::observer::LogLevel::Warn,
+                                        "op '{}': memo: requires at least one of \
+                                         `before` / `after` (or a string shorthand)",
+                                        template.name);
+                                    false
+                                } else {
+                                    current = crate::wrappers::MemoDispenser::wrap(
+                                        current.clone(),
+                                        before,
+                                        after,
+                                        activity.memo.clone(),
+                                    );
+                                    false
+                                }
+                            }
                             other => {
                                 crate::diag!(crate::observer::LogLevel::Error,
                                     "error: op '{}': resolver returned wrapper `{}` \
@@ -1341,6 +1449,15 @@ impl Activity {
         // fibers finish so the thread terminates and clears its line.
         let progress_flag = Arc::new(AtomicBool::new(true));
         let activity_name = activity.config.name.clone();
+        // The inline-status refresh thread no longer writes
+        // directly to stdout/stderr — it publishes the binder's
+        // rendered status string through the global observer's
+        // actor channel, and the active `DisplaySink` (LogOnly /
+        // TuiSink) owns the surface. The TTY check stays here
+        // because a non-TTY stderr means no interactive console
+        // is consuming the actor's snapshots (no SinkSupervisor
+        // is spawned in `nbrs/src/run.rs` for that case), so
+        // there's no point running the refresh thread.
         let is_stderr_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
         let suppress_progress = adapters.values()
             .any(|a| a.name() == "plotter");
@@ -1352,7 +1469,18 @@ impl Activity {
             let name = &source_for_progress.schema().name;
             format!(" cursor={name}")
         };
-        if is_stderr_tty && total_extent > 1000 && !suppress_progress {
+        // Spawn the inline-status refresh thread for every TTY
+        // phase (was previously gated on `total_extent > 1000`).
+        // Reasoning: the historical threshold was meant to avoid
+        // status-line noise for trivial phases, but it also
+        // suppressed the inline display for long-running single-
+        // op phases (jolokia_compact, schema migrations) where
+        // the memo wrapper's `before:` state is exactly what the
+        // operator needs to see. Phases that finish in <500ms
+        // emit zero ticks because the loop sleeps before its
+        // first emission; phases that run longer get the
+        // two-line readout + memo header live.
+        if is_stderr_tty && !suppress_progress {
             // Spawn the inline progress thread unconditionally
             // (subject to the TTY / extent / adapter guards).
             // The thread gates each emission tick on the live
@@ -1368,6 +1496,7 @@ impl Activity {
             let cursor_name_progress = cursor_name.clone();
             let activity_concurrency = activity.config.concurrency;
             let status_metrics = activity.config.status_metrics.clone();
+            let memo_handle = activity.memo.clone();
             // Build the on_update binder once at spawn time:
             // workload's `on_update:` overrides if any, else
             // the default `phase_status` body. This is the
@@ -1424,6 +1553,7 @@ impl Activity {
                         start_time.elapsed().as_secs_f64(),
                         tick,
                         &status_metrics,
+                        memo_handle.as_ref(),
                     );
                     use crate::readouts::ReadoutBinder;
                     let mut sink = crate::readouts::StringSink::with_capacity(192);
@@ -1444,9 +1574,20 @@ impl Activity {
                         crate::readouts::snapshot::lod_str(crate::readouts::Lod::Labeled),
                         &rendered,
                     );
-                    let cols = terminal_cols().unwrap_or(200);
-                    let truncated = truncate_to_width(&rendered, cols.saturating_sub(1));
-                    eprint!("\r\x1b[K{truncated}");
+                    // Publish the rendered status line through
+                    // the global observer's actor channel; the
+                    // active DisplaySink (LogOnlySink for
+                    // tui=terminal, TuiSink for tui=on) renders
+                    // it as a managed bottom region in lockstep
+                    // with the log stream it produces. No direct
+                    // `print!`/`eprint!` here — two writers on
+                    // one byte stream is what produced the
+                    // multi-line "staggering" pattern, and the
+                    // sink-managed surface is the documented
+                    // architectural fix.
+                    if let Some(obs) = crate::observer::global_observer() {
+                        obs.set_status_line(Some(rendered));
+                    }
                     let _ = cursor_name; // retained for log-file detail; status line stays compact
                 }
             });
@@ -1597,11 +1738,34 @@ impl Activity {
                     last_logged_count = n;
                 }
             } else if stuck_since.elapsed() > std::time::Duration::from_secs(30) {
-                crate::diag!(crate::observer::LogLevel::Warn,
-                    "activity '{}': {} fibers running, {} cycles completed, \
-                     no progress for 30s — likely blocked on adapter response, \
-                     lock, or IO",
-                    activity.config.name, n, cycles);
+                // Distinguish "genuinely stuck" from "fiber is mid-op
+                // on a long synchronous call." The latter case
+                // (jolokia compaction, large schema migrations,
+                // synchronous JMX exec) legitimately blocks one
+                // fiber for many minutes without being a bug.
+                // `ops_started > ops_finished` proves the fiber
+                // is busy in the adapter — log at Debug so the
+                // session.log timeline still records the slope,
+                // but don't surface a Warn that operators read as
+                // "something's wrong."
+                let started = activity.metrics.ops_started
+                    .load(Ordering::Relaxed);
+                let finished = activity.metrics.ops_finished
+                    .load(Ordering::Relaxed);
+                let in_flight = started.saturating_sub(finished);
+                if in_flight > 0 {
+                    crate::diag!(crate::observer::LogLevel::Debug,
+                        "activity '{}': {n} fiber(s), {in_flight} op(s) in flight, \
+                         {cycles} cycles completed, no fiber-count or cycle-count \
+                         change for 30s (long-running op in progress)",
+                        activity.config.name);
+                } else {
+                    crate::diag!(crate::observer::LogLevel::Warn,
+                        "activity '{}': {n} fibers running, {cycles} cycles completed, \
+                         no ops in flight, no progress for 30s — likely blocked on \
+                         lock or IO",
+                        activity.config.name);
+                }
                 stuck_since = std::time::Instant::now();
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1642,15 +1806,19 @@ impl Activity {
                 .collect_status_values(&activity.config.status_metrics)
                 .concat();
             // Clear the in-place progress line ONLY when the
-            // inline progress thread was actually rendering — the
-            // spawn site at line ~980 gates on
-            // `is_stderr_tty && total_extent > 1000`. Without
-            // those conditions there's nothing to clear and the
-            // `\r\x1b[K` would just spurt control codes in
-            // pipelined output.
-            let inline_was_rendering = is_stderr_tty && total_extent > 1000 && !suppress_progress;
+            // inline progress thread was actually rendering. Must
+            // match the spawn gate above (TTY + !suppress) so
+            // pipelined / quiet runs don't emit spurious clear
+            // sequences.
+            let inline_was_rendering = is_stderr_tty && !suppress_progress;
             if inline_was_rendering {
-                eprint!("\r\x1b[K");
+                // Clear the status slot on the actor; the sink
+                // wipes its bottom region on the next tick. No
+                // direct terminal writes from the activity
+                // layer — the sink owns the surface.
+                if let Some(obs) = crate::observer::global_observer() {
+                    obs.set_status_line(None);
+                }
             }
             // Render the ✓ DONE line via the readout engine.
             // SRD-63 / Push 1: the previous inline `format!()`
@@ -1675,6 +1843,7 @@ impl Activity {
                 status_metric_chips: relevancy_str,
                 depth_indent: crate::scene_tree::running_phase_indent(),
                 use_color: crate::observer::use_color(),
+                memo: activity.memo.load().as_str().to_string(),
             };
             // SRD-63 §6.2 / Push 9c: synthesise one final
             // `on_update` tick before the DONE summary. The
@@ -1701,6 +1870,7 @@ impl Activity {
                     elapsed,
                     u64::MAX,  // sentinel: spinner frame doesn't matter at end-of-phase
                     &activity.config.status_metrics,
+                    activity.memo.as_ref(),
                 );
                 let phase_status_default = {
                     let readout = crate::readouts::Registry::lookup("phase_status")
@@ -1836,6 +2006,32 @@ impl Activity {
                         let stats_labels = stats.labels();
                         let k_label = stats_labels.get("k").map(str::to_string);
                         let r_label = stats_labels.get("r").map(str::to_string);
+                        // Generic observability point: a relevancy
+                        // function's per-phase summary has been
+                        // computed and is about to be published
+                        // as `{name}_{stat}` gauges. The trace
+                        // fires for ANY relevancy function — the
+                        // labels carry the publishing dimensions
+                        // (phase, profile, …, k, r, n) from the
+                        // surrounding scope, not from any
+                        // workload-specific knowledge.
+                        if crate::observer::trace_enabled() {
+                            let mut trace_labels = activity_labels.with("n", &n.to_string());
+                            if let Some(k) = &k_label {
+                                trace_labels = trace_labels.with("k", k);
+                            }
+                            if let Some(r) = &r_label {
+                                trace_labels = trace_labels.with("r", r);
+                            }
+                            crate::observer::trace(
+                                &trace_labels,
+                                &format!(
+                                    "event=relevancy.publish fn={name} n={n} \
+                                     mean={mean:.6} p50={p50:.6} p99={p99:.6} \
+                                     min={min:.6} max={max:.6}"
+                                ),
+                            );
+                        }
                         for (stat, val) in [("mean", mean), ("p50", p50), ("p99", p99), ("min", min), ("max", max)] {
                             let mut gauge_labels = activity_labels.with("n", &n.to_string());
                             if let Some(k) = &k_label {
@@ -2166,6 +2362,14 @@ async fn executor_task(
                     // the cell-bound input slot for `<X>`. No-op
                     // when the kernel carries no write-throughs.
                     fiber.commit_op_template_write_throughs_for_idx(template_idx);
+                    // Then pull every captured wire's compute
+                    // chain so side-effecting nodes (log_info,
+                    // log_debug, etc.) actually evaluate. Without
+                    // this, a result-binding whose LHS isn't a
+                    // write-through stays dormant — its log_info
+                    // call (the diagnostic the operator asked
+                    // for) never fires.
+                    fiber.pull_all_op_template_outputs_for_idx(template_idx);
                 }
             }
 
@@ -2177,12 +2381,13 @@ async fn executor_task(
 
 /// Best-effort terminal column count read off stderr (fd 2) via
 /// the `TIOCGWINSZ` ioctl. Returns `None` when stderr isn't a
-/// TTY or the call fails. The inline status line uses this to
-/// truncate to a single visual row, since the `\r\x1b[K`
-/// in-place rewrite only erases from the cursor to the end of
-/// the *current* visual line — anything that wraps once stays
-/// on screen and previous-tick text peeks through underneath.
-fn terminal_cols() -> Option<usize> {
+/// TTY or the call fails. The status renderer (now hosted by
+/// `nbrs-tui::log_only_sink`) uses this to clamp the rendered
+/// status to a single visual row, since a wrap would leave
+/// previous-tick text on screen below the cursor — the in-place
+/// rewrite only erases from the cursor through end of the
+/// current visual line.
+pub fn terminal_cols() -> Option<usize> {
     use std::os::raw::c_int;
     #[repr(C)]
     struct WinSize {
@@ -2245,7 +2450,7 @@ fn glob_match_bytes(pat: &[u8], s: &[u8]) -> bool {
 /// always at a character boundary that's NOT inside an escape
 /// sequence, so we never emit a half-broken `\x1b[3` to the
 /// terminal.
-fn truncate_to_width(s: &str, max_cols: usize) -> String {
+pub fn truncate_to_width(s: &str, max_cols: usize) -> String {
     if max_cols == 0 { return String::new(); }
     let bytes = s.as_bytes();
     let mut visible = 0usize;

@@ -226,11 +226,12 @@ phases:
 #        poll_metric_name: index_build_time_s
       wait_for_index_cass6:
         raw: "SELECT index_name, is_building FROM system_views.indexes WHERE keyspace_name = '{keyspace}' AND index_name = '{table}_meta_idx' AND is_building = true ALLOW FILTERING"
-        poll: await_empty
-        poll_interval_ms: 5000
-        timeout_ms: 600000
-        poll_max_error_retries: 3
-        poll_metric_name: index_build_time_s
+        poll:
+          mode: await_empty
+          interval_ms: 5000
+          timeout_ms: 600000
+          max_error_retries: 3
+          metric_name: index_build_time_s
 
   # ── Data loading (parameterized by {table}, {dataset}:{profile}) ────────────
   # ANN rampup: key + vector only. Used by fulltest, unfiltered.

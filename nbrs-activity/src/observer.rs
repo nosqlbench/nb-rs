@@ -10,6 +10,12 @@
 /// Log level for diagnostic messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
+    /// Highest-volume per-cycle/per-event tracing (recall pipeline,
+    /// adapter call traces). Below `Debug` so the existing file
+    /// sink default (Debug) does not pick up trace traffic. Trace
+    /// events instead route through the [`crate::trace_router`]
+    /// to optionally-filtered per-label files.
+    Trace,
     /// Detailed diagnostics (parse notes, connection info)
     Debug,
     /// Normal operational messages (phase info, metrics paths)
@@ -53,6 +59,22 @@ pub trait RunObserver: Send + Sync {
     /// to a ring buffer in TUI mode. All `eprintln!` in the
     /// runtime should go through this instead.
     fn log(&self, level: LogLevel, message: &str);
+
+    /// Publish (or clear) the latest rendered status line for
+    /// the active phase. Default implementation is a no-op —
+    /// observers that route output through the run-state actor
+    /// (TUI / log-only sinks) override to push a
+    /// `SetStatusLine` mutation; the
+    /// [`StderrObserver`] fallback ignores it.
+    ///
+    /// Producers (the activity's inline-status refresh thread)
+    /// call this once per tick with `Some(rendered)` and once
+    /// at phase end with `None`. The owning sink coordinates
+    /// the surface — clearing and redrawing the status line in
+    /// lockstep with its log-line stream. Calling
+    /// [`Self::log`] never blocks on this and is never
+    /// interleaved with it on the same byte stream.
+    fn set_status_line(&self, _rendered: Option<String>) {}
 
     /// Whether to suppress the inline stderr progress line
     /// (because the TUI is handling display).
@@ -164,6 +186,15 @@ pub fn set_global_observer(observer: Arc<dyn RunObserver>) {
     let _ = GLOBAL_OBSERVER.set(observer);
 }
 
+/// Borrow the installed global observer, if set. Used by code
+/// that needs the actor channel without threading an explicit
+/// observer reference through every call site (e.g. the
+/// activity's inline-status refresh thread publishing into
+/// [`RunObserver::set_status_line`]).
+pub fn global_observer() -> Option<Arc<dyn RunObserver>> {
+    GLOBAL_OBSERVER.get().cloned()
+}
+
 /// Direct the log sink to a file. Opens for append-writes,
 /// installs the [`crate::log_sink`] async writer thread.
 /// Producers thereafter `try_send` and never block — see SRD-02
@@ -254,6 +285,7 @@ pub fn log(level: LogLevel, message: &str) {
     if level >= retain_level() {
         if let Some(sink) = crate::log_sink::global() {
             let tag = match level {
+                LogLevel::Trace => "TRC",
                 LogLevel::Debug => "DBG",
                 LogLevel::Info  => "INF",
                 LogLevel::Warn  => "WRN",
@@ -286,6 +318,9 @@ pub fn log(level: LogLevel, message: &str) {
 pub fn colorize_log_line(level: LogLevel, message: &str) -> String {
     if !use_color() { return message.to_string(); }
     let (color, reset) = match level {
+        // Faintest grey for trace — even more de-emphasized
+        // than debug; rarely reaches console anyway.
+        LogLevel::Trace => ("\x1b[2;90m",   "\x1b[0m"),
         // Dim grey for debug — present but de-emphasized.
         LogLevel::Debug => ("\x1b[2m",      "\x1b[0m"),
         // Default-color for info — the baseline; no
@@ -306,6 +341,38 @@ pub fn colorize_log_line(level: LogLevel, message: &str) -> String {
 macro_rules! diag {
     ($level:expr, $($arg:tt)*) => {
         $crate::observer::log($level, &format!($($arg)*))
+    };
+}
+
+/// Emit a [`LogLevel::Trace`] event carrying the component's
+/// labels through the [`crate::trace_router`]. Returns
+/// immediately when no `--trace=<spec>` was configured (the
+/// router is empty), so the hot-path cost of an unused trace
+/// site is one atomic load + branch.
+///
+/// Trace events DO NOT flow to `session.log` — they are routed
+/// to dedicated trace files configured by `--trace=` so the
+/// main session log stays usable as a Debug-and-up record.
+pub fn trace(labels: &nbrs_metrics::labels::Labels, message: &str) {
+    crate::trace_router::log(labels, message);
+}
+
+/// True iff the trace router has at least one configured sink.
+/// Hot-path guard so callers can skip expensive message
+/// formatting when tracing is off.
+pub fn trace_enabled() -> bool {
+    crate::trace_router::enabled()
+}
+
+/// Format-and-emit a trace event. Same shape as [`diag!`] but
+/// takes a labels handle first and only fires when the trace
+/// router is active.
+#[macro_export]
+macro_rules! trace_event {
+    ($labels:expr, $($arg:tt)*) => {
+        if $crate::observer::trace_enabled() {
+            $crate::observer::trace($labels, &format!($($arg)*));
+        }
     };
 }
 

@@ -14,4 +14,4 @@ name = "query-label-analysis"
 path = "src/query_label_analysis.rs"
 
 [dependencies]
-vectordata = "1.0.2"
+vectordata = "1.1.1"

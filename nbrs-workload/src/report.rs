@@ -130,6 +130,19 @@ pub struct ReportItem {
     /// keep their existing single-image behaviour.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub with_table: bool,
+    /// Plot-only directive: when non-empty, the renderer
+    /// emits one companion table per distinct value tuple
+    /// of the listed label keys. Each table is filtered to
+    /// rows whose labels match that tuple, and gets its own
+    /// markdown section / standalone file named with the
+    /// tuple values appended.
+    ///
+    /// Set via `with-tables: [label1, label2, …]` in the
+    /// plot body. Independent of (and composes with)
+    /// `with-table: true` — the singular form still emits
+    /// a single un-faceted table when set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub with_tables: Vec<String>,
 }
 
 /// Kind discriminator. Identifies which renderer owns the item.
@@ -269,6 +282,19 @@ impl ReportItem {
             out.push_str("  label \"");
             out.push_str(&label.replace('\\', "\\\\").replace('"', "\\\""));
             out.push_str("\"\n");
+        }
+        if let Some(target) = &self.target_file {
+            out.push_str("  target ");
+            out.push_str(target);
+            out.push('\n');
+        }
+        if self.with_table {
+            out.push_str("  with-table true\n");
+        }
+        if !self.with_tables.is_empty() {
+            out.push_str("  with-tables [");
+            out.push_str(&self.with_tables.join(", "));
+            out.push_str("]\n");
         }
 
         // Style scalars in declaration order from the vocab
@@ -464,6 +490,20 @@ pub struct ParsedReport {
     pub warnings: Vec<String>,
 }
 
+/// Parse a single persisted-form report item — header line
+/// (`<kind> <name>`) followed by indented directive lines, as
+/// produced by [`ReportItem::to_yaml_directive_string`]. Used by
+/// the session-db fallback path in `nbrs report` so the
+/// directive-form knowledge lives in one place.
+pub fn parse_persisted_item(body: &str) -> Result<ReportItem, String> {
+    let mut warnings: Vec<String> = Vec::new();
+    let mut text_counter: usize = 0;
+    let group = parse_group("__persisted__", body, &mut warnings, &mut text_counter)?;
+    group.items.into_iter().next().ok_or_else(|| {
+        "persisted report item body did not yield any item".to_string()
+    })
+}
+
 fn parse_group(
     name: &str,
     body: &str,
@@ -651,6 +691,7 @@ impl PartialItem {
             body: String::new(),
             target_file: None,
             with_table: false,
+            with_tables: Vec::new(),
         };
 
         // Text items: body is verbatim markdown. Pull out a
@@ -688,6 +729,52 @@ impl PartialItem {
             }
             if let Some(rest) = strip_directive_keyword(line, "as") {
                 item.as_stem = Some(rest.trim().to_string());
+                continue;
+            }
+            // `target <filename>` — per-item override that pins
+            // the output markdown file independently of any
+            // surrounding `file <filename>` scope. Used by the
+            // persisted form (runner emits it for every item so
+            // the round-trip through the db preserves the
+            // target the workload's `file` scope assigned).
+            if let Some(rest) = strip_directive_keyword(line, "target") {
+                item.target_file = Some(rest.trim().to_string());
+                continue;
+            }
+            // `with-tables: [label1, label2, …]` — plot-only
+            // multi-table fan-out. Emits one companion
+            // table per distinct value tuple of the listed
+            // labels. Comes before `with-table` matching so
+            // the plural form isn't shadowed by the
+            // prefix-trimmed singular.
+            if let Some(rest) = strip_directive_keyword(line, "with-tables") {
+                let trimmed = rest.trim().trim_matches(':').trim();
+                let inner = trimmed.strip_prefix('[')
+                    .and_then(|s| s.strip_suffix(']'))
+                    .ok_or_else(|| format!(
+                        "report.{}:{} `with-tables`: expected `[label1, label2, …]`, got `{trimmed}`",
+                        self.group, self.line_no,
+                    ))?;
+                let labels: Vec<String> = inner.split(',')
+                    .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if labels.is_empty() {
+                    return Err(format!(
+                        "report.{}:{} `with-tables`: list is empty — drop the directive \
+                         or list one or more label keys",
+                        self.group, self.line_no,
+                    ));
+                }
+                if !matches!(self.kind, Kind::Plot) {
+                    warnings.push(format!(
+                        "report.{}:{} item '{}' uses `with-tables` but is a {}; \
+                         only plots can have a faceted companion table.",
+                        self.group, self.line_no, item.name, item.kind.as_str(),
+                    ));
+                } else {
+                    item.with_tables = labels;
+                }
                 continue;
             }
             // `with-table: true|false` — plot-only flag
@@ -762,8 +849,15 @@ fn strip_directive_keyword<'a>(line: &'a str, kw: &str) -> Option<&'a str> {
     let line = line.trim_start();
     if let Some(rest) = line.strip_prefix(kw) {
         let next = rest.chars().next();
-        if next.is_none() || next == Some(' ') || next == Some('\t') || next == Some('=') {
-            return Some(rest.trim_start_matches(|c: char| c == ' ' || c == '\t' || c == '='));
+        if next.is_none()
+            || next == Some(' ')
+            || next == Some('\t')
+            || next == Some('=')
+            || next == Some(':')
+        {
+            return Some(rest.trim_start_matches(|c: char| {
+                c == ' ' || c == '\t' || c == '=' || c == ':'
+            }));
         }
     }
     None
@@ -1102,6 +1196,55 @@ empty_block: ""
 "#);
         assert_eq!(p.report.groups.len(), 1);
         assert!(p.warnings.iter().any(|w| w.contains("empty_block")));
+    }
+
+    #[test]
+    fn parse_persisted_item_strips_with_table_from_body() {
+        // Verbatim shape produced by `to_yaml_directive_string`
+        // and written to `session_metadata.report.<name>`.
+        // Lines start at column 0 (no indentation in the
+        // persisted form). The plot must survive a round-trip
+        // with `with_table=true` and no `with-table` line in
+        // the body.
+        let body = "plot recall_1_mean
+label \"ALL 1-recall@R, oracles & PVS\"
+target oracles_report.md
+legend: br
+x: r
+y1: avg(recall_mean{k=\"1\"}) by (k,r)
+y-ranges: [[0.0,1.0]]
+with-table: true";
+        let item = parse_persisted_item(body)
+            .expect("parse_persisted_item should succeed");
+        assert_eq!(item.name, "recall_1_mean");
+        assert!(item.with_table, "with_table should be set");
+        assert!(
+            !item.body.contains("with-table"),
+            "body should not contain with-table line; got: {:?}",
+            item.body,
+        );
+    }
+
+    #[test]
+    fn with_table_colon_form_consumed_not_in_body() {
+        // Regression: the YAML colon form `with-table: true` used
+        // to fall through `strip_directive_keyword` (which only
+        // accepted space/tab/`=` separators), leaving the line in
+        // `item.body`. The plot renderer then saw it as an
+        // unknown directive and failed every plot it touched.
+        let p = parse(r#"
+g: |
+  plot p1
+    over limit
+    with-table: true
+"#);
+        let item = &p.report.groups[0].items[0];
+        assert!(item.with_table, "with-table flag should be set");
+        assert!(
+            !item.body.contains("with-table"),
+            "with-table line should be stripped from body, got: {:?}",
+            item.body,
+        );
     }
 
     #[test]

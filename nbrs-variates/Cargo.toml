@@ -21,7 +21,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 petgraph = "0.8"
 layout-rs = "0.1"
-vectordata = { version = "1.0.2", optional = true }
+vectordata = { version = "1.1.1", optional = true }
 cranelift-jit = { version = "0.116", optional = true }
 cranelift-module = { version = "0.116", optional = true }
 cranelift-codegen = { version = "0.116", optional = true }

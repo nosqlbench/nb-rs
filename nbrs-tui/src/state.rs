@@ -293,6 +293,25 @@ pub struct RunState {
 
     /// Set to true when the run is complete.
     pub finished: bool,
+
+    /// Latest rendered status line for the active phase.
+    /// Owned by the [`crate::display_sink::DisplaySink`] consumer
+    /// (currently [`crate::log_only_sink::LogOnlySink`]) as a
+    /// managed bottom region. Producer is the activity's inline-
+    /// status thread, which sends
+    /// [`crate::run_state_actor::RunStateCmd::SetStatusLine`]
+    /// once per refresh tick via the observer's actor handle.
+    /// `None` between phases.
+    ///
+    /// Why this lives on the actor: keeping the status renderer
+    /// off the wire (no direct `eprint!`/`print!` from the
+    /// activity layer) means the sink can coordinate the status
+    /// line with the log stream it's also producing — clearing
+    /// and redrawing as a single owner of the rendering surface.
+    /// Two writers on the same byte stream is what produces the
+    /// "staggering" stale-row pattern we hit on multi-line
+    /// status renders; one writer eliminates it by construction.
+    pub status_render: Option<String>,
 }
 
 impl RunState {
@@ -331,6 +350,7 @@ impl RunState {
             p99_history: Vec::new(),
             p999_history: Vec::new(),
             finished: false,
+            status_render: None,
         }
     }
 

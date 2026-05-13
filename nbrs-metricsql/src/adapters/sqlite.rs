@@ -8,15 +8,20 @@
 //! # Schema contract
 //!
 //! Mirrors the writer-side schema in
-//! `nbrs-metrics/src/reporters/sqlite.rs::create_schema`:
+//! `nbrs-metrics/src/reporters/sqlite.rs::create_schema`
+//! (post-cutover, fully denormalised — no `label_set`):
 //!
 //! - `metric_family(id, name, type, unit, help)` —
 //!   `type` ∈ `{"counter", "gauge", "summary"}`.
-//! - `metric_instance(id, family_id, label_set_id, spec)` —
-//!   one row per (family, label-set) combination.
-//! - `label_set_entry(set_id, key_id, value_id)`,
-//!   `label_key(id, key)`, `label_value(id, value)` —
-//!   normalized label storage.
+//! - `metric_instance(id, family_id, spec UNIQUE)` —
+//!   `spec` is the OpenMetrics-canonical sample identifier
+//!   `name{k="v",…}` (sorted by key). Two logical label sets
+//!   that are equal as a mapping produce equal spec text and
+//!   resolve to the same instance row.
+//! - `instance_label(instance_id, key, value)` —
+//!   one row per label pair, including `__name__` (so
+//!   queries filter on metric family the same way they
+//!   filter on any other dimension).
 //! - `sample_value(instance_id, timestamp_ms, interval_ms,
 //!   count, sum, min, max, mean, stddev, p50..p999)` —
 //!   one row per (instance, sample). Per `metric_family.type`
@@ -25,9 +30,9 @@
 //!     - `gauge`:   `mean` only
 //!     - `summary`: all stat columns
 //!
-//! Indexes added in SRD-47 follow-up keep the read paths
-//! O(log N) per matcher; without them every fetch is a full
-//! scan of `label_set_entry` and `sample_value`.
+//! Indexes: `instance_label(key, value, instance_id)` covers
+//! matcher resolution; `instance_label(instance_id)` covers
+//! per-instance label materialisation.
 //!
 //! # Metric naming convention
 //!
@@ -250,19 +255,19 @@ impl DataSource for SqliteDataSource {
         let other_matchers: Vec<&Matcher> = matchers.iter()
             .filter(|m| m.label != "__name__")
             .collect();
-        let label_set_filter = label_set_filter_clause(&other_matchers)?;
+        let label_filter = instance_label_filter_clause(&other_matchers)?;
 
-        // 3. JOIN to instance + sample_value. Single query
-        //    grouped per instance; we materialize labels in
-        //    a follow-up query per emitted instance.
+        // 3. JOIN to sample_value. Single query grouped per
+        //    instance; per-instance labels are materialised
+        //    in a follow-up query.
         let stat_col = resolved.stat_column;
         let sql = format!(
-            "SELECT mi.id, mi.label_set_id, sv.timestamp_ms, sv.{stat_col} \
+            "SELECT mi.id, sv.timestamp_ms, sv.{stat_col} \
              FROM metric_instance mi \
              JOIN sample_value sv ON sv.instance_id = mi.id \
              WHERE mi.family_id = ?1 \
                AND sv.timestamp_ms >= ?2 AND sv.timestamp_ms <= ?3 \
-               {label_set_filter} \
+               {label_filter} \
              ORDER BY mi.id, sv.timestamp_ms"
         );
 
@@ -286,42 +291,32 @@ impl DataSource for SqliteDataSource {
             .map_err(|e| DataSourceError::new(format!("query fetch: {e}")))?;
         let mut out: Vec<Series> = Vec::new();
         let mut current_instance_id: Option<i64> = None;
-        let mut current_label_set_id: i64 = 0;
         let mut current_samples: Vec<Sample> = Vec::new();
 
         while let Some(row) = rows.next()
             .map_err(|e| DataSourceError::new(format!("step fetch: {e}")))? {
             let instance_id: i64 = row.get(0).map_err(|e|
                 DataSourceError::new(format!("row.get(0): {e}")))?;
-            let label_set_id: i64 = row.get(1).map_err(|e|
+            let timestamp_ms: i64 = row.get(1).map_err(|e|
                 DataSourceError::new(format!("row.get(1): {e}")))?;
-            let timestamp_ms: i64 = row.get(2).map_err(|e|
-                DataSourceError::new(format!("row.get(2): {e}")))?;
-            // The stat column may be NULL for type-mismatched
-            // queries (e.g. `cpu_load_p99` against a gauge).
-            // Treat NULL as NaN so reducers naturally skip.
-            let value: f64 = row.get::<_, Option<f64>>(3)
-                .map_err(|e| DataSourceError::new(format!("row.get(3): {e}")))?
+            let value: f64 = row.get::<_, Option<f64>>(2)
+                .map_err(|e| DataSourceError::new(format!("row.get(2): {e}")))?
                 .unwrap_or(f64::NAN);
 
             if Some(instance_id) != current_instance_id {
-                // Flush the previous instance.
                 if let Some(prev) = current_instance_id.take() {
-                    let _ = prev;
                     out.push(materialize_series(
-                        &conn, current_label_set_id,
+                        &conn, prev,
                         &resolved.virtual_name, std::mem::take(&mut current_samples),
                     )?);
                 }
                 current_instance_id = Some(instance_id);
-                current_label_set_id = label_set_id;
             }
             current_samples.push(Sample { timestamp_ms, value });
         }
-        // Final flush.
-        if current_instance_id.is_some() {
+        if let Some(last) = current_instance_id {
             out.push(materialize_series(
-                &conn, current_label_set_id,
+                &conn, last,
                 &resolved.virtual_name, current_samples,
             )?);
         }
@@ -371,20 +366,25 @@ impl MetricCatalog for SqliteDataSource {
         let mut keys: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
 
+        // `__name__` lives in `instance_label` for matcher
+        // uniformity (so `{__name__="x"}` works the same way
+        // as any other label filter), but the catalog's
+        // `label_keys()` enumerates dimensional labels — the
+        // metric family name surfaces through
+        // `metric_families()` instead.
         let sql = match family_filter {
-            // Restrict to label keys observed on instances
-            // belonging to the named family.
             Some(_) => {
-                "SELECT DISTINCT lk.key \
-                 FROM label_key lk \
-                 JOIN label_set_entry lse ON lse.key_id = lk.id \
-                 JOIN metric_instance mi ON mi.label_set_id = lse.set_id \
+                "SELECT DISTINCT il.key \
+                 FROM instance_label il \
+                 JOIN metric_instance mi ON mi.id = il.instance_id \
                  JOIN metric_family mf ON mf.id = mi.family_id \
-                 WHERE mf.name = ?1 \
-                 ORDER BY lk.key"
+                 WHERE mf.name = ?1 AND il.key != '__name__' \
+                 ORDER BY il.key"
             }
             None => {
-                "SELECT key FROM label_key ORDER BY key"
+                "SELECT DISTINCT key FROM instance_label \
+                 WHERE key != '__name__' \
+                 ORDER BY key"
             }
         };
 
@@ -416,22 +416,17 @@ impl MetricCatalog for SqliteDataSource {
             .map_err(|_| DataSourceError::new("sqlite mutex poisoned"))?;
         let sql = match family_filter {
             Some(_) => {
-                "SELECT DISTINCT lv.value \
-                 FROM label_value lv \
-                 JOIN label_set_entry lse ON lse.value_id = lv.id \
-                 JOIN label_key lk ON lk.id = lse.key_id \
-                 JOIN metric_instance mi ON mi.label_set_id = lse.set_id \
+                "SELECT DISTINCT il.value \
+                 FROM instance_label il \
+                 JOIN metric_instance mi ON mi.id = il.instance_id \
                  JOIN metric_family mf ON mf.id = mi.family_id \
-                 WHERE lk.key = ?1 AND mf.name = ?2 \
-                 ORDER BY lv.value"
+                 WHERE il.key = ?1 AND mf.name = ?2 \
+                 ORDER BY il.value"
             }
             None => {
-                "SELECT DISTINCT lv.value \
-                 FROM label_value lv \
-                 JOIN label_set_entry lse ON lse.value_id = lv.id \
-                 JOIN label_key lk ON lk.id = lse.key_id \
-                 WHERE lk.key = ?1 \
-                 ORDER BY lv.value"
+                "SELECT DISTINCT value FROM instance_label \
+                 WHERE key = ?1 \
+                 ORDER BY value"
             }
         };
         let mut stmt = conn.prepare(sql)
@@ -480,30 +475,21 @@ impl MetricCatalog for SqliteDataSource {
             .filter(|m| m.label != "__name__")
             .collect();
 
-        // Reuse the same label-set filter shape `fetch` uses.
-        let label_set_filter = label_set_filter_clause(&other_matchers)?;
+        let label_filter = instance_label_filter_clause(&other_matchers)?;
 
         let sql_with_family = format!(
-            "SELECT mi.label_set_id, mf.name \
-             FROM metric_instance mi \
-             JOIN metric_family mf ON mf.id = mi.family_id \
+            "SELECT mi.id FROM metric_instance mi \
              WHERE mi.family_id = ?1 \
-             {label_set_filter} \
-             ORDER BY mi.label_set_id"
+             {label_filter} \
+             ORDER BY mi.id"
         );
         let sql_no_family = format!(
-            "SELECT mi.label_set_id, mf.name \
-             FROM metric_instance mi \
-             JOIN metric_family mf ON mf.id = mi.family_id \
+            "SELECT mi.id FROM metric_instance mi \
              WHERE 1=1 \
-             {label_set_filter} \
-             ORDER BY mi.label_set_id"
+             {label_filter} \
+             ORDER BY mi.id"
         );
-
-        let (sql, has_family) = match &resolved {
-            Some(_) => (sql_with_family, true),
-            None => (sql_no_family, false),
-        };
+        let sql = if resolved.is_some() { sql_with_family } else { sql_no_family };
 
         let mut params: Vec<Value> = Vec::new();
         if let Some(r) = &resolved {
@@ -514,24 +500,30 @@ impl MetricCatalog for SqliteDataSource {
             params.push(Value::Text(m.value.clone()));
         }
 
-        // Resolve label_set_id → labels.
         let mut stmt = conn.prepare(&sql)
             .map_err(|e| DataSourceError::new(format!("prepare series: {e}")))?;
         let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            r.get::<_, i64>(0)
         }).map_err(|e| DataSourceError::new(format!("query series: {e}")))?;
 
         let mut out = Vec::new();
         for row in rows {
-            let (set_id, family_name) = row
+            let instance_id = row
                 .map_err(|e| DataSourceError::new(format!("decode series row: {e}")))?;
-            let mut labels = materialize_label_set(&conn, set_id)?;
-            // Inject __name__ so callers can reconstruct the
-            // selector verbatim.
-            labels.insert(0, ("__name__".into(), family_name));
+            // `__name__` is just another row in instance_label
+            // (the writer stores it canonically); pull labels
+            // sorted, then promote `__name__` to first
+            // position so the trait's caller sees the
+            // OpenMetrics convention up front.
+            let mut labels = materialize_instance_labels(&conn, instance_id)?;
+            if let Some(pos) = labels.iter().position(|(k, _)| k == "__name__") {
+                if pos != 0 {
+                    let pair = labels.remove(pos);
+                    labels.insert(0, pair);
+                }
+            }
             out.push(labels);
         }
-        let _ = has_family; // suppress unused-var lint
         Ok(out)
     }
 
@@ -562,33 +554,31 @@ impl MetricCatalog for SqliteDataSource {
         let other_matchers: Vec<&Matcher> = matchers.iter()
             .filter(|m| m.label != "__name__")
             .collect();
-        let label_set_filter = label_set_filter_clause(&other_matchers)?;
+        let label_filter = instance_label_filter_clause(&other_matchers)?;
 
         let (start_ms, end_ms) = time_range.unwrap_or((i64::MIN, i64::MAX));
 
         let sql_with_family = format!(
-            "SELECT mi.id, mi.label_set_id, mf.name, \
+            "SELECT mi.id, \
                     e.sample_timestamp_ms, e.value, \
                     e.timestamp_ms, e.labels_spec \
              FROM exemplar e \
              JOIN metric_instance mi ON mi.id = e.instance_id \
-             JOIN metric_family mf ON mf.id = mi.family_id \
              WHERE mi.family_id = ?1 \
                AND e.sample_timestamp_ms >= ?2 \
                AND e.sample_timestamp_ms <= ?3 \
-               {label_set_filter} \
+               {label_filter} \
              ORDER BY e.sample_timestamp_ms"
         );
         let sql_no_family = format!(
-            "SELECT mi.id, mi.label_set_id, mf.name, \
+            "SELECT mi.id, \
                     e.sample_timestamp_ms, e.value, \
                     e.timestamp_ms, e.labels_spec \
              FROM exemplar e \
              JOIN metric_instance mi ON mi.id = e.instance_id \
-             JOIN metric_family mf ON mf.id = mi.family_id \
              WHERE e.sample_timestamp_ms >= ?1 \
                AND e.sample_timestamp_ms <= ?2 \
-               {label_set_filter} \
+               {label_filter} \
              ORDER BY e.sample_timestamp_ms"
         );
 
@@ -615,21 +605,25 @@ impl MetricCatalog for SqliteDataSource {
             .map_err(|e| DataSourceError::new(format!("prepare exemplars: {e}")))?;
         let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
             Ok((
-                r.get::<_, i64>(1)?, // label_set_id
-                r.get::<_, String>(2)?, // family name
-                r.get::<_, i64>(3)?, // sample_timestamp_ms
-                r.get::<_, f64>(4)?, // value
-                r.get::<_, Option<i64>>(5)?, // timestamp_ms
-                r.get::<_, String>(6)?, // labels_spec
+                r.get::<_, i64>(0)?, // instance_id
+                r.get::<_, i64>(1)?, // sample_timestamp_ms
+                r.get::<_, f64>(2)?, // value
+                r.get::<_, Option<i64>>(3)?, // timestamp_ms
+                r.get::<_, String>(4)?, // labels_spec
             ))
         }).map_err(|e| DataSourceError::new(format!("query exemplars: {e}")))?;
 
         let mut out = Vec::new();
         for row in rows {
-            let (set_id, fname, sample_ts, value, ts, labels_spec) = row
+            let (instance_id, sample_ts, value, ts, labels_spec) = row
                 .map_err(|e| DataSourceError::new(format!("decode exemplar: {e}")))?;
-            let mut series = materialize_label_set(&conn, set_id)?;
-            series.insert(0, ("__name__".into(), fname));
+            let mut series = materialize_instance_labels(&conn, instance_id)?;
+            if let Some(pos) = series.iter().position(|(k, _)| k == "__name__") {
+                if pos != 0 {
+                    let pair = series.remove(pos);
+                    series.insert(0, pair);
+                }
+            }
             let labels = parse_labels_spec(&labels_spec);
             out.push(ExemplarPoint {
                 series,
@@ -691,22 +685,19 @@ fn parse_labels_spec(spec: &str) -> Vec<(String, String)> {
     out
 }
 
-/// Helper: read every (key, value) entry in `label_set_id`'s
-/// label set into a sorted Vec. Mirrors the `materialize_series`
-/// helper but returns just the labels, no samples.
-fn materialize_label_set(
+/// Read every label pair for an instance into a sorted Vec.
+/// Post-cutover the labels live denormalised on
+/// `instance_label`, including `__name__`.
+fn materialize_instance_labels(
     conn: &Connection,
-    label_set_id: i64,
+    instance_id: i64,
 ) -> Result<Vec<(String, String)>, DataSourceError> {
-    let mut stmt = conn.prepare(
-        "SELECT lk.key, lv.value \
-         FROM label_set_entry lse \
-         JOIN label_key lk ON lk.id = lse.key_id \
-         JOIN label_value lv ON lv.id = lse.value_id \
-         WHERE lse.set_id = ?1 \
-         ORDER BY lk.key",
+    let mut stmt = conn.prepare_cached(
+        "SELECT key, value FROM instance_label \
+         WHERE instance_id = ?1 \
+         ORDER BY key",
     ).map_err(|e| DataSourceError::new(format!("prepare label set: {e}")))?;
-    let rows = stmt.query_map([label_set_id], |r| {
+    let rows = stmt.query_map([instance_id], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
     }).map_err(|e| DataSourceError::new(format!("query label set: {e}")))?;
     let mut out = Vec::new();
@@ -849,10 +840,11 @@ const STAT_SUFFIXES: &[StatSuffix] = &[
 ];
 
 /// Build the SQL fragment that narrows by label matchers.
-/// Returns `""` when there are no non-`__name__` matchers
-/// (an unrestricted family scan). Otherwise produces
-/// `AND mi.label_set_id IN (... INTERSECT ...)`.
-fn label_set_filter_clause(matchers: &[&Matcher])
+/// Returns `""` when there are no non-`__name__` matchers.
+/// Otherwise produces `AND mi.id IN (... INTERSECT ...)` —
+/// one subquery per matcher hits the
+/// `instance_label(key, value, instance_id)` covering index.
+fn instance_label_filter_clause(matchers: &[&Matcher])
     -> Result<String, DataSourceError>
 {
     if matchers.is_empty() { return Ok(String::new()); }
@@ -860,61 +852,36 @@ fn label_set_filter_clause(matchers: &[&Matcher])
     for (i, m) in matchers.iter().enumerate() {
         let kparam = i * 2 + 4;  // 1, 2, 3 are family_id + ts range
         let vparam = i * 2 + 5;
-        // Regex matchers route through a connection-scoped
-        // `REGEXP(pattern, value)` scalar function registered
-        // at adapter open (see `register_regexp`). The
-        // function anchors the pattern with `^(?:…)$` so
-        // metricsql's full-string semantics match — e.g.,
-        // `profile=~"label.*"` matches `label_00` but not
-        // `prefix_label_00`.
         let cmp_clause = match m.op {
-            MatcherOp::Eq => format!("k.key = ?{kparam} AND v.value = ?{vparam}"),
-            MatcherOp::Ne => format!("k.key = ?{kparam} AND v.value != ?{vparam}"),
-            MatcherOp::EqRegex => format!("k.key = ?{kparam} AND v.value REGEXP ?{vparam}"),
-            MatcherOp::NeRegex => format!("k.key = ?{kparam} AND NOT (v.value REGEXP ?{vparam})"),
+            MatcherOp::Eq      => format!("il.key = ?{kparam} AND il.value = ?{vparam}"),
+            MatcherOp::Ne      => format!("il.key = ?{kparam} AND il.value != ?{vparam}"),
+            MatcherOp::EqRegex => format!("il.key = ?{kparam} AND il.value REGEXP ?{vparam}"),
+            MatcherOp::NeRegex => format!("il.key = ?{kparam} AND NOT (il.value REGEXP ?{vparam})"),
         };
         parts.push(format!(
-            "SELECT lse.set_id FROM label_set_entry lse \
-             JOIN label_key k ON k.id = lse.key_id \
-             JOIN label_value v ON v.id = lse.value_id \
-             WHERE {cmp_clause}"
+            "SELECT il.instance_id FROM instance_label il WHERE {cmp_clause}"
         ));
     }
-    Ok(format!(" AND mi.label_set_id IN ({})", parts.join(" INTERSECT ")))
+    Ok(format!(" AND mi.id IN ({})", parts.join(" INTERSECT ")))
 }
 
-/// Build the `Series.labels` for a result instance: every
-/// `(key, value)` from its `label_set_entry`, plus the
-/// virtual metric name as `__name__`.
+/// Build the `Series.labels` for an instance: every label
+/// row, with `__name__` promoted to the first slot per the
+/// trait contract. Uses `materialize_instance_labels` so the
+/// single materialiser stays the chokepoint.
 fn materialize_series(
     conn: &Connection,
-    label_set_id: i64,
+    instance_id: i64,
     virtual_name: &str,
     samples: Vec<Sample>,
 ) -> Result<Series, DataSourceError> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT k.key, v.value \
-         FROM label_set_entry lse \
-         JOIN label_key k ON k.id = lse.key_id \
-         JOIN label_value v ON v.id = lse.value_id \
-         WHERE lse.set_id = ?1 \
-         ORDER BY k.key"
-    ).map_err(|e| DataSourceError::new(format!("prepare materialize: {e}")))?;
-
-    let mut labels: Vec<(String, String)> = Vec::new();
-    // Canonical `__name__` first per the trait contract.
-    labels.push(("__name__".to_string(), virtual_name.to_string()));
-
-    let row_iter = stmt.query_map(
-        rusqlite::params![label_set_id],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    ).map_err(|e| DataSourceError::new(format!("query materialize: {e}")))?;
-
-    for r in row_iter {
-        let (k, v) = r.map_err(|e|
-            DataSourceError::new(format!("row materialize: {e}")))?;
-        labels.push((k, v));
-    }
+    let mut labels = materialize_instance_labels(conn, instance_id)?;
+    // Replace any stored `__name__` with the virtual name
+    // (suffix-stripping resolves `latency_p99` → family
+    // `latency` + stat `p99`; we want callers to see the
+    // virtual name they queried). Promote to first slot.
+    labels.retain(|(k, _)| k != "__name__");
+    labels.insert(0, ("__name__".to_string(), virtual_name.to_string()));
     Ok(Series { labels, samples })
 }
 
@@ -937,30 +904,19 @@ mod tests {
                 help TEXT,
                 UNIQUE(name, type)
             );
-            CREATE TABLE label_key (
-                id INTEGER PRIMARY KEY,
-                key TEXT NOT NULL UNIQUE
-            );
-            CREATE TABLE label_value (
-                id INTEGER PRIMARY KEY,
-                value TEXT NOT NULL UNIQUE
-            );
-            CREATE TABLE label_set (
-                id INTEGER PRIMARY KEY,
-                hash INTEGER NOT NULL UNIQUE
-            );
-            CREATE TABLE label_set_entry (
-                set_id INTEGER NOT NULL,
-                key_id INTEGER NOT NULL,
-                value_id INTEGER NOT NULL
-            );
             CREATE TABLE metric_instance (
                 id INTEGER PRIMARY KEY,
                 family_id INTEGER NOT NULL,
-                label_set_id INTEGER NOT NULL,
-                spec TEXT,
-                UNIQUE(family_id, label_set_id)
+                spec TEXT NOT NULL UNIQUE
             );
+            CREATE TABLE instance_label (
+                instance_id INTEGER NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY (instance_id, key)
+            );
+            CREATE INDEX idx_instance_label_kv
+                ON instance_label(key, value, instance_id);
             CREATE TABLE sample_value (
                 instance_id INTEGER NOT NULL,
                 timestamp_ms INTEGER NOT NULL,
@@ -974,15 +930,16 @@ mod tests {
         conn
     }
 
-    /// Insert a family + label set + instance, returning the
-    /// instance id so the caller can attach samples.
+    /// Insert a family + instance with the supplied labels.
+    /// Mirrors the post-cutover writer: `__name__` is stored
+    /// in `instance_label` alongside every other pair; the
+    /// canonical spec drives `metric_instance.spec`.
     fn make_instance(
         conn: &Connection,
         family_name: &str,
         family_type: &str,
         labels: &[(&str, &str)],
     ) -> i64 {
-        // Family.
         conn.execute(
             "INSERT OR IGNORE INTO metric_family (name, type) VALUES (?1, ?2)",
             params![family_name, family_type]).unwrap();
@@ -991,47 +948,38 @@ mod tests {
             params![family_name, family_type],
             |r| r.get(0)).unwrap();
 
-        // Label keys / values.
-        let mut entries: Vec<(i64, i64)> = Vec::new();
-        for (k, v) in labels {
-            conn.execute("INSERT OR IGNORE INTO label_key (key) VALUES (?1)",
-                params![k]).unwrap();
-            conn.execute("INSERT OR IGNORE INTO label_value (value) VALUES (?1)",
-                params![v]).unwrap();
-            let kid: i64 = conn.query_row(
-                "SELECT id FROM label_key WHERE key = ?1",
-                params![k], |r| r.get(0)).unwrap();
-            let vid: i64 = conn.query_row(
-                "SELECT id FROM label_value WHERE value = ?1",
-                params![v], |r| r.get(0)).unwrap();
-            entries.push((kid, vid));
+        // Build the OpenMetrics-canonical spec (sorted, with
+        // `__name__` excluded from the labels block).
+        let mut sorted: Vec<(&str, &str)> = labels.iter()
+            .filter(|(k, _)| *k != "__name__")
+            .copied().collect();
+        sorted.sort();
+        let mut spec = String::new();
+        spec.push_str(family_name);
+        spec.push('{');
+        for (i, (k, v)) in sorted.iter().enumerate() {
+            if i > 0 { spec.push(','); }
+            spec.push_str(&format!(r#"{k}="{v}""#));
         }
-        // Label set — deterministic hash from labels.
-        let hash: i64 = labels.iter()
-            .fold(0i64, |acc, (k, v)| acc.wrapping_add(
-                k.bytes().fold(0i64, |a, b| a.wrapping_add(b as i64))
-                + v.bytes().fold(0i64, |a, b| a.wrapping_add(b as i64))
-            ));
+        spec.push('}');
+
         conn.execute(
-            "INSERT OR IGNORE INTO label_set (hash) VALUES (?1)",
-            params![hash]).unwrap();
-        let set_id: i64 = conn.query_row(
-            "SELECT id FROM label_set WHERE hash = ?1",
-            params![hash], |r| r.get(0)).unwrap();
-        for (kid, vid) in &entries {
+            "INSERT OR IGNORE INTO metric_instance (family_id, spec) VALUES (?1, ?2)",
+            params![family_id, &spec]).unwrap();
+        let instance_id: i64 = conn.query_row(
+            "SELECT id FROM metric_instance WHERE spec = ?1",
+            params![&spec], |r| r.get(0)).unwrap();
+
+        // `__name__` + every other label as `instance_label` rows.
+        conn.execute(
+            "INSERT OR IGNORE INTO instance_label (instance_id, key, value) VALUES (?1, '__name__', ?2)",
+            params![instance_id, family_name]).unwrap();
+        for (k, v) in &sorted {
             conn.execute(
-                "INSERT INTO label_set_entry (set_id, key_id, value_id) \
-                 VALUES (?1, ?2, ?3)",
-                params![set_id, kid, vid]).unwrap();
+                "INSERT OR IGNORE INTO instance_label (instance_id, key, value) VALUES (?1, ?2, ?3)",
+                params![instance_id, k, v]).unwrap();
         }
-        // Instance.
-        conn.execute(
-            "INSERT OR IGNORE INTO metric_instance (family_id, label_set_id, spec) \
-             VALUES (?1, ?2, ?3)",
-            params![family_id, set_id, format!("{family_name}{{{labels:?}}}")]).unwrap();
-        conn.query_row(
-            "SELECT id FROM metric_instance WHERE family_id = ?1 AND label_set_id = ?2",
-            params![family_id, set_id], |r| r.get(0)).unwrap()
+        instance_id
     }
 
     fn add_counter_sample(conn: &Connection, instance_id: i64, ts: i64, count: i64) {

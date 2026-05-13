@@ -102,10 +102,11 @@ phases:
     ops:
       wait:
         raw: "SELECT keyspace_name, table_name, kind, progress FROM system_views.sstable_tasks WHERE keyspace_name = '{keyspace}' AND table_name = '{table}'"
-        poll: await_empty
-        poll_interval_ms: 1000
-        timeout_ms: 600000
-        poll_metric_name: index_build_time_s
+        poll:
+          mode: await_empty
+          interval_ms: 1000
+          timeout_ms: 600000
+          metric_name: index_build_time_s
 
   # Verify the index works with a query
   verify:

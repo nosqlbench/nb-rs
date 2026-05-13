@@ -24,6 +24,7 @@ use std::sync::OnceLock;
 /// `nbrs_activity::observer::LogLevel` without reformatting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
+    Trace,
     Debug,
     Info,
     Warn,
@@ -52,6 +53,7 @@ pub fn log(level: LogLevel, msg: &str) {
         f(level, msg);
     } else {
         let tag = match level {
+            LogLevel::Trace => "TRC",
             LogLevel::Debug => "DBG",
             LogLevel::Info  => "INF",
             LogLevel::Warn  => "WRN",

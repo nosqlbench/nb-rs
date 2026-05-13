@@ -40,6 +40,12 @@ pub const KNOWN_PARAMS: &[&str] = &[
     // line 1439 below; without it on this allow-list the
     // workload-param validator rejects the CLI form.
     "schedule",
+    // `--trace=<spec>` — trace-router routing/filter spec.
+    // Multiple occurrences supported (collected by
+    // `collect_repeated_flag`); parse_params keeps only the
+    // last value, but the allow-list still needs the key so
+    // the unrecognized-param guard doesn't reject the flag.
+    "trace",
 ];
 
 /// Convert the workload-model `SummaryConfig` (parsed from the
@@ -328,7 +334,8 @@ pub async fn run(args: &[String]) -> Result<(), String> {
 pub fn parse_log_level(s: &str) -> Option<crate::observer::LogLevel> {
     use crate::observer::LogLevel;
     match s.trim().to_ascii_lowercase().as_str() {
-        "debug" | "dbg" | "trace"        => Some(LogLevel::Debug),
+        "trace" | "trc"                  => Some(LogLevel::Trace),
+        "debug" | "dbg"                  => Some(LogLevel::Debug),
         "info"  | "inf"                  => Some(LogLevel::Info),
         "warn"  | "wrn" | "warning"      => Some(LogLevel::Warn),
         "error" | "err"                  => Some(LogLevel::Error),
@@ -386,24 +393,13 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         crate::observer::log(crate::observer::LogLevel::Info, &format!("{indent}{msg}"));
     });
 
-    // Route nbrs-variates' data-source audit lines (prebuffer
-    // coverage + reader opens, plus general nbrs-variates
-    // diagnostics) through the observer log so every level
-    // lands in session.log alongside the rest of the run trace.
-    // See `nbrs_variates::audit` for the events emitted.
-    nbrs_variates::audit::set_log_fn(|level, msg| {
-        let mapped = match level {
-            nbrs_variates::audit::LogLevel::Debug => crate::observer::LogLevel::Debug,
-            nbrs_variates::audit::LogLevel::Info  => crate::observer::LogLevel::Info,
-            nbrs_variates::audit::LogLevel::Warn  => crate::observer::LogLevel::Warn,
-            nbrs_variates::audit::LogLevel::Error => crate::observer::LogLevel::Error,
-        };
-        // Audit lines fire from inside data-source nodes during
-        // phase execution; align with the running phase like
-        // the errorhandler / metrics bridges above.
-        let indent = crate::scene_tree::running_phase_indent();
-        crate::observer::log(mapped, &format!("{indent}{msg}"));
-    });
+    // Audit sink is installed after session creation
+    // below (so it can target `<session>/audit.log`).
+    // Until then, the crate-default eprintln fallback
+    // is in effect for any audit::log calls fired
+    // during init. Workload-emitted lines fire mid-phase
+    // (well after the install), so they don't reach
+    // stderr.
 
     let mut diag = DiagnosticConfig::normal();
 
@@ -810,8 +806,56 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             session_log_path.display());
     }
 
+    // `--trace=<spec>` (repeatable). Collected from raw `args`
+    // because parse_params is HashMap-keyed and would collapse
+    // repeated flags. See trace_router for spec grammar.
+    let trace_specs = collect_repeated_flag(&args, "trace");
+    match crate::trace_router::init(&trace_specs, &session.output_dir) {
+        Ok(0) => {} // no --trace specified, router stays empty
+        Ok(n) => crate::diag!(crate::observer::LogLevel::Info,
+            "trace router: {n} route(s) configured"),
+        Err(e) => crate::diag!(crate::observer::LogLevel::Warn,
+            "trace router init failed: {e}"),
+    }
+
     crate::diag!(crate::observer::LogLevel::Info, "session: {} ({})",
         session.id, session.output_dir.display());
+
+    // Workload-emitted audit channel: route to
+    // <session>/audit.log. See the comment near the top
+    // of run() for the design rationale (session.log is
+    // lifecycle-only; metric data goes to
+    // <session>/metrics/*.jsonl; bulk workload diagnostic
+    // dumps via `log_info` and friends land here).
+    let audit_log_path = session.output_dir.join("audit.log");
+    match std::fs::OpenOptions::new()
+        .create(true).append(true).open(&audit_log_path)
+    {
+        Ok(file) => {
+            let handle = std::sync::Arc::new(std::sync::Mutex::new(file));
+            nbrs_variates::audit::set_log_fn(move |level, msg| {
+                use std::io::Write;
+                let tag = match level {
+                    nbrs_variates::audit::LogLevel::Trace => "TRC",
+                    nbrs_variates::audit::LogLevel::Debug => "DBG",
+                    nbrs_variates::audit::LogLevel::Info  => "INF",
+                    nbrs_variates::audit::LogLevel::Warn  => "WRN",
+                    nbrs_variates::audit::LogLevel::Error => "ERR",
+                };
+                if let Ok(mut f) = handle.lock() {
+                    let _ = writeln!(f, "{tag} {msg}");
+                }
+            });
+            crate::diag!(crate::observer::LogLevel::Info,
+                "audit log: {}", audit_log_path.display());
+        }
+        Err(e) => {
+            crate::diag!(crate::observer::LogLevel::Warn,
+                "audit log: failed to open '{}': {e} (audit messages dropped)",
+                audit_log_path.display());
+            nbrs_variates::audit::set_log_fn(|_level, _msg| {});
+        }
+    }
 
     // SQLite metrics in session directory
     let sqlite_path = session.metrics_path();
@@ -1154,6 +1198,45 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         "metrics: SQLite subscription failed: {e}");
                 }
             }
+        }
+    }
+
+    // Default per-instance JSONL snapshot reporter — writes
+    // one file per (metric, label-tuple) in `<session>/metrics/`,
+    // one JSON record appended per snapshot tick. Always-on:
+    // operators get a durable per-instance trace they can
+    // tail, awk, or import into a notebook without opening
+    // the SQLite db. Aligns to the same 30s cadence as the
+    // SQLite write so the two output forms stay roughly in
+    // step. Construction failure is logged but doesn't fail
+    // the run — metrics persistence is best-effort.
+    let per_instance_dir = session.output_dir.join("metrics");
+    match nbrs_metrics::reporters::per_instance::PerInstanceReporter::new(&per_instance_dir) {
+        Ok(reporter) => {
+            if let Some(cadence) = cadence_tree.align_to_declared(
+                std::time::Duration::from_secs(30),
+            ) {
+                match cadence_reporter.subscribe(
+                    cadence,
+                    Box::new(reporter),
+                    nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
+                ) {
+                    Ok(_) => {
+                        crate::diag!(crate::observer::LogLevel::Info,
+                            "metrics: per-instance JSONL writes every {:?} into {}",
+                            cadence, per_instance_dir.display());
+                    }
+                    Err(e) => {
+                        crate::diag!(crate::observer::LogLevel::Warn,
+                            "metrics: per-instance subscription failed: {e}");
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            crate::diag!(crate::observer::LogLevel::Warn,
+                "metrics: per-instance reporter disabled ({}): {e}",
+                per_instance_dir.display());
         }
     }
 
@@ -2213,23 +2296,12 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 // `nbrs report` round-trips through the same
                 // parser the workload uses.
                 for item in workload_report.items() {
-                    let mut value = String::new();
-                    value.push_str(item.kind.as_str());
-                    value.push(' ');
-                    value.push_str(&item.name);
-                    value.push('\n');
-                    if let Some(label) = item.label.as_deref() {
-                        value.push_str("label ");
-                        value.push('"');
-                        value.push_str(label);
-                        value.push_str("\"\n");
-                    }
-                    if let Some(tf) = item.target_file.as_deref() {
-                        value.push_str("target ");
-                        value.push_str(tf);
-                        value.push('\n');
-                    }
-                    value.push_str(&item.body);
+                    // Single emission point: the workload-side
+                    // serializer. The db-fallback path in
+                    // `nbrs report` parses this value back
+                    // through `parse_persisted_item`, which
+                    // uses the same grammar — round-trip safe.
+                    let value = item.to_yaml_directive_string();
                     reporter.set_metadata(
                         &format!("report.{}", item.name), &value);
                 }
@@ -3111,6 +3183,33 @@ pub fn parse_params(args: &[String]) -> HashMap<String, String> {
         }
     }
     params
+}
+
+/// Collect every occurrence of a repeatable flag (e.g.
+/// `--trace=<spec>` or `trace=<spec>`) from a raw arg list.
+/// Returns the values in order of appearance — `parse_params`
+/// collapses repeats into a HashMap, so this is the escape
+/// hatch for repeatable args.
+///
+/// Accepts both `--name=value` and `name=value` shapes for
+/// symmetry with the rest of nbrs's arg surface.
+pub fn collect_repeated_flag(args: &[String], name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut iter = args.iter().peekable();
+    let long_eq = format!("--{name}=");
+    let bare_eq = format!("{name}=");
+    while let Some(arg) = iter.next() {
+        if let Some(v) = arg.strip_prefix(&long_eq) {
+            out.push(v.to_string());
+        } else if let Some(v) = arg.strip_prefix(&bare_eq) {
+            out.push(v.to_string());
+        } else if arg == &format!("--{name}") {
+            if let Some(v) = iter.next() {
+                out.push(v.clone());
+            }
+        }
+    }
+    out
 }
 
 /// Parse a cycle count that may have suffixes: K, M, B.

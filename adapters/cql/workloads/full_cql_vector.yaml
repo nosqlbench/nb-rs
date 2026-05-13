@@ -82,13 +82,13 @@ report:
       x: r
       x-legend: "R"
       x-ticks: avg(recall_mean{k="1",profile=~"label.*"}) by (k,r)
+      y-side: left
       y1: avg(recall_mean{k="1",phase="ann_query",profile=~"label.*"}) by (k,r,optimize_for)
       y2: avg(recall_mean{k="1",phase="pvs_query",profile=~"default"}) by (k,r,optimize_for)
-      y3: avg(overscan{k="1",phase="ann_query",profile=~"label.*"}) by (k,r)
-      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]", overscan]
-      y-ranges: [[0.0,1.0]]
-      y-labels:  [recall, overscan]
-      with-table: true
+      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
+      y-ranges: [[0.0,1.0],[0.0,1.0]]
+      y-labels: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
+      with-tables: [optimize_for]
       style profile=default:line=dotted
 
     plot recall_10_mean
@@ -97,13 +97,28 @@ report:
       x: r
       x-legend: "R"
       x-ticks: avg(recall_mean{k="10",profile=~"label.*"}) by (k,r)
+      y-side: left
       y1: avg(recall_mean{k="10",phase="ann_query",profile=~"label.*"}) by (k,r,optimize_for)
       y2: avg(recall_mean{k="10",phase="pvs_query",profile=~"default"}) by (k,r,optimize_for)
-      y3: avg(overscan{k="10",phase="ann_query",profile=~"label.*"}) by (k,r)
-      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]", overscan]
-      y-ranges: [[0.0,1.0]]
-      y-labels:  [recall, overscan]
-      with-table: true
+      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
+      y-ranges: [[0.8,1.0],[0.8,1.0]]
+      y-labels: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
+      with-tables: [optimize_for]
+      style profile=default:line=dotted
+
+    plot recall_10_mean_all
+      label "ALL 10-recall@R, oracles & PVS ALL"
+      legend: br
+      x: r
+      x-legend: "R"
+      x-ticks: recall_mean{k="10",profile=~"label.*"} by (k,r)
+      y-side: left
+      y1: recall_mean{k="10",phase="ann_query",profile=~"label.*"} by (k,r,optimize_for)
+      y2: recall_mean{k="10",phase="pvs_query",profile=~"default"} by (k,r,optimize_for)
+      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
+      y-ranges: [[0.8,1.0],[0.8,1.0]]
+      y-labels: ["oracle-O4[optimize_for]-all", "PVS_O4[optimize_for]-all"]
+      with-tables: [optimize_for_all]
       style profile=default:line=dotted
 
     plot recall_100_mean
@@ -112,125 +127,27 @@ report:
       x: r
       x-legend: "R"
       x-ticks: avg(recall_mean{k="100",profile=~"label.*"}) by (k,r,optimize_for)
+      y-side: left
       y1: avg(recall_mean{k="100",phase="ann_query",profile=~"label.*"}) by (k,r,optimize_for)
       y2: avg(recall_mean{k="100",phase="pvs_query",profile=~"default"}) by (k,r,optimize_for)
-      y3: avg(overscan{k="100",phase="ann_query",profile=~"label.*"}) by (k,r)
-      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]", overscan]
-      y-ranges: [[0.0,1.0]]
-      y-labels:  [recall, overscan]
-      with-table: true
+      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
+      y-ranges: [[0.9,1.0],[0.9,1.0]]
+      y-labels:  ["oracle-o4[optimize_for], "PVS_O4[optimize_for]"]
+      with-tables: [optimize_for]
       style profile=default:line=dotted
 
     plot recall_vs_latency_k1
       label "Recall@1 vs latency, oracles & PVS"
       legend: br
-      x: cycles_servicetime_mean
+      x: r
       x-legend: "service time"
-      y1: avg(recall_mean{k="1",phase="ann_query",profile=~"label.*"}) by (k,r,optimize_for)
-      y2: avg(recall_mean{k="1",phase="pvs_query",profile=~"default"}) by (k,r,optimize_for)
+      y1: avg(cycles_servicetime_mean{k="1",phase="ann_query",profile=~"label.*"}) by (k,r,optimize_for)
+      y2: avg(cycles_servicetime_mean{k="1",phase="pvs_query",profile=~"default"}) by (k,r,optimize_for)
       y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
-      y-ranges: [[0.0,1.0]]
+      y-ranges: [[0.0,1.0],[0.0,1.0]]
       y-labels:  [recall]
-      with-table: true
+      with-tables: [optimize_for]
       style profile=default:line=dotted
-
-
-
-#    plot recall_1_each_ofr
-#      label "MEAN 1-recall@R, oracles & PVS"
-#      legend: br
-#      x: R
-#      x-ticks: avg(recall_at_1_mean{k="1",profile=~"label.*",optimize_for="RECALL"}) by (limit)
-#      y1: avg(recall_at_1_mean{k="1",phase="ann_query",profile=~"label.*",optimize_for="RECALL"}) by (profile, limit)
-#      y2: avg(recall_at_1_mean{k="1",phase="pvs_query",profile=~"default",optimize_for="RECALL"}) by (profile, limit)
-#      y3: avg(overscan{k="1", phase="ann_query",profile=~"label.*",optimize_for="RECALL"}) by (limit)
-#      y-ranges: [[0.0,1.0]]
-#      y-legends: ["oracle [profile]", "PVS", overscan]
-#      y-labels:  [recall, overscan]
-#      style profile=default:line=dotted
-
-#    plot recall_10_each_ofr
-#      label "Mean recall@10 (left) + overscan (right) per profile, limits"
-#      legend: br
-#      x: limit
-#      x-ticks: avg(recall_at_10_mean{k="10",profile=~"label.*",optimize_for="RECALL"}) by (limit)
-#      y1: avg(recall_at_10_mean{k="10",phase="ann_query",profile=~"label.*",optimize_for="RECALL"}) by (profile, limit)
-#      y2: avg(recall_at_10_mean{k="10",phase="pvs_query",profile=~"default",optimize_for="RECALL"}) by (profile, limit)
-#      y3: avg(overscan{k="10", phase="ann_query",profile=~"label.*",optimize_for="RECALL"}) by (limit)
-#      y-ranges: [[0.75,1.0]]
-#      y-legends: ["oracle [profile]", pvs, overscan]
-#      y-labels:  [recall, overscan]
-#      style profile=default:line=dotted
-
-#    plot recall_at_k10
-#      label "Mean recall@10 (left) + overscan (right) per profile"
-#      legend: br
-#      x: limit
-#      x-ticks: avg(recall_at_10_mean{k="10",profile=~"label.*"}) by (limit)
-#      y: avg(recall_at_10_mean{k="10",profile=~"label.*"}) by (profile, limit)
-#      y-range: [0.75,1.0]
-#      y2: avg(overscan{k="10", phase="ann_query",profile=~"label.*"}) by (limit)
-#      y2-label: overscan
-#      style profile=default:line=dotted
-#
-#    plot recall_at_k100
-#      label "Recall@100 (left) + overscan (right) per profile (k=100)"
-#      legend: br
-#      x: limit
-#      x-ticks: avg(recall_at_100_mean{k="100",profile=~"label.*"}) by (limit)
-#      y: avg(recall_at_100_mean{k="100",profile=~"label.*"}) by (profile, limit)
-#      y-range: [0.75,1.0]
-#      y2: avg(overscan{k="100", phase="ann_query",profile=~"label.*"}) by (limit)
-#      y2-label: overscan
-#      style profile=default:line=dotted
-#
-#  fknn_section: |
-#    file fknn_report.md as 'Filtered-KNN Sweep'
-#
-#    text This report covers the **test_fknn** scenario:
-#     filtered-KNN queries that combine a vector ANN search with
-#     an integer metadata predicate. Phases use `pvs_query` (the
-#     filtered query op) and produce recall metrics analogous to
-#     the oracles run, plus a metadata-only baseline from
-#     `pvs_metadata_query`.
-#
-#     Plots show the recall curve as the ANN search depth
-#     (`limit`) grows; the table aggregates by profile.
-#
-#    table recall_fknn
-#      group_by: profile
-#      query recall: avg(recall_at_10_mean) by (profile)
-#      query latency: avg(cycles_servicetime_mean) by (profile)
-#
-#    plot fknn_recall_at_k1
-#      label "Filtered-KNN mean recall@1"
-#      legend: br
-#      x: limit
-#      x-ticks: avg(recall_at_1_mean{k="1",phase="pvs_query",profile=~"default"}) by (limit)
-#      y: avg(recall_at_1_mean{k="1",phase="pvs_query", profile="default"}) by (limit)
-#      y-range: [0.75,1.0]
-#      y2: avg(overscan{k="1", phase="pvs_query",profile=~"default"}) by (limit)
-#      y2-label: overscan
-#
-#    plot fknn_recall_at_k10
-#      label "Filtered-KNN mean recall@10"
-#      legend: br
-#      x: limit
-#      x-ticks: avg(recall_at_10_mean{k="10",phase="pvs_query",profile=~"default"}) by (limit)
-#      y: avg(recall_at_10_mean{k="10", phase="pvs_query", profile="default"}) by (limit)
-#      y-range: [0.75,1.0]
-#      y2: avg(overscan{k="10", phase="pvs_query",profile=~"default"}) by (limit)
-#      y2-label: overscan
-#
-#    plot fknn_recall_at_k100
-#      label "Filtered-KNN mean recall@100"
-#      legend: br
-#      x: limit
-#      x-ticks: avg(recall_at_100_mean{k="100",phase="pvs_query",profile=~"default"}) by (limit)
-#      y: avg(recall_at_100_mean{k="100", phase="pvs_query", profile="default"}) by (limit)
-#      y-range: [0.75,1.0]
-#      y2: avg(overscan{k="100",phase="pvs_query",profile=~"default"}) by (limit)
-#      y2-label: overscan
 
 bindings: |
   profiles := matching_profiles("{dataset}", "{prefix}")
@@ -260,6 +177,37 @@ scenarios:
     - detect_dialect
     - scenario: test_oracles
     - scenario: test_fknn
+    # One-shot diagnostic probe — runs the SAME query
+    # against both oracle and PVS tables and dumps
+    # bindings + DB result bodies to <session>/audit.log.
+    # Both tables must already exist; placement after
+    # test_fknn guarantees that.
+    - recall_audit_oracle
+    - recall_audit_pvs
+
+  # Standalone diagnostic scenario — invoke with
+  # `scenario=recall_audit_only` to run JUST the probe
+  # against leftover tables from a previous fulltest run.
+  # Skips teardown / schema / rampup / await_index, so
+  # the existing data is used as-is. Errors out if the
+  # tables `vec_label_00_recall` or `fknn_default_recall`
+  # don't exist; run `fulltest` first to populate them.
+  recall_audit_only:
+    - recall_audit_oracle
+    - recall_audit_pvs
+
+  # Probe-only: detect dialect and count the SAI index's
+  # SSTable fan-out for label_00:recall. Confirms whether
+  # the SAI-not-settled hypothesis is the cause of the
+  # recall inversion before we wire in the full compaction
+  # pipeline.
+  count_only:
+    - detect_dialect
+    - for: "profile in matching_profiles('{dataset}', '{oracles_prefix}')"
+      phases:
+        - for: "optimize_for in {optimize_for_values}, table in vec_{profile}_{optimize_for}"
+          phases:
+            - count_sstables
 
   # Per-profile partition test (label_00..label_11)
   test_oracles:
@@ -272,6 +220,41 @@ scenarios:
             - schema
             - rampup
             - await_index
+            # SAI's `is_building=true` flag flips false long
+            # before the index has been compacted down to a
+            # single SSTable. Recall at narrow LIMIT is
+            # measurably worse on a fragmented SAI index
+            # (we lost ~11 points in earlier runs that
+            # measured pre-compaction). Force the SAI index
+            # to its settled state via Jolokia → flush →
+            # major compaction, then verify via BOTH paths:
+            # Jolokia (CompactionManager.getCompactions ==
+            # []) for "no jobs running" and CQL
+            # (sai_sstable_indexes count == 1) for "the
+            # index actually merged".
+            - count_sstables
+            - jolokia_flush
+            - jolokia_compact
+            - jolokia_await_compaction
+            - await_compaction
+            - count_sstables
+            - for: "k in {k_values}, limit in {k_{k}_limits}"
+              phases:
+                - ann_query
+
+  # Query-only oracle scenario — same parameter sweep as
+  # `test_oracles` but skips teardown/schema/rampup/await_index.
+  # Use against tables already populated by a prior `test_oracles`
+  # run to measure recall as the SAI index ages without
+  # re-paying the rampup cost. If recall here climbs over
+  # repeated invocations, the SAI index hasn't fully settled by
+  # the time `await_index`'s polling returns.
+  test_oracles_query_only:
+    - detect_dialect
+    - for: "profile in matching_profiles('{dataset}', '{oracles_prefix}')"
+      phases:
+        - for: "optimize_for in {optimize_for_values}, table in vec_{profile}_{optimize_for}"
+          phases:
             - for: "k in {k_values}, limit in {k_{k}_limits}"
               phases:
                 - ann_query
@@ -298,6 +281,17 @@ scenarios:
         - schema
         - fknn_rampup_data
         - await_index
+        # Same SAI-settlement guard as test_oracles — see
+        # comment there. Jolokia drives the flush + compact
+        # triggers AND the "no compaction jobs running"
+        # check; CQL polls `sai_sstable_indexes` for the
+        # final `count == 1` settled state.
+        - count_sstables
+        - jolokia_flush
+        - jolokia_compact
+        - jolokia_await_compaction
+        - await_compaction
+        - count_sstables
         - for: "k in {k_values}, limit in {k_{k}_limits}"
           phases:
             - pvs_query
@@ -335,6 +329,15 @@ phases:
         raw: |
           CREATE TABLE IF NOT EXISTS {keyspace}.{table} 
           (key text PRIMARY KEY, value vector<float, {dim}>, metadata int)
+          WITH
+           compaction = {
+           'class': 'SizeTieredCompactionStrategy', 
+           'min_threshold': '2', 
+           'max_threshold': '5' }
+          AND compression = {
+           'enabled': 'false'
+          }
+
       create_vector_index:
         raw: |
           CREATE CUSTOM INDEX IF NOT EXISTS {table}{vector_idx_suffix}
@@ -385,6 +388,224 @@ phases:
           has_sai_column_indexes := log_info(regex_match(schema_text, "(?im)^\s*(?:CREATE\s+)?(?:VIRTUAL\s+)?TABLE\s+system_views\.sai_column_indexes\s*\("))
           has_indexes            := log_info(regex_match(schema_text, "(?im)^\s*(?:CREATE\s+)?(?:VIRTUAL\s+)?TABLE\s+system_views\.indexes\s*\("))
 
+  # Count the SSTables that the vector SAI index currently
+  # spans for `{keyspace}.{table}`. Each row in
+  # `system_views.sai_sstable_indexes` is one (keyspace,
+  # index, sstable) tuple, so `COUNT(*)` filtered to our
+  # index gives the live SSTable fan-out. SAI's ANN graph
+  # quality degrades with sstable count > 1 — count > 1
+  # post-rampup means the search has to query multiple
+  # graphs and merge, which lowers recall at narrow LIMIT
+  # values. Surfaces the number as both an audit.log line
+  # and a `sai_sstable_count` gauge so we can plot it over
+  # time.
+  count_sstables:
+    concurrency: 1
+    cycles: 1
+    ops:
+      sai_sstable_count:
+        raw: |
+          SELECT sstable_name FROM system_views.sai_sstable_indexes
+          WHERE keyspace_name = '{keyspace}'
+            AND index_name = '{table}{vector_idx_suffix}'
+          ALLOW FILTERING
+        # SRD-66 magic extern `count` is populated by the
+        # adapter wrapper with the result body's row count
+        # (typed as u64), so we don't need
+        # `exactly_one_value` extraction here — every row
+        # returned is one SSTable in the SAI index.
+        # Split the format_u64 call into its own binding so
+        # the `+`-as-str_concat dispatch sees a clean
+        # `Str + Str` (rather than re-inferring the nested
+        # call's return type).
+        # No `metrics:` block — see followup note: the
+        # current wrapper order (result innermost, metrics
+        # outermost) means `metrics` reads its values from
+        # the per-op kernel BEFORE the result-binding
+        # captures have been written there, so a `value:
+        # count` gauge resolves to Value::None at cycle
+        # time. Audit log line is the visibility path for
+        # now.
+        result: |
+          n_str := format_u64(count, 10)
+          _audit := log_info("sai_sstable_count: " + n_str)
+
+  # Trigger a memtable flush for {keyspace} via the Jolokia
+  # JMX/HTTP bridge. Cassandra's `is_building=true → false`
+  # signal (used by `await_index`) fires before the data has
+  # been pushed to disk; until a flush happens, the SAI index
+  # lives entirely in the memtable and `sai_sstable_indexes`
+  # returns zero rows. Running this between rampup and the
+  # query phases guarantees there's at least one on-disk
+  # SSTable for the SAI index to anchor on, so the subsequent
+  # `await_compaction` poll on `count == 1` actually sees the
+  # state it's waiting for.
+  #
+  # MBean: org.apache.cassandra.db:type=StorageService
+  # Operation:
+  #   forceKeyspaceFlush(String keyspaceName, String[] tableNames)
+  #
+  # This Cassandra build requires the two-arg signature
+  # (`String, String[]`); the GET-URL form can't express the
+  # array argument cleanly, so we POST a JSON exec envelope
+  # with an empty `[]` tables list (= flush the entire
+  # keyspace).
+  #
+  # Jolokia ALWAYS returns HTTP 200 — the JMX call's outcome
+  # lives in the response body's `status` field. The verify
+  # block below asserts `status == 200` so a JMX-side error
+  # (mistyped keyspace, missing MBean, permission failure)
+  # surfaces as a phase error instead of being silently
+  # swallowed.
+  jolokia_flush:
+    adapter: http
+    concurrency: 1
+    cycles: 1
+    ops:
+      flush:
+        uri: "http://localhost:8778/jolokia/"
+        method: POST
+        body: |
+          {"type":"exec",
+           "mbean":"org.apache.cassandra.db:type=StorageService",
+           "operation":"forceKeyspaceFlush(java.lang.String,[Ljava.lang.String;)",
+           "arguments":["{keyspace}",[]]}
+        verify:
+          - field: status
+            eq: "200"
+        strict: true
+        memo:
+          before: "flushing keyspace {keyspace}"
+          after:  "flushed keyspace {keyspace}"
+
+  # Trigger a major compaction for {keyspace}.{table} via
+  # Jolokia. After a flush, multiple SSTables typically exist
+  # (one per flushed memtable + any prior segments). The
+  # compaction merges them into a single SSTable, which is
+  # the steady-state condition `await_compaction` polls for.
+  #
+  # MBean: org.apache.cassandra.db:type=StorageService
+  # Operation:
+  #   forceKeyspaceCompaction(boolean splitOutput,
+  #                           String keyspaceName,
+  #                           String... tableNames)
+  # `splitOutput=false` keeps the output as a single SSTable
+  # (the whole point of running this).
+  #
+  # `forceKeyspaceCompaction` is SYNCHRONOUS — the JMX call
+  # blocks until the compaction completes. For a 1M-vector
+  # table the call can take 20-30 minutes; `timeout_ms` is
+  # set high enough to cover that without tripping the
+  # adapter's default 30-second client timeout.
+  #
+  # Same Jolokia 200-in-body assertion as `jolokia_flush` —
+  # don't fire and forget. The verify block ensures a JMX
+  # failure (after the long wait) still fails the phase.
+  jolokia_compact:
+    adapter: http
+    concurrency: 1
+    cycles: 1
+    ops:
+      compact:
+        uri: "http://localhost:8778/jolokia/"
+        method: POST
+        body: |
+          {"type":"exec",
+           "mbean":"org.apache.cassandra.db:type=StorageService",
+           "operation":"forceKeyspaceCompaction(boolean,java.lang.String,[Ljava.lang.String;)",
+           "arguments":[false,"{keyspace}",["{table}"]]}
+        request_timeout_ms: 3600000
+        verify:
+          - field: status
+            eq: "200"
+        strict: true
+        memo:
+          before: "compacting {keyspace}.{table}"
+          after:  "compacted {keyspace}.{table}"
+
+  # Poll Jolokia until Cassandra's CompactionManager reports
+  # no running compactions. The state lives on the JMX
+  # ATTRIBUTE `Compactions` (read-only list of currently-
+  # active compaction tasks), NOT an op like `getCompactions`
+  # which this Cassandra build doesn't expose. Jolokia
+  # wraps the attribute value in `{value: [...], status: 200,
+  # ...}`, so the poll uses `json_path: /value` to drill into
+  # the array and `await_empty` semantics (default
+  # `min_rows=0, max_rows=0`) to wait until the list is
+  # empty.
+  #
+  # Each poll iteration is a short HTTP call — the *loop*
+  # is the long-running step. If a new compaction kicks off
+  # mid-poll (size-tier triggered by an earlier compaction's
+  # output, or a SAI side-effect of the base-table compact),
+  # the array becomes non-empty again and the loop keeps
+  # waiting. `request_timeout_ms: 10000` caps a single HTTP
+  # call (slow JMX, GC pause) so we fail fast and resume on
+  # the next interval; `poll.timeout_ms` is the overall
+  # loop deadline.
+  #
+  # Same `status == 200` verify as the trigger phases so a
+  # JMX-side failure surfaces as a phase error instead of
+  # being silently swallowed.
+  jolokia_await_compaction:
+    adapter: http
+    concurrency: 1
+    ops:
+      compactions_running:
+        memo:
+          before: "awaiting compaction on {keyspace}.{table}"
+          after: "compacted {keyspace}.{table}"
+        uri: "http://localhost:8778/jolokia/read/org.apache.cassandra.db:type=CompactionManager/Compactions"
+        method: GET
+        request_timeout_ms: 10000
+        verify:
+          - field: status
+            eq: "200"
+        strict: true
+        poll:
+          mode: await_empty
+          interval_ms: 5000
+          timeout_ms: 1800000
+          max_error_retries: 3
+          json_path: "/value"
+          metric_name: jolokia_compaction_wait_time_s
+
+  # Block until the SAI vector index has been compacted
+  # down to a single SSTable. Polls
+  # `system_views.sai_sstable_indexes` rows for our index
+  # and waits until the row count is exactly 1.
+  #
+  # `min_rows=1` is load-bearing: right after rampup the
+  # data is still in the memtable and zero rows appear
+  # in `sai_sstable_indexes`. Without the lower bound, the
+  # poll exits immediately at count=0 — before the
+  # memtable has flushed — and recall is measured on an
+  # un-settled state. With `[1..=1]` the poll waits for
+  # (a) flush so there's at least 1 sstable, then
+  # (b) compaction so there's at most 1.
+  #
+  # Trusts natural compaction to converge. If the cluster
+  # doesn't reach `count == 1` within `timeout_ms`, the
+  # phase fails with a poll timeout, which is the correct
+  # surfacing for an unsettling-cluster condition.
+  await_compaction:
+    concurrency: 1
+    ops:
+      sai_sstable_count_settled:
+        raw: |
+          SELECT sstable_name FROM system_views.sai_sstable_indexes
+          WHERE keyspace_name = '{keyspace}'
+            AND index_name = '{table}{vector_idx_suffix}'
+          ALLOW FILTERING
+        poll:
+          mode: await_settled
+          interval_ms: 5000
+          timeout_ms: 1800000
+          min_rows: 1
+          max_rows: 1
+          max_error_retries: 3
+          metric_name: compaction_wait_time_s
+
   await_index:
     concurrency: 1
     bindings: |
@@ -416,11 +637,12 @@ phases:
             AND index_name = '{table}{vector_idx_suffix}'
             AND is_building = true
           ALLOW FILTERING
-        poll: await_empty
-        poll_interval_ms: 5000
-        timeout_ms: 600000
-        poll_max_error_retries: 3
-        poll_metric_name: index_build_time_s
+        poll:
+          mode: await_empty
+          interval_ms: 5000
+          timeout_ms: 600000
+          max_error_retries: 3
+          metric_name: index_build_time_s
 
   # ── Data loading (parameterized by {table}, {dataset}:{profile}) ────────────
   # ANN rampup: key + vector only. Used by fulltest, unfiltered.
@@ -492,6 +714,73 @@ phases:
             kind: gauge
             value: overscan
 
+
+  # Single-cycle diagnostic phase. Runs the SAME query
+  # vector against both the oracle (label_00) and PVS
+  # (default WHERE metadata=0) paths, dumps the bindings
+  # + result bodies via log_info, so audit.log shows:
+  #
+  #   - the query vector hash (proxy for "this is the
+  #     same q across both probes"),
+  #   - oracle's ground truth (label_00 local indices),
+  #     oracle's DB result keys,
+  #   - the corresponding default-side payload (PVS
+  #     ground truth at default's q=0, predicate, and DB
+  #     keys returned).
+  #
+  # The user reads audit.log to cross-check whether the
+  # DB returns the same effective vectors on both paths
+  # (compare returned values when extracted via
+  # `SELECT key,value`).
+  #
+  # Hardcoded to label_00 / metadata=0. Requires the
+  # `fulltest` scenario to have already populated both
+  # tables; runs once after test_fknn so both targets
+  # exist.
+  # Single-op phase: oracle path only, iterates q=0..856
+  # (all label_00 queries). Pairs with `recall_audit_pvs`
+  # below; both phases iterate the SAME q range so the
+  # offline analyser can join their audit.log entries by q
+  # and compute per-q recall deltas (oracle vs pvs on the
+  # identical query vector).
+  recall_audit_oracle:
+    concurrency: 1
+    bindings: |
+      init opb = dataset_prebuffer("{dataset}:label_00")
+      cursor q = range(0, 856)
+      query           := query_vector_at(opb, q)
+      gt_oracle       := neighbor_indices_at(opb, q)
+      _audit_marker   := log_info("=== recall_audit_oracle cycle: label_00 q=" + format_u64(q, 10) + " ===")
+      _audit_gt       := log_info("gt_oracle (label_00 local indices, top-100): " + json_text(gt_oracle))
+    ops:
+      oracle_probe:
+        prepared: |
+          SELECT key, value FROM {keyspace}.vec_label_00_recall
+          ORDER BY value ANN OF {query} LIMIT 10
+        result: |
+          _audit_oracle_result := log_info("oracle_probe body: " + json_text(body))
+
+  # Single-op phase: PVS path only, iterates q=0..856 (same
+  # range as recall_audit_oracle). Uses label_00's query
+  # vectors so each q corresponds to the SAME underlying
+  # query as the oracle phase's same-q cycle.
+  recall_audit_pvs:
+    concurrency: 1
+    bindings: |
+      init opb = dataset_prebuffer("{dataset}:label_00")
+      cursor q = range(0, 856)
+      query           := query_vector_at(opb, q)
+      gt_oracle       := neighbor_indices_at(opb, q)
+      _audit_marker   := log_info("=== recall_audit_pvs cycle: label_00 q=" + format_u64(q, 10) + " ===")
+      _audit_gt       := log_info("gt_oracle (label_00 local indices, top-100): " + json_text(gt_oracle))
+    ops:
+      pvs_probe:
+        prepared: |
+          SELECT key, value FROM {keyspace}.fknn_default_recall
+          WHERE metadata = 0
+          ORDER BY value ANN OF {query} LIMIT 10
+        result: |
+          _audit_pvs_result := log_info("pvs_probe body: " + json_text(body))
 
   pvs_metadata_query:
     concurrency: "{query_concurrency}"

@@ -111,6 +111,36 @@ fn load_workload_summaries(path: &Path) -> Result<Vec<(String, String)>, String>
 ///
 /// `format` is `md` (markdown table) or `csv`. Other formats
 /// fall back to markdown — same convention as the legacy path.
+/// Compare two `|`-joined composite group keys position by
+/// position. Each segment uses [`natural_cmp_one`] so numeric
+/// components order by magnitude (`2 < 10`) while non-numeric
+/// stay lexicographic.
+fn natural_cmp_pipe_tuple(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut ai = a.split('|');
+    let mut bi = b.split('|');
+    loop {
+        match (ai.next(), bi.next()) {
+            (Some(x), Some(y)) => match natural_cmp_one(x, y) {
+                Ordering::Equal => continue,
+                non_eq => return non_eq,
+            },
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+        }
+    }
+}
+
+/// Compare two single tokens. Numeric (both parse as `f64`)
+/// compares numerically; otherwise lexicographic.
+fn natural_cmp_one(a: &str, b: &str) -> std::cmp::Ordering {
+    match (a.parse::<f64>(), b.parse::<f64>()) {
+        (Ok(x), Ok(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+        _ => a.cmp(b),
+    }
+}
+
 fn render_metricsql_table(
     db_path: &Path,
     cfg: &SummaryConfig,
@@ -150,7 +180,10 @@ fn render_metricsql_table(
     // `group_value -> column_value` map. When `group_by` is
     // empty, every row collapses into a single un-named row;
     // we put it under the empty string for stable iteration.
-    let group_key = cfg.group_by.as_str();
+    // Multi-key `group_by` produces a tuple key (the row's
+    // label values joined by `|`) so the table breaks down
+    // along the same dimensions the plot's series do.
+    let group_keys: &[String] = cfg.group_by.as_slice();
     let mut by_group: BTreeMap<String, Vec<Option<f64>>> = BTreeMap::new();
     let n_cols = cfg.metricsql_columns.len();
     for (col_idx, (_col_name, expr)) in cfg.metricsql_columns.iter().enumerate() {
@@ -159,18 +192,37 @@ fn render_metricsql_table(
         let series = evaluate(&ctx, &parsed)
             .map_err(|e| format!("evaluate '{expr}': {e}"))?;
         for s in series {
-            let group_val: String = if group_key.is_empty() {
+            let group_val: String = if group_keys.is_empty() {
                 String::new()
             } else {
-                s.labels.iter()
-                    .find(|(k, _)| k == group_key)
-                    .map(|(_, v)| v.clone())
-                    .unwrap_or_default()
+                group_keys.iter()
+                    .map(|gk| {
+                        s.labels.iter()
+                            .find(|(k, _)| k == gk)
+                            .map(|(_, v)| v.as_str())
+                            .unwrap_or("")
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|")
             };
-            // Use the latest sample as the cell value.
-            let value = s.samples.iter()
-                .max_by_key(|s| s.timestamp_ms)
-                .map(|s| s.value);
+            // Mean across every sample in the evaluation
+            // window — matches the plot renderer's
+            // `bucket_rows`+`aggregate(mean, …)` pipeline so
+            // a companion table shows the same number the
+            // plot's curve sits at. Previously we took the
+            // latest sample, which silently diverged from
+            // the plot whenever the time series wasn't
+            // perfectly flat across the run window.
+            let finite: Vec<f64> = s.samples.iter()
+                .map(|s| s.value)
+                .filter(|v| v.is_finite())
+                .collect();
+            let value = if finite.is_empty() {
+                None
+            } else {
+                Some(finite.iter().sum::<f64>() / finite.len() as f64)
+            };
             let row = by_group.entry(group_val).or_insert_with(|| vec![None; n_cols]);
             row[col_idx] = value;
         }
@@ -197,6 +249,15 @@ fn render_metricsql_table(
         })
         .collect();
 
+    // Natural-order the rows so the table reads in the same
+    // sequence as the plot (numeric x values ascend by
+    // magnitude, not by string order — `1, 2, 4, 8, 16`
+    // instead of `1, 16, 2, 32, 4`). Each composite group_val
+    // is split on `|` and the components are compared
+    // position-by-position with `natural_cmp`.
+    let mut by_group: Vec<(String, Vec<Option<f64>>)> = by_group.into_iter().collect();
+    by_group.sort_by(|a, b| natural_cmp_pipe_tuple(&a.0, &b.0));
+
     // Render headers including unit annotations.
     let column_headers: Vec<String> = cfg.metricsql_columns.iter()
         .zip(column_units.iter())
@@ -217,17 +278,25 @@ fn render_metricsql_table(
     }
 
     // Emit. Markdown table by default; CSV with `--format=csv`.
+    // Group columns: one header column per key in
+    // `group_keys`; cell values come from splitting the
+    // composite `group_val` on `|`.
+    let split_group = |g: &str| -> Vec<String> {
+        if group_keys.is_empty() {
+            Vec::new()
+        } else {
+            g.split('|').map(str::to_string).collect()
+        }
+    };
     if format.eq_ignore_ascii_case("csv") {
         let mut out = String::new();
-        let mut header: Vec<&str> = Vec::new();
-        if !group_key.is_empty() { header.push(group_key); }
+        let mut header: Vec<&str> = group_keys.iter().map(String::as_str).collect();
         let header_strs: Vec<&str> = column_headers.iter().map(String::as_str).collect();
         for h in &header_strs { header.push(*h); }
         out.push_str(&header.join(","));
         out.push('\n');
         for (group_val, cells) in &by_group {
-            let mut row: Vec<String> = Vec::new();
-            if !group_key.is_empty() { row.push(group_val.clone()); }
+            let mut row: Vec<String> = split_group(group_val);
             for (cell, unit) in cells.iter().zip(column_units.iter()) {
                 row.push(render_cell(*cell, unit.as_ref(), ","));
             }
@@ -239,8 +308,7 @@ fn render_metricsql_table(
 
     // Markdown.
     let mut out = String::new();
-    let mut header: Vec<&str> = Vec::new();
-    if !group_key.is_empty() { header.push(group_key); }
+    let mut header: Vec<&str> = group_keys.iter().map(String::as_str).collect();
     let header_strs: Vec<&str> = column_headers.iter().map(String::as_str).collect();
     for h in &header_strs { header.push(*h); }
     out.push_str("| ");
@@ -252,8 +320,8 @@ fn render_metricsql_table(
     out.push('\n');
     for (group_val, cells) in &by_group {
         out.push_str("| ");
-        if !group_key.is_empty() {
-            out.push_str(group_val);
+        for v in split_group(group_val) {
+            out.push_str(&v);
             out.push_str(" | ");
         }
         let cell_strs: Vec<String> = cells.iter()
@@ -438,14 +506,17 @@ pub fn summary_command(args: &[String]) {
             eprintln!("nbrs summary: --create requires --name <NAME>");
             std::process::exit(1);
         }
-        // Case 6b: --name with no --create can't take a
-        // positional — the positional is only meaningful when
-        // creating a new entry. Reject so we don't silently
-        // swallow user input.
-        (Some(_), false, Some(_)) => {
-            eprintln!("nbrs summary: positional spec is only valid with \
-                       `--create`; drop it or add `--create` to persist.");
-            std::process::exit(1);
+        // Case 4b: --name + positional spec without --create
+        // = render the ad-hoc spec under that name. The name
+        // drives the standalone output filename
+        // (`<name>_summary.md`) and the markdown report's
+        // section identifier so concurrent ad-hoc renders
+        // (e.g. SRD-46 companion tables, one per plot) get
+        // distinct sections instead of stomping on a single
+        // shared `default` slot. Add `--create` only when
+        // you want the spec persisted to the db for replay.
+        (Some(name), false, Some(spec_text)) => {
+            literal_spec(spec_text, Some(name))
         }
         // Case 5: persist + render.
         (Some(name), true, Some(spec_text)) => {

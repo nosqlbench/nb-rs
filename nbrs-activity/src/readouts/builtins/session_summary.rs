@@ -45,13 +45,20 @@ fn render_compact(
     ctx: &dyn ReadoutContext,
     out: &mut dyn ReadoutBuf,
 ) -> usize {
-    let mut tmp = String::with_capacity(48);
+    let color = ctx.use_color();
+    let dim    = if color { "\x1b[2m"    } else { "" };
+    let green  = if color { "\x1b[32m"   } else { "" };
+    let red    = if color { "\x1b[1;31m" } else { "" };
+    let reset  = if color { "\x1b[0m"    } else { "" };
+    let f = ctx.session_phases_failed();
+    let p = ctx.session_phases_pending();
+    let fail_color = if f > 0 { red } else { dim };
+    let pending_color = if p > 0 { dim } else { dim };
+    let mut tmp = String::with_capacity(64);
     let _ = write!(
         &mut tmp,
-        "{c}/{f}/{p}/{t}",
+        "{green}{c}{reset}/{fail_color}{f}{reset}/{pending_color}{p}{reset}/{dim}{t}{reset}",
         c = ctx.session_phases_completed(),
-        f = ctx.session_phases_failed(),
-        p = ctx.session_phases_pending(),
         t = ctx.session_phases_total(),
     );
     let len = tmp.len();
@@ -66,12 +73,26 @@ fn render_labeled(
     ctx: &dyn ReadoutContext,
     out: &mut dyn ReadoutBuf,
 ) -> usize {
-    let mut tmp = String::with_capacity(96);
+    // Per docs/guide/color_style.md: `phases:` is HEADER
+    // (bold), counts colored per status (OK/ERROR/MUTED),
+    // total in MUTED, `of N total` parenthetical dim.
+    let color = ctx.use_color();
+    let bold   = if color { "\x1b[1m"    } else { "" };
+    let dim    = if color { "\x1b[2m"    } else { "" };
+    let green  = if color { "\x1b[32m"   } else { "" };
+    let red    = if color { "\x1b[1;31m" } else { "" };
+    let reset  = if color { "\x1b[0m"    } else { "" };
+    let f = ctx.session_phases_failed();
+    let fail_color = if f > 0 { red } else { dim };
+    let mut tmp = String::with_capacity(128);
     let _ = write!(
         &mut tmp,
-        "phases:  {c} completed, {f} failed, {p} not run (of {t} total)",
+        "{bold}phases:{reset}  \
+         {green}{c}{reset} completed, \
+         {fail_color}{f}{reset} failed, \
+         {dim}{p}{reset} not run \
+         {dim}(of {t} total){reset}",
         c = ctx.session_phases_completed(),
-        f = ctx.session_phases_failed(),
         p = ctx.session_phases_pending(),
         t = ctx.session_phases_total(),
     );
@@ -86,16 +107,23 @@ fn render_expanded(
     ctx: &dyn ReadoutContext,
     out: &mut dyn ReadoutBuf,
 ) -> usize {
-    let mut tmp = String::with_capacity(160);
+    let color = ctx.use_color();
+    let bold   = if color { "\x1b[1m"    } else { "" };
+    let dim    = if color { "\x1b[2m"    } else { "" };
+    let green  = if color { "\x1b[32m"   } else { "" };
+    let red    = if color { "\x1b[1;31m" } else { "" };
+    let reset  = if color { "\x1b[0m"    } else { "" };
+    let f = ctx.session_phases_failed();
+    let fail_color = if f > 0 { red } else { dim };
+    let mut tmp = String::with_capacity(192);
     let _ = write!(
         &mut tmp,
-        "session totals\n  \
-         completed:  {c}\n  \
-         failed:     {f}\n  \
-         not run:    {p}\n  \
-         total:      {t}",
+        "{bold}session totals{reset}\n  \
+         {dim}completed:{reset}  {green}{c}{reset}\n  \
+         {dim}failed:{reset}     {fail_color}{f}{reset}\n  \
+         {dim}not run:{reset}    {dim}{p}{reset}\n  \
+         {dim}total:{reset}      {dim}{t}{reset}",
         c = ctx.session_phases_completed(),
-        f = ctx.session_phases_failed(),
         p = ctx.session_phases_pending(),
         t = ctx.session_phases_total(),
     );

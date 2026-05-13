@@ -77,6 +77,7 @@ pub mod scheduler;
 pub mod profiler;
 pub mod session_signals;
 pub mod observer;
+pub mod trace_router;
 pub mod session;
 pub mod runner;
 pub mod executor;

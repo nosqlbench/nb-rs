@@ -225,6 +225,7 @@ impl LogOnlyObserver {
 
 fn level_to_severity(level: LogLevel) -> LogSeverity {
     match level {
+        LogLevel::Trace => LogSeverity::Debug,
         LogLevel::Debug => LogSeverity::Debug,
         LogLevel::Info  => LogSeverity::Info,
         LogLevel::Warn  => LogSeverity::Warn,
@@ -407,10 +408,17 @@ impl RunObserver for LogOnlyObserver {
 
     fn phase_progress(&self, update: &PhaseProgressUpdate) {
         self.state.send(RunStateCmd::PhaseProgress(update.clone()));
-        // The activity's inline-status thread handles the on-the-
-        // wire `\r\x1b[K…` rewrite. Phase 2 of the display-sink
-        // refactor moves that responsibility onto a
-        // FakeTuiSink/LogOnlySink so this comment can be revisited.
+    }
+
+    fn set_status_line(&self, rendered: Option<String>) {
+        // The activity's inline-status thread sends the binder's
+        // rendered status string through here instead of writing
+        // it directly to the terminal. The active
+        // `DisplaySink` (currently `LogOnlySink`) renders it as
+        // a managed bottom region in lockstep with its log
+        // stream, so log lines and status updates can't stagger
+        // each other — a single owner of the surface.
+        self.state.send(RunStateCmd::SetStatusLine(rendered));
     }
 
     fn run_finished(&self) {

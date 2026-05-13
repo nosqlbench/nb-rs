@@ -111,6 +111,13 @@ pub enum RunStateCmd {
         profiler: Option<String>,
         limit: Option<String>,
     },
+    /// Set (or clear) the latest rendered status line for the
+    /// active phase. The activity's inline-status thread fires
+    /// this once per refresh tick instead of writing directly
+    /// to the terminal. `None` clears the slot at phase end.
+    /// See [`crate::state::RunState::status_render`] for the
+    /// rationale (single-owner rendering surface).
+    SetStatusLine(Option<String>),
     /// Synchronous render checkpoint. Processed in command order
     /// so its position in the queue marks "all preceding mutations
     /// have been applied". The actor:
@@ -446,6 +453,9 @@ fn apply(state: &mut RunState, cmd: RunStateCmd) {
         RunStateCmd::SetMeta { profiler, limit } => {
             if let Some(p) = profiler { state.profiler = p; }
             if let Some(l) = limit    { state.limit    = l; }
+        }
+        RunStateCmd::SetStatusLine(rendered) => {
+            state.status_render = rendered;
         }
         RunStateCmd::FrameAck(_) => {
             // Routed to `handle_cmd` before reaching this match;

@@ -326,13 +326,12 @@ impl GkState {
     /// them at indices 0..N with per-input change detection.
     pub fn set_inputs(&mut self, coords: &[u64]) {
         for i in 0..coords.len().min(self.core.inputs.len()) {
-            let new_val = Value::U64(coords[i]);
-            if self.core.inputs[i] != new_val {
-                self.core.inputs[i] = new_val;
-                if i < self.input_dependents.len() {
-                    for &node_idx in &self.input_dependents[i] {
-                        self.core.node_clean[node_idx] = false;
-                    }
+            self.core.inputs[i] = Value::U64(coords[i]);
+            // Unconditional invalidation: the write itself is the
+            // signal — see `set_input` for the rationale.
+            if i < self.input_dependents.len() {
+                for &node_idx in &self.input_dependents[i] {
+                    self.core.node_clean[node_idx] = false;
                 }
             }
         }
@@ -357,25 +356,44 @@ impl GkState {
     /// (`RawState`, `ProvScanState`) implement different
     /// strategies — see their own `set_inputs` impls.
     pub fn set_input(&mut self, idx: usize, value: Value) {
-        let changed = if let Some(cell) = self.core.shared_cells.get(idx).and_then(|c| c.as_ref()) {
+        if let Some(cell) = self.core.shared_cells.get(idx).and_then(|c| c.as_ref()) {
             // Cell-bound slot: the cell is the register. We do
             // NOT mirror the value into `inputs[idx]`; that
             // array slot is unused for cell-bound inputs.
             let mut guard = cell.lock().unwrap();
-            let changed = *guard != value;
             *guard = value;
-            changed
         } else {
-            let changed = self.core.inputs[idx] != value;
-            if changed {
-                self.core.inputs[idx] = value;
+            self.core.inputs[idx] = value;
+        }
+        // Mark every transitive dependent dirty unconditionally.
+        // The act of writing an input IS the invalidation
+        // signal — we don't gate on value equality because (a)
+        // structural equality on rich Value variants
+        // (Json/Bytes/VecF32) is expensive enough to defeat
+        // the purpose of the optimisation, and (b) a same-
+        // value rewrite is still a legitimate "the upstream
+        // owner asked for a re-evaluation" signal that
+        // downstream side-effecting nodes (`log_*`, audit
+        // emitters, time-stamped observers) MUST honour.
+        let dirty_debug = std::env::var("NBRS_DIRTY_DEBUG").is_ok();
+        if idx < self.input_dependents.len() {
+            if dirty_debug {
+                eprintln!(
+                    "DIRTY: set_input idx={idx} input_count={} dependents_for_idx={} \
+                     total_input_dependents_len={}",
+                    self.core.inputs.len(),
+                    self.input_dependents[idx].len(),
+                    self.input_dependents.len()
+                );
             }
-            changed
-        };
-        if changed && idx < self.input_dependents.len() {
             for &node_idx in &self.input_dependents[idx] {
                 self.core.node_clean[node_idx] = false;
             }
+        } else if dirty_debug {
+            eprintln!(
+                "DIRTY: set_input idx={idx} OUT_OF_RANGE input_dependents_len={}",
+                self.input_dependents.len()
+            );
         }
         // Non-deterministic nodes must always re-evaluate.
         for &idx in &self.nondeterministic_nodes {
@@ -428,6 +446,30 @@ impl GkState {
     /// inner kernels.
     pub fn shared_cell(&self, idx: usize) -> Option<SharedCell> {
         self.core.shared_cells.get(idx).and_then(|c| c.clone())
+    }
+
+    /// Mark every node that depends on a cell-bound input slot as
+    /// dirty. Called at cycle boundary on descendant kernels so
+    /// that values written into shared cells by ancestor kernels'
+    /// `advance_broadcasts` actually propagate through our memoized
+    /// eval cone on the next pull.
+    ///
+    /// Without this, a passthrough output node like `query` —
+    /// whose wiring is `WireSource::Input(idx_of_query_slot)` and
+    /// whose `query` slot is attached to the phase kernel's output
+    /// cell — caches its first-cycle value forever, because no
+    /// `set_input` call on this kernel ever touches that slot (the
+    /// cell is written by the ancestor, not via our `set_input`).
+    pub fn invalidate_cell_bound_dependents(&mut self) {
+        let n = self.core.shared_cells.len()
+            .min(self.input_dependents.len());
+        for i in 0..n {
+            if self.core.shared_cells[i].is_some() {
+                for &node_idx in &self.input_dependents[i] {
+                    self.core.node_clean[node_idx] = false;
+                }
+            }
+        }
     }
 
     /// Reset a range of inputs to their defaults. Used at stanza
@@ -623,11 +665,10 @@ impl ProvScanState {
     pub fn set_inputs(&mut self, coords: &[u64]) {
         let mut mask = 0u64;
         for i in 0..coords.len().min(self.core.inputs.len()) {
-            let new_val = Value::U64(coords[i]);
-            if self.core.inputs[i] != new_val {
-                self.core.inputs[i] = new_val;
-                mask |= 1u64 << i;
-            }
+            self.core.inputs[i] = Value::U64(coords[i]);
+            // Unconditional: writing the input IS the
+            // invalidation signal regardless of value equality.
+            mask |= 1u64 << i;
         }
         if mask != 0 {
             for (i, clean) in self.core.node_clean.iter_mut().enumerate() {

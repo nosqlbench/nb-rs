@@ -42,50 +42,58 @@ impl Readout for TruncatedPhases {
         if count == 0 {
             return 0;
         }
+        let color = ctx.use_color();
         match (lod, mode) {
-            (Lod::Compact,  ContentMode::Value)       => render_compact(count, out),
-            (Lod::Labeled,  ContentMode::Value)       => render_labeled(count, out),
-            (Lod::Expanded, ContentMode::Value)       => render_expanded(count, out),
+            (Lod::Compact,  ContentMode::Value)       => render_compact(count, color, out),
+            (Lod::Labeled,  ContentMode::Value)       => render_labeled(count, color, out),
+            (Lod::Expanded, ContentMode::Value)       => render_expanded(count, color, out),
             (_,             ContentMode::Explanation) => render_explanation(out),
         }
     }
 }
 
-fn render_compact(count: usize, out: &mut dyn ReadoutBuf) -> usize {
-    let mut tmp = String::with_capacity(32);
-    let _ = write!(&mut tmp, "(… {count} more)");
+fn render_compact(count: usize, color: bool, out: &mut dyn ReadoutBuf) -> usize {
+    let dim   = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
+    let mut tmp = String::with_capacity(48);
+    let _ = write!(&mut tmp, "{dim}(… {count} more){reset}");
     let len = tmp.len();
     let _ = out.write_str(&tmp);
     len
 }
 
-fn render_labeled(count: usize, out: &mut dyn ReadoutBuf) -> usize {
-    // Two-line form matches the prior direct eprintln
-    // byte-for-byte: rollup + tip.
+fn render_labeled(count: usize, color: bool, out: &mut dyn ReadoutBuf) -> usize {
+    // Two-line form: rollup + tip. Both rendered as MUTED
+    // (dim) per docs/guide/color_style.md — this is
+    // informational tail, not primary signal.
+    let dim   = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     let suffix = if count == 1 { "" } else { "s" };
-    let mut tmp = String::with_capacity(96);
+    let mut tmp = String::with_capacity(128);
     let _ = write!(
         &mut tmp,
-        "(… and {count} more phase{suffix} not listed)\n\
-tip: run with dryrun=phase to see the full plan",
+        "{dim}(… and {count} more phase{suffix} not listed){reset}\n\
+{dim}tip: run with dryrun=phase to see the full plan{reset}",
     );
     let len = tmp.len();
     let _ = out.write_str(&tmp);
     len
 }
 
-fn render_expanded(count: usize, out: &mut dyn ReadoutBuf) -> usize {
+fn render_expanded(count: usize, color: bool, out: &mut dyn ReadoutBuf) -> usize {
     // Expanded adds one extra contextualising line above
     // the rollup explaining *why* the tail was truncated.
     // Same data; just spelled out for the operator who's
     // reading the post-run summary cold.
+    let dim   = if color { "\x1b[2m" } else { "" };
+    let reset = if color { "\x1b[0m" } else { "" };
     let suffix = if count == 1 { "" } else { "s" };
-    let mut tmp = String::with_capacity(160);
+    let mut tmp = String::with_capacity(192);
     let _ = write!(
         &mut tmp,
-        "post-failure tail truncated to keep the summary readable\n\
-(… and {count} more phase{suffix} not listed)\n\
-tip: run with dryrun=phase to see the full plan",
+        "{dim}post-failure tail truncated to keep the summary readable{reset}\n\
+{dim}(… and {count} more phase{suffix} not listed){reset}\n\
+{dim}tip: run with dryrun=phase to see the full plan{reset}",
     );
     let len = tmp.len();
     let _ = out.write_str(&tmp);

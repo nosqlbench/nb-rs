@@ -1823,18 +1823,14 @@ async fn run_phase(
     ctx.observer.phase_starting(phase_name, &phase_labels,
         stanza_len, progress_extent, phase_concurrency);
 
-    // SRD-63 Push 9a: fire `Event::PhaseStart` once per
-    // phase, right after `set_phase_running` so any
-    // bound `phase_starting` readout sees the same
-    // scene-tree state the post-fire activity will. The
-    // built-in default is empty (no opt-in pre-phase
-    // line by default — Push 2's deletion stays in
-    // effect); workloads that want it back bind
-    // `on_phase_start: phase_starting` (or any custom
-    // body).
+    // Fire `Event::PhaseStart` once per phase. No built-in
+    // default body — `phase_done` already renders the
+    // lifecycle bound for the phase's existence, and a
+    // separate `▶ starting` line just duplicates the
+    // name/coords/seq. Workloads that want a pre-phase
+    // header bind `on_phase_start: phase_starting`
+    // explicitly.
     {
-        // Display labels: root-first reversed coords —
-        // matches the form `phase_done` already uses.
         let display_labels: String = {
             let parent_coords: Vec<_> = ctx.current_parent_kernel.as_ref()
                 .map(|k| k.scope_coordinates().iter().rev().cloned().collect())
@@ -2333,6 +2329,20 @@ async fn run_phase(
             // Same scope_close partial annotation — vframe is the
             // phase's terminal validation snapshot.
             vframe.mark_partial();
+            // Generic observability point: a validation MetricSet
+            // is being handed to the cadence reporter. Carries
+            // the phase labels (whatever the scope tree pushed)
+            // and the family count — applies to ANY workload
+            // that produces a validation frame.
+            if crate::observer::trace_enabled() {
+                crate::observer::trace(
+                    &labels,
+                    &format!(
+                        "event=validation_frame.ingest family_count={}",
+                        vframe.len()
+                    ),
+                );
+            }
             ctx.cadence_reporter.ingest(&labels, vframe.clone());
             ctx.stop_handle.report_frame(&vframe);
         }
