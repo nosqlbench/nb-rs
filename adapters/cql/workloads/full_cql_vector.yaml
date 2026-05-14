@@ -13,6 +13,7 @@
 #   nbrs full_cql_vector.yaml scenario=filtered_knn limit=100
 
 params:
+  host: localhost
   adapter: cql
   dataset: example
   prefix: ""
@@ -26,10 +27,9 @@ params:
   query_concurrency: "20"
   replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
   fknn_profile: default
-#  optimize_for_values: "recall"
-  optimize_for_values: "recall,latency"
   vector_idx_suffix: _vector_idx
   meta_idx_suffix: _meta_idx
+  min_query_cycles: 100000
 
 # Unified report block (SRD-46): plots + tables in declaration
 # order. Each scenario contributes its items to its own
@@ -76,105 +76,50 @@ report:
       query recall: avg(recall_mean{k="10"}) by (profile,limit)
       query latency: avg(cycles_servicetime_mean) by (profile,limit)
 
-    plot recall_1_mean
-      label "ALL 1-recall@R, oracles & PVS"
+    # Annotated reference plot — recall on the y-axis, QPS
+    # on the x-axis with a logarithmic scale. The directives
+    # below cover every plot-DSL primitive currently in use;
+    # comment per line explains what that primitive does.
+    plot recall_vs_qps
+      label "Recall vs QPS (log scale), oracles & PVS"
       legend: br
-      x: r
-      x-legend: "R"
-      x-ticks: avg(recall_mean{k="1",profile=~"label.*"}) by (k,r)
+      # Compact paired form: `(METRIC_X, METRIC_Y, point-label){labels} by (...)`
+      # expands to two parallel `avg(...)` queries sharing the
+      # label filter and `by` clause. `limit` varies along each
+      # curve (the within-line dimension); `phase` and `k` are
+      # the per-line discriminators in `series:` below.
+      # Third positional `*` enables auto-vary point labels:
+      # at each rendered point, surface every label in the
+      # source data that isn't a series discriminator. With
+      # `series: phase,k` and `by (phase,k,limit)`, that's
+      # `limit=<value>` at every point. For richer
+      # annotations (e.g. `limit=N, x=<rate>`) replace `*`
+      # with a `point-label1:` long-form directive listing
+      # label names plus the reserved tokens `x`, `y`, `n`.
+      y1: (cycles_total_rate, recall_mean, *){phase=~".*query"} by (phase,k,limit)
+      point-label1: limit, x
+      x-legend: "QPS"
+      xscale=log
       y-side: left
-      y1: avg(recall_mean{k="1",phase="ann_query",profile=~"label.*"}) by (k,r,optimize_for)
-      y2: avg(recall_mean{k="1",phase="pvs_query",profile=~"default"}) by (k,r,optimize_for)
-      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
-      y-ranges: [[0.0,1.0],[0.0,1.0]]
-      y-labels: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
-      with-tables: [optimize_for]
-      style profile=default:line=dotted
-
-    plot recall_10_mean
-      label "ALL 10-recall@R, oracles & PVS"
-      legend: br
-      x: r
-      x-legend: "R"
-      x-ticks: avg(recall_mean{k="10",profile=~"label.*"}) by (k,r)
-      y-side: left
-      y1: avg(recall_mean{k="10",phase="ann_query",profile=~"label.*"}) by (k,r,optimize_for)
-      y2: avg(recall_mean{k="10",phase="pvs_query",profile=~"default"}) by (k,r,optimize_for)
-      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
-      y-ranges: [[0.8,1.0],[0.8,1.0]]
-      y-labels: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
-      with-tables: [optimize_for]
-      style profile=default:line=dotted
-
-    plot recall_10_mean_all
-      label "ALL 10-recall@R, oracles & PVS ALL"
-      legend: br
-      x: r
-      x-legend: "R"
-      x-ticks: recall_mean{k="10",profile=~"label.*"} by (k,r)
-      y-side: left
-      y1: recall_mean{k="10",phase="ann_query",profile=~"label.*"} by (k,r,optimize_for)
-      y2: recall_mean{k="10",phase="pvs_query",profile=~"default"} by (k,r,optimize_for)
-      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
-      y-ranges: [[0.8,1.0],[0.8,1.0]]
-      y-labels: ["oracle-O4[optimize_for]-all", "PVS_O4[optimize_for]-all"]
-      with-tables: [optimize_for_all]
-      style profile=default:line=dotted
-
-    plot recall_100_mean
-      label "ALL 100-recall@R, oracles & PVS"
-      legend: br
-      x: r
-      x-legend: "R"
-      x-ticks: avg(recall_mean{k="100",profile=~"label.*"}) by (k,r,optimize_for)
-      y-side: left
-      y1: avg(recall_mean{k="100",phase="ann_query",profile=~"label.*"}) by (k,r,optimize_for)
-      y2: avg(recall_mean{k="100",phase="pvs_query",profile=~"default"}) by (k,r,optimize_for)
-      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
-      y-ranges: [[0.9,1.0],[0.9,1.0]]
-      y-labels:  ["oracle-o4[optimize_for], "PVS_O4[optimize_for]"]
-      with-tables: [optimize_for]
-      style profile=default:line=dotted
-
-    plot recall_vs_latency_k1
-      label "Recall@1 vs latency, oracles & PVS"
-      legend: br
-      x: r
-      x-legend: "service time"
-      y1: avg(cycles_servicetime_mean{k="1",phase="ann_query",profile=~"label.*"}) by (k,r,optimize_for)
-      y2: avg(cycles_servicetime_mean{k="1",phase="pvs_query",profile=~"default"}) by (k,r,optimize_for)
-      y-legends: ["oracle-O4[optimize_for]", "PVS_O4[optimize_for]"]
-      y-ranges: [[0.0,1.0],[0.0,1.0]]
-      y-labels:  [recall]
-      with-tables: [optimize_for]
-      style profile=default:line=dotted
+      y-labels: ["recall"]
+      # Legend uses placeholders that bind from `series:`
+      # labels. `[k]` and `[phase]` resolve because they're
+      # listed in `series:`. `[limit]` would NOT resolve (it
+      # varies along the curve, not per line).
+      y-legends: ["k=[k] [phase]"]
+      y-ranges: [[,1.0]]
+      series: phase,k
+      style phase=pvs_query:line=dotted
 
 bindings: |
   profiles := matching_profiles("{dataset}", "{prefix}")
-  # SRD-66: detected-fact wires populated by the
-  # `detect_dialect` phase. Initial `false`; the result-
-  # bindings on `describe_system_views` flip them based on
-  # the cluster's schema. `await_index` reads them via
-  # `pick(...)` to choose the right system-views table.
-  shared has_sai_column_indexes := false
-  shared has_indexes := false
 
 scenarios:
 
-  # `default` runs when the operator invokes without an
-  # explicit `scenario=`. Aliases `fulltest` so the natural
-  # `nbrs run workload=full_cql_vector.yaml dryrun=…` invocation
-  # exercises a coherent scenario tree (with the for-loops
-  # that bind `{profile}` / `{table}` / `{optimize_for}`),
-  # not the runtime-auto-generated flat phase list (which
-  # invokes every phase at the top level without those
-  # iteration variables and immediately fails to resolve
-  # `{table}` in the schema phase).
   default:
     - scenario: fulltest
 
   fulltest:
-    - detect_dialect
     - scenario: test_oracles
     - scenario: test_fknn
     # One-shot diagnostic probe — runs the SAME query
@@ -196,48 +141,18 @@ scenarios:
     - recall_audit_oracle
     - recall_audit_pvs
 
-  # Probe-only: detect dialect and count the SAI index's
-  # SSTable fan-out for label_00:recall. Confirms whether
-  # the SAI-not-settled hypothesis is the cause of the
-  # recall inversion before we wire in the full compaction
-  # pipeline.
-  count_only:
-    - detect_dialect
-    - for: "profile in matching_profiles('{dataset}', '{oracles_prefix}')"
-      phases:
-        - for: "optimize_for in {optimize_for_values}, table in vec_{profile}_{optimize_for}"
-          phases:
-            - count_sstables
-
   # Per-profile partition test (label_00..label_11)
   test_oracles:
-    - detect_dialect
     - for: "profile in matching_profiles('{dataset}', '{oracles_prefix}')"
       phases:
-        - for: "optimize_for in {optimize_for_values}, table in vec_{profile}_{optimize_for}"
+        - for: "table in vec_{profile}"
           phases:
             - teardown
             - schema
             - rampup
-            - await_index
-            # SAI's `is_building=true` flag flips false long
-            # before the index has been compacted down to a
-            # single SSTable. Recall at narrow LIMIT is
-            # measurably worse on a fragmented SAI index
-            # (we lost ~11 points in earlier runs that
-            # measured pre-compaction). Force the SAI index
-            # to its settled state via Jolokia → flush →
-            # major compaction, then verify via BOTH paths:
-            # Jolokia (CompactionManager.getCompactions ==
-            # []) for "no jobs running" and CQL
-            # (sai_sstable_indexes count == 1) for "the
-            # index actually merged".
-            - count_sstables
             - jolokia_flush
             - jolokia_compact
             - jolokia_await_compaction
-            - await_compaction
-            - count_sstables
             - for: "k in {k_values}, limit in {k_{k}_limits}"
               phases:
                 - ann_query
@@ -250,58 +165,26 @@ scenarios:
   # repeated invocations, the SAI index hasn't fully settled by
   # the time `await_index`'s polling returns.
   test_oracles_query_only:
-    - detect_dialect
     - for: "profile in matching_profiles('{dataset}', '{oracles_prefix}')"
       phases:
-        - for: "optimize_for in {optimize_for_values}, table in vec_{profile}_{optimize_for}"
+        - for: "table in vec_{profile}"
           phases:
             - for: "k in {k_values}, limit in {k_{k}_limits}"
               phases:
                 - ann_query
 
-  # Filtered KNN against default profile
-  # For smoke testing: nbrs full_cql_vector.yaml filtered_knn limit=100
-  #
-  # Rampup and query are interleaved inside the SAME for-loop
-  # iteration over `optimize_for` so each iteration's queries hit
-  # the index that was just built. The previous shape (separate
-  # `rampup_fknn` and `query_fknn` top-level scenarios) caused the
-  # second rampup iteration to tear down and rebuild the table
-  # under a different `optimize_for` setting before the first
-  # iteration's queries could run; both query iterations then
-  # measured the SAME (last-built) index, producing byte-identical
-  # `optimize_for=LATENCY` and `optimize_for=RECALL` recall values
-  # that differed only in their metric labels. Mirrors the
-  # `test_oracles` shape.
   test_fknn:
-    - detect_dialect
-    - for: "profile in {fknn_profile}, optimize_for in {optimize_for_values}, table in fknn_{profile}_{optimize_for}"
+    - for: "profile in {fknn_profile}, table in fknn_{profile}"
       phases:
         - teardown
         - schema
         - fknn_rampup_data
-        - await_index
-        # Same SAI-settlement guard as test_oracles — see
-        # comment there. Jolokia drives the flush + compact
-        # triggers AND the "no compaction jobs running"
-        # check; CQL polls `sai_sstable_indexes` for the
-        # final `count == 1` settled state.
-        - count_sstables
         - jolokia_flush
         - jolokia_compact
         - jolokia_await_compaction
-        - await_compaction
-        - count_sstables
         - for: "k in {k_values}, limit in {k_{k}_limits}"
           phases:
             - pvs_query
-
-  await_fknn:
-    - detect_dialect
-    - for: "profile in {fknn_profile}, table in fknn_{profile}, optimize_for in {optimize_for_values}"
-      phases:
-        - await_index
-
 
 
 # =====================================================================
@@ -309,11 +192,6 @@ scenarios:
 # =====================================================================
 
 phases:
-
-  # ── Schema DDL (parameterized by {table}, {dataset}:{profile}, {optimize_for}) ──
-  # Single unified schema: keyspace → table (with metadata column) → indexes.
-  # All IF NOT EXISTS — idempotent and safe to re-run.
-  # ANN-only workloads simply leave the metadata column null.
 
   schema:
     concurrency: 1
@@ -343,7 +221,7 @@ phases:
           CREATE CUSTOM INDEX IF NOT EXISTS {table}{vector_idx_suffix}
           ON {keyspace}.{table} (value)
           USING 'StorageAttachedIndex'
-          WITH OPTIONS = {'optimize_for': '{optimize_for}', 'similarity_function': '{similarity_function}'}
+          WITH OPTIONS = {'similarity_function': '{similarity_function}'}
       create_metadata_index:
         raw: |
           CREATE CUSTOM INDEX IF NOT EXISTS {table}{meta_idx_suffix}
@@ -360,75 +238,6 @@ phases:
         raw: "DROP INDEX IF EXISTS {keyspace}.{table}{vector_idx_suffix}"
       drop_table:
         raw: "DROP TABLE IF EXISTS {keyspace}.{table}"
-
-  # SRD-66 probe phase: runs once per scenario, before
-  # any phase that consumes the dialect facts. Reads the
-  # cluster's `system_views` schema and flips the
-  # workload-root `shared` booleans based on which
-  # virtual table is present. Result-bindings use
-  # `regex_match(exactly_one_value(body), …)` to assert
-  # the schema-text body is unary and apply the pattern.
-  # Subsequent phases read the booleans via `extern` and
-  # branch with `pick(...)` to choose the right system
-  # table.
-  detect_dialect:
-    concurrency: 1
-    cycles: 1
-    ops:
-      describe_system_views:
-        raw: "DESCRIBE KEYSPACE system_views"
-        result: |
-          # `DESCRIBE KEYSPACE` returns multi-row. Flatten the
-          # JSON leaves (including embedded newlines inside
-          # `create_statement` columns) into one big text the
-          # regex can scan. CQL emits `CREATE TABLE …` and
-          # `CREATE VIRTUAL TABLE …`, so the pattern allows
-          # the optional CREATE prefix.
-          schema_text            := log_info("JSON_TEXT: " + json_text(body))
-          has_sai_column_indexes := log_info(regex_match(schema_text, "(?im)^\s*(?:CREATE\s+)?(?:VIRTUAL\s+)?TABLE\s+system_views\.sai_column_indexes\s*\("))
-          has_indexes            := log_info(regex_match(schema_text, "(?im)^\s*(?:CREATE\s+)?(?:VIRTUAL\s+)?TABLE\s+system_views\.indexes\s*\("))
-
-  # Count the SSTables that the vector SAI index currently
-  # spans for `{keyspace}.{table}`. Each row in
-  # `system_views.sai_sstable_indexes` is one (keyspace,
-  # index, sstable) tuple, so `COUNT(*)` filtered to our
-  # index gives the live SSTable fan-out. SAI's ANN graph
-  # quality degrades with sstable count > 1 — count > 1
-  # post-rampup means the search has to query multiple
-  # graphs and merge, which lowers recall at narrow LIMIT
-  # values. Surfaces the number as both an audit.log line
-  # and a `sai_sstable_count` gauge so we can plot it over
-  # time.
-  count_sstables:
-    concurrency: 1
-    cycles: 1
-    ops:
-      sai_sstable_count:
-        raw: |
-          SELECT sstable_name FROM system_views.sai_sstable_indexes
-          WHERE keyspace_name = '{keyspace}'
-            AND index_name = '{table}{vector_idx_suffix}'
-          ALLOW FILTERING
-        # SRD-66 magic extern `count` is populated by the
-        # adapter wrapper with the result body's row count
-        # (typed as u64), so we don't need
-        # `exactly_one_value` extraction here — every row
-        # returned is one SSTable in the SAI index.
-        # Split the format_u64 call into its own binding so
-        # the `+`-as-str_concat dispatch sees a clean
-        # `Str + Str` (rather than re-inferring the nested
-        # call's return type).
-        # No `metrics:` block — see followup note: the
-        # current wrapper order (result innermost, metrics
-        # outermost) means `metrics` reads its values from
-        # the per-op kernel BEFORE the result-binding
-        # captures have been written there, so a `value:
-        # count` gauge resolves to Value::None at cycle
-        # time. Audit log line is the visibility path for
-        # now.
-        result: |
-          n_str := format_u64(count, 10)
-          _audit := log_info("sai_sstable_count: " + n_str)
 
   # Trigger a memtable flush for {keyspace} via the Jolokia
   # JMX/HTTP bridge. Cassandra's `is_building=true → false`
@@ -463,7 +272,7 @@ phases:
     cycles: 1
     ops:
       flush:
-        uri: "http://localhost:8778/jolokia/"
+        uri: "http://{host}:8778/jolokia/"
         method: POST
         body: |
           {"type":"exec",
@@ -507,7 +316,7 @@ phases:
     cycles: 1
     ops:
       compact:
-        uri: "http://localhost:8778/jolokia/"
+        uri: "http://{host}:8778/jolokia/"
         method: POST
         body: |
           {"type":"exec",
@@ -555,7 +364,7 @@ phases:
         memo:
           before: "awaiting compaction on {keyspace}.{table}"
           after: "compacted {keyspace}.{table}"
-        uri: "http://localhost:8778/jolokia/read/org.apache.cassandra.db:type=CompactionManager/Compactions"
+        uri: "http://{host}:8778/jolokia/read/org.apache.cassandra.db:type=CompactionManager/Compactions"
         method: GET
         request_timeout_ms: 10000
         verify:
@@ -569,83 +378,6 @@ phases:
           max_error_retries: 3
           json_path: "/value"
           metric_name: jolokia_compaction_wait_time_s
-
-  # Block until the SAI vector index has been compacted
-  # down to a single SSTable. Polls
-  # `system_views.sai_sstable_indexes` rows for our index
-  # and waits until the row count is exactly 1.
-  #
-  # `min_rows=1` is load-bearing: right after rampup the
-  # data is still in the memtable and zero rows appear
-  # in `sai_sstable_indexes`. Without the lower bound, the
-  # poll exits immediately at count=0 — before the
-  # memtable has flushed — and recall is measured on an
-  # un-settled state. With `[1..=1]` the poll waits for
-  # (a) flush so there's at least 1 sstable, then
-  # (b) compaction so there's at most 1.
-  #
-  # Trusts natural compaction to converge. If the cluster
-  # doesn't reach `count == 1` within `timeout_ms`, the
-  # phase fails with a poll timeout, which is the correct
-  # surfacing for an unsettling-cluster condition.
-  await_compaction:
-    concurrency: 1
-    ops:
-      sai_sstable_count_settled:
-        raw: |
-          SELECT sstable_name FROM system_views.sai_sstable_indexes
-          WHERE keyspace_name = '{keyspace}'
-            AND index_name = '{table}{vector_idx_suffix}'
-          ALLOW FILTERING
-        poll:
-          mode: await_settled
-          interval_ms: 5000
-          timeout_ms: 1800000
-          min_rows: 1
-          max_rows: 1
-          max_error_retries: 3
-          metric_name: compaction_wait_time_s
-
-  await_index:
-    concurrency: 1
-    bindings: |
-      # SRD-66 §"Surface 3" — `pick(b0, b1, v0, v1)`
-      # returns the value paired with the unique true
-      # selector. Exactly one of the two booleans must
-      # be true (the detect_dialect phase guarantees
-      # this); zero or two true selectors is a hard
-      # error pointing the operator at a misconfigured
-      # cluster.
-      target_index_table := pick(
-        has_sai_column_indexes, has_indexes,
-        "system_views.sai_column_indexes",
-        "system_views.indexes")
-    ops:
-      indexes_present:
-        raw: |
-          SELECT index_name FROM {target_index_table}
-          WHERE keyspace_name = '{keyspace}'
-            AND index_name = '{table}{vector_idx_suffix}'
-          ALLOW FILTERING
-        verify:
-          - min_rows: 1
-        strict: true
-      indexes_built:
-        raw: |
-          SELECT index_name FROM {target_index_table}
-          WHERE keyspace_name = '{keyspace}'
-            AND index_name = '{table}{vector_idx_suffix}'
-            AND is_building = true
-          ALLOW FILTERING
-        poll:
-          mode: await_empty
-          interval_ms: 5000
-          timeout_ms: 600000
-          max_error_retries: 3
-          metric_name: index_build_time_s
-
-  # ── Data loading (parameterized by {table}, {dataset}:{profile}) ────────────
-  # ANN rampup: key + vector only. Used by fulltest, unfiltered.
 
   rampup:
     concurrency: "{concurrency}"
@@ -686,13 +418,14 @@ phases:
     concurrency: "{query_concurrency}"
     bindings: |
       init prebuffered = dataset_prebuffer("{dataset}:{profile}")
-      init query_counts = query_count(prebuffered)
-      cursor q = range(0, query_counts * 1)
-      query_vector := query_vector_at(prebuffered, q % query_counts)
-      ground_truth := neighbor_indices_at(prebuffered, q)
-      latency_factor := 0.979 + 4.021 * pow(limit, -0.761)                                                                                                                                                                                                             
-      recall_factor  := 0.509 + 9.491 * pow(limit, -0.402)
-      overscan := if(optimize_for == "LATENCY", latency_factor, recall_factor) 
+      init base = query_count(prebuffered)
+      passes := set_or_get(
+        query_passes,
+        multiples_at_least(min_query_cycles, base)
+      )
+      cursor q = range(0, base * passes)
+      query_vector := query_vector_at(prebuffered, q % base)
+      ground_truth := neighbor_indices_at(prebuffered, q % base)
 
     ops:
       select_ann:
@@ -709,10 +442,6 @@ phases:
             r: "{limit}"
             functions:
               - recall
-        metrics:
-          overscan:
-            kind: gauge
-            value: overscan
 
 
   # Single-cycle diagnostic phase. Runs the SAME query
@@ -811,17 +540,10 @@ phases:
     bindings: |
       init prebuffered = dataset_prebuffer("{dataset}:{profile}")
       init query_counts = query_count(prebuffered)
-      cursor q = range(0, query_counts * 1)
+      cursor q = range(0, query_counts * 10)
       query_vector := query_vector_at(prebuffered, q % query_counts)
       predicate := predicate_value_at(prebuffered, q % query_counts)
       ground_truth := filtered_neighbor_indices_at(prebuffered, q % query_counts)
-      latency_factor := 0.979 + 4.021 * pow(limit, -0.761)
-      recall_factor  := 0.509 + 9.491 * pow(limit, -0.402)
-      # Align with ann_query's overscan formula. A future
-      # `map(key, "K1", v1, "K2", v2, ...)` intrinsic could
-      # replace this once designed; for now `if(... == "LATENCY",
-      # ..., ...)` is the canonical dispatch on string keys.
-      overscan := if(optimize_for == "LATENCY", latency_factor, recall_factor)
 
     ops:
       select_ann:
@@ -846,10 +568,6 @@ phases:
             r: "{limit}"
             functions:
               - recall
-        metrics:
-          overscan:
-            kind: gauge
-            value: overscan
 
 
 

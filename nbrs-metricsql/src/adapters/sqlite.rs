@@ -259,10 +259,23 @@ impl DataSource for SqliteDataSource {
 
         // 3. JOIN to sample_value. Single query grouped per
         //    instance; per-instance labels are materialised
-        //    in a follow-up query.
-        let stat_col = resolved.stat_column;
+        //    in a follow-up query. `stat_expr` is a full SQL
+        //    expression (referring to `sv.*` columns) so
+        //    derived stats like `_rate` can blend `count` and
+        //    `interval_ms` per row.
+        //
+        //    For `_rate` queries we additionally project
+        //    `sv.interval_ms` so the loop below can warn when
+        //    any sample's underlying window was sub-second —
+        //    `_rate` over a sub-second window quantizes harshly
+        //    (a phase that completed 10k ops in 800ms gives
+        //    `12500 ops/sec`; 700ms or 900ms give the same to
+        //    integer precision). Surfacing the warning prevents
+        //    silent fictional precision.
+        let stat_expr = resolved.stat_expr;
+        let interval_proj = if resolved.is_rate { ", sv.interval_ms" } else { "" };
         let sql = format!(
-            "SELECT mi.id, sv.timestamp_ms, sv.{stat_col} \
+            "SELECT mi.id, sv.timestamp_ms, {stat_expr}{interval_proj} \
              FROM metric_instance mi \
              JOIN sample_value sv ON sv.instance_id = mi.id \
              WHERE mi.family_id = ?1 \
@@ -292,6 +305,12 @@ impl DataSource for SqliteDataSource {
         let mut out: Vec<Series> = Vec::new();
         let mut current_instance_id: Option<i64> = None;
         let mut current_samples: Vec<Sample> = Vec::new();
+        // Sub-1s rate warning state: track the minimum interval
+        // observed for any `_rate` row across the whole query.
+        // Emit a single summary warning post-fetch so a
+        // multi-series query doesn't fan out one warning per
+        // instance.
+        let mut min_rate_interval_ms: Option<i64> = None;
 
         while let Some(row) = rows.next()
             .map_err(|e| DataSourceError::new(format!("step fetch: {e}")))? {
@@ -302,6 +321,15 @@ impl DataSource for SqliteDataSource {
             let value: f64 = row.get::<_, Option<f64>>(2)
                 .map_err(|e| DataSourceError::new(format!("row.get(2): {e}")))?
                 .unwrap_or(f64::NAN);
+            if resolved.is_rate {
+                let iv: i64 = row.get(3).map_err(|e|
+                    DataSourceError::new(format!("row.get(3): {e}")))?;
+                if iv > 0 && iv < 1000 {
+                    min_rate_interval_ms = Some(min_rate_interval_ms
+                        .map(|m| m.min(iv))
+                        .unwrap_or(iv));
+                }
+            }
 
             if Some(instance_id) != current_instance_id {
                 if let Some(prev) = current_instance_id.take() {
@@ -313,6 +341,16 @@ impl DataSource for SqliteDataSource {
                 current_instance_id = Some(instance_id);
             }
             current_samples.push(Sample { timestamp_ms, value });
+        }
+        if let Some(iv) = min_rate_interval_ms {
+            eprintln!(
+                "warning: `{}` evaluated over samples with sub-1s windows \
+                 (shortest seen: {iv}ms). _rate divides count by interval, so \
+                 a {iv}ms window quantizes the result heavily — consider \
+                 rate({}[30s]) for a steady-state view over a longer span.",
+                resolved.virtual_name,
+                resolved.virtual_name.trim_end_matches("_rate"),
+            );
         }
         if let Some(last) = current_instance_id {
             out.push(materialize_series(
@@ -714,11 +752,26 @@ struct ResolvedName {
     /// Re-applied as `__name__` on every result series so the
     /// downstream evaluator sees the name it queried for.
     virtual_name: String,
-    /// `sample_value` column to read for the value series.
-    stat_column: &'static str,
+    /// Full SQL expression that produces the sample's value
+    /// from a `sample_value` row aliased as `sv`. For native
+    /// columns this is `sv.<col>`; the synthetic `_rate`
+    /// suffix uses a derived expression that blends `count`
+    /// and `interval_ms` so single-snapshot counters yield a
+    /// useful per-second value without needing PromQL's
+    /// `rate([window])` (which requires ≥2 samples).
+    stat_expr: &'static str,
+    /// `true` when the resolved name carries the synthetic
+    /// `_rate` suffix. Used by [`fetch`] to project
+    /// `sv.interval_ms` alongside the value column and warn
+    /// when any sample's interval is below 1s — a `_rate`
+    /// computation over a sub-second window quantizes
+    /// heavily (a 50ms sample of a counter that counted N
+    /// items gives `N × 20 ops/sec` granularity), and
+    /// operators rarely want that quietly.
+    is_rate: bool,
 }
 
-/// Try to resolve a metric name to a (family, stat-column)
+/// Try to resolve a metric name to a (family, stat-expr)
 /// pair. The lookup tries the bare name first (for
 /// counter/gauge/summary families with no suffix), then —
 /// if no family is found — strips a known stat suffix and
@@ -729,26 +782,33 @@ fn resolve_family(conn: &Connection, name: &str)
     // Bare-name lookup: matches counter / gauge / summary
     // families whose name equals the query verbatim.
     if let Some((family_id, family_type)) = lookup_family(conn, name)? {
-        let stat_column = default_column_for_type(&family_type);
+        let stat_expr = default_column_for_type(&family_type);
         return Ok(Some(ResolvedName {
             family_id,
             virtual_name: name.to_string(),
-            stat_column,
+            stat_expr,
+            is_rate: false,
         }));
     }
-    // Suffix lookup: `<family>_<stat>` against summary
-    // families. The suffix list is closed and ordered
-    // longest-first so `_p999` is preferred over `_p9` (none
-    // exist now but the principle is robust).
+    // Suffix lookup: `<family>_<stat>` against summary,
+    // histogram, counter or gauge-with-count families. The
+    // suffix list is closed and ordered longest-first so
+    // `_p999` is preferred over `_p9`.
+    //
+    // Each suffix lists which family types it applies to:
+    // `_p99` only makes sense on summary/histogram (with a
+    // p99 column); `_rate` makes sense on anything with a
+    // `count` column (counters, summaries, histograms).
     for suffix in STAT_SUFFIXES {
         if let Some(stripped) = name.strip_suffix(suffix.text)
             && let Some((family_id, family_type)) = lookup_family(conn, stripped)?
-            && family_type == "summary"
+            && suffix.applies_to(&family_type)
         {
             return Ok(Some(ResolvedName {
                 family_id,
                 virtual_name: name.to_string(),
-                stat_column: suffix.column,
+                stat_expr: suffix.expr,
+                is_rate: suffix.text == "_rate",
             }));
         }
     }
@@ -768,19 +828,20 @@ fn lookup_family(conn: &Connection, name: &str)
         DataSourceError::new(format!("family lookup: {e}")))
 }
 
-/// Default `sample_value` column for a family type. The
-/// suffix lookup overrides this for summary families where
-/// the user explicitly named a stat.
+/// Default expression for a family type's bare-name value.
+/// Returns a SQL fragment that reads from `sv.*` columns;
+/// the suffix lookup overrides this when the user names a
+/// specific stat.
 fn default_column_for_type(family_type: &str) -> &'static str {
     match family_type {
         // Counters: cumulative observation total.
-        "counter" => "count",
+        "counter" => "sv.count",
         // Gauges: instantaneous reading.
-        "gauge"   => "mean",
+        "gauge"   => "sv.mean",
         // Summaries: bare name returns observation count;
         // suffixes route to specific stat columns
         // (`_sum` → sum, `_p99` → p99, etc.).
-        "summary" => "count",
+        "summary" => "sv.count",
         // Histograms (bucketed): bare name returns the
         // cumulative count column. Bucket samples are
         // distinguished via the `le` label, not via the
@@ -789,54 +850,96 @@ fn default_column_for_type(family_type: &str) -> &'static str {
         // resolves to the same `count` column, while
         // `_sum` and `_count` siblings resolve through the
         // STAT_SUFFIXES table.
-        "histogram" => "count",
+        "histogram" => "sv.count",
         // GaugeHistogram: identical schema shape to
         // Histogram; the type label tells consumers
         // (metricsql evaluator) to allow non-monotonic
         // buckets.
-        "gaugehistogram" => "count",
+        "gaugehistogram" => "sv.count",
         // Info: always-1 metric whose data lives in its
-        // labels. Value column convention: `count = 1`.
-        // Bare-name queries return the constant 1; the
-        // labels carry the descriptive info.
-        "info" => "count",
+        // labels.
+        "info" => "sv.count",
         // StateSet: one series per state, value 0 or 1
         // indicating whether the state is active. Stored
         // in the `mean` column (gauge convention).
-        "stateset" => "mean",
+        "stateset" => "sv.mean",
         // Unknown / OpenMetrics fallback: treat as gauge
         // (mean column). Defensive — any type tag we don't
         // explicitly recognise returns the mean column so
         // the query at least produces something rather
         // than empty.
-        "unknown" => "mean",
-        _ => "mean",  // Same fallback for non-spec types.
+        "unknown" => "sv.mean",
+        _ => "sv.mean",  // Same fallback for non-spec types.
     }
 }
 
-/// Closed table of summary-stat suffixes. Order matters
+/// Closed table of stat-name suffixes. Order matters
 /// only insofar as `strip_suffix` matches the longest first
 /// would — Rust's `str::strip_suffix` is exact; we just
 /// iterate in the natural order.
 struct StatSuffix {
     text: &'static str,
-    column: &'static str,
+    /// SQL expression read from `sv.*` columns. For native
+    /// columns this is `sv.<col>`; the synthetic `_rate`
+    /// derives `(count * 1000.0 / interval_ms)` so per-sample
+    /// counters yield a per-second rate without needing a
+    /// range vector.
+    expr: &'static str,
+    /// Family-type predicate. Returns true if the suffix can
+    /// be applied to a family of the given type. Percentile
+    /// stats only make sense on histograms; `_rate` makes
+    /// sense on anything with a `count` column.
+    applies_to_fn: fn(&str) -> bool,
+}
+
+impl StatSuffix {
+    fn applies_to(&self, family_type: &str) -> bool {
+        (self.applies_to_fn)(family_type)
+    }
+}
+
+fn applies_summary(t: &str) -> bool {
+    matches!(t, "summary" | "histogram" | "gaugehistogram")
+}
+
+fn applies_counted(t: &str) -> bool {
+    // Anything with a `count` column on `sample_value`. The
+    // openmetrics types that fall in here: counter, summary,
+    // histogram (bucketed), info. Gauges don't have count.
+    matches!(t, "counter" | "summary" | "histogram"
+        | "gaugehistogram" | "info")
 }
 
 const STAT_SUFFIXES: &[StatSuffix] = &[
-    StatSuffix { text: "_p999",   column: "p999"   },
-    StatSuffix { text: "_p99",    column: "p99"    },
-    StatSuffix { text: "_p98",    column: "p98"    },
-    StatSuffix { text: "_p95",    column: "p95"    },
-    StatSuffix { text: "_p90",    column: "p90"    },
-    StatSuffix { text: "_p75",    column: "p75"    },
-    StatSuffix { text: "_p50",    column: "p50"    },
-    StatSuffix { text: "_count",  column: "count"  },
-    StatSuffix { text: "_sum",    column: "sum"    },
-    StatSuffix { text: "_min",    column: "min"    },
-    StatSuffix { text: "_max",    column: "max"    },
-    StatSuffix { text: "_mean",   column: "mean"   },
-    StatSuffix { text: "_stddev", column: "stddev" },
+    StatSuffix { text: "_p999",   expr: "sv.p999",   applies_to_fn: applies_summary },
+    StatSuffix { text: "_p99",    expr: "sv.p99",    applies_to_fn: applies_summary },
+    StatSuffix { text: "_p98",    expr: "sv.p98",    applies_to_fn: applies_summary },
+    StatSuffix { text: "_p95",    expr: "sv.p95",    applies_to_fn: applies_summary },
+    StatSuffix { text: "_p90",    expr: "sv.p90",    applies_to_fn: applies_summary },
+    StatSuffix { text: "_p75",    expr: "sv.p75",    applies_to_fn: applies_summary },
+    StatSuffix { text: "_p50",    expr: "sv.p50",    applies_to_fn: applies_summary },
+    StatSuffix { text: "_count",  expr: "sv.count",  applies_to_fn: applies_summary },
+    StatSuffix { text: "_sum",    expr: "sv.sum",    applies_to_fn: applies_summary },
+    StatSuffix { text: "_min",    expr: "sv.min",    applies_to_fn: applies_summary },
+    StatSuffix { text: "_max",    expr: "sv.max",    applies_to_fn: applies_summary },
+    StatSuffix { text: "_mean",   expr: "sv.mean",   applies_to_fn: applies_summary },
+    StatSuffix { text: "_stddev", expr: "sv.stddev", applies_to_fn: applies_summary },
+    // Synthetic per-sample rate: count divided by the
+    // sample's interval, expressed in counts-per-second.
+    // Works on counters, summaries, and histograms — anything
+    // whose `count` column is meaningful. For a phase that
+    // produced exactly one cadence snapshot, this gives
+    // `total_count / phase_duration_seconds` — the per-phase
+    // throughput. For a phase with multiple snapshots, each
+    // sample is the rate over its own interval; downstream
+    // aggregation (`avg(... ) by (...)`) collapses them.
+    // NULLIF guards a div-by-zero on the very first sample
+    // where interval_ms might still be 0.
+    StatSuffix {
+        text: "_rate",
+        expr: "(CAST(sv.count AS REAL) * 1000.0 / NULLIF(sv.interval_ms, 0))",
+        applies_to_fn: applies_counted,
+    },
 ];
 
 /// Build the SQL fragment that narrows by label matchers.
@@ -989,6 +1092,15 @@ mod tests {
             params![instance_id, ts, count]).unwrap();
     }
 
+    fn add_counter_sample_with_interval(
+        conn: &Connection, instance_id: i64, ts: i64, interval_ms: i64, count: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, count) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![instance_id, ts, interval_ms, count]).unwrap();
+    }
+
     fn add_gauge_sample(conn: &Connection, instance_id: i64, ts: i64, mean: f64) {
         conn.execute(
             "INSERT INTO sample_value (instance_id, timestamp_ms, interval_ms, mean) \
@@ -1034,6 +1146,99 @@ mod tests {
         assert_eq!(got[0].samples.len(), 2);
         assert_eq!(got[0].samples[0].value, 42.0);
         assert_eq!(got[0].samples[1].value, 100.0);
+    }
+
+    #[test]
+    fn rate_suffix_resolves_sub_second_window_precisely() {
+        // Regression guard for the precision fix: a 7843ms
+        // interval (the kind a real-elapsed phase-end flush
+        // produces) must NOT round to 8000ms before the rate
+        // is computed. The expected rate is 10000 / 7.843 =
+        // ~1275.0 ops/sec, NOT the previous 1250 ops/sec
+        // quantization that came from interval being stamped
+        // to integer seconds.
+        let conn = make_schema();
+        let id = make_instance(&conn, "cycles_total", "counter",
+            &[("limit", "1"), ("phase", "pvs_query")]);
+        // 10000 ops in 7843 ms.
+        add_counter_sample_with_interval(&conn, id, 7_843, 7_843, 10_000);
+
+        let ds = open_ds(conn);
+        let got = ds.fetch(
+            &[Matcher { label: "__name__".into(), op: MatcherOp::Eq,
+                value: "cycles_total_rate".into() }],
+            0, 100_000,
+        ).expect("fetch cycles_total_rate");
+        assert_eq!(got.len(), 1);
+        let r = got[0].samples[0].value;
+        // 10000 / 7.843 = 1275.020...
+        // Verify it's distinctly above the old 1250 quantization
+        // floor — within 0.1 of the true rate.
+        assert!((r - 1275.0).abs() < 0.1,
+            "expected ~1275 ops/sec for 10000 ops in 7843ms, got {r}");
+        assert!(r > 1265.0,
+            "rate must NOT round down to the old 1250 cluster: {r}");
+    }
+
+    #[test]
+    fn rate_suffix_derives_per_second_value_from_counter() {
+        // Regression guard for the throughput plot's
+        // `cycles_total_rate` query path. A counter sample
+        // carrying 857 ops over a 1000ms cadence interval
+        // must resolve to 857 ops/sec via the synthetic
+        // `_rate` suffix — no `rate([window])` rollup involved.
+        let conn = make_schema();
+        let id = make_instance(&conn, "cycles_total", "counter",
+            &[("k", "10"), ("phase", "ann_query")]);
+        add_counter_sample_with_interval(&conn, id, 1_000, 1_000, 857);
+
+        let ds = open_ds(conn);
+        let got = ds.fetch(
+            &[Matcher { label: "__name__".into(), op: MatcherOp::Eq,
+                value: "cycles_total_rate".into() }],
+            0, 10_000,
+        ).expect("fetch cycles_total_rate");
+        assert_eq!(got.len(), 1, "one series expected, got: {got:?}");
+        assert_eq!(got[0].samples.len(), 1);
+        assert!((got[0].samples[0].value - 857.0).abs() < 1e-9,
+            "expected 857.0 ops/s, got {}", got[0].samples[0].value);
+        // Series virtual name must echo the queried suffix
+        // so downstream metricsql operators see what was asked.
+        assert_eq!(lookup(&got[0], "__name__"), Some("cycles_total_rate"));
+    }
+
+    #[test]
+    fn rate_suffix_with_label_matchers_filters_correctly() {
+        // Mirror the production plot query: filter by label
+        // matchers AND apply the synthetic `_rate` suffix in
+        // one fetch. Confirms the WHERE clause and the
+        // synthetic stat expression cooperate.
+        let conn = make_schema();
+        let id_match = make_instance(&conn, "cycles_total", "counter",
+            &[("k", "10"), ("phase", "ann_query"), ("profile", "label_00")]);
+        let id_other = make_instance(&conn, "cycles_total", "counter",
+            &[("k", "1"), ("phase", "ann_query"), ("profile", "label_00")]);
+        add_counter_sample_with_interval(&conn, id_match, 100, 500, 200);
+        add_counter_sample_with_interval(&conn, id_other, 100, 500, 999);
+
+        let ds = open_ds(conn);
+        let got = ds.fetch(
+            &[
+                Matcher { label: "__name__".into(), op: MatcherOp::Eq,
+                    value: "cycles_total_rate".into() },
+                Matcher { label: "k".into(), op: MatcherOp::Eq,
+                    value: "10".into() },
+                Matcher { label: "phase".into(), op: MatcherOp::Eq,
+                    value: "ann_query".into() },
+            ],
+            0, 10_000,
+        ).expect("fetch");
+        assert_eq!(got.len(), 1,
+            "label filter should narrow to one instance; got: {got:?}");
+        // 200 ops in 500ms = 400 ops/s.
+        assert!((got[0].samples[0].value - 400.0).abs() < 1e-9,
+            "expected 400.0 ops/s for the k=10 instance, got {}",
+            got[0].samples[0].value);
     }
 
     #[test]
@@ -1641,17 +1846,19 @@ mod tests {
 
     #[test]
     fn catalog_default_column_for_type_covers_all_eight_types() {
-        // Pin the column-routing convention from
+        // Pin the expression-routing convention from
         // [`default_column_for_type`]. Each type has a
         // canonical sample column the bare-name selector
-        // returns.
-        assert_eq!(default_column_for_type("counter"),         "count");
-        assert_eq!(default_column_for_type("gauge"),           "mean");
-        assert_eq!(default_column_for_type("summary"),         "count");
-        assert_eq!(default_column_for_type("histogram"),       "count");
-        assert_eq!(default_column_for_type("gaugehistogram"),  "count");
-        assert_eq!(default_column_for_type("info"),            "count");
-        assert_eq!(default_column_for_type("stateset"),        "mean");
-        assert_eq!(default_column_for_type("unknown"),         "mean");
+        // returns; expressions are now fully-qualified
+        // (`sv.<col>`) so the SQL template can blend in
+        // derived stat suffixes like `_rate`.
+        assert_eq!(default_column_for_type("counter"),         "sv.count");
+        assert_eq!(default_column_for_type("gauge"),           "sv.mean");
+        assert_eq!(default_column_for_type("summary"),         "sv.count");
+        assert_eq!(default_column_for_type("histogram"),       "sv.count");
+        assert_eq!(default_column_for_type("gaugehistogram"),  "sv.count");
+        assert_eq!(default_column_for_type("info"),            "sv.count");
+        assert_eq!(default_column_for_type("stateset"),        "sv.mean");
+        assert_eq!(default_column_for_type("unknown"),         "sv.mean");
     }
 }

@@ -262,6 +262,21 @@ impl SchedulerHandle {
 
         let stop_running = running.clone();
         let handle = thread::spawn(move || {
+            // Drift surveillance: real wall-clock elapsed between
+            // successive tick captures should match `interval` to
+            // within 5%. If it doesn't, the scheduler thread is
+            // being starved (GC pause, OS scheduling lag,
+            // upstream-channel drain spike). Warn — once per
+            // surveillance window — so the operator can correlate
+            // metric anomalies with scheduler health. Recorded
+            // snapshot intervals stay at the nominal cadence
+            // (preserving "canonical scheduler cadence as a
+            // matter of record"); the drift is reported
+            // out-of-band.
+            let drift_warn_min_interval = Duration::from_secs(60);
+            let drift_threshold = 0.05_f64;
+            let mut last_drift_warn: Option<Instant> = None;
+            let mut last_tick_capture: Option<Instant> = None;
             let mut next_tick = Instant::now() + interval;
             loop {
                 if !*stop_running.lock().unwrap_or_else(|e| e.into_inner()) {
@@ -273,6 +288,33 @@ impl SchedulerHandle {
                     thread::sleep(next_tick - now);
                 }
                 next_tick += interval;
+
+                // Drift check: compare actual elapsed since last
+                // tick to the nominal interval. Skipped on the
+                // first iteration (no prior tick to compare).
+                let post_sleep = Instant::now();
+                if let Some(prev) = last_tick_capture {
+                    let actual = post_sleep.duration_since(prev);
+                    let actual_s = actual.as_secs_f64();
+                    let nominal_s = interval.as_secs_f64();
+                    let drift_ratio = (actual_s - nominal_s).abs() / nominal_s.max(f64::MIN_POSITIVE);
+                    if drift_ratio > drift_threshold {
+                        let should_warn = last_drift_warn
+                            .map(|t| post_sleep.duration_since(t) >= drift_warn_min_interval)
+                            .unwrap_or(true);
+                        if should_warn {
+                            last_drift_warn = Some(post_sleep);
+                            crate::diag::warn(&format!(
+                                "scheduler tick drift: actual={:?} nominal={:?} \
+                                 ({:.1}% off) — snapshots still recorded at nominal \
+                                 cadence; check for thread starvation or sleep \
+                                 oversleep",
+                                actual, interval, drift_ratio * 100.0,
+                            ));
+                        }
+                    }
+                }
+                last_tick_capture = Some(post_sleep);
 
                 // Drain async snapshot channel (lifecycle flushes from executor)
                 while let Ok(snapshot) = frame_rx.try_recv() {

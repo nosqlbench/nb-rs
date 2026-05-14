@@ -27,8 +27,7 @@
 //! distinguished by the `type` discriminator so a downstream
 //! consumer can parse without per-file metadata.
 
-use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -36,11 +35,19 @@ use crate::labels::Labels;
 use crate::scheduler::Reporter;
 use crate::snapshot::{BucketBound, MetricSet, MetricValue};
 
+/// Per-instance JSONL reporter.
+///
+/// **No file-handle cache.** The previous implementation kept
+/// every `(metric_name, labels)` combination's `File` alive in a
+/// `HashMap` for the entire run, which monotonically grew the
+/// open-FD count — for workloads with many distinct label
+/// tuples (e.g. `phase × profile × optimize_for × k × r`), the
+/// process would exhaust its `ulimit -n`. Each `report()` call
+/// now opens, writes, and closes the target file per record.
+/// At the 30s cadence the metrics scheduler runs this on, the
+/// open() cost is dwarfed by the rest of the snapshot path.
 pub struct PerInstanceReporter {
     dir: PathBuf,
-    /// Open file handles keyed by the sanitised filename.
-    /// Cached so we append rather than reopen on every tick.
-    files: HashMap<String, File>,
 }
 
 impl PerInstanceReporter {
@@ -52,19 +59,7 @@ impl PerInstanceReporter {
         let dir = dir.as_ref().to_path_buf();
         fs::create_dir_all(&dir)
             .map_err(|e| format!("create per-instance metrics dir {:?}: {e}", dir))?;
-        Ok(Self { dir, files: HashMap::new() })
-    }
-
-    fn handle(&mut self, key: &str) -> std::io::Result<&mut File> {
-        if !self.files.contains_key(key) {
-            let path = self.dir.join(format!("{key}.jsonl"));
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)?;
-            self.files.insert(key.to_string(), file);
-        }
-        Ok(self.files.get_mut(key).expect("just inserted"))
+        Ok(Self { dir })
     }
 }
 
@@ -82,16 +77,18 @@ impl Reporter for PerInstanceReporter {
                 let Some(point) = metric.point() else { continue };
                 let line = render_record(now_ms, name, labels, point.value());
                 let key = instance_filename(name, labels);
-                let file = match self.handle(&key) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        crate::diag::warn(&format!(
-                            "warning: per-instance metrics open failed for {key}: {e}"
-                        ));
-                        continue;
-                    }
-                };
-                if let Err(e) = writeln!(file, "{line}") {
+                let path = self.dir.join(format!("{key}.jsonl"));
+                // Open-write-close per record. The File is
+                // dropped at the end of the block, closing
+                // the FD immediately — bounded resource use
+                // regardless of how many distinct instances
+                // the workload produces.
+                let result = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .and_then(|mut f| writeln!(f, "{line}"));
+                if let Err(e) = result {
                     crate::diag::warn(&format!(
                         "warning: per-instance metrics write failed for {key}: {e}"
                     ));
@@ -101,13 +98,8 @@ impl Reporter for PerInstanceReporter {
     }
 
     fn flush(&mut self) {
-        for (key, f) in self.files.iter_mut() {
-            if let Err(e) = f.flush() {
-                crate::diag::warn(&format!(
-                    "warning: per-instance metrics flush failed for {key}: {e}"
-                ));
-            }
-        }
+        // No cache, nothing to flush. Each record's open-write-
+        // close path already commits before the FD is dropped.
     }
 }
 

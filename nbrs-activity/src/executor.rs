@@ -2315,11 +2315,22 @@ async fn run_phase(
         let mut final_delta = phase_component
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .capture_delta(std::time::Duration::from_secs(1));
+            .capture_delta_auto(std::time::Duration::from_secs(1));
         // SRD-40b §11 / SRD-42 §"Component lifecycle: scope_close
         // flush" — this delta is the phase's last-tick contribution
         // before teardown. Mark it partial so the cadence stream
         // can distinguish it from naturally pulse-flushed windows.
+        //
+        // The `_auto` variant computes the interval from real
+        // wall-clock elapsed time since the previous capture
+        // (typically the last scheduler tick), rather than
+        // stamping a nominal 1-second tail. Eliminates the
+        // 1-second quantization that previously made e.g.
+        // four phases of differing real durations all report
+        // `cycles_total_rate = 1250` (10000 ops / 8 ticks).
+        // The `Duration::from_secs(1)` argument is only the
+        // fallback for the edge case of a phase ending before
+        // any scheduler tick captured.
         final_delta.mark_partial();
         ctx.cadence_reporter.ingest(&labels, final_delta.clone());
         ctx.stop_handle.report_frame(&final_delta);

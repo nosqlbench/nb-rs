@@ -1688,6 +1688,54 @@ mod inner {
         }
     }
 
+    impl SqliteReporter {
+        /// Merge the WAL+SHM sidecar files into the main `.db`
+        /// file so the database is self-contained on disk.
+        ///
+        /// SQLite's WAL journal mode produces three files at
+        /// runtime: `metrics.db`, `metrics.db-wal`, and
+        /// `metrics.db-shm`. The `-wal` file holds committed
+        /// pages that haven't yet been migrated to the main
+        /// file; the `-shm` is a shared-memory index over the
+        /// WAL. If a session directory is archived or moved
+        /// without these sidecars, readers see the db as if
+        /// the trailing writes never happened.
+        ///
+        /// `PRAGMA wal_checkpoint(TRUNCATE)` forces all
+        /// pending WAL frames into the main db file AND
+        /// truncates the WAL to zero bytes. After this, the
+        /// SHM holds no useful state — when the connection
+        /// drops, both sidecars are removed (or left empty,
+        /// safe to delete by hand). The main file alone has
+        /// the complete session record.
+        ///
+        /// Called once at session end from
+        /// `nbrs-activity::runner` after every reporter has
+        /// flushed and before the reporter is dropped.
+        /// Failures are logged and swallowed — a partial
+        /// consolidation is preferable to a panic during
+        /// shutdown.
+        pub fn consolidate_wal(&self) {
+            // PRAGMA returns a row carrying (busy, log_size,
+            // checkpointed_count). We don't care about the
+            // values — just need the operation to run. Use
+            // `query_row` to consume the row so SQLite finalises
+            // the checkpoint cleanly.
+            let _ = self.conn.query_row(
+                "PRAGMA wal_checkpoint(TRUNCATE)",
+                rusqlite::params![],
+                |_row| Ok(()),
+            ).map_err(|e| {
+                crate::diag::warn(&format!(
+                    "sqlite WAL consolidation failed: {e} \
+                     — `metrics.db-wal` / `metrics.db-shm` may \
+                     still hold committed writes; keep them \
+                     alongside the .db when archiving"
+                ));
+            });
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;

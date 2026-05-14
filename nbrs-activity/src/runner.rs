@@ -524,11 +524,57 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // declaring `concurrency` as a param masks the CLI parameter
     // validation, but if nothing in the workload uses `{concurrency}`
     // the value is silently ignored).
+    //
+    // AND the reverse direction (SRD-N param-reference validator):
+    // every `{name}` placeholder in the workload must resolve to a
+    // declared param, a known runner/adapter param, or an iter-var
+    // introduced by some Comprehension in the scenario tree. A
+    // stray `{undeclared}` would otherwise survive
+    // `expand_workload_params` as a literal and trip the GK parser
+    // later with a cryptic "expected expression, got LBrace" — that
+    // surfaces too late and doesn't name the offender. The check
+    // here points at the placeholder by name so the operator sees
+    // what to fix.
     {
+        // First — catch `{name}` placeholders that appear inside
+        // GK expression bodies outside of string literals. The
+        // GK grammar doesn't accept `{...}` as expression syntax;
+        // a `{name}` there will always fail compile with a
+        // cryptic "expected expression, got LBrace". Catch it
+        // here with a targeted message naming the YAML file and
+        // line so the operator can jump straight to it.
+        let mut invalid_gk_braces: Vec<GkBraceFinding> = collect_gk_brace_refs(&workload);
+        if !invalid_gk_braces.is_empty() {
+            invalid_gk_braces.sort();
+            invalid_gk_braces.dedup();
+            let file_path = workload_file.as_deref().unwrap_or("<inline>");
+            let lines: Vec<String> = invalid_gk_braces.iter().map(|f| {
+                let yaml_line = workload_source_text.as_deref()
+                    .and_then(|src| find_yaml_line_for_brace(src, &f.placeholder));
+                let prefix = match yaml_line {
+                    Some(n) => format!("{file_path}:{n}"),
+                    None => file_path.to_string(),
+                };
+                format!("  {prefix}: in {} — `{{{}}}`. Use bare `{}`.",
+                    f.location, f.placeholder, f.placeholder)
+            }).collect();
+            return Err(format!(
+                "`{{...}}` braces in GK expression context (invalid syntax).\n\
+                 GK accepts bare identifiers; braces are only for YAML string\n\
+                 interpolation (op `prepared:`/`raw:`, `cycles:`, etc.).\n{}",
+                lines.join("\n"),
+            ));
+        }
+
         let referenced = collect_param_references(&workload);
+        let adapter_params: std::collections::HashSet<&'static str> =
+            registered_adapter_params().into_iter().collect();
+        let iter_var_names = collect_iter_var_names(&workload.scenarios);
+        let wire_names = collect_gk_binding_names(&workload);
+
+        // Declared/known direction: every declared param must be
+        // referenced.
         for name in &workload.declared_params {
-            // Skip params that are also known runner/adapter params — these
-            // are referenced by the runner itself.
             if KNOWN_PARAMS.contains(&name.as_str()) {
                 continue;
             }
@@ -539,6 +585,40 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     name
                 ));
             }
+        }
+
+        // Undeclared direction: every curly-brace placeholder
+        // must resolve. The legitimate-name set spans every
+        // declaration site the runtime can satisfy:
+        //   - workload.declared_params (the `params:` block)
+        //   - KNOWN_PARAMS (built-ins like `cycles`, `concurrency`)
+        //   - adapter-registered params (driver-specific config)
+        //   - iter-vars from Comprehensions in the scenario tree
+        //     (`k`, `limit`, `profile` from `for_each: "k in …"`)
+        let declared_set: std::collections::HashSet<&str> =
+            workload.declared_params.iter().map(|s| s.as_str()).collect();
+        let mut undeclared: Vec<&str> = referenced.placeholders.iter()
+            .map(|s| s.as_str())
+            .filter(|name| !declared_set.contains(*name))
+            .filter(|name| !KNOWN_PARAMS.contains(name))
+            .filter(|name| !adapter_params.contains(name))
+            .filter(|name| !iter_var_names.contains(*name))
+            .filter(|name| !wire_names.contains(*name))
+            .collect();
+        if !undeclared.is_empty() {
+            undeclared.sort();
+            return Err(format!(
+                "workload references undeclared placeholder{plural} {names} — \
+                 add to the `params:` block, or check for a typo. Recognised \
+                 sources for `{{name}}` placeholders: workload `params:`, \
+                 runner/adapter built-ins, scenario-tree iter-vars from \
+                 `for_each:`/`for_combinations:`, and wire names from GK \
+                 `bindings:`.",
+                plural = if undeclared.len() == 1 { "" } else { "s" },
+                names = undeclared.iter()
+                    .map(|n| format!("`{{{n}}}`"))
+                    .collect::<Vec<_>>().join(", "),
+            ));
         }
     }
 
@@ -869,6 +949,29 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             for (k, v) in &merged_params {
                 r.set_metadata(&format!("param.{k}"), v);
             }
+            // Reproducibility: stash the raw workload YAML and the
+            // CLI params verbatim so the metrics db alone is enough
+            // to re-create the run. An operator pulling just
+            // `metrics.db` off a CI machine can recover the exact
+            // workload via:
+            //   sqlite3 metrics.db "SELECT value FROM session_metadata \
+            //     WHERE key='workload_yaml';" > workload.yaml
+            //   sqlite3 metrics.db "SELECT value FROM session_metadata \
+            //     WHERE key='cli_params';"  (one key=value per line)
+            // No file-tree dependency, no inferred reconstruction.
+            if let Some(yaml) = workload_source_text.as_deref() {
+                r.set_metadata("workload_yaml", yaml);
+            }
+            // CLI params (the raw `params` HashMap before merge with
+            // workload defaults) — these are the operator's actual
+            // command-line overrides. One per line as `key=value`.
+            // Sorted for deterministic output across runs.
+            let mut cli_keys: Vec<&String> = params.keys().collect();
+            cli_keys.sort();
+            let cli_text: String = cli_keys.iter()
+                .filter_map(|k| params.get(*k).map(|v| format!("{k}={v}")))
+                .collect::<Vec<_>>().join("\n");
+            r.set_metadata("cli_params", &cli_text);
             crate::diag!(crate::observer::LogLevel::Info, "metrics: {}",
                 sqlite_path.display());
             r
@@ -1201,42 +1304,53 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         }
     }
 
-    // Default per-instance JSONL snapshot reporter — writes
+    // Per-instance JSONL snapshot reporter — opt-in. Writes
     // one file per (metric, label-tuple) in `<session>/metrics/`,
-    // one JSON record appended per snapshot tick. Always-on:
-    // operators get a durable per-instance trace they can
-    // tail, awk, or import into a notebook without opening
-    // the SQLite db. Aligns to the same 30s cadence as the
-    // SQLite write so the two output forms stay roughly in
-    // step. Construction failure is logged but doesn't fail
-    // the run — metrics persistence is best-effort.
-    let per_instance_dir = session.output_dir.join("metrics");
-    match nbrs_metrics::reporters::per_instance::PerInstanceReporter::new(&per_instance_dir) {
-        Ok(reporter) => {
-            if let Some(cadence) = cadence_tree.align_to_declared(
-                std::time::Duration::from_secs(30),
-            ) {
-                match cadence_reporter.subscribe(
-                    cadence,
-                    Box::new(reporter),
-                    nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
+    // one JSON record appended per snapshot tick. Useful when
+    // you want a per-instance trace to tail / awk / import
+    // into a notebook without opening the SQLite db, but most
+    // sessions never read these files and the SQLite db
+    // already carries the same data. Enable via any of:
+    //   * `--per-instance-metrics` flag on the CLI
+    //   * `per-instance-metrics=true` in workload params
+    //   * `NBRS_PER_INSTANCE_METRICS=1` env var
+    let per_instance_enabled =
+        args.iter().any(|a| a == "--per-instance-metrics")
+            || params.get("per-instance-metrics")
+                .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
+                .unwrap_or(false)
+            || std::env::var("NBRS_PER_INSTANCE_METRICS").ok()
+                .map(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
+                .unwrap_or(false);
+    if per_instance_enabled {
+        let per_instance_dir = session.output_dir.join("metrics");
+        match nbrs_metrics::reporters::per_instance::PerInstanceReporter::new(&per_instance_dir) {
+            Ok(reporter) => {
+                if let Some(cadence) = cadence_tree.align_to_declared(
+                    std::time::Duration::from_secs(30),
                 ) {
-                    Ok(_) => {
-                        crate::diag!(crate::observer::LogLevel::Info,
-                            "metrics: per-instance JSONL writes every {:?} into {}",
-                            cadence, per_instance_dir.display());
-                    }
-                    Err(e) => {
-                        crate::diag!(crate::observer::LogLevel::Warn,
-                            "metrics: per-instance subscription failed: {e}");
+                    match cadence_reporter.subscribe(
+                        cadence,
+                        Box::new(reporter),
+                        nbrs_metrics::cadence_reporter::SubscriptionOpts::default(),
+                    ) {
+                        Ok(_) => {
+                            crate::diag!(crate::observer::LogLevel::Info,
+                                "metrics: per-instance JSONL writes every {:?} into {}",
+                                cadence, per_instance_dir.display());
+                        }
+                        Err(e) => {
+                            crate::diag!(crate::observer::LogLevel::Warn,
+                                "metrics: per-instance subscription failed: {e}");
+                        }
                     }
                 }
             }
-        }
-        Err(e) => {
-            crate::diag!(crate::observer::LogLevel::Warn,
-                "metrics: per-instance reporter disabled ({}): {e}",
-                per_instance_dir.display());
+            Err(e) => {
+                crate::diag!(crate::observer::LogLevel::Warn,
+                    "metrics: per-instance reporter disabled ({}): {e}",
+                    per_instance_dir.display());
+            }
         }
     }
 
@@ -1720,20 +1834,28 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     );
                 }
                 Err(e) => {
-                    if strict {
-                        return Err(e);
-                    }
-                    crate::diag!(
-                        crate::observer::LogLevel::Warn,
-                        "scope kernel synthesis failed: {e}"
-                    );
+                    // Kernel synthesis failure is a hard error
+                    // regardless of strict mode: a phase whose GK
+                    // source doesn't compile literally cannot run.
+                    // Letting the walk continue past the failure
+                    // only delays the bad news — the phase will
+                    // fail mid-run with a less helpful diagnostic
+                    // (or, worse, run with stale / partial
+                    // kernels installed for sibling scopes). The
+                    // earlier "warn-and-continue" behavior dates
+                    // from before strict mode existed; with the
+                    // strict-mode behavior being the only sane
+                    // default, the non-strict branch was
+                    // effectively a footgun that turned compile
+                    // errors into silent partial runs.
+                    return Err(format!("scope kernel synthesis failed: {e}"));
                 }
             }
         }
 
         crate::diag!(crate::observer::LogLevel::Info,
-            "scenario '{scenario_name}': {}",
-            format_scenario_tree(&scenario_nodes));
+            "scenario '{scenario_name}':\n{}",
+            format_scenario_tree(&scenario_nodes, &phases));
 
         // Observer is passed from the caller (default: StderrObserver).
 
@@ -2365,6 +2487,18 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         }
     }
 
+    // WAL consolidation: merge any pending `metrics.db-wal` /
+    // `metrics.db-shm` content into the main `.db` file so the
+    // db is self-contained on disk. Without this, archiving or
+    // moving the session directory without the sidecars yields
+    // a db missing the trailing writes. Runs last, after every
+    // reporter has finished writing.
+    if let Ok(guard) = sqlite_reporter.lock() {
+        if let Some(ref reporter) = *guard {
+            reporter.consolidate_wal();
+        }
+    }
+
     Ok(())
 }
 
@@ -2575,8 +2709,20 @@ pub fn expand_workload_params(s: &str, params: &HashMap<String, String>) -> Stri
 /// values including `1`.
 #[derive(Default)]
 struct ParamRefs {
-    /// Names that appeared directly as `{name}` placeholders.
-    direct: std::collections::HashSet<String>,
+    /// Names that appeared as `{name}` curly-brace placeholders.
+    /// These MUST resolve to a declared param, runner-known
+    /// param, adapter-registered param, or scenario-tree
+    /// iter-var — anything else is a typo or missing
+    /// declaration and the validator surfaces it as an error.
+    placeholders: std::collections::HashSet<String>,
+    /// Bare identifiers harvested from `if:` / `delay:`
+    /// expression bodies. These may be wire names (referencing
+    /// values bound via GK source) rather than workload params,
+    /// so they participate in the "declared but unreferenced"
+    /// check (as references) but NOT in the "referenced but
+    /// undeclared" check (since wire names legitimately live
+    /// outside the workload's param surface).
+    expression_idents: std::collections::HashSet<String>,
     /// Composite templates: the literal body of a `{...}` whose
     /// inner content contained nested `{...}`. Stored verbatim
     /// (e.g. `"k_{k}_limits"`); validation checks each declared
@@ -2586,9 +2732,12 @@ struct ParamRefs {
 }
 
 impl ParamRefs {
-    /// Does `param` appear either directly or via composition?
+    /// Does `param` appear as a reference anywhere — placeholder,
+    /// expression ident, or composite template? Used by the
+    /// existing "declared but unreferenced" validator.
     fn contains(&self, param: &str) -> bool {
-        if self.direct.contains(param) { return true; }
+        if self.placeholders.contains(param) { return true; }
+        if self.expression_idents.contains(param) { return true; }
         self.templates.iter().any(|tpl| template_matches(tpl, param))
     }
 }
@@ -2716,8 +2865,10 @@ fn scan_param_refs(text: &str, refs: &mut ParamRefs) {
             && body.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
             && !body.bytes().next().unwrap().is_ascii_digit()
         {
-            // Plain `{name}` — direct reference.
-            refs.direct.insert(body.to_string());
+            // Plain `{name}` — curly-brace placeholder. MUST
+            // resolve to a declared / known / iter-var name;
+            // the new validator surfaces an error if it doesn't.
+            refs.placeholders.insert(body.to_string());
         } else {
             // Inline GK expression body, e.g.
             // `{is_one_of(cassandra_dialect, "cndb")}` or
@@ -2729,7 +2880,15 @@ fn scan_param_refs(text: &str, refs: &mut ParamRefs) {
             // identifiers) is harmless — the validator's
             // membership test below uses the workload's own
             // declared params as the universe of interest.
-            scan_expression_idents(body, &mut refs.direct);
+            //
+            // These land in `expression_idents` (not
+            // `placeholders`) because they may legitimately
+            // resolve to GK wire names rather than workload
+            // params; the "declared but unreferenced" check
+            // still consults them via `ParamRefs::contains`,
+            // but the new "referenced but undeclared" check
+            // only scrutinises `placeholders`.
+            scan_expression_idents(body, &mut refs.expression_idents);
         }
         i = j + 1;
     }
@@ -2821,11 +2980,11 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
         // validator.
         if let Some(s) = &op.condition {
             scan_param_refs(s, refs);
-            scan_expression_idents(s, &mut refs.direct);
+            scan_expression_idents(s, &mut refs.expression_idents);
         }
         if let Some(s) = &op.delay {
             scan_param_refs(s, refs);
-            scan_expression_idents(s, &mut refs.direct);
+            scan_expression_idents(s, &mut refs.expression_idents);
         }
         // `params:` values can be strings, numbers, nested
         // maps (e.g. `relevancy: { actual: key, expected: …}`).
@@ -2847,7 +3006,7 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
                 // or it falsely flags params that the workload
                 // legitimately consumes via the bare path.
                 scan_param_refs(s, refs);
-                scan_expression_idents(s, &mut refs.direct);
+                scan_expression_idents(s, &mut refs.expression_idents);
             }
             nbrs_workload::model::BindingsDef::Map(m) => {
                 for v in m.values() { scan_param_refs(v, refs); }
@@ -2870,7 +3029,7 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
     match &workload.bindings {
         nbrs_workload::model::BindingsDef::GkSource(s) => {
             scan_param_refs(s, &mut refs);
-            scan_expression_idents(s, &mut refs.direct);
+            scan_expression_idents(s, &mut refs.expression_idents);
         }
         nbrs_workload::model::BindingsDef::Map(m) => {
             for v in m.values() { scan_param_refs(v, &mut refs); }
@@ -2889,7 +3048,7 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
         match &phase.bindings {
             nbrs_workload::model::BindingsDef::GkSource(s) => {
                 scan_param_refs(s, &mut refs);
-                scan_expression_idents(s, &mut refs.direct);
+                scan_expression_idents(s, &mut refs.expression_idents);
             }
             nbrs_workload::model::BindingsDef::Map(m) => {
                 for v in m.values() { scan_param_refs(v, &mut refs); }
@@ -2939,6 +3098,289 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
     }
 
     refs
+}
+
+/// Collect every iter-var name introduced by a `for_each:` /
+/// `for_combinations:` clause anywhere in the scenario tree.
+///
+/// These names become legitimate `{name}` placeholders inside
+/// phases reached via that for-clause — the runner binds them
+/// fresh per iteration through the workload kernel's
+/// scope-coordinate mechanism. The "referenced but undeclared"
+/// validator consults this set so it doesn't false-positive on
+/// `{k}` / `{limit}` / `{profile}` references that are clearly
+/// satisfied by an enclosing `for_each: "k in …, limit in …,
+/// profile in …"`.
+///
+/// Walks every scenario in the workload (the union — any
+/// scenario the operator might invoke), so the validator
+/// remains correct regardless of which `scenario=` argument
+/// the operator passes on the CLI.
+fn collect_iter_var_names(
+    scenarios: &std::collections::HashMap<String, Vec<nbrs_workload::model::ScenarioNode>>,
+) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for nodes in scenarios.values() {
+        for node in nodes {
+            collect_iter_vars_recursive(node, &mut out);
+        }
+    }
+    out
+}
+
+fn collect_iter_vars_recursive(
+    node: &nbrs_workload::model::ScenarioNode,
+    out: &mut std::collections::HashSet<String>,
+) {
+    use nbrs_workload::model::ScenarioNode::*;
+    match node {
+        Phase(_) => {}
+        Comprehension { comprehension, children } => {
+            for name in comprehension.coordinate_names() {
+                out.insert(name.to_string());
+            }
+            for child in children {
+                collect_iter_vars_recursive(child, out);
+            }
+        }
+        DoWhile { children, counter, .. } | DoUntil { children, counter, .. } => {
+            // `counter:` introduces a bare iteration index name
+            // that's legitimately referenceable inside the loop
+            // body, even though there's no `for_each` clause.
+            if let Some(c) = counter { out.insert(c.clone()); }
+            for child in children { collect_iter_vars_recursive(child, out); }
+        }
+        IncludedScenario { children, .. } => {
+            for child in children { collect_iter_vars_recursive(child, out); }
+        }
+    }
+}
+
+/// Collect every binding LHS name (wire output) declared in GK
+/// source anywhere in the workload — top-level `bindings:`,
+/// per-phase `bindings:`, and per-op `bindings:`.
+///
+/// These names become legitimate `{name}` placeholders inside
+/// op text (op-template `prepared:` / `raw:` strings get
+/// `{wire}` interpolated to the wire's value at cycle time, just
+/// like workload params get expanded earlier in the pipeline).
+/// The "referenced but undeclared" validator consults this set so
+/// it doesn't false-positive on `{query_vector}` / `{dim}` /
+/// `{ground_truth}` references that are clearly satisfied by an
+/// enclosing `bindings:` block.
+///
+/// Scanner is line-based and recognises four shapes:
+///   * `init NAME = …`     — init binding (eager, once per scope)
+///   * `cursor NAME = …`   — cursor declaration
+///   * `shared NAME := …`  — shared output (cross-scope cell)
+///   * `final NAME := …`   — final binding
+///   * `NAME := …`         — ordinary `:=` output binding
+fn collect_gk_binding_names(
+    workload: &nbrs_workload::model::Workload,
+) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    use nbrs_workload::model::BindingsDef;
+
+    if let BindingsDef::GkSource(s) = &workload.bindings {
+        scan_gk_binding_lhs(&mut out, s);
+    }
+    for phase in workload.phases.values() {
+        if let BindingsDef::GkSource(s) = &phase.bindings {
+            scan_gk_binding_lhs(&mut out, s);
+        }
+        for op in &phase.ops {
+            if let BindingsDef::GkSource(s) = &op.bindings {
+                scan_gk_binding_lhs(&mut out, s);
+            }
+        }
+    }
+    out
+}
+
+/// One occurrence of an invalid `{name}` placeholder inside a
+/// GK expression context. The `location` describes which source
+/// block in the workload (e.g. `"phase 'ann_query' bindings"`),
+/// and the `placeholder` is the literal body that appeared inside
+/// the offending `{...}` — kept verbatim so the error formatter
+/// can locate the exact YAML line by substring search.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct GkBraceFinding {
+    location: String,
+    placeholder: String,
+}
+
+/// Collect every `{name}` placeholder that appears inside a GK
+/// source context but OUTSIDE a string literal — these will
+/// always fail GK compile because `{...}` isn't valid expression
+/// syntax. Each finding names the workload block it came from
+/// so the error formatter can point at the offending site.
+///
+/// Walks every GK source in the workload: top-level `bindings:`,
+/// per-phase `bindings:`, per-op `bindings:`.
+fn collect_gk_brace_refs(
+    workload: &nbrs_workload::model::Workload,
+) -> Vec<GkBraceFinding> {
+    use nbrs_workload::model::BindingsDef;
+    let mut out: Vec<GkBraceFinding> = Vec::new();
+    let mut push_refs = |loc: &str, source: &str| {
+        for name in scan_gk_braced_refs(source) {
+            out.push(GkBraceFinding {
+                location: loc.to_string(),
+                placeholder: name,
+            });
+        }
+    };
+    if let BindingsDef::GkSource(s) = &workload.bindings {
+        push_refs("workload `bindings:`", s);
+    }
+    for (phase_name, phase) in &workload.phases {
+        if let BindingsDef::GkSource(s) = &phase.bindings {
+            push_refs(&format!("phase '{phase_name}' bindings"), s);
+        }
+        for op in &phase.ops {
+            if let BindingsDef::GkSource(s) = &op.bindings {
+                push_refs(&format!("phase '{phase_name}' op-bindings"), s);
+            }
+        }
+    }
+    out
+}
+
+/// Scan the raw YAML source for the first line that contains
+/// the given placeholder text (with surrounding braces).
+/// Returns the 1-based line number when found, `None` otherwise.
+///
+/// Used to upgrade the GK-brace validator's error message from
+/// "phase 'foo' bindings" to a file:line locator the operator
+/// can click on or jump to. Works because YAML block scalars
+/// (`|` / `>`) preserve the body verbatim; the offending
+/// `{name}` substring appears in the file exactly as the
+/// validator captured it.
+///
+/// Falls back to `None` on the rare cases where the literal
+/// also appears in an unrelated comment or string — the
+/// validator's caller treats that as "give the location but
+/// no line number." The substring is namespaced enough
+/// (`{name}` with curly braces) that collisions are unlikely
+/// in practice.
+fn find_yaml_line_for_brace(yaml_source: &str, placeholder: &str) -> Option<usize> {
+    let needle = format!("{{{placeholder}}}");
+    yaml_source.lines()
+        .enumerate()
+        .find(|(_, line)| line.contains(&needle))
+        .map(|(idx, _)| idx + 1)
+}
+
+/// Scan GK source for `{name}` placeholders that appear OUTSIDE
+/// string literals and OUTSIDE comments. Inside `"..."` or
+/// `'...'` (with backslash escapes), `{...}` is part of the
+/// string and gets handled by runtime interpolation — leave it
+/// alone. Lines starting with `#` (and content after `#` on any
+/// line) are comments — also skipped.
+fn scan_gk_braced_refs(source: &str) -> Vec<String> {
+    let bytes = source.as_bytes();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        // Line comment — skip to next newline.
+        if b == b'#' {
+            while i < bytes.len() && bytes[i] != b'\n' { i += 1; }
+            continue;
+        }
+        // String literal — skip past the closing quote.
+        if b == b'"' || b == b'\'' {
+            let quote = b;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == quote {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        // Outside any string — `{` opens a brace placeholder.
+        if b == b'{' {
+            // Find the matching `}`, allowing one level of
+            // nesting for composite forms like `{k_{k}_limits}`.
+            // We only need the OUTER body for the error message
+            // — the inner placeholders are also wrong but the
+            // outer is what the operator sees.
+            let start = i + 1;
+            let mut depth = 1;
+            let mut j = start;
+            while j < bytes.len() && depth > 0 {
+                match bytes[j] {
+                    b'{' => depth += 1,
+                    b'}' => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 { break; }
+                j += 1;
+            }
+            if depth == 0 && j > start {
+                let body = &source[start..j];
+                // Trim whitespace; ignore obviously-empty bodies.
+                let trimmed = body.trim();
+                if !trimmed.is_empty() {
+                    out.push(trimmed.to_string());
+                }
+                i = j + 1;
+                continue;
+            }
+            // Unmatched `{` — let the GK parser handle it with
+            // its own error; don't double-report.
+            break;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Line-by-line scan of GK source for binding LHS names —
+/// `init NAME = …`, `cursor NAME = …`, `shared NAME := …`,
+/// `final NAME := …`, and bare `NAME := …` ordinary assignments.
+/// Skips comments and blank lines. Lines that don't match any of
+/// these shapes (function-call statements, comments, expression
+/// continuations) are ignored.
+fn scan_gk_binding_lhs(
+    out: &mut std::collections::HashSet<String>,
+    source: &str,
+) {
+    for raw_line in source.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        // Strip leading modifier (`init `, `cursor `, …); body is
+        // what follows. These are mutually exclusive in practice.
+        let body = line.strip_prefix("init ")
+            .or_else(|| line.strip_prefix("cursor "))
+            .or_else(|| line.strip_prefix("shared "))
+            .or_else(|| line.strip_prefix("final "))
+            .unwrap_or(line);
+        // Pull the leading identifier.
+        let bytes = body.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+        if i == 0 { continue; }
+        // What follows the identifier? Skip whitespace.
+        let mut j = i;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() { j += 1; }
+        // Must be `=` (init/cursor) or `:=` (assignment); reject
+        // anything else (function calls, expressions starting
+        // with an ident, etc.).
+        let is_binding = bytes.get(j) == Some(&b'=')
+            || (bytes.get(j) == Some(&b':') && bytes.get(j + 1) == Some(&b'='));
+        if !is_binding { continue; }
+        out.insert(body[..i].to_string());
+    }
 }
 
 /// Resolve a config value to u64 via GK scope lookup or numeric parsing.
@@ -2996,44 +3438,140 @@ fn resolve_scenario(
     Err(format!("scenario '{name}' not found"))
 }
 
-/// Format a scenario tree for display.
-fn format_scenario_tree(nodes: &[nbrs_workload::model::ScenarioNode]) -> String {
+/// Format a scenario tree for display — one construct per line,
+/// nested with two-space indent per level. Phases include their
+/// declared `cycles:` and `concurrency:` config when available
+/// from the workload's phase map so the operator can see the
+/// run shape at a glance.
+///
+/// Example output for the full_cql_vector fulltest scenario:
+///
+/// ```text
+/// scenario 'test_oracles'
+///   for_each profile in matching_profiles('{dataset}', '{oracles_prefix}')
+///     for_each table in vec_{profile}
+///       teardown                          (cycles: 1, concurrency: 1)
+///       schema                            (cycles: 1, concurrency: 1)
+///       rampup
+///       jolokia_flush
+///       for_combinations [k, limit] in {k_values}, {k_{k}_limits}
+///         ann_query                       (concurrency: {query_concurrency})
+/// scenario 'test_fknn'
+///   ...
+/// recall_audit_oracle
+/// recall_audit_pvs
+/// ```
+///
+/// The replaced LISP-shaped one-liner had bracket nesting that
+/// scaled badly past two levels and required mental parsing to
+/// see the loop structure.
+fn format_scenario_tree(
+    nodes: &[nbrs_workload::model::ScenarioNode],
+    phases: &std::collections::HashMap<String, nbrs_workload::model::WorkloadPhase>,
+) -> String {
+    let mut out = String::new();
+    format_scenario_nodes(nodes, phases, 0, &mut out);
+    // Trim trailing newline so the runner's log call doesn't
+    // emit a double-blank line.
+    if out.ends_with('\n') { out.pop(); }
+    out
+}
+
+fn format_scenario_nodes(
+    nodes: &[nbrs_workload::model::ScenarioNode],
+    phases: &std::collections::HashMap<String, nbrs_workload::model::WorkloadPhase>,
+    depth: usize,
+    out: &mut String,
+) {
     use nbrs_variates::comprehension::ComprehensionMode;
-    let parts: Vec<String> = nodes.iter().map(|n| match n {
-        nbrs_workload::model::ScenarioNode::Phase(name) => name.clone(),
-        nbrs_workload::model::ScenarioNode::Comprehension { comprehension, children } => {
-            let inner = format_scenario_tree(children);
-            match &comprehension.mode {
-                ComprehensionMode::Cartesian(clauses) if clauses.len() == 1 => {
-                    format!("for_each {}: [{inner}]", clauses[0].var())
-                }
-                ComprehensionMode::Cartesian(clauses) => {
-                    let vars: Vec<&str> = clauses.iter().map(|c| c.var()).collect();
-                    format!("for_combinations [{}]: [{inner}]", vars.join(", "))
-                }
-                ComprehensionMode::Union(subspaces) => {
-                    let names = comprehension.coordinate_names().join(", ");
-                    format!("for_each_union [{}] ({} sub-spaces): [{inner}]",
-                        names, subspaces.len())
+    use nbrs_workload::model::ScenarioNode::*;
+    let indent = "  ".repeat(depth);
+    for node in nodes {
+        match node {
+            Phase(name) => {
+                let suffix = phases.get(name)
+                    .map(format_phase_config_suffix)
+                    .unwrap_or_default();
+                if suffix.is_empty() {
+                    out.push_str(&format!("{indent}{name}\n"));
+                } else {
+                    // Pad name to a fixed column so the
+                    // `(cycles:..., concurrency:...)` chip lines
+                    // up across consecutive phases. 32 chars
+                    // covers the typical phase names; longer
+                    // names just push past the column without
+                    // breaking layout.
+                    out.push_str(&format!(
+                        "{indent}{name:<32} {suffix}\n",
+                    ));
                 }
             }
+            Comprehension { comprehension, children } => {
+                let header = match &comprehension.mode {
+                    ComprehensionMode::Cartesian(clauses) if clauses.len() == 1 => {
+                        let c = &clauses[0];
+                        format!("for_each {} in {}", c.var(), c.expr())
+                    }
+                    ComprehensionMode::Cartesian(clauses) => {
+                        let vars: Vec<&str> = clauses.iter().map(|c| c.var()).collect();
+                        let specs: Vec<String> = clauses.iter()
+                            .map(|c| c.expr().to_string()).collect();
+                        format!("for_combinations [{}] in [{}]",
+                            vars.join(", "), specs.join(", "))
+                    }
+                    ComprehensionMode::Union(subspaces) => {
+                        let names = comprehension.coordinate_names().join(", ");
+                        format!("for_each_union [{}] ({} sub-spaces)",
+                            names, subspaces.len())
+                    }
+                };
+                out.push_str(&format!("{indent}{header}\n"));
+                format_scenario_nodes(children, phases, depth + 1, out);
+            }
+            DoWhile { condition, counter, children } => {
+                let ctr = counter.as_deref()
+                    .map(|c| format!(" (counter={c})")).unwrap_or_default();
+                out.push_str(&format!("{indent}do_while '{condition}'{ctr}\n"));
+                format_scenario_nodes(children, phases, depth + 1, out);
+            }
+            DoUntil { condition, counter, children } => {
+                let ctr = counter.as_deref()
+                    .map(|c| format!(" (counter={c})")).unwrap_or_default();
+                out.push_str(&format!("{indent}do_until '{condition}'{ctr}\n"));
+                format_scenario_nodes(children, phases, depth + 1, out);
+            }
+            IncludedScenario { name, children } => {
+                out.push_str(&format!("{indent}scenario '{name}'\n"));
+                format_scenario_nodes(children, phases, depth + 1, out);
+            }
         }
-        nbrs_workload::model::ScenarioNode::DoWhile { condition, counter, children } => {
-            let inner = format_scenario_tree(children);
-            let ctr = counter.as_deref().map(|c| format!(" ({c})")).unwrap_or_default();
-            format!("do_while '{condition}'{ctr}: [{inner}]")
+    }
+}
+
+/// Render the `(cycles: X, concurrency: Y)` suffix for a phase
+/// line in the scenario-tree summary. Includes only the fields
+/// that the phase actually declared — phases that inherit the
+/// runtime defaults skip the chip entirely so the tree line
+/// stays uncluttered. Strings are shown verbatim (including
+/// `{name}` placeholders) so the operator sees the workload's
+/// declared intent rather than a runtime-evaluated number.
+fn format_phase_config_suffix(phase: &nbrs_workload::model::WorkloadPhase) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(c) = phase.cycles.as_deref() {
+        if !c.is_empty() {
+            parts.push(format!("cycles: {c}"));
         }
-        nbrs_workload::model::ScenarioNode::DoUntil { condition, counter, children } => {
-            let inner = format_scenario_tree(children);
-            let ctr = counter.as_deref().map(|c| format!(" ({c})")).unwrap_or_default();
-            format!("do_until '{condition}'{ctr}: [{inner}]")
+    }
+    if let Some(c) = phase.concurrency.as_deref() {
+        if !c.is_empty() {
+            parts.push(format!("concurrency: {c}"));
         }
-        nbrs_workload::model::ScenarioNode::IncludedScenario { name, children } => {
-            let inner = format_scenario_tree(children);
-            format!("scenario '{name}': [{inner}]")
-        }
-    }).collect();
-    parts.join(", ")
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("({})", parts.join(", "))
+    }
 }
 
 
@@ -3273,6 +3811,139 @@ pub use nbrs_variates::kernel::{extract_manifest, ManifestEntry};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── GK binding-LHS-name scanner ──────────────────────────
+
+    fn scan_to_set(src: &str) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        scan_gk_binding_lhs(&mut out, src);
+        out
+    }
+
+    // ── scan_gk_braced_refs: invalid `{...}` outside strings ─
+
+    #[test]
+    fn scan_gk_braced_refs_flags_expression_position_braces() {
+        // The user's case: `{name}` outside any string literal,
+        // sitting where GK expects an expression. Always invalid.
+        let refs = scan_gk_braced_refs(
+            "init passes = multiples_at_least({min_query_cycles}, base)\n"
+        );
+        assert_eq!(refs, vec!["min_query_cycles".to_string()]);
+    }
+
+    #[test]
+    fn scan_gk_braced_refs_ignores_braces_inside_double_quotes() {
+        // Inside `"…"` braces are valid — either workload-param
+        // interp (if the runtime expanded the string earlier) or
+        // GK string interpolation (parser turns it into printf).
+        // Either way, scan_gk_braced_refs must NOT flag them.
+        let refs = scan_gk_braced_refs(
+            "init prebuffered = dataset_prebuffer(\"{dataset}:{profile}\")\n"
+        );
+        assert!(refs.is_empty(),
+            "must not flag `{{dataset}}` / `{{profile}}` inside string \
+             literal — string interpolation handles them, got {refs:?}");
+    }
+
+    #[test]
+    fn scan_gk_braced_refs_ignores_braces_inside_single_quotes() {
+        let refs = scan_gk_braced_refs(
+            "tag := assert_eq(actual, '{expected}')\n"
+        );
+        assert!(refs.is_empty(),
+            "single-quoted strings get the same treatment: {refs:?}");
+    }
+
+    #[test]
+    fn scan_gk_braced_refs_handles_escaped_quotes_in_strings() {
+        // `"foo \"with brace {x}\" bar"` — the inner `{x}` is
+        // inside a string the whole way through; backslash-escape
+        // must not be treated as the end of the string.
+        let refs = scan_gk_braced_refs(
+            "x := concat(\"prefix \\\"{embedded}\\\" suffix\")\n"
+        );
+        assert!(refs.is_empty(), "escaped quotes inside strings: {refs:?}");
+    }
+
+    #[test]
+    fn scan_gk_braced_refs_ignores_comments() {
+        let refs = scan_gk_braced_refs(
+            "# this is a comment with {fake} placeholder\n\
+             init real = 1\n"
+        );
+        assert!(refs.is_empty(),
+            "`{{fake}}` inside a comment must not be flagged: {refs:?}");
+    }
+
+    #[test]
+    fn scan_gk_braced_refs_catches_multiple_invalid_braces() {
+        let refs = scan_gk_braced_refs(
+            "a := foo({x}, {y})\n\
+             b := bar({z})\n"
+        );
+        // Order is source order; uniqueness isn't enforced here
+        // (the validator caller dedups before reporting).
+        assert_eq!(refs, vec![
+            "x".to_string(), "y".to_string(), "z".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn scan_gk_braced_refs_handles_mixed_string_and_expression_braces() {
+        // `{inside}` is in a string (OK); `{outside}` is in
+        // expression position (flagged).
+        let refs = scan_gk_braced_refs(
+            "x := concat(\"foo {inside}\", {outside})\n"
+        );
+        assert_eq!(refs, vec!["outside".to_string()]);
+    }
+
+    // ── GK binding-LHS-name scanner ──────────────────────────
+
+    #[test]
+    fn scan_gk_binding_lhs_finds_all_recognised_shapes() {
+        // Validates the wire-name scanner picks up every shape:
+        // init / cursor / shared / final modifier-prefixed
+        // bindings, plus bare `NAME := …` assignments.
+        let names = scan_to_set(
+            "init prebuffered = dataset_prebuffer(\"foo\")\n\
+             cursor q = range(0, 100)\n\
+             query_vector := query_vector_at(prebuffered, q)\n\
+             shared query_passes := set_or_get(query_passes, 7)\n\
+             final tag := \"label_00\"\n",
+        );
+        for expected in ["prebuffered", "q", "query_vector",
+                         "query_passes", "tag"] {
+            assert!(names.contains(expected),
+                "scanner missed `{expected}` — got {names:?}");
+        }
+    }
+
+    #[test]
+    fn scan_gk_binding_lhs_skips_comments_and_blank_lines() {
+        let names = scan_to_set(
+            "# comment\n\
+             \n\
+             init real_binding = 1\n\
+             # another comment\n",
+        );
+        assert_eq!(names.len(), 1);
+        assert!(names.contains("real_binding"));
+    }
+
+    #[test]
+    fn scan_gk_binding_lhs_ignores_non_binding_lines() {
+        // Expression-call statements and continuation lines must
+        // not introduce phantom wires.
+        let names = scan_to_set(
+            "foo(1, 2)\n\
+             bar.baz\n\
+             init real = 1\n",
+        );
+        assert_eq!(names.len(), 1);
+        assert!(names.contains("real"));
+    }
 
     #[test]
     fn parse_dryrun_controls_sets_list_flag() {

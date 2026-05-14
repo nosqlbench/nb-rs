@@ -74,6 +74,21 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         rebuild_wipe_targets(&items, &output_root);
     }
 
+    // `--clean` (only honored with the `all` target) wipes
+    // every `.png` and `.md` file in the session output
+    // directory before rendering. Use when the workload's
+    // `report:` block has changed (items renamed, removed,
+    // or relettered) and you want the resulting directory
+    // to exactly reflect the current declaration set —
+    // including no leftover artifact files from prior runs.
+    // Stronger than `--rebuild`: that one only deletes the
+    // markdown report files (`target_file` paths); this one
+    // also sweeps the individual plot PNGs and companion-
+    // table MDs.
+    if is_clean_mode(args) && rest.first().map(String::as_str) == Some("all") {
+        clean_wipe_artifacts(&output_root);
+    }
+
     // SRD-15 strict mode: when `--strict` is on the arg list
     // (or `NBRS_STRICT` is set), figure-render no-data errors
     // remain hard failures. Without strict mode, "no-data"
@@ -635,6 +650,12 @@ fn extract_workload(args: &[String]) -> (Option<PathBuf>, Vec<String>) {
         // `is_rebuild_mode`; stripped here so it doesn't
         // confuse the dispatch loop.
         "--rebuild",
+        // `--clean` (only honored alongside `all`) wipes
+        // every `.png` and `.md` file in the session output
+        // directory before rendering. Stronger than
+        // `--rebuild` — sweeps individual artifact files
+        // too. Consumed by `is_clean_mode`.
+        "--clean",
     ];
     let mut workload_path: Option<PathBuf> = None;
     let mut rest: Vec<String> = Vec::new();
@@ -948,6 +969,60 @@ fn is_strict_mode(args: &[String]) -> bool {
 fn is_rebuild_mode(args: &[String]) -> bool {
     args.iter().any(|a| a == "--rebuild")
         || std::env::var("NBRS_REPORT_REBUILD").is_ok()
+}
+
+/// True when `--clean` is on the arg list. Activates the
+/// blanket-wipe code path that removes every `.png` and
+/// `.md` file from the session output directory before
+/// rendering. Use case: the operator has reshaped the
+/// workload's `report:` block (renamed / removed items)
+/// and wants the post-render directory to be exactly the
+/// current declaration set — no orphan artifacts from
+/// prior runs.
+fn is_clean_mode(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--clean")
+        || std::env::var("NBRS_REPORT_CLEAN").is_ok()
+}
+
+/// Remove every top-level `.png` and `.md` file under
+/// `output_root`. Called before `report all` when
+/// `--clean` is set. Non-recursive on purpose — we only
+/// touch artifacts in the session's own directory, not
+/// any nested `metrics/` / `traces/` / `vectordata/`
+/// directories that other systems own.
+///
+/// Best-effort: missing-files and read-dir failures are
+/// reported but don't abort. The render itself will fail
+/// with a clearer message if it can't write.
+fn clean_wipe_artifacts(output_root: &Path) {
+    let entries = match std::fs::read_dir(output_root) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!(
+                "nbrs report: --clean: could not read directory '{}': {e}",
+                output_root.display(),
+            );
+            return;
+        }
+    };
+    let mut removed: usize = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() { continue; }
+        let Some(ext) = path.extension().and_then(|e| e.to_str()) else { continue };
+        if ext != "png" && ext != "md" { continue; }
+        match std::fs::remove_file(&path) {
+            Ok(()) => { removed += 1; }
+            Err(e) => eprintln!(
+                "nbrs report: --clean: could not remove '{}': {e}",
+                path.display(),
+            ),
+        }
+    }
+    eprintln!(
+        "nbrs report: --clean removed {removed} artifact file(s) from '{}'",
+        output_root.display(),
+    );
 }
 
 /// Delete every report markdown file that the resolved
@@ -1327,7 +1402,21 @@ fn render_one(
             plot_result
         }
         Kind::Table => {
-            crate::summary::summary_command(&base);
+            // Standalone table naming convention:
+            // `<item.name>_table.md`. Bypasses summary's
+            // default `<name>_summary.<format>` suffix by
+            // passing an explicit `--output`. Anchored at the
+            // db's directory when known, otherwise at
+            // `output_root` (which itself resolves to
+            // `logs/latest` for the default `nbrs report` flow).
+            let mut argv = base;
+            let out_dir = session_db
+                .and_then(|d| d.parent().map(|p| p.to_path_buf()))
+                .unwrap_or_else(|| output_root.to_path_buf());
+            let out = out_dir.join(format!("{}_table.md", item.name));
+            argv.push("--output".into());
+            argv.push(out.to_string_lossy().into_owned());
+            crate::summary::summary_command(&argv);
             Ok(())
         }
         Kind::Text | Kind::File | Kind::Details => unreachable!(),
@@ -1436,15 +1525,23 @@ fn render_companion_table(
     // name (so each table gets its own anchor / file slot)
     // and the heading label (so the operator can see which
     // slice they're looking at).
-    let facet_suffix_name = if facet.is_empty() {
-        String::new()
+    // Companion-table naming convention:
+    //   non-faceted: `<plot>_table.md`
+    //   faceted:     `<plot>__<key>_<value>[__<key2>_<value2>...].md`
+    // (matches the user-facing rule in
+    //  docs/sysref/46_reports.md / per workload guidance.)
+    let (basename, name_arg) = if facet.is_empty() {
+        let stem = format!("{}_table", item.name);
+        (stem.clone(), stem)
     } else {
-        let mut s = String::new();
-        for (_k, v) in facet {
+        let mut s = item.name.clone();
+        for (k, v) in facet {
+            s.push_str("__");
+            s.push_str(&sanitize_for_anchor(k));
             s.push('_');
             s.push_str(&sanitize_for_anchor(v));
         }
-        s
+        (s.clone(), s)
     };
     let facet_suffix_label = if facet.is_empty() {
         String::new()
@@ -1455,7 +1552,7 @@ fn render_companion_table(
         format!(" [{}]", parts.join(", "))
     };
     let mut argv: Vec<String> = vec![
-        format!("--name={}_table{facet_suffix_name}", item.name),
+        format!("--name={name_arg}"),
         "--figure-num".into(),
         plot_figure_num.to_string(),
         "--label".into(),
@@ -1469,6 +1566,18 @@ fn render_companion_table(
         argv.push("--db".into());
         argv.push(db.to_string_lossy().into_owned());
     }
+    // Explicit output path — overrides summary's default
+    // `<basename>_summary.md` so the on-disk file matches
+    // the prescribed name. Anchored at the db's directory
+    // when known, otherwise at `output_root` (which itself
+    // resolves to `logs/latest` for the default `nbrs report`
+    // flow).
+    let out_dir = session_db
+        .and_then(|d| d.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| output_root.to_path_buf());
+    let out = out_dir.join(format!("{basename}.md"));
+    argv.push("--output".into());
+    argv.push(out.to_string_lossy().into_owned());
     argv.push(spec);
     crate::summary::summary_command(&argv);
     Ok(())
@@ -1819,6 +1928,61 @@ fn glob_matches(glob: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clean_wipe_removes_png_and_md_leaves_other_files() {
+        // Mirrors the operator's intent for `--clean all`:
+        // every `.png` and `.md` in the session dir is gone
+        // post-wipe; non-artifact files (metrics.db, log,
+        // checkpoint, etc.) survive. Subdirectories are
+        // left alone — wipe is non-recursive.
+        let dir = std::env::temp_dir()
+            .join(format!("nbrs_clean_wipe_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Artifact files (should be removed).
+        std::fs::write(dir.join("recall_10_mean_plot.png"), b"PNG").unwrap();
+        std::fs::write(dir.join("throughput_1__optimize_for_recall.md"), b"# tbl").unwrap();
+        std::fs::write(dir.join("summary.md"), b"# top").unwrap();
+        // Non-artifact files (should survive).
+        std::fs::write(dir.join("metrics.db"), b"sqlite").unwrap();
+        std::fs::write(dir.join("session.log"), b"log").unwrap();
+        std::fs::write(dir.join("checkpoint.jsonl"), b"{}").unwrap();
+        // Subdirectory (should survive untouched).
+        std::fs::create_dir_all(dir.join("metrics")).unwrap();
+        std::fs::write(dir.join("metrics/nested.md"), b"# nested").unwrap();
+
+        clean_wipe_artifacts(&dir);
+
+        assert!(!dir.join("recall_10_mean_plot.png").exists(),
+            "png should be removed");
+        assert!(!dir.join("throughput_1__optimize_for_recall.md").exists(),
+            "companion-table md should be removed");
+        assert!(!dir.join("summary.md").exists(),
+            "summary.md should be removed");
+        assert!(dir.join("metrics.db").exists(),
+            "metrics.db must survive");
+        assert!(dir.join("session.log").exists(),
+            "session.log must survive");
+        assert!(dir.join("checkpoint.jsonl").exists(),
+            "checkpoint.jsonl must survive");
+        assert!(dir.join("metrics/nested.md").exists(),
+            "nested md inside subdir must survive (non-recursive wipe)");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn is_clean_mode_recognises_flag_and_env() {
+        assert!(is_clean_mode(&["--clean".to_string()]));
+        assert!(is_clean_mode(&[
+            "all".to_string(), "--clean".to_string(), "workload=x.yaml".to_string(),
+        ]));
+        assert!(!is_clean_mode(&[
+            "all".to_string(), "workload=x.yaml".to_string(),
+        ]));
+    }
 
     #[test]
     fn glob_star_matches() {

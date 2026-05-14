@@ -223,13 +223,26 @@ fn render_labeled(
     // metrics. Indentation on the second line aligns roughly
     // under the activity name. The surface sink
     // (`LogOnlySink`) handles multi-line region clearing.
+    //
+    // The `cycles:N/T` chip sits alongside `c:concurrency` —
+    // a glance shows both the running cycle count and the
+    // total extent the phase is bounded by. With no extent
+    // (unbounded sources, when those exist), we elide the `/T`
+    // half and show just the running counter.
+    let cycles_chip = if total_extent > 0 {
+        format!(" {dim}cycles:{ops_completed}/{total_extent}{reset}")
+    } else if ops_completed > 0 {
+        format!(" {dim}cycles:{ops_completed}{reset}")
+    } else {
+        String::new()
+    };
     let mut tmp = String::with_capacity(320);
     let _ = write!(
         &mut tmp,
         "{memo_header}\
 {depth_indent}{cyan}{spinner}{reset}{bar} {seq_prefix}{bold}{blue}{activity_name}{reset} {pct:.0}%\n\
 {depth_indent}    {dim}{rate_str}{reset} {ok_tone}ok:{ok_pct:.0}%{reset} \
-{err_tone}e:{errors} r:{retries}{reset} {dim}c:{concurrency}{reset}\
+{err_tone}e:{errors} r:{retries}{reset} {dim}c:{concurrency}{reset}{cycles_chip}\
 {adapter_status}{batch_info}{chips}{eta}",
     );
     let len = tmp.len();

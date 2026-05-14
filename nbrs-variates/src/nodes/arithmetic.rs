@@ -303,6 +303,204 @@ impl GkNode for DivWireU64 {
     }
 }
 
+/// Smallest multiple of `multiple` that is ≥ `value`.
+///
+/// Signature: `ceil_to_multiple(value: u64, multiple: u64) -> (u64)`
+///
+/// Workload-author shorthand for "round this value up to the
+/// next whole multiple of base." Eliminates the
+/// `(v + m - 1) / m * m` / `div_ceil` idiom from bindings.
+/// `multiple == 0` is a soft no-op: returns `value` unchanged
+/// rather than trapping, so a transient zero from a wire-bound
+/// extern doesn't break a binding mid-evaluation.
+///
+/// Use cases:
+///   - cycle counts: `ceil_to_multiple(min_cycles, base)` gives
+///     the smallest whole-pass cycle count meeting a minimum
+///   - alignment: pad an offset up to a chunk boundary
+///   - bucketing: snap a value up to the next bin edge
+///
+/// JIT level: P2 (uses `u64::div_ceil`).
+pub struct CeilToMultipleU64 {
+    meta: NodeMeta,
+}
+
+impl Default for CeilToMultipleU64 {
+    fn default() -> Self { Self::new() }
+}
+
+impl CeilToMultipleU64 {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "ceil_to_multiple".into(),
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("value")),
+                    Slot::Wire(Port::u64("multiple")),
+                ],
+            },
+        }
+    }
+}
+
+impl GkNode for CeilToMultipleU64 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let value = inputs[0].as_u64();
+        let multiple = inputs[1].as_u64();
+        outputs[0] = Value::U64(if multiple == 0 {
+            value
+        } else {
+            value.div_ceil(multiple).saturating_mul(multiple)
+        });
+    }
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        Some(Box::new(|inputs, outputs| {
+            let value = inputs[0];
+            let multiple = inputs[1];
+            outputs[0] = if multiple == 0 {
+                value
+            } else {
+                value.div_ceil(multiple).saturating_mul(multiple)
+            };
+        }))
+    }
+}
+
+/// Count of multiples of `multiple` needed to cover `value`.
+///
+/// Signature: `multiples_at_least(value: u64, multiple: u64) -> (u64)`
+///
+/// Companion to [`CeilToMultipleU64`] that returns the *count*
+/// instead of the product — i.e. `ceil(value / multiple)`. The
+/// invariant `multiples_at_least(v, m) * m == ceil_to_multiple(v, m)`
+/// holds whenever `multiple > 0` and the multiplication doesn't
+/// overflow.
+///
+/// Use cases:
+///   - calibration: `multiples_at_least(min_cycles, base)` gives
+///     the pass count so the workload can both apply the
+///     multiplier and report "ran N passes" for diagnostics
+///   - bucket arithmetic: count of fixed-size buckets needed
+///     to hold N items
+///
+/// `multiple == 0` returns `0` — there is no count that covers
+/// a positive value with zero-sized multiples; rather than
+/// trap, the function quietly yields the only honest answer.
+///
+/// JIT level: P3 (single `udiv_ceil`).
+pub struct MultiplesAtLeastU64 {
+    meta: NodeMeta,
+}
+
+impl Default for MultiplesAtLeastU64 {
+    fn default() -> Self { Self::new() }
+}
+
+impl MultiplesAtLeastU64 {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "multiples_at_least".into(),
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("value")),
+                    Slot::Wire(Port::u64("multiple")),
+                ],
+            },
+        }
+    }
+}
+
+impl GkNode for MultiplesAtLeastU64 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let value = inputs[0].as_u64();
+        let multiple = inputs[1].as_u64();
+        outputs[0] = Value::U64(if multiple == 0 { 0 } else { value.div_ceil(multiple) });
+    }
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        Some(Box::new(|inputs, outputs| {
+            let value = inputs[0];
+            let multiple = inputs[1];
+            outputs[0] = if multiple == 0 { 0 } else { value.div_ceil(multiple) };
+        }))
+    }
+}
+
+/// "Set-or-get" memoizer: returns `current` if non-zero,
+/// otherwise returns `fallback`.
+///
+/// Signature: `set_or_get(current: u64, fallback: u64) -> (u64)`
+///
+/// Functionally `if current == 0 { fallback } else { current }`
+/// — a simple conditional. The name reflects its intended use
+/// alongside SRD-13f cross-scope shared wires:
+///
+/// ```text
+///   shared query_passes := set_or_get(
+///       query_passes,
+///       multiples_at_least(min_cycles, base),
+///   )
+/// ```
+///
+/// First phase to evaluate this: `query_passes` reads 0 (the
+/// unset sentinel), `set_or_get` returns the computed fallback,
+/// the `shared :=` broadcast writes the value to the parent
+/// scope's SharedCell. Every subsequent phase reads the
+/// already-set value and the fallback computation is
+/// effectively a no-op (it still evaluates, but its result is
+/// discarded). The write-back is idempotent — writing the
+/// already-cached value back doesn't change anything.
+///
+/// Concurrency: first-writer-wins is provided by the SharedCell
+/// mutex, not by this node. The node itself is pure — given
+/// the same inputs it returns the same output. Concurrent
+/// phases evaluating it simultaneously will compute the same
+/// fallback and race on the cell write; whichever writes last
+/// wins, but they're writing the same value anyway.
+///
+/// JIT level: P3 (single compare + select).
+pub struct SetOrGetU64 {
+    meta: NodeMeta,
+}
+
+impl Default for SetOrGetU64 {
+    fn default() -> Self { Self::new() }
+}
+
+impl SetOrGetU64 {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "set_or_get".into(),
+                outs: vec![Port::u64("output")],
+                ins: vec![
+                    Slot::Wire(Port::u64("current")),
+                    Slot::Wire(Port::u64("fallback")),
+                ],
+            },
+        }
+    }
+}
+
+impl GkNode for SetOrGetU64 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let current = inputs[0].as_u64();
+        let fallback = inputs[1].as_u64();
+        outputs[0] = Value::U64(if current == 0 { fallback } else { current });
+    }
+    fn compiled_u64(&self) -> Option<CompiledU64Op> {
+        Some(Box::new(|inputs, outputs| {
+            let current = inputs[0];
+            let fallback = inputs[1];
+            outputs[0] = if current == 0 { fallback } else { current };
+        }))
+    }
+}
+
 /// Clamp an unsigned integer to [min, max].
 ///
 /// Signature: `clamp(input: u64, min: u64, max: u64) -> (u64)`
@@ -848,6 +1046,48 @@ pub fn signatures() -> &'static [FuncSig] {
             output_type: crate::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
+            name: "ceil_to_multiple", category: C::Arithmetic,
+            outputs: 1, description: "smallest multiple of `multiple` that is ≥ `value`",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "value", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "multiple", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Round `value` UP to the nearest multiple of `multiple`.\nUseful for cycle counts (smallest whole-pass cycle count\nmeeting a minimum), alignment (pad to chunk boundary),\nbucketing (snap to next bin edge).\nReturns `value` unchanged if `multiple == 0` (soft no-op so a\ntransient zero from a wire-bound extern doesn't trap).\nParameters:\n  value    — u64 wire input\n  multiple — u64 wire input (multiplier base)\nExample: cycles := ceil_to_multiple(min_cycles, base)",
+            default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
+        },
+        FuncSig {
+            name: "multiples_at_least", category: C::Arithmetic,
+            outputs: 1, description: "count of `multiple`s needed to cover `value`",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "value", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "multiple", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Number of `multiple`-sized chunks needed to cover `value`:\nceil(value / multiple). Companion to ceil_to_multiple — returns\nthe count instead of the rounded value.\nReturns 0 if `multiple == 0`.\nParameters:\n  value    — u64 wire input\n  multiple — u64 wire input (chunk size)\nExample: passes := multiples_at_least(min_cycles, base)",
+            default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
+        },
+        FuncSig {
+            name: "set_or_get", category: C::Arithmetic,
+            outputs: 1, description: "first non-zero of (current, fallback)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "current", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+                ParamSpec { name: "fallback", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            help: "Returns `current` if non-zero, else `fallback`. Use with\nSRD-13f shared wires for cross-scope memoization:\n  shared X := set_or_get(X, expensive_computation())\nFirst evaluation: X reads 0, returns fallback, broadcast\nwrites it to the parent's SharedCell. Subsequent\nevaluations: X reads the cached value, fallback is\ndiscarded. Concurrency-safe via the SharedCell mutex.\nParameters:\n  current  — u64 wire input (typically a shared-bound slot)\n  fallback — u64 wire input (computed value to use when current==0)\nExample: passes := set_or_get(query_passes, multiples_at_least(min, base))",
+            default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
+        },
+        FuncSig {
             name: "clamp", category: C::Arithmetic,
             outputs: 1, description: "clamp u64 to [min, max]",
             identity: None, variadic_ctor: None,
@@ -916,6 +1156,9 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_
         "mod" => Some(Ok(Box::new(ModU64::new(consts.first().map(|c| c.as_u64()).unwrap_or(1))))),
         "mod_wire" => Some(Ok(Box::new(ModWireU64::new()))),
         "div_wire" => Some(Ok(Box::new(DivWireU64::new()))),
+        "ceil_to_multiple" => Some(Ok(Box::new(CeilToMultipleU64::new()))),
+        "multiples_at_least" => Some(Ok(Box::new(MultiplesAtLeastU64::new()))),
+        "set_or_get" => Some(Ok(Box::new(SetOrGetU64::new()))),
         "clamp" => Some(Ok(Box::new(ClampU64::new(
             consts.first().map(|c| c.as_u64()).unwrap_or(0),
             consts.get(1).map(|c| c.as_u64()).unwrap_or(u64::MAX),
@@ -1127,6 +1370,128 @@ mod tests {
         }
     }
 
+    // ── ceil_to_multiple ──────────────────────────────────
+
+    fn run_binary(node: &dyn GkNode, a: u64, b: u64) -> u64 {
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(a), Value::U64(b)], &mut out);
+        out[0].as_u64()
+    }
+
+    #[test]
+    fn ceil_to_multiple_returns_value_when_already_a_multiple() {
+        let n = CeilToMultipleU64::new();
+        assert_eq!(run_binary(&n, 800, 100), 800);
+    }
+
+    #[test]
+    fn ceil_to_multiple_rounds_up_to_next_boundary() {
+        let n = CeilToMultipleU64::new();
+        assert_eq!(run_binary(&n, 801, 100), 900);
+    }
+
+    #[test]
+    fn ceil_to_multiple_zero_value_is_zero() {
+        let n = CeilToMultipleU64::new();
+        assert_eq!(run_binary(&n, 0, 100), 0);
+    }
+
+    #[test]
+    fn ceil_to_multiple_below_one_multiple_rounds_to_multiple() {
+        let n = CeilToMultipleU64::new();
+        assert_eq!(run_binary(&n, 50, 100), 100);
+        assert_eq!(run_binary(&n, 1, 100), 100);
+    }
+
+    #[test]
+    fn ceil_to_multiple_zero_multiple_is_soft_no_op() {
+        let n = CeilToMultipleU64::new();
+        assert_eq!(run_binary(&n, 42, 0), 42,
+            "multiple=0 must not trap; passes value through");
+    }
+
+    // ── multiples_at_least ────────────────────────────────
+
+    #[test]
+    fn multiples_at_least_exact_division() {
+        let n = MultiplesAtLeastU64::new();
+        assert_eq!(run_binary(&n, 800, 100), 8);
+    }
+
+    #[test]
+    fn multiples_at_least_rounds_up_partial() {
+        let n = MultiplesAtLeastU64::new();
+        assert_eq!(run_binary(&n, 801, 100), 9);
+        assert_eq!(run_binary(&n, 1, 100), 1);
+    }
+
+    #[test]
+    fn multiples_at_least_zero_value_is_zero() {
+        let n = MultiplesAtLeastU64::new();
+        assert_eq!(run_binary(&n, 0, 100), 0);
+    }
+
+    #[test]
+    fn multiples_at_least_zero_multiple_is_zero() {
+        let n = MultiplesAtLeastU64::new();
+        assert_eq!(run_binary(&n, 42, 0), 0);
+    }
+
+    // ── set_or_get ────────────────────────────────────────
+
+    #[test]
+    fn set_or_get_returns_current_when_non_zero() {
+        let n = SetOrGetU64::new();
+        assert_eq!(run_binary(&n, 7, 99), 7);
+        assert_eq!(run_binary(&n, u64::MAX, 99), u64::MAX);
+    }
+
+    #[test]
+    fn set_or_get_returns_fallback_when_current_is_zero() {
+        let n = SetOrGetU64::new();
+        assert_eq!(run_binary(&n, 0, 99), 99);
+    }
+
+    #[test]
+    fn set_or_get_zero_fallback_is_zero() {
+        // If both inputs are zero, output is zero — soft default
+        // for the degenerate case (caller's choice not to seed
+        // a meaningful fallback).
+        let n = SetOrGetU64::new();
+        assert_eq!(run_binary(&n, 0, 0), 0);
+    }
+
+    #[test]
+    fn set_or_get_idempotent_on_already_set() {
+        // The "every subsequent phase" path: current is the
+        // cached value, fallback is the (still-evaluated but
+        // discarded) recomputation. Returning current preserves
+        // the cached state across phases.
+        let n = SetOrGetU64::new();
+        for v in [1u64, 42, 1000, u64::MAX] {
+            // Even if the fallback differs each call (e.g., a
+            // recomputation that picked a slightly different
+            // value due to a different base), the cached value
+            // wins.
+            assert_eq!(run_binary(&n, v, 999), v);
+        }
+    }
+
+    #[test]
+    fn ceil_to_multiple_and_count_satisfy_invariant() {
+        // Documented invariant: ceil_to_multiple(v, m) == multiples_at_least(v, m) * m
+        // whenever m > 0 and the multiplication doesn't overflow.
+        let ceil = CeilToMultipleU64::new();
+        let count = MultiplesAtLeastU64::new();
+        for (v, m) in [(0u64, 100), (1, 100), (50, 100), (100, 100),
+                       (101, 100), (10000, 7), (10000, 64), (12345, 256)] {
+            let c_val = run_binary(&ceil, v, m);
+            let n_val = run_binary(&count, v, m);
+            assert_eq!(c_val, n_val * m,
+                "invariant violated for (v={v}, m={m}): ceil={c_val}, count={n_val}");
+        }
+    }
+
     /// Verify wire_inputs() returns correct count for all arithmetic nodes.
     #[test]
     fn slot_wire_inputs_match_inputs() {
@@ -1139,6 +1504,9 @@ mod tests {
             Box::new(ProductN::new(2)),
             Box::new(Interleave::new()),
             Box::new(MixedRadix::new(vec![10, 20])),
+            Box::new(CeilToMultipleU64::new()),
+            Box::new(MultiplesAtLeastU64::new()),
+            Box::new(SetOrGetU64::new()),
         ];
 
         for node in &nodes {

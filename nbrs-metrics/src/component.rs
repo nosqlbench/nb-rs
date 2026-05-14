@@ -144,6 +144,14 @@ pub struct Component {
     /// Keyed by counter labels' `identity_hash`. Populated lazily on
     /// each `capture_delta` call.
     prev_counters: Mutex<HashMap<u64, u64>>,
+    /// Wall-clock instant of the most recent `capture_delta` /
+    /// `capture_delta_auto` call. Used by `capture_delta_auto` to
+    /// compute the true elapsed-time interval for a phase-end
+    /// flush — eliminates the 1-second quantization that comes
+    /// from stamping the partial with the scheduler's nominal
+    /// `base_interval`. `None` until the first capture; the auto
+    /// path treats that as "use caller-supplied fallback".
+    last_capture_instant: Mutex<Option<Instant>>,
     /// Dynamic-controls declared on this component (SRD 23).
     /// Empty unless the code that instantiates the component
     /// explicitly declares a control via
@@ -167,6 +175,7 @@ impl Component {
             instruments: Vec::new(),
             dynamic_capture: None,
             prev_counters: Mutex::new(HashMap::new()),
+            last_capture_instant: Mutex::new(None),
             controls: crate::controls::ControlRegistry::new(),
         }
     }
@@ -284,9 +293,56 @@ impl Component {
     /// Resets internal delta accumulators (histograms drain;
     /// counter baselines advance). Called by the scheduler on
     /// every tick — the result feeds the cadence reporter's
-    /// smallest-cadence accumulator.
+    /// smallest-cadence accumulator. The caller-supplied
+    /// `interval` is recorded on the snapshot verbatim; the
+    /// scheduler passes its nominal `base_interval` so the
+    /// "canonical scheduler cadence" property is preserved
+    /// in storage even when wall-clock between ticks drifts
+    /// (drift surfaces via the scheduler's tick warning,
+    /// not by mutating the snapshot's interval).
+    ///
+    /// Also stamps `last_capture_instant` so the phase-end
+    /// flush path (`capture_delta_auto`) can compute true
+    /// elapsed time since the previous capture.
     pub fn capture_delta(&self, interval: Duration) -> MetricSet {
         let now = Instant::now();
+        let mut out = MetricSet::at(now, interval);
+        self.capture_registry_into(&mut out, now, true);
+        if let Some(hook) = &self.dynamic_capture {
+            hook.capture_into(&mut out, now, true);
+        }
+        *self.last_capture_instant.lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(now);
+        out
+    }
+
+    /// Phase-end variant of [`capture_delta`] that stamps the
+    /// snapshot with **real elapsed wall time** since the
+    /// previous capture, rather than a caller-supplied
+    /// nominal interval.
+    ///
+    /// Eliminates the 1-second quantization that surfaced as
+    /// the spurious `cycles_total_rate = 10000/8 = 1250.0`
+    /// cluster for short phases — a 7.84-second phase will now
+    /// carry a 7843-ms interval (subject to storage precision)
+    /// instead of being padded to the scheduler's nominal 1s
+    /// final-flush stamp.
+    ///
+    /// `fallback` covers the edge case where no prior capture
+    /// has happened (a phase that ended before the first
+    /// scheduler tick). The phase-end caller passes the
+    /// scheduler's nominal `base_interval` here — a phase
+    /// shorter than one tick still gets stamped with that
+    /// nominal duration rather than zero.
+    pub fn capture_delta_auto(&self, fallback: Duration) -> MetricSet {
+        let now = Instant::now();
+        let interval = {
+            let mut prev = self.last_capture_instant.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let elapsed = prev.map(|t| now.duration_since(t));
+            *prev = Some(now);
+            elapsed.unwrap_or(fallback)
+        };
         let mut out = MetricSet::at(now, interval);
         self.capture_registry_into(&mut out, now, true);
         if let Some(hook) = &self.dynamic_capture {
@@ -1522,5 +1578,55 @@ mod tests {
         let labels = phase.read().unwrap().effective_labels().clone();
         assert!(reporter.latest(&labels, Duration::from_secs(1)).is_none(),
             "scope_close on a non-Running component must not publish");
+    }
+
+    // ── capture_delta_auto: real-elapsed interval ────────────
+
+    #[test]
+    fn capture_delta_auto_uses_fallback_on_first_call() {
+        // No prior capture → fallback is the recorded interval.
+        // Same shape the executor's phase-end flush sees on the
+        // edge case where a phase ends before any scheduler tick.
+        let c = Component::new(Labels::empty(), HashMap::new());
+        let s = c.capture_delta_auto(Duration::from_millis(500));
+        assert_eq!(s.interval(), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn capture_delta_auto_measures_real_elapsed_after_prior_capture() {
+        // After a `capture_delta` records the watermark,
+        // `capture_delta_auto` reports the actual wall-clock
+        // delta between the two — NOT the prior `interval`
+        // argument. This is what kills the 1s quantization in
+        // the phase-end flush path: a phase-end auto-capture
+        // ~80ms after the last scheduler tick stamps ~80ms,
+        // not the nominal 1000ms fallback.
+        let c = Component::new(Labels::empty(), HashMap::new());
+        let _ = c.capture_delta(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_millis(80));
+        let s = c.capture_delta_auto(Duration::from_secs(1));
+        // Allow generous lower / upper bounds — CI machines
+        // can be loaded — but anything within (60ms, 500ms) is
+        // unambiguously distinct from the 1000ms fallback.
+        assert!(s.interval() > Duration::from_millis(60),
+            "interval should reflect real ~80ms elapsed, got {:?}",
+            s.interval());
+        assert!(s.interval() < Duration::from_millis(500),
+            "interval should be the real elapsed, not the 1s fallback: {:?}",
+            s.interval());
+    }
+
+    #[test]
+    fn capture_delta_auto_chained_uses_inter_capture_elapsed() {
+        // Two consecutive auto-captures: the second sees the
+        // elapsed between auto calls, not the cumulative
+        // since component creation.
+        let c = Component::new(Labels::empty(), HashMap::new());
+        let _first = c.capture_delta_auto(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_millis(50));
+        let second = c.capture_delta_auto(Duration::from_secs(1));
+        assert!(second.interval() < Duration::from_millis(500),
+            "second auto-capture should measure inter-capture \
+             elapsed, not cumulative: {:?}", second.interval());
     }
 }

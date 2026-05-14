@@ -61,7 +61,7 @@ const DEJAVU_SANS: &[u8] = include_bytes!("DejaVuSans.ttf");
 /// misclassified as a positional DSL spec and rewrite `opts`.
 const FLAGS_TAKING_VALUE: &[&str] = &[
     // Plot-specific
-    "--metric", "--x", "--series", "--filter", "--agg",
+    "--metric", "--x", "--x1", "--reduce", "--series", "--filter", "--agg",
     "--db", "--output", "--name", "--label", "--palette",
     "--line", "--line-width", "--marker", "--marker-size",
     "--figure-num", "--title", "--xlabel", "--ylabel",
@@ -230,7 +230,72 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
         let line: &str = raw_line;
 
         if let Some(rest) = line.strip_prefix("y:").map(str::trim) {
-            opts.query = Some(rest.to_string());
+            // Compact pair shorthand: `(M1, M2){labels} by (...)`
+            // and friends expand into separate x1 and y1
+            // queries. See `try_decompose_compact_pair`.
+            if let Some(pair) = try_decompose_compact_pair(rest) {
+                opts.x_query = Some(pair.x_query);
+                opts.query = Some(pair.y_query);
+                if let Some(spec) = pair.point_label {
+                    opts.point_label1 = Some(spec);
+                }
+            } else {
+                opts.query = Some(rest.to_string());
+            }
+        } else if let Some(rest) = line.strip_prefix("y1:").map(str::trim) {
+            // Same compact-pair handling as `y:` — the two
+            // names are synonyms for the primary axis.
+            if let Some(pair) = try_decompose_compact_pair(rest) {
+                opts.x_query = Some(pair.x_query);
+                opts.query = Some(pair.y_query);
+                if let Some(spec) = pair.point_label {
+                    opts.point_label1 = Some(spec);
+                }
+            } else {
+                opts.query = Some(rest.to_string());
+            }
+        } else if let Some(rest) = line.strip_prefix("series:").map(str::trim) {
+            // Comma-separated list of label keys (or `*` to
+            // auto-detect every varying label) that define
+            // one series per distinct tuple. Other labels
+            // (e.g. `limit` on a Pareto plot where points
+            // vary along the curve) are kept on the row but
+            // don't split into separate lines.
+            opts.series_labels.clear();
+            for k in rest.trim_matches(|c| c == '[' || c == ']')
+                .split(',').map(str::trim).filter(|s| !s.is_empty())
+            {
+                opts.series_labels.push(k.to_string());
+            }
+        } else if let Some(rest) = line.strip_prefix("x1:").map(str::trim) {
+            // Paired-coordinate mode: x-positions come from
+            // the *values* of this metricsql query, paired
+            // with `y1:`'s values. Each unique label tuple in
+            // both queries contributes one (or more, depending
+            // on `reduce:`) point. Replaces the prior
+            // `x-query:` directive — semantics are stricter
+            // and pairing is symmetric.
+            opts.x_query = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("reduce:").map(str::trim) {
+            // How to collapse per-tuple time-series samples
+            // into rendered points: `avg` (default) reduces
+            // every tuple to one point at the mean of its
+            // (x, y) samples; `last` takes the most recent
+            // timestamp pair; `none` keeps every paired
+            // sample. Only meaningful with paired `x1:`/`y1:`.
+            opts.reduce = Some(parse_reduce_op(rest)
+                .map_err(|e| format!("reduce: {e}"))?);
+        } else if let Some(rest) = line.strip_prefix("point-label1:").map(str::trim) {
+            // Per-point text annotation source:
+            //   * `*`        → Vary (auto-discover labels
+            //                  that aren't series-defining
+            //                  and aren't the x label)
+            //   * `k`        → Explicit(["k"]) — single label
+            //   * `k,limit`  → Explicit(["k", "limit"]) — list
+            // Empty string is rejected so a typo doesn't
+            // silently disable the feature.
+            opts.point_label1 = Some(parse_point_label_spec(rest)
+                .map_err(|e| format!("point-label1: {e}"))?);
         } else if let Some(rest) = line.strip_prefix("x:").map(str::trim) {
             opts.x_label = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix("x-label:").map(str::trim) {
@@ -471,6 +536,32 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
 struct PlotMetricsOpts {
     metric: Option<String>,
     x_label: Option<String>,
+    /// Pareto-scatter mode: when set, x-positions come from the
+    /// *values* of this metricsql query rather than from a label
+    /// lookup. Each y-row is paired with the matching x-series
+    /// by exact label-tuple equality (any extra labels on the
+    /// y-row that aren't on the x-series are ignored — the
+    /// x-query's label set is the join key, so the operator
+    /// controls coupling tightness via the `by (...)` clause
+    /// they use on the x-query). Mutually exclusive with
+    /// `x_label` for binding purposes — when both are set,
+    /// `x_query` wins and `x_label` is used only for the
+    /// axis-title fallback.
+    x_query: Option<String>,
+    /// How to collapse per-tuple time-series samples into
+    /// rendered points when `x_query` is set. `None` (the
+    /// option default) → `ReduceOp::Avg`. Set via the
+    /// `reduce:` directive.
+    reduce: Option<ReduceOp>,
+    /// Per-point label annotation source. `None` ⇒ no
+    /// per-point text. Configured via the long-form
+    /// `point-label1:` directive, or the third positional
+    /// element of a compact paired-query shorthand. `Vary`
+    /// auto-discovers the labels that aren't series-defining
+    /// and aren't the x label; `Explicit(labels)` projects
+    /// the listed label names per point. Renders as small
+    /// text near each marker.
+    point_label1: Option<PointLabelSpec>,
     /// One series per distinct *tuple* of values across these
     /// label keys. Empty → single series. `["*"]` → auto-detect:
     /// every label key that has >1 distinct value after filtering
@@ -818,10 +909,10 @@ struct ResolvedSecondaryAxis {
     /// min / max / scale for the renderer's range
     /// computation.
     cfg: AxisOpts,
-    /// Aggregated `(series_name → Vec<(x, y)>)` shape — same
-    /// as the primary's `aggregated` map. Empty when the
-    /// axis is pending.
-    series: BTreeMap<String, Vec<(f64, f64)>>,
+    /// Aggregated `(series_name → Vec<PlotPoint>)` shape —
+    /// same as the primary's `aggregated` map. Empty when
+    /// the axis is pending.
+    series: BTreeMap<String, Vec<PlotPoint>>,
     /// Resolved tick detents (numeric positions) for this
     /// axis. Empty when no ticks were requested or the
     /// resolver returned nothing.
@@ -1040,6 +1131,500 @@ fn strip_quotes(s: &str) -> &str {
 ///
 /// - `[name]` matched against `labels.get("name")`. Hit:
 ///   the label value replaces the bracketed text.
+/// One rendered point on a plot.
+///
+/// Carries the (x, y) coordinate plus enough provenance for
+/// every downstream consumer (renderer, verbose table, CSV
+/// writer, per-point label annotation) to format honest
+/// output. Replaces the old `(f64, f64, usize)` triple —
+/// canonical shape across both the paired x1/y1 path and
+/// the classic label-driven bucket_rows path.
+///
+/// - `count` is the number of input samples that reduced
+///   into this point. For Avg/Last per-tuple reductions
+///   it's the source-sample count; for None reductions
+///   (and classic single-row buckets) it's 1.
+/// - `labels` is the full label map of the source data
+///   (series labels + vary labels). The renderer's
+///   `point-label1:` directive picks which to surface as
+///   per-point annotations.
+#[derive(Debug, Clone)]
+struct PlotPoint {
+    x: f64,
+    y: f64,
+    count: usize,
+    labels: std::collections::HashMap<String, String>,
+}
+
+/// Per-point label annotation source for the renderer.
+/// Configured via `point-label1:` (long form) or the third
+/// positional element of a compact paired query.
+#[derive(Debug, Clone)]
+enum PointLabelSpec {
+    /// Auto-discover: surface every label in the source
+    /// data that's part of the `by (...)` clause but NOT
+    /// in `series:`. These are the labels that vary along
+    /// each line; rendering them per-point gives the
+    /// operator a free reading of "which limit / k / ...
+    /// does this point correspond to" without reaching for
+    /// the verbose table.
+    Vary,
+    /// Render the listed names' values per point. Each
+    /// name is one of:
+    ///   * a label key — looked up in the point's labels;
+    ///     missing labels render as `(unset)` so a typo is
+    ///     visible rather than silent
+    ///   * the reserved token `x` — the point's x value
+    ///   * the reserved token `y` — the point's y value
+    ///   * the reserved token `n` — the per-point sample
+    ///     count
+    ///
+    /// Combining tokens with label keys (e.g.
+    /// `limit, x, y`) renders the matching values side by
+    /// side at each point.
+    Explicit(Vec<String>),
+}
+
+/// Parse a `point-label1:` value into a [`PointLabelSpec`].
+/// Accepts `*` (Vary) or a comma-separated label list
+/// (Explicit). Empty input is an error — leaving the field
+/// blank is the way to disable the feature, not a synonym
+/// for an empty annotation.
+fn parse_point_label_spec(value: &str) -> Result<PointLabelSpec, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("expected `*` or one-or-more label names".to_string());
+    }
+    if trimmed == "*" {
+        return Ok(PointLabelSpec::Vary);
+    }
+    let labels: Vec<String> = trimmed
+        .trim_matches(|c| c == '[' || c == ']')
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if labels.is_empty() {
+        return Err("label list was empty after splitting".to_string());
+    }
+    Ok(PointLabelSpec::Explicit(labels))
+}
+
+/// Format the annotation text for a single rendered point
+/// according to the operator's [`PointLabelSpec`] and the
+/// series's defining label set. Returns an empty string when
+/// the spec produces no labels to surface (caller skips
+/// drawing for empty results so an empty annotation is not
+/// mistaken for a deliberate "" label).
+///
+/// Format: comma-separated `key=value` pairs, sorted by key
+/// for deterministic readout regardless of `HashMap`
+/// iteration order. The key prefix is always included —
+/// even for single-label projections — so a glance at the
+/// annotation tells the operator *which* label they're
+/// reading, not just the value. Missing label names render
+/// as `<unset>` so typos are visible rather than silent.
+///
+/// In addition to label names, three reserved tokens
+/// project the point's intrinsic values:
+///
+///   * `x` → the point's x coordinate (formatted compactly)
+///   * `y` → the point's y coordinate (formatted compactly)
+///   * `n` → the per-point sample count (integer)
+///
+/// These are useful when the metric value itself should
+/// appear in the per-point annotation. For paired plots,
+/// `x` is the x-query's value at that point and `y` is the
+/// y-query's value — so on a recall-vs-QPS plot, `x`
+/// surfaces the rate and `y` surfaces the recall alongside
+/// any labels the operator also projected.
+fn format_point_label(
+    point: &PlotPoint,
+    spec: &PointLabelSpec,
+    series_labels: &[String],
+) -> String {
+    let value_for = |token: &str| -> String {
+        match token {
+            "x" => format_x(point.x),
+            "y" => format_datapoint(point.y),
+            "n" => point.count.to_string(),
+            other => point.labels.get(other)
+                .cloned()
+                .unwrap_or_else(|| "(unset)".to_string()),
+        }
+    };
+    let format_kvs = |names: &[&String]| -> String {
+        names.iter()
+            .map(|k| format!("{}={}", k, value_for(k.as_str())))
+            .collect::<Vec<_>>().join(", ")
+    };
+    match spec {
+        PointLabelSpec::Vary => {
+            let mut keys: Vec<&String> = point.labels.keys()
+                .filter(|k| !series_labels.iter().any(|s| s == *k))
+                .filter(|k| k.as_str() != "__name__")
+                .collect();
+            if keys.is_empty() { return String::new(); }
+            keys.sort();
+            format_kvs(&keys)
+        }
+        PointLabelSpec::Explicit(names) => {
+            if names.is_empty() { return String::new(); }
+            let refs: Vec<&String> = names.iter().collect();
+            format_kvs(&refs)
+        }
+    }
+}
+
+/// How paired (x, y) coordinate samples collapse per
+/// label tuple in the new `x1:`/`y1:` paradigm.
+///
+/// Reductions apply *after* the cross-query timestamp-pair
+/// inner join — each `(label_tuple, timestamp)` slot
+/// contributes one `(x_val, y_val)` pair, and the reduction
+/// folds the per-tuple set of pairs into the rendered
+/// points.
+#[derive(Debug, Clone, Copy)]
+enum ReduceOp {
+    /// One point per tuple at the arithmetic mean of all
+    /// paired (x, y) samples for that tuple. Default.
+    Avg,
+    /// One point per tuple at the latest-timestamp pair.
+    Last,
+    /// No reduction — every paired sample becomes a point.
+    /// Lines connect points in x-ascending order within
+    /// each series.
+    None,
+}
+
+fn parse_reduce_op(s: &str) -> Result<ReduceOp, String> {
+    match s.trim() {
+        "avg" | "mean" => Ok(ReduceOp::Avg),
+        "last"         => Ok(ReduceOp::Last),
+        "none"         => Ok(ReduceOp::None),
+        other => Err(format!(
+            "unknown reduce op `{other}` (expected: avg, last, none)"
+        )),
+    }
+}
+
+/// Decomposed pair from one of the compact `y1:` shorthand
+/// forms. Carries the two expanded metricsql expressions
+/// (one for x, one for y) plus an optional point-label
+/// spec carried positionally in the shorthand (third
+/// positional element when present and not a label filter).
+struct CompactPair {
+    x_query: String,
+    y_query: String,
+    /// `Some(spec)` when the operator wrote a third
+    /// positional element that names per-point labels (`*`
+    /// or a label name). `None` when the shorthand had no
+    /// such element OR the third element was the inline
+    /// `{labels}` filter of Form A.
+    point_label: Option<PointLabelSpec>,
+}
+
+/// Try to interpret `value` as one of the compact pair
+/// shorthand forms accepted on `y1:`. When it matches,
+/// return the two decomposed metricsql expressions. When
+/// it doesn't match, return `None` and the caller should
+/// treat the value as a plain y-query.
+///
+/// Accepted shapes (whitespace flexible):
+///
+/// ```text
+///   (FN(METRIC_X), FN(METRIC_Y), {LABELS}) by (GROUPS)   // form A
+///   (METRIC_X, METRIC_Y){LABELS} by (GROUPS)             // form B (implies avg)
+///   FN(METRIC_X, METRIC_Y){LABELS} by (GROUPS)           // form C
+///   (METRIC_X, METRIC_Y, *){LABELS} by (GROUPS)          // form B + point-label
+///   (METRIC_X, METRIC_Y, k){LABELS} by (GROUPS)          // form B + point-label
+///   FN(METRIC_X, METRIC_Y, *){LABELS} by (GROUPS)        // form C + point-label
+/// ```
+///
+/// Forms B and C imply `avg(...)` aggregation; form A
+/// takes whatever aggregation the operator wrote on each
+/// element. The `{LABELS}` filter and `by (GROUPS)` clause
+/// are applied identically to both x and y so the two
+/// queries share their join key.
+///
+/// A third positional element (when not the inline
+/// `{labels}` of Form A) carries the per-point label spec:
+/// `*` for auto-vary, otherwise a single label name. To
+/// project multiple labels per point, use the long-form
+/// `point-label1:` directive instead.
+fn try_decompose_compact_pair(value: &str) -> Option<CompactPair> {
+    let value = value.trim();
+
+    // Form A vs Form B-with-point-label disambiguation:
+    // both shapes have 3 top-level elements inside the
+    // outer parens. Form A's third element is the
+    // `{LABELS}` filter (starts with `{`); the new
+    // extension's third element is a label-projection
+    // token (`*` or a bare identifier).
+    if value.starts_with('(') {
+        let (inner, after) = split_balanced(value, '(', ')')?;
+        let parts = split_top_level_commas(inner);
+        if parts.len() == 3 {
+            let third = parts[2].trim();
+            if third.starts_with('{') && third.ends_with('}') {
+                // Form A: inline-labels variant.
+                let x_expr = parts[0].trim();
+                let y_expr = parts[1].trim();
+                let by_clause = after.trim();
+                return Some(CompactPair {
+                    x_query: inject_labels_and_by(x_expr, third, by_clause)?,
+                    y_query: inject_labels_and_by(y_expr, third, by_clause)?,
+                    point_label: None,
+                });
+            }
+            // Form B + point-label spec.
+            let after_trim = after.trim();
+            let (labels, by_part) = if after_trim.starts_with('{') {
+                let close = after_trim.find('}')?;
+                (&after_trim[..=close], after_trim[close + 1..].trim())
+            } else {
+                ("", after_trim)
+            };
+            let x_metric = parts[0].trim();
+            let y_metric = parts[1].trim();
+            let spec = parse_point_label_spec(third).ok()?;
+            return Some(CompactPair {
+                x_query: build_avg(x_metric, labels, by_part),
+                y_query: build_avg(y_metric, labels, by_part),
+                point_label: Some(spec),
+            });
+        }
+        // Form B: two top-level elements, then `{...}`
+        // outside, then `by ...`.
+        if parts.len() == 2 {
+            let after_trim = after.trim();
+            let (labels, by_part) = if after_trim.starts_with('{') {
+                let close = after_trim.find('}')?;
+                (&after_trim[..=close], after_trim[close + 1..].trim())
+            } else {
+                ("", after_trim)
+            };
+            let x_metric = parts[0].trim();
+            let y_metric = parts[1].trim();
+            return Some(CompactPair {
+                x_query: build_avg(x_metric, labels, by_part),
+                y_query: build_avg(y_metric, labels, by_part),
+                point_label: None,
+            });
+        }
+        return None;
+    }
+
+    // Form C: `<fn>(METRIC_X, METRIC_Y){labels} by (...)`,
+    // optionally with a third positional point-label spec
+    // (`*` or a label name). The function name is
+    // whatever the operator typed — we preserve it
+    // verbatim, only requiring 2-or-3 top-level args.
+    if let Some(open) = value.find('(') {
+        let fn_name = &value[..open];
+        if !fn_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return None;
+        }
+        let tail = &value[open..];
+        let (inner, after) = split_balanced(tail, '(', ')')?;
+        let parts = split_top_level_commas(inner);
+        if parts.len() == 2 || parts.len() == 3 {
+            let after_trim = after.trim();
+            let (labels, by_part) = if after_trim.starts_with('{') {
+                let close = after_trim.find('}')?;
+                (&after_trim[..=close], after_trim[close + 1..].trim())
+            } else {
+                ("", after_trim)
+            };
+            let x_metric = parts[0].trim();
+            let y_metric = parts[1].trim();
+            let point_label = if parts.len() == 3 {
+                Some(parse_point_label_spec(parts[2].trim()).ok()?)
+            } else {
+                None
+            };
+            return Some(CompactPair {
+                x_query: build_fn_call(fn_name, x_metric, labels, by_part),
+                y_query: build_fn_call(fn_name, y_metric, labels, by_part),
+                point_label,
+            });
+        }
+    }
+    None
+}
+
+/// Peel off the substring inside the first balanced
+/// `<open>...<close>` pair starting at the beginning of
+/// `s`, returning `(inside, after)`. Respects nested
+/// parens. None if there's no matching close.
+fn split_balanced(s: &str, open: char, close: char) -> Option<(&str, &str)> {
+    let s = s.trim_start();
+    let mut chars = s.char_indices();
+    let (first_i, first_c) = chars.next()?;
+    if first_c != open { return None; }
+    let mut depth = 1i32;
+    for (i, c) in chars {
+        if c == open { depth += 1; }
+        else if c == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some((&s[first_i + 1..i], &s[i + 1..]));
+            }
+        }
+    }
+    None
+}
+
+/// Split a metricsql-ish expression on top-level commas
+/// (commas at depth 0 — not inside `(...)`, `{...}`, or
+/// `[...]`). Handles nested parens / braces / brackets
+/// without a full grammar.
+fn split_top_level_commas(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let bytes = s.as_bytes();
+    let mut depth_p = 0i32;
+    let mut depth_c = 0i32;
+    let mut depth_b = 0i32;
+    let mut start = 0usize;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth_p += 1,
+            b')' => depth_p -= 1,
+            b'{' => depth_c += 1,
+            b'}' => depth_c -= 1,
+            b'[' => depth_b += 1,
+            b']' => depth_b -= 1,
+            b',' if depth_p == 0 && depth_c == 0 && depth_b == 0 => {
+                out.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
+}
+
+/// Build `avg(<metric><labels>) <by>` — the form B/C
+/// expansion. `labels` may be empty (no filter); `by_part`
+/// may be empty (no `by (...)` clause).
+fn build_avg(metric: &str, labels: &str, by_part: &str) -> String {
+    let mut out = format!("avg({metric}{labels})");
+    if !by_part.is_empty() {
+        out.push(' ');
+        out.push_str(by_part);
+    }
+    out
+}
+
+/// Build `<fn>(<metric><labels>) <by>` for a caller-named
+/// aggregation function.
+fn build_fn_call(fn_name: &str, metric: &str, labels: &str, by_part: &str) -> String {
+    let mut out = format!("{fn_name}({metric}{labels})");
+    if !by_part.is_empty() {
+        out.push(' ');
+        out.push_str(by_part);
+    }
+    out
+}
+
+/// Form A expansion: an explicit aggregation expression
+/// gets the shared label filter and by clause appended.
+/// The expression already has its own aggregation wrapper.
+fn inject_labels_and_by(expr: &str, labels: &str, by_clause: &str) -> Option<String> {
+    // Inject labels into the FIRST `{}` slot inside the
+    // expression, or — if there isn't one — append them
+    // before the closing `)` of the outermost call.
+    let expr = expr.trim();
+    let labels = labels.trim();
+    let labels_inner = labels.strip_prefix('{')?.strip_suffix('}')?;
+    let mut out = expr.to_string();
+    if let Some(open) = out.find('{') {
+        // Splice the labels_inner into the existing `{}`,
+        // merging with whatever filter the expression
+        // already has. Comma-separate if non-empty.
+        let close = out[open..].find('}')? + open;
+        let existing = out[open + 1..close].trim();
+        let merged = if existing.is_empty() {
+            labels_inner.to_string()
+        } else {
+            format!("{existing},{labels_inner}")
+        };
+        out.replace_range(open + 1..close, &merged);
+    } else {
+        // No existing `{}` — find the rightmost `)` and
+        // inject `{labels_inner}` immediately before it.
+        let last_close = out.rfind(')')?;
+        out.insert_str(last_close, &format!("{{{labels_inner}}}"));
+    }
+    if !by_clause.is_empty() {
+        out.push(' ');
+        out.push_str(by_clause);
+    }
+    Some(out)
+}
+
+/// Natural-numeric comparator for series keys.
+///
+/// Series-tuple keys look like `k=10, optimize_for=recall,
+/// phase=ann_query`. A plain lexicographic sort puts
+/// `limit=10` before `limit=2` because `'1' < '2'`. That
+/// flips legend / line ordering for any label whose values
+/// span a digit-count change. This comparator walks both
+/// strings in parallel and, whenever both have a run of
+/// digits at the current position, compares those runs as
+/// numbers instead of character-by-character.
+///
+/// Outside digit runs, falls back to byte-wise comparison
+/// — same ordering as `str::cmp`. Equal-length numeric
+/// prefixes followed by different suffixes still resolve
+/// correctly (the suffix bytes do the tie-break).
+fn natural_str_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let ab = a.as_bytes();
+    let bb = b.as_bytes();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < ab.len() && j < bb.len() {
+        let (ca, cb) = (ab[i], bb[j]);
+        if ca.is_ascii_digit() && cb.is_ascii_digit() {
+            // Find both digit runs; trim leading zeros for
+            // canonical numeric compare, then break ties by
+            // raw run length so `01` sorts before `1` only
+            // if everything else matches.
+            let a_start = i;
+            while i < ab.len() && ab[i].is_ascii_digit() { i += 1; }
+            let b_start = j;
+            while j < bb.len() && bb[j].is_ascii_digit() { j += 1; }
+            let a_run = &ab[a_start..i];
+            let b_run = &bb[b_start..j];
+            let a_trim = trim_leading_zeros(a_run);
+            let b_trim = trim_leading_zeros(b_run);
+            match a_trim.len().cmp(&b_trim.len()) {
+                Ordering::Equal => match a_trim.cmp(b_trim) {
+                    Ordering::Equal => {}
+                    other => return other,
+                },
+                other => return other,
+            }
+        } else if ca == cb {
+            i += 1;
+            j += 1;
+        } else {
+            return ca.cmp(&cb);
+        }
+    }
+    ab.len().cmp(&bb.len())
+}
+
+fn trim_leading_zeros(b: &[u8]) -> &[u8] {
+    let mut start = 0;
+    while start + 1 < b.len() && b[start] == b'0' {
+        start += 1;
+    }
+    &b[start..]
+}
+
 /// - Miss: the bracketed text is left verbatim, so the
 ///   operator can spot the typo / missing label.
 /// - `[` not followed by a matching `]` is treated as a
@@ -1382,6 +1967,9 @@ impl Default for PlotMetricsOpts {
         Self {
             metric: None,
             x_label: None,
+            x_query: None,
+            reduce: None,
+            point_label1: None,
             series_labels: Vec::new(),
             filters: Vec::new(),
             agg: String::new(),
@@ -1605,9 +2193,33 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
         .or(synthetic_metric)
         .ok_or_else(|| "--metric <pattern> is required (or pass `--y <metricsql>` / a positional spec)".to_string())?;
     let metric = metric_owned.as_str();
-    let Some(x_label) = opts.x_label.as_deref() else {
-        return Err("--x <label_key> is required (or `over <label>` in the spec)".to_string());
+    // Three x-axis paths:
+    //   1. `x1: <metricsql>` paired with `y1: <metricsql>` —
+    //      coordinate-stream mode. Both queries are inner-
+    //      joined by label tuple + timestamp; per-tuple
+    //      `reduce:` (default `avg`) collapses time-series
+    //      to rendered points. Handled below via
+    //      `pair_xy_coordinates` (bypasses bucket_rows
+    //      entirely).
+    //   2. `x: <label_key>` — classic mode. x-positions come
+    //      from the named label on each y-row.
+    //   3. Neither — error: caller must pick one.
+    let x_label_owned: String = if opts.x_query.is_some() {
+        // Placeholder; the coordinate-stream path doesn't
+        // actually use an x_label, but the rest of the
+        // pipeline still threads one through (used by
+        // verbose-table / CSV writers).
+        "__x_value__".to_string()
+    } else if let Some(s) = opts.x_label.as_deref() {
+        s.to_string()
+    } else {
+        return Err(
+            "--x <label_key> is required (or `--x1 <metricsql>` for \
+             paired-coordinate mode, or `over <label>` in the positional spec)"
+                .to_string()
+        );
     };
+    let x_label = x_label_owned.as_str();
 
     // 1. Pull rows from every db that matches the metric pattern
     //    + filters. Multi-db: merge into a temp db first so
@@ -1634,104 +2246,144 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     // back what was found (or that it found nothing) so the
     // operator running plots against a live session can see
     // which axes resolved and which are still waiting on data.
-    let rows = if let Some(q) = opts.query.as_deref() {
-        let r = rows_via_metricsql(&query_db, q)
-            .map_err(|e| format!("metricsql failed against '{}': {e}", query_db.display()))?;
-        eprintln!("plot: y1 query against '{}': `{q}` → {} row(s)",
-            query_db.display(), r.len());
-        r
-    } else {
-        let r = query_rows(&query_db, metric, &opts.filters)
-            .map_err(|e| format!("query failed against '{}': {e}", query_db.display()))?;
-        eprintln!("plot: y1 legacy SQL against '{}' for metric '{metric}' → {} row(s)",
-            query_db.display(), r.len());
-        r
-    };
-    // Default-output paths anchor on the first user-supplied db
-    // (not the merge temp) so artifacts live next to real
-    // session data.
     let db_path = &primary_db;
-    if rows.is_empty() {
-        let mut msg = if let Some(q) = opts.query.as_deref() {
-            format!("metricsql query returned no series in '{}': `{q}`",
-                db_path.display())
-        } else {
-            format!("no matching rows in '{}' for metric '{metric}'",
-                db_path.display())
-        };
-        if !opts.filters.is_empty() && opts.query.is_none() {
-            msg.push_str(&format!(" with filters {}",
-                opts.filters.iter().map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>().join(", ")));
-        }
-        return Err(format!("{PLOT_NO_DATA_PREFIX}{msg}"));
-    }
+    let paired_mode = opts.x_query.is_some() && opts.query.is_some();
 
-    // 2. Resolve series labels.
-    //   - `["*"]` (explicit) → auto-detect: every label that has
-    //     >1 distinct value across the rows (excluding x and
-    //     session).
-    //   - Empty + `query:` set → auto-detect (the MetricsQL
-    //     `by(...)` clause already declares the dimensions; the
-    //     labels in the result minus the X axis are the natural
-    //     series-partition tuple. Defers to MetricsQL — no
-    //     duplicate `series:` / `by:` directive needed in the
-    //     plot grammar).
-    //   - Empty + legacy SQL path → single series (preserves the
-    //     old behaviour for the no-`query:` form).
-    //   - Otherwise → explicit list of label keys; one series
-    //     per distinct *tuple* of values across them.
-    let series_labels: Vec<String> = if opts.series_labels.iter().any(|s| s == "*") {
-        let auto = auto_detect_series_labels(&rows, x_label);
-        eprintln!("series: auto-detected discriminants: [{}]", auto.join(", "));
-        auto
-    } else if opts.series_labels.is_empty() && opts.query.is_some() {
-        let auto = auto_detect_series_labels(&rows, x_label);
-        if !auto.is_empty() {
-            eprintln!("series: auto-detected discriminants: [{}]", auto.join(", "));
+    // Canonical per-series shape across both paths: one
+    // `Vec<PlotPoint>` per series. Paired mode produces points
+    // with full source-series labels; classic mode produces
+    // points whose `labels` are the representative labels of
+    // the first row that landed in each `(series, x)` bucket.
+    let aggregated: BTreeMap<String, Vec<PlotPoint>>;
+    let series_labels: Vec<String>;
+    // `rows` is the raw `DbRow` shape used by the classic
+    // label-driven path for tick-spec auto-detection. Paired
+    // mode skips bucket_rows entirely and threads an empty
+    // vec — tick auto-detect on x-label is meaningless when
+    // x comes from a metric query (use explicit `x-ticks:`
+    // for those).
+    let rows: Vec<DbRow>;
+
+    if paired_mode {
+        rows = Vec::new();
+        // Paired-coordinate path: skip DbRow / bucket_rows
+        // entirely. Both queries flow into `pair_xy_coordinates`
+        // which inner-joins by label tuple + timestamp,
+        // reduces per tuple, and produces `PlotPoint`s. Series
+        // labels come from `series:` literally (no auto-detect
+        // — the operator declared the join dimensions via
+        // `by (...)` on the queries).
+        let xq = opts.x_query.as_deref().unwrap();
+        let yq = opts.query.as_deref().unwrap();
+        let reduce = opts.reduce.unwrap_or(ReduceOp::Avg);
+        series_labels = opts.series_labels.iter()
+            .filter(|s| s.as_str() != "*")
+            .cloned().collect();
+        aggregated = pair_xy_coordinates(
+            &query_db, xq, yq, &series_labels, reduce,
+        )?;
+        if aggregated.is_empty() {
+            return Err(format!(
+                "{PLOT_NO_DATA_PREFIX}x1/y1 pairing produced no series in '{}'",
+                db_path.display(),
+            ));
         }
-        auto
     } else {
-        opts.series_labels.clone()
-    };
-
-    // Group by (series-tuple, x_value) and aggregate per cell.
-    let series: BTreeMap<String, BTreeMap<F64Key, Vec<f64>>> =
-        bucket_rows(&rows, x_label, &series_labels);
-    if series.is_empty() {
-        return Err(format!(
-            "{PLOT_NO_DATA_PREFIX}rows matched but none yielded a usable \
-             ({x_label}, value) pair — check that '{x_label}' is a label on \
-             the matched rows."
-        ));
+        // Classic label-driven path: y-query (metricsql or
+        // legacy SQL) → rows → bucket_rows → aggregate.
+        rows = if let Some(q) = opts.query.as_deref() {
+            let r = rows_via_metricsql(&query_db, q)
+                .map_err(|e| format!("metricsql failed against '{}': {e}", query_db.display()))?;
+            eprintln!("plot: y1 query against '{}': `{q}` → {} row(s)",
+                query_db.display(), r.len());
+            r
+        } else {
+            let r = query_rows(&query_db, metric, &opts.filters)
+                .map_err(|e| format!("query failed against '{}': {e}", query_db.display()))?;
+            eprintln!("plot: y1 legacy SQL against '{}' for metric '{metric}' → {} row(s)",
+                query_db.display(), r.len());
+            r
+        };
+        if rows.is_empty() {
+            let mut msg = if let Some(q) = opts.query.as_deref() {
+                format!("metricsql query returned no series in '{}': `{q}`",
+                    db_path.display())
+            } else {
+                format!("no matching rows in '{}' for metric '{metric}'",
+                    db_path.display())
+            };
+            if !opts.filters.is_empty() && opts.query.is_none() {
+                msg.push_str(&format!(" with filters {}",
+                    opts.filters.iter().map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>().join(", ")));
+            }
+            return Err(format!("{PLOT_NO_DATA_PREFIX}{msg}"));
+        }
+        // Resolve series labels: same rules as before.
+        series_labels = if opts.series_labels.iter().any(|s| s == "*") {
+            let auto = auto_detect_series_labels(&rows, x_label);
+            eprintln!("series: auto-detected discriminants: [{}]", auto.join(", "));
+            auto
+        } else if opts.series_labels.is_empty() && opts.query.is_some() {
+            let auto = auto_detect_series_labels(&rows, x_label);
+            if !auto.is_empty() {
+                eprintln!("series: auto-detected discriminants: [{}]", auto.join(", "));
+            }
+            auto
+        } else {
+            opts.series_labels.clone()
+        };
+        let series: BTreeMap<String, BTreeMap<F64Key, Vec<f64>>> =
+            bucket_rows(&rows, x_label, &series_labels);
+        if series.is_empty() {
+            return Err(format!(
+                "{PLOT_NO_DATA_PREFIX}rows matched but none yielded a usable \
+                 ({x_label}, value) pair — check that '{x_label}' is a label on \
+                 the matched rows."
+            ));
+        }
+        // Collect representative labels per `(series_key,
+        // x_val)` bucket so the renderer's `point-label1:`
+        // directive can surface non-series labels per point
+        // even in classic (bucket_rows-driven) mode. The
+        // representative is the first row that hits the
+        // bucket — sufficient for label projection since
+        // within a bucket every row already shares the
+        // series labels and the x value; remaining labels
+        // either match or vary (where they vary we pick the
+        // first as a representative, same way the y
+        // aggregator collapses many samples into one mean).
+        let bucket_labels = collect_bucket_labels(&rows, x_label, &series_labels);
+        aggregated = series.iter()
+            .map(|(sname, by_x)| {
+                let labels_for_series = bucket_labels.get(sname);
+                let mut points: Vec<PlotPoint> = by_x.iter()
+                    .map(|(xk, ys)| PlotPoint {
+                        x: xk.0,
+                        y: aggregate(&opts.agg, ys),
+                        count: ys.len(),
+                        labels: labels_for_series
+                            .and_then(|m| m.get(xk))
+                            .cloned()
+                            .unwrap_or_default(),
+                    })
+                    .collect();
+                points.sort_by(|a, b| a.x.partial_cmp(&b.x)
+                    .unwrap_or(std::cmp::Ordering::Equal));
+                (sname.clone(), points)
+            })
+            .collect();
     }
-
-    // Aggregate to (x, value) pairs per series. Also keep the
-    // n-rows count per cell — we surface it via `--verbose` and
-    // `--csv-also` so users can audit the aggregation against
-    // raw db queries.
-    let aggregated_with_counts: BTreeMap<String, Vec<(f64, f64, usize)>> = series.iter()
-        .map(|(sname, by_x)| {
-            let mut points: Vec<(f64, f64, usize)> = by_x.iter()
-                .map(|(xk, ys)| (xk.0, aggregate(&opts.agg, ys), ys.len()))
-                .collect();
-            points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-            (sname.clone(), points)
-        })
-        .collect();
-    let aggregated: BTreeMap<String, Vec<(f64, f64)>> = aggregated_with_counts.iter()
-        .map(|(s, pts)| (s.clone(), pts.iter().map(|(x, y, _)| (*x, *y)).collect()))
-        .collect();
 
     // --verbose: dump the aggregation table to stderr.
     if opts.verbose {
-        emit_verbose_table(&aggregated_with_counts, x_label,
+        emit_verbose_table(&aggregated, x_label,
             &series_labels, &opts.agg);
     }
 
     // --csv-also: write the same data as CSV.
     if let Some(csv_path) = opts.csv_also.as_ref() {
-        write_csv(csv_path, &aggregated_with_counts, x_label,
+        write_csv(csv_path, &aggregated, x_label,
             &series_labels, metric, &opts.agg)
             .map_err(|e| format!("failed to write CSV '{}': {e}", csv_path.display()))?;
         eprintln!("csv:  {}", csv_path.display());
@@ -1816,13 +2468,24 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
             });
             continue;
         }
-        let series: BTreeMap<String, Vec<(f64, f64)>> = buckets.iter()
+        let axis_bucket_labels =
+            collect_bucket_labels(&rows2, x_label, &axis_series_labels);
+        let series: BTreeMap<String, Vec<PlotPoint>> = buckets.iter()
             .map(|(sname, by_x)| {
-                let mut points: Vec<(f64, f64)> = by_x.iter()
-                    .map(|(xk, ys)| (xk.0, aggregate(&opts.agg, ys)))
+                let labels_for_series = axis_bucket_labels.get(sname);
+                let mut points: Vec<PlotPoint> = by_x.iter()
+                    .map(|(xk, ys)| PlotPoint {
+                        x: xk.0,
+                        y: aggregate(&opts.agg, ys),
+                        count: ys.len(),
+                        labels: labels_for_series
+                            .and_then(|m| m.get(xk))
+                            .cloned()
+                            .unwrap_or_default(),
+                    })
                     .collect();
                 points.sort_by(|a, b|
-                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                    a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
                 (sname.clone(), points)
             })
             .collect();
@@ -1830,7 +2493,10 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
         eprintln!("plot: {} → {} series, {} point(s)",
             axis.name, series.len(), total_pts);
         let ticks = resolve_tick_spec(
-            &axis.ticks, &rows2, x_label, &query_db, TickAxis::YValue,
+            &axis.ticks,
+            &TickSource::Rows { rows: &rows2, x_label },
+            &query_db,
+            TickAxis::YValue,
         )?;
         secondary_resolved.push(ResolvedSecondaryAxis {
             name: axis.name.clone(),
@@ -1849,16 +2515,26 @@ fn render_one(opts: PlotMetricsOpts) -> Result<(), String> {
     // y-ticks it's the result's value column — sample mean
     // values, since Y represents the metric value rather than
     // a label.
+    // Tick auto-detect data source depends on the pipeline
+    // path: classic mode harvests from DbRows (label-x or
+    // mean-y); paired mode harvests from the already-
+    // aggregated points (where x came from a metric query,
+    // not a label).
+    let primary_tick_source = if paired_mode {
+        TickSource::Aggregated { agg: &aggregated }
+    } else {
+        TickSource::Rows { rows: &rows, x_label }
+    };
     let x_ticks_resolved = resolve_tick_spec(
-        &opts.x_ticks, &rows, x_label, &query_db, TickAxis::XLabel,
+        &opts.x_ticks, &primary_tick_source, &query_db, TickAxis::XLabel,
     )?;
     let y_ticks_resolved = resolve_tick_spec(
-        &opts.y_ticks, &rows, x_label, &query_db, TickAxis::YValue,
+        &opts.y_ticks, &primary_tick_source, &query_db, TickAxis::YValue,
     )?;
 
     // 4. Render.
     render_plot(&aggregated, &secondary_resolved, &opts, x_label, metric, &out_path,
-        &x_ticks_resolved, &y_ticks_resolved)
+        &x_ticks_resolved, &y_ticks_resolved, &series_labels)
         .map_err(|e| format!("render failed: {e}"))?;
 
     let total_points: usize = aggregated.values().map(|v| v.len()).sum();
@@ -2250,13 +2926,19 @@ fn derive_stored_output_path(db_path: &Path, name: &str) -> PathBuf {
     let dir = db_path.parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
-    // Allow stored names like "myplot.svg" to override the
-    // default extension; otherwise default to PNG.
+    // Naming convention: `<name>_plot.<ext>`. Default
+    // extension is PNG; a stored `name` carrying its own
+    // extension (`myplot.svg`) overrides the default, with
+    // the `_plot` suffix inserted before the extension.
     let p = PathBuf::from(name);
-    if p.extension().is_some() {
-        dir.join(format!("plot_{name}"))
+    if let Some(ext) = p.extension() {
+        let stem = p.file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| name.to_string());
+        let ext_s = ext.to_string_lossy();
+        dir.join(format!("{stem}_plot.{ext_s}"))
     } else {
-        dir.join(format!("plot_{name}.png"))
+        dir.join(format!("{name}_plot.png"))
     }
 }
 
@@ -2355,6 +3037,8 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
         match a.as_str() {
             "--metric" => opts.metric = Some(next(&mut iter, "metric")?),
             "--x" => opts.x_label = Some(next(&mut iter, "x")?),
+            "--x1" => opts.x_query = Some(next(&mut iter, "x1")?),
+            "--reduce" => opts.reduce = Some(parse_reduce_op(&next(&mut iter, "reduce")?)?),
             "--series" => {
                 let raw = next(&mut iter, "series")?;
                 for k in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -2512,6 +3196,8 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                     match k {
                         "metric" => opts.metric = Some(v.to_string()),
                         "x" => opts.x_label = Some(v.to_string()),
+                        "x1" => opts.x_query = Some(v.to_string()),
+                        "reduce" => opts.reduce = Some(parse_reduce_op(v)?),
                         "series" => {
                             for k in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                                 opts.series_labels.push(k.to_string());
@@ -2675,6 +3361,40 @@ struct DbRow {
 /// sample becomes one `DbRow` with the series's labels and the
 /// sample's value as `mean`. The `spec` is synthesised in
 /// PromQL-ish form (`__name__{labels...}`) for diagnostics.
+/// Evaluate `expr` against `db_path` and return the raw
+/// `Vec<Series>` from the metricsql engine, with timestamps
+/// preserved. Use this for the paired x1/y1 path where the
+/// downstream pair logic needs to align samples by their
+/// timestamps; legacy `rows_via_metricsql` is fine for paths
+/// that only need values.
+fn series_via_metricsql(
+    db_path: &Path,
+    expr: &str,
+) -> Result<Vec<nbrs_metricsql::eval::Series>, String> {
+    use nbrs_metricsql::adapters::sqlite::SqliteDataSource;
+    use nbrs_metricsql::eval::{EvalContext, evaluate};
+
+    let ds = SqliteDataSource::open(db_path)
+        .map_err(|e| format!("open metricsql sqlite adapter: {e}"))?;
+    let parsed = nbrs_metricsql::parse(expr)
+        .map_err(|e| format!("parse metricsql: {e}"))?;
+    let (start_ms, end_ms) = match latest_sample_window(db_path) {
+        Some((s, e)) => (s, e),
+        None => return Ok(Vec::new()),
+    };
+    let ctx = EvalContext {
+        data: &ds,
+        start_ms,
+        end_ms,
+        step_ms: 60_000,
+        lookback_ms: Some(300_000),
+        query_start_ms: Some(start_ms),
+        query_end_ms: Some(end_ms),
+    };
+    evaluate(&ctx, &parsed)
+        .map_err(|e| format!("evaluate metricsql: {e}"))
+}
+
 fn rows_via_metricsql(db_path: &Path, expr: &str) -> Result<Vec<DbRow>, String> {
     use nbrs_metricsql::adapters::sqlite::SqliteDataSource;
     use nbrs_metricsql::eval::{EvalContext, evaluate};
@@ -2876,6 +3596,188 @@ impl Ord for F64Key {
 /// plot legend reads naturally — for the user's "(k=10,
 /// optimize_for=RECALL)" use case, the legend literally shows
 /// `k=10, optimize_for=RECALL`.
+/// Paired x/y coordinate join.
+///
+/// Evaluates both `x_query` and `y_query` against `db_path`,
+/// then for each label tuple appearing in BOTH:
+///
+/// 1. Inner-joins samples by timestamp — only timestamps
+///    present in both x and y survive.
+/// 2. Reduces the per-tuple set of `(x, y)` pairs per
+///    [`ReduceOp`]: `Avg` collapses to one point at the
+///    mean of x and y; `Last` keeps the latest-timestamp
+///    pair; `None` keeps every paired sample.
+/// 3. Groups by `series_labels` into the rendered shape.
+/// 4. Sorts points within each series by x for clean line
+///    connectors.
+///
+/// Bypasses `bucket_rows` and produces the same
+/// `(x, y, count)` triple per point that bucket_rows emits.
+/// `count` is the number of input sample pairs that
+/// contributed to the point — for `Avg`/`Last` reductions
+/// it's the per-tuple sample count, for `None` it's
+/// always 1 (each sample is its own point).
+fn pair_xy_coordinates(
+    db_path: &Path,
+    x_query: &str,
+    y_query: &str,
+    series_labels: &[String],
+    reduce: ReduceOp,
+) -> Result<BTreeMap<String, Vec<PlotPoint>>, String> {
+    use std::collections::HashMap;
+    type LabelKey = Vec<(String, String)>;
+    fn key_for(labels: &[(String, String)]) -> LabelKey {
+        let mut k: LabelKey = labels.iter()
+            .filter(|(k, _)| *k != "__name__")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        k.sort();
+        k
+    }
+
+    let x_series = series_via_metricsql(db_path, x_query)?;
+    let y_series = series_via_metricsql(db_path, y_query)?;
+    eprintln!("plot: x1 query against '{}': `{x_query}` → {} series",
+        db_path.display(), x_series.len());
+    eprintln!("plot: y1 query against '{}': `{y_query}` → {} series",
+        db_path.display(), y_series.len());
+
+    // Cadence-tolerance bucket for the timestamp join.
+    // Counters and summaries from the cadence reporter land
+    // within ~ms of each tick boundary but not at the exact
+    // same timestamp (see SqliteAdapter eval comment at
+    // `latest_sample_window`). Bucketing both sides to the
+    // nearest `TICK_BUCKET_MS` makes them join within a
+    // cadence tick while keeping cross-tick samples distinct.
+    // Cadence is 30s in production; 1000ms tolerance is
+    // ample for within-tick skew, comfortably under any
+    // realistic cross-tick gap.
+    const TICK_BUCKET_MS: i64 = 1000;
+    let bucket_ts = |ts: i64| ts / TICK_BUCKET_MS;
+
+    let mut x_by_tuple: HashMap<LabelKey, HashMap<i64, f64>> = HashMap::new();
+    for s in &x_series {
+        let key = key_for(&s.labels);
+        let bucket = x_by_tuple.entry(key).or_default();
+        for sample in &s.samples {
+            if sample.value.is_finite() {
+                bucket.insert(bucket_ts(sample.timestamp_ms), sample.value);
+            }
+        }
+    }
+    if x_by_tuple.is_empty() {
+        return Err(format!(
+            "{PLOT_NO_DATA_PREFIX}x1 query produced no series in '{}': `{x_query}`",
+            db_path.display(),
+        ));
+    }
+    if y_series.is_empty() {
+        return Err(format!(
+            "{PLOT_NO_DATA_PREFIX}y1 query produced no series in '{}': `{y_query}`",
+            db_path.display(),
+        ));
+    }
+
+    let mut out: BTreeMap<String, Vec<PlotPoint>> = BTreeMap::new();
+    let mut paired_tuples = 0usize;
+    let mut y_only = 0usize;
+    let mut total_points = 0usize;
+    // Capture per-tuple pairings for the diagnostic table
+    // we emit after the loop. Keyed by the full label tuple
+    // (sorted) so the output reads in a stable order.
+    let mut diag_rows: Vec<(String, Vec<(f64, f64, usize)>)> = Vec::new();
+    for s in &y_series {
+        let key = key_for(&s.labels);
+        let Some(x_ts_map) = x_by_tuple.get(&key) else {
+            y_only += 1;
+            continue;
+        };
+        let mut pairs: Vec<(i64, f64, f64)> = s.samples.iter()
+            .filter(|sm| sm.value.is_finite())
+            .filter_map(|sm| x_ts_map.get(&bucket_ts(sm.timestamp_ms))
+                .map(|xv| (sm.timestamp_ms, *xv, sm.value)))
+            .collect();
+        if pairs.is_empty() { continue; }
+        pairs.sort_by_key(|(ts, _, _)| *ts);
+        let sample_count = pairs.len();
+
+        let labels_map: std::collections::HashMap<String, String> = s.labels.iter()
+            .filter(|(k, _)| k != "__name__")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        // For Avg / Last the point summarises `sample_count`
+        // inputs. For None each input becomes its own point
+        // with sample_count = 1. Each emitted point carries
+        // the full source-series labels so the renderer's
+        // `point-label1:` directive can surface them.
+        let reduced: Vec<PlotPoint> = match reduce {
+            ReduceOp::Avg => {
+                let n = sample_count as f64;
+                let (sx, sy) = pairs.iter().fold((0.0_f64, 0.0_f64),
+                    |(ax, ay), (_, x, y)| (ax + x, ay + y));
+                vec![PlotPoint {
+                    x: sx / n, y: sy / n, count: sample_count,
+                    labels: labels_map.clone(),
+                }]
+            }
+            ReduceOp::Last => {
+                let (_, x, y) = *pairs.last().unwrap();
+                vec![PlotPoint {
+                    x, y, count: sample_count,
+                    labels: labels_map.clone(),
+                }]
+            }
+            ReduceOp::None => pairs.iter()
+                .map(|(_, x, y)| PlotPoint {
+                    x: *x, y: *y, count: 1,
+                    labels: labels_map.clone(),
+                }).collect(),
+        };
+
+        let series_key = series_tuple_key(&labels_map, series_labels);
+        let tuple_repr = key.iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>().join(", ");
+        diag_rows.push((
+            tuple_repr,
+            reduced.iter().map(|p| (p.x, p.y, p.count)).collect(),
+        ));
+        let entry = out.entry(series_key).or_default();
+        total_points += reduced.len();
+        for p in reduced { entry.push(p); }
+        paired_tuples += 1;
+    }
+
+    let x_tuples: std::collections::HashSet<LabelKey> = x_by_tuple.keys().cloned().collect();
+    let y_tuples: std::collections::HashSet<LabelKey> = y_series.iter()
+        .map(|s| key_for(&s.labels)).collect();
+    let x_only = x_tuples.difference(&y_tuples).count();
+    eprintln!(
+        "plot: paired {paired_tuples} tuple(s) → {total_points} point(s); \
+         {y_only} y-only, {x_only} x-only dropped; reduce={reduce:?}",
+    );
+    // Per-tuple pairings — sorted naturally so the operator
+    // can scan the (x, y) values alongside the source label
+    // tuple. One row per tuple per emitted point (so
+    // `reduce: none` produces multiple rows per tuple).
+    diag_rows.sort_by(|a, b| natural_str_cmp(&a.0, &b.0));
+    for (tuple_repr, pts) in &diag_rows {
+        for (x, y, n) in pts {
+            eprintln!("  {tuple_repr:<48}  x={x:>12.4}  y={y:>10.6}  n={n}");
+        }
+    }
+
+    // Sort points within each series by x for line
+    // connectors. Series order itself is sorted later in
+    // render_plot via natural_str_cmp.
+    for pts in out.values_mut() {
+        pts.sort_by(|a, b| a.x.partial_cmp(&b.x)
+            .unwrap_or(std::cmp::Ordering::Equal));
+    }
+    Ok(out)
+}
+
 fn bucket_rows(
     rows: &[DbRow],
     x_label: &str,
@@ -2892,6 +3794,36 @@ fn bucket_rows(
             .entry(F64Key(x_val))
             .or_default()
             .push(y_val);
+    }
+    out
+}
+
+/// Collect a representative label map per `(series_key, x_val)`
+/// bucket. Mirrors `bucket_rows`'s partitioning logic — same
+/// series-tuple keying, same x-parse — but records the FIRST
+/// row's full label map for each cell instead of accumulating
+/// y values. Used by the classic (label-driven) path to give
+/// each rendered point a `labels` field the renderer's
+/// `point-label1:` directive can read from. Labels that vary
+/// across a bucket's source rows are represented by the first
+/// row's value — consistent with the way the y-aggregator
+/// collapses many samples into one mean.
+fn collect_bucket_labels(
+    rows: &[DbRow],
+    x_label: &str,
+    series_labels: &[String],
+) -> BTreeMap<String, BTreeMap<F64Key, std::collections::HashMap<String, String>>> {
+    let mut out: BTreeMap<String, BTreeMap<F64Key, std::collections::HashMap<String, String>>>
+        = BTreeMap::new();
+    for row in rows {
+        let Some(x_str) = row.labels.get(x_label) else { continue; };
+        let Ok(x_val) = x_str.parse::<f64>() else { continue; };
+        if row.mean.is_none() { continue; }
+        let series_key = series_tuple_key(&row.labels, series_labels);
+        out.entry(series_key)
+            .or_default()
+            .entry(F64Key(x_val))
+            .or_insert_with(|| row.labels.clone());
     }
     out
 }
@@ -3033,7 +3965,7 @@ struct RenderedAxis<'a> {
     /// Resolved tick detents (may be empty).
     ticks: &'a [f64],
     /// Aggregated series.
-    series: &'a BTreeMap<String, Vec<(f64, f64)>>,
+    series: &'a BTreeMap<String, Vec<PlotPoint>>,
     /// Per-series legend template (`yN-legend:`). When
     /// `Some`, replaces the auto-generated series-name
     /// shape entirely — no `(R)` / `(R2)` suffix is
@@ -3056,7 +3988,7 @@ struct RenderedAxis<'a> {
 }
 
 fn render_plot(
-    series: &BTreeMap<String, Vec<(f64, f64)>>,
+    series: &BTreeMap<String, Vec<PlotPoint>>,
     secondary: &[ResolvedSecondaryAxis],
     opts: &PlotMetricsOpts,
     x_label: &str,
@@ -3064,6 +3996,7 @@ fn render_plot(
     out_path: &Path,
     x_ticks: &[f64],
     y_ticks: &[f64],
+    series_labels: &[String],
 ) -> Result<(), String> {
     if let Some(parent) = out_path.parent() {
         if !parent.as_os_str().is_empty() && !parent.exists() {
@@ -3080,14 +4013,14 @@ fn render_plot(
     let mut y_min = f64::INFINITY;
     let mut y_max = f64::NEG_INFINITY;
     for points in series.values() {
-        for &(x, y) in points {
-            if x.is_finite() {
-                if x < x_min { x_min = x; }
-                if x > x_max { x_max = x; }
+        for p in points {
+            if p.x.is_finite() {
+                if p.x < x_min { x_min = p.x; }
+                if p.x > x_max { x_max = p.x; }
             }
-            if y.is_finite() {
-                if y < y_min { y_min = y; }
-                if y > y_max { y_max = y; }
+            if p.y.is_finite() {
+                if p.y < y_min { y_min = p.y; }
+                if p.y > y_max { y_max = p.y; }
             }
         }
     }
@@ -3111,14 +4044,14 @@ fn render_plot(
         let mut a_min = f64::INFINITY;
         let mut a_max = f64::NEG_INFINITY;
         for points in axis.series.values() {
-            for &(x, y) in points {
-                if x.is_finite() {
-                    if x < x_min { x_min = x; }
-                    if x > x_max { x_max = x; }
+            for p in points {
+                if p.x.is_finite() {
+                    if p.x < x_min { x_min = p.x; }
+                    if p.x > x_max { x_max = p.x; }
                 }
-                if y.is_finite() {
-                    if y < a_min { a_min = y; }
-                    if y > a_max { a_max = y; }
+                if p.y.is_finite() {
+                    if p.y < a_min { a_min = p.y; }
+                    if p.y > a_max { a_max = p.y; }
                 }
             }
         }
@@ -3334,7 +4267,9 @@ fn render_plot(
             x_log, y_log,
             x_ticks, y_ticks,
             opts.y_legend_format.as_deref(),
-            opts.datapoints_mode)?;
+            opts.datapoints_mode,
+            opts.point_label1.as_ref(),
+            series_labels)?;
         root.present().map_err(|e| format!("present: {e}"))?;
     } else {
         let root = BitMapBackend::new(out_path, (opts.width, opts.height)).into_drawing_area();
@@ -3346,7 +4281,9 @@ fn render_plot(
             x_log, y_log,
             x_ticks, y_ticks,
             opts.y_legend_format.as_deref(),
-            opts.datapoints_mode)?;
+            opts.datapoints_mode,
+            opts.point_label1.as_ref(),
+            series_labels)?;
         root.present().map_err(|e| format!("present: {e}"))?;
     }
     Ok(())
@@ -3550,44 +4487,61 @@ enum TickAxis {
     YValue,
 }
 
-/// Resolve a [`TickSpec`] to a sorted, deduped `Vec<f64>` of
-/// tick positions. The result is plumbed into `with_key_points`
-/// at chart-construction time.
-///
-/// `Auto` reads directly from `primary_rows` — the rows
-/// already fetched for the main query. `Query` evaluates a
-/// metricsql expression against `query_db` and harvests the
-/// same axis from its result rows.
-///
-/// Returns an empty Vec for `TickSpec::None` (or when `Auto`
-/// is requested against an empty row set, which happens for
-/// y2 when no y2 query was supplied — the caller falls back
-/// to plotters' tick-picker).
-fn resolve_tick_spec(
-    spec: &TickSpec,
-    primary_rows: &[DbRow],
-    x_label: &str,
-    query_db: &Path,
-    axis: TickAxis,
-) -> Result<Vec<f64>, String> {
-    let extract_axis_values = |rows: &[DbRow]| -> Vec<f64> {
-        let mut out = Vec::new();
-        match axis {
-            TickAxis::XLabel => {
-                for r in rows {
-                    if let Some(v) = r.labels.get(x_label)
-                        && let Ok(n) = v.parse::<f64>()
-                    {
-                        out.push(n);
+/// Source for auto-detected tick positions. Classic
+/// label-driven plots harvest from DbRows (a label value or
+/// the mean column); paired-coordinate plots harvest from
+/// the aggregated `(x, y)` points directly. Same logical
+/// purpose, two different data shapes — this enum is the
+/// seam that keeps `resolve_tick_spec` polymorphic across
+/// both modes instead of forcing one to fake the other.
+enum TickSource<'a> {
+    /// Auto-detect reads x-label values (when `axis ==
+    /// XLabel`) or mean values (when `axis == YValue`) out
+    /// of DbRows. Used by classic plots.
+    Rows { rows: &'a [DbRow], x_label: &'a str },
+    /// Auto-detect reads x components or y components out
+    /// of the already-aggregated points. Used by paired
+    /// plots where the x-axis values don't come from a
+    /// label.
+    Aggregated { agg: &'a BTreeMap<String, Vec<PlotPoint>> },
+}
+
+impl<'a> TickSource<'a> {
+    fn extract_axis_values(&self, axis: TickAxis) -> Vec<f64> {
+        let mut out: Vec<f64> = Vec::new();
+        match self {
+            TickSource::Rows { rows, x_label } => {
+                match axis {
+                    TickAxis::XLabel => {
+                        for r in *rows {
+                            if let Some(v) = r.labels.get(*x_label)
+                                && let Ok(n) = v.parse::<f64>()
+                            {
+                                out.push(n);
+                            }
+                        }
+                    }
+                    TickAxis::YValue => {
+                        for r in *rows {
+                            if let Some(m) = r.mean
+                                && m.is_finite()
+                            {
+                                out.push(m);
+                            }
+                        }
                     }
                 }
             }
-            TickAxis::YValue => {
-                for r in rows {
-                    if let Some(m) = r.mean
-                        && m.is_finite()
-                    {
-                        out.push(m);
+            TickSource::Aggregated { agg } => {
+                for pts in agg.values() {
+                    for p in pts {
+                        let v = match axis {
+                            TickAxis::XLabel => p.x,
+                            TickAxis::YValue => p.y,
+                        };
+                        if v.is_finite() {
+                            out.push(v);
+                        }
                     }
                 }
             }
@@ -3595,7 +4549,33 @@ fn resolve_tick_spec(
         out.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         out.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
         out
-    };
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            TickSource::Rows { rows, .. } => rows.is_empty(),
+            TickSource::Aggregated { agg } => agg.values().all(|v| v.is_empty()),
+        }
+    }
+}
+
+/// Resolve a [`TickSpec`] to a sorted, deduped `Vec<f64>` of
+/// tick positions. The result is plumbed into `with_key_points`
+/// at chart-construction time.
+///
+/// `Auto` reads directly from `source` — DbRows for classic
+/// label-driven plots, aggregated points for paired-coordinate
+/// plots. `Query` evaluates a metricsql expression against
+/// `query_db` and harvests from its DbRows in either case.
+///
+/// Returns an empty Vec for `TickSpec::None` (or when `Auto`
+/// is requested against an empty source).
+fn resolve_tick_spec(
+    spec: &TickSpec,
+    source: &TickSource<'_>,
+    query_db: &Path,
+    axis: TickAxis,
+) -> Result<Vec<f64>, String> {
     match spec {
         TickSpec::None => Ok(Vec::new()),
         TickSpec::Literal(v) => {
@@ -3605,15 +4585,22 @@ fn resolve_tick_spec(
             Ok(sorted)
         }
         TickSpec::Auto => {
-            if primary_rows.is_empty() { return Ok(Vec::new()); }
-            Ok(extract_axis_values(primary_rows))
+            if source.is_empty() { return Ok(Vec::new()); }
+            Ok(source.extract_axis_values(axis))
         }
         TickSpec::Query(expr) => {
             let rows = rows_via_metricsql(query_db, expr)
                 .map_err(|e| format!(
                     "tick metricsql `{expr}` against '{}': {e}",
                     query_db.display()))?;
-            Ok(extract_axis_values(&rows))
+            // For `Query` specs the source is the explicit
+            // metricsql result; reuse the Rows extractor with
+            // a transient TickSource.
+            let transient = TickSource::Rows { rows: &rows, x_label: match source {
+                TickSource::Rows { x_label, .. } => x_label,
+                TickSource::Aggregated { .. } => "__x_value__",
+            } };
+            Ok(transient.extract_axis_values(axis))
         }
     }
 }
@@ -3841,7 +4828,7 @@ fn format_datapoint(y: f64) -> String {
 
 fn draw_chart<DB>(
     root: &DrawingArea<DB, plotters::coord::Shift>,
-    series: &BTreeMap<String, Vec<(f64, f64)>>,
+    series: &BTreeMap<String, Vec<PlotPoint>>,
     secondary: &[RenderedAxis<'_>],
     title: &str,
     x_axis: &str,
@@ -3863,6 +4850,8 @@ fn draw_chart<DB>(
     y_ticks: &[f64],
     y_legend_format: Option<&str>,
     datapoints_mode: DatapointsMode,
+    point_label: Option<&PointLabelSpec>,
+    series_labels: &[String],
 ) -> Result<(), String>
 where
     DB: DrawingBackend,
@@ -3949,7 +4938,13 @@ where
     let default_marker = marker_shape.unwrap_or("circle");
     let default_m_size = marker_size.map(|s| s.max(0.0) as i32).unwrap_or(3);
 
-    for (idx, (series_name, points)) in series.iter().enumerate() {
+    // Render series in natural-numeric order rather than the
+    // BTreeMap's pure lexicographic order — so `limit=10`
+    // doesn't sit between `limit=1` and `limit=2` in the
+    // legend. See `natural_str_cmp`.
+    let mut series_sorted: Vec<(&String, &Vec<PlotPoint>)> = series.iter().collect();
+    series_sorted.sort_by(|(a, _), (b, _)| natural_str_cmp(a, b));
+    for (idx, (series_name, points)) in series_sorted.into_iter().enumerate() {
         // Find the first matching per-series style override (if
         // any). Fields the override sets win over the cascade
         // default; fields it leaves `None` fall through.
@@ -3984,7 +4979,7 @@ where
         } else {
             series_name.clone()
         };
-        let pts = points.clone();
+        let xy_pts: Vec<(f64, f64)> = points.iter().map(|p| (p.x, p.y)).collect();
 
         // Line component — solid (default), dashed, dotted (visual
         // approximation: short dashes), or none.
@@ -3992,7 +4987,7 @@ where
             "none" => {} // no line
             "dashed" => {
                 chart.draw_series(plotters::series::DashedLineSeries::new(
-                    pts.iter().cloned(), 8, 8, color.stroke_width(stroke_width),
+                    xy_pts.iter().cloned(), 8, 8, color.stroke_width(stroke_width),
                 ))
                 .map_err(|e| format!("draw dashed line: {e}"))?
                 .label(series_label_for_legend.clone())
@@ -4002,7 +4997,7 @@ where
             }
             "dotted" => {
                 chart.draw_series(plotters::series::DashedLineSeries::new(
-                    pts.iter().cloned(), 2, 4, color.stroke_width(stroke_width),
+                    xy_pts.iter().cloned(), 2, 4, color.stroke_width(stroke_width),
                 ))
                 .map_err(|e| format!("draw dotted line: {e}"))?
                 .label(series_label_for_legend.clone())
@@ -4012,7 +5007,7 @@ where
             }
             _ => {
                 chart.draw_series(LineSeries::new(
-                    pts.iter().cloned(), color.stroke_width(stroke_width)))
+                    xy_pts.iter().cloned(), color.stroke_width(stroke_width)))
                     .map_err(|e| format!("draw line: {e}"))?
                     .label(series_label_for_legend.clone())
                     .legend(move |(x, y)| PathElement::new(
@@ -4026,13 +5021,13 @@ where
         match marker_kind {
             "none" => {}
             "circle" => {
-                chart.draw_series(pts.iter()
+                chart.draw_series(xy_pts.iter()
                     .map(|p| Circle::new(*p, m_size, color.filled())))
                     .map_err(|e| format!("draw circles: {e}"))?;
             }
             "square" => {
                 let off = m_size as f64;
-                chart.draw_series(pts.iter().map(|p| {
+                chart.draw_series(xy_pts.iter().map(|p| {
                     Rectangle::new(
                         [(p.0 - off, p.1 - off), (p.0 + off, p.1 + off)],
                         color.filled(),
@@ -4040,13 +5035,13 @@ where
                 })).map_err(|e| format!("draw squares: {e}"))?;
             }
             "triangle" => {
-                chart.draw_series(pts.iter()
+                chart.draw_series(xy_pts.iter()
                     .map(|p| TriangleMarker::new(*p, m_size, color.filled())))
                     .map_err(|e| format!("draw triangles: {e}"))?;
             }
             "diamond" => {
                 let off = m_size as f64;
-                chart.draw_series(pts.iter().map(|p| {
+                chart.draw_series(xy_pts.iter().map(|p| {
                     Polygon::new(vec![
                         (p.0, p.1 - off),
                         (p.0 + off, p.1),
@@ -4056,13 +5051,13 @@ where
                 })).map_err(|e| format!("draw diamonds: {e}"))?;
             }
             "plus" => {
-                chart.draw_series(pts.iter()
+                chart.draw_series(xy_pts.iter()
                     .map(|p| Cross::new(*p, m_size, color.stroke_width(stroke_width))))
                     .map_err(|e| format!("draw plus: {e}"))?;
             }
             "cross" => {
                 let off = m_size as f64;
-                chart.draw_series(pts.iter().flat_map(|p| {
+                chart.draw_series(xy_pts.iter().flat_map(|p| {
                     let p = *p;
                     [
                         PathElement::new(vec![
@@ -4076,7 +5071,7 @@ where
             }
             other => {
                 eprintln!("warning: unknown marker '{other}'; falling back to circle");
-                chart.draw_series(pts.iter()
+                chart.draw_series(xy_pts.iter()
                     .map(|p| Circle::new(*p, m_size, color.filled())))
                     .map_err(|e| format!("draw circles: {e}"))?;
             }
@@ -4087,15 +5082,43 @@ where
         // primary data space (which IS the value space), so
         // the label uses the same Y as the placement.
         let label_idxs = datapoint_label_indices(
-            &pts.iter().map(|&(_, y)| y).collect::<Vec<_>>(),
+            &points.iter().map(|p| p.y).collect::<Vec<_>>(),
             datapoints_mode,
         );
         if !label_idxs.is_empty() {
             let style = ("sans-serif", 11).into_font().color(&color);
             chart.draw_series(label_idxs.into_iter().map(|i| {
-                let (x, y) = pts[i];
-                Text::new(format_datapoint(y), (x, y), style.clone())
+                let p = &points[i];
+                Text::new(format_datapoint(p.y), (p.x, p.y), style.clone())
             })).map_err(|e| format!("draw datapoint labels: {e}"))?;
+        }
+
+        // point-label1: — per-point textual annotation drawn
+        // slightly offset from each marker. The spec was
+        // resolved against `series_labels` so the renderer
+        // just reads each point's pre-formatted annotation
+        // string. Empty annotations (e.g. classic mode with
+        // `Vary` and no non-series, non-x labels available)
+        // skip silently.
+        if let Some(spec) = point_label {
+            // Anchor the per-point text to its bottom-center
+            // (so it floats above each marker) — keeps it
+            // clear of the y-datapoint inline labels, which
+            // plotters draws with the default top-left
+            // anchor and end up below-right of the point.
+            use plotters::style::text_anchor::{Pos, HPos, VPos};
+            let style = ("sans-serif", 10).into_font()
+                .color(&color.mix(0.85))
+                .pos(Pos::new(HPos::Center, VPos::Bottom));
+            let annotated: Vec<_> = points.iter()
+                .map(|p| (p, format_point_label(p, spec, series_labels)))
+                .filter(|(_, txt)| !txt.is_empty())
+                .collect();
+            if !annotated.is_empty() {
+                chart.draw_series(annotated.into_iter().map(|(p, txt)| {
+                    Text::new(txt, (p.x, p.y), style.clone())
+                })).map_err(|e| format!("draw point labels: {e}"))?;
+            }
         }
     }
 
@@ -4211,7 +5234,13 @@ where
         // right with its own range as the target).
         let identity_projection = target_secondary && axis_idx == 0;
         let palette_offset = series_count_so_far(total_secondary_series);
-        for (i, (series_name, points)) in axis.series.iter().enumerate() {
+        // Same natural-numeric ordering as the primary axis;
+        // keeps secondary-axis legend rows aligned with
+        // primary in workloads that share x-discriminants.
+        let mut axis_series_sorted: Vec<(&String, &Vec<PlotPoint>)> =
+            axis.series.iter().collect();
+        axis_series_sorted.sort_by(|(a, _), (b, _)| natural_str_cmp(a, b));
+        for (i, (series_name, points)) in axis_series_sorted.into_iter().enumerate() {
             let ov = series_overrides.iter()
                 .find(|o| style_override_matches(o, series_name));
             let series_palette = ov.and_then(|o| o.palette.as_deref())
@@ -4246,11 +5275,13 @@ where
             };
             // Project values if needed. Identity case
             // (right-routed axis 2) skips the per-point
-            // projection allocation.
+            // projection allocation. Plotters takes
+            // `(f64, f64)` for series drawing, so the
+            // PlotPoints are unpacked here.
             let projected_pts: Vec<(f64, f64)> = if identity_projection {
-                points.clone()
+                points.iter().map(|p| (p.x, p.y)).collect()
             } else {
-                points.iter().map(|&(x, y)| (x, project(y))).collect()
+                points.iter().map(|p| (p.x, project(p.y))).collect()
             };
 
             // The chart's `draw_series` and
@@ -4379,7 +5410,7 @@ where
             // the label TEXT uses the original (unprojected)
             // Y so the operator sees the real metric value
             // regardless of how the curve was rescaled.
-            let original_ys: Vec<f64> = points.iter().map(|&(_, y)| y).collect();
+            let original_ys: Vec<f64> = points.iter().map(|p| p.y).collect();
             let label_idxs = datapoint_label_indices(&original_ys, datapoints_mode);
             if !label_idxs.is_empty() {
                 let style = ("sans-serif", 11).into_font().color(&color);
@@ -4394,6 +5425,34 @@ where
                 }).collect();
                 draw_into!(labels.into_iter(),
                     format!("draw {} datapoint labels", axis.name));
+            }
+
+            // point-label1: also surfaces on secondary axes,
+            // using each point's projected Y so the text
+            // sits next to the rendered marker. The
+            // annotation TEXT is derived from the source
+            // point's labels (pre-projection). Same
+            // bottom-center anchor as the primary axis so
+            // the label sits above the marker, clear of the
+            // y-datapoint numeric label.
+            if let Some(spec) = point_label {
+                use plotters::style::text_anchor::{Pos, HPos, VPos};
+                let style = ("sans-serif", 10).into_font()
+                    .color(&color.mix(0.85))
+                    .pos(Pos::new(HPos::Center, VPos::Bottom));
+                let annotated: Vec<_> = points.iter()
+                    .enumerate()
+                    .map(|(i, p)| (i, p, format_point_label(p, spec, series_labels)))
+                    .filter(|(_, _, txt)| !txt.is_empty())
+                    .collect();
+                if !annotated.is_empty() {
+                    let labels: Vec<_> = annotated.into_iter().map(|(i, _, txt)| {
+                        let (x, y_proj) = projected_pts[i];
+                        Text::new(txt, (x, y_proj), style.clone())
+                    }).collect();
+                    draw_into!(labels.into_iter(),
+                        format!("draw {} point labels", axis.name));
+                }
             }
         }
         total_secondary_series += axis.series.len();
@@ -4435,7 +5494,7 @@ where
 /// optional series label, x label, n_rows aggregated, agg
 /// value. Aligned for legibility.
 fn emit_verbose_table(
-    aggregated: &BTreeMap<String, Vec<(f64, f64, usize)>>,
+    aggregated: &BTreeMap<String, Vec<PlotPoint>>,
     x_label: &str,
     series_labels: &[String],
     agg_name: &str,
@@ -4454,10 +5513,10 @@ fn emit_verbose_table(
         if !series_header.is_empty() {
             series_w = series_w.max(sname.len());
         }
-        for (x, v, n) in pts {
-            x_w = x_w.max(format_x(*x).len());
-            n_w = n_w.max(format!("{n}").len());
-            v_w = v_w.max(format!("{v:.6}").len());
+        for p in pts {
+            x_w = x_w.max(format_x(p.x).len());
+            n_w = n_w.max(format!("{}", p.count).len());
+            v_w = v_w.max(format!("{:.6}", p.y).len());
         }
     }
 
@@ -4473,14 +5532,14 @@ fn emit_verbose_table(
     eprintln!("{}", "-".repeat(header.len()));
 
     for (sname, pts) in aggregated {
-        for (x, v, n) in pts {
+        for p in pts {
             let mut row = String::new();
             if !series_header.is_empty() {
                 row.push_str(&format!("{:<w$}  ", sname, w = series_w));
             }
-            row.push_str(&format!("{:>w$}  ", format_x(*x), w = x_w));
-            row.push_str(&format!("{:>w$}  ", n, w = n_w));
-            row.push_str(&format!("{:>w$.6}", v, w = v_w));
+            row.push_str(&format!("{:>w$}  ", format_x(p.x), w = x_w));
+            row.push_str(&format!("{:>w$}  ", p.count, w = n_w));
+            row.push_str(&format!("{:>w$.6}", p.y, w = v_w));
             eprintln!("{row}");
         }
     }
@@ -4504,7 +5563,7 @@ fn format_x(x: f64) -> String {
 /// string back apart.
 fn write_csv(
     path: &Path,
-    aggregated: &BTreeMap<String, Vec<(f64, f64, usize)>>,
+    aggregated: &BTreeMap<String, Vec<PlotPoint>>,
     x_label: &str,
     series_labels: &[String],
     metric: &str,
@@ -4520,8 +5579,8 @@ fn write_csv(
     if series_labels.is_empty() {
         out.push_str(&format!("{x_label},n_rows,{agg_name}({metric})\n"));
         for pts in aggregated.values() {
-            for (x, v, n) in pts {
-                out.push_str(&format!("{},{},{:.6}\n", format_x(*x), n, v));
+            for p in pts {
+                out.push_str(&format!("{},{},{:.6}\n", format_x(p.x), p.count, p.y));
             }
         }
     } else {
@@ -4535,15 +5594,15 @@ fn write_csv(
             // deterministic because `series_tuple_key` always
             // emits the keys in `series_labels` order.
             let values = parse_tuple_key(sname, series_labels);
-            for (x, v, n) in pts {
+            for p in pts {
                 let cells: Vec<String> = values.iter()
                     .map(|s| csv_escape(s)).collect();
                 out.push_str(&format!(
                     "{},{},{},{:.6}\n",
                     cells.join(","),
-                    format_x(*x),
-                    n,
-                    v,
+                    format_x(p.x),
+                    p.count,
+                    p.y,
                 ));
             }
         }
@@ -4806,6 +5865,303 @@ mod tests {
             expand_legend_template("oracle-[profile", &labels),
             "oracle-[profile"
         );
+    }
+
+    #[test]
+    fn natural_str_cmp_sorts_numeric_runs_by_value() {
+        use std::cmp::Ordering;
+        // Plain lex would order `limit=10 < limit=2`. Natural
+        // ordering puts `limit=2` first.
+        assert_eq!(natural_str_cmp("limit=2", "limit=10"), Ordering::Less);
+        assert_eq!(natural_str_cmp("limit=10", "limit=2"), Ordering::Greater);
+        // Same prefix, numerics differ.
+        assert_eq!(natural_str_cmp("k=1", "k=10"), Ordering::Less);
+        assert_eq!(natural_str_cmp("k=10", "k=100"), Ordering::Less);
+        // Tuples: numeric segment + non-numeric tail.
+        assert_eq!(
+            natural_str_cmp(
+                "k=10, optimize_for=recall",
+                "k=100, optimize_for=recall",
+            ),
+            Ordering::Less,
+        );
+        // Equal strings.
+        assert_eq!(natural_str_cmp("foo=bar", "foo=bar"), Ordering::Equal);
+    }
+
+    #[test]
+    fn natural_str_cmp_full_sort_of_series_keys() {
+        // Spot-check: a bag of series keys typical of the
+        // user's workloads sorts in natural order.
+        let mut ks = vec![
+            "k=10, optimize_for=recall",
+            "k=1, optimize_for=recall",
+            "k=100, optimize_for=recall",
+            "k=2, optimize_for=recall",
+        ];
+        ks.sort_by(|a, b| natural_str_cmp(a, b));
+        assert_eq!(ks, vec![
+            "k=1, optimize_for=recall",
+            "k=2, optimize_for=recall",
+            "k=10, optimize_for=recall",
+            "k=100, optimize_for=recall",
+        ]);
+    }
+
+    #[test]
+    fn compact_pair_form_a_three_tuple_with_explicit_avg() {
+        // Form A: explicit aggregation on each element,
+        // third tuple slot is the shared `{labels}` filter.
+        let p = try_decompose_compact_pair(
+            "(avg(cycles_total_rate),avg(cycles_servicetime_mean),{phase=~\".*query\"}) by (phase,limit)"
+        ).expect("should decompose form A");
+        assert!(p.x_query.contains("cycles_total_rate"));
+        assert!(p.x_query.contains("phase=~\".*query\""));
+        assert!(p.x_query.contains("by (phase,limit)"));
+        assert!(p.y_query.contains("cycles_servicetime_mean"));
+        assert!(p.y_query.contains("phase=~\".*query\""));
+    }
+
+    #[test]
+    fn compact_pair_form_b_implies_avg() {
+        // Form B: paren-wrapped bare metric names → avg
+        // implied.
+        let p = try_decompose_compact_pair(
+            "(cycles_total_rate,cycles_servicetime_mean){phase=~\".*query\"} by (phase,limit)"
+        ).expect("should decompose form B");
+        assert_eq!(p.x_query,
+            "avg(cycles_total_rate{phase=~\".*query\"}) by (phase,limit)");
+        assert_eq!(p.y_query,
+            "avg(cycles_servicetime_mean{phase=~\".*query\"}) by (phase,limit)");
+    }
+
+    #[test]
+    fn compact_pair_form_c_explicit_outer_fn() {
+        // Form C: outer aggregation wraps the metric pair.
+        let p = try_decompose_compact_pair(
+            "avg(cycles_total_rate,cycles_servicetime_mean){phase=~\".*query\"} by (phase,limit)"
+        ).expect("should decompose form C");
+        assert_eq!(p.x_query,
+            "avg(cycles_total_rate{phase=~\".*query\"}) by (phase,limit)");
+        assert_eq!(p.y_query,
+            "avg(cycles_servicetime_mean{phase=~\".*query\"}) by (phase,limit)");
+    }
+
+    #[test]
+    fn compact_pair_returns_none_for_plain_query() {
+        // Single-metric queries pass through unchanged —
+        // operator wants this exact text as the y query.
+        assert!(try_decompose_compact_pair(
+            "avg(recall_mean{phase=\"ann_query\"}) by (k,limit)"
+        ).is_none());
+        assert!(try_decompose_compact_pair("recall_mean").is_none());
+    }
+
+    #[test]
+    fn compact_pair_form_b_with_vary_point_label() {
+        // Form B + `*` in third position → Vary spec.
+        let p = try_decompose_compact_pair(
+            "(cycles_total_rate, recall_mean, *){phase=~\".*query\"} by (phase,k,limit)"
+        ).expect("should decompose form B + point-label");
+        assert!(p.x_query.contains("cycles_total_rate"));
+        assert!(p.y_query.contains("recall_mean"));
+        assert!(matches!(p.point_label, Some(PointLabelSpec::Vary)));
+    }
+
+    #[test]
+    fn compact_pair_form_b_with_explicit_point_label() {
+        // Form B + single label name → Explicit(["limit"]).
+        let p = try_decompose_compact_pair(
+            "(cycles_total_rate, recall_mean, limit){phase=~\".*query\"} by (phase,k,limit)"
+        ).expect("should decompose form B + label");
+        match p.point_label {
+            Some(PointLabelSpec::Explicit(ref v)) =>
+                assert_eq!(v, &["limit".to_string()]),
+            other => panic!("expected Explicit(['limit']), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compact_pair_form_c_with_point_label() {
+        // Form C + third positional → carries through.
+        let p = try_decompose_compact_pair(
+            "avg(cycles_total_rate, recall_mean, *){phase=~\".*query\"} by (phase,limit)"
+        ).expect("should decompose form C + point-label");
+        assert!(matches!(p.point_label, Some(PointLabelSpec::Vary)));
+    }
+
+    #[test]
+    fn compact_pair_form_a_still_recognised_with_inline_labels() {
+        // Form A's third element is a `{labels}` filter,
+        // NOT a point-label spec. Must continue to parse as
+        // Form A (no point-label).
+        let p = try_decompose_compact_pair(
+            "(avg(a),avg(b),{phase=~\".*query\"}) by (phase,limit)"
+        ).expect("Form A still parses");
+        assert!(p.point_label.is_none());
+    }
+
+    #[test]
+    fn parse_point_label_spec_accepts_star_and_lists() {
+        assert!(matches!(parse_point_label_spec("*"),
+            Ok(PointLabelSpec::Vary)));
+        match parse_point_label_spec("limit") {
+            Ok(PointLabelSpec::Explicit(v)) =>
+                assert_eq!(v, vec!["limit".to_string()]),
+            other => panic!("expected Explicit, got {other:?}"),
+        }
+        match parse_point_label_spec("k,limit,phase") {
+            Ok(PointLabelSpec::Explicit(v)) =>
+                assert_eq!(v, vec![
+                    "k".to_string(), "limit".to_string(), "phase".to_string()
+                ]),
+            other => panic!("expected Explicit, got {other:?}"),
+        }
+        // Bracketed list parses the same — convenience for
+        // YAML readers used to `[a, b]` shapes.
+        match parse_point_label_spec("[a,b]") {
+            Ok(PointLabelSpec::Explicit(v)) =>
+                assert_eq!(v, vec!["a".to_string(), "b".to_string()]),
+            other => panic!("expected Explicit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_point_label_spec_rejects_empty() {
+        assert!(parse_point_label_spec("").is_err());
+        assert!(parse_point_label_spec("   ").is_err());
+        assert!(parse_point_label_spec("[]").is_err());
+    }
+
+    #[test]
+    fn format_point_label_vary_single_keeps_key() {
+        let mut labels = std::collections::HashMap::new();
+        labels.insert("phase".to_string(), "ann_query".to_string());
+        labels.insert("k".to_string(), "10".to_string());
+        labels.insert("limit".to_string(), "100".to_string());
+        let p = PlotPoint { x: 1.0, y: 0.95, count: 1, labels };
+        // series_labels = [phase, k] → vary surfaces just
+        // `limit`. Key prefix is preserved so the operator
+        // always knows which label they're reading.
+        let s = format_point_label(
+            &p, &PointLabelSpec::Vary,
+            &["phase".to_string(), "k".to_string()],
+        );
+        assert_eq!(s, "limit=100");
+    }
+
+    #[test]
+    fn format_point_label_vary_multi_keeps_keys() {
+        let mut labels = std::collections::HashMap::new();
+        labels.insert("phase".to_string(), "ann_query".to_string());
+        labels.insert("k".to_string(), "10".to_string());
+        labels.insert("limit".to_string(), "100".to_string());
+        labels.insert("model".to_string(), "v2".to_string());
+        let p = PlotPoint { x: 1.0, y: 0.95, count: 1, labels };
+        let s = format_point_label(
+            &p, &PointLabelSpec::Vary,
+            &["phase".to_string()],
+        );
+        assert_eq!(s, "k=10, limit=100, model=v2");
+    }
+
+    #[test]
+    fn format_point_label_explicit_single_keeps_key() {
+        let mut labels = std::collections::HashMap::new();
+        labels.insert("limit".to_string(), "200".to_string());
+        labels.insert("k".to_string(), "10".to_string());
+        let p = PlotPoint { x: 1.0, y: 0.5, count: 1, labels };
+        let s = format_point_label(
+            &p, &PointLabelSpec::Explicit(vec!["limit".to_string()]),
+            &[],
+        );
+        // Single-label projection still includes the key
+        // prefix — operators read the annotation without
+        // needing to remember which label the directive
+        // named.
+        assert_eq!(s, "limit=200");
+    }
+
+    #[test]
+    fn format_point_label_explicit_multi_keeps_keys() {
+        let mut labels = std::collections::HashMap::new();
+        labels.insert("limit".to_string(), "200".to_string());
+        labels.insert("k".to_string(), "10".to_string());
+        let p = PlotPoint { x: 1.0, y: 0.5, count: 1, labels };
+        let s = format_point_label(
+            &p, &PointLabelSpec::Explicit(vec![
+                "k".to_string(), "limit".to_string()
+            ]),
+            &[],
+        );
+        assert_eq!(s, "k=10, limit=200");
+    }
+
+    #[test]
+    fn format_point_label_missing_label_renders_unset() {
+        let p = PlotPoint {
+            x: 1.0, y: 0.5, count: 1,
+            labels: std::collections::HashMap::new(),
+        };
+        let s = format_point_label(
+            &p, &PointLabelSpec::Explicit(vec!["limit".to_string()]),
+            &[],
+        );
+        assert_eq!(s, "limit=(unset)");
+    }
+
+    #[test]
+    fn format_point_label_reserved_tokens_render_intrinsic_values() {
+        // `x`, `y`, `n` aren't looked up in the labels map
+        // — they project the point's x/y/count fields. Same
+        // formatters as the rest of the renderer
+        // (format_x for x, format_datapoint for y).
+        let mut labels = std::collections::HashMap::new();
+        labels.insert("limit".to_string(), "200".to_string());
+        let p = PlotPoint {
+            x: 816.5, y: 0.8718, count: 24,
+            labels,
+        };
+        let s = format_point_label(
+            &p, &PointLabelSpec::Explicit(vec![
+                "limit".to_string(),
+                "x".to_string(),
+                "y".to_string(),
+                "n".to_string(),
+            ]),
+            &[],
+        );
+        assert_eq!(s, "limit=200, x=816.500000, y=0.8718, n=24");
+    }
+
+    #[test]
+    fn format_point_label_x_token_alone_works() {
+        // Single-token `x` renders the formatted x value.
+        let p = PlotPoint {
+            x: 1234.0, y: 0.5, count: 1,
+            labels: std::collections::HashMap::new(),
+        };
+        let s = format_point_label(
+            &p, &PointLabelSpec::Explicit(vec!["x".to_string()]),
+            &[],
+        );
+        // 1234.0 has zero fractional part → integer form.
+        assert_eq!(s, "x=1234");
+    }
+
+    #[test]
+    fn natural_str_cmp_leading_zeros_tie_break_by_length() {
+        use std::cmp::Ordering;
+        // Numerically `01` == `1`. After matching the
+        // digit run's value, the trailing-string-length
+        // tiebreaker (consistent with `str::cmp`) makes
+        // the longer form sort *after* the shorter — so
+        // bare `1` precedes zero-padded `01` in the legend.
+        // Either way the values stay adjacent.
+        assert_eq!(natural_str_cmp("a=01", "a=1"), Ordering::Greater);
+        assert_eq!(natural_str_cmp("a=1", "a=01"), Ordering::Less);
+        // Multi-digit values still sort by numeric value.
+        assert_eq!(natural_str_cmp("a=5", "a=10"), Ordering::Less);
     }
 
     #[test]

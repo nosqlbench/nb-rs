@@ -113,6 +113,7 @@ plotters = { version = "0.3", default-features = false, features = [
     "line_series",
     "point_series",
     "chrono",
+    "histogram"
 ] }
 # Used by `nbrs plot` for direct queries against the metrics db.
 # `bundled` so we don't depend on system libsqlite3.
