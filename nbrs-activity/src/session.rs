@@ -198,6 +198,74 @@ impl SessionReuse {
     }
 }
 
+/// Where the default session directory lives when the user hasn't
+/// passed `--session-path`. Three cases:
+///
+/// * **Normal invocation** (installed binary, user shell): the
+///   session lands at `<cwd>/logs/<id>`. This is the documented,
+///   long-standing user-facing behavior.
+///
+/// * **In-process tests that pre-sandboxed cwd** (e.g.
+///   `checkpoint_resume_staircase` `in_dir(tmp, runner::run)`):
+///   `<cwd>/logs/<id>` is already inside the test's tempdir
+///   sandbox, so leave it alone — the test reads back from
+///   `<cwd>/logs/latest` and would be broken by a redirect.
+///
+/// * **Cargo-spawned invocation where cwd lands inside the
+///   workspace** (`cargo test` integration tests that spawn
+///   `nbrs` as a subprocess without `--session-path`, plus
+///   `cargo run --bin nbrs` runs from the workspace root):
+///   the default would otherwise be the user-visible
+///   `<workspace>/logs/<id>`, and the `session-keep` rotation
+///   would evict real run sessions. Redirect into
+///   `$TMPDIR/nbrs-sessions/<id>` — `.cargo/config.toml`
+///   already points `TMPDIR` at `<workspace>/target/test-tmp`,
+///   so cargo-spawned sessions live in `target/test-tmp/`
+///   alongside other test artifacts. See
+///   `feedback_tests_no_project_root`.
+///
+/// Tests that want to read back their session contents must
+/// still pass `--session-path` to a known path — this
+/// fallback is the blast-radius limiter, not a substitute for
+/// explicit sandboxing.
+pub fn default_session_dir(id: &str) -> PathBuf {
+    default_logs_root().join(id)
+}
+
+/// Resolve the parent directory the runtime treats as the session
+/// root when `--session-path` is absent. See [`default_session_dir`]
+/// for the three-case logic.
+pub fn default_logs_root() -> PathBuf {
+    if cwd_is_workspace_dir() {
+        // Cargo-spawned invocation, cwd is a cargo workspace
+        // dir (`Cargo.toml` present) — the cwd-relative default
+        // would write into the user-visible `<workspace>/logs/`.
+        // Redirect to TMPDIR (per `.cargo/config.toml`, this is
+        // `<workspace>/target/test-tmp/`), under an
+        // `nbrs-sessions/` infix so siblings tempfiles stay
+        // segregated.
+        std::env::temp_dir().join("nbrs-sessions")
+    } else {
+        PathBuf::from("logs")
+    }
+}
+
+/// `true` when both (a) we're running under cargo
+/// (`CARGO_MANIFEST_DIR` env present, inherited from the cargo
+/// parent through `std::process::Command`'s default env-inherit)
+/// and (b) the current working directory has a `Cargo.toml` at
+/// its root (workspace member or workspace root). Tests that
+/// sandbox cwd into a tempdir won't satisfy (b) — the redirect
+/// stays off for those.
+fn cwd_is_workspace_dir() -> bool {
+    if std::env::var_os("CARGO_MANIFEST_DIR").is_none() {
+        return false;
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join("Cargo.toml").is_file())
+        .unwrap_or(false)
+}
+
 /// Resolved session inputs from CLI / env. Built by
 /// [`resolve_session_dir`] from one of:
 ///
@@ -261,11 +329,10 @@ impl SessionDirSpec {
             return None;
         }
         let id = self.session_name.clone().unwrap_or_else(|| auto_id.to_string());
-        let path_str = match &self.session_path {
-            Some(p) => p.replace(SESSION_TOKEN, &id),
-            None => format!("logs/{id}"),
+        let path = match &self.session_path {
+            Some(p) => PathBuf::from(p.replace(SESSION_TOKEN, &id)),
+            None => default_session_dir(&id),
         };
-        let path = PathBuf::from(path_str);
         // Re-derive id from basename so a path-only spec
         // (`--session-path /tmp/foo`) still yields id="foo".
         let id = path.file_name()
@@ -777,9 +844,9 @@ pub fn apply_session_directory_at_startup(args: &[String]) {
         let resolved = sd.replace(SESSION_TOKEN, "");
         PathBuf::from(resolved).parent()
             .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("logs"))
+            .unwrap_or_else(default_logs_root)
     } else {
-        PathBuf::from("logs")
+        default_logs_root()
     };
     purge_stale_sessions(&cleanup_parent, spec.session_keep, spec.session_shelflife);
 
@@ -789,7 +856,7 @@ pub fn apply_session_directory_at_startup(args: &[String]) {
     // `auto_id` won't be consumed because `needs_auto_id()` is
     // false above; pass an empty placeholder for the contract.
     let Some((path, _id)) = spec.resolve("") else { return; };
-    let logs = PathBuf::from("logs");
+    let logs = default_logs_root();
     // Only touch `logs/` when the resolved session path lives
     // under it. A `--session-path /tmp/x` (or any path the user
     // redirected outside `logs/`) is an explicit opt-out:
@@ -912,7 +979,7 @@ impl Session {
 
         let spec = resolve_session_dir(args);
         let (output_dir, id) = spec.resolve(&auto_id)
-            .unwrap_or_else(|| (PathBuf::from("logs").join(&auto_id), auto_id.clone()));
+            .unwrap_or_else(|| (default_session_dir(&auto_id), auto_id.clone()));
 
         // Reuse-policy check. Only fires when the resolved
         // directory already holds prior session artifacts. The
@@ -1284,7 +1351,10 @@ mod tests {
         unsafe { std::env::remove_var(SESSION_DIRECTORY_ENV); }
         let session = Session::new("full_cql_vector.yaml", "fknn_rampup");
         assert!(session.id.starts_with("fknn_rampup_"), "id: {}", session.id);
-        assert!(session.output_dir.starts_with("logs/"), "output_dir: {}", session.output_dir.display());
+        let expected_root = default_logs_root();
+        assert!(session.output_dir.starts_with(&expected_root),
+            "output_dir {} should start with {}",
+            session.output_dir.display(), expected_root.display());
     }
 
     #[test]
@@ -1332,12 +1402,12 @@ mod tests {
     }
 
     #[test]
-    fn spec_session_name_only_yields_logs_dir() {
+    fn spec_session_name_only_yields_default_logs_dir() {
         let _g = env_test_lock();
         clear_session_env();
         let args = vec!["--session-name=alpha".into()];
         let (path, id) = resolve_session_dir(&args).resolve("autogen").unwrap();
-        assert_eq!(path.to_str(), Some("logs/alpha"));
+        assert_eq!(path, default_logs_root().join("alpha"));
         assert_eq!(id, "alpha");
     }
 

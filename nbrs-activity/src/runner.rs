@@ -847,7 +847,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 let p = std::path::PathBuf::from(s);
                 if p.is_file() { p }
                 else if p.is_dir() { p.join("checkpoint.jsonl") }
-                else { std::path::PathBuf::from("logs").join(s).join("checkpoint.jsonl") }
+                else { crate::session::default_logs_root().join(s).join("checkpoint.jsonl") }
             });
         let resume_latest = params.get("resume_latest")
             .map(|s| s != "false" && s != "0")
@@ -857,11 +857,11 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             // Resolve the symlink to a concrete session dir
             // *now* — once `Session::new` runs the symlink will
             // be repointed at the new session.
-            let latest = std::path::PathBuf::from("logs/latest");
+            let latest = crate::session::default_logs_root().join("latest");
             let resolved = std::fs::read_link(&latest).ok()
                 .map(|target| {
                     if target.is_absolute() { target }
-                    else { std::path::PathBuf::from("logs").join(target) }
+                    else { crate::session::default_logs_root().join(target) }
                 })
                 .map(|d| d.join("checkpoint.jsonl"));
             explicit.or(resolved)
@@ -1979,7 +1979,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         let parent_for_keep_check = if let Some(p) = session.output_dir.parent() {
             p.to_path_buf()
         } else {
-            std::path::PathBuf::from("logs")
+            crate::session::default_logs_root()
         };
         let session_keep = crate::session::resolve_session_dir(&args).session_keep;
         struct EndOfRunNoticeGuard {
