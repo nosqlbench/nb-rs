@@ -22,7 +22,7 @@ params:
   k_values: "1,10,100"
   k_1_limits: "1,2,4,8,16,32,64"
   k_10_limits: "10,20,30,40,50"
-  k_100_limits: "100,200,300,400,500"
+  k_100_limits: "100,125,150,175,200"
   concurrency: "100"
   query_concurrency: "20"
   replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
