@@ -7,7 +7,7 @@
 #   nbrs run workload=examples/conditional_ops.yaml cycles=10
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   is_even := mod(cycle, 2)
   is_third := mod(cycle, 3)
 

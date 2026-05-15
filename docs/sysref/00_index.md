@@ -146,7 +146,7 @@ home of each decision.
 | 3 | Per-phase config override | SRD 21 §"Parameter Resolution" (block-level `params:`, closest-wins; GK helpers `this_or` / `required` / predicates for explicit layering). |
 | 4 | `cycles=train_count` resolution | SRD 10 §"GK as the unified access surface" + SRD 21 §"Explicit layering with GK helpers". `cycles` is not special; cursors are arbitrary names; `train_count` is a GK-folded constant reified into the local or workload scope. |
 | 5 | Adapter vs core op-field boundary | SRD 30 §"Core-first field processing" (core consumes its fields first; adapters see only their own fields; unknown fields are errors). |
-| 6 | `inputs := (cycle)` boilerplate | SRD 10 §"Input Declaration" (inputs inferred when the declaration is omitted; `cycle` is not a magic identifier). |
+| 6 | `input cycle: u64` boilerplate | SRD 10 §"Input Declaration" (inputs inferred when the declaration is omitted; `cycle` is not a magic identifier). |
 | 7 | Result extraction model | SRD 33 §"Result Extraction" (universal JSON access + typed accessors / traversers as an opt-in hot-path optimization). |
 
 For outstanding unresolved items, see

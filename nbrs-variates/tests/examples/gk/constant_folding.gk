@@ -7,7 +7,7 @@
 //   ConstantFolded: base → 42
 //   ConstantFolded: seed → <hash of 42>
 
-inputs := (cycle)
+input cycle: u64
 base := 42
 seed := hash(base)
 user_id := mod(hash(cycle), 1000000)

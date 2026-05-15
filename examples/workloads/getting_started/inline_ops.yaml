@@ -13,7 +13,7 @@
 # The examples below use YAML workload syntax with equivalent features.
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   hashed := hash(cycle)
   user_id := mod(hashed, 1000000)
 

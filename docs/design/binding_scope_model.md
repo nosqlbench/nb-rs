@@ -99,7 +99,7 @@ pub enum BindingOrigin {
 
 /// Typed scope for a phase compilation.
 pub struct BindingScope {
-    /// The coordinate declaration (e.g., "inputs := (cycle)").
+    /// The coordinate declaration (e.g., "input cycle: u64").
     pub coordinates: Option<String>,
     /// All bindings, in declaration order within each origin group.
     pub bindings: Vec<ScopedBinding>,

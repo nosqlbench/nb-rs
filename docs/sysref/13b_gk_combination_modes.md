@@ -31,7 +31,7 @@ collisions:
 
 ```gk
 // foo.gk
-inputs := (cycle)
+input cycle: u64
 inner := mod(hash(cycle), 1000)
 
 // host

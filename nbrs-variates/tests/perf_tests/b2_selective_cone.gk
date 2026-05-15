@@ -18,7 +18,7 @@
 /// leaf_b: 70-node param-dependent cone (pulled 10%, cached).
 /// Double optimization: provenance caches leaf_b's inputs,
 /// AND it's rarely pulled.
-inputs := (cycle, param_a, param_b)
+input (cycle: u64, param_a: u64, param_b: u64)
 
 // Cycle subgraph (30 nodes) — hot path
 c0 := hash(cycle)

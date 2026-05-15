@@ -430,7 +430,7 @@ fn multiple_factories_independent() {
 fn cursor_compiles_and_produces_schema() {
     let src = r#"
         cursor r = range(0, 100)
-        inputs := (cycle)
+        input cycle: u64
         id := hash(r.ordinal)
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -447,7 +447,7 @@ fn cursor_extent_folds_const_function_call() {
     // should resolve via post-compile folding, not only via literals.
     let src = r#"
         cursor r = range(0, mod(100, 7))
-        inputs := (cycle)
+        input cycle: u64
         id := hash(r.ordinal)
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -461,7 +461,7 @@ fn cursor_extent_folds_arithmetic_expression() {
     // Non-literal arithmetic should also fold post-compile.
     let src = r#"
         cursor r = range(10, 10 + 50)
-        inputs := (cycle)
+        input cycle: u64
         id := hash(r.ordinal)
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -473,7 +473,7 @@ fn cursor_extent_folds_arithmetic_expression() {
 fn cursor_projection_wires_into_downstream_nodes() {
     let src = r#"
         cursor r = range(0, 500)
-        inputs := (cycle)
+        input cycle: u64
         doubled := r.ordinal + r.ordinal
     "#;
     let mut kernel = compile_gk(src).unwrap();
@@ -491,7 +491,7 @@ fn multiple_cursors_produce_independent_schemas() {
     let src = r#"
         cursor a = range(0, 100)
         cursor b = range(0, 200)
-        inputs := (cycle)
+        input cycle: u64
         sum := a.ordinal + b.ordinal
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -507,7 +507,7 @@ fn multiple_cursors_produce_independent_schemas() {
 fn cursor_with_non_literal_extent() {
     // range with non-literal args — extent is None
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         cursor r = range(0, cycle)
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -519,7 +519,7 @@ fn cursor_with_non_literal_extent() {
 fn cursor_projection_feeds_function_call() {
     let src = r#"
         cursor r = range(0, 1000)
-        inputs := (cycle)
+        input cycle: u64
         id := hash(r.ordinal)
     "#;
     let mut kernel = compile_gk(src).unwrap();
@@ -543,7 +543,7 @@ fn advancer_targets_correct_cursors() {
 
     let src = r#"
         cursor base = range(0, 100)
-        inputs := (cycle)
+        input cycle: u64
         id := hash(base.ordinal)
         unused := hash(cycle)
     "#;
@@ -567,7 +567,7 @@ fn advancer_does_not_target_unused_sources() {
     let src = r#"
         cursor base = range(0, 100)
         cursor queries = range(0, 50)
-        inputs := (cycle)
+        input cycle: u64
         id := hash(base.ordinal)
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -590,7 +590,7 @@ fn advancer_advance_and_exhaust() {
 
     let src = r#"
         cursor r = range(0, 3)
-        inputs := (cycle)
+        input cycle: u64
         id := hash(r.ordinal)
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -616,7 +616,7 @@ fn advancer_last_items_reflect_position() {
 
     let src = r#"
         cursor r = range(10, 13)
-        inputs := (cycle)
+        input cycle: u64
         id := hash(r.ordinal)
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -641,7 +641,7 @@ fn advancer_empty_when_no_sources_referenced() {
     use std::collections::HashMap;
 
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         id := hash(cycle)
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -663,7 +663,7 @@ fn limit_node_compiles_and_clamps_extent() {
 
     let src = r#"
         cursor r = range(0, 1000)
-        inputs := (cycle)
+        input cycle: u64
         id := hash(r.ordinal)
     "#;
     let kernel = compile_gk_with_libs_and_limit(
@@ -682,7 +682,7 @@ fn limit_node_not_inserted_when_no_limit() {
 
     let src = r#"
         cursor r = range(0, 500)
-        inputs := (cycle)
+        input cycle: u64
         id := hash(r.ordinal)
     "#;
     let kernel = compile_gk_with_libs_and_limit(
@@ -699,7 +699,7 @@ fn limit_larger_than_extent_preserves_extent() {
 
     let src = r#"
         cursor r = range(0, 50)
-        inputs := (cycle)
+        input cycle: u64
         id := hash(r.ordinal)
     "#;
     let kernel = compile_gk_with_libs_and_limit(

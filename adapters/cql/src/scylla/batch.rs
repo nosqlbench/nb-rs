@@ -134,15 +134,14 @@ impl OpDispenser for ScyllaBatchDispenser {
                 None
             };
             // Mirror nbrs batch dispenser's `rows_inserted`
-            // capture — drives the `rows/s` status metric.
-            let mut captures = std::collections::HashMap::new();
-            captures.insert(
-                "rows_inserted".to_string(),
+            // capture — drives the `rows/s` status metric. Lands on
+            // the per-fiber kernel via ctx.wires.write.
+            let _ = ctx.wires.write(
+                "rows_inserted",
                 nbrs_variates::node::Value::U64(row_count as u64),
             );
             Ok(OpResult {
                 body: body_box,
-                captures,
                 skipped: false,
             })
         })

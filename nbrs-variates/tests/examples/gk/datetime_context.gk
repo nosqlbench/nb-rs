@@ -3,7 +3,7 @@
 // Exercises epoch manipulation, timestamp formatting, and
 // non-deterministic context nodes.
 
-inputs := (cycle)
+input cycle: u64
 epoch := epoch_scale(cycle, 1000)
 ts := to_timestamp(epoch_offset(cycle, 1704067200000))
 (year, month, day, hour, minute, second, millis) := date_components(epoch_offset(cycle, 1704067200000))

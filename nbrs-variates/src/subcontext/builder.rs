@@ -65,6 +65,13 @@ pub struct CompileOptions {
     pub required_outputs: Vec<String>,
     pub context_label: Option<String>,
     pub cursor_limit: Option<u64>,
+    /// Session-wide optimization level for op-template synthesis.
+    /// `Release` (the default) lets the closure-binding economy
+    /// DCE unreferenced slots; `Diagnostic` force-allocates every
+    /// magic-extern and result-binding-LHS slot so step-debug /
+    /// cycle-replay sees writes that the runtime would otherwise
+    /// drop on the floor. See [`KernelOptLevel`].
+    pub kernel_opt: crate::kernel::KernelOptLevel,
 }
 
 impl CompileOptions {
@@ -75,6 +82,7 @@ impl CompileOptions {
             && self.required_outputs.is_empty()
             && self.context_label.is_none()
             && self.cursor_limit.is_none()
+            && self.kernel_opt == crate::kernel::KernelOptLevel::default()
     }
 }
 
@@ -247,10 +255,8 @@ impl<P> SubcontextBuilder<P> {
                 Statement::ExternPort(ep) => {
                     local_decls.insert(ep.name.clone());
                 }
-                Statement::Inputs(names, _) => {
-                    for n in names {
-                        local_decls.insert(n.clone());
-                    }
+                Statement::InputDecl(d) => {
+                    local_decls.insert(d.name.clone());
                 }
                 _ => {}
             }
@@ -299,8 +305,20 @@ impl<P> SubcontextBuilder<P> {
         ];
         let span0 = Span { line: 0, col: 0 };
         let mut prepended: Vec<Statement> = Vec::new();
+        // Magic-extern slot allocation. Release: only inject when
+        // the result-binding RHS actually references the name (the
+        // closure-binding economy's DCE). Diagnostic: force-allocate
+        // every magic extern not already locally declared, so writes
+        // for `body` / `count` / `ok` always have a kernel slot to
+        // land in regardless of whether anything reads them. The
+        // diagnostic mode is for step-debug / cycle-replay; the
+        // unused slots have no eval cone and add a fixed handful of
+        // bytes to per-op-template state.
+        let force_all = self.compile_options.kernel_opt.keep_unreferenced_slots();
         for (name, _pt, type_kw) in magic_externs {
-            if free_idents.contains(*name) && !local_decls.contains(*name) {
+            let referenced = free_idents.contains(*name);
+            let already_local = local_decls.contains(*name);
+            if (force_all || referenced) && !already_local {
                 prepended.push(Statement::ExternPort(ExternPort {
                     name: (*name).to_string(),
                     typ: (*type_kw).to_string(),
@@ -310,24 +328,31 @@ impl<P> SubcontextBuilder<P> {
             }
         }
 
-        // Each result LHS becomes an export — finalize's Rule 2
-        // rewrites the binding into a write-through when the
-        // parent has a same-named `shared` export. The port
-        // type here is best-effort: finalize re-resolves against
-        // the parent's input slot (the canonical typed source
-        // — see Rule 2's lookup of `input_port_type` inside
-        // finalize). Use the parent's known type when available;
-        // fall back to U64 for anything we can't classify.
-        // The parent kernel is borrowed read-only for the
-        // duration of this resolution.
+        // Each result LHS may become a Rule 2 write-through when
+        // the parent has a same-named `shared` cell visible in
+        // scope. Without that match the binding stays a local
+        // output and no export needs to be registered — the
+        // result-LHS still becomes a kernel output through the
+        // regular cycle-binding compile path, so wrappers /
+        // metrics readers can still see it via wires.get.
+        //
+        // Conditioning registration on actual collision avoids
+        // the U64-default port-type leak that used to surface
+        // when a non-colliding LHS expression produced a non-u64
+        // value (e.g. an f64 metric expression): the export
+        // pre-allocated a u64 output port for the LHS and the
+        // compiler hit a type mismatch wiring the f64 RHS
+        // through it.
         {
-            let parent_inner = self.parent.lock_inner();
+            let in_scope_cells = self.parent.shared_cells_in_scope();
+            let parent_shared_by_name: std::collections::HashMap<&str, PortType> = in_scope_cells
+                .iter()
+                .map(|c| (c.name.as_str(), c.port_type))
+                .collect();
             for name in &result_lhs {
-                let pt = parent_inner
-                    .program()
-                    .input_port_type(name)
-                    .unwrap_or(PortType::U64);
-                self.exports.push(ExportSpec::shared(name.clone(), pt));
+                if let Some(&pt) = parent_shared_by_name.get(name.as_str()) {
+                    self.exports.push(ExportSpec::shared(name.clone(), pt));
+                }
             }
         }
 
@@ -713,7 +738,7 @@ fn collect_free_idents(stmt: &Statement, out: &mut std::collections::HashSet<Str
         Statement::Cursor(c) => collect_expr_idents(&c.constructor, out),
         Statement::ModuleDef(_)
         | Statement::ExternPort(_)
-        | Statement::Inputs(_, _)
+        | Statement::InputDecl(_)
         | Statement::Pragma { .. } => {}
     }
 }

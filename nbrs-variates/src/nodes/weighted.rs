@@ -735,7 +735,7 @@ mod tests {
         use crate::dsl::events::CompileEventLog;
 
         let source = r#"
-            inputs := (cycle)
+            input cycle: u64
             init spec = "alpha:0.3;beta:0.7"
             result := dynamic_weighted_select(hash(cycle), spec)
         "#;
@@ -755,7 +755,7 @@ mod tests {
 
         // Spec derived from cycle → cycle-time → config wire warning
         let source = r#"
-            inputs := (cycle)
+            input cycle: u64
             spec := format_u64(hash(cycle), 10)
             result := dynamic_weighted_select(hash(cycle), spec)
         "#;

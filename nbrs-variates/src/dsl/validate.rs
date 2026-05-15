@@ -16,11 +16,11 @@ use crate::dsl::registry;
 /// Validate the AST: check function names, argument counts, wire
 /// references, unused bindings, forward references.
 ///
-/// Coordinate inference: if no `coordinates` declaration is present,
-/// any referenced name that is not defined as a node output is
-/// automatically promoted to a coordinate input. If a `coordinates`
-/// declaration IS present, any unbound reference not in that list
-/// is an error.
+/// Input inference: if no `input` declaration is present, any
+/// referenced name that is not defined as a node output is
+/// automatically promoted to a kernel input. If at least one
+/// `input` declaration IS present, any unbound reference not in
+/// that set is an error.
 pub(crate) fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
     let mut defined: HashSet<String> = HashSet::new();
     let mut referenced: HashSet<String> = HashSet::new();
@@ -31,12 +31,10 @@ pub(crate) fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
     // First pass: collect explicit coordinates and all defined names
     for stmt in &file.statements {
         match stmt {
-            Statement::Inputs(names, _) => {
+            Statement::InputDecl(d) => {
                 has_explicit_coords = true;
-                for n in names {
-                    input_names.insert(n.clone());
-                    defined.insert(n.clone());
-                }
+                input_names.insert(d.name.clone());
+                defined.insert(d.name.clone());
             }
             Statement::InitBinding(b) => {
                 defined.insert(b.name.clone());
@@ -62,7 +60,7 @@ pub(crate) fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
     // Second pass: validate function calls and collect references
     for stmt in &file.statements {
         let expr = match stmt {
-            Statement::Inputs(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
+            Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
             Statement::InitBinding(b) => &b.value,
             Statement::CycleBinding(b) => &b.value,
         };
@@ -83,7 +81,7 @@ pub(crate) fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
                     } else if let Some(suggestion) = find_close_name(name, &defined) {
                         format!("did you mean '{suggestion}'?")
                     } else {
-                        format!("'{name}' is not declared as a coordinate — add it to your coordinates declaration, or define it as a binding")
+                        format!("'{name}' is not declared — add `input {name}: <type>`, or define it as a binding")
                     },
                 );
             }
@@ -99,11 +97,11 @@ pub(crate) fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
         if inferred.is_empty() && !file.statements.is_empty() {
             report.error_with_hint(
                 crate::dsl::lexer::Span { line: 1, col: 1 },
-                "no coordinate inputs found",
-                "reference at least one unbound name (e.g., 'cycle') to define the kernel's input",
+                "no kernel inputs found",
+                "reference at least one unbound name (e.g., 'cycle') or declare one with `input <name>: <type>`",
             );
         } else {
-            // Promote inferred names to coordinates
+            // Promote inferred names to kernel inputs
             for name in &inferred {
                 input_names.insert(name.clone());
                 defined.insert(name.clone());
@@ -123,7 +121,7 @@ pub(crate) fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
     let mut seen_defs: HashSet<String> = input_names.clone();
     for stmt in &file.statements {
         match stmt {
-            Statement::Inputs(_, _) => {}
+            Statement::InputDecl(_) => {}
             Statement::InitBinding(b) => {
                 check_forward_refs(&b.value, &seen_defs, b.span, report);
                 seen_defs.insert(b.name.clone());

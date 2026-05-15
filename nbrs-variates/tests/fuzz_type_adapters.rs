@@ -123,7 +123,7 @@ fn adapter_table_is_consistent() {
     for p in producers() {
         for c in consumers() {
             let source = format!(
-                "inputs := (cycle)\n\
+                "input cycle: u64\n\
                  src_val := {}\n\
                  sink_val := {}\n",
                 p.produce,
@@ -280,7 +280,7 @@ fn fuzzable_sigs() -> Vec<FuncSig> {
 /// because their positional invariants (pairs, groups) can't be
 /// satisfied by random independent draws.
 fn generate_module(rng: &mut Rng, sigs: &[FuncSig], n_bindings: usize) -> String {
-    let mut out = String::from("inputs := (cycle)\n");
+    let mut out = String::from("input cycle: u64\n");
     let mut defined: Vec<String> = Vec::new();
     for i in 0..n_bindings {
         let sig = &sigs[rng.range(sigs.len())];
@@ -556,7 +556,7 @@ fn pragmas_round_trip_through_compile() {
 #[test]
 fn sanity_same_type_chain_has_no_adapters() {
     let source = "\
-        inputs := (cycle)\n\
+        input cycle: u64\n\
         a := add(cycle, 1)\n\
         b := add(a, 2)\n\
     ";
@@ -573,7 +573,7 @@ fn sanity_same_type_chain_has_no_adapters() {
 #[test]
 fn sanity_u64_to_f64_widens_via_adapter() {
     let source = "\
-        inputs := (cycle)\n\
+        input cycle: u64\n\
         a := clamp_f64(cycle, 0.0, 1.0)\n\
     ";
     let mut log = CompileEventLog::new();
@@ -590,7 +590,7 @@ fn sanity_f64_to_u64_rejects_without_cast() {
     // should report a type mismatch so the author is forced to pick
     // `f64_to_u64` / `round_to_u64` / `floor_to_u64` explicitly.
     let source = "\
-        inputs := (cycle)\n\
+        input cycle: u64\n\
         x := to_f64(cycle)\n\
         y := add(x, 1)\n\
     ";

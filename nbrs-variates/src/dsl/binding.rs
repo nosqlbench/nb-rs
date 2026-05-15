@@ -580,14 +580,29 @@ impl Compiler {
                 }
             }
             Expr::Ident(id, _) => {
-                // Simple alias: target := source
+                // Simple alias: target := source. The passthrough's
+                // port type is inferred from the source wire so an
+                // f64 / bool / json alias doesn't clash with
+                // Identity's hardcoded u64 ports. Falls back to u64
+                // when the type can't be resolved at this point —
+                // preserves the legacy Identity behaviour for the
+                // unknown-source case.
                 let name = &targets[0];
                 let wire = if self.input_names.contains(id) {
                     WireRef::input(id)
                 } else {
                     WireRef::node(id)
                 };
-                asm.add_node(name, Box::new(Identity::new()), vec![wire]);
+                let src_type = asm.wire_type(&wire).unwrap_or(PortType::U64);
+                if src_type == PortType::U64 {
+                    asm.add_node(name, Box::new(Identity::new()), vec![wire]);
+                } else {
+                    asm.add_node(
+                        name,
+                        Box::new(PortPassthrough::new(name, src_type)),
+                        vec![wire],
+                    );
+                }
                 self.all_names.push(name.clone());
             }
             Expr::IntLit(v, _) => {

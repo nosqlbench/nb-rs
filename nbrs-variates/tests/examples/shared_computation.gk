@@ -8,7 +8,7 @@
 // This kernel generates user profile fields where several outputs
 // depend on a common hashed user identity.
 
-inputs := (cycle)
+input cycle: u64
 
 // Hash once. This single value feeds multiple downstream paths.
 user_h := hash(cycle)

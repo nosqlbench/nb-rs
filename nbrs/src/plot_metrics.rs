@@ -290,12 +290,23 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             //   * `*`        → Vary (auto-discover labels
             //                  that aren't series-defining
             //                  and aren't the x label)
-            //   * `k`        → Explicit(["k"]) — single label
-            //   * `k,limit`  → Explicit(["k", "limit"]) — list
+            //   * `k`            → Explicit(["k"]) — single label
+            //   * `k,limit`      → Explicit(["k", "limit"]) — list
+            //   * `none|off`     → explicitly disable per-point
+            //                      labels (overrides a `*` set by
+            //                      the y1 compact-pair shorthand)
             // Empty string is rejected so a typo doesn't
             // silently disable the feature.
-            opts.point_label1 = Some(parse_point_label_spec(rest)
-                .map_err(|e| format!("point-label1: {e}"))?);
+            let trimmed = rest.trim();
+            if matches!(trimmed, "none" | "off" | "false") {
+                // Explicit opt-out — clear any prior spec
+                // (e.g. set by the compact-pair shorthand's
+                // third positional element).
+                opts.point_label1 = None;
+            } else {
+                opts.point_label1 = Some(parse_point_label_spec(rest)
+                    .map_err(|e| format!("point-label1: {e}"))?);
+            }
         } else if let Some(rest) = line.strip_prefix("x:").map(str::trim) {
             opts.x_label = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix("x-label:").map(str::trim) {
@@ -402,6 +413,15 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             deferred_y_legends = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix("y-labels:").map(str::trim) {
             deferred_y_labels = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("style ").map(str::trim) {
+            // Per-series style override: `style key=value:directives`
+            // — same shape the `--style` CLI flag accepts. The
+            // body parser missed this previously, so workloads
+            // with `style phase=pvs_query:line=dotted` in their
+            // plot body had their override silently dropped when
+            // dispatched via `nbrs plot --name X --workload Y`.
+            opts.series_overrides.push(parse_style_override(rest)
+                .map_err(|e| format!("style '{rest}': {e}"))?);
         } else {
             residual_lines.push((*line).to_string());
         }
@@ -830,20 +850,28 @@ enum AxisRole { Range, Min, Max }
 
 /// `y-datapoints:` mode — how (or whether) to draw the
 /// numeric value alongside each plotted point.
+///
+/// Default is `None` — a plot without any opt-in point-label
+/// directive renders a clean line/marker chart with no
+/// per-point text annotations. The operator opts in via
+/// `y-datapoints: inline|extremes|callouts` for numeric value
+/// labels, or via `point-label1:` for label-projection
+/// annotations.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum DatapointsMode {
-    /// Value text next to every point. Default.
-    #[default]
+    /// Value text next to every point. Opt-in via
+    /// `y-datapoints: inline`.
     Inline,
     /// Only the min and max value per series (the
     /// boundaries of each curve).
     Extremes,
+    /// Suppress numeric annotations entirely. **Default**.
+    #[default]
+    None,
     /// Inline label boxed against the chart background so
     /// it pops against dense data; useful when plot lines
     /// would otherwise obscure the text.
     Callouts,
-    /// Suppress numeric annotations entirely.
-    None,
 }
 
 impl DatapointsMode {
@@ -1353,6 +1381,17 @@ struct CompactPair {
 /// `*` for auto-vary, otherwise a single label name. To
 /// project multiple labels per point, use the long-form
 /// `point-label1:` directive instead.
+/// If `value` is one of the compact pair shorthand forms,
+/// return just the underlying y-query — for callers that need
+/// raw metricsql (label-tuple discovery, with-tables faceting,
+/// etc.) and would otherwise choke on the shorthand's plot-DSL
+/// extensions (`*` point-label sentinel, inline-labels third
+/// element, etc.). Returns `None` when `value` is a plain
+/// query that's already valid metricsql.
+pub(crate) fn try_decompose_y_query(value: &str) -> Option<String> {
+    try_decompose_compact_pair(value).map(|pair| pair.y_query)
+}
+
 fn try_decompose_compact_pair(value: &str) -> Option<CompactPair> {
     let value = value.trim();
 
@@ -2003,7 +2042,7 @@ impl Default for PlotMetricsOpts {
             query: None,
             y_legend_format: None,
             secondary_side_default: None,
-            datapoints_mode: DatapointsMode::Inline,
+            datapoints_mode: DatapointsMode::default(),
             secondary_axes: Vec::new(),
             series_overrides: Vec::new(),
             x_ticks: TickSpec::None,

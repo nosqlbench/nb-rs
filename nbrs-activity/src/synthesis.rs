@@ -288,16 +288,15 @@ pub fn validate_bind_points(
     templates: &[ParsedOp],
     program: &GkProgram,
 ) -> Result<(), String> {
-    // Collect all capture declarations across templates
+    // Collect all capture declarations across templates. Captures
+    // are extracted at workload-parse time and live on
+    // `ParsedOp.captures`; the op-text fields have brackets
+    // stripped by then, so re-parsing the text wouldn't surface
+    // them.
     let mut capture_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for template in templates {
-        for value in template.op.values() {
-            if let serde_json::Value::String(s) = value {
-                let result = bindpoints::parse_capture_points(s);
-                for cp in result.captures {
-                    capture_names.insert(cp.as_name);
-                }
-            }
+        for cap in &template.captures {
+            capture_names.insert(cap.as_name.clone());
         }
     }
 
@@ -833,7 +832,7 @@ mod tests {
         let builder = OpBuilder::new(workload_kernel);
 
         // Stand up a shared canonical via the public API.
-        let workload_src = "inputs := (cycle)\nfolded := 42\n";
+        let workload_src = "input cycle: u64\nfolded := 42\n";
         let canonical_program = nbrs_variates::dsl::compile::compile_gk(workload_src)
             .expect("compile probe canonical").program().clone();
         let canonical_kernel: std::sync::Arc<GkKernel> = builder.canonical_kernel_for_op("nonexistent");

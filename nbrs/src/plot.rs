@@ -120,7 +120,7 @@ fn normalize_source(expr: &str) -> Result<String, String> {
             let lines: Vec<&str> = expr.lines().map(|l| l.trim())
                 .filter(|l| !l.is_empty() && !l.starts_with("//"))
                 .collect();
-            let mut out_lines = vec!["inputs := (cycle)".to_string()];
+            let mut out_lines = vec!["input cycle: u64".to_string()];
             for (i, line) in lines.iter().enumerate() {
                 if line.contains(":=") {
                     out_lines.push(line.to_string());
@@ -132,7 +132,7 @@ fn normalize_source(expr: &str) -> Result<String, String> {
             }
             Ok(out_lines.join("\n"))
         } else {
-            Ok(format!("inputs := (cycle)\nout := {expr}"))
+            Ok(format!("input cycle: u64\nout := {expr}"))
         }
     }
 }

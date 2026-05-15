@@ -9,7 +9,7 @@
 /// @graph
 /// 49 nodes, 3 inputs, ALL change every eval.
 /// Provenance: worst case (overhead, no caching).
-inputs := (a, b, c)
+input (a: u64, b: u64, c: u64)
 
 r0 := hash(a)
 r1 := hash(b)

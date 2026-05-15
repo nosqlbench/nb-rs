@@ -20,7 +20,7 @@
 //! use nbrs_variates::dsl::compile_gk;
 //!
 //! let mut kernel = compile_gk(r#"
-//!     inputs := (cycle)
+//!     input cycle: u64
 //!     hashed := hash(cycle)
 //!     user_id := mod(hashed, 1000000)
 //! "#).unwrap();

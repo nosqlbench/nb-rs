@@ -14,7 +14,6 @@
 //!   without spelunking.
 
 use std::any::Any;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use nbrs_activity::adapter::{
@@ -30,7 +29,7 @@ use nbrs_variates::kernel::GkProgram;
 /// Minimal program with `cycle` + `ground_truth: Str` extern.
 fn program_with_gt() -> Arc<GkProgram> {
     compile_gk(
-        "inputs := (cycle)\n\
+        "input cycle: u64\n\
          extern ground_truth: Str = \"\"\n",
     ).expect("compile_gk").into_program()
 }
@@ -38,7 +37,7 @@ fn program_with_gt() -> Arc<GkProgram> {
 /// Program with no externs — every wrapper that registers any
 /// non-`cycle` name will fail.
 fn program_minimal() -> Arc<GkProgram> {
-    compile_gk("inputs := (cycle)\n").expect("compile_gk").into_program()
+    compile_gk("input cycle: u64\n").expect("compile_gk").into_program()
 }
 
 /// No-op inner dispenser — we never call execute in these tests.
@@ -56,7 +55,7 @@ impl OpDispenser for NoopDispenser {
         _ctx: &'a ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         Box::pin(async move {
-            Ok(OpResult { body: Some(Box::new(NoopBody)), captures: HashMap::new(), skipped: false })
+            Ok(OpResult { body: Some(Box::new(NoopBody)), skipped: false })
         })
     }
 }

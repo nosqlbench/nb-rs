@@ -17,7 +17,7 @@ params:
   cycles: "1000"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
 
   // 10 horizontal slices through 2D Perlin noise
   row_0 := perlin_2d(cycle, 0, 42, 0.02)

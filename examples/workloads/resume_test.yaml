@@ -34,7 +34,7 @@ params:
   errors: ".*:warn,stop"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   # `volatile` excludes these wires' values from `hash_const`
   # so the per-invocation threshold change doesn't invalidate
   # workload identity. Also suppresses the strict-mode

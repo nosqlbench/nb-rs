@@ -20,7 +20,7 @@ init site_table = alias_table(site_weights)
 
 // === Cycle-time: the DAG ===
 
-inputs := (cycle)
+input cycle: u64
 
 // Decompose into domain dimensions
 (site, sensor, reading) := mixed_radix(cycle, 100, 500, 0)

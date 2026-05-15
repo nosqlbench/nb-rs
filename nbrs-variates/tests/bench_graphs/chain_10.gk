@@ -1,5 +1,5 @@
 // Benchmark: 10-node chain (degree=1)
-inputs := (cycle)
+input cycle: u64
 
 n0 := hash(cycle)
 n1 := mod(n0, 1001)

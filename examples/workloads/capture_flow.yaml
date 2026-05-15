@@ -18,7 +18,7 @@ params:
   user_count: "1000"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
 
   // Simulated "captured" value — in a real workload, this would
   // come from a SELECT result via [username] capture syntax.

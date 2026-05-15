@@ -14,11 +14,18 @@ pub struct GkFile {
 /// A top-level statement.
 #[derive(Debug, Clone)]
 pub enum Statement {
-    /// `inputs := (name1, name2, ...)` — declares the kernel's
-    /// per-cycle input ports. Each name becomes both an input
-    /// slot (settable via `set_input`) and a passthrough output
-    /// (readable via `get_constant`/`pull`). Parity with `extern`.
-    Inputs(Vec<String>, Span),
+    /// `input name[: type]` — declares one per-cycle kernel input slot.
+    /// The name becomes both an input slot (settable via `set_input`)
+    /// and a passthrough output (readable via `get_constant`/`pull`).
+    ///
+    /// Surface forms (parser desugars the tuple into N `InputDecl`s,
+    /// mirroring the module-signature param-list shape from
+    /// `nbrs/stdlib/modeling.gk`):
+    /// ```text
+    /// input cycle: u64
+    /// input (cycle: u64, q: f64)
+    /// ```
+    InputDecl(InputDecl),
     /// `init name = expr`
     InitBinding(InitBinding),
     /// `name := expr` or `(a, b) := expr`
@@ -53,6 +60,25 @@ pub struct ExternPort {
     pub name: String,
     pub typ: String,
     pub default: Option<Expr>,
+    pub span: Span,
+}
+
+/// One per-cycle kernel input slot.
+///
+/// Declared by `input <name>[: <type>]` (single) or
+/// `input (<name>[: <type>], ...)` (tuple, sugar for N decls).
+/// The name participates in the kernel's input-port wiring just
+/// like `extern` participates in its port set, but inputs are
+/// driven by the runtime cycle pump (cursors, captures, etc.)
+/// rather than by external port writes.
+///
+/// `ty` is `None` when the author omitted the annotation; typed
+/// downstream by inference. Authors are encouraged to declare
+/// the type for clarity and editor support.
+#[derive(Debug, Clone)]
+pub struct InputDecl {
+    pub name: String,
+    pub ty: Option<String>,
     pub span: Span,
 }
 

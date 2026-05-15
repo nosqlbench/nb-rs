@@ -751,7 +751,37 @@ pub(crate) fn plot_body_specs(
     Ok(items
         .into_iter()
         .filter(|i| matches!(i.kind, Kind::Plot))
-        .map(|i| (i.name, i.body))
+        .map(|i| {
+            // The report parser tokenizes `style key=value:...`
+            // lines OUT of the body into `series_overrides` —
+            // the report-cmd path then converts them into
+            // `--style` CLI args at dispatch. But the
+            // `nbrs plot --name X --workload Y` path goes
+            // directly to `parse_spec(body)` and would miss
+            // them. Re-append in the canonical
+            // `style key=value:k=v k=v` shape so the
+            // plot-body parser (which now recognises this
+            // form) picks them up.
+            let mut body = i.body;
+            for so in &i.series_overrides {
+                if !body.ends_with('\n') && !body.is_empty() {
+                    body.push('\n');
+                }
+                body.push_str("style ");
+                body.push_str(&so.key);
+                body.push('=');
+                body.push_str(&so.value);
+                body.push(':');
+                let mut first = true;
+                for line in so.style.scalar_directive_lines() {
+                    if !first { body.push(' '); }
+                    first = false;
+                    body.push_str(&line);
+                }
+                body.push('\n');
+            }
+            (i.name, body)
+        })
         .collect())
 }
 
@@ -1774,7 +1804,17 @@ fn extract_y_queries(body: &str) -> Vec<(String, String)> {
                     .or_else(|| positional.get(axis_idx).cloned())
                     .unwrap_or_else(|| key.to_string());
                 let col_name = strip_legend_placeholders(&col_name);
-                out.push((col_name, rest.trim().to_string()));
+                // Compact pair shorthand (`(M_x, M_y[, *|label]){...}
+                // by (...)`) isn't valid metricsql — decompose to
+                // the underlying y query before exposing the value
+                // to downstream metricsql parsers (e.g. the
+                // `with-tables` label-tuple discovery in
+                // discover_faceted_tuples). When the value isn't a
+                // shorthand, pass through verbatim.
+                let raw = rest.trim().to_string();
+                let y_query = crate::plot_metrics::try_decompose_y_query(&raw)
+                    .unwrap_or(raw);
+                out.push((col_name, y_query));
                 break;
             }
         }

@@ -29,7 +29,7 @@ report:
       recall
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   item_id := zero_pad_u64(mod_wire(hash(cycle), item_count), 6)
   score := to_f64(mod(hash(hash(cycle)), 100)) / 100.0
 
@@ -67,7 +67,7 @@ phases:
     cycles: "{item_count}"
     concurrency: 1
     bindings: |
-      inputs := (cycle)
+      input cycle: u64
       item_id := zero_pad_u64(mod_wire(hash(cycle), item_count), 6)
       score := format_f64(to_f64(mod(hash(hash(cycle)), 100)) / 100.0, 4)
     ops:

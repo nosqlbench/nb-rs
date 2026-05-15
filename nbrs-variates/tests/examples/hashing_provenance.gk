@@ -7,7 +7,7 @@
 // This example shows three common hashing patterns and explains
 // when and why each is used.
 
-inputs := (cycle)
+input cycle: u64
 
 (tenant, device) := mixed_radix(cycle, 100, 0)
 

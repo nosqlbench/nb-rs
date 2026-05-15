@@ -27,6 +27,36 @@
 use nbrs_variates::kernel::GkKernel;
 use nbrs_variates::node::Value;
 
+/// Result of a [`WireSource::write`] call.
+///
+/// `Stored` means the value landed on a real input slot in the
+/// underlying kernel and is visible to subsequent pulls.
+///
+/// `NoSlot` means the kernel's program has no input slot named
+/// `name`. Under [`KernelOptLevel::Release`] this is the
+/// closure-binding economy's DCE signal — nothing in the body
+/// referenced the name, so the value is silently dropped. Under
+/// [`KernelOptLevel::Diagnostic`] every magic extern and
+/// result-binding LHS gets a slot, so `NoSlot` indicates a
+/// genuinely-unknown name (caller error or a name outside the
+/// kernel's scope).
+///
+/// Callers don't need to branch on the outcome to maintain
+/// correctness — the kernel either has a slot for the name or it
+/// doesn't, and `NoSlot` is the same as "the workload doesn't
+/// reference this value." Diagnostics (`debug_nodes_enabled()`,
+/// audit log) can log the outcome to make DCE visible.
+///
+/// [`KernelOptLevel::Release`]: nbrs_variates::kernel::KernelOptLevel::Release
+/// [`KernelOptLevel::Diagnostic`]: nbrs_variates::kernel::KernelOptLevel::Diagnostic
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteOutcome {
+    /// Value written to a real input slot.
+    Stored,
+    /// No input slot named `name` in this kernel's program.
+    NoSlot,
+}
+
 /// Cycle-time read surface a dispenser uses to resolve names from
 /// its bound GK context.
 ///
@@ -48,6 +78,27 @@ pub trait WireSource: Send + Sync {
     /// Iterate declared names. Order is implementation-defined.
     /// Used by validators and diagnostic renderers.
     fn names(&self) -> Box<dyn Iterator<Item = String> + '_>;
+
+    /// Write `value` into the named input slot of this kernel.
+    /// Returns [`WriteOutcome::Stored`] when the slot exists and
+    /// the value was written, [`WriteOutcome::NoSlot`] when the
+    /// kernel's program has no input slot named `name`.
+    ///
+    /// This is the canonical cycle-time capture path used by
+    /// `ResultDispenser` and `TraversingDispenser` after their
+    /// inner stack returns. Writes land on the kernel directly —
+    /// no HashMap intermediary, no post-stack pump in the
+    /// activity loop. Subsequent `wires.get` calls (e.g. from a
+    /// later wrapper like `MetricsDispenser`) see fresh values.
+    ///
+    /// Default impl returns `NoSlot` — appropriate for read-only
+    /// implementations like `NullWireSource` and the bare
+    /// `&GkKernel` baseline (which has no `&mut` handle to mutate
+    /// state). `CycleWires` overrides with the real write path
+    /// through the wrapped kernel's `set_input`.
+    fn write(&self, _name: &str, _value: Value) -> WriteOutcome {
+        WriteOutcome::NoSlot
+    }
 
     /// Advance the underlying kernel state to coordinate `coord`
     /// and invalidate any memoized pulls so subsequent `get`
@@ -187,6 +238,15 @@ impl<'a> WireSource for CycleWires<'a> {
             .cloned()
             .collect();
         Box::new(outputs.into_iter().chain(inputs_only))
+    }
+
+    fn write(&self, name: &str, value: Value) -> WriteOutcome {
+        let mut k = self.kernel.lock().expect("CycleWires mutex poisoned");
+        let Some(idx) = k.program().find_input(name) else {
+            return WriteOutcome::NoSlot;
+        };
+        k.state().set_input(idx, value);
+        WriteOutcome::Stored
     }
 
     fn advance(&self, coord: u64) {
@@ -367,18 +427,41 @@ pub fn substitute_via_wires(
 /// the helper returns name+value pairs an adapter can hand to its
 /// renderer, with no synthesis-layer involvement.
 ///
-/// Resolution rules per field:
-/// - Non-string JSON values pass through as `Value::Str(json.to_string())`.
-///   (Adapters that bind by type can reach into the JSON directly
-///   if they need richer typing — this helper preserves the legacy
-///   string projection.)
-/// - String fields whose entire trimmed text is a single bare
-///   `{name}` token preserve their typed `Value` via `wires.get(name)`.
-///   Mirrors the synthesis-era "pure-token" rule so adapters that
-///   bind typed values (CQL prepared params, vector args) keep
-///   precision through the pipeline.
-/// - Other string fields render through `substitute_via_wires`,
-///   producing a `Value::Str`.
+/// The four-case rule, in order of dispatch:
+///
+/// 1. **Non-string YAML scalar / list / object**: passes through as
+///    `Value::Str(json.to_string())`. Adapters that need richer
+///    typing for a JSON-shaped field can downcast through
+///    `ResolvedFields` and parse, but the default projection keeps
+///    the legacy "everything renders to a string" contract.
+///
+/// 2. **Pure-token typed-reference**: the entire string (trimmed)
+///    is exactly `{name}` where `name` is a bare identifier. The
+///    field's value becomes `wires.get(name).clone()` — typed
+///    `Value` preserved. Used by CQL prepared-param bindings,
+///    vector args, and anywhere an adapter needs the native typed
+///    value rather than its display string. An unresolved name
+///    here is a hard error (no silent fallback).
+///
+/// 3. **Text template with placeholders**: any string containing
+///    `{name}` placeholders embedded in surrounding text, or
+///    `{{ expr }}` inline-GK escapes. Renders through
+///    `substitute_via_wires` to produce a `Value::Str` with each
+///    placeholder replaced by its wire's display-string form.
+///    Inline-expression `{{ … }}` placeholders are evaluated then
+///    stringified.
+///
+/// 4. **Bare-string literal**: a string with no `{…}` markers
+///    passes through unchanged as `Value::Str(s.clone())`. This is
+///    the most common case for SQL stmts, URIs, and headers.
+///
+/// **Why not "bare-name as wire reference"?** A workload author
+/// writing `stmt: "SELECT * FROM users"` doesn't expect `users` to
+/// resolve as a GK wire. The pure-token form (case 2) is the
+/// explicit opt-in for typed references; bare strings stay
+/// literal. Per-adapter typed-field metadata (a future enhancement)
+/// would let specific fields opt into bare-name-as-reference; the
+/// current contract doesn't require it.
 ///
 /// Returns the SRD-68 standard error message on the first
 /// unresolved bind point (single resolution surface, no fallback).
@@ -454,7 +537,7 @@ mod tests {
         // without a memoizing pull. `folded := 42` lands as a
         // compile-folded constant; `cycle` is a coordinate input.
         let mut k = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              folded := 42\n",
         ).unwrap();
         k.set_inputs(&[7]);
@@ -472,7 +555,7 @@ mod tests {
         // current contract so the Push 2 change is visible as a
         // diff.
         let mut k = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              cyc_dep := hash(cycle)\n",
         ).unwrap();
         k.set_inputs(&[7]);
@@ -482,14 +565,14 @@ mod tests {
 
     #[test]
     fn gkkernel_get_returns_none_for_unknown_name() {
-        let k = compile_gk("inputs := (cycle)\nx := 1\n").unwrap();
+        let k = compile_gk("input cycle: u64\nx := 1\n").unwrap();
         let wires: &dyn WireSource = &k;
         assert!(wires.get("not_a_real_name").is_none());
     }
 
     #[test]
     fn gkkernel_names_lists_declared_outputs_and_inputs() {
-        let k = compile_gk("inputs := (cycle)\nfolded := 42\n").unwrap();
+        let k = compile_gk("input cycle: u64\nfolded := 42\n").unwrap();
         let wires: &dyn WireSource = &k;
         let names: Vec<String> = wires.names().collect();
         assert!(names.iter().any(|n| n == "folded"), "folded should appear: {names:?}");
@@ -510,7 +593,7 @@ mod tests {
         // computed output — pulling it requires `&mut state` to
         // fire the eval cone and cache the result.
         let mut k = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              folded := 42\n\
              cyc_dep := hash(cycle)\n",
         ).unwrap();
@@ -528,7 +611,7 @@ mod tests {
 
     #[test]
     fn cycle_wires_returns_none_for_unknown_name() {
-        let mut k = compile_gk("inputs := (cycle)\nx := 1\n").unwrap();
+        let mut k = compile_gk("input cycle: u64\nx := 1\n").unwrap();
         let cw = CycleWires::new(&mut k);
         let wires: &dyn WireSource = &cw;
         assert!(wires.get("not_a_real_name").is_none());
@@ -551,7 +634,7 @@ mod tests {
         // pipeline; it pins the contract that `wires.get` answers
         // for any name the program declares as an output.
         let mut k = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"vec_label_00\"\n\
              # `pick`-equivalent with constant booleans for testability:\n\
@@ -575,7 +658,7 @@ mod tests {
     #[test]
     fn substitute_via_wires_resolves_bare_names() {
         let mut k = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"vec_label_00\"\n",
         ).unwrap();
@@ -590,7 +673,7 @@ mod tests {
     #[test]
     fn substitute_via_wires_passes_through_literal_braces() {
         let mut k = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              ks := \"baselines\"\n",
         ).unwrap();
         let cw = CycleWires::new(&mut k);
@@ -608,7 +691,7 @@ mod tests {
 
     #[test]
     fn substitute_via_wires_errors_on_unresolved_name() {
-        let mut k = compile_gk("inputs := (cycle)\nx := \"a\"\n").unwrap();
+        let mut k = compile_gk("input cycle: u64\nx := \"a\"\n").unwrap();
         let cw = CycleWires::new(&mut k);
         let err = substitute_via_wires("hi {nonexistent}", &cw).unwrap_err();
         assert!(err.contains("nonexistent"), "diagnostic should name the wire: {err}");
@@ -628,7 +711,7 @@ mod tests {
         // when `{` is followed by `'` or `"`, treat it as a CQL
         // map opener (emit the brace, continue scanning).
         let mut k = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              optimize_for := \"RECALL\"\n\
              similarity_function := \"EUCLIDEAN\"\n",
         ).unwrap();
@@ -646,7 +729,7 @@ mod tests {
 
     #[test]
     fn substitute_via_wires_errors_on_qualifier_prefix() {
-        let mut k = compile_gk("inputs := (cycle)\nx := \"a\"\n").unwrap();
+        let mut k = compile_gk("input cycle: u64\nx := \"a\"\n").unwrap();
         let cw = CycleWires::new(&mut k);
         let err = substitute_via_wires("hi {bind:x}", &cw).unwrap_err();
         assert!(err.contains("bind:x"), "diagnostic should name the qualifier form: {err}");
@@ -654,7 +737,7 @@ mod tests {
 
     #[test]
     fn substitute_via_wires_passes_through_inline_expr() {
-        let mut k = compile_gk("inputs := (cycle)\nx := \"a\"\n").unwrap();
+        let mut k = compile_gk("input cycle: u64\nx := \"a\"\n").unwrap();
         let cw = CycleWires::new(&mut k);
         let resolved = substitute_via_wires("v = {{x + 1}}", &cw).unwrap();
         // `{{...}}` is reserved for the inline-expression desugar
@@ -692,7 +775,7 @@ mod tests {
         // output via `final` — same pattern the phase synthesizer
         // uses for iter-var cascade.
         let mut parent = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              extern optimize_for: String\n",
         ).unwrap();
         // Populate the input slot the way the phase kernel does
@@ -704,7 +787,7 @@ mod tests {
         // Child: program declares the same name as an extern.
         // Mimics the per-op canonical the dispenser owns.
         let child_program = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              extern optimize_for: String\n",
         ).unwrap().program().clone();
 
@@ -745,7 +828,7 @@ mod tests {
         // and the chain breaks.
         use nbrs_variates::dsl::compile::compile_gk;
         let k = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              extern optimize_for: String\n",
         ).unwrap();
         let outputs: Vec<&str> = k.program().output_names().to_vec();
@@ -763,7 +846,7 @@ mod tests {
         // calls produce values for that coord. Verify by pulling
         // a coord-dependent output before and after advance.
         let mut k = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              id := format_u64(cycle, 10)\n",
         ).unwrap();
         k.set_inputs(&[0]);
@@ -790,6 +873,117 @@ mod tests {
     }
 
     #[test]
+    fn cycle_wires_write_lands_on_input_slot_visible_to_get() {
+        // SRD-66 capture flow: ResultDispenser writes a magic-extern
+        // input (e.g. `count`), then a later wrapper or the eval
+        // cone reads it. `wires.write` lands the value; `wires.get`
+        // returns it on the next read.
+        let mut k = compile_gk(
+            "input cycle: u64\n\
+             extern count: u64\n\
+             extern body: Json\n",
+        ).unwrap();
+        k.set_inputs(&[0]);
+        let cw = CycleWires::new(&mut k);
+        let wires: &dyn WireSource = &cw;
+
+        assert_eq!(wires.write("count", Value::U64(42)), WriteOutcome::Stored);
+        assert_eq!(wires.get("count").map(|v| v.as_u64()), Some(42));
+
+        // Overwrite — the new value supersedes the old.
+        assert_eq!(wires.write("count", Value::U64(7)), WriteOutcome::Stored);
+        assert_eq!(wires.get("count").map(|v| v.as_u64()), Some(7));
+    }
+
+    #[test]
+    fn cycle_wires_write_returns_no_slot_for_unknown_name() {
+        // The closure-binding economy's DCE signal: no slot, value
+        // silently dropped. Caller is unaffected.
+        let mut k = compile_gk("input cycle: u64\nx := 1\n").unwrap();
+        let cw = CycleWires::new(&mut k);
+        let wires: &dyn WireSource = &cw;
+        assert_eq!(wires.write("nope", Value::U64(99)), WriteOutcome::NoSlot);
+    }
+
+    #[test]
+    fn cycle_wires_write_feeds_eval_cone_through_get() {
+        // The full capture-then-pull flow: write a magic-extern
+        // input, read an output that depends on it through the
+        // eval cone. This is the metrics-wrapper-reading-row_count
+        // scenario from the design memo.
+        let mut k = compile_gk(
+            "input cycle: u64\n\
+             extern count: u64\n\
+             row_count := count\n",
+        ).unwrap();
+        k.set_inputs(&[0]);
+        let cw = CycleWires::new(&mut k);
+        let wires: &dyn WireSource = &cw;
+
+        // Before the write, `count` is at its default and
+        // `row_count` reflects that.
+        assert_eq!(wires.write("count", Value::U64(123)), WriteOutcome::Stored);
+        // The pull through `row_count` (an output) reads the
+        // freshly-written `count` (an input).
+        assert_eq!(wires.get("row_count").map(|v| v.as_u64()), Some(123));
+    }
+
+    #[test]
+    fn null_wires_write_returns_no_slot() {
+        let wires: &dyn WireSource = &NULL_WIRES;
+        assert_eq!(wires.write("anything", Value::U64(1)), WriteOutcome::NoSlot);
+    }
+
+    #[test]
+    fn resolve_op_fields_four_case_dispatch() {
+        // Pin the four-case dispatch contract for op-field resolution.
+        // See `resolve_op_fields_via_wires` doc for the cases.
+        let mut k = compile_gk(
+            "input cycle: u64\n\
+             table := \"users\"\n\
+             count := 42\n",
+        ).unwrap();
+        let cw = CycleWires::new(&mut k);
+
+        let fields: Vec<(String, serde_json::Value)> = vec![
+            // Case 1: non-string JSON scalar — stringified.
+            ("limit_num".into(), serde_json::json!(100)),
+            // Case 2: pure-token — typed wire reference, count is U64(42).
+            ("typed_ref".into(), serde_json::Value::String("{count}".into())),
+            // Case 3: text template — wires.get(table).to_display_string()
+            //          interpolated into the surrounding text.
+            ("templated".into(), serde_json::Value::String(
+                "SELECT * FROM {table} WHERE x = 1".into(),
+            )),
+            // Case 4: bare-string literal — no placeholders, passes through.
+            ("literal_stmt".into(), serde_json::Value::String(
+                "SELECT 1".into(),
+            )),
+        ];
+
+        let resolved = resolve_op_fields_via_wires(&fields, &cw)
+            .expect("four-case dispatch");
+
+        // Case 1: stringified — exact form is implementation-defined,
+        // verify the value contains the digits.
+        assert!(matches!(resolved.get_value("limit_num"),
+            Some(nbrs_variates::node::Value::Str(s)) if s.contains("100")),
+            "case 1: got {:?}", resolved.get_value("limit_num"));
+        // Case 2: typed U64.
+        assert_eq!(resolved.get_value("typed_ref").map(|v| v.as_u64()),
+            Some(42),
+            "case 2: typed wire ref preserves U64");
+        // Case 3: interpolated string.
+        assert_eq!(resolved.get_str("templated"),
+            Some("SELECT * FROM users WHERE x = 1"),
+            "case 3: text template");
+        // Case 4: literal pass-through.
+        assert_eq!(resolved.get_str("literal_stmt"),
+            Some("SELECT 1"),
+            "case 4: bare string literal");
+    }
+
+    #[test]
     fn cycle_wires_caches_across_repeated_gets() {
         // Pull memoizes; a second get of the same name reads the
         // cached value off state, not re-runs the eval cone. We
@@ -799,7 +993,7 @@ mod tests {
         // dirty-tracking would require a state mutation to
         // re-fire — the property still holds).
         let mut k = compile_gk(
-            "inputs := (cycle)\nh := hash(cycle)\n"
+            "input cycle: u64\nh := hash(cycle)\n"
         ).unwrap();
         k.set_inputs(&[42]);
         let cw = CycleWires::new(&mut k);

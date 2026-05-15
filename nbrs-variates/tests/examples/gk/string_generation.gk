@@ -5,7 +5,7 @@
 // Expected events:
 //   BindingResolved for each string node
 
-inputs := (cycle)
+input cycle: u64
 code := combinations(hash(cycle), "A-Z0-9", 8)
 decimal := format_u64(cycle, 10)
 hex := format_u64(hash(cycle), 16)

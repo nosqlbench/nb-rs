@@ -1,5 +1,5 @@
 // Benchmark: 10-node layered DAG (degree~3, width=4, layers=3)
-inputs := (cycle)
+input cycle: u64
 
 n0 := hash(cycle)
 n1 := hash(n0)

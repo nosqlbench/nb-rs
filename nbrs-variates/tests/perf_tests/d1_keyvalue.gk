@@ -6,7 +6,7 @@
 
 /// @graph
 /// Realistic key-value INSERT. 9 nodes, single input.
-inputs := (cycle)
+input cycle: u64
 
 hashed := hash(cycle)
 user_id := mod(hashed, 1000000)

@@ -5,7 +5,7 @@
 
 fn main() {
     let kernel = nbrs_variates::dsl::compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         user_id := mod(hash(cycle), 1000000)
     "#).expect("compile failed");
 

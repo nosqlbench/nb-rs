@@ -77,7 +77,7 @@ live metadata.
      field-path provenance, and the in-scope name list.
 4. Coord inputs (`cycle` and any additional declared at workload
    level) are owned by every scope that needs to set them. The
-   synthesizer emits `inputs := (cycle, …)` on the subscope.
+   synthesizer emits `input (cycle: u64, …: u64)` on the subscope.
 
 **AST-mode synthesis path:**
 
@@ -370,7 +370,7 @@ unresolved-reference validation error surface.
   semantic-change risk.
 - Stage 3: **landed** 2026-05-11.
   - `build_scope::workload_level_gk` parameter + scan block: **removed**.
-  - `compile_from_scope::workload_level_gk` parameter + source-append + `inputs := (cycle)` fallback: **removed**.
+  - `compile_from_scope::workload_level_gk` parameter + source-append + `input cycle: u64` fallback: **removed**.
   - `compile_bindings_with_libs_excluding`: kept the
     workload_level_gk parameter but switched its internal
     handling from post-emit source-append to
@@ -378,7 +378,7 @@ unresolved-reference validation error surface.
   - `ExecCtx::workload_level_gk` field: **removed** (no readers
     left after the build_scope/compile_from_scope retirements).
   - Phase-scope coord propagation: synthesizer now emits
-    `inputs := (...)` from the parent program's coord names.
+    `input ...: u64` from the parent program's coord names.
   - All four hardcoded `name == "cycle"` special-cases retired
     in scope.rs and synthesis.rs (replaced with generic
     coord-set detection via `parent_program.coord_count()`).

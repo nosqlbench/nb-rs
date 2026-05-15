@@ -240,11 +240,16 @@ pub fn replace_bind_points_with_markers(value: &str) -> String {
 /// subsequent operations or verification.
 ///
 /// Formats:
-/// - `[username]` — capture "username" as "username"
-/// - `[username as u1]` — capture "username", store as "u1"
+/// - `[username]` — capture "username" as "username" (single value)
+/// - `[username as u1]` — capture "username", store as "u1" (single value)
 /// - `[(List) field]` — capture with type assertion
 /// - `[*]` — capture all available fields
-#[derive(Debug, Clone, PartialEq)]
+/// - `[@keys]` — **slurp**: collect every row's `keys` column into
+///   a `Value::Json` array. Use when the result has multiple rows
+///   and the consumer needs all per-row column values as a list
+///   (e.g. recall-evaluator's `actual:` reads).
+/// - `[@col as values]` — slurp with alias.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CapturePoint {
     /// The field name to capture from the result.
     pub source_name: String,
@@ -252,7 +257,15 @@ pub struct CapturePoint {
     /// Same as source_name if no `as` clause.
     pub as_name: String,
     /// Optional type assertion (e.g., "List", "int[]").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cast_type: Option<String>,
+    /// `true` when the capture-point was declared with the `@`
+    /// slurp prefix (`[@name]`). Slurp captures collect every
+    /// row's column value across the result body into a single
+    /// `Value::Json` array; non-slurp captures take the first
+    /// row's value as a scalar.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub slurp: bool,
 }
 
 /// Result of parsing capture points from a string.
@@ -279,7 +292,17 @@ pub fn parse_capture_points(template: &str) -> CaptureParseResult {
     while i < chars.len() {
         if chars[i] == '[' {
             let bracket_start = i;
-            i += 1;
+            let attempt_start = i + 1;
+            i = attempt_start;
+
+            // Speculatively parse a capture-point spec. If anything
+            // about the grammar fails to match — including the
+            // source name being absent or not starting with an
+            // identifier character — we reset to `bracket_start + 1`
+            // and emit the `[` as a literal. This keeps JSON / CQL
+            // array literals (`[]`, `["foo", 42]`), JNI type
+            // signatures (`[Ljava.lang.String;`), and other uses of
+            // `[...]` from being silently consumed.
 
             // Skip whitespace
             while i < chars.len() && chars[i].is_whitespace() { i += 1; }
@@ -297,12 +320,51 @@ pub fn parse_capture_points(template: &str) -> CaptureParseResult {
                 None
             };
 
-            // Source name (word chars, digits, hyphens, underscores, dots, or *)
+            // Optional slurp modifier: `[@name]` collects every
+            // row's column value into a `Value::Json` array. The
+            // `@` is a syntax-only marker — stripped from the
+            // emitted raw_template so the adapter sees clean
+            // column-reference text.
+            let slurp = if i < chars.len() && chars[i] == '@' {
+                i += 1;
+                while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+                true
+            } else {
+                false
+            };
+
+            // Source name — must look like a real identifier (or
+            // `*` for wildcard). Starts with `_` or an ASCII alpha
+            // character; continues with alphanumerics, `_`, `-`,
+            // `.`, or `*`. The strict-leading-char rule prevents
+            // JSON array literals like `["..."]`, `[42]`, and JNI
+            // signatures like `[Ljava.lang.String;` from being
+            // misread as captures.
             let name_start = i;
+            if i < chars.len() {
+                let first = chars[i];
+                let is_valid_first = first.is_ascii_alphabetic()
+                    || first == '_'
+                    || first == '*';
+                if !is_valid_first {
+                    // Not a capture-point opening — emit `[` and
+                    // resume one char in.
+                    raw.push('[');
+                    i = attempt_start;
+                    continue;
+                }
+            }
             while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '-' || chars[i] == '.' || chars[i] == '*') {
                 i += 1;
             }
             let source_name: String = chars[name_start..i].iter().collect();
+            if source_name.is_empty() {
+                // Defense-in-depth — the leading-char check above
+                // already excludes this path, but keep it explicit.
+                raw.push('[');
+                i = attempt_start;
+                continue;
+            }
 
             // Optional "as alias"
             while i < chars.len() && chars[i].is_whitespace() { i += 1; }
@@ -331,12 +393,18 @@ pub fn parse_capture_points(template: &str) -> CaptureParseResult {
                     source_name: source_name.clone(),
                     as_name,
                     cast_type,
+                    slurp,
                 });
                 // Emit source name without brackets into raw template
                 raw.push_str(&source_name);
             } else {
-                // Malformed — pass through as-is
-                raw.push_str(&template[bracket_start..i]);
+                // No matching `]` for what otherwise looked like a
+                // capture spec — likely a CQL/JSON array containing
+                // an identifier (e.g. `[foo, bar]`). Treat the
+                // opening `[` as a literal and resume one char in.
+                let _ = bracket_start;
+                raw.push('[');
+                i = attempt_start;
             }
         } else {
             raw.push(chars[i]);
@@ -538,6 +606,61 @@ mod tests {
         let result = parse_capture_points("select [*] from users");
         assert_eq!(result.captures.len(), 1);
         assert_eq!(result.captures[0].source_name, "*");
+    }
+
+    #[test]
+    fn capture_empty_brackets_pass_through() {
+        // `[]` (empty JSON array literal) is NOT a capture point.
+        // The parser must emit it verbatim — eating the brackets
+        // would break Jolokia payloads like
+        // `"arguments":["foo",[]]` which became `"arguments":["foo",]`
+        // (invalid JSON, JMX op gets 1 arg instead of 2).
+        let result = parse_capture_points(r#"{"arguments":["foo",[]]}"#);
+        assert!(result.captures.is_empty(),
+            "no capture should be extracted: {:?}", result.captures);
+        assert_eq!(result.raw_template, r#"{"arguments":["foo",[]]}"#);
+    }
+
+    #[test]
+    fn capture_jni_array_signature_pass_through() {
+        // JNI array signature `[Ljava.lang.String;` opens with `[`
+        // but is not a capture point (no closing `]` follows the
+        // identifier chunk). The parser must not consume anything.
+        let template =
+            r#""operation":"forceKeyspaceFlush(java.lang.String,[Ljava.lang.String;)""#;
+        let result = parse_capture_points(template);
+        assert!(result.captures.is_empty(),
+            "JNI signature should not parse as capture: {:?}", result.captures);
+        assert_eq!(result.raw_template, template);
+    }
+
+    #[test]
+    fn capture_json_array_with_string_pass_through() {
+        // JSON string-array literal — opens `[`, content begins
+        // with `"`, no identifier; parser must leave it alone.
+        let result = parse_capture_points(r#"["alpha","beta"]"#);
+        assert!(result.captures.is_empty());
+        assert_eq!(result.raw_template, r#"["alpha","beta"]"#);
+    }
+
+    #[test]
+    fn capture_json_array_with_number_pass_through() {
+        // Numeric-literal-only array — leading digit is not a
+        // valid identifier start, so no capture is extracted.
+        let result = parse_capture_points("[42]");
+        assert!(result.captures.is_empty());
+        assert_eq!(result.raw_template, "[42]");
+    }
+
+    #[test]
+    fn capture_cql_collection_literal_pass_through() {
+        // CQL collection literal like `[1, 2, 3]` — content has
+        // digits + commas, not a valid capture spec. Must
+        // pass through verbatim.
+        let template = "INSERT INTO t (vals) VALUES ([1, 2, 3])";
+        let result = parse_capture_points(template);
+        assert!(result.captures.is_empty());
+        assert_eq!(result.raw_template, template);
     }
 
     #[test]

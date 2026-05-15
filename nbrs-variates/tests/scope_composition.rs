@@ -20,13 +20,13 @@ use nbrs_variates::subcontext::GkMatter;
 #[test]
 fn materialize_wiring_from_outer_wires_constants() {
     let outer = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         dim := 128
         count := 1000
     "#).unwrap();
 
     let inner_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern dim: u64
         extern count: u64
     "#).unwrap().program().clone();
@@ -41,13 +41,13 @@ fn materialize_wiring_from_outer_wires_constants() {
 #[test]
 fn materialize_wiring_from_outer_only_matches_by_name() {
     let outer = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         dim := 128
     "#).unwrap();
 
     // Inner has an extern named 'offset' — not in outer scope
     let inner_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern offset: u64
     "#).unwrap().program().clone();
     let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
@@ -60,12 +60,12 @@ fn materialize_wiring_from_outer_only_matches_by_name() {
 #[test]
 fn materialize_wiring_from_outer_does_not_affect_coordinates() {
     let outer = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         dim := 128
     "#).unwrap();
 
     let inner_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern dim: u64
         h := hash(cycle)
     "#).unwrap().program().clone();
@@ -86,13 +86,13 @@ fn materialize_wiring_from_outer_does_not_affect_coordinates() {
 #[test]
 fn scope_values_extracts_bound_inputs() {
     let outer = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         dim := 128
         count := 500
     "#).unwrap();
 
     let inner_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern dim: u64
         extern count: u64
     "#).unwrap().program().clone();
@@ -108,12 +108,12 @@ fn scope_values_extracts_bound_inputs() {
 #[test]
 fn scope_values_empty_when_no_externs() {
     let outer = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         dim := 128
     "#).unwrap();
 
     let inner_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         h := hash(cycle)
     "#).unwrap().program().clone();
     let inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
@@ -134,21 +134,21 @@ fn scope_values_empty_when_no_externs() {
 #[test]
 fn inner_scope_shadows_outer_binding() {
     let outer = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         dim := 128
     "#).unwrap();
     assert_eq!(outer.get_constant("dim").unwrap().as_u64(), 128);
 
     // Inner scope redefines dim — should use its own value
     let inner = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         dim := 256
     "#).unwrap();
     assert_eq!(inner.get_constant("dim").unwrap().as_u64(), 256);
 
     // Inner scope has no extern for dim — materialize_wiring_from_outer won't wire it
     let inner2_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         dim := 256
     "#).unwrap().program().clone();
     let inner2 = outer.subscope(GkMatter::builder().program(inner2_program).build().unwrap()).unwrap();
@@ -165,7 +165,7 @@ fn shared_modifier_survives_compilation_pipeline() {
     // Literal-init shared bindings — the only currently-supported
     // shape; non-literal RHS is rejected at compile time.
     let kernel = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         shared running_total := 0
         shared error_count := 0
         normal_val := hash(cycle)
@@ -184,7 +184,7 @@ fn shared_modifier_survives_compilation_pipeline() {
 #[test]
 fn shared_init_constant_folds() {
     let kernel = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         shared init budget = 100
     "#).unwrap();
 
@@ -199,7 +199,7 @@ fn shared_init_constant_folds() {
 #[test]
 fn final_modifier_survives_compilation_pipeline() {
     let kernel = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         final dataset := "example"
         final dim := 128
         mutable_val := hash(cycle)
@@ -218,7 +218,7 @@ fn final_modifier_survives_compilation_pipeline() {
 #[test]
 fn final_init_constant_folds() {
     let kernel = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         final init max_dim = 512
     "#).unwrap();
 
@@ -233,7 +233,7 @@ fn final_init_constant_folds() {
 #[test]
 fn extern_wired_into_hash() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         extern seed: u64
         result := hash(seed)
     "#;
@@ -254,7 +254,7 @@ fn extern_wired_into_hash() {
 #[test]
 fn extern_in_binary_expression() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         extern multiplier: u64
         result := cycle * multiplier
     "#;
@@ -269,7 +269,7 @@ fn extern_in_binary_expression() {
 #[test]
 fn extern_in_function_chain() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         extern base: u64
         h := hash(base)
         result := mod(h, 100)
@@ -286,7 +286,7 @@ fn extern_in_function_chain() {
 #[test]
 fn extern_and_coordinate_mixed() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         extern offset: u64
         result := hash(cycle) + offset
     "#;
@@ -312,14 +312,14 @@ fn extern_and_coordinate_mixed() {
 fn full_scope_pipeline_outer_to_inner() {
     // Simulate workload scope → phase scope composition
     let outer = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         dim := 128
         base_count := 10000
     "#).unwrap();
 
     // Inner scope uses outer constants via extern + GK wire
     let inner_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern dim: u64
         extern base_count: u64
         id := hash(cycle) + base_count
@@ -340,7 +340,7 @@ fn full_scope_pipeline_outer_to_inner() {
 #[test]
 fn scope_pipeline_with_shared_and_final() {
     let outer = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         shared error_budget := 100
         final max_dim := 256
         normal := hash(cycle)
@@ -353,7 +353,7 @@ fn scope_pipeline_with_shared_and_final() {
 
     // Inner scope sees the outer's constants via bind
     let inner_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern error_budget: u64
         extern max_dim: u64
     "#).unwrap().program().clone();
@@ -372,13 +372,13 @@ fn scope_pipeline_with_shared_and_final() {
 #[test]
 fn sequential_inner_scopes_are_independent() {
     let outer = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         seed := 42
     "#).unwrap();
 
     // First inner scope
     let inner1_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern seed: u64
         h := hash(seed)
     "#).unwrap().program().clone();
@@ -388,7 +388,7 @@ fn sequential_inner_scopes_are_independent() {
 
     // Second inner scope — should produce identical result
     let inner2_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern seed: u64
         h := hash(seed)
     "#).unwrap().program().clone();
@@ -406,7 +406,7 @@ fn sequential_inner_scopes_are_independent() {
 #[test]
 fn all_kernels_have_diagnostic_context() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         h := hash(cycle)
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -417,7 +417,7 @@ fn all_kernels_have_diagnostic_context() {
 #[test]
 fn extern_kernel_has_source() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         extern dim: u64
         h := hash(dim)
     "#;
@@ -449,7 +449,7 @@ fn extern_kernel_has_source() {
 #[test]
 fn extern_default_u64_literal() {
     let kernel = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern counter: u64 = 42
     "#).unwrap();
     assert_eq!(kernel.lookup("counter").unwrap().as_u64(), 42);
@@ -458,7 +458,7 @@ fn extern_default_u64_literal() {
 #[test]
 fn extern_default_u64_zero() {
     let kernel = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern counter: u64 = 0
     "#).unwrap();
     assert_eq!(kernel.lookup("counter").unwrap().as_u64(), 0);
@@ -467,7 +467,7 @@ fn extern_default_u64_zero() {
 #[test]
 fn extern_default_f64_float_literal() {
     let kernel = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern temperature: f64 = 3.14
     "#).unwrap();
     assert_eq!(kernel.lookup("temperature").unwrap().as_f64(), 3.14);
@@ -478,7 +478,7 @@ fn extern_default_f64_int_literal_widens() {
     // Integer literal in an f64 slot widens to f64 — common YAML
     // convention (`5` rather than `5.0`).
     let kernel = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern threshold: f64 = 5
     "#).unwrap();
     assert_eq!(kernel.lookup("threshold").unwrap().as_f64(), 5.0);
@@ -487,7 +487,7 @@ fn extern_default_f64_int_literal_widens() {
 #[test]
 fn extern_default_string_literal() {
     let kernel = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern name: String = "guest"
     "#).unwrap();
     match kernel.lookup("name").unwrap() {
@@ -502,7 +502,7 @@ fn extern_default_no_default_starts_unset() {
     // filters None internally, so it returns `None` for unset
     // names — distinguishing them from set-but-zero values.
     let kernel = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern unset: u64
     "#).unwrap();
     assert!(kernel.lookup("unset").is_none(),
@@ -516,7 +516,7 @@ fn extern_default_visible_through_passthrough_output() {
     // two-tier read). Any caller using `interpolate_via_kernel`
     // or `materialize_wiring_from_outer` against this kernel sees the default.
     let kernel = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern budget: u64 = 100
     "#).unwrap();
 
@@ -529,7 +529,7 @@ fn extern_default_function_call_rejected() {
     // Function calls aren't const literals — the compiler must
     // reject them with a clear error.
     let err = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern x: u64 = hash(0)
     "#).expect_err("function call default must error");
     assert!(err.contains("extern 'x' default"),
@@ -543,7 +543,7 @@ fn extern_default_identifier_rejected() {
     // Bare identifiers (referencing other bindings) are not
     // const literals.
     let err = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern x: u64 = somewhere
     "#).expect_err("identifier default must error");
     assert!(err.contains("extern 'x' default"), "error: {err}");
@@ -552,7 +552,7 @@ fn extern_default_identifier_rejected() {
 #[test]
 fn extern_default_type_mismatch_string_for_u64_rejected() {
     let err = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern n: u64 = "not a number"
     "#).expect_err("string default for u64 port must error");
     assert!(err.contains("extern 'n' default"), "error: {err}");
@@ -561,7 +561,7 @@ fn extern_default_type_mismatch_string_for_u64_rejected() {
 #[test]
 fn extern_default_type_mismatch_float_for_u64_rejected() {
     let err = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern n: u64 = 1.5
     "#).expect_err("float default for u64 port must error");
     assert!(err.contains("extern 'n' default"), "error: {err}");
@@ -575,7 +575,7 @@ fn extern_default_negative_for_u64_rejected_with_clear_message() {
     // same "literal required" message as other non-literal
     // expressions.
     let err = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern n: u64 = -5
     "#).expect_err("negative literal default for u64 must error");
     assert!(err.contains("extern 'n' default"), "error: {err}");
@@ -584,7 +584,7 @@ fn extern_default_negative_for_u64_rejected_with_clear_message() {
 #[test]
 fn extern_default_bool_true_works() {
     let kernel = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern enabled: bool = true
     "#).unwrap();
     match kernel.lookup("enabled").unwrap() {
@@ -596,7 +596,7 @@ fn extern_default_bool_true_works() {
 #[test]
 fn extern_default_bool_false_works() {
     let kernel = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern enabled: bool = false
     "#).unwrap();
     match kernel.lookup("enabled").unwrap() {
@@ -618,7 +618,7 @@ fn extern_default_bool_false_works() {
 #[test]
 fn shared_init_compiles_to_slot_with_initial_value() {
     let kernel = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         shared counter := 0
     "#).unwrap();
 
@@ -636,12 +636,12 @@ fn shared_init_compiles_to_slot_with_initial_value() {
 #[test]
 fn shared_inner_write_propagates_to_outer_via_cell() {
     let outer = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         shared counter := 5
     "#).unwrap();
 
     let inner_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern counter: u64
     "#).unwrap().program().clone();
     let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
@@ -662,16 +662,16 @@ fn shared_inner_write_propagates_to_outer_via_cell() {
 #[test]
 fn shared_two_inners_see_each_others_writes_via_cell() {
     let outer = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         shared budget := 100
     "#).unwrap();
 
     let a_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern budget: u64
     "#).unwrap().program().clone();
     let b_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern budget: u64
     "#).unwrap().program().clone();
     let mut a = outer.subscope(GkMatter::builder().program(a_program).build().unwrap()).unwrap();
@@ -704,16 +704,16 @@ fn shared_last_write_wins_under_concurrent_writers() {
     // `try_fold_shared_init` matches `Expr::StringLit` and
     // creates a Str-typed input slot.
     let outer = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         shared status := "init"
     "#).unwrap();
 
     let a_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern status: String
     "#).unwrap().program().clone();
     let b_program = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         extern status: String
     "#).unwrap().program().clone();
     let mut a = outer.subscope(GkMatter::builder().program(a_program).build().unwrap()).unwrap();
@@ -740,7 +740,7 @@ fn shared_non_literal_init_rejected() {
     // and a computed RHS doesn't have one. See SRD-16
     // §"Non-literal `shared` initializers".
     let err = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         shared rolling := hash(cycle)
     "#).expect_err("non-literal shared init must error");
     assert!(err.contains("shared binding 'rolling'"), "error: {err}");

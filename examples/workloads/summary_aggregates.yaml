@@ -33,7 +33,7 @@ report:
       mean(recall) over profile~fast
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
 
 scenarios:
   # Default: show detail rows + one mean aggregate for "fast" profiles
@@ -71,7 +71,7 @@ phases:
     cycles: "{query_count}"
     concurrency: 1
     bindings: |
-      inputs := (cycle)
+      input cycle: u64
       query_id := zero_pad_u64(mod(hash(cycle), 1000), 6)
       result := zero_pad_u64(mod(hash(hash(cycle)), 10000), 6)
     ops:

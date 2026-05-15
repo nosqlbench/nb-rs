@@ -59,6 +59,7 @@ mod scope_coords;
 mod manifest;
 mod api;
 mod api_impl;
+mod opt;
 
 pub use program::*;
 pub use engines::*;
@@ -66,6 +67,7 @@ pub use gkkernel::*;
 pub use scope_coords::{ScopeCoord, format_scope_coordinate_path};
 pub use manifest::{extract_manifest, ManifestEntry};
 pub use api::{Construction, Dataflow, Metadata, WireKey};
+pub use opt::KernelOptLevel;
 
 use crate::node::Value;
 
@@ -90,7 +92,7 @@ pub enum WireSource {
 /// them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputKind {
-    /// Dimensional input declared by `inputs := (cycle, ...)` —
+    /// Dimensional input declared by `input (cycle: u64, ...: u64)` —
     /// dynamic, reset every cycle.
     Coordinate,
     /// External slot populated by `materialize_wiring_from_outer` from an
@@ -219,7 +221,7 @@ mod tests {
         // base=42, seed=hash(base) should both be folded
         // user_id=hash(cycle) should NOT be folded (depends on coordinate)
         use crate::dsl::compile::compile_gk;
-        let mut k = compile_gk("inputs := (cycle)\nbase := 42\nseed := hash(base)\nuser_id := hash(cycle)").unwrap();
+        let mut k = compile_gk("input cycle: u64\nbase := 42\nseed := hash(base)\nuser_id := hash(cycle)").unwrap();
 
         // seed should be constant across cycles
         k.set_inputs(&[0]);
@@ -239,7 +241,7 @@ mod tests {
     #[test]
     fn fold_does_not_touch_cycle_dependent() {
         use crate::dsl::compile::compile_gk;
-        let mut k = compile_gk("inputs := (cycle)\nout := hash(cycle)").unwrap();
+        let mut k = compile_gk("input cycle: u64\nout := hash(cycle)").unwrap();
         k.set_inputs(&[42]);
         let v1 = k.pull("out").as_u64();
         k.set_inputs(&[43]);
@@ -463,7 +465,7 @@ mod tests {
         use crate::dsl::compile::compile_gk;
         // sin() expects f64, cycle is u64. The compiler should auto-insert
         // a __u64_to_f64 adapter. This must not panic.
-        let mut k = compile_gk("inputs := (cycle)\nout := sin(cycle)").unwrap();
+        let mut k = compile_gk("input cycle: u64\nout := sin(cycle)").unwrap();
         k.set_inputs(&[1]);
         let v = k.pull("out");
         // sin(1.0) ≈ 0.8414709848078965

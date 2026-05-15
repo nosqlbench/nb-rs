@@ -155,7 +155,7 @@ params:
   dataset: example
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   train_count := vector_count("{dataset}")
   dim := vector_dim("{dataset}")
 

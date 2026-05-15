@@ -127,7 +127,7 @@ params:
   concurrency: "100"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   train_vector := vector_at(cycle, "{dataset}")
   query_vector := query_vector_at(cycle, "{dataset}")
   ground_truth := neighbor_indices_at(cycle, "{dataset}")

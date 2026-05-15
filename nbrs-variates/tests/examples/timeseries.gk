@@ -14,7 +14,7 @@ init reading_lut = dist_normal(mean: 72.0, stddev: 5.0)
 
 // === Cycle-time: the DAG ===
 
-inputs := (cycle)
+input cycle: u64
 
 // Coordinate decomposition: 100 tenants × 1000 devices × readings
 (tenant, device, reading) := mixed_radix(cycle, 100, 1000, 0)

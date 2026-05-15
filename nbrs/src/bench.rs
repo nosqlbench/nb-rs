@@ -137,7 +137,7 @@ fn parse_bench_annotations(source: &str) -> BenchScenario {
     }
 
     let (driver_source, driver_outputs) = if !driver_lines.is_empty() {
-        let src = format!("inputs := (meta)\n{}", driver_lines.join("\n"));
+        let src = format!("input meta: u64\n{}", driver_lines.join("\n"));
         let outputs = match nbrs_variates::dsl::compile::compile_gk(&src) {
             Ok(kernel) => {
                 kernel.program().output_names().iter()
@@ -595,7 +595,7 @@ fn normalize_source(expr: &str) -> Result<String, String> {
             let lines: Vec<&str> = expr.lines().map(|l| l.trim())
                 .filter(|l| !l.is_empty() && !l.starts_with("//"))
                 .collect();
-            let mut out_lines = vec!["inputs := (cycle)".to_string()];
+            let mut out_lines = vec!["input cycle: u64".to_string()];
             for (i, line) in lines.iter().enumerate() {
                 if line.contains(":=") {
                     out_lines.push(line.to_string());
@@ -607,7 +607,7 @@ fn normalize_source(expr: &str) -> Result<String, String> {
             }
             Ok(out_lines.join("\n"))
         } else {
-            Ok(format!("inputs := (cycle)\nout := {expr}"))
+            Ok(format!("input cycle: u64\nout := {expr}"))
         }
     }
 }

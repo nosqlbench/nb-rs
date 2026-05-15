@@ -33,7 +33,7 @@ node output. Three patterns, all interchangeable from the
 workload's side:
 
 - **Input**. An external value the runner pushes on every
-  cycle (e.g. `cycle`). Declared via `inputs := (...)` and
+  cycle (e.g. `cycle`). Declared via `input ...: u64` and
   wired via `{input:name}`.
 - **Binding output**. A named GK expression compiled into the
   kernel (e.g. `dim := vector_dim("glove-25-angular")`). Read
@@ -87,8 +87,8 @@ GK programs are written in `.gk` files or inline in workload
 ### Input Declaration
 
 ```
-inputs := (cycle)
-inputs := (cycle, partition, cluster)
+input cycle: u64
+input (cycle: u64, partition: u64, cluster: u64)
 ```
 
 Inputs are the external values that drive the DAG. A workload
@@ -101,7 +101,7 @@ binding block that references `cycle` (or any other unbound
 name) implicitly declares those names as its input set —
 the compiler's closure inference already identifies unbound
 wires on both the input and output sides, so requiring an
-explicit `inputs := (...)` line in every block was redundant.
+explicit `input ...: u64` line in every block was redundant.
 Strict checking still applies: the host closure feeding the
 kernel must provide every inferred input, and the compiler
 reports a mismatch if it doesn't.
@@ -125,7 +125,7 @@ decomposed via `mixed_radix`) is fine. The engine treats
 Most workloads use a single `cycle` input. Multi-dimensional
 iteration is modeled inside the GK via mixed_radix decomposition:
 
-    inputs := (cycle)
+    input cycle: u64
     (row, col) := mixed_radix(cycle, 1000, 1000)
 
 This keeps the activity executor simple (it only passes `[cycle]`)

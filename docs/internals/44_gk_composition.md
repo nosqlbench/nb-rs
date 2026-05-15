@@ -42,7 +42,7 @@ recompiled and optimized as a single unit.
 
 ```gk
 // timeseries.gk module
-inputs := (cycle)
+input cycle: u64
 timestamp := add(epoch_offset(cycle, 1704067200000), mod(hash(cycle), 86400000))
 
 // host workload
@@ -64,7 +64,7 @@ For example:
 params:
   dataset: "glove-100"
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   vectors := load_vectors("{dataset}")
   dataset_size := vector_count(vectors)   # init-time: how many vectors?
   idx := mod(hash(cycle), dataset_size)   # cycle-time: index into dataset
@@ -133,7 +133,7 @@ In the GK DSL, composition is implicit. The compiler handles the
 init/cycle split automatically based on dependency analysis:
 
 ```gk
-inputs := (cycle)
+input cycle: u64
 
 // These are init-time (no cycle dependency):
 vectors := load_vectors("glove-100")

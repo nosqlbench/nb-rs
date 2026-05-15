@@ -73,7 +73,7 @@ params:
   iter_count: "3"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
 
   # ── final modifier ─────────────────────────────────────────
   # Compile-time constant. Folded once, never mutated; outer
@@ -361,7 +361,7 @@ phases:
 # (4) Tuple-target shared binding (compile-error path)
 # ────────────────────────────────────────────────────────────
 # # bindings: |
-# #   inputs := (cycle)
+# #   input cycle: u64
 # #   shared (a, b) := mixed_radix(cycle, 100, 0)
 # #
 # # Limitation: the compiler rejects tuple-target shared

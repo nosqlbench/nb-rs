@@ -212,7 +212,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
 
     for stmt in &ast.statements {
         match stmt {
-            Statement::Inputs(names, _) => input_names.extend(names.clone()),
+            Statement::InputDecl(d) => input_names.push(d.name.clone()),
             Statement::InitBinding(b) => {
                 defined_names.insert(b.name.clone());
                 all_output_names.push(b.name.clone());
@@ -234,7 +234,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
         let mut refs: HashSet<String> = HashSet::new();
         for stmt in &ast.statements {
             let expr = match stmt {
-                Statement::Inputs(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
+                Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
                 Statement::InitBinding(b) => &b.value,
                 Statement::CycleBinding(b) => &b.value,
             };
@@ -250,7 +250,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
     let mut consumed: HashSet<String> = HashSet::new();
     for stmt in &ast.statements {
         let expr = match stmt {
-            Statement::Inputs(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
+            Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
             Statement::InitBinding(b) => &b.value,
             Statement::CycleBinding(b) => &b.value,
         };
@@ -285,7 +285,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
     // ─── Function nodes (middle) ────────────────────────
     for stmt in &ast.statements {
         match stmt {
-            Statement::Inputs(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
+            Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
             Statement::InitBinding(b) => {
                 let id = format!("n{node_counter}");
                 node_counter += 1;
@@ -450,7 +450,7 @@ fn dot_escape(s: &str) -> String {
 mod tests {
     use super::*;
 
-    const SIMPLE_GK: &str = "inputs := (cycle)\nh := hash(cycle)\nuser_id := mod(h, 1000000)";
+    const SIMPLE_GK: &str = "input cycle: u64\nh := hash(cycle)\nuser_id := mod(h, 1000000)";
 
     #[test]
     fn dot_has_ports() {
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn multi_output() {
-        let src = "inputs := (cycle)\n(x, y) := mixed_radix(cycle, 100, 0)\nhx := hash(x)";
+        let src = "input cycle: u64\n(x, y) := mixed_radix(cycle, 100, 0)\nhx := hash(x)";
         let dot = gk_to_dot(src).unwrap();
         assert!(dot.contains("mixed_radix"));
         assert!(dot.contains("hash"));

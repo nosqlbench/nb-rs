@@ -345,9 +345,12 @@ impl DataSource for SqliteDataSource {
         if let Some(iv) = min_rate_interval_ms {
             eprintln!(
                 "warning: `{}` evaluated over samples with sub-1s windows \
-                 (shortest seen: {iv}ms). _rate divides count by interval, so \
-                 a {iv}ms window quantizes the result heavily — consider \
-                 rate({}[30s]) for a steady-state view over a longer span.",
+                 (shortest seen: {iv}ms). Intervals are precisely measured \
+                 (ms-resolution), so the numeric rate is honest — but a short \
+                 window samples a brief slice of phase activity and is more \
+                 susceptible to instantaneous noise (warmup, GC pause, single \
+                 outlier op). For a steady-state view, prefer rate({}[30s]) or \
+                 ensure the phase runs long enough to span ≥ 1 cadence window.",
                 resolved.virtual_name,
                 resolved.virtual_name.trim_end_matches("_rate"),
             );

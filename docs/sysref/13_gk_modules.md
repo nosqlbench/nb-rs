@@ -22,7 +22,7 @@ A `.gk` file is a module. Interface is inferred:
 
 ```
 // user_generator.gk
-inputs := (cycle)
+input cycle: u64
 user_id := mod(hash(cycle), 1000000)
 username := format_u64(user_id, 8)
 email := "{username}@example.com"

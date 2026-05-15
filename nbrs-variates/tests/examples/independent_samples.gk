@@ -23,7 +23,7 @@
 //   init wait_lut = dist_exponential(0.5)
 //   init size_lut = dist_pareto(1.0, 2.0)
 //
-//   inputs := (cycle)
+//   input cycle: u64
 //   (q_temp, q_wait, q_size) := independent_samples(cycle)
 //   temperature := lut_sample(q_temp, temp_lut)
 //   wait_time := lut_sample(q_wait, wait_lut)

@@ -17,7 +17,7 @@ use nbrs_variates::nodes::hash::{Hash64, HashRange};
 // ---------------------------------------------------------------
 // hello_world.gk
 //
-//   inputs := (cycle)
+//   input cycle: u64
 //   hashed := hash(cycle)
 //   user_id := mod(hashed, 1000000)
 // ---------------------------------------------------------------
@@ -66,7 +66,7 @@ fn hello_world_dispersed() {
 // ---------------------------------------------------------------
 // cartesian_space.gk
 //
-//   inputs := (cycle)
+//   input cycle: u64
 //   (region, store, tx) := mixed_radix(cycle, 50, 200, 0)
 //   region_h := hash(region)
 //   region_code := mod(region_h, 10000)
@@ -153,7 +153,7 @@ fn cartesian_codes_bounded() {
 // ---------------------------------------------------------------
 // shared_computation.gk
 //
-//   inputs := (cycle)
+//   input cycle: u64
 //   user_h := hash(cycle)
 //   user_id := mod(user_h, 10000000)
 //   user_bucket := mod(user_h, 64)
@@ -244,7 +244,7 @@ fn shared_chained_hashes_differ() {
 // ---------------------------------------------------------------
 // multi_coordinate.gk
 //
-//   inputs := (cycle, thread)
+//   input (cycle: u64, thread: u64)
 //   combined := interleave(cycle, thread)
 //   row_h := hash(combined)
 //   partition := mod(hash(thread), 256)
@@ -333,7 +333,7 @@ fn multi_coord_bounded() {
 // ---------------------------------------------------------------
 // hashing_provenance.gk
 //
-//   inputs := (cycle)
+//   input cycle: u64
 //   (tenant, device) := mixed_radix(cycle, 100, 0)
 //   tenant_h := hash(tenant)
 //   tenant_id := mod(tenant_h, 10000)

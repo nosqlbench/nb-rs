@@ -10,7 +10,7 @@
 /// @graph
 /// 201 nodes, 4 inputs (3 stable). Separate subgraph per input.
 /// Provenance sweet spot: 75% of graph cached.
-inputs := (cycle, param_a, param_b, param_c)
+input (cycle: u64, param_a: u64, param_b: u64, param_c: u64)
 
 // cycle subgraph (50 nodes)
 c0 := hash(cycle)

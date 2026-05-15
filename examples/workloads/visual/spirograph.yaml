@@ -23,7 +23,7 @@ params:
   cycles: "5000"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   t := to_f64(cycle) * 0.01
 
   // (R+r) and (R+r)/r as constants

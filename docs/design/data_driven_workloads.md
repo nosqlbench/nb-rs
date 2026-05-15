@@ -64,7 +64,7 @@ dataset_vectors("example:label_00")
   └─ yields: (u64, Vec<f32>) per pull
 ```
 
-The GK graph exposes sources as **coordinate providers**. Today, `inputs := (cycle)` declares one coordinate. With sources:
+The GK graph exposes sources as **coordinate providers**. Today, `input cycle: u64` declares one coordinate. With sources:
 
 ```yaml
 bindings: |
@@ -329,7 +329,7 @@ Source projections (`base.ordinal`, `base.vector`) are like struct field access.
 
 ## Relationship to Coordinates
 
-Today: `inputs := (cycle)` declares one coordinate. All nodes compute from it.
+Today: `input cycle: u64` declares one coordinate. All nodes compute from it.
 
 With sources: the source **replaces** the coordinate for its dependents. `base.ordinal` is the effective coordinate for `id` and `vector`. The GK graph wires source projections as inputs to downstream nodes.
 

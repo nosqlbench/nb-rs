@@ -9,7 +9,6 @@
 
 use std::sync::OnceLock;
 use std::any::Any;
-use std::collections::HashMap;
 use std::fmt;
 
 // Re-export so adapter crates can write `use nbrs_activity::adapter::ExecCtx`
@@ -111,9 +110,6 @@ pub struct OpResult {
     /// Adapter-internal code can downcast via `.as_any()`.
     /// `None` for operations with no meaningful result (e.g., DDL).
     pub body: Option<Box<dyn ResultBody>>,
-    /// Captured values from the result (populated by adapters that
-    /// support capture points). Key = capture alias name.
-    pub captures: HashMap<String, nbrs_variates::node::Value>,
     /// If true, this op was conditionally skipped (via `if:` field).
     /// The activity loop counts this as a skip, not a success or error.
     pub skipped: bool,
@@ -121,14 +117,14 @@ pub struct OpResult {
 
 impl Default for OpResult {
     fn default() -> Self {
-        Self { body: None, captures: HashMap::new(), skipped: false }
+        Self { body: None, skipped: false }
     }
 }
 
 impl OpResult {
-    /// Create a skipped result (no execution, no captures).
+    /// Create a skipped result (no execution).
     pub fn skipped() -> Self {
-        Self { body: None, captures: HashMap::new(), skipped: true }
+        Self { body: None, skipped: true }
     }
 }
 

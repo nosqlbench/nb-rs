@@ -1,0 +1,96 @@
+#!/usr/bin/env nbrs
+# =====================================================================
+# nbrs Kernel Opt-Level Diagnostic Mode
+# =====================================================================
+#
+# This workload demonstrates the `--kernel-opt=diagnostic` flag (or
+# `kernel_opt=diagnostic` workload param) and the slot-allocation
+# behaviour it relaxes.
+#
+# ─────────────────────────────────────────────────────────────────────
+# The DCE the closure-binding economy applies under `release` (default)
+# ─────────────────────────────────────────────────────────────────────
+#
+# At op-template synthesis, the closure-binding economy walks the
+# `result:` RHSs and allocates input slots only for the magic externs
+# (`body`, `count`, `ok`) the source actually references. Slots the
+# workload doesn't reference get DCE'd. Runtime writes to those names
+# silently no-op — the workload didn't ask for the value, the runtime
+# doesn't pay to track it.
+#
+# This op references `count` only:
+#
+#   result:
+#     hit_count: count           # references `count`
+#
+# Under `--kernel-opt=release` the kernel has slots for:
+#   - count   (magic extern, referenced)
+#   - hit_count (the LHS — always allocated as an output)
+#
+# It does NOT have slots for:
+#   - body    (magic extern, NOT referenced)
+#   - ok      (magic extern, NOT referenced)
+#
+# Adapter writes to `body` and `ok` via ctx.wires.write land on NoSlot
+# (dropped). The workload doesn't care — it didn't ask.
+#
+# ─────────────────────────────────────────────────────────────────────
+# What `--kernel-opt=diagnostic` changes
+# ─────────────────────────────────────────────────────────────────────
+#
+# Diagnostic mode force-allocates every magic-extern slot regardless
+# of reference. So `body`, `count`, AND `ok` all get slots. Adapter
+# writes always land; step-debug / cycle-replay tooling can read
+# every magic extern via `wires.get(name)` even when nothing in the
+# workload's `result:` block consumed them.
+#
+# The cost is a handful of extra slots per op-template (the unreferenced
+# magic externs). No eval cone changes — the slots exist, but no node
+# depends on them.
+#
+# ─────────────────────────────────────────────────────────────────────
+# Try it
+# ─────────────────────────────────────────────────────────────────────
+#
+#   # default: release
+#   nbrs run docs/guide/kernel_opt_diagnostic_example.yaml
+#
+#   # opt in to diagnostic mode
+#   nbrs run docs/guide/kernel_opt_diagnostic_example.yaml \
+#       --kernel-opt=diagnostic
+#
+#   # or via workload param
+#   nbrs run docs/guide/kernel_opt_diagnostic_example.yaml \
+#       kernel_opt=diagnostic
+#
+# Under diagnostic the stdout adapter's auto-traversal (which writes
+# `body` / `count` / `ok` per cycle) lands every slot on the kernel.
+# Under release it lands only the slots the result block references.
+#
+# A future `nbrs debug step` subcommand will use the diagnostic slot
+# set to surface "what the adapter wrote this cycle" — without
+# `--kernel-opt=diagnostic`, step-debug would only see the slots the
+# workload happened to read.
+
+params:
+  adapter: stdout
+  cycles: 5
+  format: "row #{cycle}: count={count}"
+
+scenarios:
+  default:
+    - inspect
+
+phases:
+
+  inspect:
+    concurrency: 1
+    cycles: "{cycles}"
+    ops:
+      probe:
+        stmt: "show row {cycle}"
+        result:
+          # Only `count` is referenced — under `release`, `body` and
+          # `ok` magic-extern slots are DCE'd. Under `diagnostic`,
+          # all three are allocated.
+          hit_count: count

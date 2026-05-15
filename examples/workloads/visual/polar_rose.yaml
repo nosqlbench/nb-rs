@@ -19,7 +19,7 @@ params:
   cycles: "3000"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   theta := to_f64(cycle) * 0.01
   r := cos(theta * {k})
 

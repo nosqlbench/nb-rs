@@ -48,9 +48,10 @@ pub fn pp_file(file: &GkFile) -> String {
 /// Pretty-print a top-level statement.
 pub fn pp_statement(stmt: &Statement) -> String {
     match stmt {
-        Statement::Inputs(names, _) => {
-            format!("inputs := ({})", names.join(", "))
-        }
+        Statement::InputDecl(d) => match &d.ty {
+            Some(ty) => format!("input {}: {}", d.name, ty),
+            None => format!("input {}", d.name),
+        },
         Statement::InitBinding(b) => pp_init_binding(b),
         Statement::CycleBinding(b) => pp_cycle_binding(b),
         Statement::ModuleDef(m) => pp_module_def(m),
@@ -260,7 +261,7 @@ mod tests {
 
     #[test]
     fn round_trip_inputs() {
-        round_trip("inputs := (cycle, thread)\n");
+        round_trip("input (cycle: u64, thread: u64)\n");
     }
 
     #[test]

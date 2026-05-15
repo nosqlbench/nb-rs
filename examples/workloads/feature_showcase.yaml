@@ -28,7 +28,7 @@ params:
   num_items: "10"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
 
   // Derived IDs using infix operators
   item_id := mod(hash(cycle), 1000000)

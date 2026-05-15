@@ -6,7 +6,7 @@
 // Expected events:
 //   TypeAdapterInserted: cycle → unit_interval (U64→F64) [for sin]
 
-inputs := (cycle)
+input cycle: u64
 u := unit_interval(hash(cycle))
 s := sin(u)
 c := cos(u)

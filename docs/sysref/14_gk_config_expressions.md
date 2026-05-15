@@ -67,7 +67,7 @@ constant folding pass used for named bindings.
 
 ```rust
 pub fn eval_const_expr(source: &str) -> Result<Value, String> {
-    let wrapped = format!("inputs := ()\nout := {source}");
+    let wrapped = format!("\nout := {source}");
     let kernel = compile_gk(&wrapped)?;
     kernel.get_constant("out")
         .cloned()

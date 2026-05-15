@@ -22,7 +22,7 @@
 //
 // In a separate file (e.g., workload.gk):
 //
-//   inputs := (cycle)
+//   input cycle: u64
 //   (tenant, device) := mixed_radix(cycle, 100, 0)
 //
 //   // Use library_kernel as a node — referenced by file name.

@@ -11,7 +11,7 @@
 /// @graph
 /// 101 nodes, 5 inputs, 4 stable. 80% of graph cached.
 /// Best case for provenance.
-inputs := (cycle, p1, p2, p3, p4)
+input (cycle: u64, p1: u64, p2: u64, p3: u64, p4: u64)
 
 // Cycle subgraph: 20 nodes
 c0 := hash(cycle)

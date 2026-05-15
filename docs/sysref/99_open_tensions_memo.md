@@ -16,7 +16,7 @@
 > | 3 Per-phase config override | SRD 21 §"Parameter Resolution" + §"Explicit layering with GK helpers". |
 > | 4 `cycles=train_count` | SRD 10 + SRD 21; `cycles` loses special status, cursors are arbitrary, `train_count` is a GK-folded constant in local/workload scope. |
 > | 5 Adapter vs core field routing | SRD 30 §"Core-first field processing". |
-> | 6 `inputs := (cycle)` default | SRD 10 §"Input Declaration" — inputs inferred when omitted. |
+> | 6 `input cycle: u64` default | SRD 10 §"Input Declaration" — inputs inferred when omitted. |
 > | 7 Result extraction | SRD 33 §"Result Extraction" — universal JSON + typed accessors as hot-path opt-in. |
 > | 8 HDR significant digits | SRD 40 §"HDR significant digits — subtree-scoped setting". |
 > | 9 Extra Bindings staleness | Deleted from SRD 31. |
@@ -222,12 +222,12 @@ can contribute their own controls / nodes / ops" story
 
 ---
 
-## 6. `inputs := (cycle)` — explicit vs default
+## 6. `input cycle: u64` — explicit vs default
 
 **Where.** `00_index.md` tension #6; `10_gk_language.md:18`.
 
 **Context.** Every GK binding block currently requires
-`inputs := (cycle)` at the top, even though 99% of them use
+`input cycle: u64` at the top, even though 99% of them use
 exactly that one input. The question is whether to make it
 implicit.
 
@@ -235,7 +235,7 @@ implicit.
 
 **Options.**
 
-- **A. Always require explicit `inputs := (...)`.** One rule
+- **A. Always require explicit `input ...: u64`.** One rule
   to teach, no surprises for multi-input workloads. Costs the
   user a boilerplate line in every trivial binding block.
 - **B. Default to `(cycle)` if omitted.** Zero boilerplate for

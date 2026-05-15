@@ -105,7 +105,7 @@ pub struct ExternDecl {
 /// Built by the executor from structured inputs, validated for
 /// scope rules, then emitted as a single GK source string.
 pub struct BindingScope {
-    /// The coordinate declaration (e.g., `"inputs := (cycle)"`).
+    /// The coordinate declaration (e.g., `"input cycle: u64"`).
     coordinates: Option<String>,
     /// All bindings in insertion order.
     bindings: Vec<ScopedBinding>,
@@ -153,6 +153,16 @@ impl BindingScope {
                 continue;
             }
 
+            // `input` declarations: `input <name>[: <type>]` (bare) or
+            // `input (<name>[: <type>], ...)` (tuple). Stored verbatim
+            // on the scope's `coordinates` slot — the synthesizer
+            // re-emits this line into the per-scope GK source so the
+            // compiler can pick up the declared inputs.
+            if trimmed.starts_with("input ") {
+                self.coordinates = Some(trimmed.to_string());
+                continue;
+            }
+
             // Cursor declarations use `=` not `:=`:
             //   cursor row = range(0, vector_count("example"))
             //   init prebuffer = dataset_prebuffer("example")
@@ -179,12 +189,6 @@ impl BindingScope {
 
             if let Some(pos) = trimmed.find(":=") {
                 let lhs = trimmed[..pos].trim();
-
-                // Input declaration (`inputs := (...)`)
-                if lhs == "inputs" {
-                    self.coordinates = Some(trimmed.to_string());
-                    continue;
-                }
 
                 // Extern declarations
                 if lhs.starts_with("extern") {
@@ -481,13 +485,15 @@ impl BindingScope {
         // references) compiles fine without a synthetic line.
         if let Some(ref coords) = self.coordinates {
             lines.push(coords.clone());
-            if let Some(pos) = coords.find(":=") {
-                let rhs = coords[pos + 2..].trim();
-                let inner = rhs.trim_start_matches('(').trim_end_matches(')');
-                for name in inner.split(',') {
-                    emitted_names.insert(name.trim().to_string());
-                }
-            }
+            // Populate `emitted_names` from the declared coordinate
+            // names so the externs pass (and downstream binding
+            // emission) doesn't re-introduce a same-named declaration
+            // that would collide with the input slot. The coord line
+            // is the canonical `input` declaration in either
+            // surface form:
+            //   input <name>[: <type>]               (bare)
+            //   input (<name>[: <type>], ...)        (tuple)
+            scan_input_decl_names(coords.trim(), &mut emitted_names);
         }
 
         // 2. Externs
@@ -656,6 +662,57 @@ fn format_param_binding_line(name: &str, value: &str) -> String {
     } else {
         let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
         format!("final {name} := \"{escaped}\"")
+    }
+}
+
+/// Parse an `input` declaration line and insert each declared
+/// slot name into `out`. Accepts both surface forms:
+///
+/// - `input cycle: u64`       — bare single (with or without type)
+/// - `input (a: u64, b: f64)` — tuple form
+///
+/// The leading `input ` keyword may be present or absent — the
+/// scanner tolerates a coord line stored without the keyword (older
+/// emit paths) by falling back to treating the body as the slot
+/// list. Empty / unparseable input is a no-op.
+pub(crate) fn scan_input_decl_names(line: &str, out: &mut HashSet<String>) {
+    let body = line.trim().strip_prefix("input ").unwrap_or(line.trim());
+    let body = body.trim();
+    if let Some(inner) = body.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+        for part in inner.split(',') {
+            let name = part.trim().split(':').next().unwrap_or("").trim();
+            if !name.is_empty() {
+                out.insert(name.to_string());
+            }
+        }
+        return;
+    }
+    let name = body.split(':').next().unwrap_or("").trim();
+    if !name.is_empty() {
+        out.insert(name.to_string());
+    }
+}
+
+/// Render an `input` declaration line for one or more slot names,
+/// matching the two surface forms produced by the parser:
+///
+/// - one name           → `input <name>: u64\n`
+/// - multiple names     → `input (<a>: u64, <b>: u64, ...)\n`
+///
+/// All slots default to `u64` here — the runtime emits these for
+/// propagated parent inputs, which are already u64-typed today.
+/// A future port-type-aware pass can plumb the parent's declared
+/// type through if/when non-u64 inputs become common.
+fn format_input_decl_line(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [single] => format!("input {single}: u64\n"),
+        many => {
+            let typed: Vec<String> = many.iter()
+                .map(|n| format!("{n}: u64"))
+                .collect();
+            format!("input ({})\n", typed.join(", "))
+        }
     }
 }
 
@@ -971,6 +1028,7 @@ pub fn build_phase_scope_kernel(
         required_outputs: Vec::new(),
         context_label: Some(context.to_string()),
         cursor_limit: None,
+        ..Default::default()
     };
     let matter = nbrs_variates::subcontext::GkMatter::builder()
         .label(context)
@@ -1155,7 +1213,7 @@ pub fn build_do_loop_scope_kernel(
 /// best-effort first pass for the cross-scope contract check.
 pub(crate) fn scan_idents_in_gk_source(src: &str) -> HashSet<String> {
     const KEYWORDS: &[&str] = &[
-        "inputs", "extern", "final", "init", "shared", "volatile",
+        "input", "extern", "final", "init", "shared", "volatile", "cursor", "pragma",
         "true", "false", "as", "in", "for",
     ];
     let mut out = HashSet::new();
@@ -1164,6 +1222,12 @@ pub(crate) fn scan_idents_in_gk_source(src: &str) -> HashSet<String> {
     let mut in_string = false;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
+    // Suppress the next ident — set when we just saw a `:` outside
+    // strings/comments. Lets us skip the type token in declarations
+    // like `extern x: u64`, `input cycle: u64`, `input (a: u64, b: f64)`,
+    // and module signatures `foo(p: u64) -> (q: f64)`. A type name
+    // (`u64`/`f64`/`Str`/etc.) is not a wire reference.
+    let mut suppress_next_ident = false;
     while let Some(c) = chars.next() {
         if in_line_comment {
             if c == '\n' { in_line_comment = false; }
@@ -1190,17 +1254,25 @@ pub(crate) fn scan_idents_in_gk_source(src: &str) -> HashSet<String> {
             current.push(c);
         } else if !current.is_empty() {
             // Token boundary — is `current` an ident?
-            if !current.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true)
-                && !KEYWORDS.contains(&current.as_str())
-            {
+            let is_ident = !current.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true)
+                && !KEYWORDS.contains(&current.as_str());
+            if is_ident && !suppress_next_ident {
                 out.insert(current.clone());
             }
             current.clear();
+            suppress_next_ident = false;
+        }
+        // Track `:` separately so the next ident is treated as a
+        // type annotation. Excludes `:=` (the binding operator) by
+        // peeking ahead.
+        if c == ':' && chars.peek() != Some(&'=') {
+            suppress_next_ident = true;
         }
     }
     if !current.is_empty()
         && !current.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true)
         && !KEYWORDS.contains(&current.as_str())
+        && !suppress_next_ident
     {
         out.insert(current);
     }
@@ -1283,6 +1355,7 @@ pub fn build_op_template_scope_kernel(
     gk_lib_paths: Vec<std::path::PathBuf>,
     workload_dir: Option<&std::path::Path>,
     strict: bool,
+    kernel_opt: nbrs_variates::kernel::KernelOptLevel,
     context: &str,
 ) -> Result<nbrs_variates::kernel::GkKernel, String> {
     use nbrs_workload::model::BindingsDef;
@@ -1318,15 +1391,15 @@ pub fn build_op_template_scope_kernel(
 
     // SRD-13f Push D: declare the parent's coordinate inputs
     // (typically just `cycle`) on this op-template kernel.
-    // Pre-Push-D, the workload-level `inputs := (cycle)` line
-    // was merged into op.bindings and arrived via body_text,
-    // so the kernel always had a Coordinate slot. After Push D
+    // Pre-Push-D, the workload-level `input <name>: <type>` line
+    // was merged into op.bindings and arrived via body_text, so
+    // the kernel always had a Coordinate slot. After Push D
     // body_text no longer carries it, so we emit the declaration
     // explicitly — without it the op-template kernel has no
     // input slot for cycle and the runtime's per-cycle
     // `set_inputs` writes go nowhere.
     let body_has_inputs_decl = body_text.lines()
-        .any(|line| line.trim_start().starts_with("inputs :="));
+        .any(|line| line.trim_start().starts_with("input "));
     if !body_has_inputs_decl {
         let parent_coord_names: Vec<String> = parent_kernel.program()
             .input_names()
@@ -1334,7 +1407,7 @@ pub fn build_op_template_scope_kernel(
             .take(parent_kernel.program().coord_count())
             .collect();
         if !parent_coord_names.is_empty() {
-            source.push_str(&format!("inputs := ({})\n", parent_coord_names.join(", ")));
+            source.push_str(&format_input_decl_line(&parent_coord_names));
             for name in &parent_coord_names {
                 emitted.insert(name.clone());
             }
@@ -1404,6 +1477,37 @@ pub fn build_op_template_scope_kernel(
             && !referenced.iter().any(|r| r == trimmed)
         {
             referenced.push(trimmed.to_string());
+        }
+    }
+
+    // Wire references inside the relevancy block. The validator
+    // resolves `actual:`, `expected:`, `k:`, `r:` at wrap-time
+    // through the dispenser's canonical kernel (parse_count_param
+    // and the `expected_wire_name` path in `validation.rs`).
+    // Strings that are bare identifiers OR `{name}` text-templates
+    // name a wire that must be visible on this op-template kernel;
+    // numeric / integer-literal values aren't wire references and
+    // pass through.
+    if let Some(rel) = op.params.get("relevancy").and_then(|v| v.as_object()) {
+        for key in &["actual", "expected", "k", "r"] {
+            let Some(val) = rel.get(*key).and_then(|v| v.as_str()) else { continue };
+            let trimmed = val.trim().trim_start_matches('{').trim_end_matches('}').trim();
+            if trimmed.is_empty() { continue; }
+            // Skip numeric literals — `k: 10` is a constant, not a
+            // wire ref.
+            if trimmed.parse::<i64>().is_ok() { continue; }
+            // Bare-identifier check matches the validator's
+            // `is_bare_ident` rule.
+            let bare = trimmed.chars().next()
+                .map(|c| c.is_ascii_alphabetic() || c == '_')
+                .unwrap_or(false)
+                && trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !bare { continue; }
+            if !body_locally_declared.contains(trimmed)
+                && !referenced.iter().any(|r| r == trimmed)
+            {
+                referenced.push(trimmed.to_string());
+            }
         }
     }
 
@@ -1588,6 +1692,8 @@ pub fn build_op_template_scope_kernel(
         required_outputs: Vec::new(),
         context_label: Some(context.to_string()),
         cursor_limit: None,
+        kernel_opt,
+        ..Default::default()
     };
 
     // SRD-67 Phase 5 — fold the SRD-66 `result:` source through
@@ -1603,8 +1709,34 @@ pub fn build_op_template_scope_kernel(
     // through unchanged; path expressions surface as unbound-
     // identifier compile errors with the SRD-66 deferred-
     // structural-body-wire diagnostic.
-    let result_source: Option<String> =
-        op.result.as_ref().map(collect_result_bindings_source).filter(|s| !s.trim().is_empty());
+    // SRD-66 result bindings + post-SRD-68 metric-value bindings.
+    // Both routes feed the same closure-binding-economy walker
+    // (`add_result_bindings`) which injects magic externs
+    // (body/count/ok) for any of those names referenced from
+    // either RHS. The walker then registers each LHS as a kernel
+    // output the metrics wrapper / evaluator reads at cycle time
+    // via `wires.get`.
+    //
+    // Metric-driven bindings use the `__metric_<name>` prefix so
+    // they don't collide with user-declared output names and so
+    // diagnostic output can filter them as internal. MetricsDispenser
+    // reads the same `__metric_<name>` form at cycle time —
+    // `synthesize_metric_binding_name` is the single source of
+    // truth for the naming convention.
+    let mut result_source: String = op.result.as_ref()
+        .map(collect_result_bindings_source)
+        .unwrap_or_default();
+    if !op.metrics.is_empty() {
+        // Stable ordering — matches `MetricsDispenser::wrap`'s
+        // sort-by-name so synthesis order is reproducible.
+        let mut entries: Vec<_> = op.metrics.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, spec) in entries {
+            let binding = synthesize_metric_binding_name(name);
+            result_source.push_str(&format!("{binding} := {expr}\n", expr = spec.value));
+        }
+    }
+    let result_source: Option<String> = Some(result_source).filter(|s| !s.trim().is_empty());
 
     let mut matter_builder = nbrs_variates::subcontext::GkMatter::builder()
         .label(context)
@@ -1622,6 +1754,19 @@ pub fn build_op_template_scope_kernel(
         .map_err(|e| format!("{context}: op-template scope synthesis: {e}"))?;
     propagate_parent_inputs(&mut kernel, parent_kernel);
     Ok(kernel)
+}
+
+/// Internal binding name for a workload-declared metric's `value:`
+/// expression. The metric's `value:` source is synthesised into the
+/// op-template kernel as `<binding> := <expr>` so a single
+/// closure-binding-economy walker handles slot allocation for
+/// magic-extern references in both result-bindings AND
+/// metric-value expressions. MetricsDispenser reads the same name
+/// at cycle time via `ctx.wires.get` — the prefix keeps these
+/// internal bindings from colliding with workload-declared output
+/// names and lets diagnostic surfaces filter them out by prefix.
+pub fn synthesize_metric_binding_name(metric_name: &str) -> String {
+    format!("__metric_{metric_name}")
 }
 
 /// Flatten a [`nbrs_workload::model::ResultSpec`] into a single
@@ -1857,7 +2002,7 @@ pub fn build_scope(
     if let Some(parent_kernel_ref) = parent_kernel {
         let parent_prog = parent_kernel_ref.program();
         // Propagate the parent's coordinate input names into this
-        // scope when it doesn't already have an `inputs := (...)`
+        // scope when it doesn't already have an `input ...: u64`
         // declaration of its own. Without this, an included
         // binding like `trip := throw_at(cycle, threshold, ...)`
         // references `cycle` but the auto-extern loop emits
@@ -1866,7 +2011,7 @@ pub fn build_scope(
         //
         // Coord names are just wire names the parent declared as
         // inputs; the child propagates them by declaring the
-        // same `inputs := (...)` line. Nothing special about any
+        // same `input ...: u64` line. Nothing special about any
         // specific name here.
         if scope.coordinates.is_none() {
             let coord_count = parent_prog.coord_count();
@@ -1875,7 +2020,7 @@ pub fn build_scope(
                 let coords: Vec<String> = input_names.into_iter()
                     .take(coord_count)
                     .collect();
-                scope.coordinates = Some(format!("inputs := ({})", coords.join(", ")));
+                scope.coordinates = Some(format_input_decl_line(&coords).trim_end().to_string());
             }
         }
 
@@ -1884,7 +2029,7 @@ pub fn build_scope(
         // walker uses this as its termination boundary so it
         // doesn't re-emit names the scope already satisfies.
         // (Coord input names like the one the workload author
-        // declared via `inputs := (...)` are not special — the
+        // declared via `input ...: u64` are not special — the
         // chain walker's `binding_ast_for` returns `None` for
         // coord inputs since they aren't binding statements, so
         // they self-terminate without explicit handling here.)
@@ -2024,7 +2169,7 @@ pub fn build_scope(
         for var in iteration_vars.keys() { satisfied.insert(var.clone()); }
         for name in workload_params.keys() { satisfied.insert(name.clone()); }
         for entry in outer_manifest { satisfied.insert(entry.name.clone()); }
-        // Coord names from this scope's `inputs := (...)` line.
+        // Coord names from this scope's `input ...: u64` line.
         if let Some(coords_line) = &scope.coordinates {
             if let Some(rhs) = coords_line.split(":=").nth(1) {
                 let inner = rhs.trim()
@@ -2416,24 +2561,28 @@ fn collect_phase_binding_lhs_names(ops: &[ParsedOp]) -> Vec<String> {
             for line in logical_lines(src) {
                 let trimmed = line.trim();
                 if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
-                // Coordinates (`inputs := (cycle, ...)`) ARE
-                // per-cycle names by definition — the runtime
-                // sets them per iteration. Extract every name
-                // inside the parentheses; without this, `{cycle}`
-                // in op templates resolves at compile time
-                // against the kernel's initial value (0) instead
-                // of being deferred to per-iteration substitution.
-                if let Some(rest) = trimmed.strip_prefix("inputs ")
-                    .or_else(|| trimmed.strip_prefix("inputs:"))
-                    .or_else(|| trimmed.strip_prefix("inputs"))
-                {
-                    let rest = rest.trim_start_matches(':').trim_start_matches('=').trim();
+                // `input` declarations declare per-cycle wire names
+                // by definition — the runtime sets them per
+                // iteration. Both surface forms are handled:
+                //   input cycle: u64
+                //   input (cycle: u64, q: f64)
+                // Without this, `{cycle}` in op templates would
+                // resolve at compile time against the kernel's
+                // initial value (0) instead of being deferred to
+                // per-iteration substitution.
+                if let Some(rest) = trimmed.strip_prefix("input ") {
+                    let rest = rest.trim();
                     if let Some(inner) = rest.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
                         for piece in inner.split(',') {
-                            let n = piece.trim();
+                            let n = piece.trim().split(':').next().unwrap_or("").trim();
                             if is_bare_ident(n) && !out.contains(&n.to_string()) {
                                 out.push(n.to_string());
                             }
+                        }
+                    } else {
+                        let n = rest.split(':').next().unwrap_or("").trim();
+                        if is_bare_ident(n) && !out.contains(&n.to_string()) {
+                            out.push(n.to_string());
                         }
                     }
                     continue;
@@ -2621,7 +2770,7 @@ fn resolve_placeholders_in_string(
         }
 
         // Names that are per-cycle (coordinates declared via
-        // `inputs := (cycle, ...)`, or LHS of phase bindings)
+        // `input (cycle: u64, ...: u64)`, or LHS of phase bindings)
         // MUST be deferred to per-cycle resolution. Their value
         // varies per iteration; pre-resolving against the parent
         // kernel here would bake in iteration 0's value (0) and
@@ -2883,7 +3032,7 @@ mod tests {
 
     #[test]
     fn inherited_bindings_dedup_across_ops() {
-        let bindings = "inputs := (cycle)\nprofiles := matching_profiles(\"example\", \"label\")";
+        let bindings = "input cycle: u64\nprofiles := matching_profiles(\"example\", \"label\")";
         let ops = vec![
             make_gk_op("op_a", "{profiles}", bindings),
             make_gk_op("op_b", "{profiles}", bindings),
@@ -2907,7 +3056,7 @@ mod tests {
 
     #[test]
     fn iteration_vars_dont_conflict_with_inherited() {
-        let bindings = "inputs := (cycle)\nprofiles := matching_profiles(\"example\", \"label\")";
+        let bindings = "input cycle: u64\nprofiles := matching_profiles(\"example\", \"label\")";
         let ops = vec![
             make_gk_op("op_a", "{profiles} {table}", bindings),
             make_gk_op("op_b", "{profiles} {table}", bindings),
@@ -2940,8 +3089,8 @@ mod tests {
 
     #[test]
     fn op_augmentation_adds_new_names() {
-        let base = "inputs := (cycle)\nfoo := hash(cycle)";
-        let augmented = "inputs := (cycle)\nfoo := hash(cycle)\nbar := mod(cycle, 100)";
+        let base = "input cycle: u64\nfoo := hash(cycle)";
+        let augmented = "input cycle: u64\nfoo := hash(cycle)\nbar := mod(cycle, 100)";
         let ops = vec![
             make_gk_op("op_a", "{foo}", base),
             make_gk_op("op_b", "{foo} {bar}", augmented),
@@ -2964,8 +3113,8 @@ mod tests {
 
     #[test]
     fn real_shadow_is_caught() {
-        let base = "inputs := (cycle)\nfoo := hash(cycle)";
-        let shadow = "inputs := (cycle)\nfoo := mod(cycle, 100)";
+        let base = "input cycle: u64\nfoo := hash(cycle)";
+        let shadow = "input cycle: u64\nfoo := mod(cycle, 100)";
         let ops = vec![
             make_gk_op("op_a", "{foo}", base),
             make_gk_op("op_b", "{foo}", shadow),
@@ -2993,7 +3142,7 @@ mod tests {
         // inherited by a phase with for_each iteration vars.
         // Two ops share identical inherited bindings.
         // The init injection used to make them differ, causing false shadow.
-        let bindings = "inputs := (cycle)\nprofiles := matching_profiles(\"example\", \"label\")";
+        let bindings = "input cycle: u64\nprofiles := matching_profiles(\"example\", \"label\")";
         let ops = vec![
             make_gk_op("drop_metadata_index", "DROP INDEX {table}_meta_idx", bindings),
             make_gk_op("drop_vector_index", "DROP INDEX {table}_idx", bindings),
@@ -3035,7 +3184,7 @@ mod tests {
         // (cycle-dependent, no modifier). Each shape exercises
         // a different `ParentRefKind` arm.
         nbrs_variates::dsl::compile::compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              final dim := 128\n\
              shared budget := 100\n\
              load := add(cycle, 1)\n",
@@ -3061,7 +3210,7 @@ mod tests {
         let result = build_op_template_scope_kernel(
             &op, &manifest, &parent,
             &HashMap::new(),
-            Vec::new(), None, false, "test",
+            Vec::new(), None, false, nbrs_variates::kernel::KernelOptLevel::Release, "test",
         );
         assert!(result.is_ok(),
             "cycle is a parent input — should be accepted. err: {:?}",
@@ -3083,7 +3232,7 @@ mod tests {
         let result = build_op_template_scope_kernel(
             &op, &manifest, &parent,
             &HashMap::new(),
-            Vec::new(), None, false, "test",
+            Vec::new(), None, false, nbrs_variates::kernel::KernelOptLevel::Release, "test",
         );
         assert!(result.is_ok(),
             "final/folded output should be accepted. err: {:?}",
@@ -3104,7 +3253,7 @@ mod tests {
         let result = build_op_template_scope_kernel(
             &op, &manifest, &parent,
             &HashMap::new(),
-            Vec::new(), None, false, "test",
+            Vec::new(), None, false, nbrs_variates::kernel::KernelOptLevel::Release, "test",
         );
         assert!(result.is_ok(),
             "shared output should be accepted. err: {:?}",
@@ -3133,7 +3282,7 @@ mod tests {
         let kernel = build_op_template_scope_kernel(
             &op, &manifest, &parent,
             &HashMap::new(),
-            Vec::new(), None, false, "test",
+            Vec::new(), None, false, nbrs_variates::kernel::KernelOptLevel::Release, "test",
         ).expect("op-template kernel synth should accept dynamic parent ref");
         // The op-template kernel carries `load` as an extern
         // input — the construction-time wiring set up the slot;
@@ -3200,7 +3349,9 @@ extern table: String
         workload_params.insert("keyspace".into(), "baselines".into());
         let kernel = build_op_template_scope_kernel(
             &op, &manifest, &parent,
-            &workload_params, vec![], None, false, "pvs_query.select_ann",
+            &workload_params, vec![], None, false,
+            nbrs_variates::kernel::KernelOptLevel::Release,
+            "pvs_query.select_ann",
         ).expect("op-template kernel synth");
         let outs: Vec<String> = kernel.program().output_names()
             .iter().map(|s| s.to_string()).collect();
@@ -3272,7 +3423,9 @@ extern keyspace: String
         let kernel = build_op_template_scope_kernel(
             &op, &manifest, &parent,
             &HashMap::new(),
-            Vec::new(), None, false, "pvs_query.select_ann",
+            Vec::new(), None, false,
+            nbrs_variates::kernel::KernelOptLevel::Release,
+            "pvs_query.select_ann",
         ).expect("op-template kernel synth");
         let outs: Vec<String> = kernel.program().output_names()
             .iter().map(|s| s.to_string()).collect();
@@ -3284,13 +3437,141 @@ extern keyspace: String
     }
 
     #[test]
+    fn op_template_relevancy_k_r_bare_wire_names_cascade() {
+        // Post-SRD-68 follow-up: `evaluations.relevancy.{k, r,
+        // expected, actual}` accept bare wire-name forms. The
+        // op-template synthesiser must include those names in its
+        // cascaded-extern set so the dispenser's canonical kernel
+        // can resolve them at wrap-time (where parse_count_param
+        // calls wires.get(name)).
+        let parent = parent_kernel_with_load();
+        let manifest = nbrs_variates::kernel::extract_manifest(parent.program())
+            .into_iter()
+            .map(|e| crate::runner::ManifestEntry {
+                name: e.name, port_type: e.port_type, modifier: e.modifier,
+            })
+            .collect::<Vec<_>>();
+        let mut op = ParsedOp::simple("read", "noop");
+        op.bindings = BindingsDef::GkSource("".into());
+        op.params.insert("relevancy".into(), serde_json::json!({
+            "actual": "rows",
+            "expected": "ground_truth",
+            "k": "k_value",
+            "r": "limit_value",
+            "functions": ["recall"],
+        }));
+        // Parent has `cycle` as the coord input. The relevancy
+        // wire names (rows, ground_truth, k_value, limit_value)
+        // aren't on the parent; the synthesiser should still add
+        // them to the cascade-extern set so the op-template kernel
+        // *declares* them (errors only fire at wrap-time when the
+        // canonical kernel actually tries to resolve them).
+        //
+        // For this unit test we just confirm the synthesiser
+        // doesn't error AND that the input/output names list
+        // includes each relevancy wire name — meaning the
+        // referenced-cascade walker picked them up. We pick names
+        // the parent doesn't have so the auto-extern path fires
+        // and the resulting kernel has them as inputs.
+        let _ = manifest;
+        // Use the public synthesis entry point to construct the
+        // op-template kernel under a parent that *does* have the
+        // referenced wires (so the cascade succeeds).
+        let kernel_src = "\
+            input cycle: u64\n\
+            final rows := 10\n\
+            final ground_truth := \"1,2,3\"\n\
+            final k_value := 5\n\
+            final limit_value := 100\n";
+        let real_parent = nbrs_variates::dsl::compile::compile_gk(kernel_src)
+            .expect("parent compile");
+        let real_manifest = nbrs_variates::kernel::extract_manifest(real_parent.program())
+            .into_iter()
+            .map(|e| crate::runner::ManifestEntry {
+                name: e.name, port_type: e.port_type, modifier: e.modifier,
+            })
+            .collect::<Vec<_>>();
+        let kernel = build_op_template_scope_kernel(
+            &op, &real_manifest, &real_parent,
+            &HashMap::new(),
+            Vec::new(), None, false,
+            nbrs_variates::kernel::KernelOptLevel::Release,
+            "relevancy-cascade-test",
+        ).expect("op-template kernel synth");
+
+        // Each bare-name relevancy wire should resolve through the
+        // op-template kernel's lookup — the same path validation.rs
+        // takes at wrap-time via canonical_kernel().lookup(name).
+        for name in &["rows", "ground_truth", "k_value", "limit_value"] {
+            assert!(kernel.lookup(name).is_some(),
+                "relevancy wire '{name}' should be visible on the \
+                 op-template kernel (cascaded extern); kernel had \
+                 outputs: {outs:?}",
+                outs = kernel.program().output_names());
+        }
+    }
+
+    #[test]
+    fn op_template_metric_value_count_allocates_magic_extern_slot() {
+        // Post-SRD-68 follow-up: a metric `value:` expression is a
+        // use site for any names it references. The op-template
+        // kernel synthesiser appends `__metric_<name> := <value_expr>`
+        // to the result-bindings source, so the closure-binding
+        // economy's free-identifier walker sees `count` and injects
+        // an `extern count: u64` slot — no throw-away result-binding
+        // needed.
+        //
+        // Verifies: a workload with NO `result:` block but a
+        // `metrics: rows_per_op: { value: count }` declaration ends
+        // up with a `count` INPUT slot on the kernel.
+        let parent = parent_kernel_with_load();
+        let manifest = nbrs_variates::kernel::extract_manifest(parent.program())
+            .into_iter()
+            .map(|e| crate::runner::ManifestEntry {
+                name: e.name, port_type: e.port_type, modifier: e.modifier,
+            })
+            .collect::<Vec<_>>();
+        let mut op = ParsedOp::simple("read", "noop");
+        op.bindings = BindingsDef::GkSource("".into());
+        op.metrics.insert(
+            "rows_per_op".into(),
+            nbrs_workload::model::MetricSpec {
+                value: "count".into(),
+                family: None,
+                kind: Some(nbrs_workload::model::MetricKind::Gauge),
+                unit: None,
+                format: None,
+            },
+        );
+        let kernel = build_op_template_scope_kernel(
+            &op, &manifest, &parent,
+            &HashMap::new(),
+            Vec::new(), None, false,
+            nbrs_variates::kernel::KernelOptLevel::Release,
+            "metric-walker-test",
+        ).expect("op-template kernel synth");
+        let inputs = kernel.program().input_names();
+        assert!(inputs.iter().any(|i| i == "count"),
+            "metric `value: count` should force the `count` magic-extern \
+             input slot to be allocated under Release opt level; \
+             inputs were: {inputs:?}");
+        // And the synthesised binding shows up as an output the
+        // MetricsDispenser will read at cycle time.
+        let outs = kernel.program().output_names();
+        let synth = synthesize_metric_binding_name("rows_per_op");
+        assert!(outs.iter().any(|o| o == &synth),
+            "synthesised `{synth}` binding should be a kernel output; \
+             outputs were: {outs:?}");
+    }
+
+    #[test]
     fn promoted_final_emits_inline_literal_for_str() {
         // SRD-13f case 1 — when a referenced name is `final`
         // upstream and a Str, the synthesizer emits
         // `final name := "value"` in the child's source rather
         // than auto-externing it.
         let parent = nbrs_variates::dsl::compile_gk(
-            "inputs := (cycle)\nfinal dataset := \"sift1m\"\n"
+            "input cycle: u64\nfinal dataset := \"sift1m\"\n"
         ).expect("compile parent");
         let manifest: Vec<crate::runner::ManifestEntry> =
             nbrs_variates::kernel::extract_manifest(parent.program())
@@ -3299,7 +3580,7 @@ extern keyspace: String
                     name: e.name, port_type: e.port_type, modifier: e.modifier,
                 })
                 .collect();
-        let ops = vec![make_gk_op("step", "x={dataset}", "inputs := (cycle)")];
+        let ops = vec![make_gk_op("step", "x={dataset}", "input cycle: u64")];
         let scope = build_scope(
             &ops,
             &HashMap::new(),
@@ -3324,7 +3605,7 @@ extern keyspace: String
     #[test]
     fn promoted_final_emits_inline_literal_for_u64() {
         let parent = nbrs_variates::dsl::compile_gk(
-            "inputs := (cycle)\nfinal count := 42\n"
+            "input cycle: u64\nfinal count := 42\n"
         ).expect("compile parent");
         let manifest: Vec<crate::runner::ManifestEntry> =
             nbrs_variates::kernel::extract_manifest(parent.program())
@@ -3333,7 +3614,7 @@ extern keyspace: String
                     name: e.name, port_type: e.port_type, modifier: e.modifier,
                 })
                 .collect();
-        let ops = vec![make_gk_op("step", "n={count}", "inputs := (cycle)")];
+        let ops = vec![make_gk_op("step", "n={count}", "input cycle: u64")];
         let scope = build_scope(
             &ops,
             &HashMap::new(),
@@ -3358,7 +3639,7 @@ extern keyspace: String
         // at the synthesizer level with a structured error,
         // not via a downstream GK compiler error.
         let parent = nbrs_variates::dsl::compile_gk(
-            "inputs := (cycle)\nfinal dataset := \"sift1m\"\n"
+            "input cycle: u64\nfinal dataset := \"sift1m\"\n"
         ).expect("compile parent");
         let manifest: Vec<crate::runner::ManifestEntry> =
             nbrs_variates::kernel::extract_manifest(parent.program())
@@ -3367,7 +3648,7 @@ extern keyspace: String
                     name: e.name, port_type: e.port_type, modifier: e.modifier,
                 })
                 .collect();
-        let ops = vec![make_gk_op("step", "x={tirp}", "inputs := (cycle)")];
+        let ops = vec![make_gk_op("step", "x={tirp}", "input cycle: u64")];
         let err = match build_scope(
             &ops,
             &HashMap::new(),
@@ -3492,7 +3773,7 @@ extern keyspace: String
         // the cell's actual Value variant — downstream consumers
         // (e.g. pick) see the runtime variant and reject it.
         let parent = nbrs_variates::dsl::compile_gk(
-            "inputs := (cycle)\nshared has_sai_column_indexes := false\n\
+            "input cycle: u64\nshared has_sai_column_indexes := false\n\
              shared has_indexes := false\n"
         ).expect("parent compile");
         // The phase has its own bindings block (the await_index shape).
@@ -3711,6 +3992,7 @@ extern keyspace: String
                 required_outputs: scope.required_outputs(),
                 context_label: Some("test_root".to_string()),
                 cursor_limit: None,
+                ..Default::default()
             })
             .build()
             .expect("root matter");
@@ -3888,6 +4170,7 @@ extern keyspace: String
             required_outputs: scope.required_outputs(),
             context_label: Some("test_workload_root".to_string()),
             cursor_limit: None,
+            ..Default::default()
         };
         let matter = nbrs_variates::subcontext::GkMatter::builder()
             .label("test_workload_root")
@@ -4048,7 +4331,7 @@ extern keyspace: String
         // the original SharedCell reaches the leaf.
         use nbrs_variates::kernel::extract_manifest;
         let root = nbrs_variates::dsl::compile_gk(
-            "inputs := (cycle)\nshared has_sai_column_indexes := false\n\
+            "input cycle: u64\nshared has_sai_column_indexes := false\n\
              shared has_indexes := false\n"
         ).expect("root compile");
 

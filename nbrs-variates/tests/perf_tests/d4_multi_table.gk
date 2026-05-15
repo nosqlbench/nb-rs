@@ -15,7 +15,7 @@
 /// @graph
 /// Multi-table workload. 4 independent table generators.
 /// 44 nodes, single input. Tests fan-out from shared cycle.
-inputs := (cycle)
+input cycle: u64
 
 // Table 1: users
 u_h := hash(cycle)

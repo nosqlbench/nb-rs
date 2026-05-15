@@ -1070,7 +1070,6 @@ impl OpDispenser for CqlRawDispenser {
             };
             Ok(OpResult {
                 body,
-                captures: std::collections::HashMap::new(),
                 skipped: false,
             })
         })
@@ -1318,7 +1317,6 @@ impl OpDispenser for CqlPreparedDispenser {
             };
             Ok(OpResult {
                 body,
-                captures: std::collections::HashMap::new(),
                 skipped: false,
             })
         })
@@ -1630,14 +1628,15 @@ impl OpDispenser for CqlBatchDispenser {
             }
             self.rows_total.fetch_add(row_count as u64, std::sync::atomic::Ordering::Relaxed);
 
+            // `rows_inserted` lands on the per-fiber kernel via
+            // ctx.wires.write — wrappers above this layer see it
+            // through wires.get on the same cycle.
+            let _ = ctx.wires.write(
+                "rows_inserted",
+                nbrs_variates::node::Value::U64(row_count as u64),
+            );
             Ok(OpResult {
                 body: None,
-                captures: {
-                    let mut c = std::collections::HashMap::new();
-                    c.insert("rows_inserted".to_string(),
-                        nbrs_variates::node::Value::U64(row_count as u64));
-                    c
-                },
                 skipped: false,
             })
         })

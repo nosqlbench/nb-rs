@@ -1,0 +1,192 @@
+#!/usr/bin/env nbrs
+# =====================================================================
+# nbrs Cursor Extension Reference
+# =====================================================================
+#
+# This workload demonstrates the five extension cursor functions
+# nbrs supports. Each phase below uses a different stop condition
+# (or composition of conditions) so a single run exercises every
+# variant end-to-end. The stdout adapter keeps it dependency-free:
+#   nbrs run docs/guide/cursor_extension_example.yaml
+#
+# ─────────────────────────────────────────────────────────────────────
+# What an "extending cursor" is
+# ─────────────────────────────────────────────────────────────────────
+#
+# A normal cursor (`range(0, N)`) commits to a fixed cycle count at
+# phase start. The fiber pool dispatches exactly N ordinals and the
+# phase ends.
+#
+# An extending cursor doesn't pre-commit. It starts with an initial
+# extent of `base` ordinals and consults an EXTENSION POLICY each
+# time the cursor reaches its current end. The policy answers:
+#
+#   "Given current state (elapsed time, ordinals consumed, passes
+#    completed), should the cursor extend? By how much?"
+#
+# If the policy says continue, the source's end grows by the
+# policy's delta (defaults to base) and dispatch keeps going. If
+# the policy says stop, the cursor signals `None` to the fiber
+# pool and the phase ends naturally.
+#
+# The phase-status readout shows the LIVE extent — it grows in
+# real time as the policy extends. Progress percentage is honest:
+# `consumed / current_end`.
+#
+# ─────────────────────────────────────────────────────────────────────
+# Cursor functions
+# ─────────────────────────────────────────────────────────────────────
+#
+#   until_elapsed(base, min_ms[, delta])
+#     Extend while wall-clock time since phase start < min_ms.
+#
+#   until_passes(base, min_passes[, delta])
+#     Extend while completed passes (consumed/base) < min_passes.
+#
+#   until_count(base, min_count[, delta])
+#     Extend while raw consumed ordinal count < min_count.
+#
+#   until_elapsed_and_passes(base, min_ms, min_passes[, delta])
+#     AND — stops when EITHER target is reached.
+#     Extends while BOTH conditions are still below target.
+#
+#   until_elapsed_or_passes(base, min_ms, min_passes[, delta])
+#     OR — stops only when BOTH targets are reached.
+#     Extends while EITHER condition is still below target.
+#
+# The optional `delta` arg is the extension step size — i.e. how
+# many ordinals get added each time the policy says continue. When
+# omitted it defaults to `base` (one full pass per extension). Use
+# it to decouple the check granularity from the pass size:
+#
+#   until_elapsed(1000, 5000, 100)   # 1000-op passes; check every 100 ops
+#
+# Smaller delta = finer-grained stop point; larger delta = fewer
+# end-reach decisions per phase.
+
+params:
+  adapter: stdout
+  # Phase-level minimum-duration / minimum-pass targets. Tweak
+  # these to see the corresponding extension behaviour.
+  min_phase_ms: 200          # 200 ms wall-clock minimum
+  min_phase_passes: 3        # 3 whole passes minimum
+  min_phase_cycles: 250      # 250 raw cycles minimum
+  base: 50                   # ordinals per pass
+
+scenarios:
+  default:
+    - timed
+    - pass_count
+    - raw_count
+    - and_both
+    - or_either
+    - with_explicit_delta
+
+phases:
+
+  # ─── 1. until_elapsed — wall-clock minimum ─────────────────
+  # Extends in `base`-sized increments while elapsed_ms <
+  # min_phase_ms. Stops at the first base-boundary crossing
+  # after the minimum is reached. Total cycles =
+  #   passes_completed * base, where passes_completed is
+  # `ceil(min_phase_ms / per_pass_time)`.
+  timed:
+    concurrency: 2
+    bindings: |
+      cursor q = until_elapsed(base, min_phase_ms)
+    ops:
+      noop:
+        stmt: "timed cycle"
+
+  # ─── 2. until_passes — pass-count minimum ──────────────────
+  # Extends while completed passes (consumed/base) <
+  # min_phase_passes. Stops EXACTLY at min_phase_passes * base
+  # ordinals. Deterministic phase size — useful when you need
+  # a known cycle count rather than a duration.
+  pass_count:
+    concurrency: 2
+    bindings: |
+      cursor q = until_passes(base, min_phase_passes)
+    ops:
+      noop:
+        stmt: "pass_count cycle"
+
+  # ─── 3. until_count — raw-cycle minimum ────────────────────
+  # Extends while raw consumed count < min_phase_cycles.
+  # Equivalent to a finite `range(0, ceil_to_multiple(min,
+  # base))` but the extension shape lets the cursor cross
+  # multiple base boundaries cleanly when min isn't a base
+  # multiple.
+  raw_count:
+    concurrency: 2
+    bindings: |
+      cursor q = until_count(base, min_phase_cycles)
+    ops:
+      noop:
+        stmt: "raw_count cycle"
+
+  # ─── 4. AND — both conditions must reach target to stop ────
+  # Extends while EITHER time<min_ms OR passes<min_passes is
+  # still below target. The phase stops the moment whichever
+  # condition reaches its target FIRST. Useful for "at least N
+  # passes BUT no longer than M ms" — the AND semantics let
+  # either ceiling cap the phase.
+  #
+  # Conceptually: while (elapsed<min_ms AND passes<min_passes).
+  # Stop condition: (elapsed>=min_ms OR passes>=min_passes).
+  and_both:
+    concurrency: 2
+    bindings: |
+      cursor q = until_elapsed_and_passes(
+        base, min_phase_ms, min_phase_passes
+      )
+    ops:
+      noop:
+        stmt: "and_both cycle"
+
+  # ─── 5. OR — both conditions must reach target to stop ─────
+  # Extends while EITHER condition is still below target.
+  # Only stops when BOTH have been reached. Use for "at least
+  # N passes AND at least M ms" — the OR semantics let the
+  # phase keep running until every minimum is satisfied.
+  #
+  # Conceptually: while (elapsed<min_ms OR passes<min_passes).
+  # Stop condition: (elapsed>=min_ms AND passes>=min_passes).
+  or_either:
+    concurrency: 2
+    bindings: |
+      cursor q = until_elapsed_or_passes(
+        base, min_phase_ms, min_phase_passes
+      )
+    ops:
+      noop:
+        stmt: "or_either cycle"
+
+  # ─── 6. Orthogonal delta (extension step size) ─────────────
+  # The optional 4th arg (or 3rd for atomic forms) overrides
+  # the extension step. Defaults to `base` when omitted. Here:
+  # base=50 (pass size) but delta=10 — the source extends in
+  # 10-ordinal chunks, consulting the policy ~5× more often
+  # than the default. The stop boundary is the same (first
+  # base-multiple after min_ms), but the cursor advances in
+  # smaller chunks between policy checks.
+  with_explicit_delta:
+    concurrency: 2
+    bindings: |
+      cursor q = until_elapsed(base, min_phase_ms, 10)
+    ops:
+      noop:
+        stmt: "with_explicit_delta cycle"
+
+# =====================================================================
+# Composing your own policies
+# =====================================================================
+#
+# Beyond the 5 canned forms, the underlying `ExtensionPolicy` trait
+# in `nbrs-variates::source` accepts arbitrary policy compositions:
+# `AndPolicy { policies: vec![...] }` / `OrPolicy { ... }` over any
+# `Arc<dyn ExtensionPolicy>`. Workloads currently expose only the
+# two-condition AND/OR forms above (elapsed × passes). For broader
+# composition (e.g. 3-way OR, or AND across all three of elapsed,
+# passes, and count), you'd extend the GK compiler to recognise
+# more cursor-function shapes.

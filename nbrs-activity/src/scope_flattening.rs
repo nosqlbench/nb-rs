@@ -67,8 +67,31 @@ pub struct ClassifyInputs<'a> {
 /// predicate by adding the program-hash check; the call site
 /// stays the same.
 pub fn classify_and_mark(tree: &mut ScopeTree, inputs: &ClassifyInputs<'_>) {
-    tree.mark_scope_flattening(|kind, _idx| {
-        let matter = scope_kind_gk_matter(kind, inputs);
+    // Pre-compute the owning-phase name for every OpTemplate node
+    // by walking up to the nearest Phase ancestor. Op names are
+    // not globally unique — two phases can each declare an op
+    // called `select_ann` with very different bodies — so the
+    // flat `phases.values().flat_map(|p| p.ops)` lookup that used
+    // to live in `scope_kind_gk_matter` could silently pick the
+    // wrong phase's op and apply the wrong classification.
+    // Mirrors the same disambiguation `runner.rs::InstallSpec::OpTemplate`
+    // already does at install time.
+    let mut owning_phase: std::collections::HashMap<ScopeNodeIdx, String>
+        = std::collections::HashMap::new();
+    for (idx, node) in tree.iter_dfs() {
+        if !matches!(node.kind, ScopeKind::OpTemplate { .. }) { continue; }
+        let mut cursor = node.parent;
+        while let Some(p) = cursor {
+            if let ScopeKind::Phase { name } = &tree.nodes[p].kind {
+                owning_phase.insert(idx, name.clone());
+                break;
+            }
+            cursor = tree.nodes[p].parent;
+        }
+    }
+
+    tree.mark_scope_flattening(|kind, idx| {
+        let matter = scope_kind_gk_matter(kind, idx, inputs, &owning_phase);
         matches!(matter, GkMatter::Definitions)
     });
 }
@@ -90,7 +113,12 @@ pub fn classify_and_mark(tree: &mut ScopeTree, inputs: &ClassifyInputs<'_>) {
 /// - **IncludedScenario** — `None`. The wrapper itself adds
 ///   nothing; the included scenario's children carry the
 ///   classification.
-fn scope_kind_gk_matter(kind: &ScopeKind, inputs: &ClassifyInputs<'_>) -> GkMatter {
+fn scope_kind_gk_matter(
+    kind: &ScopeKind,
+    idx: ScopeNodeIdx,
+    inputs: &ClassifyInputs<'_>,
+    owning_phase: &std::collections::HashMap<ScopeNodeIdx, String>,
+) -> GkMatter {
     match kind {
         ScopeKind::Workload => {
             // Mirrors `Workload::gk_matter` without requiring
@@ -106,14 +134,17 @@ fn scope_kind_gk_matter(kind: &ScopeKind, inputs: &ClassifyInputs<'_>) -> GkMatt
             .map(WorkloadPhase::gk_matter)
             .unwrap_or(GkMatter::None),
         ScopeKind::OpTemplate { name } => {
-            // SRD-13d §3.1 OpTemplate classification: walk the
-            // workload's phases to find the op declaring this
-            // scope. If found, consult its `gk_matter()`. If not
-            // found (orphaned scope tree node — shouldn't happen
-            // post-`extend_with_op_templates`), default to None.
-            inputs.phases.values()
-                .flat_map(|p| p.ops.iter())
-                .find(|op| op.name == *name)
+            // SRD-13d §3.1 OpTemplate classification: look up the
+            // op against its OWNING phase (resolved via the
+            // pre-computed ancestor walk). A flat name-only lookup
+            // would silently pick the wrong phase's op when two
+            // phases declare ops with the same name.
+            let phase_name = match owning_phase.get(&idx) {
+                Some(n) => n,
+                None => return GkMatter::None,
+            };
+            inputs.phases.get(phase_name)
+                .and_then(|p| p.ops.iter().find(|op| op.name == *name))
                 .map(ParsedOp::gk_matter)
                 .unwrap_or(GkMatter::None)
         }
@@ -288,13 +319,19 @@ mod tests {
     }
 
     #[test]
-    fn op_template_bare_name_value_flattens() {
+    fn op_template_bare_name_metric_materialises() {
+        // Post-SRD-68 follow-up: every metric, including a
+        // bare-name `value:`, requires the op-template kernel
+        // because the synthesiser appends a
+        // `__metric_<name> := <value>` binding to the kernel's
+        // result-binding source. The op MUST materialise so the
+        // synthesised binding has somewhere to land.
         use nbrs_workload::model::{MetricSpec, ParsedOp};
         let mut phases = HashMap::new();
         let mut p = empty_phase();
         let mut op = ParsedOp::simple("a", "noop");
         op.metrics.insert("m".into(), MetricSpec {
-            value: "existing_wire".into(),  // bare name → Readonly
+            value: "existing_wire".into(),
             family: None, kind: None, unit: None, format: None,
         });
         p.ops.push(op);
@@ -308,7 +345,61 @@ mod tests {
                 crate::scope_tree::ScopeKind::OpTemplate { name } if name == "a"))
             .map(|(i, _)| i)
             .expect("op-template node");
-        assert_eq!(tree.nodes[op_idx].materialised, Some(false));
+        assert_eq!(tree.nodes[op_idx].materialised, Some(true));
+    }
+
+    #[test]
+    fn same_op_name_in_different_phases_classifies_per_phase() {
+        // Two phases each declare an op named `select_ann`. One
+        // version has metrics (→ Definitions → materialise); the
+        // other doesn't (→ None → flatten). The classifier MUST
+        // resolve each scope-tree OpTemplate node against its
+        // OWNING phase, not the first match by name across the
+        // phases map.
+        use nbrs_workload::model::{MetricSpec, ParsedOp};
+        let mut with_metrics = empty_phase();
+        let mut op_with = ParsedOp::simple("select_ann", "noop");
+        op_with.metrics.insert("m".into(), MetricSpec {
+            value: "existing_wire".into(),
+            family: None, kind: None, unit: None, format: None,
+        });
+        with_metrics.ops.push(op_with);
+        let mut without_metrics = empty_phase();
+        without_metrics.ops.push(ParsedOp::simple("select_ann", "noop"));
+        let mut phases = HashMap::new();
+        phases.insert("ann_query".into(), with_metrics);
+        phases.insert("pvs_metadata_query".into(), without_metrics);
+        let mut tree = ScopeTree::build("default", &[
+            ScenarioNode::Phase("ann_query".into()),
+            ScenarioNode::Phase("pvs_metadata_query".into()),
+        ]);
+        tree.extend_with_op_templates(&phases);
+        mark_with(&mut tree, &BindingsDef::default(), &HashMap::new(), &phases);
+
+        // Find the two select_ann op-template nodes, locate which
+        // phase ancestor each lives under, and assert per-phase
+        // materialisation.
+        for (idx, node) in tree.iter_dfs() {
+            let crate::scope_tree::ScopeKind::OpTemplate { name } = &node.kind else { continue };
+            if name != "select_ann" { continue }
+            // Walk up to the owning phase.
+            let mut cursor = node.parent;
+            let mut phase = None;
+            while let Some(p) = cursor {
+                if let crate::scope_tree::ScopeKind::Phase { name } = &tree.nodes[p].kind {
+                    phase = Some(name.clone());
+                    break;
+                }
+                cursor = tree.nodes[p].parent;
+            }
+            let expected_materialised = match phase.as_deref() {
+                Some("ann_query") => Some(true),
+                Some("pvs_metadata_query") => Some(false),
+                other => panic!("unexpected owning phase: {other:?}"),
+            };
+            assert_eq!(tree.nodes[idx].materialised, expected_materialised,
+                "op-template {name} under phase {phase:?} should materialise={expected_materialised:?}");
+        }
     }
 
     #[test]

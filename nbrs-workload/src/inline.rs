@@ -79,16 +79,17 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
         }
     }
 
-    // Build GK source from collected expressions.
-    let gk_source = if inline_exprs.is_empty() {
-        String::new()
-    } else {
-        let mut src = String::from("inputs := (cycle)\n");
-        for (i, expr) in inline_exprs.iter().enumerate() {
-            src.push_str(&format!("__inline_{i} := {expr}\n"));
-        }
-        src
-    };
+    // Build GK source. The `input cycle: u64` line is always emitted
+    // for inline mode: `cycle` is the wire name CLI users reference
+    // (via `{cycle}` placeholders) without writing any explicit
+    // bindings block, so the inline parser makes that convention
+    // explicit in the generated model. Without this declaration the
+    // workload-level placeholder validator can't see `cycle` as a
+    // known wire name and rejects `{cycle}` as undeclared.
+    let mut gk_source = String::from("input cycle: u64\n");
+    for (i, expr) in inline_exprs.iter().enumerate() {
+        gk_source.push_str(&format!("__inline_{i} := {expr}\n"));
+    }
 
     // Second pass: rewrite templates and build ParsedOps.
     let mut ops = Vec::with_capacity(segments.len());
@@ -108,9 +109,7 @@ pub fn synthesize_inline_workload(op_template: &str) -> Result<Workload, String>
         op.tags.insert("op".to_string(), op.name.clone());
         op.tags.insert("block".to_string(), "inline".to_string());
 
-        if !gk_source.is_empty() {
-            op.bindings = BindingsDef::GkSource(gk_source.clone());
-        }
+        op.bindings = BindingsDef::GkSource(gk_source.clone());
 
         ops.push(op);
     }
@@ -364,7 +363,7 @@ mod tests {
         assert_eq!(stmt, "hello {__inline_0}");
         match &w.ops[0].bindings {
             BindingsDef::GkSource(src) => {
-                assert!(src.contains("inputs := (cycle)"));
+                assert!(src.contains("input cycle: u64"));
                 assert!(src.contains("__inline_0 := cycle"));
             }
             _ => panic!("expected GkSource bindings"),
@@ -394,7 +393,15 @@ mod tests {
         assert_eq!(w.ops.len(), 1);
         let stmt = w.ops[0].op.get("stmt").unwrap().as_str().unwrap();
         assert_eq!(stmt, "hello world");
-        assert!(w.ops[0].bindings.is_empty());
+        // Inline mode always emits the `input cycle: u64` line so
+        // workloads referencing `{cycle}` validate cleanly. With no
+        // inline expressions the bindings carry just that declaration
+        // and nothing else.
+        let bindings = match &w.ops[0].bindings {
+            crate::model::BindingsDef::GkSource(s) => s.clone(),
+            _ => panic!("expected GkSource"),
+        };
+        assert_eq!(bindings, "input cycle: u64\n");
     }
 
     #[test]
@@ -403,7 +410,16 @@ mod tests {
         assert_eq!(w.ops.len(), 1);
         let stmt = w.ops[0].op.get("stmt").unwrap().as_str().unwrap();
         assert_eq!(stmt, "value={cycle}");
-        assert!(w.ops[0].bindings.is_empty());
+        // Same as `no_inline_bindings_plain_text`: a bare `{cycle}`
+        // reference doesn't introduce inline expressions, but the
+        // `input cycle: u64` convention line still gets emitted so
+        // the workload-level placeholder validator recognises the
+        // wire name.
+        let bindings = match &w.ops[0].bindings {
+            crate::model::BindingsDef::GkSource(s) => s.clone(),
+            _ => panic!("expected GkSource"),
+        };
+        assert_eq!(bindings, "input cycle: u64\n");
     }
 
     #[test]

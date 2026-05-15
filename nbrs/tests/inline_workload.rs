@@ -130,11 +130,25 @@ fn reference_bind_point_cycle() {
 
 #[test]
 fn json_format() {
+    // Per-invocation `--session-path` so nextest's parallel test
+    // execution doesn't race on the default `logs/default_<ts>`
+    // session directory (see `feedback_tests_no_project_root`).
+    let session_parent = std::env::temp_dir().join(format!(
+        "nbrs-json-format-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+    ));
+    std::fs::create_dir_all(&session_parent).expect("create session parent");
+    let session_path = session_parent.join("session");
     let output = nbrs()
         .args(["run", "op=val={{cycle}}", "cycles=2", "format=json"])
+        .arg("--session-path")
+        .arg(&session_path)
         .output()
         .expect("failed to execute nbrs");
-    assert!(output.status.success(), "nbrs failed");
+    let _ = std::fs::remove_dir_all(&session_parent);
+    assert!(output.status.success(), "nbrs failed: {}", String::from_utf8_lossy(&output.stderr));
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 2);

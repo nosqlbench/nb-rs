@@ -331,7 +331,7 @@ kernel chain.
    resolve correctly without the legacy parser merge.
 5. `nbrs-activity/src/bindings.rs::compile_from_scope`:
    coordinates-declaration shim ensures every phase-
-   scope program declares `inputs := (cycle)` so per-
+   scope program declares `input cycle: u64` so per-
    cycle `set_inputs` propagation finds a Coordinate
    slot to write to. Conflicting extern declarations
    (auto-emitted from the manifest cascade) are stripped

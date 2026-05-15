@@ -9,7 +9,7 @@
 /// @graph
 /// 49 nodes, 3 inputs. Only cycle changes per eval.
 /// ks/ds subgraphs are stable — provenance should cache them.
-inputs := (cycle, ks, ds)
+input (cycle: u64, ks: u64, ds: u64)
 
 // Cycle-dependent subgraph (15 nodes, changes every eval)
 c0 := hash(cycle)

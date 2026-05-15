@@ -401,7 +401,6 @@ impl OpDispenser for ModelDispenser {
 
             Ok(OpResult {
                 body: Some(Box::new(TextBody(text))),
-                captures: std::collections::HashMap::new(),
                 skipped: false,
             })
         })
@@ -511,7 +510,7 @@ mod tests {
     /// in tests that don't need a richer GK context (SRD-68 Push 2).
     fn test_kernel() -> std::sync::Arc<nbrs_variates::kernel::GkKernel> {
         std::sync::Arc::new(
-            nbrs_variates::dsl::compile::compile_gk("inputs := (cycle)\n").unwrap()
+            nbrs_variates::dsl::compile::compile_gk("input cycle: u64\n").unwrap()
         )
     }
 

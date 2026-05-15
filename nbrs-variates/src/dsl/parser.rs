@@ -87,6 +87,16 @@ impl Parser {
                 self.advance();
                 Ok(name)
             }
+            // `input` is a soft keyword: at statement start it's a
+            // declaration, elsewhere (module-signature param names,
+            // call-site named args, body references like `hash(input)`)
+            // it is a plain identifier. This mirrors the convention
+            // in `nbrs/stdlib/modeling.gk` where `input:` is the
+            // canonical parameter name for cycle-driven modules.
+            TokenKind::Input => {
+                self.advance();
+                Ok("input".to_string())
+            }
             _ => Err(format!(
                 "expected identifier, got {:?} at line {}, col {}",
                 self.peek(), self.span().line, self.span().col
@@ -105,7 +115,7 @@ pub fn parse(tokens: Vec<Token>) -> Result<GkFile, String> {
     let mut statements = Vec::new();
 
     while !parser.at_eof() {
-        statements.push(parse_statement(&mut parser)?);
+        parse_statement_into(&mut parser, &mut statements)?;
     }
 
     Ok(GkFile { statements })
@@ -141,30 +151,38 @@ pub fn parse_expression(tokens: Vec<Token>) -> Result<Expr, String> {
     Ok(expr)
 }
 
-fn parse_statement(p: &mut Parser) -> Result<Statement, String> {
+/// Parse one statement and append the resulting AST node(s) to
+/// `out`. Most statement kinds map 1-to-1, but the tuple form of
+/// `input (a: u64, b: f64)` desugars into N `InputDecl` statements
+/// at parse time — hence the `Vec` sink rather than a single
+/// return value.
+fn parse_statement_into(p: &mut Parser, out: &mut Vec<Statement>) -> Result<(), String> {
     match p.peek() {
-        TokenKind::Pragma => parse_pragma(p),
-        TokenKind::Inputs => parse_inputs(p),
-        TokenKind::Init => parse_init_binding(p),
-        TokenKind::Extern => parse_extern_port(p),
-        TokenKind::Cursor => parse_cursor_decl(p),
-        TokenKind::Shared | TokenKind::Final | TokenKind::Volatile => parse_modified_binding(p),
-        TokenKind::LParen => parse_destructuring_binding(p),
+        TokenKind::Pragma => out.push(parse_pragma(p)?),
+        TokenKind::Input => parse_input_decl(p, out)?,
+        TokenKind::Init => out.push(parse_init_binding(p)?),
+        TokenKind::Extern => out.push(parse_extern_port(p)?),
+        TokenKind::Cursor => out.push(parse_cursor_decl(p)?),
+        TokenKind::Shared | TokenKind::Final | TokenKind::Volatile => {
+            out.push(parse_modified_binding(p)?);
+        }
+        TokenKind::LParen => out.push(parse_destructuring_binding(p)?),
         TokenKind::Ident(_) => {
             // Lookahead to distinguish:
             //   name := expr              → cycle binding
             //   name(p: type) -> ... := { → module def
             if is_module_def(p) {
-                parse_module_def(p)
+                out.push(parse_module_def(p)?);
             } else {
-                parse_cycle_binding(p)
+                out.push(parse_cycle_binding(p)?);
             }
         }
-        _ => Err(format!(
+        _ => return Err(format!(
             "unexpected token {:?} at line {}, col {}",
             p.peek(), p.span().line, p.span().col
         )),
     }
+    Ok(())
 }
 
 /// `pragma <name>` — first-class module directive. The pragma name
@@ -180,11 +198,18 @@ fn parse_pragma(p: &mut Parser) -> Result<Statement, String> {
 
 /// Lookahead: is this a module def? Pattern: ident ( ident : ident ...
 fn is_module_def(p: &Parser) -> bool {
-    // Need at least: ident ( ident : type
+    // Need at least: ident ( <param-name> : type
+    // The param name accepts plain idents AND the soft keyword
+    // `input` (canonical for cycle-driven modules — see
+    // `nbrs/stdlib/modeling.gk`).
     if p.pos + 4 >= p.tokens.len() { return false; }
+    let third_is_param_name = matches!(
+        &p.tokens[p.pos + 2].kind,
+        TokenKind::Ident(_) | TokenKind::Input,
+    );
     matches!(&p.tokens[p.pos].kind, TokenKind::Ident(_))
         && matches!(&p.tokens[p.pos + 1].kind, TokenKind::LParen)
-        && matches!(&p.tokens[p.pos + 2].kind, TokenKind::Ident(_))
+        && third_is_param_name
         && matches!(&p.tokens[p.pos + 3].kind, TokenKind::Colon)
 }
 
@@ -228,7 +253,7 @@ fn parse_module_def(p: &mut Parser) -> Result<Statement, String> {
 
     let mut body = Vec::new();
     while !matches!(p.peek(), TokenKind::RBrace | TokenKind::Eof) {
-        body.push(parse_statement(p)?);
+        parse_statement_into(p, &mut body)?;
     }
     p.expect(&TokenKind::RBrace)?;
 
@@ -261,31 +286,60 @@ fn parse_extern_port(p: &mut Parser) -> Result<Statement, String> {
     Ok(Statement::ExternPort(ExternPort { name, typ, default, span }))
 }
 
-/// `inputs := (name1, name2, ...)` or `inputs := ()` (zero inputs)
-fn parse_inputs(p: &mut Parser) -> Result<Statement, String> {
-    let span = p.span();
-    p.advance(); // consume 'coordinates' / 'inputs'
-    p.expect(&TokenKind::ColonEq)?;
-    p.expect(&TokenKind::LParen)?;
+/// Parse an `input` declaration. Two surface forms, both emit one
+/// [`Statement::InputDecl`] per declared slot:
+///
+/// - `input <name>[: <type>]` — bare single
+/// - `input (<name>[: <type>][, ...])` — tuple form mirroring the
+///   module-signature param-list shape (see
+///   `nbrs/stdlib/modeling.gk`). Desugars to N InputDecls.
+///
+/// Empty tuple `input ()` is rejected — declare zero inputs by
+/// simply omitting the `input` line.
+fn parse_input_decl(p: &mut Parser, out: &mut Vec<Statement>) -> Result<(), String> {
+    let keyword_span = p.span();
+    p.advance(); // consume 'input'
 
-    // Allow empty input list: `inputs := ()`
-    if matches!(p.peek(), TokenKind::RParen) {
-        p.advance(); // consume ')'
-        return Ok(Statement::Inputs(vec![], span));
-    }
-
-    let mut names = Vec::new();
-    loop {
-        names.push(p.expect_ident()?);
-        if matches!(p.peek(), TokenKind::Comma) {
-            p.advance();
-        } else {
-            break;
+    if matches!(p.peek(), TokenKind::LParen) {
+        // Tuple form: input (a: u64, b: f64, ...)
+        p.advance(); // consume '('
+        if matches!(p.peek(), TokenKind::RParen) {
+            return Err(format!(
+                "`input ()` is empty; omit the line entirely to declare zero inputs \
+                 (at line {}, col {})",
+                keyword_span.line, keyword_span.col,
+            ));
         }
+        loop {
+            let span = p.span();
+            let name = p.expect_ident()?;
+            let ty = if matches!(p.peek(), TokenKind::Colon) {
+                p.advance();
+                Some(p.expect_ident()?)
+            } else {
+                None
+            };
+            out.push(Statement::InputDecl(InputDecl { name, ty, span }));
+            if matches!(p.peek(), TokenKind::Comma) {
+                p.advance();
+            } else {
+                break;
+            }
+        }
+        p.expect(&TokenKind::RParen)?;
+    } else {
+        // Bare form: input name[: type]
+        let span = p.span();
+        let name = p.expect_ident()?;
+        let ty = if matches!(p.peek(), TokenKind::Colon) {
+            p.advance();
+            Some(p.expect_ident()?)
+        } else {
+            None
+        };
+        out.push(Statement::InputDecl(InputDecl { name, ty, span }));
     }
-    p.expect(&TokenKind::RParen)?;
-
-    Ok(Statement::Inputs(names, span))
+    Ok(())
 }
 
 /// `init name = expr`
@@ -515,6 +569,20 @@ fn parse_atom(p: &mut Parser) -> Result<Expr, String> {
                 Ok(Expr::Ident(name, span))
             }
         }
+        // `input` is a soft keyword: usable as a plain identifier in
+        // expressions (e.g. `hash(input)` inside a module body where
+        // `input` is the parameter name).
+        TokenKind::Input => {
+            p.advance();
+            let name = "input".to_string();
+            if matches!(p.peek(), TokenKind::Dot) {
+                p.advance();
+                let field = p.expect_ident()?;
+                Ok(Expr::FieldAccess { source: name, field, span })
+            } else {
+                Ok(Expr::Ident(name, span))
+            }
+        }
         _ => Err(format!(
             "expected expression, got {:?} at line {}, col {}",
             p.peek(), span.line, span.col
@@ -732,16 +800,25 @@ fn parse_call(p: &mut Parser, func: String, span: Span) -> Result<Expr, String> 
 }
 
 /// Parse a single argument: either `name: expr` (named) or `expr` (positional).
+///
+/// `name` accepts both plain identifiers and the soft keyword
+/// `input` — the latter is the canonical parameter name in
+/// `nbrs/stdlib/modeling.gk` and other cycle-driven modules.
 fn parse_arg(p: &mut Parser) -> Result<Arg, String> {
-    // Lookahead: if it's `Ident Colon`, it's a named arg.
-    if let TokenKind::Ident(name) = p.peek().clone()
-        && p.pos + 1 < p.tokens.len() && matches!(p.tokens[p.pos + 1].kind, TokenKind::Colon) {
-            let name = name.clone();
-            p.advance(); // consume ident
-            p.advance(); // consume ':'
-            let value = parse_expr(p)?;
-            return Ok(Arg::Named(name, value));
-        }
+    let arg_name: Option<String> = match p.peek() {
+        TokenKind::Ident(name) => Some(name.clone()),
+        TokenKind::Input => Some("input".to_string()),
+        _ => None,
+    };
+    if let Some(name) = arg_name
+        && p.pos + 1 < p.tokens.len()
+        && matches!(p.tokens[p.pos + 1].kind, TokenKind::Colon)
+    {
+        p.advance(); // consume ident/keyword
+        p.advance(); // consume ':'
+        let value = parse_expr(p)?;
+        return Ok(Arg::Named(name, value));
+    }
     let expr = parse_expr(p)?;
     Ok(Arg::Positional(expr))
 }
@@ -863,28 +940,58 @@ mod tests {
     }
 
     #[test]
-    fn parse_inputs() {
-        let f = parse_str("inputs := (cycle, thread)");
+    fn parse_input_bare() {
+        let f = parse_str("input cycle: u64");
         assert_eq!(f.statements.len(), 1);
         match &f.statements[0] {
-            Statement::Inputs(names, _) => {
-                assert_eq!(names, &["cycle", "thread"]);
+            Statement::InputDecl(d) => {
+                assert_eq!(d.name, "cycle");
+                assert_eq!(d.ty.as_deref(), Some("u64"));
             }
-            _ => panic!("expected coordinates"),
+            other => panic!("expected InputDecl, got {other:?}"),
         }
     }
 
     #[test]
-    fn parse_inputs_empty() {
-        // Zero-input declaration for const expression programs
-        let f = parse_str("inputs := ()");
-        assert_eq!(f.statements.len(), 1);
+    fn parse_input_bare_untyped() {
+        let f = parse_str("input cycle");
         match &f.statements[0] {
-            Statement::Inputs(names, _) => {
-                assert_eq!(names.len(), 0, "expected empty input list");
+            Statement::InputDecl(d) => {
+                assert_eq!(d.name, "cycle");
+                assert!(d.ty.is_none(), "no type annotation");
             }
-            _ => panic!("expected coordinates"),
+            other => panic!("expected InputDecl, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_input_tuple_form() {
+        // Tuple form desugars to N InputDecl statements, mirroring
+        // the module-signature param-list shape.
+        let f = parse_str("input (cycle: u64, q: f64)");
+        assert_eq!(f.statements.len(), 2);
+        match &f.statements[0] {
+            Statement::InputDecl(d) => {
+                assert_eq!(d.name, "cycle");
+                assert_eq!(d.ty.as_deref(), Some("u64"));
+            }
+            other => panic!("expected InputDecl, got {other:?}"),
+        }
+        match &f.statements[1] {
+            Statement::InputDecl(d) => {
+                assert_eq!(d.name, "q");
+                assert_eq!(d.ty.as_deref(), Some("f64"));
+            }
+            other => panic!("expected InputDecl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_input_tuple_empty_rejected() {
+        // `input ()` is malformed — to declare zero inputs, omit the line.
+        let tokens = crate::dsl::lexer::lex("input ()").unwrap();
+        let err = parse(tokens).unwrap_err();
+        assert!(err.contains("empty"), "error should mention empty tuple: {err}");
     }
 
     #[test]
@@ -1198,7 +1305,7 @@ mod tests {
             init weights = [60.0, 20.0, 15.0]
 
             // Cycle
-            inputs := (cycle)
+            input cycle: u64
             (tenant, device) := mixed_radix(cycle, 100, 0)
             tenant_h := hash(tenant)
             code := mod(tenant_h, 10000)

@@ -458,6 +458,122 @@ fn walk_json_leaves(j: &serde_json::Value, out: &mut String) {
     }
 }
 
+/// `body_column_i32(body, "name")` — extract the named column from
+/// every row of a JSON result body, parse each as i32, and return
+/// the values as a `VecI32` wire.
+///
+/// This is the canonical capture path for tabular result data into
+/// typed-vector wires. Adapter result bodies that already serialize
+/// to `[{ "key": 1, ... }, { "key": 2, ... }, ...]`-shaped JSON can
+/// expose per-column wires for downstream readers (the recall
+/// evaluator, custom metrics, etc.) without forcing string
+/// round-trips through the metric reader.
+///
+/// Robust extraction rules:
+/// - Body shape `[{...}, {...}, ...]`: walks each row, looks up the
+///   column by name, parses as i32 via `json_value_as_i32`.
+/// - Body shape `{ "rows": [...] }`: walks `rows`; same per-row
+///   extraction as above. Matches common envelope formats (Jolokia,
+///   HTTP wrappers).
+/// - Body shape `{ "key": value, ... }` (single row at top level):
+///   produces a single-element vector.
+/// - Non-JSON input: empty vector. This preserves the "no values
+///   extracted" diagnostic at the evaluator instead of panicking
+///   here.
+///
+/// Rows whose column is absent / null / unparseable contribute
+/// nothing (no zero-fill, no error). Mirrors the legacy
+/// `extract_indices_from_json` behaviour in `nbrs_activity::validation`
+/// so workloads can swap from the old JSON-walk to this typed-wire
+/// path without recall-value drift.
+pub struct BodyColumnI32 {
+    meta: NodeMeta,
+    column: String,
+}
+
+impl BodyColumnI32 {
+    pub fn new(column: impl Into<String>) -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "body_column_i32".into(),
+                outs: vec![Port::new("output", PortType::VecI32)],
+                ins: vec![Slot::Wire(Port::new("body", PortType::Json))],
+            },
+            column: column.into(),
+        }
+    }
+}
+
+impl GkNode for BodyColumnI32 {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        let json = match &inputs[0] {
+            Value::Json(j) => j,
+            // Non-JSON inputs produce an empty vector. The
+            // evaluator surfaces "no values" as a hard error;
+            // here we just produce the empty shape so the
+            // node's type contract holds.
+            _ => {
+                outputs[0] = Value::VecI32(crate::node::SliceArc::from_vec(Vec::new()));
+                return;
+            }
+        };
+        let values = extract_column_i32(json, &self.column);
+        outputs[0] = Value::VecI32(crate::node::SliceArc::from_vec(values));
+    }
+}
+
+/// Walk a JSON value extracting `column` from every row. Handles
+/// top-level array, `{ rows: [...] }` envelope, and bare object
+/// forms — the same shapes adapter `ResultBody::to_json()` produces
+/// across CQL / HTTP / stdout drivers.
+fn extract_column_i32(json: &serde_json::Value, column: &str) -> Vec<i32> {
+    match json {
+        serde_json::Value::Array(rows) => {
+            rows.iter()
+                .filter_map(|row| json_value_as_i32(row.get(column)?))
+                .collect()
+        }
+        serde_json::Value::Object(obj) => {
+            // Two shapes can land here: an envelope object with a
+            // `rows` array (preferred), or a single row object
+            // whose column we extract as a one-element vector.
+            // Try envelope first to match the common
+            // `{rows: [...]}` shape adapters use.
+            if let Some(serde_json::Value::Array(rows)) = obj.get("rows") {
+                return rows.iter()
+                    .filter_map(|row| json_value_as_i32(row.get(column)?))
+                    .collect();
+            }
+            obj.get(column)
+                .and_then(json_value_as_i32)
+                .map(|n| vec![n])
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Parse a JSON value as i32 with the same tolerance the legacy
+/// `json_field_as_i64` extractor used: number→cast, string→parse,
+/// bool/null/object/array→skip. Out-of-range numerics saturate to
+/// the closest i32 boundary; preserves the legacy "best-effort"
+/// behaviour rather than silently dropping rows.
+fn json_value_as_i32(v: &serde_json::Value) -> Option<i32> {
+    match v {
+        serde_json::Value::Number(n) => {
+            n.as_i64().map(|i| i.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
+                .or_else(|| n.as_u64().map(|u| u.min(i32::MAX as u64) as i32))
+                .or_else(|| n.as_f64().and_then(|f| {
+                    if f.is_finite() { Some(f as i32) } else { None }
+                }))
+        }
+        serde_json::Value::String(s) => s.trim().parse::<i32>().ok(),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Signature declarations for the DSL registry
 // ---------------------------------------------------------------------------
@@ -552,6 +668,20 @@ pub fn signatures() -> &'static [FuncSig] {
             params: &[
                 ParamSpec { name: "array", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
                 ParamSpec { name: "index", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
+        },
+        FuncSig {
+            name: "body_column_i32", category: C::Json, outputs: 1,
+            description: "extract a column of integer values from a JSON result body",
+            help: "Walk a JSON result body and pull the named column from every row\nas a `VecI32` wire. Recognises `[{...},{...}]`, `{rows: [{...}]}` envelope,\nand single-row `{column: value}` shapes — the same shapes adapter\nResultBody::to_json() emits across CQL / HTTP / stdout drivers.\nUnparseable / missing per-row values are skipped (no zero-fill).\nUse to wire result-body columns into typed-vector wires that the\nrecall evaluator / custom metrics consume via ctx.wires.get.\nParameters:\n  body   — Json wire input (typically the magic `body` extern).\n  column — column name (compile-time const string).\nExample: result: { keys: body_column_i32(body, \"key\") }",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "body", slot_type: SlotType::Wire, required: true, example: "body", constraint: None },
+                ParamSpec { name: "column", slot_type: SlotType::ConstStr, required: true, example: "\"key\"", constraint: None },
             ],
             arity: Arity::Fixed,
             commutativity: crate::node::Commutativity::Positional,
@@ -796,6 +926,9 @@ pub(crate) fn build_node(name: &str, _wires: &[crate::assembly::WireRef], _wire_
         "json_merge" => Some(Ok(Box::new(JsonMerge::new()))),
         "array_len" => Some(Ok(Box::new(ArrayLen::new()))),
         "array_at" => Some(Ok(Box::new(ArrayAt::new()))),
+        "body_column_i32" => Some(Ok(Box::new(BodyColumnI32::new(
+            consts.first().map(|c| c.as_str()).unwrap_or(""),
+        )))),
         "normalize_vector" => Some(Ok(Box::new(NormalizeVector::new()))),
         "random_vector" => Some(Ok(Box::new(RandomVector::new(
             consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
@@ -810,6 +943,92 @@ crate::register_nodes!(signatures, build_node);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn body_column_i32_extracts_array_of_rows() {
+        // Standard CQL SELECT shape: top-level array of row objects.
+        let body = Value::Json(serde_json::json!([
+            { "key": 4, "value": 0.5 },
+            { "key": 17, "value": 0.4 },
+            { "key": 42, "value": 0.3 },
+        ]));
+        let node = BodyColumnI32::new("key");
+        let mut out = [Value::None];
+        node.eval(&[body], &mut out);
+        let Value::VecI32(slice) = &out[0] else { panic!("expected VecI32, got {:?}", out[0]) };
+        assert_eq!(slice.as_slice(), &[4, 17, 42]);
+    }
+
+    #[test]
+    fn body_column_i32_extracts_envelope_rows() {
+        // Envelope shape: { "rows": [...] }.
+        let body = Value::Json(serde_json::json!({
+            "rows": [
+                { "id": 1 },
+                { "id": 7 },
+                { "id": 13 },
+            ],
+            "metadata": "ignored",
+        }));
+        let node = BodyColumnI32::new("id");
+        let mut out = [Value::None];
+        node.eval(&[body], &mut out);
+        let Value::VecI32(slice) = &out[0] else { panic!("expected VecI32") };
+        assert_eq!(slice.as_slice(), &[1, 7, 13]);
+    }
+
+    #[test]
+    fn body_column_i32_skips_rows_missing_column() {
+        // Robustness: rows without the column don't zero-fill.
+        let body = Value::Json(serde_json::json!([
+            { "key": 1 },
+            { "other": 2 },     // skipped
+            { "key": "not_an_int" },  // skipped
+            { "key": 3 },
+        ]));
+        let node = BodyColumnI32::new("key");
+        let mut out = [Value::None];
+        node.eval(&[body], &mut out);
+        let Value::VecI32(slice) = &out[0] else { panic!("expected VecI32") };
+        assert_eq!(slice.as_slice(), &[1, 3]);
+    }
+
+    #[test]
+    fn body_column_i32_string_numeric_parses() {
+        // Stringified numbers parse — common for some adapters
+        // that don't preserve native numeric typing.
+        let body = Value::Json(serde_json::json!([
+            { "key": "42" },
+            { "key": "-7" },
+        ]));
+        let node = BodyColumnI32::new("key");
+        let mut out = [Value::None];
+        node.eval(&[body], &mut out);
+        let Value::VecI32(slice) = &out[0] else { panic!("expected VecI32") };
+        assert_eq!(slice.as_slice(), &[42, -7]);
+    }
+
+    #[test]
+    fn body_column_i32_empty_body_produces_empty_vec() {
+        let body = Value::Json(serde_json::json!([]));
+        let node = BodyColumnI32::new("key");
+        let mut out = [Value::None];
+        node.eval(&[body], &mut out);
+        let Value::VecI32(slice) = &out[0] else { panic!("expected VecI32") };
+        assert!(slice.as_slice().is_empty());
+    }
+
+    #[test]
+    fn body_column_i32_non_json_input_produces_empty_vec() {
+        // Defensive: non-JSON input shouldn't panic; the node's
+        // type contract still holds. The evaluator surfaces a
+        // "no values extracted" diagnostic downstream.
+        let node = BodyColumnI32::new("key");
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("not json".into())], &mut out);
+        let Value::VecI32(slice) = &out[0] else { panic!("expected VecI32") };
+        assert!(slice.as_slice().is_empty());
+    }
 
     /// `json_text` flattens a multi-row describe-keyspace body
     /// to newline-joined leaves. The actual newlines INSIDE

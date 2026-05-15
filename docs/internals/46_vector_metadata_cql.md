@@ -80,7 +80,7 @@ params:
   table: items
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   dim := vector_dim("{dataset}")
   count := vector_count("{dataset}")
   base_vec := vector_at(cycle, "{dataset}")

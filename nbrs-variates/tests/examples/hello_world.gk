@@ -6,7 +6,7 @@
 
 // Declare the input coordinate space. Here we have a single
 // dimension called "cycle" — the engine's iteration counter.
-inputs := (cycle)
+input cycle: u64
 
 // Hash the cycle to produce a pseudo-random but deterministic u64.
 // Without this, sequential cycle values (0, 1, 2, ...) would produce

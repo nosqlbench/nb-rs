@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nbrs_metrics::labels::Labels;
 
+use crate::wires::WireSource;
 use crate::adapter::{
     ExecutionError, OpDispenser, OpResult, WrappingDispenser,
 };
@@ -344,12 +345,15 @@ pub struct ValidatingDispenser {
     inner: Arc<dyn OpDispenser>,
     assertions: Vec<AssertionSpec>,
     relevancy: Option<RelevancyConfig>,
-    /// Memoized handle for the relevancy `expected` binding (the
-    /// ground-truth GK name). Registered into the per-template
-    /// `ScopeFixture` by [`Self::wrap`]. `None` only when no
-    /// `relevancy:` block is declared (assertion-only validation).
-    /// SRD 33 §"Ground Truth Flow".
-    expected_handle: Option<crate::fixture::PullHandle>,
+    /// Pre-stripped wire name for the relevancy `expected`
+    /// binding. The workload author writes either
+    /// `expected: ground_truth` (bare) or `expected: "{ground_truth}"`
+    /// (text-template legacy form, the braces are stripped at
+    /// wrap-time). Cycle-time reads go through
+    /// `ctx.wires.get(&expected_wire_name)` for a typed,
+    /// snapshot-free value — same canonical-scope contract the
+    /// MetricsDispenser uses. None when no `relevancy:` block.
+    expected_wire_name: Option<String>,
     metrics: Arc<ValidationMetrics>,
     /// If true, assertion failures become ExecutionError::Op.
     strict: bool,
@@ -379,7 +383,8 @@ impl ValidatingDispenser {
         // pass through unchanged; the wrapper registers them on
         // the fixture for cycle-time pulls below.
         let template_owned: nbrs_workload::model::ParsedOp;
-        let template = if let Some(canonical) = inner.canonical_kernel() {
+        let canonical_kernel = inner.canonical_kernel();
+        let template = if let Some(canonical) = &canonical_kernel {
             let mut t = template.clone();
             crate::scope::resolve_placeholders_in_op_params(&mut t, canonical.as_ref())?;
             template_owned = t;
@@ -388,7 +393,16 @@ impl ValidatingDispenser {
             template
         };
         let assertions = parse_assertions(template);
-        let relevancy = parse_relevancy(template, program)?;
+        // Bare wire-name forms in `k:` / `r:` resolve against the
+        // canonical kernel at wrap time (one-shot, same as the
+        // pre-existing `{k}` text-template substitution). The
+        // canonical kernel implements `WireSource` directly per
+        // SRD-68 Push 1; no per-cycle freshness because k / r are
+        // phase-constants by contract.
+        let wires_for_parse: Option<&dyn WireSource> = canonical_kernel
+            .as_ref()
+            .map(|k| k.as_ref() as &dyn WireSource);
+        let relevancy = parse_relevancy(template, program, wires_for_parse)?;
         let strict = template.params.get("strict")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
@@ -397,18 +411,27 @@ impl ValidatingDispenser {
             return Ok((inner, None));
         }
 
-        // Register the relevancy ground-truth binding with the
-        // fixture so the wrapper can read it via PullHandle at
-        // cycle time. Strip the `{...}` braces from the binding
-        // reference; the fixture registers bare names.
-        let expected_handle = match &relevancy {
+        // Validate at wrap-time that the relevancy `expected`
+        // binding exists on the op-template kernel — surfacing
+        // missing-wire diagnostics before any cycle runs. The
+        // returned PullHandle is unused (cycle-time reads go
+        // through ctx.wires.get on the bare wire name), so we
+        // only keep the name; same canonical-scope contract as
+        // the post-SRD-68 MetricsDispenser.
+        //
+        // Tolerate either `expected: ground_truth` (bare, the
+        // canonical post-refactor shape) or `expected: "{ground_truth}"`
+        // (the legacy text-template form — braces strip).
+        let expected_wire_name = match &relevancy {
             Some(cfg) => {
                 let name = cfg.expected_binding
-                    .trim_matches(|c| c == '{' || c == '}');
-                Some(fx.register_pull(name).map_err(|e| format!(
+                    .trim_matches(|c| c == '{' || c == '}')
+                    .to_string();
+                fx.register_pull(&name).map_err(|e| format!(
                     "op '{op}' relevancy.expected: {e}",
                     op = template.name,
-                ))?)
+                ))?;
+                Some(name)
             }
             None => None,
         };
@@ -422,7 +445,7 @@ impl ValidatingDispenser {
             inner,
             assertions,
             relevancy,
-            expected_handle,
+            expected_wire_name,
             metrics: metrics.clone(),
             strict,
         });
@@ -468,27 +491,29 @@ impl OpDispenser for ValidatingDispenser {
             // Phase 2: Relevancy metrics
             if let Some(config) = &self.relevancy {
                 let actual_ordered = extract_actual_indices(&result, &config.actual_field);
-                // Single read path: ground truth comes from the
-                // PullHandle registered into the ScopeFixture at
-                // init (SRD 33 §"Ground Truth Flow"). When
-                // relevancy is configured, the handle is
-                // *required* — wrap registers it unconditionally,
-                // and a missing handle here is a programming error.
-                let h = self.expected_handle.expect(
+                // Single read path: ground truth comes from
+                // `ctx.wires.get(name)` — a live, snapshot-free read
+                // through the per-fiber op-template kernel. The wire
+                // name was validated at wrap-time. Same canonical-scope
+                // contract MetricsDispenser uses.
+                let name = self.expected_wire_name.as_deref().expect(
                     "ValidatingDispenser invariant violated: relevancy is \
-                     configured but expected_handle was not registered. \
+                     configured but expected_wire_name was not stored. \
                      Construct via ValidatingDispenser::wrap.",
                 );
-                let expected_raw = resolve_expected_from_value(ctx.pulls.get(h));
+                let raw_value = ctx.wires.get(name);
+                let expected_raw = raw_value
+                    .as_ref()
+                    .map(resolve_expected_from_value)
+                    .unwrap_or_default();
 
                 // Hard error if ground truth or actual results are empty
                 if expected_raw.is_empty() {
-                    let binding_name = config.expected_binding.trim_matches(|c| c == '{' || c == '}');
                     let available: Vec<String> = ctx.wires.names().collect();
                     return Err(ExecutionError::Op(crate::adapter::AdapterError {
                         error_name: "relevancy_error".into(),
                         message: format!(
-                            "relevancy: no ground truth for '{binding_name}'. \
+                            "relevancy: no ground truth for '{name}'. \
                              Available wires: {available:?}. \
                              Ensure the binding exists in the GK program.",
                         ),
@@ -822,6 +847,7 @@ const RELEVANCY_VOCAB: &[&str] = &[
 fn parse_relevancy(
     template: &nbrs_workload::model::ParsedOp,
     _program: Option<&nbrs_variates::kernel::GkProgram>,
+    wires: Option<&dyn WireSource>,
 ) -> Result<Option<RelevancyConfig>, String> {
     let Some(rel) = template.params.get("relevancy") else { return Ok(None); };
     let obj = rel.as_object().ok_or_else(|| format!(
@@ -864,14 +890,14 @@ fn parse_relevancy(
         .to_string();
 
     let k_label = format!("op '{}' relevancy.k", template.name);
-    let k = parse_count_param(obj.get("k"), &k_label)?
+    let k = parse_count_param(obj.get("k"), &k_label, wires)?
         .ok_or_else(|| format!(
             "op '{}' relevancy: missing required field 'k' (integer)",
             template.name,
         ))? as usize;
 
     let r_label = format!("op '{}' relevancy.r", template.name);
-    let r: Option<usize> = parse_count_param(obj.get("r"), &r_label)?
+    let r: Option<usize> = parse_count_param(obj.get("r"), &r_label, wires)?
         .map(|n| n as usize);
 
     if let Some(rv) = r {
@@ -945,6 +971,7 @@ fn parse_relevancy(
 fn parse_count_param(
     val: Option<&serde_json::Value>,
     field_label: &str,
+    wires: Option<&dyn WireSource>,
 ) -> Result<Option<u64>, String> {
     let Some(v) = val else { return Ok(None); };
     if let Some(n) = v.as_u64() { return Ok(Some(n)); }
@@ -969,11 +996,53 @@ fn parse_count_param(
              single-read-path resolver should have substituted it from the kernel."
         ));
     }
+    // Bare wire-name form: post-SRD-68 follow-up. When `k:` or `r:`
+    // names a bare identifier and the canonical kernel knows it,
+    // read the value at wrap time. Same one-shot evaluation as the
+    // legacy `{k}` text-template form, but without the placeholder
+    // wrapper. Numeric strings ("100") fall through to the parse
+    // below — they're literals, not wire references.
+    if let Some(wires) = wires
+        && is_bare_ident(trimmed)
+        && let Some(value) = wires.get(trimmed)
+    {
+        return value_to_u64_for_count(value).ok_or_else(|| format!(
+            "{field_label}: wire '{trimmed}' resolved but its value is not \
+             coercible to a non-negative integer"
+        )).map(Some);
+    }
     match trimmed.parse::<u64>() {
         Ok(n) => Ok(Some(n)),
         Err(_) => Err(format!(
-            "{field_label}: '{trimmed}' is not a valid non-negative integer"
+            "{field_label}: '{trimmed}' is not a valid non-negative integer \
+             (and not declared as a wire name on the op-template kernel)"
         )),
+    }
+}
+
+/// Predicate for a bare GK identifier (single ident-shaped token).
+/// Inlined locally to avoid pulling the `crate::wires::is_bare_ident`
+/// pub-but-unexported helper into this file's surface.
+fn is_bare_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Coerce a kernel `Value` to a non-negative integer suitable for
+/// `k:` / `r:` count fields. U64 / F64 (non-negative) accepted;
+/// other variants signal a type mismatch the caller surfaces.
+fn value_to_u64_for_count(value: nbrs_variates::node::Value) -> Option<u64> {
+    use nbrs_variates::node::Value;
+    match value {
+        Value::U64(n) => Some(n),
+        Value::F64(f) if f.is_finite() && f >= 0.0 => Some(f as u64),
+        Value::Bool(true) => Some(1),
+        Value::Bool(false) => Some(0),
+        _ => None,
     }
 }
 
@@ -1020,9 +1089,10 @@ fn json_field_as_i64(v: &serde_json::Value) -> Option<i64> {
 /// Extract integer ground-truth indices from a typed `Value`.
 ///
 /// Single read path: at cycle time, [`ValidatingDispenser::execute`]
-/// pulls the value via the `expected_handle` registered with the
-/// scope fixture at init (SRD 33 §"Ground Truth Flow"), then
-/// hands it here for type-aware extraction.
+/// reads the value via `ctx.wires.get(name)` (a live read through
+/// the per-fiber op-template kernel — same canonical-scope contract
+/// MetricsDispenser uses), then hands it here for type-aware
+/// extraction.
 ///
 /// Fast path for the typed-array vector data path (SRD 53
 /// §"Native vector PortType"): when the binding produces
@@ -1150,7 +1220,6 @@ mod tests {
     fn assertion_not_null() {
         let result = OpResult {
             body: Some(Box::new(JsonBody(serde_json::json!({"name": "alice"})))),
-            captures: HashMap::new(),
             skipped: false,
         };
         let spec = AssertionSpec {
@@ -1170,7 +1239,6 @@ mod tests {
     fn assertion_eq() {
         let result = OpResult {
             body: Some(Box::new(JsonBody(serde_json::json!({"status": "ok"})))),
-            captures: HashMap::new(),
             skipped: false,
         };
         let spec = AssertionSpec {
@@ -1190,7 +1258,6 @@ mod tests {
     fn assertion_gte() {
         let result = OpResult {
             body: Some(Box::new(JsonBody(serde_json::json!({"balance": 42.5})))),
-            captures: HashMap::new(),
             skipped: false,
         };
         let spec = AssertionSpec {
@@ -1210,7 +1277,6 @@ mod tests {
     fn assertion_no_body() {
         let result = OpResult {
             body: None,
-            captures: HashMap::new(),
             skipped: false,
         };
         let spec = AssertionSpec {
@@ -1251,7 +1317,6 @@ mod tests {
                     serde_json::json!({"index_name": "meta_idx"}),
                 ],
             })),
-            captures: HashMap::new(),
             skipped: false,
         };
         let spec = AssertionSpec {
@@ -1272,7 +1337,6 @@ mod tests {
         // Empty array: element_count = 0, MinRows(1) must fail.
         let result = OpResult {
             body: Some(Box::new(CountedBody { rows: Vec::new() })),
-            captures: HashMap::new(),
             skipped: false,
         };
         let spec = AssertionSpec {
@@ -1284,7 +1348,6 @@ mod tests {
         // No body at all: element_count defaults to 0 → MinRows(1) fails.
         let result_none = OpResult {
             body: None,
-            captures: HashMap::new(),
             skipped: false,
         };
         assert!(!spec.check(&result_none));
@@ -1316,7 +1379,6 @@ mod tests {
             body: Some(Box::new(JsonBody(serde_json::json!({
                 "value": null, "request": {"type": "exec"}
             })))),
-            captures: HashMap::new(),
             skipped: false,
         };
         let spec = AssertionSpec {
@@ -1346,7 +1408,6 @@ mod tests {
         let text_result = OpResult {
             body: Some(Box::new(PlainBody(
                 "<html><body>404 Not Found</body></html>".into()))),
-            captures: HashMap::new(),
             skipped: false,
         };
         let msg2 = describe_assertion_failure(&spec, &text_result);
@@ -1363,7 +1424,6 @@ mod tests {
         // rather than a generic "validation failed".
         let result = OpResult {
             body: Some(Box::new(CountedBody { rows: Vec::new() })),
-            captures: HashMap::new(),
             skipped: false,
         };
         let spec = AssertionSpec {
@@ -1458,7 +1518,7 @@ mod tests {
             "k": 10,
             "functions": ["recall", "precision", "f1"]
         }));
-        let config = parse_relevancy(&template, None).unwrap().unwrap();
+        let config = parse_relevancy(&template, None, None).unwrap().unwrap();
         assert_eq!(config.actual_field, "key");
         assert_eq!(config.expected_binding, "{ground_truth}");
         assert_eq!(config.k, 10);
@@ -1482,7 +1542,7 @@ mod tests {
             "r": 100,
             "functions": ["recall"],
         }));
-        let config = parse_relevancy(&template, None).unwrap().unwrap();
+        let config = parse_relevancy(&template, None, None).unwrap().unwrap();
         assert_eq!(config.k, 10);
         assert_eq!(config.r, Some(100));
     }
@@ -1496,7 +1556,7 @@ mod tests {
             "k": "10",
             "r": "100",
         }));
-        let config = parse_relevancy(&template, None).unwrap().unwrap();
+        let config = parse_relevancy(&template, None, None).unwrap().unwrap();
         assert_eq!(config.k, 10);
         assert_eq!(config.r, Some(100));
     }
@@ -1504,7 +1564,51 @@ mod tests {
     #[test]
     fn parse_relevancy_missing() {
         let template = nbrs_workload::model::ParsedOp::simple("test", "INSERT");
-        assert!(parse_relevancy(&template, None).unwrap().is_none());
+        assert!(parse_relevancy(&template, None, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_relevancy_k_and_r_accept_bare_wire_names() {
+        // Post-SRD-68 follow-up: `k: k` (bare wire-name) resolves
+        // against the canonical kernel at wrap time. Same one-shot
+        // evaluation as the `{k}` text-template form but without
+        // the placeholder braces.
+        use nbrs_variates::dsl::compile::compile_gk;
+        let kernel = compile_gk(
+            "input cycle: u64\n\
+             final k := 10\n\
+             final limit := 100\n",
+        ).expect("compile_gk wires");
+        let wires: &dyn WireSource = &kernel;
+
+        let mut template = nbrs_workload::model::ParsedOp::simple("test", "SELECT key FROM t");
+        template.params.insert("relevancy".into(), serde_json::json!({
+            "actual": "key",
+            "expected": "{ground_truth}",
+            "k": "k",            // bare wire-name
+            "r": "limit",        // bare wire-name
+            "functions": ["recall"],
+        }));
+        let config = parse_relevancy(&template, None, Some(wires)).unwrap().unwrap();
+        assert_eq!(config.k, 10, "bare `k:` resolved through wires");
+        assert_eq!(config.r, Some(100), "bare `r:` resolved through wires");
+    }
+
+    #[test]
+    fn parse_relevancy_bare_name_falls_through_to_int_parse_when_no_kernel() {
+        // Without a canonical kernel (no wires available), a bare
+        // identifier in `k:` errors clearly — it can't be a wire
+        // reference and isn't a valid integer either.
+        let mut template = nbrs_workload::model::ParsedOp::simple("test", "SELECT key FROM t");
+        template.params.insert("relevancy".into(), serde_json::json!({
+            "actual": "key",
+            "expected": "{ground_truth}",
+            "k": "k",
+            "functions": ["recall"],
+        }));
+        let err = parse_relevancy(&template, None, None).unwrap_err();
+        assert!(err.contains("'k' is not a valid non-negative integer"),
+            "diagnostic should describe the parse failure: {err}");
     }
 
     #[test]

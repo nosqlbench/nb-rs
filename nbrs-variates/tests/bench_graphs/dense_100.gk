@@ -1,5 +1,5 @@
 // Benchmark: 100-node dense DAG (degree~6, width=12, layers=9)
-inputs := (cycle)
+input cycle: u64
 
 n0 := hash(cycle)
 n1 := hash(n0)

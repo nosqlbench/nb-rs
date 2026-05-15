@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn report_includes_source_line() {
-        let mut report = DiagnosticReport::new("inputs := (cycle)\nbad := ???");
+        let mut report = DiagnosticReport::new("input cycle: u64\nbad := ???");
         report.error(Span { line: 2, col: 8 }, "unexpected token");
         let s = report.to_string();
         assert!(s.contains("bad := ???"));

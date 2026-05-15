@@ -27,8 +27,11 @@ pub enum TokenKind {
     Ident(String),
     /// `init` keyword
     Init,
-    /// `coordinates` keyword
-    Inputs,
+    /// `input` keyword — declares one per-cycle kernel input slot.
+    /// Surface: `input <name>[: <type>]` (single) or
+    /// `input (<name>[: <type>], ...)` (tuple sugar). Mirrors the
+    /// module-signature param-list shape.
+    Input,
     /// `extern` keyword
     Extern,
     /// `shared` keyword
@@ -463,7 +466,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
             let word: String = chars[start..pos].iter().collect();
             let kind = match word.as_str() {
                 "init" => TokenKind::Init,
-                "inputs" => TokenKind::Inputs,
+                "input" => TokenKind::Input,
                 "extern" => TokenKind::Extern,
                 "shared" => TokenKind::Shared,
                 "final" => TokenKind::Final,
@@ -581,9 +584,11 @@ mod tests {
     }
 
     #[test]
-    fn lex_coordinates() {
-        let tokens = lex("inputs := (cycle, thread)").unwrap();
-        assert!(matches!(tokens[0].kind, TokenKind::Inputs));
+    fn lex_input_keyword_tuple() {
+        let tokens = lex("input (cycle: u64, thread: u64)").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Input));
+        assert!(matches!(tokens[1].kind, TokenKind::LParen));
+        assert!(matches!(tokens[2].kind, TokenKind::Ident(ref s) if s == "cycle"));
     }
 
     #[test]
@@ -666,9 +671,12 @@ mod tests {
     }
 
     #[test]
-    fn lex_inputs_keyword() {
-        let tokens = lex("inputs := (cycle)").unwrap();
-        assert!(matches!(tokens[0].kind, TokenKind::Inputs));
+    fn lex_input_keyword_bare() {
+        let tokens = lex("input cycle: u64").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Input));
+        assert!(matches!(tokens[1].kind, TokenKind::Ident(ref s) if s == "cycle"));
+        assert!(matches!(tokens[2].kind, TokenKind::Colon));
+        assert!(matches!(tokens[3].kind, TokenKind::Ident(ref s) if s == "u64"));
     }
 
     #[test]

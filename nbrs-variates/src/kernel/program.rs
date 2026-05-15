@@ -1534,9 +1534,9 @@ mod canonical_hash_tests {
         // slot that canonical_hash should cover — even when it's
         // an argument to a function call rather than a top-level
         // `final X := <literal>` binding.
-        let a = compile_gk("inputs := (cycle)\nshard := mod(hash(cycle), 8)\n")
+        let a = compile_gk("input cycle: u64\nshard := mod(hash(cycle), 8)\n")
             .expect("a");
-        let b = compile_gk("inputs := (cycle)\nshard := mod(hash(cycle), 16)\n")
+        let b = compile_gk("input cycle: u64\nshard := mod(hash(cycle), 16)\n")
             .expect("b");
         assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
             "literal-arg const value must change canonical hash");

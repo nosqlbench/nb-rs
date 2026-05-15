@@ -1495,6 +1495,16 @@ impl Activity {
             let activity_name_progress = activity_name.clone();
             let cursor_name_progress = cursor_name.clone();
             let activity_concurrency = activity.config.concurrency;
+            // Clone the source factory into the progress thread
+            // so each refresh tick can query the LIVE extent
+            // (`global_extent()`) — needed because
+            // ExtendingRangeSourceFactory grows its end value at
+            // runtime under the until_elapsed policy. Without
+            // this, the displayed total would stay pinned at
+            // the initial `base` value while the actual cursor
+            // ran several base-multiples worth of cycles.
+            let progress_source_factory = source_for_progress.clone();
+            let progress_default_cycles = activity.config.cycles;
             let status_metrics = activity.config.status_metrics.clone();
             let memo_handle = activity.memo.clone();
             // Build the on_update binder once at spawn time:
@@ -1545,11 +1555,18 @@ impl Activity {
                     // to the binder; the binder walks its
                     // resolved bodies in declaration order
                     // and writes into the StringSink.
+                    // Live extent: re-read each tick so growing
+                    // sources (until_elapsed and friends) surface
+                    // their current ceiling to the operator
+                    // instead of the cached initial value.
+                    let live_extent = progress_source_factory
+                        .global_extent()
+                        .unwrap_or(progress_default_cycles);
                     let ctx = crate::readout_context::build_inline_refresh_context(
                         &progress_metrics,
                         &activity_name,
                         activity_concurrency,
-                        total_extent,
+                        live_extent,
                         start_time.elapsed().as_secs_f64(),
                         tick,
                         &status_metrics,
@@ -1828,12 +1845,19 @@ impl Activity {
             let phase_name_bare = activity.config.name.split_once(" (")
                 .map(|(n, _)| n.to_string())
                 .unwrap_or_else(|| activity.config.name.clone());
+            // Phase-end: re-read the source's final extent.
+            // For static cursors this equals the initial
+            // `total_extent`; for extending cursors it's the
+            // last grown value before the policy declined
+            // further extension.
+            let final_extent = source_for_progress.global_extent()
+                .unwrap_or(activity.config.cycles);
             let ctx = crate::readout_context::ActivityReadoutContext {
                 phase_name: phase_name_bare,
                 phase_seq: activity.config.phase_seq,
                 phase_labels: activity.config.phase_labels.clone(),
                 cycles_completed: ops_completed,
-                cycles_total: total_extent,
+                cycles_total: final_extent,
                 ops_ok: successes,
                 errors,
                 retries,
@@ -2247,10 +2271,14 @@ async fn executor_task(
             let exec_ctx = crate::fixture::ExecCtx::with_wires(&fields, &pulls, &cycle_wires);
             let service_start = Instant::now();
             let mut tries = 1u32;
-            let (success, captures, skipped) = loop {
+            let (success, skipped) = loop {
                 match dispenser.execute(cycle, &exec_ctx).await {
                     Ok(result) => {
-                        break (true, result.captures, result.skipped);
+                        // OpResult.captures is vestigial — captures
+                        // land on the per-op kernel directly via
+                        // ctx.wires.write inside the dispenser stack.
+                        // The field itself is removed in step 7.
+                        break (true, result.skipped);
                     }
                     Err(e) => {
                         let duration_nanos = service_start.elapsed().as_nanos() as u64;
@@ -2304,7 +2332,7 @@ async fn executor_task(
                             continue;
                         }
 
-                        break (false, std::collections::HashMap::new(), false);
+                        break (false, false);
                     }
                 }
             };
@@ -2320,55 +2348,26 @@ async fn executor_task(
                 if success {
                     activity.metrics.successes_total.inc();
                     activity.metrics.result_success_time.record(service_nanos);
-                    // SRD-67 Phase 5 — captures route to BOTH
-                    // the fiber's main kernel (legacy path) AND
-                    // the per-op-template kernel when one was
-                    // materialised. The op-template kernel is the
-                    // one that carries result-binding extern
-                    // slots for `body` / `count` / `ok` plus any
-                    // user captures the result-bindings reference,
-                    // and Rule 2 write-throughs feed values up
-                    // through parent `shared` cells. Slots that
-                    // don't exist on either kernel are silently
-                    // dropped (closure-binding economy).
-                    let debug_nodes = nbrs_variates::nodes::debug_nodes_enabled();
-                    if debug_nodes {
-                        crate::observer::log(
-                            crate::observer::LogLevel::Debug,
-                            &format!(
-                                "activity.cycle: op '{}' captures={:?}",
-                                template.name,
-                                captures.keys().collect::<Vec<_>>()
-                            ),
-                        );
-                    }
-                    for (name, value) in captures {
-                        fiber.capture(&name, value.clone());
-                        let wrote = fiber.write_op_template_input_for_idx(template_idx, &name, value);
-                        if debug_nodes {
-                            crate::observer::log(
-                                crate::observer::LogLevel::Debug,
-                                &format!(
-                                    "activity.cycle: op '{}' write_op_template_input \
-                                     name='{}' wrote={}",
-                                    template.name, name, wrote
-                                ),
-                            );
-                        }
-                    }
-                    // Fire the Rule 2 write-through commit on the
-                    // op-template kernel — pulls every
-                    // `__write_<X>` and stores its value through
-                    // the cell-bound input slot for `<X>`. No-op
-                    // when the kernel carries no write-throughs.
+                    // Captures landed on the per-op-template kernel
+                    // directly via ctx.wires.write inside the
+                    // dispenser stack — no post-execute pump.
+                    //
+                    // Two kernel-side steps remain:
+                    //
+                    // 1. Rule 2 write-through commit on the
+                    //    op-template kernel — pulls every
+                    //    `__write_<X>` and stores its value through
+                    //    the cell-bound input slot for `<X>`,
+                    //    propagating result-binding LHS values up
+                    //    to parent `shared` cells. No-op when the
+                    //    kernel carries no write-throughs.
                     fiber.commit_op_template_write_throughs_for_idx(template_idx);
-                    // Then pull every captured wire's compute
-                    // chain so side-effecting nodes (log_info,
-                    // log_debug, etc.) actually evaluate. Without
-                    // this, a result-binding whose LHS isn't a
-                    // write-through stays dormant — its log_info
-                    // call (the diagnostic the operator asked
-                    // for) never fires.
+                    // 2. Pull every output of the op-template
+                    //    kernel so side-effecting nodes (log_info,
+                    //    log_debug) inside result-binding compute
+                    //    chains actually evaluate. Without this, a
+                    //    result-binding whose LHS isn't a
+                    //    write-through stays dormant.
                     fiber.pull_all_op_template_outputs_for_idx(template_idx);
                 }
             }
@@ -2515,7 +2514,7 @@ mod tests {
         fn execute<'a>(&'a self, _cycle: u64, _ctx: &'a crate::fixture::ExecCtx<'a>)
             -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
             self.count.fetch_add(1, Ordering::Relaxed);
-            Box::pin(async { Ok(OpResult { body: None, captures: HashMap::new(), skipped: false }) })
+            Box::pin(async { Ok(OpResult { body: None, skipped: false }) })
         }
     }
 
@@ -2567,7 +2566,7 @@ mod tests {
                         retryable: true,
                     }))
                 } else {
-                    Ok(OpResult { body: None, captures: HashMap::new(), skipped: false })
+                    Ok(OpResult { body: None, skipped: false })
                 }
             })
         }

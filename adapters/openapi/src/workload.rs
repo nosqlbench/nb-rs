@@ -99,6 +99,7 @@ pub fn generate_ops(
             metrics: HashMap::new(),
             result: None,
             wrappers: None,
+            captures: Vec::new(),
         };
         parsed_ops.push(parsed);
     }

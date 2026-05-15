@@ -24,6 +24,7 @@ use nbrs_activity::adapter::{
 };
 use nbrs_activity::fixture::{PullPlan, ResolvedPulls, ScopeFixture};
 use nbrs_activity::validation::ValidatingDispenser;
+use nbrs_activity::wires::CycleWires;
 use nbrs_metrics::labels::Labels;
 use nbrs_variates::dsl::compile::compile_gk;
 use nbrs_variates::kernel::GkProgram;
@@ -77,7 +78,6 @@ impl OpDispenser for FixedBodyDispenser {
         Box::pin(async move {
             Ok(OpResult {
                 body: Some(body),
-                captures: HashMap::new(),
                 skipped: false,
             })
         })
@@ -91,7 +91,7 @@ impl OpDispenser for FixedBodyDispenser {
 /// cycle.
 fn make_gt_program() -> Arc<GkProgram> {
     let kernel = compile_gk(
-        "inputs := (cycle)\n\
+        "input cycle: u64\n\
          extern ground_truth: Str = \"\"\n",
     ).expect("compile_gk extern declaration");
     kernel.into_program()
@@ -157,6 +157,22 @@ fn pulls_with_gt_string(
     plan.resolve(&mut state)
 }
 
+/// Build a real `GkKernel` with the `ground_truth` input populated.
+/// Used to bind a `CycleWires` for `ExecCtx::with_wires` so the
+/// validation wrapper's `ctx.wires.get("ground_truth")` read
+/// resolves to the test fixture value. Returns the kernel by value;
+/// the caller wraps `CycleWires` around it for the cycle's duration.
+fn kernel_with_gt_string(gt_csv: &str) -> nbrs_variates::kernel::GkKernel {
+    let mut k = compile_gk(
+        "input cycle: u64\n\
+         extern ground_truth: Str = \"\"\n",
+    ).expect("compile_gk extern declaration");
+    k.set_inputs(&[0]);
+    let idx = k.program().find_input("ground_truth").expect("ground_truth input");
+    k.state().set_input(idx, Value::Str(gt_csv.into()));
+    k
+}
+
 #[tokio::test]
 async fn perfect_recall_when_keys_match_ground_truth() {
     let ground_truth = [4_i64, 17, 42, 99, 123, 256, 512, 777, 1001, 2048];
@@ -171,7 +187,9 @@ async fn perfect_recall_when_keys_match_ground_truth() {
         ground_truth.iter().map(i64::to_string).collect::<Vec<_>>().join(","));
     let pulls = pulls_with_gt_string(&program, &plan, &gt_string);
     let fields = ResolvedFields::new(Vec::new(), Vec::new());
-    let ctx = ExecCtx::new(&fields, &pulls);
+    let mut kernel = kernel_with_gt_string(&gt_string);
+    let cw = CycleWires::new(&mut kernel);
+    let ctx = ExecCtx::with_wires(&fields, &pulls, &cw);
 
     validated.execute(0, &ctx).await.expect("validation should not error");
 
@@ -195,7 +213,9 @@ async fn zero_recall_when_returned_keys_do_not_match() {
         ground_truth.iter().map(i64::to_string).collect::<Vec<_>>().join(","));
     let pulls = pulls_with_gt_string(&program, &plan, &gt_string);
     let fields = ResolvedFields::new(Vec::new(), Vec::new());
-    let ctx = ExecCtx::new(&fields, &pulls);
+    let mut kernel = kernel_with_gt_string(&gt_string);
+    let cw = CycleWires::new(&mut kernel);
+    let ctx = ExecCtx::with_wires(&fields, &pulls, &cw);
 
     validated.execute(0, &ctx).await.expect("validation should not error");
 
@@ -219,7 +239,6 @@ impl OpDispenser for MultiBodyDispenser {
         Box::pin(async move {
             Ok(OpResult {
                 body: Some(rows_body(&keys)),
-                captures: HashMap::new(),
                 skipped: false,
             })
         })
@@ -248,7 +267,9 @@ async fn averaged_recall_across_three_cycles() {
     for cycle in 0u64..3 {
         let pulls = pulls_with_gt_string(&program, &plan, &gt_string);
         let fields = ResolvedFields::new(Vec::new(), Vec::new());
-        let ctx = ExecCtx::new(&fields, &pulls);
+        let mut kernel = kernel_with_gt_string(&gt_string);
+        let cw = CycleWires::new(&mut kernel);
+        let ctx = ExecCtx::with_wires(&fields, &pulls, &cw);
         validated.execute(cycle, &ctx).await.expect("ok");
     }
 
@@ -293,7 +314,6 @@ async fn zero_recall_when_column_name_does_not_match() {
             Box::pin(async move {
                 Ok(OpResult {
                     body: Some(Box::new(WrongColumnBody { values: vec![1, 2, 3, 4] })),
-                    captures: HashMap::new(),
                     skipped: false,
                 })
             })
@@ -307,7 +327,9 @@ async fn zero_recall_when_column_name_does_not_match() {
 
     let pulls = pulls_with_gt_string(&program, &plan, "[1,2,3,4]");
     let fields = ResolvedFields::new(Vec::new(), Vec::new());
-    let ctx = ExecCtx::new(&fields, &pulls);
+    let mut kernel = kernel_with_gt_string("[1,2,3,4]");
+    let cw = CycleWires::new(&mut kernel);
+    let ctx = ExecCtx::with_wires(&fields, &pulls, &cw);
 
     validated.execute(0, &ctx).await.expect("ok");
 
@@ -330,7 +352,6 @@ async fn zero_recall_when_body_is_empty() {
             Box::pin(async move {
                 Ok(OpResult {
                     body: None,
-                    captures: HashMap::new(),
                     skipped: false,
                 })
             })
@@ -344,7 +365,9 @@ async fn zero_recall_when_body_is_empty() {
 
     let pulls = pulls_with_gt_string(&program, &plan, "[1,2,3]");
     let fields = ResolvedFields::new(Vec::new(), Vec::new());
-    let ctx = ExecCtx::new(&fields, &pulls);
+    let mut kernel = kernel_with_gt_string("[1,2,3]");
+    let cw = CycleWires::new(&mut kernel);
+    let ctx = ExecCtx::with_wires(&fields, &pulls, &cw);
 
     validated.execute(0, &ctx).await.expect("ok");
 

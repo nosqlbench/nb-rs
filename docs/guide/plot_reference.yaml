@@ -1,0 +1,551 @@
+#!/usr/bin/env nbrs
+# =====================================================================
+# nbrs Plot DSL Reference
+# =====================================================================
+#
+# This workload is a reference for every directive supported by the
+# plot DSL. Each `plot` block exercises one or two features with
+# inline comments above. The workload also runs as a real session
+# — its phases emit synthetic metrics over a (k, limit, profile)
+# label space so every plot has data to draw from.
+#
+# Regenerate one plot from a session db:
+#   nbrs plot --name <plot-name> --db logs/latest/metrics.db
+# Materialise the whole report:
+#   nbrs report --workload docs/guide/plot_reference.yaml \
+#               --db logs/latest/metrics.db
+# Run end-to-end (produces all plots in one shot):
+#   nbrs run docs/guide/plot_reference.yaml
+#
+# ─────────────────────────────────────────────────────────────────────
+# Quick reference
+# ─────────────────────────────────────────────────────────────────────
+#
+# Two query modes:
+#   classic   y1: <metricsql>     — y values; x comes from a label name
+#                                   (the `x:` directive picks which one)
+#   paired    y1: <metricsql>     — y values; x comes from x1:
+#             x1: <metricsql>     — paired x metric (Pareto scatter)
+#             reduce: avg|last|none  per-tuple reduction in paired mode
+#
+# Axes:
+#   y / y1            primary y axis
+#   y2                secondary axis (right rail with `y-side: right`)
+#   y3, y4            additional axes (project into primary y by default)
+#
+# Every per-axis directive (label, legend, scale, ticks, min, max,
+# range, side) is settable as `yN-<sub>` for axis N ∈ {1..4}.
+#
+# Plural directives that fan out to every declared axis positionally:
+#   y-labels: ["recall", "QPS"]
+#   y-legends: ["k=[k]", "qps"]
+#   y-ranges: [[0,1], [,]]   ([,] = "auto" in that slot)
+#
+# Styling (plot level via `<key>=<value>` lines OR `defaults:` block):
+#   palette=wong         colorblind-safe palette name
+#   line=solid|dashed|dotted|none
+#   width=2              line width in pixels
+#   marker=circle|square|triangle|diamond|plus|cross|none
+#   size=3               marker radius in pixels
+#   color=#aabbcc        explicit hex color (overrides palette)
+#   figure_width=1024    output dimensions
+#   figure_height=640
+#
+# Per-series style overrides:
+#   style key=value: line=dashed   match series whose discriminator
+#                                  labels include key=value
+#
+# Per-point annotations (off by default — explicit opt-in):
+#   y-datapoints: inline|extremes|callouts   numeric value labels
+#   point-label1: *|labels|x|y|n             label-projection annotations
+#
+
+params:
+  adapter: stdout
+
+scenarios:
+  default:
+    - synth
+
+phases:
+  # Synthetic emitter — produces metrics with rich labels so every
+  # plot in the report has data. Stdout adapter = no external
+  # dependencies. The bindings shape the synthetic latency and
+  # recall as a function of `limit` so the resulting plots look
+  # like a real ANN-style sweep.
+  synth:
+    concurrency: 4
+    cycles: 200
+    ops:
+      noop:
+        stmt: "synthetic-cycle"
+
+report:
+  defaults:
+    # Palette applies to every plot in the report unless overridden
+    # at the plot level. `wong` is colorblind-safe; other built-ins:
+    # cb_blue_orange, viridis, plasma.
+    palette: wong
+
+  reference: |
+    file plot_reference.md as 'Plot DSL Reference'
+
+    text
+      Each plot below documents one or two features of the plot DSL.
+      Comments above each plot explain the directives in use.
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 1 — Basics
+    # ═══════════════════════════════════════════════════════════════
+
+    # ─── 1.1 Minimal plot ──────────────────────────────────────────
+    # The simplest possible plot: just a `y1:` query. Every other
+    # directive uses sensible defaults.
+    plot p01_minimal
+      y1: avg(latency_p99) by (limit)
+
+    # ─── 1.2 Caption (label) ───────────────────────────────────────
+    # `label "..."` sets the figure caption AND the markdown heading
+    # used when this plot is embedded in the report file.
+    plot p02_caption
+      label "Latency at p99 vs limit"
+      y1: avg(latency_p99) by (limit)
+
+    # ─── 1.3 Title (alternative to label) ──────────────────────────
+    # `title:` is a synonym of `label "..."` for the on-figure
+    # caption. Use `label` when you want the text to also drive
+    # the markdown heading.
+    plot p03_title
+      title: "Latency p99 (alternative form)"
+      y1: avg(latency_p99) by (limit)
+
+    # ─── 1.4 Series grouping ───────────────────────────────────────
+    # `series:` lists the labels that distinguish one series (curve)
+    # from another. One curve per distinct tuple. Use `*` to
+    # auto-detect every non-x-axis label that varies.
+    plot p04_series_explicit
+      label "One curve per (k, profile)"
+      series: k, profile
+      y1: avg(latency_p99) by (k, profile, limit)
+
+    plot p05_series_auto
+      label "Auto-detect series discriminants"
+      series: "*"
+      y1: avg(latency_p99) by (k, profile, limit)
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 2 — X axis
+    # ═══════════════════════════════════════════════════════════════
+
+    text
+      ## X-axis configuration
+
+    # ─── 2.1 X-axis label name (classic mode) ──────────────────────
+    # `x:` names which label drives the x positions in CLASSIC mode.
+    plot p06_x_label
+      x: limit
+      y1: avg(latency_p99) by (limit)
+
+    # ─── 2.2 X-axis title ──────────────────────────────────────────
+    # `x-legend:` / `x-label:` are synonyms — both set the axis
+    # title below the plot.
+    plot p07_x_legend
+      x-legend: "Result-set Limit"
+      y1: avg(latency_p99) by (limit)
+
+    # ─── 2.3 Log-scale x axis ──────────────────────────────────────
+    # `xscale=log` forces a log axis. Values: linear, log, dec, bin,
+    # auto (auto detects from tick distribution).
+    plot p08_xscale_log
+      xscale=log
+      x-legend: "Limit (log)"
+      y1: avg(latency_p99) by (limit)
+
+    # ─── 2.4 X-axis bounds ─────────────────────────────────────────
+    # `x-min:` / `x-max:` OR `x-range:`. Mutually exclusive.
+    plot p09_x_bounds
+      x-min: 1
+      x-max: 1000
+      y1: avg(latency_p99) by (limit)
+
+    plot p10_x_range
+      x-range: [1, 1000]
+      y1: avg(latency_p99) by (limit)
+
+    # ─── 2.5 X-axis ticks ──────────────────────────────────────────
+    # `x-ticks:` supports three forms:
+    #   * literal:  x-ticks: 1, 10, 100, 1000
+    #   * auto:     x-ticks: auto             (distinct values from query)
+    #   * query:    x-ticks: <metricsql>      (evaluate; extract x label)
+    plot p11_x_ticks_literal
+      x-ticks: 1, 2, 4, 8, 16, 32, 64
+      y1: avg(latency_p99) by (limit)
+
+    plot p12_x_ticks_auto
+      x-ticks: auto
+      y1: avg(latency_p99) by (limit)
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 3 — Y axis (primary)
+    # ═══════════════════════════════════════════════════════════════
+
+    text
+      ## Primary y-axis configuration. The same surface applies to
+      y2/y3/y4 via the `yN-<sub>` form.
+
+    # ─── 3.1 Per-axis title ────────────────────────────────────────
+    # `y1-label:` sets the primary axis title. `yl-label:` is a
+    # shorthand alias (left-rail) for the same target.
+    plot p13_y1_label
+      y1-label: "Recall@k"
+      y1: avg(recall_mean) by (limit)
+
+    plot p14_yl_label_shorthand
+      yl-label: "Recall (left)"
+      y1: avg(recall_mean) by (limit)
+
+    # ─── 3.2 Y-axis bounds ─────────────────────────────────────────
+    # Same shape as x-axis bounds. Pinning the upper bound to 1.0
+    # is common for recall plots.
+    plot p15_y1_range
+      y1-range: [0, 1.0]
+      y1: avg(recall_mean) by (limit)
+
+    # ─── 3.3 Y-axis scale ──────────────────────────────────────────
+    plot p16_y1_scale
+      y1-scale: log
+      y1: avg(latency_p99) by (limit)
+
+    # ─── 3.4 Y-axis explicit ticks ─────────────────────────────────
+    plot p17_y1_ticks
+      y1-ticks: 0.0, 0.5, 0.9, 0.99, 0.999, 1.0
+      y1-range: [0, 1.0]
+      y1: avg(recall_mean) by (limit)
+
+    # ─── 3.5 Per-axis legend template ──────────────────────────────
+    # `y1-legend:` is a per-SERIES legend label template. `[name]`
+    # placeholders pull from the series's discriminator labels.
+    plot p18_y1_legend
+      series: k
+      y1-legend: "k=[k]"
+      y1: avg(recall_mean) by (k, limit)
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 4 — Multi-axis (y2, y3, y4)
+    # ═══════════════════════════════════════════════════════════════
+
+    text
+      ## Two- to four-axis plots
+
+    # ─── 4.1 Dual axis ─────────────────────────────────────────────
+    # `y2:` introduces a secondary axis. By default y2 renders on
+    # the right rail; y3 and y4 project into the primary y-coord
+    # unless explicitly given `yN-side: right`.
+    plot p19_dual_axis
+      y1: avg(recall_mean) by (limit)
+      y1-label: "Recall"
+      y2: avg(latency_p99) by (limit)
+      y2-label: "Latency p99 (ms)"
+
+    # ─── 4.2 y-side default for every secondary axis ───────────────
+    # `y-side: left` (or `right`) sets the workload-wide default.
+    # Per-axis `yN-side:` overrides win.
+    plot p20_y_side_left
+      y-side: left
+      y1: avg(recall_mean) by (limit)
+      y2: avg(latency_p99) by (limit)
+
+    plot p21_y_side_right
+      y-side: right
+      y1: avg(recall_mean) by (limit)
+      y2: avg(latency_p99) by (limit)
+
+    # ─── 4.3 Three axes ────────────────────────────────────────────
+    plot p22_three_axes
+      y1: avg(recall_mean) by (limit)
+      y1-label: "Recall"
+      y2: avg(latency_p99) by (limit)
+      y2-label: "Latency p99"
+      y3: avg(cycles_total_rate) by (limit)
+      y3-label: "QPS"
+
+    # ─── 4.4 Plural directives ─────────────────────────────────────
+    # `y-ranges`, `y-legends`, `y-labels` fan out positionally to
+    # every declared axis. Use `[,]` for "auto" in a range slot.
+    plot p23_plural_directives
+      y1: avg(recall_mean) by (limit)
+      y2: avg(latency_p99) by (limit)
+      y-labels: ["Recall", "Latency"]
+      y-ranges: [[0, 1.0], [, ]]
+      y-legends: ["recall", "latency p99"]
+
+    # ─── 4.5 Per-axis scale and ticks ──────────────────────────────
+    plot p24_per_axis_scale
+      y1: avg(recall_mean) by (limit)
+      y1-scale: linear
+      y2: avg(latency_p99) by (limit)
+      y2-scale: log
+      y2-ticks: 1, 10, 100, 1000
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 5 — Paired-coordinate mode (Pareto scatter)
+    # ═══════════════════════════════════════════════════════════════
+
+    text
+      ## Paired x1/y1 mode
+
+      Classic mode reads x position from a LABEL value. Paired mode
+      reads x from a separate metricsql query — useful for
+      "metric X vs metric Y" plots like recall-vs-QPS.
+
+    # ─── 5.1 Paired x1/y1 ──────────────────────────────────────────
+    # Each label tuple becomes one rendered point. The `by (...)`
+    # clauses on both queries determine the join key.
+    plot p25_paired
+      x1: avg(cycles_total_rate) by (k, limit)
+      y1: avg(recall_mean) by (k, limit)
+      x-legend: "QPS"
+      y1-label: "Recall"
+
+    # ─── 5.2 reduce: avg|last|none ─────────────────────────────────
+    # Per-tuple time-series samples collapse into rendered points.
+    # `avg` (default) = mean over all paired samples; `last` = most
+    # recent timestamp pair; `none` = every paired sample becomes
+    # its own point.
+    plot p26_reduce_avg
+      reduce: avg
+      x1: avg(cycles_total_rate) by (k, limit)
+      y1: avg(recall_mean) by (k, limit)
+
+    plot p27_reduce_last
+      reduce: last
+      x1: avg(cycles_total_rate) by (k, limit)
+      y1: avg(recall_mean) by (k, limit)
+
+    plot p28_reduce_none
+      reduce: none
+      x1: avg(cycles_total_rate) by (k, limit)
+      y1: avg(recall_mean) by (k, limit)
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 6 — Compact pair shorthand
+    # ═══════════════════════════════════════════════════════════════
+
+    text
+      ## Compact pair shorthand for paired x1/y1 queries
+
+      Three forms expand into separate `x1:` and `y1:` queries
+      sharing label filters and `by (...)` clauses.
+
+    # ─── 6.1 Form B — implicit avg ─────────────────────────────────
+    # `(METRIC_X, METRIC_Y){labels} by (groups)` expands to
+    #   x1: avg(METRIC_X{labels}) by (groups)
+    #   y1: avg(METRIC_Y{labels}) by (groups)
+    plot p29_compact_form_b
+      y1: (cycles_total_rate, recall_mean){phase=~".*query"} by (k, limit)
+
+    # ─── 6.2 Form C — outer function name ──────────────────────────
+    # `FN(METRIC_X, METRIC_Y){labels} by (groups)` uses FN as the
+    # aggregator for both metrics.
+    plot p30_compact_form_c
+      y1: sum(cycles_total, errors_total){phase=~".*query"} by (k)
+
+    # ─── 6.3 Form A — explicit per-element aggregation ─────────────
+    # `(FN1(METRIC_X), FN2(METRIC_Y), {labels}) by (groups)` lets
+    # each side carry its own aggregation. `{labels}` lives INSIDE
+    # the outer parens as the third element.
+    plot p31_compact_form_a
+      y1: (sum(cycles_total), avg(recall_mean), {phase=~".*query"}) by (k, limit)
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 7 — Per-point annotations (point-label1)
+    # ═══════════════════════════════════════════════════════════════
+
+    text
+      ## point-label1 — per-point text annotations.
+      Without `point-label1:` no per-point text is rendered.
+
+    # ─── 7.1 Auto-vary (`*`) ───────────────────────────────────────
+    # `point-label1: *` surfaces every label in the source data
+    # that ISN'T in `series:` and isn't the x-axis label — the
+    # labels that VARY along each curve.
+    plot p32_point_label_vary
+      series: k
+      point-label1: "*"
+      y1: avg(recall_mean) by (k, limit)
+
+    # ─── 7.2 Explicit label projection ─────────────────────────────
+    # `point-label1: <name>[, <name>...]` projects the named labels.
+    plot p33_point_label_explicit
+      series: k
+      point-label1: limit
+      y1: avg(recall_mean) by (k, limit)
+
+    # ─── 7.3 Reserved tokens — x, y, n ─────────────────────────────
+    # `x`, `y`, and `n` surface the point's coordinates and sample
+    # count instead of label values.
+    plot p34_point_label_tokens
+      series: k
+      point-label1: limit, x, y
+      x1: avg(cycles_total_rate) by (k, limit)
+      y1: avg(recall_mean) by (k, limit)
+
+    # ─── 7.4 Point label in compact-pair shorthand ─────────────────
+    # The compact pair forms accept a third positional element:
+    #   (METRIC_X, METRIC_Y, *){labels} by (...)
+    #   (METRIC_X, METRIC_Y, name){labels} by (...)
+    # For multi-label projection use the long-form directive.
+    plot p35_compact_with_point_label
+      series: k
+      y1: (cycles_total_rate, recall_mean, *){phase=~".*query"} by (k, limit)
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 8 — Y-axis datapoints (numeric value labels)
+    # ═══════════════════════════════════════════════════════════════
+
+    text
+      ## y-datapoints — inline numeric value labels.
+      Default is `none`. Explicit opt-in via `inline`, `extremes`,
+      or `callouts`.
+
+    plot p36_datapoints_inline
+      y-datapoints: inline
+      y1: avg(recall_mean) by (limit)
+
+    plot p37_datapoints_extremes
+      y-datapoints: extremes
+      y1: avg(recall_mean) by (limit)
+
+    plot p38_datapoints_none
+      y-datapoints: none
+      y1: avg(recall_mean) by (limit)
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 9 — Legend positioning
+    # ═══════════════════════════════════════════════════════════════
+
+    text
+      ## Legend position via `legend:` directive.
+      Long forms: top-left, top-right, top-center, bottom-left,
+      bottom-right, bottom-center, center, top, bottom, left, right.
+      Shortcuts: tl, tr, bl, br, c, t, b, l, r, tc, bc.
+      Suppress entirely: `legend: none` (or `off`).
+
+    plot p39_legend_tl
+      legend: tl
+      series: k
+      y1: avg(recall_mean) by (k, limit)
+
+    plot p40_legend_none
+      legend: none
+      series: k
+      y1: avg(recall_mean) by (k, limit)
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 10 — Styling
+    # ═══════════════════════════════════════════════════════════════
+
+    text
+      ## Plot-level styling overrides
+
+    # ─── 10.1 Palette ──────────────────────────────────────────────
+    # `palette=NAME` selects the color palette. Built-ins (all
+    # colorblind-safe): wong (default), cb_blue_orange, viridis,
+    # plasma.
+    plot p41_palette
+      palette=viridis
+      series: k
+      y1: avg(recall_mean) by (k, limit)
+
+    # ─── 10.2 Line style ───────────────────────────────────────────
+    # `line=solid|dashed|dotted|none`. Default solid.
+    plot p42_line_style
+      line=dashed
+      y1: avg(recall_mean) by (limit)
+
+    plot p43_line_none
+      line=none
+      marker=circle
+      size=4
+      y1: avg(recall_mean) by (limit)
+
+    # ─── 10.3 Markers ──────────────────────────────────────────────
+    # `marker=circle|square|triangle|diamond|plus|cross|none`,
+    # `size=N` for the marker radius in pixels.
+    plot p44_markers
+      marker=triangle
+      size=5
+      y1: avg(recall_mean) by (limit)
+
+    # ─── 10.4 Line width ───────────────────────────────────────────
+    plot p45_line_width
+      width=4
+      y1: avg(recall_mean) by (limit)
+
+    # ─── 10.5 Explicit color ───────────────────────────────────────
+    # `color=#RRGGBB` overrides the palette ordinal entirely.
+    plot p46_color
+      color=#ff6600
+      y1: avg(recall_mean) by (limit)
+
+    # ─── 10.6 Figure dimensions ────────────────────────────────────
+    # Default: 1024×640.
+    plot p47_dimensions
+      figure_width=1200
+      figure_height=400
+      y1: avg(recall_mean) by (limit)
+
+    # ─── 10.7 Per-series style overrides ───────────────────────────
+    # `style key=value:k1=v1 k2=v2` overrides style for series whose
+    # discriminator labels match `key=value`.
+    plot p48_style_override
+      series: phase
+      y1: avg(recall_mean) by (phase, limit)
+      style phase=oracle:line=solid width=3
+      style phase=pvs_query:line=dotted width=2 color=#cc0000
+
+    # ═══════════════════════════════════════════════════════════════
+    # SECTION 11 — Combined showcase
+    # ═══════════════════════════════════════════════════════════════
+
+    text
+      ## Combined example — paired Pareto with most directives
+
+    # Paired x1/y1 with auto-vary point labels, log x scale,
+    # custom legend template, per-series style overrides, pinned
+    # recall ceiling.
+    plot p49_combined
+      label "Recall vs QPS — full feature showcase"
+      legend: br
+      y1: (cycles_total_rate, recall_mean, *){phase=~".*query"} by (phase, k, limit)
+      x-legend: "QPS"
+      xscale=log
+      y-side: left
+      y-labels: ["recall"]
+      y-legends: ["k=[k] [phase]"]
+      y-ranges: [[, 1.0]]
+      series: phase, k
+      style phase=pvs_query:line=dotted
+
+# =====================================================================
+# Closing notes
+# =====================================================================
+#
+# Directives NOT shown above (each axis has the same surface as y1):
+#   y2-min: <n>          y2-max: <n>          y2-range: [a, b]
+#   y2-scale: <name>     y2-ticks: <spec>     y2-side: left|right
+#   y2-label: "..."      y2-legend: "[name]"
+#   (and likewise for y3, y4)
+#
+# Retired directives (parser errors with migration hints):
+#   y-label / y-legend / y-scale / y-min / y-max / y-range / y-ticks
+#     → use `y1-<sub>` (axis-1) or the plural form `y-<sub>s`.
+#
+# CLI equivalents for body directives (ad-hoc renders):
+#   --metric, --x, --y, --x-query, --series, --filter, --legend,
+#   --xscale, --yscale, --y-min, --y-max, --x-range, --y-range,
+#   --x-ticks, --y-ticks, --label, --title, --palette, --line,
+#   --width, --marker, --size, --color, --output, --verbose,
+#   --csv-also, --report, --add-to-markdown, --update-markdown
+# Plus axis-specific: --y2 / --y2-label / --y2-legend / --y2-min / ...
+#

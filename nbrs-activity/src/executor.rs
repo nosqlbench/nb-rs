@@ -1332,7 +1332,9 @@ async fn run_phase(
     }
 
     // --- Compile inner kernel via BindingScope ---
-    let (iter_op_builder, iter_ops, runtime_cursor_extents) = if is_iter || has_bindings {
+    let (iter_op_builder, iter_ops, runtime_cursor_extents,
+         runtime_cursor_min_ms, runtime_cursor_min_passes,
+         runtime_cursor_min_count, runtime_cursor_delta) = if is_iter || has_bindings {
         let mut ops = phase.ops.clone();
 
         // SRD-16 single read path: every `{name}` placeholder
@@ -1591,19 +1593,62 @@ async fn run_phase(
         // record the resolved extent — keyed by cursor name — for the
         // source-factory construction below.
         let mut runtime_extents: HashMap<String, u64> = HashMap::new();
-        let cursor_specs: Vec<(String, Option<(String, String)>, Option<u64>)> = kernel
-            .program()
+        // Resolved policy-arg buckets, keyed by cursor name.
+        // The source-factory site reads from these to build the
+        // appropriate ExtensionPolicy per CursorKind. Pulled
+        // here while `kernel` is in scope.
+        let mut runtime_min_ms: HashMap<String, u64> = HashMap::new();
+        let mut runtime_min_passes: HashMap<String, u64> = HashMap::new();
+        let mut runtime_min_count: HashMap<String, u64> = HashMap::new();
+        let mut runtime_delta: HashMap<String, u64> = HashMap::new();
+        let cursor_specs: Vec<(String, Option<(String, String)>, Option<u64>, nbrs_variates::source::CursorKind)>
+            = kernel.program()
             .cursor_schemas()
             .iter()
-            .map(|s| (s.name.clone(), s.extent_outputs.clone(), s.extent_limit))
+            .map(|s| (s.name.clone(), s.extent_outputs.clone(),
+                      s.extent_limit, s.cursor_kind.clone()))
             .collect();
-        for (name, outputs, limit) in cursor_specs {
+        for (name, outputs, limit, cursor_kind) in cursor_specs {
             if let Some((start_out, end_out)) = outputs {
                 let start = kernel.pull(&start_out).as_u64();
                 let end = kernel.pull(&end_out).as_u64();
                 let extent = end.saturating_sub(start);
                 let final_extent = limit.map(|l| extent.min(l)).unwrap_or(extent);
-                runtime_extents.insert(name, final_extent);
+                runtime_extents.insert(name.clone(), final_extent);
+            }
+            use nbrs_variates::source::CursorKind::*;
+            // Each branch pulls only the outputs its policy needs.
+            // `delta_output` is optional — when absent, the source
+            // factory uses `base` (the initial extent) as the
+            // extension step.
+            match &cursor_kind {
+                Range => {}
+                ExtendingTimed { min_ms_output, delta_output } => {
+                    runtime_min_ms.insert(name.clone(), kernel.pull(min_ms_output).as_u64());
+                    if let Some(d) = delta_output {
+                        runtime_delta.insert(name.clone(), kernel.pull(d).as_u64());
+                    }
+                }
+                ExtendingPasses { min_passes_output, delta_output } => {
+                    runtime_min_passes.insert(name.clone(), kernel.pull(min_passes_output).as_u64());
+                    if let Some(d) = delta_output {
+                        runtime_delta.insert(name.clone(), kernel.pull(d).as_u64());
+                    }
+                }
+                ExtendingCount { min_count_output, delta_output } => {
+                    runtime_min_count.insert(name.clone(), kernel.pull(min_count_output).as_u64());
+                    if let Some(d) = delta_output {
+                        runtime_delta.insert(name.clone(), kernel.pull(d).as_u64());
+                    }
+                }
+                ExtendingElapsedAndPasses { min_ms_output, min_passes_output, delta_output }
+                | ExtendingElapsedOrPasses { min_ms_output, min_passes_output, delta_output } => {
+                    runtime_min_ms.insert(name.clone(), kernel.pull(min_ms_output).as_u64());
+                    runtime_min_passes.insert(name.clone(), kernel.pull(min_passes_output).as_u64());
+                    if let Some(d) = delta_output {
+                        runtime_delta.insert(name.clone(), kernel.pull(d).as_u64());
+                    }
+                }
             }
         }
         // Wrap in an `Arc<OpBuilder>` so the per-iteration extern
@@ -1634,7 +1679,8 @@ async fn run_phase(
             }
             Arc::new(b)
         };
-        (op_builder, ops, runtime_extents)
+        (op_builder, ops, runtime_extents, runtime_min_ms,
+         runtime_min_passes, runtime_min_count, runtime_delta)
     } else {
         // Workload-kernel fallback: no per-iteration values to
         // inject. Materialize a fresh subscope of the live
@@ -1653,7 +1699,8 @@ async fn run_phase(
                 b = b.with_op_template_programs(map);
             }
         }
-        (Arc::new(b), phase.ops.clone(), HashMap::new())
+        (Arc::new(b), phase.ops.clone(), HashMap::new(), HashMap::new(),
+         HashMap::new(), HashMap::new(), HashMap::new())
     };
 
     let op_sequence = OpSequence::from_ops(iter_ops, ctx.seq_type);
@@ -1785,9 +1832,78 @@ async fn run_phase(
             let extent = runtime_cursor_extents.get(&schema.name).copied()
                 .or(schema.extent)
                 .unwrap_or(phase_cycles);
-            Some(Arc::new(
-                nbrs_variates::source::RangeSourceFactory::named(&schema.name, 0, extent)
-            ))
+            use nbrs_variates::source as src;
+            // Effective extension delta — `runtime_cursor_delta`
+            // when the workload supplied an explicit `delta` arg,
+            // else the cursor's base (the initial extent).
+            let delta = runtime_cursor_delta.get(&schema.name).copied()
+                .unwrap_or(extent);
+            match &schema.cursor_kind {
+                src::CursorKind::Range => {
+                    Some(Arc::new(
+                        src::RangeSourceFactory::named(&schema.name, 0, extent)
+                    ) as Arc<dyn src::DataSourceFactory>)
+                }
+                src::CursorKind::ExtendingTimed { .. } => {
+                    let min_ms = runtime_cursor_min_ms.get(&schema.name).copied().unwrap_or(0);
+                    let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
+                        src::UntilElapsedPolicy { min_ms, delta },
+                    );
+                    Some(Arc::new(
+                        src::ExtendingRangeSourceFactory::new(&schema.name, 0, extent, policy)
+                    ) as Arc<dyn src::DataSourceFactory>)
+                }
+                src::CursorKind::ExtendingPasses { .. } => {
+                    let min_passes = runtime_cursor_min_passes.get(&schema.name).copied().unwrap_or(0);
+                    let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
+                        src::UntilPassesPolicy { min_passes, delta },
+                    );
+                    Some(Arc::new(
+                        src::ExtendingRangeSourceFactory::new(&schema.name, 0, extent, policy)
+                    ) as Arc<dyn src::DataSourceFactory>)
+                }
+                src::CursorKind::ExtendingCount { .. } => {
+                    let min_count = runtime_cursor_min_count.get(&schema.name).copied().unwrap_or(0);
+                    let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
+                        src::UntilCountPolicy { min_count, delta },
+                    );
+                    Some(Arc::new(
+                        src::ExtendingRangeSourceFactory::new(&schema.name, 0, extent, policy)
+                    ) as Arc<dyn src::DataSourceFactory>)
+                }
+                src::CursorKind::ExtendingElapsedAndPasses { .. } => {
+                    let min_ms = runtime_cursor_min_ms.get(&schema.name).copied().unwrap_or(0);
+                    let min_passes = runtime_cursor_min_passes.get(&schema.name).copied().unwrap_or(0);
+                    let elapsed: Arc<dyn src::ExtensionPolicy> = Arc::new(
+                        src::UntilElapsedPolicy { min_ms, delta },
+                    );
+                    let passes: Arc<dyn src::ExtensionPolicy> = Arc::new(
+                        src::UntilPassesPolicy { min_passes, delta },
+                    );
+                    let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
+                        src::AndPolicy { policies: vec![elapsed, passes] },
+                    );
+                    Some(Arc::new(
+                        src::ExtendingRangeSourceFactory::new(&schema.name, 0, extent, policy)
+                    ) as Arc<dyn src::DataSourceFactory>)
+                }
+                src::CursorKind::ExtendingElapsedOrPasses { .. } => {
+                    let min_ms = runtime_cursor_min_ms.get(&schema.name).copied().unwrap_or(0);
+                    let min_passes = runtime_cursor_min_passes.get(&schema.name).copied().unwrap_or(0);
+                    let elapsed: Arc<dyn src::ExtensionPolicy> = Arc::new(
+                        src::UntilElapsedPolicy { min_ms, delta },
+                    );
+                    let passes: Arc<dyn src::ExtensionPolicy> = Arc::new(
+                        src::UntilPassesPolicy { min_passes, delta },
+                    );
+                    let policy: Arc<dyn src::ExtensionPolicy> = Arc::new(
+                        src::OrPolicy { policies: vec![elapsed, passes] },
+                    );
+                    Some(Arc::new(
+                        src::ExtendingRangeSourceFactory::new(&schema.name, 0, extent, policy)
+                    ) as Arc<dyn src::DataSourceFactory>)
+                }
+            }
         } else {
             None
         }
@@ -1801,6 +1917,34 @@ async fn run_phase(
         .map(|f| f.schema().name.clone())
         .unwrap_or_else(|| "cycles".into());
     let progress_fibers = phase_concurrency;
+
+    // Stride-alignment warning: when stanza_len doesn't evenly
+    // divide the cursor's extent, the boundary stanza is
+    // partial (shorter than stanza_len) — which is fine for
+    // the source dispatcher itself, but it surprises
+    // workload authors whose op-sequence assumes full stanzas
+    // (e.g. relevancy evaluators that batch over a
+    // stanza-sized window). Same applies per-segment for
+    // extending cursors: the `base` step that drives each
+    // extension behaves the same way as the initial extent.
+    //
+    // Fired here, once at phase setup, after both numbers
+    // are known. Silent when alignment is clean — the
+    // common case for `cursor q = range(0, N)` with `N`
+    // divisible by stanza_len.
+    let stanza_len_u64 = stanza_len as u64;
+    if stanza_len_u64 > 0 && progress_extent > 0 && progress_extent % stanza_len_u64 != 0 {
+        let remainder = progress_extent % stanza_len_u64;
+        let full_stanzas = progress_extent / stanza_len_u64;
+        crate::diag!(crate::observer::LogLevel::Warn,
+            "phase '{phase_name}': cursor extent ({progress_extent}) is not an \
+             even multiple of stanza length ({stanza_len_u64}) — boundary stanza \
+             will be {remainder}/{stanza_len_u64} of a full stride after \
+             {full_stanzas} clean stanza(s). If the op-sequence assumes \
+             complete stanzas (e.g. for relevancy or aggregation evaluation), \
+             align by sizing the cursor to a multiple of {stanza_len_u64}, or \
+             by adjusting stanza_concurrency / ops.");
+    }
 
     // Now that the source factory and its global extent are
     // settled, fire phase_starting with the actual loop bound —

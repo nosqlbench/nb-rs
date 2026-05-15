@@ -73,13 +73,13 @@ a mistake. Strict mode catches it at compile time.
 
 ## Input Declaration (design target)
 
-In non-strict mode, omitting `inputs := (cycle)` implies a
+In non-strict mode, omitting `input cycle: u64` implies a
 single `cycle` input. In strict mode, inputs must be declared
 explicitly.
 
 | Mode | Missing input declaration |
 |------|-------------------------------|
-| Non-strict | Implicit `inputs := (cycle)` |
+| Non-strict | Implicit `input cycle: u64` |
 | Strict | Error: "inputs must be declared explicitly" |
 
 **Rationale:** Implicit defaults hide assumptions. A module that

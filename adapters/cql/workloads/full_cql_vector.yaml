@@ -29,7 +29,14 @@ params:
   fknn_profile: default
   vector_idx_suffix: _vector_idx
   meta_idx_suffix: _meta_idx
-  min_query_cycles: 100000
+  # Minimum wall-clock duration per ann_query / pvs_query phase
+  # in milliseconds. The query cursor extends in `base`-sized
+  # passes (one full sweep of the prebuffered query set) until
+  # this much time has elapsed since phase start, at which point
+  # the policy stops at the next whole-pass boundary. 60 s gives
+  # each (profile, k, limit) phase enough cadence-window
+  # coverage for stable rate and latency averages.
+  min_query_ms: 15000
 
 # Unified report block (SRD-46): plots + tables in declaration
 # order. Each scenario contributes its items to its own
@@ -76,40 +83,34 @@ report:
       query recall: avg(recall_mean{k="10"}) by (profile,limit)
       query latency: avg(cycles_servicetime_mean) by (profile,limit)
 
-    # Annotated reference plot — recall on the y-axis, QPS
-    # on the x-axis with a logarithmic scale. The directives
-    # below cover every plot-DSL primitive currently in use;
-    # comment per line explains what that primitive does.
     plot recall_vs_qps
-      label "Recall vs QPS (log scale), oracles & PVS"
+      label "Recall vs QPS, (oracles & PVS)"
       legend: br
-      # Compact paired form: `(METRIC_X, METRIC_Y, point-label){labels} by (...)`
-      # expands to two parallel `avg(...)` queries sharing the
-      # label filter and `by` clause. `limit` varies along each
-      # curve (the within-line dimension); `phase` and `k` are
-      # the per-line discriminators in `series:` below.
-      # Third positional `*` enables auto-vary point labels:
-      # at each rendered point, surface every label in the
-      # source data that isn't a series discriminator. With
-      # `series: phase,k` and `by (phase,k,limit)`, that's
-      # `limit=<value>` at every point. For richer
-      # annotations (e.g. `limit=N, x=<rate>`) replace `*`
-      # with a `point-label1:` long-form directive listing
-      # label names plus the reserved tokens `x`, `y`, `n`.
-      y1: (cycles_total_rate, recall_mean, *){phase=~".*query"} by (phase,k,limit)
-      point-label1: limit, x
+      y1: (cycles_total_rate, recall_mean){phase=~".*query"} by (phase,k,limit)
+      point-label1: limit
+      x-legend: "QPS (log)"
+      xscale=log
+      y-side: left
+      y-labels: ["recall"]
+      y-legends: ["k=[k] [phase]"]
+      y-ranges: [[,1.0]]
+      series: phase,k
+      style phase=ann_query:line=dotted
+
+    plot recall_vs_qps__pvs
+      label "Recall vs QPS (PVS)"
+      legend: br
+      y1: (cycles_total_rate, recall_mean){phase=~"pvs_query"} by (phase,k,limit)
+      point-label1: limit
       x-legend: "QPS"
       xscale=log
       y-side: left
       y-labels: ["recall"]
-      # Legend uses placeholders that bind from `series:`
-      # labels. `[k]` and `[phase]` resolve because they're
-      # listed in `series:`. `[limit]` would NOT resolve (it
-      # varies along the curve, not per line).
       y-legends: ["k=[k] [phase]"]
       y-ranges: [[,1.0]]
       series: phase,k
-      style phase=pvs_query:line=dotted
+      style phase=ann_query:line=dotted
+
 
 bindings: |
   profiles := matching_profiles("{dataset}", "{prefix}")
@@ -419,27 +420,49 @@ phases:
     bindings: |
       init prebuffered = dataset_prebuffer("{dataset}:{profile}")
       init base = query_count(prebuffered)
-      passes := set_or_get(
-        query_passes,
-        multiples_at_least(min_query_cycles, base)
-      )
-      cursor q = range(0, base * passes)
+      # Extending cursor: dispatch one full `base`-sized pass
+      # through the prebuffered query set, then keep extending
+      # by another `base` each time the cursor reaches its end
+      # — until min_query_ms of wall-clock time has elapsed
+      # since phase start. The policy stops at the next
+      # whole-pass boundary, so each phase always runs an
+      # integer number of complete passes (no partial sweep
+      # of the query set).
+      cursor q = until_elapsed(base, min_query_ms)
       query_vector := query_vector_at(prebuffered, q % base)
       ground_truth := neighbor_indices_at(prebuffered, q % base)
 
     ops:
       select_ann:
         prepared: |
-          SELECT key FROM {keyspace}.{table} 
+          SELECT [key] FROM {keyspace}.{table}
           ORDER BY value
-          ANN OF {query_vector} 
+          ANN OF {query_vector}
           LIMIT {limit}
+        # `count` is the result-body row count (a magic extern in
+        # the closure-binding economy). Referencing it directly
+        # from `value:` is enough — the metrics use-site walker
+        # forces the `count` input slot to be allocated on the
+        # op-template kernel, and the metrics wrapper reads it via
+        # ctx.wires.get fresh on every cycle.
+        metrics:
+          rows_per_op:
+            kind: gauge
+            value: count
         evaluations:
           relevancy:
             actual: key
-            expected: "{ground_truth}"
-            k: "{k}"
-            r: "{limit}"
+            # Bare wire-name — the evaluator reads `ground_truth`
+            # via ctx.wires.get with no string round-trip; the
+            # typed Value (VecI32 / VecF32 / Str) flows directly
+            # to the recall computation. Legacy `"{ground_truth}"`
+            # text-template form still works (braces are stripped
+            # at wrap-time) but the bare form is canonical.
+            expected: ground_truth
+            # Bare wire-names — same one-shot wrap-time resolution
+            # as the legacy "{k}" / "{limit}" text-template form.
+            k: k
+            r: limit
             functions:
               - recall
 
@@ -560,12 +583,26 @@ phases:
           WHERE metadata = {predicate}
           ORDER BY value
           ANN OF {query_vector} LIMIT {limit}
+        # Same direct-reference pattern as ann_query — no
+        # throw-away result-binding needed.
+        metrics:
+          rows_per_op:
+            kind: gauge
+            value: count
         evaluations:
           relevancy:
             actual: key
-            expected: "{ground_truth}"
-            k: "{k}"
-            r: "{limit}"
+            # Bare wire-name — the evaluator reads `ground_truth`
+            # via ctx.wires.get with no string round-trip; the
+            # typed Value (VecI32 / VecF32 / Str) flows directly
+            # to the recall computation. Legacy `"{ground_truth}"`
+            # text-template form still works (braces are stripped
+            # at wrap-time) but the bare form is canonical.
+            expected: ground_truth
+            # Bare wire-names — same one-shot wrap-time resolution
+            # as the legacy "{k}" / "{limit}" text-template form.
+            k: k
+            r: limit
             functions:
               - recall
 

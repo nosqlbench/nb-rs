@@ -6,7 +6,7 @@
 
 /// @graph
 /// 200-node chain, single input. Tests depth scaling.
-inputs := (cycle)
+input cycle: u64
 
 n0 := hash(cycle)
 n1 := mod(n0, 997)

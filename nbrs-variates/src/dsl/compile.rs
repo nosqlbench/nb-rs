@@ -216,7 +216,7 @@ pub fn compile_gk_with_libs_and_limit(
 /// Compile with a source directory and optional strict mode.
 ///
 /// When `strict` is true, the compiler enforces:
-/// - Explicit `inputs := (...)` declaration (no inference)
+/// - Explicit `input ...: u64` declaration (no inference)
 /// - All module arguments must be named (no positional)
 /// - All module inputs must be provided by the caller (no fallthrough to coordinates)
 pub fn compile_gk_strict(source: &str, source_dir: Option<&Path>, strict: bool) -> Result<GkKernel, String> {
@@ -333,7 +333,7 @@ pub fn compile_gk_checked(source: &str) -> (Result<GkKernel, ()>, DiagnosticRepo
 /// assert_eq!(v.as_f64(), 16.0);  // both float literals → f64_mul
 /// ```
 pub fn eval_const_expr(source: &str) -> Result<crate::node::Value, String> {
-    let wrapped = format!("inputs := ()\nout := {source}");
+    let wrapped = format!("\nout := {source}");
     // Constant-folding inside `compile_gk` invokes node `eval`
     // for inputs-free DAGs, so any node that panics on bad data
     // (e.g. `handle_of(&Value::None)` after a failed
@@ -467,7 +467,7 @@ pub fn compile_ast_with_path(file: &GkFile, source_dir: Option<&Path>) -> Result
 /// Compile a parsed AST with module resolution and optional strict mode.
 ///
 /// When `strict` is true, the compiler enforces:
-/// - Explicit `inputs := (...)` declaration (no inference)
+/// - Explicit `input ...: u64` declaration (no inference)
 /// - All module arguments must be named (no positional)
 /// - All module inputs must be provided by the caller (no fallthrough)
 pub fn compile_ast_strict(file: &GkFile, source_dir: Option<&Path>, strict: bool) -> Result<GkKernel, String> {
@@ -658,7 +658,131 @@ impl Compiler {
         // routine reads the folded values after compilation and updates
         // the schema's extent in place.
         let mut deferred: Option<(Option<u64>, String, Option<u64>, String)> = None;
+        let mut cursor_kind_for_decl: crate::source::CursorKind = crate::source::CursorKind::Range;
         let extent = match &effective_constructor {
+            // ── until_*(...) — extending cursors ────────────────
+            // Recognise every cursor function whose constructor
+            // declares an extending policy. The shape of each is:
+            //   until_FAMILY(base, ...policy_args[, delta])
+            // where `base` is the initial extent / pass size and
+            // policy_args carry the family's stop-condition
+            // parameters. An optional final `delta` overrides the
+            // extension step size (defaults to `base`).
+            //
+            // Recognised families:
+            //   until_elapsed(base, min_ms[, delta])
+            //   until_passes(base, min_passes[, delta])
+            //   until_count(base, min_count[, delta])
+            //   until_elapsed_and_passes(base, min_ms, min_passes[, delta])
+            //   until_elapsed_or_passes(base, min_ms, min_passes[, delta])
+            //
+            // Common shape: emit `base` as the cursor's `end` aux
+            // output, `start` as a literal 0, and each policy arg
+            // as a named aux output the runtime pulls at phase
+            // setup. The CursorKind variant carries the output
+            // names so the executor knows how to build the policy.
+            crate::dsl::ast::Expr::Call(call) if matches!(
+                call.func.as_str(),
+                "until_elapsed" | "until_passes" | "until_count"
+                | "until_elapsed_and_passes" | "until_elapsed_or_passes"
+            ) => {
+                let family = call.func.as_str();
+                let expected = match family {
+                    "until_elapsed" | "until_passes" | "until_count" => (2usize, 3usize),
+                    "until_elapsed_and_passes" | "until_elapsed_or_passes" => (3, 4),
+                    _ => unreachable!(),
+                };
+                let n = call.args.len();
+                if n < expected.0 || n > expected.1 {
+                    return Err(format!(
+                        "cursor '{source_name}': `{family}` takes {}-{} args, got {n}",
+                        expected.0, expected.1,
+                    ));
+                }
+                // Common: base, start, end aux outputs.
+                let base_literal = positional_int_lit(&call.args[0]);
+                let base_name = format!("__cursor_extent_{source_name}_end");
+                let start_name = format!("__cursor_extent_{source_name}_start");
+                let _ = self.compile_binding(asm, &[start_name.clone()],
+                    &crate::dsl::ast::Expr::IntLit(0, decl.span));
+                if let crate::dsl::ast::Arg::Positional(expr) = &call.args[0] {
+                    self.compile_binding(asm, &[base_name.clone()], expr)
+                        .map_err(|e| format!(
+                            "cursor '{source_name}': failed to compile {family} base: {e}"))?;
+                }
+                // Helper closure: compile a positional arg as a
+                // named aux output. Returns the name on success.
+                let mut compile_aux = |idx: usize, suffix: &str| -> Result<String, String> {
+                    let out_name = format!("__cursor_{suffix}_{source_name}");
+                    if let crate::dsl::ast::Arg::Positional(expr) = &call.args[idx] {
+                        self.compile_binding(asm, &[out_name.clone()], expr)
+                            .map_err(|e| format!(
+                                "cursor '{source_name}': failed to compile \
+                                 {family} arg {idx}: {e}"))?;
+                    }
+                    Ok(out_name)
+                };
+                // Family-specific arg layout.
+                cursor_kind_for_decl = match family {
+                    "until_elapsed" => {
+                        let min_ms_name = compile_aux(1, "min_ms")?;
+                        let delta_output = if n == 3 {
+                            Some(compile_aux(2, "delta")?)
+                        } else { None };
+                        crate::source::CursorKind::ExtendingTimed {
+                            min_ms_output: min_ms_name,
+                            delta_output,
+                        }
+                    }
+                    "until_passes" => {
+                        let min_passes_name = compile_aux(1, "min_passes")?;
+                        let delta_output = if n == 3 {
+                            Some(compile_aux(2, "delta")?)
+                        } else { None };
+                        crate::source::CursorKind::ExtendingPasses {
+                            min_passes_output: min_passes_name,
+                            delta_output,
+                        }
+                    }
+                    "until_count" => {
+                        let min_count_name = compile_aux(1, "min_count")?;
+                        let delta_output = if n == 3 {
+                            Some(compile_aux(2, "delta")?)
+                        } else { None };
+                        crate::source::CursorKind::ExtendingCount {
+                            min_count_output: min_count_name,
+                            delta_output,
+                        }
+                    }
+                    "until_elapsed_and_passes" => {
+                        let min_ms_name = compile_aux(1, "min_ms")?;
+                        let min_passes_name = compile_aux(2, "min_passes")?;
+                        let delta_output = if n == 4 {
+                            Some(compile_aux(3, "delta")?)
+                        } else { None };
+                        crate::source::CursorKind::ExtendingElapsedAndPasses {
+                            min_ms_output: min_ms_name,
+                            min_passes_output: min_passes_name,
+                            delta_output,
+                        }
+                    }
+                    "until_elapsed_or_passes" => {
+                        let min_ms_name = compile_aux(1, "min_ms")?;
+                        let min_passes_name = compile_aux(2, "min_passes")?;
+                        let delta_output = if n == 4 {
+                            Some(compile_aux(3, "delta")?)
+                        } else { None };
+                        crate::source::CursorKind::ExtendingElapsedOrPasses {
+                            min_ms_output: min_ms_name,
+                            min_passes_output: min_passes_name,
+                            delta_output,
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+                deferred = Some((Some(0), start_name, base_literal, base_name));
+                base_literal
+            }
             crate::dsl::ast::Expr::Call(call) if call.func == "range" && call.args.len() >= 2 => {
                 let start_literal = positional_int_lit(&call.args[0]);
                 let end_literal = positional_int_lit(&call.args[1]);
@@ -778,6 +902,7 @@ impl Compiler {
             extent: effective_extent,
             extent_outputs,
             extent_limit: self.cursor_limit,
+            cursor_kind: cursor_kind_for_decl.clone(),
         });
 
         // Record deferred extent resolution if the range bounds are not
@@ -795,32 +920,38 @@ impl Compiler {
     }
 
     pub(super) fn compile(&mut self, file: &GkFile) -> Result<GkKernel, String> {
-        // First pass: find explicit coordinates
-        let mut has_explicit_coords = false;
+        // First pass: collect explicit `input` declarations,
+        // deduping by name so re-declaration is a no-op (the slot
+        // already exists; the second `input cycle: u64` line is just
+        // a redundant reaffirmation, not an error).
+        let mut has_explicit_inputs = false;
         for stmt in &file.statements {
-            if let Statement::Inputs(names, _) = stmt {
-                self.input_names = names.clone();
-                has_explicit_coords = true;
+            if let Statement::InputDecl(d) = stmt {
+                if !self.input_names.iter().any(|n| n == &d.name) {
+                    self.input_names.push(d.name.clone());
+                }
+                has_explicit_inputs = true;
             }
         }
 
         // Input declaration check: error in strict mode (modules, .gk files)
-        if !has_explicit_coords && self.strict {
+        if !has_explicit_inputs && self.strict {
             return Err(
-                "strict mode: no 'inputs' declaration — add 'inputs := (...)' \
-                 to declare graph inputs explicitly".into()
+                "strict mode: no `input` declaration — add `input <name>: <type>` \
+                 (or the tuple form `input (a: u64, b: f64)`) to declare graph \
+                 inputs explicitly".into()
             );
         }
 
-        // If no explicit coordinates, infer from unbound references
-        if !has_explicit_coords {
+        // If no explicit inputs, infer from unbound references
+        if !has_explicit_inputs {
             let defined: HashSet<String> = file.statements.iter().flat_map(|stmt| {
                 match stmt {
                     Statement::InitBinding(b) => vec![b.name.clone()],
                     Statement::CycleBinding(b) => b.targets.clone(),
                     Statement::ModuleDef(m) => vec![m.name.clone()],
                     Statement::ExternPort(p) => vec![p.name.clone()],
-                    Statement::Inputs(_, _) => vec![],
+                    Statement::InputDecl(_) => vec![],
                     Statement::Cursor(_) => vec![],
                     Statement::Pragma { .. } => vec![],
                 }
@@ -829,7 +960,7 @@ impl Compiler {
             let mut referenced: HashSet<String> = HashSet::new();
             for stmt in &file.statements {
                 let expr = match stmt {
-                    Statement::Inputs(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
+                    Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
                     Statement::InitBinding(b) => &b.value,
                     Statement::CycleBinding(b) => &b.value,
                 };
@@ -863,12 +994,12 @@ impl Compiler {
 
         // Auto-expose every declared input as a passthrough output,
         // mirroring the `extern` declaration's behavior. This makes
-        // `inputs := (cycle, thread)` produce `cycle` and `thread`
-        // as kernel outputs that downstream consumers can read via
-        // `pull(...)` — no user-written `cycle := identity(cycle)`
-        // shim required. Inputs and externs are now uniform:
-        // declaration syntax differs but the resulting input+output
-        // shape is identical.
+        // `input cycle: u64` (or `input (cycle: u64, thread: u64)`)
+        // produce `cycle` and `thread` as kernel outputs that
+        // downstream consumers can read via `pull(...)` — no
+        // user-written `cycle := identity(cycle)` shim required.
+        // Inputs and externs are now uniform: declaration syntax
+        // differs but the resulting input+output shape is identical.
         for input_name in self.input_names.clone() {
             let passthrough = Box::new(
                 crate::nodes::identity::PortPassthrough::new(&input_name, crate::node::PortType::U64)
@@ -885,7 +1016,7 @@ impl Compiler {
         // Second pass: process all bindings
         for stmt in &file.statements {
             match stmt {
-                Statement::Inputs(_, _) => {} // already handled
+                Statement::InputDecl(_) => {} // already handled in first pass
                 Statement::InitBinding(b) => {
                     self.compile_binding(
                         &mut asm,
@@ -1074,10 +1205,12 @@ impl Compiler {
         // Reuse the same logic as compile(), but return the assembler
         // instead of calling asm.compile().
 
-        // First pass: find explicit coordinates
+        // First pass: collect explicit `input` declarations, dedup by name.
         for stmt in &file.statements {
-            if let Statement::Inputs(names, _) = stmt {
-                self.input_names = names.clone();
+            if let Statement::InputDecl(d) = stmt
+                && !self.input_names.iter().any(|n| n == &d.name)
+            {
+                self.input_names.push(d.name.clone());
             }
         }
 
@@ -1088,7 +1221,7 @@ impl Compiler {
                     Statement::CycleBinding(b) => b.targets.clone(),
                     Statement::ModuleDef(m) => vec![m.name.clone()],
                     Statement::ExternPort(p) => vec![p.name.clone()],
-                    Statement::Inputs(_, _) => vec![],
+                    Statement::InputDecl(_) => vec![],
                     Statement::Cursor(_) => vec![],
                     Statement::Pragma { .. } => vec![],
                 }
@@ -1097,7 +1230,7 @@ impl Compiler {
             let mut referenced: HashSet<String> = HashSet::new();
             for stmt in &file.statements {
                 let expr = match stmt {
-                    Statement::Inputs(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
+                    Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
                     Statement::InitBinding(b) => &b.value,
                     Statement::CycleBinding(b) => &b.value,
                 };
@@ -1134,7 +1267,7 @@ impl Compiler {
                 }
                 Statement::ExternPort(_) => {}
                 Statement::ModuleDef(_) => {}
-                Statement::Inputs(_, _) => {}
+                Statement::InputDecl(_) => {}
                 Statement::Pragma { .. } => {}
                 Statement::Cursor(decl) => {
                     self.process_cursor(&mut asm, decl)?;
@@ -1162,22 +1295,25 @@ impl Compiler {
         file: &GkFile,
         required_outputs: Option<&[String]>,
     ) -> Result<GkKernel, String> {
-        // First pass: find explicit coordinates
+        // First pass: collect explicit `input` declarations, dedup by name.
         for stmt in &file.statements {
-            if let Statement::Inputs(names, _) = stmt {
-                self.input_names = names.clone();
+            if let Statement::InputDecl(d) = stmt
+                && !self.input_names.iter().any(|n| n == &d.name)
+            {
+                self.input_names.push(d.name.clone());
             }
         }
 
         // Input declaration check: error in strict mode (modules, .gk files)
         if self.input_names.is_empty() && self.strict {
             return Err(
-                "strict mode: no 'inputs' declaration — add 'inputs := (...)' \
-                 to declare graph inputs explicitly".into()
+                "strict mode: no `input` declaration — add `input <name>: <type>` \
+                 (or the tuple form `input (a: u64, b: f64)`) to declare graph \
+                 inputs explicitly".into()
             );
         }
 
-        // If no explicit coordinates, infer from unbound references
+        // If no explicit inputs, infer from unbound references
         if self.input_names.is_empty() {
             let defined: HashSet<String> = file.statements.iter().flat_map(|stmt| {
                 match stmt {
@@ -1185,7 +1321,7 @@ impl Compiler {
                     Statement::CycleBinding(b) => b.targets.clone(),
                     Statement::ModuleDef(m) => vec![m.name.clone()],
                     Statement::ExternPort(p) => vec![p.name.clone()],
-                    Statement::Inputs(_, _) => vec![],
+                    Statement::InputDecl(_) => vec![],
                     Statement::Cursor(_) => vec![],
                     Statement::Pragma { .. } => vec![],
                 }
@@ -1194,7 +1330,7 @@ impl Compiler {
             let mut referenced: HashSet<String> = HashSet::new();
             for stmt in &file.statements {
                 let expr = match stmt {
-                    Statement::Inputs(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
+                    Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
                     Statement::InitBinding(b) => &b.value,
                     Statement::CycleBinding(b) => &b.value,
                 };
@@ -1230,7 +1366,7 @@ impl Compiler {
         // Second pass: process all bindings into the assembler
         for stmt in &file.statements {
             match stmt {
-                Statement::Inputs(_, _) => {}
+                Statement::InputDecl(_) => {}
                 Statement::InitBinding(b) => {
                     self.compile_binding(
                         &mut asm,
@@ -1431,7 +1567,7 @@ mod tests {
     #[test]
     fn compile_hello_world() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             hashed := hash(cycle)
             user_id := mod(hashed, 1000000)
         "#;
@@ -1444,7 +1580,7 @@ mod tests {
     #[test]
     fn compile_with_inline_nesting() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             result := mod(hash(cycle), 100)
         "#;
         let mut kernel = compile_gk(src).unwrap();
@@ -1455,7 +1591,7 @@ mod tests {
     #[test]
     fn compile_deterministic() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             h := hash(cycle)
         "#;
         let mut kernel = compile_gk(src).unwrap();
@@ -1469,7 +1605,7 @@ mod tests {
     #[test]
     fn shared_modifier_tracked() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             shared counter := 0
             normal := mod(hash(cycle), 100)
         "#;
@@ -1492,7 +1628,7 @@ mod tests {
         // pointing at the SRD-16 §"Non-literal `shared`
         // initializers" section.
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             shared rolling := hash(cycle)
         "#;
         let err = compile_gk(src).expect_err("non-literal shared init must error");
@@ -1503,7 +1639,7 @@ mod tests {
     #[test]
     fn final_modifier_tracked() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             final dim := 128
         "#;
         let kernel = compile_gk(src).unwrap();
@@ -1516,7 +1652,7 @@ mod tests {
     #[test]
     fn shared_init_modifier_tracked() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             shared init budget = 100
         "#;
         let kernel = compile_gk(src).unwrap();
@@ -1531,7 +1667,7 @@ mod tests {
     #[test]
     fn final_init_modifier_tracked() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             final init max_dim = 256
         "#;
         let kernel = compile_gk(src).unwrap();
@@ -1545,7 +1681,7 @@ mod tests {
     #[test]
     fn shared_outputs_query() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             shared counter := 0
             shared budget := 100
             normal := hash(cycle)
@@ -1560,7 +1696,7 @@ mod tests {
     #[test]
     fn final_outputs_query() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             final dim := 128
             final dataset := "example"
             normal := hash(cycle)
@@ -1575,7 +1711,7 @@ mod tests {
     #[test]
     fn unmodified_bindings_have_none_modifier() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             h := hash(cycle)
             v := mod(h, 100)
         "#;
@@ -1593,7 +1729,7 @@ mod tests {
     #[test]
     fn compile_mixed_radix() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             (tenant, device, reading) := mixed_radix(cycle, 100, 1000, 0)
             tenant_h := hash(tenant)
             tenant_code := mod(tenant_h, 10000)
@@ -1607,7 +1743,7 @@ mod tests {
     #[test]
     fn compile_string_constant() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             label := "hello world"
         "#;
         let mut kernel = compile_gk(src).unwrap();
@@ -1618,7 +1754,7 @@ mod tests {
     #[test]
     fn compile_int_constant() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             base := 1710000000000
         "#;
         let mut kernel = compile_gk(src).unwrap();
@@ -1630,7 +1766,7 @@ mod tests {
     fn compile_comments_ignored() {
         let src = r#"
             // This is a comment
-            inputs := (cycle)
+            input cycle: u64
             // Another comment
             h := hash(cycle)
         "#;
@@ -1643,7 +1779,7 @@ mod tests {
 
     #[test]
     fn error_unknown_function() {
-        let src = "inputs := (cycle)\nresult := foobar(cycle)";
+        let src = "input cycle: u64\nresult := foobar(cycle)";
         let (_result, report) = compile_gk_checked(src);
         assert!(report.has_errors());
         let errors = report.errors();
@@ -1653,7 +1789,7 @@ mod tests {
 
     #[test]
     fn error_unknown_function_suggests() {
-        let src = "inputs := (cycle)\nresult := hahs(cycle)";
+        let src = "input cycle: u64\nresult := hahs(cycle)";
         let (_, report) = compile_gk_checked(src);
         let errors = report.errors();
         let err = errors.iter().find(|e| e.message.contains("hahs")).unwrap();
@@ -1686,7 +1822,7 @@ mod tests {
     #[test]
     fn explicit_coordinates_rejects_unbound() {
         // With explicit coordinates, unbound references are errors
-        let src = "inputs := (cycle)\nh := hash(unknown)";
+        let src = "input cycle: u64\nh := hash(unknown)";
         let (_, report) = compile_gk_checked(src);
         assert!(report.has_errors());
         assert!(report.errors().iter().any(|e|
@@ -1696,7 +1832,7 @@ mod tests {
     #[test]
     fn warning_forward_reference() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             result := mod(h, 100)
             h := hash(cycle)
         "#;
@@ -1709,7 +1845,7 @@ mod tests {
     #[test]
     fn error_undefined_wire() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             result := hash(nonexistent)
         "#;
         let (_, report) = compile_gk_checked(src);
@@ -1720,7 +1856,7 @@ mod tests {
 
     #[test]
     fn error_report_includes_source_line() {
-        let src = "inputs := (cycle)\nresult := unknown_func(cycle)";
+        let src = "input cycle: u64\nresult := unknown_func(cycle)";
         let (_, report) = compile_gk_checked(src);
         let s = report.to_string();
         assert!(s.contains("unknown_func"), "report should include source context");
@@ -1729,7 +1865,7 @@ mod tests {
     #[test]
     fn checked_compile_success_with_no_errors() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             h := hash(cycle)
             result := mod(h, 1000)
         "#;
@@ -1755,7 +1891,7 @@ mod tests {
     fn strict_accepts_explicit_coordinates() {
         // With explicit coordinates, strict mode should succeed
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             h := hash(cycle)
         "#;
         let mut kernel = compile_gk_strict(src, None, true).unwrap();
@@ -1779,7 +1915,7 @@ mod tests {
     fn dce_filters_to_required_outputs() {
         // GK source defines three bindings but we only request one
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             a := hash(cycle)
             b := mod(a, 100)
             c := add(cycle, 1)
@@ -1804,7 +1940,7 @@ mod tests {
         // Request "result" which depends on "h" — both the result node
         // and its upstream "h" node must be kept, but "unrelated" is pruned
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             h := hash(cycle)
             result := mod(h, 1000)
             unrelated := add(cycle, 999)
@@ -1824,7 +1960,7 @@ mod tests {
     fn dce_empty_required_compiles_all() {
         // Empty required_outputs should produce the same kernel as compile_gk
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             a := hash(cycle)
             b := mod(a, 100)
         "#;
@@ -1852,7 +1988,7 @@ mod tests {
         // node, fold evaluates it, and `kernel.pull("side_effect")`
         // returns the folded result.
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             init side_effect = 42
             b := mod(hash(cycle), 100)
         "#;
@@ -1870,7 +2006,7 @@ mod tests {
     fn dce_multiple_required_outputs() {
         // Request two of three bindings
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             x := hash(cycle)
             y := mod(x, 50)
             z := add(cycle, 10)
@@ -1901,7 +2037,7 @@ mod tests {
         // The unused check only applies with DCE (required_outputs filter).
         // With DCE, pruned bindings produce a warning at the compiler level.
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             used := hash(cycle)
             unused := add(cycle, 1)
         "#;
@@ -1919,7 +2055,7 @@ mod tests {
     fn strict_rejects_implicit_type_coercion() {
         // u64 → f64 auto-adapter → strict error
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             h := hash(cycle)
             f := sqrt(h)
         "#;
@@ -1933,7 +2069,7 @@ mod tests {
     #[test]
     fn non_strict_allows_implicit_type_coercion() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             h := hash(cycle)
             f := sqrt(h)
         "#;
@@ -1945,7 +2081,7 @@ mod tests {
     fn strict_accepts_clean_program() {
         // All inputs declared, all bindings used, no coercions
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             h := hash(cycle)
             id := mod(h, 1000)
         "#;
@@ -1957,7 +2093,7 @@ mod tests {
     #[test]
     fn compile_bitwise_and() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             out := cycle & 0xFF
         "#;
         let mut kernel = compile_gk(src).unwrap();
@@ -1968,7 +2104,7 @@ mod tests {
     #[test]
     fn compile_shift_left() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             out := cycle << 8
         "#;
         let mut kernel = compile_gk(src).unwrap();
@@ -1979,7 +2115,7 @@ mod tests {
     #[test]
     fn compile_bitwise_not() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             out := !cycle
         "#;
         let mut kernel = compile_gk(src).unwrap();
@@ -1990,7 +2126,7 @@ mod tests {
     #[test]
     fn compile_bitwise_xor() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             out := cycle ^ 0xFF
         "#;
         let mut kernel = compile_gk(src).unwrap();
@@ -2001,7 +2137,7 @@ mod tests {
     #[test]
     fn compile_bitwise_or() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             out := cycle | 0x0F
         "#;
         let mut kernel = compile_gk(src).unwrap();
@@ -2012,7 +2148,7 @@ mod tests {
     #[test]
     fn compile_shift_right() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             out := cycle >> 4
         "#;
         let mut kernel = compile_gk(src).unwrap();
@@ -2023,7 +2159,7 @@ mod tests {
     #[test]
     fn compile_power_operator() {
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             out := to_f64(cycle) ** 2.0
         "#;
         let mut kernel = compile_gk(src).unwrap();
@@ -2119,7 +2255,7 @@ mod tests {
     fn init_binding_wired_to_cycle_input_rejected() {
         // Init binding wired to `cycle` (Coordinate input) is a
         // hard structural violation. Plan A must reject.
-        let src = "inputs := (cycle)\n\
+        let src = "input cycle: u64\n\
                    init bad = hash(cycle)\n";
         let err = compile_gk(src).expect_err(
             "Plan A must reject init binding wired to a coordinate input");
@@ -2159,7 +2295,7 @@ mod tests {
         // The contract applies *only* to bindings declared `init`.
         // A normal `:=` binding wired to `cycle` is the bread-and-
         // butter case and must keep working.
-        let src = "inputs := (cycle)\n\
+        let src = "input cycle: u64\n\
                    user_id := mod(hash(cycle), 1000)\n";
         let _kernel = compile_gk(src)
             .expect("non-init bindings wired to cycle must still compile");
@@ -2184,7 +2320,7 @@ mod tests {
     fn str_concat_via_plus_operator() {
         // `+` between Str-typed operands lowers to str_concat.
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             greeting := "hello, " + "world"
         "#;
         let mut kernel = compile_gk(src).unwrap();
@@ -2198,7 +2334,7 @@ mod tests {
         // (rather than a chain of binary concatenations) so the
         // assembler sees the full operand list at once.
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             x := "id="
             y := 42
             z := " end"
@@ -2214,7 +2350,7 @@ mod tests {
         // Numeric operand on the right is rendered as decimal text;
         // the Str path wins because the left side is Str.
         let src = r#"
-            inputs := (cycle)
+            input cycle: u64
             n := 7
             out := "n=" + n
         "#;

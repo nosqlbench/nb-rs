@@ -986,9 +986,27 @@ fn style_directive_applies_to_kind(line: &str, kind: Kind) -> bool {
 }
 
 fn parse_series_override(s: &str) -> Result<SeriesOverride, String> {
-    // Shape: `<key>=<value> {<json>}` or `<key>=<value> <directives>`
+    // Shape: `<key>=<value> {<json>}`, `<key>=<value> <directives>`,
+    // or the colon-separator form `<key>=<value>:<directives>` (same
+    // shape the plot DSL's --style flag accepts; lets workload
+    // authors write `style phase=pvs_query:line=dotted` without
+    // having to remember which directive uses which separator).
     let s = s.trim();
-    let (head, rest) = s.split_once(char::is_whitespace).unwrap_or((s, ""));
+    // Try `:` first when it appears before any whitespace — that's
+    // the colon-form. Otherwise the head ends at the first
+    // whitespace boundary as before.
+    let first_colon = s.find(':');
+    let first_ws = s.find(char::is_whitespace);
+    let split_at = match (first_colon, first_ws) {
+        (Some(c), Some(w)) if c < w => Some((c, 1)), // colon wins
+        (Some(c), None)              => Some((c, 1)),
+        (_, Some(w))                 => Some((w, 1)),
+        (None, None)                 => None,
+    };
+    let (head, rest) = match split_at {
+        Some((idx, n)) => (&s[..idx], s[idx + n..].trim_start()),
+        None => (s, ""),
+    };
     let (key, value) = head.split_once('=')
         .ok_or_else(|| format!("series discriminator must be <key>=<value>, got `{head}`"))?;
 

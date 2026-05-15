@@ -134,7 +134,7 @@ pub fn probe_compile_level(func_name: &str) -> nbrs_variates::node::CompileLevel
         parts.push("cycle".to_string());
     }
 
-    let source = format!("inputs := (cycle)\nout := {func_name}({})", parts.join(", "));
+    let source = format!("input cycle: u64\nout := {func_name}({})", parts.join(", "));
 
     // Probe compile level via catch_unwind — fallback is Phase1.
     // Does not replace the global panic hook (not thread-safe).
@@ -350,7 +350,7 @@ pub fn build_workload_root_kernel(
     // build pathway (SRD-67 §"The construction protocol").
     let mut source = scope.emit();
     // If the workload's authored matter doesn't declare its
-    // own `inputs := (...)` line, default the workload-root
+    // own `input ...: u64` line, default the workload-root
     // kernel's coordinate input to `cycle`. The wire name is
     // a CONVENTION the runner-driver contract relies on
     // (every dispatch path sets the cycle ordinal on slot 0
@@ -358,9 +358,9 @@ pub fn build_workload_root_kernel(
     // shape can declare their own inputs line explicitly. The
     // default lets inline workloads (`nbrs run op="c={cycle}"`)
     // resolve `{cycle}` against the workload-root kernel
-    // without forcing every author to write `inputs := (cycle)`.
-    if !source.lines().any(|l| l.trim_start().starts_with("inputs :=")) {
-        source = format!("inputs := (cycle)\n{source}");
+    // without forcing every author to write `input cycle: u64`.
+    if !source.lines().any(|l| l.trim_start().starts_with("input ")) {
+        source = format!("input cycle: u64\n{source}");
     }
     let opts = nbrs_variates::subcontext::CompileOptions {
         workload_dir: source_dir.map(|p| p.to_path_buf()),
@@ -369,6 +369,7 @@ pub fn build_workload_root_kernel(
         required_outputs: scope_required,
         context_label: Some(context.to_string()),
         cursor_limit,
+        ..Default::default()
     };
     let matter = nbrs_variates::subcontext::GkMatter::builder()
         .label(context)
@@ -384,7 +385,7 @@ pub fn build_workload_root_kernel(
 /// Compile all bindings from a set of ParsedOps into a GK kernel.
 ///
 /// When `strict` is true, the GK compiler enforces:
-/// - Explicit `inputs := (...)` declaration (no inference)
+/// - Explicit `input ...: u64` declaration (no inference)
 /// - All module arguments must be named (no positional)
 /// - All module inputs must be provided by caller (no fallthrough)
 pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::path::Path>, strict: bool) -> Result<GkKernel, String> {
@@ -447,7 +448,7 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
 
     // Translate each legacy chain into GK source lines
     let mut gk_lines: Vec<String> = Vec::new();
-    gk_lines.push("inputs := (cycle)".into());
+    gk_lines.push("input cycle: u64".into());
 
     for (binding_name, expr) in &all_bindings {
         let chain = parse_binding_chain(expr);
@@ -582,7 +583,7 @@ fn strip_java_long_suffix(arg: &str) -> &str {
 /// lines per entry — multi-step chains expand to intermediate
 /// `__chain_<name>_<i> := ...` wires.
 ///
-/// Does NOT prepend `inputs := (cycle)`; that's owned by the
+/// Does NOT prepend `input cycle: u64`; that's owned by the
 /// enclosing scope's emit. Intended for routing workload-level
 /// `bindings:` directly to the workload-root kernel without
 /// going through the parser merge (which retired in Push D).

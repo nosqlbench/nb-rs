@@ -29,7 +29,7 @@ Each `.gk` file has three sections marked by `/// @` headers.
 
 A GK program (commented with `///`) that generates input values
 for the test graph. The bench harness strips the `///` prefix,
-prepends `inputs := (meta)`, compiles it, and evaluates it per
+prepends `input meta: u64`, compiles it, and evaluates it per
 cycle with `meta = cycle_number`.
 
 Each output name maps positionally to the test graph's declared
@@ -74,7 +74,7 @@ is the test graph.
 
 ```
 /// @graph
-inputs := (cycle, ks, rate)
+input (cycle: u64, ks: u64, rate: u64)
 h := hash(cycle)
 ...
 out := mod(h, 997)

@@ -15,7 +15,7 @@ params:
   product_count: "5000"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
 
   // User table bindings
   user_id := mod_wire(hash(cycle), user_count)

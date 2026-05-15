@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn dataflow_indexed_set_get() {
         let mut k = compile_gk(
-            "inputs := (cycle)\nfinal x := 7\n"
+            "input cycle: u64\nfinal x := 7\n"
         ).unwrap();
         // cycle is index 0
         k.set_wire(0_usize, Value::U64(42));
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn dataflow_named_set_get() {
         let mut k = compile_gk(
-            "inputs := (cycle)\nextern n: u64\n"
+            "input cycle: u64\nextern n: u64\n"
         ).unwrap();
         k.set_wire("n", Value::U64(5));
         match k.get_wire("n") {
@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn dataflow_string_key() {
         let mut k = compile_gk(
-            "inputs := (cycle)\nextern n: u64\n"
+            "input cycle: u64\nextern n: u64\n"
         ).unwrap();
         let name = String::from("n");
         k.set_wire(&name, Value::U64(99));
@@ -150,7 +150,7 @@ mod tests {
     /// Unknown name returns false / None — no panic.
     #[test]
     fn dataflow_unknown_name_safe() {
-        let mut k = compile_gk("inputs := (cycle)\n").unwrap();
+        let mut k = compile_gk("input cycle: u64\n").unwrap();
         assert!(!k.set_wire("nonexistent", Value::U64(1)));
         assert!(k.get_wire("nonexistent").is_none());
     }
@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn metadata_listings() {
         let k = compile_gk(
-            "inputs := (cycle, thread)\nextern n: u64\nfinal x := 7\n"
+            "input (cycle: u64, thread: u64)\nextern n: u64\nfinal x := 7\n"
         ).unwrap();
         let inputs: Vec<String> = k.input_names();
         assert!(inputs.iter().any(|s| s == "cycle"));
@@ -181,10 +181,11 @@ mod tests {
             required_outputs: Vec::new(),
             context_label: Some("root".to_string()),
             cursor_limit: None,
+            ..Default::default()
         };
         let root_matter = crate::subcontext::GkMatter::builder()
             .label("root")
-            .source("inputs := (cycle)\nshared flag := 0\n")
+            .source("input cycle: u64\nshared flag := 0\n")
             .options(root_opts)
             .build()
             .expect("matter build");
@@ -198,10 +199,11 @@ mod tests {
             required_outputs: Vec::new(),
             context_label: Some("sub".to_string()),
             cursor_limit: None,
+            ..Default::default()
         };
         let sub_matter = crate::subcontext::GkMatter::builder()
             .label("sub")
-            .source("inputs := (cycle)\n")
+            .source("input cycle: u64\n")
             .options(sub_opts)
             .build()
             .expect("matter build");
@@ -215,7 +217,7 @@ mod tests {
     /// the input slot — `n` is an extern input.
     #[test]
     fn construction_root_from_program() {
-        let template = compile_gk("inputs := (cycle)\nextern n: u64\n").unwrap();
+        let template = compile_gk("input cycle: u64\nextern n: u64\n").unwrap();
         let program = template.program().clone();
         let matter = crate::subcontext::GkMatter::builder()
             .program(program)
@@ -230,9 +232,9 @@ mod tests {
     /// Builder rejects ambiguous matter (multiple input forms).
     #[test]
     fn builder_rejects_multiple_forms() {
-        let template = compile_gk("inputs := (cycle)\n").unwrap();
+        let template = compile_gk("input cycle: u64\n").unwrap();
         match crate::subcontext::GkMatter::builder()
-            .source("inputs := (cycle)\n")
+            .source("input cycle: u64\n")
             .program(template.program().clone())
             .build()
         {

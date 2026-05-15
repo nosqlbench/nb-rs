@@ -278,7 +278,7 @@ Plan A reasons (compile-time, from
 
 - **`wire on node '<n>' reaches coordinate input '<name>'
   (dynamic; changes every cycle)`** — init binding wired to a
-  graph input declared by `inputs := (...)`.
+  graph input declared by `input ...: u64`.
 - **`wire on node '<n>' reaches capture port '<name>' (dynamic;
   mutated by op execution)`** — init binding wired to an
   `extern X: T = default` port (capture surface).
@@ -318,7 +318,7 @@ Most workloads use a single `cycle` input. Multi-dimensional
 inputs enable nested iteration:
 
 ```
-inputs := (cycle)
+input cycle: u64
 
 // Mixed-radix decomposition: flat cycle → nested indices
 row := mixed_radix(cycle, 1000, 0)     // cycle / 1000

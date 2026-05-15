@@ -2,7 +2,7 @@
 //
 // Exercises first_names, last_names, state_codes, country_names.
 
-inputs := (cycle)
+input cycle: u64
 fname := first_names(hash(cycle))
 fullname := full_names(hash(cycle))
 state := state_codes(hash(cycle))

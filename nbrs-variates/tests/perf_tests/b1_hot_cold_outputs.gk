@@ -28,7 +28,7 @@
 /// 38 nodes, 3 inputs (2 stable). Hot/warm/cold output access.
 /// Hot output: small cycle-dependent cone (80% of pulls).
 /// Cold output: stable ks/ds subgraph (5% of pulls).
-inputs := (cycle, ks, ds)
+input (cycle: u64, ks: u64, ds: u64)
 
 // Hot path: cycle-dependent, small cone
 h0 := hash(cycle)

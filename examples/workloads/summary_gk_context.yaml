@@ -37,7 +37,7 @@ report:
       mean(recall) over algorithm~ivf
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
 
 scenarios:
   default:
@@ -54,7 +54,7 @@ phases:
     cycles: "{probe_count}"
     concurrency: 1
     bindings: |
-      inputs := (cycle)
+      input cycle: u64
 
       // Use iteration variables to vary the data generation pattern.
       // The algorithm and dataset names drive different hash chains,

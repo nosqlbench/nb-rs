@@ -472,7 +472,7 @@ impl GkKernel {
     /// 1. Folded output buffer (compile-time constants).
     /// 2. Cell-aware input read (covers extern values bound via
     ///    `materialize_wiring_from_outer`, auto-passthrough outputs from
-    ///    `inputs := (...)` / `extern`, and `shared`-cell-backed
+    ///    `input ...: u64` / `extern`, and `shared`-cell-backed
     ///    slots — the cell is queried on every read so reads
     ///    pick up writes from sibling kernels intrinsically).
     ///
@@ -550,8 +550,8 @@ impl GkKernel {
     /// ```compile_fail,E0624
     /// use nbrs_variates::kernel::GkKernel;
     /// use nbrs_variates::dsl::compile::compile_gk;
-    /// let parent = compile_gk("inputs := (cycle)\n").unwrap();
-    /// let mut child = compile_gk("inputs := (cycle)\n").unwrap();
+    /// let parent = compile_gk("input cycle: u64\n").unwrap();
+    /// let mut child = compile_gk("input cycle: u64\n").unwrap();
     /// child.materialize_wiring_from_outer(&parent); // ← private; refuses to compile
     /// ```
     pub(crate) fn materialize_subscope(

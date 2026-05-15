@@ -376,7 +376,6 @@ impl OpDispenser for HttpDispenser {
                 };
                 Ok(OpResult {
                     body: Some(body),
-                    captures: std::collections::HashMap::new(),
                     skipped: false,
                 })
             } else {

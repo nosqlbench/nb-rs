@@ -7,7 +7,7 @@
 //
 // Use case: each thread generates its own partition of the keyspace.
 
-inputs := (cycle, thread)
+input (cycle: u64, thread: u64)
 
 // Interleave cycle and thread to produce a globally unique seed.
 // Without this, thread 0 at cycle 100 and thread 1 at cycle 100

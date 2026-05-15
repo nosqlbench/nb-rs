@@ -303,7 +303,7 @@ impl Compiler {
         // Inline each statement from the module, rewriting names
         for stmt in &module_stmts {
             match stmt {
-                Statement::Inputs(_, _) => {} // skip — coords handled by caller
+                Statement::InputDecl(_) => {} // skip — kernel inputs handled by caller
                 Statement::InitBinding(b) => {
                     let prefixed_name = format!("{prefix}{}", b.name);
                     let rewritten = self.rewrite_module_expr(
@@ -566,7 +566,7 @@ impl Compiler {
 
         for (i, stmt) in ast.statements.iter().enumerate() {
             let (names, expr) = match stmt {
-                Statement::Inputs(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => {
+                Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => {
                     stmt_refs.push(HashSet::new());
                     continue;
                 }
@@ -616,8 +616,8 @@ impl Compiler {
         let mut referenced: HashSet<String> = HashSet::new();
         for stmt in &extracted {
             match stmt {
-                Statement::Inputs(names, _) => {
-                    for n in names { defined.insert(n.clone()); }
+                Statement::InputDecl(d) => {
+                    defined.insert(d.name.clone());
                 }
                 Statement::InitBinding(b) => { defined.insert(b.name.clone()); }
                 Statement::CycleBinding(b) => {
@@ -630,7 +630,7 @@ impl Compiler {
         }
         for stmt in &extracted {
             let expr = match stmt {
-                Statement::Inputs(_, _) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
+                Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
                 Statement::InitBinding(b) => &b.value,
                 Statement::CycleBinding(b) => &b.value,
             };

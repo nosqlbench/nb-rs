@@ -13,12 +13,12 @@ use nbrs_variates::kernel::GkKernel;
 // ---------------------------------------------------------------------------
 
 fn gk(bindings: &str) -> GkKernel {
-    let src = format!("inputs := (cycle)\n{bindings}");
+    let src = format!("input cycle: u64\n{bindings}");
     compile_gk(&src).unwrap_or_else(|e| panic!("failed to compile: {e}\nsource:\n{src}"))
 }
 
 fn gk2(bindings: &str) -> GkKernel {
-    let src = format!("inputs := (x, y)\n{bindings}");
+    let src = format!("input (x: u64, y: u64)\n{bindings}");
     compile_gk(&src).unwrap_or_else(|e| panic!("failed to compile: {e}\nsource:\n{src}"))
 }
 
@@ -133,7 +133,7 @@ fn clamp_above() {
 
 #[test]
 fn mixed_radix_decomposition() {
-    let src = "inputs := (cycle)\n(a, b) := mixed_radix(cycle, 10, 0)";
+    let src = "input cycle: u64\n(a, b) := mixed_radix(cycle, 10, 0)";
     let mut k = compile_gk(src).unwrap();
     k.set_inputs(&[42]);
     let a = k.pull("a").as_u64();
@@ -182,7 +182,7 @@ fn max_variadic() {
 
 #[test]
 fn interleave_known() {
-    let src = "inputs := (a, b)\nout := interleave(a, b)";
+    let src = "input (a: u64, b: u64)\nout := interleave(a, b)";
     let mut k = compile_gk(src).unwrap();
     // interleave(1, 0) should give 1 (bit0 of a=1 -> bit0)
     k.set_inputs(&[1, 0]);
@@ -629,7 +629,7 @@ fn to_timestamp_produces_string() {
 #[test]
 fn date_components_decomposes() {
     // 7 outputs from date_components
-    let src = "inputs := (cycle)\n\
+    let src = "input cycle: u64\n\
                e := epoch_offset(cycle, 1704067200000)\n\
                (y, mo, d, h, mi, s, ms) := date_components(e)";
     let mut k = compile_gk(src).unwrap();
@@ -830,7 +830,7 @@ fn json_merge_combines() {
     // We can verify json_merge compiles and runs with JSON inputs.
     // Use two to_json calls which produce JSON values; if they aren't
     // objects the merge may produce a defined fallback.
-    let src = "inputs := (cycle)\n\
+    let src = "input cycle: u64\n\
                a := to_json(cycle)\n\
                b := to_json(add(cycle, 1))\n\
                out := json_merge(a, b)";
@@ -1771,7 +1771,7 @@ fn fp_lerp_midpoint() {
 
 #[test]
 fn sine_wave_module() {
-    let src = "inputs := (cycle)\nout := sine_wave(input: cycle, period: 20)";
+    let src = "input cycle: u64\nout := sine_wave(input: cycle, period: 20)";
     let mut k = compile_gk(src).unwrap();
     // At cycle 0, sin(0) = 0
     k.set_inputs(&[0]);
@@ -1785,7 +1785,7 @@ fn sine_wave_module() {
 
 #[test]
 fn square_wave_module() {
-    let src = "inputs := (cycle)\nout := square_wave(input: cycle, period: 100)";
+    let src = "input cycle: u64\nout := square_wave(input: cycle, period: 100)";
     let mut k = compile_gk(src).unwrap();
     // First quarter: positive
     k.set_inputs(&[10]);
@@ -1799,7 +1799,7 @@ fn square_wave_module() {
 
 #[test]
 fn sine_unit_module() {
-    let src = "inputs := (cycle)\nout := sine_unit(input: cycle, period: 20)";
+    let src = "input cycle: u64\nout := sine_unit(input: cycle, period: 20)";
     let mut k = compile_gk(src).unwrap();
     // sine_unit maps to [0, 1]
     for c in 0..20u64 {
@@ -1852,80 +1852,85 @@ fn every_registered_function_compiles() {
     // Overrides for functions that need specific wiring or file formats.
     let mut overrides: std::collections::HashMap<&str, String> = [
         // Bytes input
-        ("to_hex", "inputs := (cycle)\nb := u64_to_bytes(cycle)\nout := to_hex(b)".into()),
-        ("from_hex", "inputs := (cycle)\nb := u64_to_bytes(cycle)\nh := to_hex(b)\nout := from_hex(h)".into()),
-        ("sha256", "inputs := (cycle)\nb := u64_to_bytes(cycle)\nout := sha256(b)".into()),
-        ("md5", "inputs := (cycle)\nb := u64_to_bytes(cycle)\nout := md5(b)".into()),
-        ("to_base64", "inputs := (cycle)\nb := u64_to_bytes(cycle)\nout := to_base64(b)".into()),
-        ("from_base64", "inputs := (cycle)\nb := u64_to_bytes(cycle)\ne := to_base64(b)\nout := from_base64(e)".into()),
+        ("to_hex", "input cycle: u64\nb := u64_to_bytes(cycle)\nout := to_hex(b)".into()),
+        ("from_hex", "input cycle: u64\nb := u64_to_bytes(cycle)\nh := to_hex(b)\nout := from_hex(h)".into()),
+        ("sha256", "input cycle: u64\nb := u64_to_bytes(cycle)\nout := sha256(b)".into()),
+        ("md5", "input cycle: u64\nb := u64_to_bytes(cycle)\nout := md5(b)".into()),
+        ("to_base64", "input cycle: u64\nb := u64_to_bytes(cycle)\nout := to_base64(b)".into()),
+        ("from_base64", "input cycle: u64\nb := u64_to_bytes(cycle)\ne := to_base64(b)\nout := from_base64(e)".into()),
         // JSON input
-        ("json_to_str", "inputs := (cycle)\nj := to_json(cycle)\nout := json_to_str(j)".into()),
-        ("json_merge", "inputs := (cycle)\na := to_json(cycle)\nb := to_json(cycle)\nout := json_merge(a, b)".into()),
-        ("escape_json", "inputs := (cycle)\ns := format_u64(cycle, 10)\nout := escape_json(s)".into()),
+        ("json_to_str", "input cycle: u64\nj := to_json(cycle)\nout := json_to_str(j)".into()),
+        ("json_merge", "input cycle: u64\na := to_json(cycle)\nb := to_json(cycle)\nout := json_merge(a, b)".into()),
+        ("escape_json", "input cycle: u64\ns := format_u64(cycle, 10)\nout := escape_json(s)".into()),
         // Distributions
-        ("dist_normal", "inputs := (cycle)\nout := dist_normal(hash(cycle), 0.0, 1.0)".into()),
-        ("dist_exponential", "inputs := (cycle)\nout := dist_exponential(hash(cycle), 1.0)".into()),
-        ("dist_uniform", "inputs := (cycle)\nout := dist_uniform(hash(cycle), 0.0, 1.0)".into()),
-        ("dist_pareto", "inputs := (cycle)\nout := dist_pareto(hash(cycle), 1.0, 1.0)".into()),
-        ("dist_zipf", "inputs := (cycle)\nout := dist_zipf(hash(cycle), 100, 1.0)".into()),
-        ("histribution", "inputs := (cycle)\nout := histribution(hash(cycle), \"50 25 13 12\")".into()),
-        ("dist_empirical", "inputs := (cycle)\nf := unit_interval(hash(cycle))\nout := dist_empirical(f, \"1.0 3.0 5.0 7.0 9.0\")".into()),
+        ("dist_normal", "input cycle: u64\nout := dist_normal(hash(cycle), 0.0, 1.0)".into()),
+        ("dist_exponential", "input cycle: u64\nout := dist_exponential(hash(cycle), 1.0)".into()),
+        ("dist_uniform", "input cycle: u64\nout := dist_uniform(hash(cycle), 0.0, 1.0)".into()),
+        ("dist_pareto", "input cycle: u64\nout := dist_pareto(hash(cycle), 1.0, 1.0)".into()),
+        ("dist_zipf", "input cycle: u64\nout := dist_zipf(hash(cycle), 100, 1.0)".into()),
+        ("histribution", "input cycle: u64\nout := histribution(hash(cycle), \"50 25 13 12\")".into()),
+        ("dist_empirical", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := dist_empirical(f, \"1.0 3.0 5.0 7.0 9.0\")".into()),
         // Weighted
-        ("weighted_strings", "inputs := (cycle)\nout := weighted_strings(hash(cycle), \"a:0.5;b:0.5\")".into()),
-        ("weighted_u64", "inputs := (cycle)\nout := weighted_u64(hash(cycle), \"10:0.5;20:0.5\")".into()),
-        ("one_of_weighted", "inputs := (cycle)\nout := one_of_weighted(hash(cycle), \"a:0.5;b:0.5\")".into()),
+        ("weighted_strings", "input cycle: u64\nout := weighted_strings(hash(cycle), \"a:0.5;b:0.5\")".into()),
+        ("weighted_u64", "input cycle: u64\nout := weighted_u64(hash(cycle), \"10:0.5;20:0.5\")".into()),
+        ("one_of_weighted", "input cycle: u64\nout := one_of_weighted(hash(cycle), \"a:0.5;b:0.5\")".into()),
         // String input
-        ("html_encode", "inputs := (cycle)\ns := format_u64(cycle, 10)\nout := html_encode(s)".into()),
-        ("html_decode", "inputs := (cycle)\ns := format_u64(cycle, 10)\nout := html_decode(s)".into()),
-        ("url_encode", "inputs := (cycle)\ns := format_u64(cycle, 10)\nout := url_encode(s)".into()),
-        ("url_decode", "inputs := (cycle)\ns := format_u64(cycle, 10)\nout := url_decode(s)".into()),
-        ("regex_replace", "inputs := (cycle)\ns := format_u64(cycle, 10)\nout := regex_replace(s, \"[0-9]\", \"x\")".into()),
-        ("regex_match", "inputs := (cycle)\ns := format_u64(cycle, 10)\nout := regex_match(s, \"[0-9]+\")".into()),
+        ("html_encode", "input cycle: u64\ns := format_u64(cycle, 10)\nout := html_encode(s)".into()),
+        ("html_decode", "input cycle: u64\ns := format_u64(cycle, 10)\nout := html_decode(s)".into()),
+        ("url_encode", "input cycle: u64\ns := format_u64(cycle, 10)\nout := url_encode(s)".into()),
+        ("url_decode", "input cycle: u64\ns := format_u64(cycle, 10)\nout := url_decode(s)".into()),
+        ("regex_replace", "input cycle: u64\ns := format_u64(cycle, 10)\nout := regex_replace(s, \"[0-9]\", \"x\")".into()),
+        ("regex_match", "input cycle: u64\ns := format_u64(cycle, 10)\nout := regex_match(s, \"[0-9]+\")".into()),
         // Multi-input
-        ("select", "inputs := (cycle)\nout := select(fair_coin(hash(cycle)), cycle, cycle)".into()),
-        ("blend", "inputs := (cycle)\nout := blend(hash(cycle), hash(cycle), 0.5)".into()),
-        ("date_components", "inputs := (cycle)\n(y, mo, d, h, mi, s, ms) := date_components(cycle)".into()),
-        ("perlin_2d", "inputs := (cycle)\nout := perlin_2d(cycle, cycle, 42, 0.01)".into()),
-        ("simplex_2d", "inputs := (cycle)\nout := simplex_2d(cycle, cycle, 42, 0.01)".into()),
-        ("fractal_noise_2d", "inputs := (cycle)\nout := fractal_noise_2d(cycle, cycle, 42, 0.02)".into()),
-        ("pcg_stream", "inputs := (cycle)\nout := pcg_stream(cycle, cycle, 42)".into()),
-        ("format_u64", "inputs := (cycle)\nout := format_u64(cycle, 16)".into()),
+        ("select", "input cycle: u64\nout := select(fair_coin(hash(cycle)), cycle, cycle)".into()),
+        ("blend", "input cycle: u64\nout := blend(hash(cycle), hash(cycle), 0.5)".into()),
+        ("date_components", "input cycle: u64\n(y, mo, d, h, mi, s, ms) := date_components(cycle)".into()),
+        ("perlin_2d", "input cycle: u64\nout := perlin_2d(cycle, cycle, 42, 0.01)".into()),
+        ("simplex_2d", "input cycle: u64\nout := simplex_2d(cycle, cycle, 42, 0.01)".into()),
+        ("fractal_noise_2d", "input cycle: u64\nout := fractal_noise_2d(cycle, cycle, 42, 0.02)".into()),
+        ("pcg_stream", "input cycle: u64\nout := pcg_stream(cycle, cycle, 42)".into()),
+        ("format_u64", "input cycle: u64\nout := format_u64(cycle, 16)".into()),
         // Context (no inputs)
-        ("current_epoch_millis", "inputs := (cycle)\nout := current_epoch_millis()".into()),
-        ("counter", "inputs := (cycle)\nout := counter()".into()),
-        ("session_start_millis", "inputs := (cycle)\nout := session_start_millis()".into()),
-        ("elapsed_millis", "inputs := (cycle)\nout := elapsed_millis()".into()),
-        ("thread_id", "inputs := (cycle)\nout := thread_id()".into()),
+        ("current_epoch_millis", "input cycle: u64\nout := current_epoch_millis()".into()),
+        ("counter", "input cycle: u64\nout := counter()".into()),
+        ("session_start_millis", "input cycle: u64\nout := session_start_millis()".into()),
+        ("elapsed_millis", "input cycle: u64\nout := elapsed_millis()".into()),
+        ("thread_id", "input cycle: u64\nout := thread_id()".into()),
         // f64 input
-        ("clamp_f64", "inputs := (cycle)\nf := unit_interval(hash(cycle))\nout := clamp_f64(f, 0.0, 0.5)".into()),
-        ("quantize", "inputs := (cycle)\nf := unit_interval(hash(cycle))\nout := quantize(f, 0.1)".into()),
-        ("lerp", "inputs := (cycle)\nf := unit_interval(hash(cycle))\nout := lerp(f, 0.0, 100.0)".into()),
-        ("inv_lerp", "inputs := (cycle)\nf := unit_interval(hash(cycle))\nout := inv_lerp(f, 0.0, 1.0)".into()),
+        ("clamp_f64", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := clamp_f64(f, 0.0, 0.5)".into()),
+        ("quantize", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := quantize(f, 0.1)".into()),
+        ("lerp", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := lerp(f, 0.0, 100.0)".into()),
+        ("inv_lerp", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := inv_lerp(f, 0.0, 1.0)".into()),
         // FFT (creates output file)
-        ("fft_analyze", "inputs := (cycle)\nf := unit_interval(hash(cycle))\nout := fft_analyze(f, \"/tmp/_gk_fft_test.jsonl\", 8)".into()),
+        ("fft_analyze", "input cycle: u64\nf := unit_interval(hash(cycle))\nout := fft_analyze(f, \"/tmp/_gk_fft_test.jsonl\", 8)".into()),
         // `env(name)` errors if the named var isn't set —
         // use `PATH` which is universally present in test
         // environments. The auto-generated `env("test")`
         // would otherwise fail unless someone happens to
         // export TEST.
-        ("env", "inputs := (cycle)\nout := env(\"PATH\")".into()),
+        ("env", "input cycle: u64\nout := env(\"PATH\")".into()),
+        // body_column_i32 needs a Json input — the auto-generator
+        // wires `cycle` (u64) which trips the type adapter. Override
+        // with `to_json(cycle)` so the signature smoke compiles.
+        ("body_column_i32",
+            "input cycle: u64\nout := body_column_i32(to_json(cycle), \"key\")".into()),
     ].into_iter().collect();
 
     // File I/O nodes — use real fixture files
     overrides.insert("csv_field", format!(
-        "inputs := (cycle)\nout := csv_field(cycle, \"{csv}\", \"name\")"));
+        "input cycle: u64\nout := csv_field(cycle, \"{csv}\", \"name\")"));
     overrides.insert("csv_row", format!(
-        "inputs := (cycle)\nout := csv_row(cycle, \"{csv}\")"));
+        "input cycle: u64\nout := csv_row(cycle, \"{csv}\")"));
     overrides.insert("csv_row_count", format!(
-        "inputs := (cycle)\nout := csv_row_count(\"{csv}\")"));
+        "input cycle: u64\nout := csv_row_count(\"{csv}\")"));
     overrides.insert("jsonl_field", format!(
-        "inputs := (cycle)\nout := jsonl_field(cycle, \"{jsonl}\", \"name\")"));
+        "input cycle: u64\nout := jsonl_field(cycle, \"{jsonl}\", \"name\")"));
     overrides.insert("jsonl_row", format!(
-        "inputs := (cycle)\nout := jsonl_row(cycle, \"{jsonl}\")"));
+        "input cycle: u64\nout := jsonl_row(cycle, \"{jsonl}\")"));
     overrides.insert("jsonl_row_count", format!(
-        "inputs := (cycle)\nout := jsonl_row_count(\"{jsonl}\")"));
+        "input cycle: u64\nout := jsonl_row_count(\"{jsonl}\")"));
     overrides.insert("file_line_at", format!(
-        "inputs := (cycle)\nout := file_line_at(cycle, \"{txt}\")"));
+        "input cycle: u64\nout := file_line_at(cycle, \"{txt}\")"));
 
     // SRD-66 `pick(b0..bN-1, v0..vN-1)` — needs Bool
     // selectors and uniform values. The auto-generated
@@ -1933,7 +1938,7 @@ fn every_registered_function_compiles() {
     // explicit override calls with two Bool selectors
     // (derived from `cycle == const`) and two U64 values.
     overrides.insert("pick",
-        "inputs := (cycle)\nout := pick(cycle == 0, cycle == 1, 100, 200)".into());
+        "input cycle: u64\nout := pick(cycle == 0, cycle == 1, 100, 200)".into());
 
     // Vectordata nodes (category RealData) require downloaded datasets —
     // tested separately in vectordata_integration.rs. Skip here to avoid
@@ -1961,7 +1966,7 @@ fn every_registered_function_compiles() {
                 args.push("cycle".into());
             }
             let call = format!("{}({})", sig.name, args.join(", "));
-            format!("inputs := (cycle)\nout := {call}")
+            format!("input cycle: u64\nout := {call}")
         };
 
         let result = std::panic::catch_unwind(|| compile_gk(&src));

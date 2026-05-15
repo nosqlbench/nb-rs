@@ -3,7 +3,7 @@
 // Exercises probability nodes: fair_coin, unfair_coin, select,
 // weighted_strings, weighted_u64.
 
-inputs := (cycle)
+input cycle: u64
 coin := fair_coin(hash(cycle))
 biased := unfair_coin(hash(cycle), 0.9)
 choice := select(coin, cycle, hash(cycle))

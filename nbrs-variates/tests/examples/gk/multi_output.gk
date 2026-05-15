@@ -6,7 +6,7 @@
 // Expected events:
 //   BindingResolved for each destructured target
 
-inputs := (cycle)
+input cycle: u64
 (region, store, tx) := mixed_radix(cycle, 50, 200, 0)
 region_id := mod(hash(region), 10000)
 store_id := mod(hash(interleave(region, store)), 100000)

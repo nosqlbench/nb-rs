@@ -114,13 +114,13 @@ in its bindings and op templates without declaring them.
 ```yaml
 # Workload level
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   dim := vector_dim("{dataset}")
 
 phases:
   rampup:
     bindings: |
-      inputs := (cycle)
+      input cycle: u64
       train_vector := vector_at(cycle, "{dataset}")
     ops:
       insert:
@@ -141,7 +141,7 @@ scope is unaffected.
 phases:
   rampup:
     bindings: |
-      inputs := (cycle)
+      input cycle: u64
       # Shadows workload-level dim with profile-specific dim
       dim := vector_dim("{dataset}:{pname}")
 ```
@@ -156,7 +156,7 @@ as `final`:
 
 ```
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   final dim := vector_dim("{dataset}")
 ```
 
@@ -197,7 +197,7 @@ from inner scopes. Writes propagate back to the outer state.
 
 ```
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   shared error_budget := 100
 ```
 

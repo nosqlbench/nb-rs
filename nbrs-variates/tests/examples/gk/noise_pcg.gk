@@ -2,7 +2,7 @@
 //
 // Exercises perlin_1d, simplex_2d, pcg, and shuffle.
 
-inputs := (cycle)
+input cycle: u64
 noise := perlin_1d(cycle, 42, 0.01)
 pnoise := perlin_2d(cycle, cycle, 42, 0.01)
 snoise := simplex_2d(cycle, cycle, 99, 0.005)

@@ -14,7 +14,7 @@ params:
   cycles: "2000"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
 
   // Uniform random in [0, 1]
   uniform := unit_interval(hash(cycle))

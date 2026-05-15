@@ -100,7 +100,6 @@ impl OpDispenser for ScyllaPreparedDispenser {
             };
             Ok(OpResult {
                 body: body_box,
-                captures: std::collections::HashMap::new(),
                 skipped: false,
             })
         })

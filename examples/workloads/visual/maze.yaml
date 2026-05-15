@@ -14,7 +14,7 @@ params:
   cycles: "24"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   row := char_buf(hash(cycle), "╱╲", cols)
 
 ops:

@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Read a specific vector index single-threaded and return its string.
 fn read_vector_single(source: &str, index: u64) -> String {
     let src = format!(
-        "inputs := (cycle)\nvec := vector_at(cycle, \"{source}\")"
+        "input cycle: u64\nvec := vector_at(cycle, \"{source}\")"
     );
     let mut kernel = compile_gk(&src).unwrap();
     kernel.set_inputs(&[index]);
@@ -49,7 +49,7 @@ fn concurrent_reads_match_sequential() {
         let source = source.to_string();
         handles.push(std::thread::spawn(move || {
             let src = format!(
-                "inputs := (cycle)\nvec := vector_at(cycle, \"{source}\")"
+                "input cycle: u64\nvec := vector_at(cycle, \"{source}\")"
             );
             let mut kernel = compile_gk(&src).unwrap();
 
@@ -91,7 +91,7 @@ fn concurrent_reads_match_sequential() {
 fn shared_kernel_concurrent_eval() {
     let source = "example:label_01";
     let src = format!(
-        "inputs := (cycle)\nvec := vector_at(cycle, \"{source}\")"
+        "input cycle: u64\nvec := vector_at(cycle, \"{source}\")"
     );
     let kernel = compile_gk(&src).unwrap();
     let program = kernel.into_program();
@@ -134,7 +134,7 @@ fn shared_kernel_concurrent_eval() {
 /// Helper: compile kernel on a blocking thread to avoid nested runtime.
 fn compile_shared_program(source: &str) -> Arc<nbrs_variates::kernel::GkProgram> {
     let src = format!(
-        "inputs := (cycle)\nvec := vector_at(cycle, \"{source}\")"
+        "input cycle: u64\nvec := vector_at(cycle, \"{source}\")"
     );
     let kernel = compile_gk(&src).unwrap();
     kernel.into_program()
@@ -249,7 +249,7 @@ fn high_contention_reads() {
             let total_reads = &total_reads;
             s.spawn(move || {
                 let src = format!(
-                    "inputs := (cycle)\nvec := vector_at(cycle, \"{source}\")"
+                    "input cycle: u64\nvec := vector_at(cycle, \"{source}\")"
                 );
                 let mut kernel = compile_gk(&src).unwrap();
                 for i in 0..reads_per_thread {

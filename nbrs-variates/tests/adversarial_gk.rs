@@ -38,7 +38,7 @@ fn comments_only() {
 #[test]
 fn unterminated_string() {
     let result = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         s := "unterminated
     "#);
     assert!(result.is_err(), "unterminated string should fail");
@@ -47,7 +47,7 @@ fn unterminated_string() {
 #[test]
 fn unterminated_block_comment() {
     let result = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         /* never closed
         h := hash(cycle)
     "#);
@@ -67,8 +67,8 @@ fn unexpected_token_at_toplevel() {
 fn duplicate_inputs_declaration() {
     // Second declaration should override, not error
     let result = compile_gk(r#"
-        inputs := (cycle)
-        inputs := (cycle)
+        input cycle: u64
+        input cycle: u64
         h := hash(cycle)
     "#);
     assert!(result.is_ok(), "duplicate inputs should be accepted: {:?}", result.err());
@@ -77,7 +77,6 @@ fn duplicate_inputs_declaration() {
 #[test]
 fn zero_inputs_explicit() {
     let result = compile_gk(r#"
-        inputs := ()
         val := 42
     "#);
     // Explicit empty inputs is valid for constant-only programs
@@ -87,7 +86,7 @@ fn zero_inputs_explicit() {
 #[test]
 fn very_long_identifier() {
     let long_name: String = "a".repeat(1000);
-    let src = format!("inputs := (cycle)\n{long_name} := hash(cycle)");
+    let src = format!("input cycle: u64\n{long_name} := hash(cycle)");
     let result = compile_gk(&src);
     assert!(result.is_ok(), "long identifier should work: {:?}", result.err());
 }
@@ -95,7 +94,7 @@ fn very_long_identifier() {
 #[test]
 fn unicode_in_string_literal() {
     let result = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         emoji := "hello 🌍 world"
     "#);
     assert!(result.is_ok(), "unicode in strings should work: {:?}", result.err());
@@ -105,7 +104,7 @@ fn unicode_in_string_literal() {
 fn deeply_nested_function_calls() {
     // hash(hash(hash(hash(hash(cycle)))))
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         deep := hash(hash(hash(hash(hash(cycle)))))
     "#;
     let mut kernel = compile_gk(src).unwrap();
@@ -116,7 +115,7 @@ fn deeply_nested_function_calls() {
 #[test]
 fn deeply_nested_arithmetic() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         v := ((((cycle + 1) * 2) + 3) * 4) + 5
     "#;
     let mut kernel = compile_gk(src).unwrap();
@@ -129,7 +128,7 @@ fn deeply_nested_arithmetic() {
 #[test]
 fn hex_literals() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         v := mod(hash(cycle), 0xFF)
     "#;
     let mut kernel = compile_gk(src).unwrap();
@@ -140,7 +139,7 @@ fn hex_literals() {
 #[test]
 fn negative_float_literal() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         v := -3.14
     "#;
     let mut kernel = compile_gk(src).unwrap();
@@ -156,7 +155,7 @@ fn negative_float_literal() {
 #[test]
 fn unknown_function_name() {
     let result = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         v := nonexistent_function(cycle)
     "#);
     assert!(result.is_err(), "unknown function should fail");
@@ -167,7 +166,7 @@ fn unknown_function_name() {
 #[test]
 fn unknown_wire_reference() {
     let result = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         v := hash(undefined_wire)
     "#);
     assert!(result.is_err(), "unknown wire should fail");
@@ -176,7 +175,7 @@ fn unknown_wire_reference() {
 #[test]
 fn wrong_arity_too_many() {
     let result = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         v := hash(cycle, cycle, cycle)
     "#);
     assert!(result.is_err(), "too many args should fail");
@@ -185,7 +184,7 @@ fn wrong_arity_too_many() {
 #[test]
 fn self_referential_binding() {
     let result = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         x := hash(x)
     "#);
     // This should fail: x references itself before being defined
@@ -205,7 +204,7 @@ fn strict_requires_explicit_inputs() {
 #[test]
 fn strict_accepts_explicit_inputs() {
     let result = compile_gk_strict(
-        "inputs := (cycle)\nh := hash(cycle)",
+        "input cycle: u64\nh := hash(cycle)",
         None,
         true,
     );
@@ -222,7 +221,7 @@ fn shared_on_cycle_binding() {
     // shareable cell. Non-literal RHS is rejected; see
     // `shared_non_literal_rejected` below.
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         shared counter := 0
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -232,7 +231,7 @@ fn shared_on_cycle_binding() {
 #[test]
 fn shared_non_literal_rejected() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         shared counter := hash(cycle)
     "#;
     let err = compile_gk(src).expect_err("non-literal shared init must error");
@@ -243,7 +242,7 @@ fn shared_non_literal_rejected() {
 #[test]
 fn final_on_cycle_binding() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         final max := mod(hash(cycle), 100)
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -253,7 +252,7 @@ fn final_on_cycle_binding() {
 #[test]
 fn shared_on_init_binding() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         shared init budget = 500
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -264,7 +263,7 @@ fn shared_on_init_binding() {
 #[test]
 fn final_on_init_binding() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         final init dim = 128
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -275,7 +274,7 @@ fn final_on_init_binding() {
 #[test]
 fn mixed_modifiers() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         shared s := 0
         final f := 42
         plain := mod(hash(cycle), 100)
@@ -289,7 +288,7 @@ fn mixed_modifiers() {
 #[test]
 fn shared_outputs_list() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         shared a := 0
         shared b := 0
         c := hash(cycle)
@@ -303,7 +302,7 @@ fn shared_outputs_list() {
 #[test]
 fn final_outputs_list() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         final x := 1
         final y := 2
         z := hash(cycle)
@@ -317,7 +316,7 @@ fn final_outputs_list() {
 #[test]
 fn no_modifiers_returns_empty_lists() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         h := hash(cycle)
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -333,7 +332,7 @@ fn no_modifiers_returns_empty_lists() {
 fn extern_u64_input_declared() {
     // Extern declarations register named inputs on the kernel
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         extern offset: u64
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -345,7 +344,7 @@ fn extern_u64_input_declared() {
 fn extern_usable_as_wire_argument() {
     // Externs should be usable directly in GK expressions
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         extern offset: u64
         result := hash(offset)
     "#;
@@ -365,7 +364,7 @@ fn extern_usable_as_wire_argument() {
 #[test]
 fn extern_in_arithmetic_expression() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         extern scale: u64
         result := cycle * scale
     "#;
@@ -381,7 +380,7 @@ fn extern_in_arithmetic_expression() {
 fn extern_input_usable_as_output() {
     // Externs create passthrough outputs accessible via pull/get_constant
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         extern dim: u64
     "#;
     let mut kernel = compile_gk(src).unwrap();
@@ -396,7 +395,7 @@ fn extern_input_usable_as_output() {
 #[test]
 fn extern_f64_input() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         extern threshold: f64
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -406,7 +405,7 @@ fn extern_f64_input() {
 #[test]
 fn extern_string_input() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         extern label: String
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -421,7 +420,7 @@ fn extern_string_input() {
 fn materialize_wiring_from_outer_copies_constants() {
     // Outer kernel has a constant
     let outer_src = r#"
-        inputs := (cycle)
+        input cycle: u64
         dim := 128
     "#;
     let outer = compile_gk(outer_src).unwrap();
@@ -429,7 +428,7 @@ fn materialize_wiring_from_outer_copies_constants() {
 
     // Inner kernel has an extern that matches the outer's output
     let inner_src = r#"
-        inputs := (cycle)
+        input cycle: u64
         extern dim: u64
     "#;
     let inner_program = compile_gk(inner_src).unwrap().program().clone();
@@ -449,14 +448,14 @@ fn materialize_wiring_from_outer_copies_constants() {
 #[test]
 fn materialize_wiring_from_outer_ignores_nonmatching() {
     let outer_src = r#"
-        inputs := (cycle)
+        input cycle: u64
         dim := 128
     "#;
     let outer = compile_gk(outer_src).unwrap();
 
     // Inner kernel doesn't reference 'dim' — no extern
     let inner_src = r#"
-        inputs := (cycle)
+        input cycle: u64
         h := hash(cycle)
     "#;
     let inner_program = compile_gk(inner_src).unwrap().program().clone();
@@ -471,7 +470,7 @@ fn materialize_wiring_from_outer_ignores_nonmatching() {
 #[test]
 fn deterministic_across_1000_cycles() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         h := hash(cycle)
         v := mod(h, 1000000)
     "#;
@@ -496,7 +495,7 @@ fn deterministic_across_1000_cycles() {
 #[test]
 fn deterministic_with_multiple_outputs() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         a := hash(cycle)
         b := mod(a, 100)
         c := mod(a, 1000)
@@ -527,7 +526,7 @@ fn deterministic_with_multiple_outputs() {
 #[test]
 fn max_u64_input() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         h := hash(cycle)
     "#;
     let mut kernel = compile_gk(src).unwrap();
@@ -539,7 +538,7 @@ fn max_u64_input() {
 #[test]
 fn zero_input() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         h := hash(cycle)
         v := mod(h, 100)
     "#;
@@ -551,7 +550,7 @@ fn zero_input() {
 #[test]
 fn mod_by_one() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         v := mod(hash(cycle), 1)
     "#;
     let mut kernel = compile_gk(src).unwrap();
@@ -562,7 +561,6 @@ fn mod_by_one() {
 #[test]
 fn constant_only_program() {
     let src = r#"
-        inputs := ()
         x := 42
         y := 3.14
         s := "hello"
@@ -580,7 +578,7 @@ fn constant_only_program() {
 #[test]
 fn compiled_kernel_has_source_and_context() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         h := hash(cycle)
     "#;
     let kernel = compile_gk(src).unwrap();
@@ -605,7 +603,7 @@ fn fuzz_random_hash_chains() {
             let func = functions[(seed as usize) % functions.len()];
             expr = format!("{func}({expr})");
         }
-        let src = format!("inputs := (cycle)\nresult := mod({expr}, 1000)");
+        let src = format!("input cycle: u64\nresult := mod({expr}, 1000)");
         let mut kernel = compile_gk(&src).unwrap_or_else(|e| {
             panic!("seed {seed}: compile failed: {e}\nsource:\n{src}")
         });
@@ -622,7 +620,7 @@ fn fuzz_arithmetic_expressions() {
     for (_i, op) in ops.iter().enumerate() {
         for a in [0u64, 1, 42, 100, u64::MAX / 2] {
             let src = format!(
-                "inputs := (cycle)\nresult := cycle {op} {a}"
+                "input cycle: u64\nresult := cycle {op} {a}"
             );
             let result = compile_gk(&src);
             assert!(result.is_ok(),
@@ -639,7 +637,7 @@ fn fuzz_arithmetic_expressions() {
 #[test]
 fn fuzz_many_bindings() {
     for n in 1..=20 {
-        let mut src = "inputs := (cycle)\n".to_string();
+        let mut src = "input cycle: u64\n".to_string();
         let mut prev = "cycle".to_string();
         for i in 0..n {
             let name = format!("v{i}");
@@ -663,7 +661,7 @@ fn fuzz_multi_output_destructuring() {
         let dims: Vec<String> = (0..n).map(|i| format!("{}", 10 + i)).collect();
         let dim_args = dims.join(", ");
         let src = format!(
-            "inputs := (cycle)\n({targets}) := mixed_radix(cycle, {dim_args})"
+            "input cycle: u64\n({targets}) := mixed_radix(cycle, {dim_args})"
         );
         let mut kernel = compile_gk(&src).unwrap_or_else(|e| {
             panic!("n={n}: compile failed: {e}\nsource:\n{src}")
@@ -678,7 +676,7 @@ fn fuzz_multi_output_destructuring() {
 /// Fuzz: stress test with 100 independent hash chains.
 #[test]
 fn fuzz_wide_graph() {
-    let mut src = "inputs := (cycle)\n".to_string();
+    let mut src = "input cycle: u64\n".to_string();
     for i in 0..100 {
         src.push_str(&format!("out_{i} := mod(hash(cycle + {i}), 1000)\n"));
     }
@@ -697,7 +695,7 @@ fn fuzz_wide_graph() {
 #[test]
 fn error_includes_line_info() {
     let result = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         h := hash(cycle)
         bad := completely_bogus_function(h)
     "#);
@@ -745,7 +743,7 @@ fn eval_const_nested() {
 #[test]
 fn string_eq_compiles_and_evaluates() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         s := "LATENCY"
         eq := s == "LATENCY"
         ne := s == "RECALL"
@@ -760,7 +758,7 @@ fn string_eq_compiles_and_evaluates() {
 #[test]
 fn string_ne_compiles_and_evaluates() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         s := "RECALL"
         ne := s != "LATENCY"
         eq := s != "RECALL"
@@ -776,7 +774,7 @@ fn string_ne_compiles_and_evaluates() {
 #[test]
 fn if_with_string_branches_picks_str() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         s := "LATENCY"
         out := if(s == "LATENCY", "fast", "thorough")
     "#;
@@ -791,7 +789,7 @@ fn if_with_string_branches_picks_str() {
 #[test]
 fn if_string_cond_picks_f64_branch() {
     let src = r#"
-        inputs := (cycle)
+        input cycle: u64
         optimize_for := "LATENCY"
         latency_factor := 1.5
         recall_factor  := 9.5
@@ -807,7 +805,7 @@ fn if_string_cond_picks_f64_branch() {
 #[test]
 fn string_ordered_comparison_errors() {
     let result = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         s := "LATENCY"
         bad := s < "RECALL"
     "#);
@@ -830,7 +828,7 @@ fn type_mismatch_error_carries_binding_name() {
     // ordered comparison on Strings (compiler returns the binding
     // name in the message).
     let result = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         s := "x"
         my_named_binding := s < "y"
     "#);
@@ -855,7 +853,7 @@ fn type_mismatch_error_names_user_binding_via_prefix() {
     // least one node in the path is auto-generated by the binding
     // compiler.
     let result = compile_gk(r#"
-        inputs := (cycle)
+        input cycle: u64
         s := "LATENCY"
         overscan := s << 2
     "#);

@@ -57,7 +57,7 @@ before workload execution:
 
 ```yaml
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   init _pb = dataset_prebuffer("{dataset}")
   # ... rest of bindings use local mmap access
 ```
@@ -434,7 +434,7 @@ params:
   concurrency: "100"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
 
   # One open per facet, scope-init.
   init base      = dataset_open("{dataset}", "base")

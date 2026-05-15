@@ -278,12 +278,20 @@ fn graph_to_gk(graph: &LiteGraph) -> Result<GkTranslation, String> {
         output_names.get(&(*src_node, *src_slot)).cloned()
     };
 
-    // Generate GK source.
+    // Generate GK source. One `input` line per declared coordinate
+    // (single-form) or a tuple `input (a: u64, b: u64, ...)` when
+    // there's more than one.
     let mut lines = Vec::new();
-    lines.push(format!(
-        "inputs := ({})",
-        coord_names.join(", ")
-    ));
+    lines.push(match coord_names.as_slice() {
+        [] => String::new(),
+        [single] => format!("input {single}: u64"),
+        many => {
+            let typed: Vec<String> = many.iter()
+                .map(|n| format!("{n}: u64"))
+                .collect();
+            format!("input ({})", typed.join(", "))
+        }
+    });
 
     // Topological order: process nodes in ID order (Litegraph assigns
     // incrementing IDs, which naturally respects creation order).

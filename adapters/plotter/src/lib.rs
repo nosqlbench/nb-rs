@@ -402,7 +402,7 @@ impl OpDispenser for PlotterDispenser {
                     retryable: false,
                 }))?;
             self.data.lock().unwrap().record(&resolved);
-            Ok(OpResult { body: None, captures: HashMap::new(), skipped: false })
+            Ok(OpResult { body: None, skipped: false })
         })
     }
 }

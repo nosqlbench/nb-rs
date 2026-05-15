@@ -156,7 +156,7 @@ scenarios:
   default:
     - schema
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   shard := mod(hash(cycle), {modulus})
 phases:
   schema:

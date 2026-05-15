@@ -4,7 +4,7 @@
 // inside quoted strings. This is sugar — the assembly phase normalizes
 // it into explicit string-building nodes and edge adapters.
 
-inputs := (cycle)
+input cycle: u64
 
 (tenant, device, reading) := mixed_radix(cycle, 100, 1000, 0)
 

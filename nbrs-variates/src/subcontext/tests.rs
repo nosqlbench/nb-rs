@@ -24,7 +24,7 @@ use crate::node::Value;
 /// is the standard coordinate input.
 fn parent_kernel() -> Arc<ScopeKernel<RootMarker>> {
     let kernel = compile_gk(
-        "inputs := (cycle)\n\
+        "input cycle: u64\n\
          final dataset := \"sift1m\"\n\
          seed := hash(cycle)\n",
     )
@@ -47,7 +47,7 @@ fn finalize_compiles_simple_gk_source_block() {
     let mut b = parent.subcontext_builder();
     b.context(SourceContext::new("simple-gk-source"));
     b.body(BodyFragment::GkSource(
-        "inputs := (cycle)\nx := 5\n".to_string(),
+        "input cycle: u64\nx := 5\n".to_string(),
     ));
     let module = b.finalize().expect("finalize should succeed");
     assert!(module.program().output_names().iter().any(|n| *n == "x"));
@@ -64,7 +64,7 @@ fn finalize_rejects_unbound_import() {
     // GK compiler surfaces this as a wiring / resolution error,
     // which the builder wraps as `ContractViolation::Compile`.
     b.body(BodyFragment::GkSource(
-        "inputs := (cycle)\nout := mul(cycle, foo)\n".to_string(),
+        "input cycle: u64\nout := mul(cycle, foo)\n".to_string(),
     ));
     let err = b.finalize().expect_err("should fail to compile");
     match err {
@@ -89,7 +89,7 @@ fn finalize_rejects_import_with_no_matching_parent_name() {
     let mut b = parent.subcontext_builder();
     b.context(SourceContext::new("rule1-direct"));
     b.import(ImportSpec::extern_("nonexistent", PortType::U64));
-    b.body(BodyFragment::GkSource("inputs := (cycle)\nx := 5\n".to_string()));
+    b.body(BodyFragment::GkSource("input cycle: u64\nx := 5\n".to_string()));
     let err = b.finalize().expect_err("should reject");
     match err {
         ContractViolation::UnboundImport { import, .. } => {
@@ -105,7 +105,7 @@ fn spawn_records_named_child() {
     let mut b = parent.clone().subcontext_builder();
     b.context(SourceContext::for_phase("p1"));
     b.body(BodyFragment::GkSource(
-        "inputs := (cycle)\ny := mul(cycle, 2)\n".to_string(),
+        "input cycle: u64\ny := mul(cycle, 2)\n".to_string(),
     ));
     let module: ScopeModule<_> = b.finalize().expect("finalize");
 
@@ -124,13 +124,13 @@ fn duplicate_spawn_errors() {
     let module1 = {
         let mut b = parent.clone().subcontext_builder();
         b.context(SourceContext::for_phase("dup"));
-        b.body(BodyFragment::GkSource("inputs := (cycle)\na := 1\n".to_string()));
+        b.body(BodyFragment::GkSource("input cycle: u64\na := 1\n".to_string()));
         b.finalize().expect("first finalize")
     };
     let module2 = {
         let mut b = parent.clone().subcontext_builder();
         b.context(SourceContext::for_phase("dup-again"));
-        b.body(BodyFragment::GkSource("inputs := (cycle)\nb := 2\n".to_string()));
+        b.body(BodyFragment::GkSource("input cycle: u64\nb := 2\n".to_string()));
         b.finalize().expect("second finalize")
     };
 
@@ -160,13 +160,13 @@ fn release_child_allows_respawn() {
     let module1 = {
         let mut b = parent.clone().subcontext_builder();
         b.context(SourceContext::for_phase("rel"));
-        b.body(BodyFragment::GkSource("inputs := (cycle)\na := 1\n".to_string()));
+        b.body(BodyFragment::GkSource("input cycle: u64\na := 1\n".to_string()));
         b.finalize().expect("first finalize")
     };
     let module2 = {
         let mut b = parent.clone().subcontext_builder();
         b.context(SourceContext::for_phase("rel-again"));
-        b.body(BodyFragment::GkSource("inputs := (cycle)\na := 1\n".to_string()));
+        b.body(BodyFragment::GkSource("input cycle: u64\na := 1\n".to_string()));
         b.finalize().expect("second finalize")
     };
 
@@ -192,7 +192,7 @@ fn register_pull_persists_into_artifact() {
     ));
     b.register_pull(consumer);
     b.body(BodyFragment::GkSource(
-        "inputs := (cycle)\nz := mul(cycle, 3)\n".to_string(),
+        "input cycle: u64\nz := mul(cycle, 3)\n".to_string(),
     ));
 
     let module = b.finalize().expect("finalize");
@@ -226,7 +226,7 @@ fn body_fragment_statements_compile_to_program() {
     // Parse a snippet to obtain `Vec<Statement>` directly, then
     // submit via BodyFragment::Statements. This is the path
     // synthesisers will use in Phase 2+.
-    let src = "inputs := (cycle)\nq := add(cycle, 7)\n";
+    let src = "input cycle: u64\nq := add(cycle, 7)\n";
     let tokens = lexer::lex(src).expect("lex");
     let file = parser::parse(tokens).expect("parse");
 
@@ -245,7 +245,7 @@ fn body_fragment_statements_compile_to_program() {
 /// Build a parent kernel with a `shared <name> := <init>` export.
 fn parent_with_shared_u64(name: &str, init: u64) -> Arc<ScopeKernel<RootMarker>> {
     let src = format!(
-        "inputs := (cycle)\n\
+        "input cycle: u64\n\
          shared {name} := {init}\n",
     );
     let kernel = compile_gk(&src).expect("parent kernel compile");
@@ -266,7 +266,7 @@ fn parent_shared_export_collision_rewrites_to_cell_write() {
     b.context(SourceContext::for_phase("rule2-rewrite"));
     b.export(ExportSpec::shared("X", crate::node::PortType::U64));
     b.body(BodyFragment::GkSource(
-        "inputs := (cycle)\nX := 42\n".to_string(),
+        "input cycle: u64\nX := 42\n".to_string(),
     ));
 
     let module = b.finalize().expect("finalize should succeed under Rule 2");
@@ -311,7 +311,7 @@ fn parent_shared_export_collision_propagates_through_siblings() {
         b.context(SourceContext::for_phase("writer"));
         b.export(ExportSpec::shared("flag", crate::node::PortType::U64));
         b.body(BodyFragment::GkSource(
-            "inputs := (cycle)\nflag := 7\n".to_string(),
+            "input cycle: u64\nflag := 7\n".to_string(),
         ));
         b.finalize().expect("writer finalize")
     };
@@ -322,7 +322,7 @@ fn parent_shared_export_collision_propagates_through_siblings() {
         // `flag` as a shared cell-bound value.
         b.import(ImportSpec::shared("flag", crate::node::PortType::U64));
         b.body(BodyFragment::GkSource(
-            "inputs := (cycle)\nextern flag: u64\nseen := flag\n".to_string(),
+            "input cycle: u64\nextern flag: u64\nseen := flag\n".to_string(),
         ));
         b.finalize().expect("reader finalize")
     };
@@ -505,7 +505,7 @@ fn workload_emulation_shared_cell_through_op_template_chain() {
     //    `shared has_sai_column_indexes := false` declaration
     //    in the workload bindings block.
     let workload_canonical = compile_gk(
-        "inputs := (cycle)\nshared has_match := false\n"
+        "input cycle: u64\nshared has_match := false\n"
     ).expect("workload-root compile");
 
     // 2. Detect-phase op-template program built via Source
@@ -520,7 +520,7 @@ fn workload_emulation_shared_cell_through_op_template_chain() {
     // shape. regex_match produces Bool, the cell-declared type.
     let detect_matter = super::GkMatter::builder()
         .label("detect_op")
-        .source("inputs := (cycle)\n".to_string())
+        .source("input cycle: u64\n".to_string())
         .result_bindings(
             "has_match := log_info(regex_match(\
              exactly_one_value(body), \"hello\"))\n"
@@ -591,7 +591,7 @@ fn workload_emulation_shared_cell_through_op_template_chain() {
     let consumer_matter = super::GkMatter::builder()
         .label("consumer_op")
         .source(
-            "inputs := (cycle)\nextern has_match: bool\nseen := has_match\n".to_string()
+            "input cycle: u64\nextern has_match: bool\nseen := has_match\n".to_string()
         )
         .build()
         .expect("consumer matter");
@@ -637,10 +637,10 @@ fn shared_bool_literal_init_does_not_leak_false_as_named_input() {
     // variant), so without an explicit filter they leaked as
     // input slots and surfaced in the runtime kernel-input
     // dump as `false=0`. Both with and without an explicit
-    // `inputs := (cycle)` declaration is exercised — the
+    // `input cycle: u64` declaration is exercised — the
     // workload-root path takes the inferred branch.
     for src in [
-        "inputs := (cycle)\n\
+        "input cycle: u64\n\
          shared has_sai_column_indexes := false\n\
          shared has_indexes := false\n",
         "shared has_sai_column_indexes := false\n\
@@ -675,12 +675,12 @@ fn log_info_preserves_bool_type_through_result_binding_cell() {
     use super::CompileOptions;
 
     let root = compile_gk(
-        "inputs := (cycle)\nshared has_match := false\n"
+        "input cycle: u64\nshared has_match := false\n"
     ).expect("root compile");
 
     // Phase scope (silent intermediate — body never names has_match).
     let phase_program = compile_gk(
-        "inputs := (cycle)\nlocal := cycle\n"
+        "input cycle: u64\nlocal := cycle\n"
     ).expect("phase compile").program().clone();
     let phase_kernel = root.materialize_subscope(phase_program, &[]);
 
@@ -692,8 +692,9 @@ fn log_info_preserves_bool_type_through_result_binding_cell() {
         required_outputs: Vec::new(),
         context_label: Some("op-template".to_string()),
         cursor_limit: None,
+        ..Default::default()
     };
-    let body = "inputs := (cycle)\n".to_string();
+    let body = "input cycle: u64\n".to_string();
     // The body magic-extern is auto-injected by
     // add_result_bindings; exactly_one_value walks its
     // structural shape. The schema_text wire feeds regex_match.
@@ -757,14 +758,14 @@ fn build_kernel_under_parent_full_sees_live_parents_cells() {
 
     // Workload root with a `shared` cell.
     let root = compile_gk(
-        "inputs := (cycle)\nshared has_sai_column_indexes := false\n"
+        "input cycle: u64\nshared has_sai_column_indexes := false\n"
     ).expect("root compile");
 
     // Phase scope built under root via the typed subscope path
     // — the canonical activity-layer path. Phase body never
     // names the shared wire; the cell rides as transit.
     let phase_program = compile_gk(
-        "inputs := (cycle)\nlocal := cycle\n"
+        "input cycle: u64\nlocal := cycle\n"
     ).expect("phase compile").program().clone();
     let phase_kernel = root.materialize_subscope(phase_program, &[]);
 
@@ -778,8 +779,9 @@ fn build_kernel_under_parent_full_sees_live_parents_cells() {
         required_outputs: Vec::new(),
         context_label: Some("op-template".to_string()),
         cursor_limit: None,
+        ..Default::default()
     };
-    let body = "inputs := (cycle)\n".to_string();
+    let body = "input cycle: u64\n".to_string();
     // RHS uses a comparison so the value is unambiguously a
     // Bool produced by a node (compile_binding's expression
     // path doesn't recognise bare `true`/`false` literals on
@@ -831,13 +833,13 @@ fn shared_cell_cascade_survives_for_iteration_through_silent_intermediates() {
     use std::sync::Arc;
 
     let root_kernel = compile_gk(
-        "inputs := (cycle)\nshared flag := 0\n"
+        "input cycle: u64\nshared flag := 0\n"
     ).expect("root compile");
 
     // Scenario: synthesised via for_iteration (the comprehension
     // code path).
     let scenario_canon = compile_gk(
-        "inputs := (cycle)\nlocal := cycle\n"
+        "input cycle: u64\nlocal := cycle\n"
     ).expect("scenario compile");
     let scenario = GkKernel::for_iteration(
         &Arc::new(scenario_canon),
@@ -847,7 +849,7 @@ fn shared_cell_cascade_survives_for_iteration_through_silent_intermediates() {
 
     // for_each scope: iter-var only.
     let foreach_program = compile_gk(
-        "inputs := (cycle)\nextern profile: String\n"
+        "input cycle: u64\nextern profile: String\n"
     ).expect("for_each compile").program().clone();
     let mut foreach = scenario.materialize_subscope(foreach_program, &[]);
     let pidx = foreach.program().find_input("profile").expect("profile slot");
@@ -855,7 +857,7 @@ fn shared_cell_cascade_survives_for_iteration_through_silent_intermediates() {
 
     // Phase op: writes through the shared cell.
     let leaf_program = compile_gk(
-        "inputs := (cycle)\n\
+        "input cycle: u64\n\
          extern flag: u64\n\
          __write_flag := 7\n"
     ).expect("leaf compile").program().clone();
@@ -877,7 +879,7 @@ fn shared_cell_cascade_survives_for_iteration_through_silent_intermediates() {
     // cell handle (not just the local snapshot) carried the
     // value.
     let reader_program = compile_gk(
-        "inputs := (cycle)\nextern flag: u64\nseen := flag\n"
+        "input cycle: u64\nextern flag: u64\nseen := flag\n"
     ).expect("reader compile").program().clone();
     let mut reader = foreach.materialize_subscope(reader_program, &[]);
     let seen = reader.pull("seen").clone();
@@ -902,13 +904,13 @@ fn shared_cell_cascade_survives_legacy_bind_program_under_parent_chain() {
     // existing call sites pick the fix up automatically.
     // Workload root: `shared X := <literal>`.
     let root_kernel = compile_gk(
-        "inputs := (cycle)\nshared counter := 0\n"
+        "input cycle: u64\nshared counter := 0\n"
     ).expect("root compile");
 
     // Scenario kernel: body never names `counter`. Built via
     // the typed subscope path — exactly how the activity layer
     // builds phase / scenario / for_each kernels.
-    let mid_program = compile_gk("inputs := (cycle)\nlocal := cycle\n")
+    let mid_program = compile_gk("input cycle: u64\nlocal := cycle\n")
         .expect("mid compile")
         .program()
         .clone();
@@ -919,7 +921,7 @@ fn shared_cell_cascade_survives_legacy_bind_program_under_parent_chain() {
     // through). The cell cascade must reach this kernel for
     // the write to land.
     let leaf_program = compile_gk(
-        "inputs := (cycle)\n\
+        "input cycle: u64\n\
          extern counter: u64\n\
          __write_counter := 42\n"
     ).expect("leaf compile").program().clone();
@@ -965,7 +967,7 @@ fn parent_shared_cell_cascades_to_grandchild_through_silent_intermediate() {
         let mut b = root.clone().subcontext_builder();
         b.context(SourceContext::for_phase("mid"));
         b.body(BodyFragment::GkSource(
-            "inputs := (cycle)\nlocal := cycle\n".to_string(),
+            "input cycle: u64\nlocal := cycle\n".to_string(),
         ));
         b.finalize().expect("mid finalize")
     };
@@ -980,7 +982,7 @@ fn parent_shared_cell_cascades_to_grandchild_through_silent_intermediate() {
         b.context(SourceContext::for_phase("leaf"));
         b.export(ExportSpec::shared("flag", crate::node::PortType::U64));
         b.body(BodyFragment::GkSource(
-            "inputs := (cycle)\nflag := 9\n".to_string(),
+            "input cycle: u64\nflag := 9\n".to_string(),
         ));
         b.finalize().expect("leaf finalize — Rule 2 must see root's cell through mid")
     };
@@ -1024,7 +1026,7 @@ fn bind_program_under_parent_rebinds_compiled_program() {
     // whose `lookup` resolves a parent constant — the same
     // behaviour the legacy two-call dance produced.
     let parent_kernel = compile_gk(
-        "inputs := (cycle)\n\
+        "input cycle: u64\n\
          final n := 7\n",
     )
     .expect("parent compile");
@@ -1032,7 +1034,7 @@ fn bind_program_under_parent_rebinds_compiled_program() {
     // Compile the child program standalone. The rebind helper
     // does NOT compile — it takes a pre-compiled `Arc<GkProgram>`.
     let child_kernel = compile_gk(
-        "inputs := (cycle)\n\
+        "input cycle: u64\n\
          extern n: u64\n\
          passthrough := mul(n, 1)\n",
     )
@@ -1054,7 +1056,7 @@ fn build_kernel_under_parent_threads_compile_options() {
     // `compile_gk_with_libs` directly produce byte-identical
     // kernels via the builder. Verify the bridge accepts a
     // non-default options struct and produces a working kernel.
-    let parent_kernel = compile_gk("inputs := (cycle)\nfinal n := 5\n")
+    let parent_kernel = compile_gk("input cycle: u64\nfinal n := 5\n")
         .expect("parent compile");
 
     let opts = super::builder::CompileOptions {
@@ -1064,6 +1066,7 @@ fn build_kernel_under_parent_threads_compile_options() {
         required_outputs: Vec::new(),
         context_label: Some("phase-3-options-test".to_string()),
         cursor_limit: None,
+        ..Default::default()
     };
     let matter = super::GkMatter::builder()
         .label("phase-3-options-test")
@@ -1085,7 +1088,7 @@ fn parent_final_export_collision_still_errors() {
     // is an immutable-export violation. Rule 2 routes shared
     // collisions but final collisions remain hard errors.
     let kernel = compile_gk(
-        "inputs := (cycle)\n\
+        "input cycle: u64\n\
          final fixed := 42\n",
     )
     .expect("parent kernel compile");
@@ -1095,7 +1098,7 @@ fn parent_final_export_collision_still_errors() {
     b.context(SourceContext::for_phase("final-shadow"));
     b.export(ExportSpec::local("fixed", crate::node::PortType::U64));
     b.body(BodyFragment::GkSource(
-        "inputs := (cycle)\nfixed := 99\n".to_string(),
+        "input cycle: u64\nfixed := 99\n".to_string(),
     ));
     let err = b.finalize().expect_err("final-shadow must error");
     match err {
@@ -1119,7 +1122,7 @@ fn add_result_bindings_injects_only_referenced_magic_externs() {
     let parent = parent_kernel();
     let mut b = parent.subcontext_builder();
     b.context(SourceContext::new("rb-closure"));
-    b.body(BodyFragment::GkSource("inputs := (cycle)\n".to_string()));
+    b.body(BodyFragment::GkSource("input cycle: u64\n".to_string()));
     b.add_result_bindings("started_with_x := regex_match(body, \"^x\")\n")
         .expect("add_result_bindings");
     let module = b.finalize().expect("finalize");
@@ -1134,6 +1137,34 @@ fn add_result_bindings_injects_only_referenced_magic_externs() {
 }
 
 #[test]
+fn add_result_bindings_diagnostic_force_allocates_unreferenced_magic_externs() {
+    // Diagnostic opt level relaxes the closure-binding economy:
+    // every magic extern (`body` / `count` / `ok`) gets a slot
+    // regardless of whether the source references it, so step-
+    // debug / cycle-replay can show the operator the values the
+    // runtime would otherwise drop. Same source as the
+    // closure-economy test above, but `count` and `ok` slots
+    // are now present.
+    let parent = parent_kernel();
+    let mut b = parent.subcontext_builder();
+    b.context(SourceContext::new("rb-diagnostic"));
+    b.with_compile_options(super::CompileOptions {
+        kernel_opt: crate::kernel::KernelOptLevel::Diagnostic,
+        ..Default::default()
+    });
+    b.body(BodyFragment::GkSource("input cycle: u64\n".to_string()));
+    b.add_result_bindings("started_with_x := regex_match(body, \"^x\")\n")
+        .expect("add_result_bindings");
+    let module = b.finalize().expect("finalize");
+    assert!(module.program().find_input("body").is_some(),
+        "body slot present (referenced)");
+    assert!(module.program().find_input("count").is_some(),
+        "count slot present under Diagnostic (force-allocated)");
+    assert!(module.program().find_input("ok").is_some(),
+        "ok slot present under Diagnostic (force-allocated)");
+}
+
+#[test]
 fn add_result_bindings_rule2_writethrough_to_parent_shared() {
     // The motivating SRD-66 use case: workload-root has
     // `shared X := false`; result-bindings declare
@@ -1141,7 +1172,7 @@ fn add_result_bindings_rule2_writethrough_to_parent_shared() {
     // the binding into a write-through that propagates to the
     // parent's shared cell.
     let parent_src = "\
-        inputs := (cycle)\n\
+        input cycle: u64\n\
         shared count_seen := 0\n\
     ";
     let parent_kernel = compile_gk(parent_src).expect("parent compile");
@@ -1149,7 +1180,7 @@ fn add_result_bindings_rule2_writethrough_to_parent_shared() {
 
     let mut b = parent.clone().subcontext_builder();
     b.context(SourceContext::new("rb-rule2"));
-    b.body(BodyFragment::GkSource("inputs := (cycle)\n".to_string()));
+    b.body(BodyFragment::GkSource("input cycle: u64\n".to_string()));
     // Use a numeric expression on a magic extern so the test
     // exercises both the closure-binding economy AND Rule 2.
     // RHS uses `count` which the magic-extern injector adds as
@@ -1177,7 +1208,7 @@ fn add_result_bindings_rejects_reassignment_of_magic_wire() {
     let parent = parent_kernel();
     let mut b = parent.subcontext_builder();
     b.context(SourceContext::new("rb-reassign"));
-    b.body(BodyFragment::GkSource("inputs := (cycle)\n".to_string()));
+    b.body(BodyFragment::GkSource("input cycle: u64\n".to_string()));
     let err = match b.add_result_bindings("body := \"oops\"\n") {
         Ok(_) => panic!("reassigning body must error"),
         Err(e) => e,
@@ -1198,7 +1229,7 @@ fn add_result_bindings_empty_source_is_noop() {
     let parent = parent_kernel();
     let mut b = parent.subcontext_builder();
     b.context(SourceContext::new("rb-empty"));
-    b.body(BodyFragment::GkSource("inputs := (cycle)\n".to_string()));
+    b.body(BodyFragment::GkSource("input cycle: u64\n".to_string()));
     b.add_result_bindings("").expect("empty source is a no-op");
     b.add_result_bindings("   \n   \n").expect("whitespace-only source is a no-op");
     let module = b.finalize().expect("finalize");

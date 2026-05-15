@@ -17,7 +17,7 @@ StartingEpochMillis('2018-10-02 04:00:00'); ToDate(); ToString()
 
 GK equivalent:
 ```gk
-inputs := (cycle)
+input cycle: u64
 h := hash(cycle)
 hour_ms := (h % 3) * 3600000
 minute_ms := (hash(shuffle(cycle, 0, 3)) % 3) * 60000

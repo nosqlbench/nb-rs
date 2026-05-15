@@ -916,6 +916,20 @@ pub struct ParsedOp {
     /// (no merge).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrappers: Option<WrappersConfig>,
+    /// Capture-point specs extracted at parse time from any
+    /// string-valued entry in `op`. Each spec names a column the
+    /// result body carries and the wire it should be written to
+    /// via `ctx.wires.write` at cycle time. The `slurp` flag
+    /// selects between single-row (`[name]`) and all-rows
+    /// (`[@name]`) extraction.
+    ///
+    /// The parser strips the bracket syntax from the source op
+    /// fields after harvesting the spec, so adapters consume
+    /// clean text (e.g. `SELECT [key] FROM ...` becomes
+    /// `SELECT key FROM ...`). Downstream wrappers read this
+    /// list directly — no re-parsing of the op's text fields.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub captures: Vec<crate::bindpoints::CapturePoint>,
 }
 
 /// SRD-40b §1 schema for one synthetic-metric declaration on
@@ -1102,6 +1116,7 @@ impl ParsedOp {
             metrics: HashMap::new(),
             result: None,
             wrappers: None,
+            captures: Vec::new(),
         }
     }
 }

@@ -45,7 +45,7 @@ report:
       all
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
 
 scenarios:
   default:
@@ -58,7 +58,7 @@ phases:
     cycles: "{query_count}"
     concurrency: 1
     bindings: |
-      inputs := (cycle)
+      input cycle: u64
       query_id := zero_pad_u64(mod(hash(cycle), 1000), 6)
       latency := format_f64(to_f64(mod(hash(hash(cycle)), 500)) / 10.0, 1)
       status := number_to_words(mod(hash(hash(hash(cycle))), 3))

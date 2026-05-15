@@ -46,6 +46,11 @@ pub const KNOWN_PARAMS: &[&str] = &[
     // last value, but the allow-list still needs the key so
     // the unrecognized-param guard doesn't reject the flag.
     "trace",
+    // SRD-68 follow-up — `kernel_opt=release|diagnostic`.
+    // Force-allocates magic-extern + result-binding-LHS slots
+    // under `diagnostic` so step-debug / cycle-replay can see
+    // values the workload doesn't otherwise consume.
+    "kernel_opt",
 ];
 
 /// Convert the workload-model `SummaryConfig` (parsed from the
@@ -569,7 +574,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         let referenced = collect_param_references(&workload);
         let adapter_params: std::collections::HashSet<&'static str> =
             registered_adapter_params().into_iter().collect();
-        let iter_var_names = collect_iter_var_names(&workload.scenarios);
+        let iter_var_names = collect_iter_var_names(&workload);
         let wire_names = collect_gk_binding_names(&workload);
 
         // Declared/known direction: every declared param must be
@@ -770,6 +775,26 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         .collect();
     let strict = args.iter().any(|a| a == "--strict")
         || matches!(params.get("strict").map(String::as_str), Some("true") | Some("1"));
+
+    // SRD-68 follow-up — session-wide op-template synthesis opt level.
+    // `--kernel-opt=release|diagnostic` or `kernel_opt=…`. Release
+    // (default) lets the closure-binding economy DCE unreferenced
+    // magic-extern slots; Diagnostic force-allocates body/count/ok and
+    // every result-binding LHS slot so step-debug / cycle-replay can
+    // inspect writes the workload doesn't otherwise consume.
+    let kernel_opt: nbrs_variates::kernel::KernelOptLevel = {
+        let raw = args.iter()
+            .find_map(|a| a.strip_prefix("--kernel-opt="))
+            .map(|s| s.to_string())
+            .or_else(|| params.get("kernel_opt").cloned());
+        match raw {
+            None => nbrs_variates::kernel::KernelOptLevel::default(),
+            Some(s) => nbrs_variates::kernel::KernelOptLevel::parse(s.trim())
+                .map_err(|bad| format!(
+                    "unknown --kernel-opt value '{bad}' — use 'release' or 'diagnostic'"
+                ))?,
+        }
+    };
 
     // Parse dryrun= param into diagnostic config
     if let Some(spec) = params.get("dryrun") {
@@ -1800,6 +1825,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         gk_lib_paths.clone(),
                         workload_dir_owned.as_deref(),
                         strict,
+                        kernel_opt,
                         &context,
                     )
                 }
@@ -2675,7 +2701,6 @@ impl crate::adapter::OpDispenser for DryRunDispenser {
             }
             Ok(crate::adapter::OpResult {
                 body: None,
-                captures: std::collections::HashMap::new(),
                 skipped: false,
             })
         })
@@ -2715,6 +2740,16 @@ struct ParamRefs {
     /// iter-var — anything else is a typo or missing
     /// declaration and the validator surfaces it as an error.
     placeholders: std::collections::HashSet<String>,
+    /// Placeholders that appeared in scenario-tree `for_each` /
+    /// `for_combinations` / DoWhile-condition text. These get
+    /// resolved at runtime by the comprehension interpolator
+    /// (which emits a `<path>:<line>:<col>:` error on failure);
+    /// the strict "must-resolve-now" validator skips them so the
+    /// more-specific runtime diagnostic wins. They still count
+    /// as references for the "declared but unreferenced" check
+    /// — a workload param used only in a `for_each` spec is
+    /// genuinely consumed by the workload, just at runtime.
+    runtime_only_placeholders: std::collections::HashSet<String>,
     /// Bare identifiers harvested from `if:` / `delay:`
     /// expression bodies. These may be wire names (referencing
     /// values bound via GK source) rather than workload params,
@@ -2733,10 +2768,12 @@ struct ParamRefs {
 
 impl ParamRefs {
     /// Does `param` appear as a reference anywhere — placeholder,
-    /// expression ident, or composite template? Used by the
-    /// existing "declared but unreferenced" validator.
+    /// runtime-only placeholder, expression ident, or composite
+    /// template? Used by the existing "declared but unreferenced"
+    /// validator.
     fn contains(&self, param: &str) -> bool {
         if self.placeholders.contains(param) { return true; }
+        if self.runtime_only_placeholders.contains(param) { return true; }
         if self.expression_idents.contains(param) { return true; }
         self.templates.iter().any(|tpl| template_matches(tpl, param))
     }
@@ -3063,6 +3100,19 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
     // `{...}`-bearing fields. DoWhile/DoUntil contribute their
     // condition text; ForEach/ForCombinations/ForEachUnion
     // contribute their iteration specs.
+    //
+    // Scenario-tree `{name}` placeholders are runtime-interpolated
+    // against the outer iter-var scope (the comprehension's
+    // enclosing for-each, plus workload params). An unresolved
+    // placeholder there surfaces a `path:line:col:` runtime error
+    // through the interpolation pipeline — the early
+    // workload-level "undeclared placeholder" check would steal
+    // that diagnostic with a less specific error. So we route
+    // these refs through a side-channel that contributes to the
+    // declared-but-unreferenced check (workload params used only
+    // in for_each text are still counted as referenced) but NOT
+    // to `refs.placeholders` (which drives the strict
+    // "must-resolve-now" guard).
     fn scan_scenario_nodes(
         nodes: &[nbrs_workload::model::ScenarioNode],
         refs: &mut ParamRefs,
@@ -3072,14 +3122,24 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
                 nbrs_workload::model::ScenarioNode::Phase(_) => {}
                 nbrs_workload::model::ScenarioNode::Comprehension { comprehension, children } => {
                     use nbrs_variates::comprehension::ClauseSource;
+                    let mut deferred = ParamRefs::default();
                     for clause in comprehension.flat_clauses() {
                         match &clause.source {
-                            ClauseSource::Single(s) => scan_param_refs(s, refs),
+                            ClauseSource::Single(s) => scan_param_refs(s, &mut deferred),
                             ClauseSource::Parallel { exprs, .. } => {
-                                for e in exprs { scan_param_refs(e, refs); }
+                                for e in exprs { scan_param_refs(e, &mut deferred); }
                             }
                         }
                     }
+                    // Comprehension `{name}` placeholders resolve at
+                    // runtime, not at workload-validation time —
+                    // route them through `runtime_only_placeholders`
+                    // so they count as references (for the
+                    // declared-but-unreferenced check) but bypass
+                    // the strict undeclared-placeholder guard.
+                    refs.runtime_only_placeholders.extend(deferred.placeholders);
+                    refs.expression_idents.extend(deferred.expression_idents);
+                    refs.templates.extend(deferred.templates);
                     scan_scenario_nodes(children, refs);
                 }
                 nbrs_workload::model::ScenarioNode::DoWhile { condition, children, .. }
@@ -3117,12 +3177,26 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
 /// remains correct regardless of which `scenario=` argument
 /// the operator passes on the CLI.
 fn collect_iter_var_names(
-    scenarios: &std::collections::HashMap<String, Vec<nbrs_workload::model::ScenarioNode>>,
+    workload: &nbrs_workload::model::Workload,
 ) -> std::collections::HashSet<String> {
     let mut out = std::collections::HashSet::new();
-    for nodes in scenarios.values() {
+    for nodes in workload.scenarios.values() {
         for node in nodes {
             collect_iter_vars_recursive(node, &mut out);
+        }
+    }
+    // Phase-level `for_each:` declarations also introduce iter-vars
+    // — `phases.X.for_each: "k in 1, 2, 3"` lets the phase's ops
+    // reference `{k}`. The scenario walker doesn't traverse phase
+    // bodies, so harvest from each phase's `for_each` clause too.
+    for phase in workload.phases.values() {
+        if let Some(text) = phase.for_each.as_deref()
+            && let Ok(comp) =
+                nbrs_variates::comprehension::parse::parse_comprehension_text(text)
+        {
+            for name in comp.coordinate_names() {
+                out.insert(name.to_string());
+            }
         }
     }
     out
@@ -3169,30 +3243,76 @@ fn collect_iter_vars_recursive(
 /// `{ground_truth}` references that are clearly satisfied by an
 /// enclosing `bindings:` block.
 ///
-/// Scanner is line-based and recognises four shapes:
+/// Scanner is line-based and recognises six shapes:
+///   * `input NAME[: TYPE]` — kernel input slot (bare form)
+///   * `input (NAME[: TYPE], ...)` — kernel input slot (tuple form)
 ///   * `init NAME = …`     — init binding (eager, once per scope)
 ///   * `cursor NAME = …`   — cursor declaration
 ///   * `shared NAME := …`  — shared output (cross-scope cell)
 ///   * `final NAME := …`   — final binding
 ///   * `NAME := …`         — ordinary `:=` output binding
+///
+/// The collector also mirrors the workload-root kernel's auto-input
+/// behaviour (see `bindings.rs::compile_workload_kernel`): when no
+/// GK source anywhere in the workload declares any `input` slot,
+/// the runtime injects `input cycle: u64` so `{cycle}` resolves at
+/// op-template substitution time. Reflecting that injection in the
+/// validator allow-set prevents false-positive rejection of
+/// `{cycle}` placeholders in workloads with no explicit `bindings:`
+/// block (e.g. inline `op="tick={cycle}"`).
 fn collect_gk_binding_names(
     workload: &nbrs_workload::model::Workload,
 ) -> std::collections::HashSet<String> {
     let mut out = std::collections::HashSet::new();
     use nbrs_workload::model::BindingsDef;
 
-    if let BindingsDef::GkSource(s) = &workload.bindings {
-        scan_gk_binding_lhs(&mut out, s);
-    }
-    for phase in workload.phases.values() {
-        if let BindingsDef::GkSource(s) = &phase.bindings {
-            scan_gk_binding_lhs(&mut out, s);
-        }
-        for op in &phase.ops {
-            if let BindingsDef::GkSource(s) = &op.bindings {
-                scan_gk_binding_lhs(&mut out, s);
+    let mut any_input_decl = false;
+    let mut scan_bindings = |bindings: &BindingsDef,
+                             sink: &mut std::collections::HashSet<String>| {
+        match bindings {
+            BindingsDef::GkSource(s) => {
+                scan_gk_binding_lhs(sink, s);
+                if s.lines().any(|l| l.trim_start().starts_with("input ")) {
+                    any_input_decl = true;
+                }
+            }
+            BindingsDef::Map(m) => {
+                // Legacy nosqlbench-style chains (`Hash(); Mod(...)`)
+                // are translated into GK bindings at runtime by
+                // `compile_bindings_with_opts`; the keys of the map
+                // become the wire names those translations produce.
+                // The validator's allow-set must reflect those names
+                // so referencing `{user_id}` in op text — where
+                // `user_id: Hash(); Mod(...)` is the binding key —
+                // doesn't trip the undeclared-placeholder guard.
+                for name in m.keys() {
+                    sink.insert(name.clone());
+                }
             }
         }
+    };
+
+    scan_bindings(&workload.bindings, &mut out);
+    // Top-level `workload.ops` carry their own `bindings:` blocks
+    // in inline-mode workloads (the inline parser puts
+    // synthesised `__inline_N := <expr>` lines there). Without
+    // walking this collection, the validator misses every
+    // inline-rewrite-generated wire name.
+    for op in &workload.ops {
+        scan_bindings(&op.bindings, &mut out);
+    }
+    for phase in workload.phases.values() {
+        scan_bindings(&phase.bindings, &mut out);
+        for op in &phase.ops {
+            scan_bindings(&op.bindings, &mut out);
+        }
+    }
+
+    // Runtime mirror: workload-root kernel auto-injects
+    // `input cycle: u64` when no `input` line is declared anywhere.
+    // Surface that injection to the validator.
+    if !any_input_decl {
+        out.insert("cycle".to_string());
     }
     out
 }
@@ -3343,9 +3463,10 @@ fn scan_gk_braced_refs(source: &str) -> Vec<String> {
     out
 }
 
-/// Line-by-line scan of GK source for binding LHS names —
+/// Line-by-line scan of GK source for locally-bound names —
 /// `init NAME = …`, `cursor NAME = …`, `shared NAME := …`,
-/// `final NAME := …`, and bare `NAME := …` ordinary assignments.
+/// `final NAME := …`, bare `NAME := …` assignments, and
+/// `input NAME[: TYPE]` / `input (NAME[: TYPE], ...)` declarations.
 /// Skips comments and blank lines. Lines that don't match any of
 /// these shapes (function-call statements, comments, expression
 /// continuations) are ignored.
@@ -3356,13 +3477,29 @@ fn scan_gk_binding_lhs(
     for raw_line in source.lines() {
         let line = raw_line.trim();
         if line.is_empty() || line.starts_with('#') { continue; }
+        // `input` declarations: collect declared slot names without
+        // requiring an `=` / `:=` suffix. Both bare (`input cycle: u64`)
+        // and tuple (`input (cycle: u64, q: f64)`) forms are handled.
+        if let Some(rest) = line.strip_prefix("input ") {
+            scan_input_decl_names(out, rest.trim());
+            continue;
+        }
         // Strip leading modifier (`init `, `cursor `, …); body is
-        // what follows. These are mutually exclusive in practice.
-        let body = line.strip_prefix("init ")
-            .or_else(|| line.strip_prefix("cursor "))
-            .or_else(|| line.strip_prefix("shared "))
-            .or_else(|| line.strip_prefix("final "))
-            .unwrap_or(line);
+        // what follows. Modifiers can be combined in a few cases
+        // (e.g. `volatile final`, `final shared`), so loop until
+        // no recognised prefix remains.
+        let mut body = line;
+        loop {
+            let stripped = body.strip_prefix("init ")
+                .or_else(|| body.strip_prefix("cursor "))
+                .or_else(|| body.strip_prefix("shared "))
+                .or_else(|| body.strip_prefix("final "))
+                .or_else(|| body.strip_prefix("volatile "));
+            match stripped {
+                Some(rest) => body = rest,
+                None => break,
+            }
+        }
         // Pull the leading identifier.
         let bytes = body.as_bytes();
         let mut i = 0;
@@ -3380,6 +3517,33 @@ fn scan_gk_binding_lhs(
             || (bytes.get(j) == Some(&b':') && bytes.get(j + 1) == Some(&b'='));
         if !is_binding { continue; }
         out.insert(body[..i].to_string());
+    }
+}
+
+/// Parse the name(s) out of an `input` declaration body (the text
+/// after the `input ` keyword has been stripped).
+///
+/// Accepts both surface forms:
+/// - `cycle` / `cycle: u64`        → inserts `cycle`
+/// - `(a: u64, b: f64, ...)`        → inserts each declared name
+///
+/// Mirrors `parse_input_decl` in the GK parser; this is a
+/// lightweight scanner used by scope-flattening to register
+/// locally-bound names without re-running the full lexer/parser.
+fn scan_input_decl_names(out: &mut std::collections::HashSet<String>, body: &str) {
+    let body = body.trim();
+    if let Some(inner) = body.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+        for part in inner.split(',') {
+            let name = part.trim().split(':').next().unwrap_or("").trim();
+            if !name.is_empty() {
+                out.insert(name.to_string());
+            }
+        }
+        return;
+    }
+    let name = body.split(':').next().unwrap_or("").trim();
+    if !name.is_empty() {
+        out.insert(name.to_string());
     }
 }
 
@@ -3943,6 +4107,26 @@ mod tests {
         );
         assert_eq!(names.len(), 1);
         assert!(names.contains("real"));
+    }
+
+    #[test]
+    fn scan_gk_binding_lhs_picks_up_input_decl_bare() {
+        let names = scan_to_set("input cycle: u64\nx := hash(cycle)\n");
+        assert!(names.contains("cycle"));
+        assert!(names.contains("x"));
+    }
+
+    #[test]
+    fn scan_gk_binding_lhs_picks_up_input_decl_untyped() {
+        let names = scan_to_set("input cycle\n");
+        assert!(names.contains("cycle"));
+    }
+
+    #[test]
+    fn scan_gk_binding_lhs_picks_up_input_decl_tuple() {
+        let names = scan_to_set("input (cycle: u64, q: f64)\n");
+        assert!(names.contains("cycle"));
+        assert!(names.contains("q"));
     }
 
     #[test]

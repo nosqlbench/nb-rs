@@ -6,7 +6,7 @@
 // Expected events:
 //   BindingResolved for icd and histribution nodes
 
-inputs := (cycle)
+input cycle: u64
 u := unit_interval(hash(cycle))
 normal := icd_normal(u, 100.0, 15.0)
 outcome := histribution(hash(cycle), "100:80 200:15 300:5")

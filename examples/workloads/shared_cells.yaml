@@ -37,7 +37,7 @@ params:
   iterations: "3"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
 
   # All four supported scalar types as shared cells. Each
   # compiles to an input slot with the literal as initial

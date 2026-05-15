@@ -34,57 +34,50 @@ pub struct TraversingDispenser {
     stats: Arc<TraversalStats>,
     /// Capture points parsed from the template at init time.
     /// Empty if no captures are declared.
-    captures: Vec<CaptureSpec>,
-}
-
-/// A single capture point to extract from the result.
-struct CaptureSpec {
-    /// Field name to look up in the result (JSON path).
-    source: String,
-    /// Name to store the captured value under.
-    alias: String,
+    captures: Vec<bindpoints::CapturePoint>,
 }
 
 impl TraversingDispenser {
     /// Wrap an inner dispenser with traversal.
     ///
-    /// If the template has capture points (`[name]` syntax in any
-    /// string field), they are parsed and the traverser will extract
-    /// those fields from the result's JSON representation.
+    /// Reads `template.captures` (the parse-time-extracted capture
+    /// specs) directly. The op-template parser has already stripped
+    /// `[name]` / `[@name]` brackets from the op text fields, so
+    /// adapters see clean SQL/URL/body strings.
     pub fn wrap(
         inner: Arc<dyn OpDispenser>,
         template: &nbrs_workload::model::ParsedOp,
         stats: Arc<TraversalStats>,
     ) -> Arc<dyn OpDispenser> {
-        let captures = parse_template_captures(template);
-        Arc::new(Self { inner, stats, captures })
+        Arc::new(Self {
+            inner,
+            stats,
+            captures: template.captures.clone(),
+        })
     }
 }
 
-/// Parse capture points from all string fields in a template.
-fn parse_template_captures(template: &nbrs_workload::model::ParsedOp) -> Vec<CaptureSpec> {
-    let mut captures = Vec::new();
-    for value in template.op.values() {
-        if let serde_json::Value::String(s) = value {
-            let result = bindpoints::parse_capture_points(s);
-            for cp in result.captures {
-                captures.push(CaptureSpec {
-                    source: cp.source_name,
-                    alias: cp.as_name,
-                });
-            }
-        }
-    }
-    captures
-}
-
-/// Extract captures from a result body's JSON using simple field lookup.
+/// Extract captures from a result body's JSON.
 ///
-/// This is the naive fallback: serialize to JSON, look up top-level fields.
-/// Adapters that want better performance can implement native extraction.
+/// Walks each declared capture spec against the body. Two modes:
+///
+/// - **Single** (`[name]`): take the first matching value. For an
+///   array-of-rows body shape (CQL's standard JSON form), reads
+///   row[0].name. For an object body, reads top-level `name`. For
+///   wildcard `*`, captures every top-level field.
+/// - **Slurp** (`[@name]`): walks every row of an array-of-rows
+///   body and collects each row's column into a single
+///   `Value::Json(array)`. Object bodies produce a single-element
+///   list. This is the convenient shape for downstream consumers
+///   that need all per-row values as a list (e.g. recall
+///   evaluator's `actual:` reads).
+///
+/// The body's `.to_json()` form is the source of truth — adapters
+/// that produce typed-row data render to a JSON array of row
+/// objects.
 fn extract_captures_from_json(
     body: &dyn crate::adapter::ResultBody,
-    specs: &[CaptureSpec],
+    specs: &[bindpoints::CapturePoint],
 ) -> HashMap<String, nbrs_variates::node::Value> {
     if specs.is_empty() {
         return HashMap::new();
@@ -92,22 +85,60 @@ fn extract_captures_from_json(
     let json = body.to_json();
     let mut captures = HashMap::new();
     for spec in specs {
-        // Try top-level field lookup
-        if let Some(val) = json.get(&spec.source) {
-            let value = json_to_value(val);
-            captures.insert(spec.alias.clone(), value);
-        } else if spec.source == "*" {
-            // Wildcard: capture all top-level fields
-            if let serde_json::Value::Object(map) = &json {
+        if spec.slurp {
+            // Slurp form: collect across all rows.
+            let collected = slurp_column(&json, &spec.source_name);
+            captures.insert(spec.as_name.clone(), nbrs_variates::node::Value::Json(
+                serde_json::Value::Array(collected),
+            ));
+            continue;
+        }
+        // Single form.
+        if spec.source_name == "*" {
+            // Wildcard: capture every top-level field. Falls
+            // through to scalar-form per field.
+            let target = match &json {
+                serde_json::Value::Array(rows) => rows.first().cloned()
+                    .unwrap_or(serde_json::Value::Null),
+                other => other.clone(),
+            };
+            if let serde_json::Value::Object(map) = target {
                 for (k, v) in map {
-                    captures.insert(k.clone(), json_to_value(v));
+                    captures.insert(k, json_to_value(&v));
                 }
             }
+            continue;
         }
-        // TODO: support dotted paths like "rows.0.user_id" via
-        // json pointer syntax for nested results
+        if let Some(val) = first_row_field(&json, &spec.source_name) {
+            captures.insert(spec.as_name.clone(), json_to_value(&val));
+        }
     }
     captures
+}
+
+/// First-row lookup: for an array body, read `rows[0].name`; for
+/// an object body, read `obj.name`. Returns `None` when the field
+/// isn't present.
+fn first_row_field(json: &serde_json::Value, name: &str) -> Option<serde_json::Value> {
+    match json {
+        serde_json::Value::Array(rows) => rows.first().and_then(|row| row.get(name)).cloned(),
+        serde_json::Value::Object(_) => json.get(name).cloned(),
+        _ => None,
+    }
+}
+
+/// Slurp helper: walk an array body and collect each row's `name`
+/// field. Object bodies produce a single-element list. Non-object,
+/// non-array bodies produce an empty list.
+fn slurp_column(json: &serde_json::Value, name: &str) -> Vec<serde_json::Value> {
+    match json {
+        serde_json::Value::Array(rows) => rows.iter()
+            .filter_map(|row| row.get(name).cloned())
+            .collect(),
+        serde_json::Value::Object(_) => json.get(name).map(|v| vec![v.clone()])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 /// Convert a serde_json::Value to a GK Value.
@@ -139,7 +170,7 @@ impl OpDispenser for TraversingDispenser {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         Box::pin(async move {
             // Execute the inner dispenser
-            let mut result = self.inner.execute(cycle, ctx).await?;
+            let result = self.inner.execute(cycle, ctx).await?;
 
             // Traverse: count elements and bytes
             if let Some(body) = &result.body {
@@ -149,12 +180,15 @@ impl OpDispenser for TraversingDispenser {
                 }
             }
 
-            // Extract captures from result if declared
+            // Extract captures from result if declared. Values land
+            // on the per-fiber kernel's input slot via ctx.wires.write;
+            // wrappers above this layer (e.g. MetricsDispenser) see
+            // them through wires.get on the same cycle.
             if !self.captures.is_empty()
                 && let Some(body) = &result.body {
                     let extracted = extract_captures_from_json(body.as_ref(), &self.captures);
                     for (name, value) in extracted {
-                        result.captures.insert(name, value);
+                        let _ = ctx.wires.write(&name, value);
                     }
                 }
 
@@ -531,10 +565,19 @@ impl OpDispenser for PollingDispenser {
                         crate::observer::LogLevel::Info,
                         &format!("{indent}{green}poll complete{reset}: {polls} polls {dim}in {elapsed_secs:.1}s{reset}"),
                     );
-                    let mut captures = std::collections::HashMap::new();
-                    captures.insert("poll_count".into(), nbrs_variates::node::Value::U64(polls));
-                    captures.insert("poll_elapsed_ms".into(),
-                        nbrs_variates::node::Value::U64(elapsed.as_millis() as u64));
+                    // Captures land on the per-fiber kernel directly
+                    // via ctx.wires.write — wrappers above this layer
+                    // see the values through wires.get on the same
+                    // cycle. Slot-absent writes silently no-op
+                    // (closure-binding economy).
+                    let _ = ctx.wires.write(
+                        "poll_count",
+                        nbrs_variates::node::Value::U64(polls),
+                    );
+                    let _ = ctx.wires.write(
+                        "poll_elapsed_ms",
+                        nbrs_variates::node::Value::U64(elapsed.as_millis() as u64),
+                    );
                     // Emit named metric. The recorded value is the
                     // elapsed wait duration; if `metric_name` carries
                     // a recognized unit suffix (`_ns` / `_us` / `_ms`
@@ -545,12 +588,13 @@ impl OpDispenser for PollingDispenser {
                     // behaviour, used by e.g. `index_build_time`).
                     if let Some(ref name) = self.metric_name {
                         let value = duration_value_for_metric_name(name, elapsed_secs);
-                        captures.insert(name.clone(),
-                            nbrs_variates::node::Value::F64(value));
+                        let _ = ctx.wires.write(
+                            name,
+                            nbrs_variates::node::Value::F64(value),
+                        );
                     }
                     return Ok(OpResult {
                         body: None,
-                        captures,
                         skipped: false,
                     });
                 }
@@ -621,10 +665,13 @@ impl OpDispenser for EmitDispenser {
                 println!("[{}@{}] (no result body)", self.op_name, cycle);
             }
 
-            // Print captures if any
-            if !result.captures.is_empty() {
-                for (name, value) in &result.captures {
-                    println!("  capture {name} = {}", value.to_display_string());
+            // Print every wire the op-template kernel knows about
+            // alongside its current value. Replaces the prior
+            // result.captures dump now that captures live on the
+            // kernel rather than a sidecar HashMap.
+            for name in ctx.wires.names() {
+                if let Some(value) = ctx.wires.get(&name) {
+                    println!("  wire {name} = {}", value.to_display_string());
                 }
             }
 
@@ -643,16 +690,14 @@ impl OpDispenser for EmitDispenser {
 /// Per cycle, after the inner adapter returns its `OpResult`, this
 /// wrapper walks the op template's `result: HashMap<String,
 /// ResultWireSpec>` declarations, computes each value from the
-/// result body, and inserts it into `OpResult.captures` under the
-/// wire name. Downstream synthesis writes those captures into the
-/// next cycle's GkState (the same plumbing that
-/// `TraversingDispenser` uses for `[name as alias]` capture
-/// points), making them visible to every subsequent GK eval —
-/// most notably the SRD-40b §5.2 metric-evaluation step.
+/// result body, and writes it through `ctx.wires.write(name, value)`
+/// onto the per-fiber op-template kernel's input slot. Wrappers
+/// later in the stack (e.g. `MetricsDispenser`) read freshly through
+/// `ctx.wires.get(name)`, so SRD-40b §5.2 metric evaluation sees
+/// the values landed this cycle — no HashMap intermediary.
 ///
 /// Insertion order in the wrapper stack (SRD-40b §5.2): inner
-/// adapter → ResultDispenser → MetricsDispenser (Phase E). The
-/// metric wrappers see a fully-populated capture map.
+/// adapter → ResultDispenser → MetricsDispenser (Phase E).
 ///
 /// Source grammars (SRD-40b §5.1):
 /// - `count` — built-in; `OpResult::body.element_count()`.
@@ -679,20 +724,21 @@ pub struct ResultDispenser {
     specs: Vec<ResultSlot>,
     /// SRD-67 Phase 5 — when the op's `result:` source contains
     /// any string-shape or gk-call entries, the dispenser writes
-    /// the magic pre-bound inputs (`body` / `count` / `ok`) into
-    /// `OpResult.captures` so the activity loop can feed them
-    /// into the op-template kernel before the result-binding
-    /// expressions evaluate. The kernel's closure-binding
-    /// economy ignores writes for slots it doesn't reference,
-    /// so unconditional writes are safe.
+    /// the magic pre-bound inputs (`body` / `count` / `ok`)
+    /// through `ctx.wires.write` onto the op-template kernel's
+    /// input slots before result-binding expressions evaluate.
+    /// The kernel's closure-binding economy returns `NoSlot` for
+    /// slots it doesn't reference, so unconditional writes are
+    /// safe. Under `KernelOptLevel::Diagnostic` every slot is
+    /// allocated regardless.
     populate_kernel_inputs: bool,
 }
 
 /// Parsed form of one `result:` declaration.
 struct ResultSlot {
     /// Wire name (the map key in `ParsedOp.result`). Drives the
-    /// `OpResult.captures` insertion key — downstream synthesis
-    /// projects each capture into the matching GkState slot.
+    /// `ctx.wires.write(name, …)` call inside `execute` — the
+    /// kernel's matching input slot receives the value.
     wire: String,
     /// Decoded source grammar.
     source: ResultSource,
@@ -850,83 +896,69 @@ fn decode_slot(
 }
 
 impl ResultDispenser {
-    /// Wrap an inner dispenser with result-as-GK exposure for the
-    /// op template's `result:` declarations (SRD-66). Returns the
-    /// inner dispenser unchanged when `result:` is absent or
-    /// empty (no overhead for ops that don't declare wires).
+    /// Wrap an inner dispenser with result-as-GK exposure
+    /// (SRD-40b §5.2's result-as-GK adapter layer).
     ///
-    /// Vari-structured `ResultSpec` shapes (string / list / map)
-    /// flatten into `(wire, source)` pairs via
-    /// [`ResultSpec::walk_fragments`]. Map-shape entries pass
-    /// through `decode_slot`'s short-form dispatch. String-shape
-    /// fragments are TODO at the kernel-driven path and emit a
-    /// Warn diagnostic per fragment until that path lands.
+    /// **Always wraps.** Per the SRD, this layer is part of the
+    /// canonical per-cycle pipeline: it writes the magic externs
+    /// (`body` / `count` / `ok`) into the op-template kernel's
+    /// input slots after the inner adapter returns, so any
+    /// downstream wrapper (metrics, validation, conditional next
+    /// op) reading those names through `ctx.wires.get` sees fresh
+    /// values. Writes to slots the kernel didn't allocate (the
+    /// closure-binding economy's DCE) silently no-op via
+    /// `WriteOutcome::NoSlot` — no overhead for ops whose
+    /// op-template kernel doesn't reference any magic extern.
+    ///
+    /// The optional `result_spec` adds *additional* dispenser-side
+    /// dispatch slots (legacy SRD-40b §5.1 path-expr / `count` /
+    /// `ok` map-shape forms). Kernel-driven entries (string-shape
+    /// source blocks, gk-call entries) need no per-cycle code
+    /// here — `add_result_bindings` compiled them into the
+    /// op-template kernel; the magic-extern population this
+    /// wrapper always performs is what makes them resolve.
     pub fn wrap(
         inner: Arc<dyn OpDispenser>,
         result_spec: Option<&nbrs_workload::model::ResultSpec>,
     ) -> Arc<dyn OpDispenser> {
-        let Some(spec) = result_spec else { return inner; };
-        if spec.is_empty() {
-            return inner;
-        }
-
-        // SRD-66 / SRD-67 Phase 5 — split the spec into two
-        // populations:
-        //
-        //   * map-shape `count` / `ok` / path-expr entries stay
-        //     on the dispenser as before (legacy SRD-40b §5.1
-        //     dispatch — keeps existing tests' path-expr capture
-        //     semantics until they migrate to the kernel-driven
-        //     form).
-        //   * map-shape gk-call entries AND every entry under
-        //     a string-shape source block are kernel-driven —
-        //     `add_result_bindings` already compiled their
-        //     bindings into the op-template kernel; the
-        //     dispenser only needs to feed `body` / `count` /
-        //     `ok` inputs per cycle.
-        //
-        // The `populate_kernel_inputs` flag fires when ANY
-        // kernel-driven entries exist; the activity loop uses
-        // it (via the captures map's magic keys) to drive the
-        // op-template kernel's `set_input` + `commit_write_throughs`.
         let mut specs: Vec<ResultSlot> = Vec::new();
-        let mut populate_kernel_inputs = false;
 
-        spec.walk_fragments(|frag| match frag {
-            nbrs_workload::model::ResultFragment::Named { name, source } => {
-                let raw = source.trim();
-                if raw == "count" || raw == "ok" {
-                    if let Some(slot) = decode_slot(name, source) {
-                        specs.push(slot);
+        if let Some(spec) = result_spec {
+            spec.walk_fragments(|frag| match frag {
+                nbrs_workload::model::ResultFragment::Named { name, source } => {
+                    let raw = source.trim();
+                    if raw == "count" || raw == "ok" {
+                        if let Some(slot) = decode_slot(name, source) {
+                            specs.push(slot);
+                        }
+                    } else if !raw.contains('(') {
+                        // Path expression — keep the legacy
+                        // JSON-path path for SRD-40b §5.1 back-compat.
+                        if let Some(slot) = decode_slot(name, source) {
+                            specs.push(slot);
+                        }
                     }
-                } else if raw.contains('(') {
-                    // gk-call form — kernel-driven via SRD-67
-                    // Phase 5. No dispenser-side dispatch.
-                    populate_kernel_inputs = true;
-                } else {
-                    // Path expression — keep the legacy JSON-path
-                    // path for SRD-40b §5.1 backwards compat.
-                    if let Some(slot) = decode_slot(name, source) {
-                        specs.push(slot);
-                    }
+                    // gk-call entries (raw.contains('(')) are
+                    // kernel-driven; nothing per-cycle to do here.
                 }
-            }
-            nbrs_workload::model::ResultFragment::Source(_source) => {
-                // String-shape — fully kernel-driven.
-                populate_kernel_inputs = true;
-            }
-        });
-
-        if specs.is_empty() && !populate_kernel_inputs {
-            return inner;
+                nbrs_workload::model::ResultFragment::Source(_source) => {
+                    // String-shape — fully kernel-driven. No
+                    // per-cycle code here.
+                }
+            });
         }
+
         // Stable order so wire-resolution warnings (and the
         // per-cycle insertion order) are reproducible.
         specs.sort_by(|a, b| a.wire.cmp(&b.wire));
         Arc::new(Self {
             inner,
             specs,
-            populate_kernel_inputs,
+            // Magic-extern population always fires. The
+            // populate_kernel_inputs field is retained for the
+            // diagnostic-trace conditional below but its value
+            // is now always-true.
+            populate_kernel_inputs: true,
         })
     }
 
@@ -970,23 +1002,25 @@ impl OpDispenser for ResultDispenser {
         ctx: &'a crate::fixture::ExecCtx<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
         Box::pin(async move {
-            let mut result = self.inner.execute(cycle, ctx).await?;
+            let result = self.inner.execute(cycle, ctx).await?;
             // Skipped ops carry no body; per SRD-40b §5.2 the
-            // metric pipeline doesn't fire on skips either, so
-            // the only safe thing to write here is `ok=true` /
-            // `count=0`. We write neither and let metric wrappers
-            // see a clean capture map — the Phase E wrappers will
-            // observe `result.skipped` and bail before evaluating.
+            // metric pipeline doesn't fire on skips either. The
+            // Phase E wrappers observe `result.skipped` and bail
+            // before evaluating.
             if result.skipped {
                 return Ok(result);
             }
             for slot in &self.specs {
                 if let Some(v) = Self::evaluate(slot, &result) {
-                    result.captures.insert(slot.wire.clone(), v);
+                    // Canonical write — lands directly on the op-template
+                    // kernel's input slot via ctx.wires. Subsequent
+                    // wrapper reads (e.g. MetricsDispenser) see the
+                    // fresh value through wires.get on the same cycle.
+                    let _ = ctx.wires.write(&slot.wire, v);
                 }
                 // Per-cycle missing-wire is silent. If a downstream
                 // consumer (e.g. MetricsDispenser) references a wire
-                // that didn't land in captures, that consumer
+                // that didn't land on the kernel, that consumer
                 // surfaces the failure as a hard ExecutionError —
                 // logging it here would just add per-cycle session.log
                 // spam without telling the user anything actionable.
@@ -995,13 +1029,15 @@ impl OpDispenser for ResultDispenser {
             // SRD-67 Phase 5 — magic-extern population. When the
             // op declares any kernel-driven result-bindings
             // (string-shape OR map-shape gk-call), inject the
-            // standard `body` / `count` / `ok` inputs into
-            // captures so the activity loop's
-            // `write_op_template_input` step can route them to
-            // the op-template kernel. The closure-binding economy
+            // standard `body` / `count` / `ok` inputs through
+            // ctx.wires so the op-template kernel's input slots
+            // are populated before any wrapper above this one in
+            // the stack reads them. The closure-binding economy
             // drops slots the kernel doesn't reference, so this
             // is safe even if the user's source only references
-            // a subset.
+            // a subset — NoSlot writes are silently ignored.
+            // Under KernelOptLevel::Diagnostic every magic extern
+            // gets a slot, so all three always land.
             if self.populate_kernel_inputs {
                 let count = result.body.as_ref().map(|b| b.element_count()).unwrap_or(0);
                 // SRD-66 §"Surface 4 §Open: body type" resolved
@@ -1018,18 +1054,9 @@ impl OpDispenser for ResultDispenser {
                     .as_ref()
                     .map(|b| b.to_json())
                     .unwrap_or(serde_json::Value::Null);
-                result
-                    .captures
-                    .entry("body".to_string())
-                    .or_insert(nbrs_variates::node::Value::Json(body_json));
-                result
-                    .captures
-                    .entry("count".to_string())
-                    .or_insert(nbrs_variates::node::Value::U64(count));
-                result
-                    .captures
-                    .entry("ok".to_string())
-                    .or_insert(nbrs_variates::node::Value::Bool(true));
+                let _ = ctx.wires.write("body", nbrs_variates::node::Value::Json(body_json));
+                let _ = ctx.wires.write("count", nbrs_variates::node::Value::U64(count));
+                let _ = ctx.wires.write("ok", nbrs_variates::node::Value::Bool(true));
             }
 
             let _ = cycle;
@@ -1052,10 +1079,13 @@ impl OpDispenser for ResultDispenser {
 /// 1. Await the inner dispenser's `execute`. With a
 ///    [`ResultDispenser`] in the wrapper stack between the inner
 ///    adapter and this one, declared `result:` wires are already
-///    written to `OpResult.captures` by the time we run.
-/// 2. For each declared metric, look up the value-producing GK
-///    expression in the captures map (bare-binding-name canonical
-///    form per SRD-40b §1).
+///    written through `ctx.wires.write` to the per-fiber kernel
+///    by the time we run.
+/// 2. For each declared metric, read the value through
+///    `ctx.wires.get(name)` (bare-binding-name canonical form per
+///    SRD-40b §1). The read pulls fresh through the eval cone
+///    so any computed output (e.g. `row_count := count`) reflects
+///    this cycle's value.
 /// 3. Apply the optional [`metric_format::FormatSpec`] sanitiser
 ///    to round to the configured precision (Phase B).
 /// 4. Dispatch to the kind-specific instrument record method
@@ -1067,23 +1097,9 @@ impl OpDispenser for ResultDispenser {
 ///      non-positive values warn and skip — counters are
 ///      monotonic by definition.
 ///
-/// **GkState access (the open question, pragmatically resolved)**
-///
-/// SRD-40b §6 names the per-cycle GK state as the eval target.
-/// The wrapper doesn't get a direct handle on the per-fiber
-/// `FiberBuilder` from `ExecCtx`, but it doesn't have to: the
-/// canonical case for synthetic-metric workloads is a bare
-/// binding name (SRD-40b §1: "bare binding name is the canonical
-/// form"). For that case, the value lives in the freshly-written
-/// `OpResult.captures` map produced by [`ResultDispenser`] (or by
-/// any prior wrapper such as [`TraversingDispenser`]'s capture
-/// extractor). We look it up there.
-///
 /// Non-bare-name expressions (`factor * 2.0`, `if(...)`, …) are
-/// **deferred** to SRD-13d Phase 9 (op-dispenser kernel handle).
-/// The wrapper carries a `value_expr: String` so the eventual
-/// upgrade is a one-line swap from "captures lookup" to "GK
-/// kernel eval against per-fiber state."
+/// **deferred** — the wrap step errors when `spec.value` is not
+/// a bare identifier.
 pub struct MetricsDispenser {
     inner: Arc<dyn OpDispenser>,
     /// One slot per declared metric. Stable ordering by metric
@@ -1099,24 +1115,21 @@ struct MetricSlot {
     /// diagnostic messages (e.g. the counter non-positive warning).
     family: String,
     /// The original `value:` text from the workload, kept for
-    /// diagnostics. Per-cycle resolution goes through the
-    /// pre-bound `pull_handle` below.
+    /// diagnostics. Per-cycle resolution reads through the
+    /// internal `binding_name` below; the user's original text
+    /// surfaces in error messages so operators see what they wrote.
     value_expr: String,
+    /// Internal kernel-output name (`__metric_<name>`) the
+    /// op-template synthesiser created from this metric's
+    /// `value:` expression. Cycle-time reads go through
+    /// `ctx.wires.get(&binding_name)`.
+    binding_name: String,
     /// Optional value sanitiser. Applied after the value is
     /// pulled, before the instrument record.
     format: Option<nbrs_workload::metric_format::FormatSpec>,
     /// Resolved instrument storage — exactly one variant is
     /// populated per slot, matching `MetricSpec.kind`.
     instrument: MetricInstrument,
-    /// Pre-bound handle into the per-cycle GK state. Every
-    /// metric value flows through the GK kernel — if a name
-    /// referenced in `value:` isn't in the kernel's wire
-    /// vocabulary at wrap time, the wrap call errors before
-    /// any cycle runs. Per the project's "GK Is Canonical Scope"
-    /// rule (memory:feedback_gk_canonical_scope), there is one
-    /// touch-point for value reads: the GK context. No sidecar
-    /// captures-map fallback.
-    pull_handle: crate::fixture::PullHandle,
 }
 
 /// Kind-specialised instrument storage owned by a [`MetricSlot`].
@@ -1233,26 +1246,24 @@ impl MetricsDispenser {
                 }
             };
 
-            // Resolve `value:` against the GK kernel up front. The
-            // GK context is the sole touch-point for reads in the
-            // op's scope (project rule "GK Is Canonical Scope"); if
-            // the kernel doesn't know the name at wrap time, the
-            // workload is referencing a wire that no binding /
-            // input / `result:` capture produced — surface as a
-            // hard init error before any cycle runs.
-            if !is_bare_name(&spec.value) {
-                return Err(format!(
-                    "metric '{name}' value '{value}' is not a bare \
-                     binding name — non-bare expressions are deferred \
-                     to SRD-13d Phase 9 (op-dispenser kernel handle). \
-                     Either rename the metric's `value:` to a single \
-                     binding, or wait for Phase 9.",
-                    value = spec.value,
-                ));
-            }
-            let pull_handle = fx.register_pull(spec.value.trim()).map_err(|e| {
+            // Resolve the metric's value expression against the
+            // GK kernel up front. The op-template synthesiser
+            // appended each metric's `value:` expression as a
+            // `__metric_<name> := <expr>` binding on the kernel
+            // (see `crate::scope::synthesize_metric_binding_name`),
+            // so cycle-time reads go through that internal output —
+            // arbitrary GK expressions work, not just bare names.
+            // The closure-binding-economy walker injected magic
+            // externs (body/count/ok) for any of those names this
+            // expression referenced, so a workload that writes
+            // `value: count` no longer needs a fake result-binding
+            // to wedge the slot open.
+            let binding_name = crate::scope::synthesize_metric_binding_name(name);
+            let _ = fx.register_pull(&binding_name).map_err(|e| {
                 format!(
-                    "metric '{name}' value '{value}': {e}",
+                    "metric '{name}' value '{value}': {e} (synthesised binding \
+                     '{binding_name}' should have been registered by the \
+                     op-template kernel synthesiser — this is a bug)",
                     value = spec.value,
                 )
             })?;
@@ -1273,9 +1284,9 @@ impl MetricsDispenser {
             slots.push(MetricSlot {
                 family,
                 value_expr: spec.value.clone(),
+                binding_name,
                 format,
                 instrument,
-                pull_handle,
             });
         }
 
@@ -1343,12 +1354,6 @@ fn count_from_json_pointer(json: &serde_json::Value, path: &str) -> u64 {
     }
 }
 
-fn is_bare_name(expr: &str) -> bool {
-    let trimmed = expr.trim();
-    !trimmed.is_empty()
-        && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_')
-}
-
 impl WrappingDispenser for MetricsDispenser {}
 
 impl OpDispenser for MetricsDispenser {
@@ -1366,13 +1371,31 @@ impl OpDispenser for MetricsDispenser {
                 return Ok(result);
             }
             for slot in &self.slots {
-                // Sole resolution path: pre-bound `PullHandle`
-                // into the per-cycle GK state. The GK context is
-                // the canonical scope (project rule
-                // "GK Is Canonical Scope") — there is no second
-                // way to fetch a value here.
-                let value = ctx.pulls.get(slot.pull_handle);
-                let raw = match value_to_f64(value) {
+                // Sole resolution path: ctx.wires reads through the
+                // live per-fiber kernel handle (project rule
+                // "GK Is Canonical Scope"). The op-template synthesiser
+                // compiled this metric's `value:` expression into the
+                // kernel as `__metric_<name> := <expr>`; pulling that
+                // wire fires the expression's eval cone — including
+                // magic-extern reads (body/count/ok) ResultDispenser
+                // wrote earlier in the same cycle. ctx.wires.get is
+                // the live read; no pre-stack snapshot.
+                let Some(value) = ctx.wires.get(&slot.binding_name) else {
+                    return Err(ExecutionError::Op(crate::adapter::AdapterError {
+                        error_name: "metric_value_unresolved".into(),
+                        message: format!(
+                            "metric '{family}' on cycle {cycle}: synthesised \
+                             binding '{binding}' (from `value: {expr}`) did not \
+                             resolve through ctx.wires — this is a wiring bug \
+                             between scope synthesis and the metrics wrapper",
+                            family = slot.family,
+                            binding = slot.binding_name,
+                            expr = slot.value_expr,
+                        ),
+                        retryable: false,
+                    }));
+                };
+                let raw = match value_to_f64(&value) {
                     Some(v) => v,
                     None => {
                         // The wire resolved but its type can't
@@ -1390,7 +1413,7 @@ impl OpDispenser for MetricsDispenser {
                                  values must be numeric (U64 / F64 / Bool)",
                                 family = slot.family,
                                 expr = slot.value_expr,
-                                disc = std::mem::discriminant(value),
+                                disc = std::mem::discriminant(&value),
                             ),
                             retryable: false,
                         }));
@@ -1511,22 +1534,41 @@ mod tests {
     use super::*;
     use crate::adapter::ResultBody;
 
-    #[test]
-    fn parse_captures_from_template() {
-        let template = nbrs_workload::model::ParsedOp::simple("test", "SELECT [username], [age as user_age] FROM users");
-        let captures = parse_template_captures(&template);
-        assert_eq!(captures.len(), 2);
-        assert_eq!(captures[0].source, "username");
-        assert_eq!(captures[0].alias, "username");
-        assert_eq!(captures[1].source, "age");
-        assert_eq!(captures[1].alias, "user_age");
+    fn cap(source: &str, alias: &str, slurp: bool) -> bindpoints::CapturePoint {
+        bindpoints::CapturePoint {
+            source_name: source.into(),
+            as_name: alias.into(),
+            cast_type: None,
+            slurp,
+        }
     }
 
     #[test]
-    fn parse_captures_no_captures() {
-        let template = nbrs_workload::model::ParsedOp::simple("test", "INSERT INTO t VALUES (1)");
-        let captures = parse_template_captures(&template);
-        assert!(captures.is_empty());
+    fn parse_captures_from_template() {
+        // Parse-time mutation lives in `nbrs_workload::parse::normalize_op_object`;
+        // `ParsedOp::simple` doesn't run it, but the unit smoke is that
+        // a parsed workload's op carries captures + clean text.
+        // For this in-place test we exercise the bindpoints parser
+        // directly.
+        let parsed = bindpoints::parse_capture_points(
+            "SELECT [username], [age as user_age] FROM users"
+        );
+        assert_eq!(parsed.captures.len(), 2);
+        assert_eq!(parsed.captures[0].source_name, "username");
+        assert_eq!(parsed.captures[0].as_name, "username");
+        assert!(!parsed.captures[0].slurp);
+        assert_eq!(parsed.captures[1].source_name, "age");
+        assert_eq!(parsed.captures[1].as_name, "user_age");
+        assert_eq!(parsed.raw_template, "SELECT username, age FROM users");
+    }
+
+    #[test]
+    fn parse_slurp_capture() {
+        let parsed = bindpoints::parse_capture_points("SELECT [@keys] FROM t");
+        assert_eq!(parsed.captures.len(), 1);
+        assert_eq!(parsed.captures[0].source_name, "keys");
+        assert!(parsed.captures[0].slurp);
+        assert_eq!(parsed.raw_template, "SELECT keys FROM t");
     }
 
     #[test]
@@ -1544,8 +1586,8 @@ mod tests {
             "balance": 99.5
         }));
         let specs = vec![
-            CaptureSpec { source: "user_id".into(), alias: "uid".into() },
-            CaptureSpec { source: "name".into(), alias: "name".into() },
+            cap("user_id", "uid", false),
+            cap("name", "name", false),
         ];
         let captures = extract_captures_from_json(&body, &specs);
         assert_eq!(captures.len(), 2);
@@ -1566,9 +1608,57 @@ mod tests {
         }
 
         let body = JsonBody(serde_json::json!({"a": 1, "b": 2}));
-        let specs = vec![CaptureSpec { source: "*".into(), alias: "*".into() }];
+        let specs = vec![cap("*", "*", false)];
         let captures = extract_captures_from_json(&body, &specs);
         assert_eq!(captures.len(), 2);
+    }
+
+    #[test]
+    fn extract_slurp_array_of_rows() {
+        // Slurp `[@key]` against a CQL-shaped body: every row's
+        // `key` column collects into a Value::Json(array).
+        #[derive(Debug)]
+        struct JsonBody(serde_json::Value);
+        impl ResultBody for JsonBody {
+            fn to_json(&self) -> serde_json::Value { self.0.clone() }
+            fn as_any(&self) -> &dyn std::any::Any { self }
+        }
+
+        let body = JsonBody(serde_json::json!([
+            {"key": 4, "value": 0.5},
+            {"key": 17, "value": 0.4},
+            {"key": 42, "value": 0.3},
+        ]));
+        let specs = vec![cap("key", "key", true)];
+        let captures = extract_captures_from_json(&body, &specs);
+        assert_eq!(captures.len(), 1);
+        match &captures["key"] {
+            nbrs_variates::node::Value::Json(serde_json::Value::Array(items)) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], serde_json::json!(4));
+                assert_eq!(items[1], serde_json::json!(17));
+                assert_eq!(items[2], serde_json::json!(42));
+            }
+            other => panic!("expected Value::Json(array), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_single_first_row_of_array() {
+        // `[name]` (non-slurp) against array-of-rows reads row[0].
+        #[derive(Debug)]
+        struct JsonBody(serde_json::Value);
+        impl ResultBody for JsonBody {
+            fn to_json(&self) -> serde_json::Value { self.0.clone() }
+            fn as_any(&self) -> &dyn std::any::Any { self }
+        }
+        let body = JsonBody(serde_json::json!([
+            {"key": 4}, {"key": 17}, {"key": 42},
+        ]));
+        let specs = vec![cap("key", "first_key", false)];
+        let captures = extract_captures_from_json(&body, &specs);
+        assert_eq!(captures.len(), 1);
+        assert_eq!(captures["first_key"].as_u64(), 4);
     }
 
     // ---------------- ResultDispenser tests (SRD-40b §5) ----------------
@@ -1617,7 +1707,6 @@ mod tests {
                         value: b.value.clone(),
                         count: b.count,
                     }) as Box<dyn ResultBody>),
-                    captures: HashMap::new(),
                     skipped: false,
                 })
             })
@@ -1629,6 +1718,36 @@ mod tests {
         let fields = crate::adapter::ResolvedFields::new(vec![], vec![]);
         let pulls = ResolvedPulls::empty();
         (fields, pulls)
+    }
+
+    /// Build a kernel with `extern <name>: u64` input slots for each
+    /// requested name. Used by ResultDispenser tests so writes via
+    /// `ctx.wires.write(name, …)` have a real slot to land on; the
+    /// test then reads back via `wires.get(name)` to assert.
+    fn kernel_with_extern_inputs(names: &[(&str, &str)]) -> nbrs_variates::kernel::GkKernel {
+        use nbrs_variates::dsl::compile::compile_gk;
+        let mut src = String::from("input cycle: u64\n");
+        for (n, ty) in names {
+            src.push_str(&format!("extern {n}: {ty}\n"));
+        }
+        let mut k = compile_gk(&src).expect("kernel_with_extern_inputs compile");
+        k.set_inputs(&[0]);
+        k
+    }
+
+    /// Run a ResultDispenser through a kernel-backed CycleWires
+    /// context. Returns the OpResult plus a fresh kernel handle for
+    /// post-execute `wires.get` reads.
+    fn run_with_wires(
+        dispenser: Arc<dyn OpDispenser>,
+        kernel: &mut nbrs_variates::kernel::GkKernel,
+    ) -> Result<OpResult, ExecutionError> {
+        let fields = crate::adapter::ResolvedFields::new(vec![], vec![]);
+        let pulls = ResolvedPulls::empty();
+        let cw = crate::wires::CycleWires::new(kernel);
+        let ctx = ExecCtx::with_wires(&fields, &pulls, &cw);
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(dispenser.execute(0, &ctx))
     }
 
     #[tokio::test]
@@ -1738,13 +1857,16 @@ mod tests {
         ]);
 
         let wrapped = ResultDispenser::wrap(inner, Some(&decl));
-        let (fields, pulls) = empty_ctx();
-        let ctx = ExecCtx::new(&fields, &pulls);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let result = rt.block_on(wrapped.execute(0, &ctx)).unwrap();
+        let mut kernel = kernel_with_extern_inputs(&[
+            ("row_count", "u64"),
+            ("first_value", "u64"),
+        ]);
+        let _ = run_with_wires(wrapped, &mut kernel).unwrap();
 
-        assert_eq!(result.captures["row_count"].as_u64(), 1);
-        assert_eq!(result.captures["first_value"].as_u64(), 42);
+        let cw = crate::wires::CycleWires::new(&mut kernel);
+        let w: &dyn crate::wires::WireSource = &cw;
+        assert_eq!(w.get("row_count").map(|v| v.as_u64()), Some(1));
+        assert_eq!(w.get("first_value").map(|v| v.as_u64()), Some(42));
     }
 
     #[test]
@@ -1756,12 +1878,13 @@ mod tests {
         let decl = map_spec(&[("succeeded", "ok")]);
 
         let wrapped = ResultDispenser::wrap(inner, Some(&decl));
-        let (fields, pulls) = empty_ctx();
-        let ctx = ExecCtx::new(&fields, &pulls);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let result = rt.block_on(wrapped.execute(0, &ctx)).unwrap();
-        match &result.captures["succeeded"] {
-            nbrs_variates::node::Value::Bool(b) => assert!(*b),
+        let mut kernel = kernel_with_extern_inputs(&[("succeeded", "bool")]);
+        let _ = run_with_wires(wrapped, &mut kernel).unwrap();
+
+        let cw = crate::wires::CycleWires::new(&mut kernel);
+        let w: &dyn crate::wires::WireSource = &cw;
+        match w.get("succeeded") {
+            Some(nbrs_variates::node::Value::Bool(b)) => assert!(b),
             other => panic!("expected Bool(true), got {other:?}"),
         }
     }
@@ -1804,25 +1927,35 @@ mod tests {
         ]);
 
         let wrapped = ResultDispenser::wrap(inner, Some(&decl));
-        let (fields, pulls) = empty_ctx();
-        let ctx = ExecCtx::new(&fields, &pulls);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let result = rt.block_on(wrapped.execute(0, &ctx)).unwrap();
+        let mut kernel = kernel_with_extern_inputs(&[("missing", "u64")]);
+        let _ = run_with_wires(wrapped, &mut kernel).unwrap();
 
-        assert!(!result.captures.contains_key("missing"));
+        // The unresolvable path-expr never writes, so the input
+        // slot retains its default `None`.
+        let cw = crate::wires::CycleWires::new(&mut kernel);
+        let w: &dyn crate::wires::WireSource = &cw;
+        assert!(matches!(w.get("missing"), Some(nbrs_variates::node::Value::None) | None));
     }
 
     #[test]
-    fn result_dispenser_empty_decl_returns_inner_unchanged() {
+    fn result_dispenser_always_wraps_per_srd_40b() {
+        // Per SRD-40b §5.2, the result-as-GK adapter is part of
+        // the canonical per-cycle pipeline. It must run on every
+        // op so the magic externs (body/count/ok) reach the
+        // op-template kernel — downstream MetricsDispenser reads
+        // depend on them. Even with `result_spec = None`,
+        // `ResultDispenser::wrap` returns a fresh wrapper that
+        // writes magic externs each cycle. `NoSlot` returns when
+        // the kernel didn't allocate the slot keep the no-overhead
+        // promise for ops that don't reference any magic extern.
         let inner: Arc<dyn OpDispenser> = Arc::new(FakeInner {
             body: Some(ResultDispBody { value: serde_json::json!({}), count: 0 }),
             error: None,
         });
         let inner_ptr = Arc::as_ptr(&inner);
         let wrapped = ResultDispenser::wrap(inner.clone(), None);
-        // Empty declaration short-circuits — the wrapper returns
-        // the inner Arc itself, not a fresh `ResultDispenser`.
-        assert_eq!(Arc::as_ptr(&wrapped), inner_ptr);
+        assert_ne!(Arc::as_ptr(&wrapped), inner_ptr,
+            "ResultDispenser must always wrap so magic-extern population fires");
     }
 
     #[test]
@@ -1839,33 +1972,32 @@ mod tests {
         }
         let decl = map_spec(&[("c", "count")]);
         let wrapped = ResultDispenser::wrap(Arc::new(SkipInner), Some(&decl));
-        let (fields, pulls) = empty_ctx();
-        let ctx = ExecCtx::new(&fields, &pulls);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let result = rt.block_on(wrapped.execute(0, &ctx)).unwrap();
+        let mut kernel = kernel_with_extern_inputs(&[("c", "u64")]);
+        let result = run_with_wires(wrapped, &mut kernel).unwrap();
         assert!(result.skipped);
-        assert!(result.captures.is_empty());
+        // No writes happened — slot retains its default.
+        let cw = crate::wires::CycleWires::new(&mut kernel);
+        let w: &dyn crate::wires::WireSource = &cw;
+        assert!(matches!(w.get("c"), Some(nbrs_variates::node::Value::None) | None));
     }
 
     // ---------------- MetricsDispenser tests (SRD-40b §6) ----------------
 
     use nbrs_workload::model::{MetricKind, MetricSpec};
 
-    /// An inner dispenser that returns a pre-baked captures map,
-    /// simulating the state Phase D's `ResultDispenser` would
-    /// hand to the metrics wrapper.
-    struct CapturesInner {
-        captures: HashMap<String, nbrs_variates::node::Value>,
-    }
+    /// A no-op inner dispenser. Test scenarios set up the kernel
+    /// with pre-baked output values (see `kernel_with_const_outputs`)
+    /// so the MetricsDispenser's wires.get path resolves through
+    /// the kernel rather than relying on a captures sidecar.
+    struct CapturesInner;
     impl OpDispenser for CapturesInner {
         fn execute<'a>(
             &'a self,
             _cycle: u64,
             _ctx: &'a ExecCtx<'a>,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OpResult, ExecutionError>> + Send + 'a>> {
-            let captures = self.captures.clone();
             Box::pin(async move {
-                Ok(OpResult { body: None, captures, skipped: false })
+                Ok(OpResult { body: None, skipped: false })
             })
         }
     }
@@ -1905,9 +2037,7 @@ mod tests {
 
     #[test]
     fn metrics_dispenser_empty_returns_inner_unchanged() {
-        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner {
-            captures: HashMap::new(),
-        });
+        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
         let inner_ptr = Arc::as_ptr(&inner);
         let mut comp = fresh_component();
         let mut fx = fresh_fixture();
@@ -1963,9 +2093,15 @@ mod tests {
         use nbrs_variates::assembly::{GkAssembler, WireRef};
         use nbrs_variates::nodes::fixed::ConstF64;
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
+        // Stand in for the op-template synthesiser: production builds
+        // `__metric_<name> := <value_expr>` outputs on the op-template
+        // kernel; the test version bakes a constant under the same
+        // synthesised name so MetricsDispenser's wrap-time register_pull
+        // and cycle-time wires.get land on a real output.
         for (name, val) in consts {
-            asm.add_node(*name, Box::new(ConstF64::new(*val)), vec![]);
-            asm.add_output(*name, WireRef::node(*name));
+            let binding = crate::scope::synthesize_metric_binding_name(name);
+            asm.add_node(&binding, Box::new(ConstF64::new(*val)), vec![]);
+            asm.add_output(&binding, WireRef::node(&binding));
         }
         let kernel = asm.compile().expect("test kernel asm.compile");
         let fx = crate::fixture::ScopeFixture::new(kernel.program().clone());
@@ -1985,6 +2121,7 @@ mod tests {
         (
             Arc<MetricsDispenser>,
             crate::fixture::ResolvedPulls,
+            nbrs_variates::kernel::GkKernel,
         ),
         String,
     > {
@@ -2027,19 +2164,18 @@ mod tests {
             comp.register_instrument_with_unit(
                 family.clone(), spec.unit.clone(), instrument.as_ref(),
             )?;
-            if !is_bare_name(&spec.value) {
-                return Err(format!(
-                    "metric '{name}' value '{}' is not a bare binding name",
-                    spec.value,
-                ));
-            }
-            let pull_handle = fx.register_pull(spec.value.trim())?;
+            // Wrap-time wire validation; mirrors the production wrap
+            // path (cycle-time reads go through ctx.wires.get on the
+            // synthesised `__metric_<name>` binding the op-template
+            // synthesiser created from this metric's `value:` expr).
+            let binding_name = crate::scope::synthesize_metric_binding_name(name);
+            let _ = fx.register_pull(&binding_name)?;
             slots.push(MetricSlot {
                 family,
                 value_expr: spec.value.clone(),
+                binding_name,
                 format,
                 instrument,
-                pull_handle,
             });
         }
         let typed = Arc::new(MetricsDispenser { inner, slots });
@@ -2047,17 +2183,22 @@ mod tests {
         let plan = fx.seal();
         kernel.set_inputs(&[0]);
         let pulls = plan.resolve_with(&mut kernel);
-        Ok((typed, pulls))
+        Ok((typed, pulls, kernel))
     }
 
-    /// Run `dispenser.execute(0, ctx)` to completion against
-    /// pulls + empty fields. Returns the result.
+    /// Run `dispenser.execute(0, ctx)` to completion against the
+    /// given kernel's CycleWires + empty fields. Returns the result.
+    /// The kernel is borrowed mutably for the duration so the
+    /// dispenser's cycle-time reads through ctx.wires.get can pull
+    /// fresh values through the eval cone.
     fn run_dispenser(
         dispenser: Arc<dyn OpDispenser>,
         pulls: &crate::fixture::ResolvedPulls,
+        kernel: &mut nbrs_variates::kernel::GkKernel,
     ) -> Result<OpResult, ExecutionError> {
         let fields = crate::adapter::ResolvedFields::new(vec![], vec![]);
-        let ctx = ExecCtx::new(&fields, pulls);
+        let cw = crate::wires::CycleWires::new(kernel);
+        let ctx = ExecCtx::with_wires(&fields, pulls, &cw);
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         rt.block_on(dispenser.execute(0, &ctx))
     }
@@ -2067,30 +2208,30 @@ mod tests {
         // The kernel produces `my_factor = 3.14` as an output;
         // the metric's `value: my_factor` resolves to that wire
         // through the GK pull plan.
-        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures: HashMap::new() });
+        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
         let mut decl = HashMap::new();
         decl.insert("my_factor".into(), make_spec("my_factor", MetricKind::Gauge, None));
 
-        let (typed, pulls) = typed_wrap_with_kernel(
+        let (typed, pulls, mut kernel) = typed_wrap_with_kernel(
             inner, &decl, &[("my_factor", 3.14)],
         ).unwrap();
         let gauge = typed.slot_gauge("my_factor").unwrap();
-        run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls).unwrap();
+        run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls, &mut kernel).unwrap();
 
         assert!((gauge.get() - 3.14).abs() < 1e-9);
     }
 
     #[test]
     fn metrics_dispenser_histogram_truncates_to_u64() {
-        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures: HashMap::new() });
+        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
         let mut decl = HashMap::new();
         decl.insert("latency_ms".into(), make_spec("latency_ms", MetricKind::Histogram, None));
 
-        let (typed, pulls) = typed_wrap_with_kernel(
+        let (typed, pulls, mut kernel) = typed_wrap_with_kernel(
             inner, &decl, &[("latency_ms", 7.9)],
         ).unwrap();
         let hist = typed.slot_histogram("latency_ms").unwrap();
-        run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls).unwrap();
+        run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls, &mut kernel).unwrap();
 
         // Truncated 7.9 -> 7. Histogram snapshot's max recorded.
         let snap = hist.peek_snapshot();
@@ -2101,17 +2242,17 @@ mod tests {
     #[test]
     fn metrics_dispenser_counter_positive_inc_and_skip_non_positive() {
         // Two counters: one positive, one non-positive (zero).
-        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures: HashMap::new() });
+        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
         let mut decl = HashMap::new();
         decl.insert("ok_inc".into(), make_spec("ok_inc", MetricKind::Counter, None));
         decl.insert("skip_inc".into(), make_spec("skip_inc", MetricKind::Counter, None));
 
-        let (typed, pulls) = typed_wrap_with_kernel(
+        let (typed, pulls, mut kernel) = typed_wrap_with_kernel(
             inner, &decl, &[("ok_inc", 5.0), ("skip_inc", 0.0)],
         ).unwrap();
         let ok_counter = typed.slot_counter("ok_inc").unwrap();
         let skip_counter = typed.slot_counter("skip_inc").unwrap();
-        run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls).unwrap();
+        run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls, &mut kernel).unwrap();
 
         assert_eq!(ok_counter.get(), 5);
         // Non-positive value warns and skips — counter stays at 0.
@@ -2120,25 +2261,25 @@ mod tests {
 
     #[test]
     fn metrics_dispenser_format_rounds_value() {
-        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures: HashMap::new() });
+        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
         let mut decl = HashMap::new();
         decl.insert(
             "ratio".into(),
             make_spec("ratio", MetricKind::Gauge, Some("#.##")),
         );
 
-        let (typed, pulls) = typed_wrap_with_kernel(
+        let (typed, pulls, mut kernel) = typed_wrap_with_kernel(
             inner, &decl, &[("ratio", 1.234)],
         ).unwrap();
         let gauge = typed.slot_gauge("ratio").unwrap();
-        run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls).unwrap();
+        run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls, &mut kernel).unwrap();
 
         assert!((gauge.get() - 1.23).abs() < 1e-9);
     }
 
     #[test]
     fn metrics_dispenser_duplicate_family_errors() {
-        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures: HashMap::new() });
+        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
         let mut comp = fresh_component();
         // Pre-claim the family by registering an instrument under
         // it — the wrapper's `register_instrument` call should now
@@ -2178,37 +2319,48 @@ mod tests {
         let mut decl = HashMap::new();
         decl.insert("g".into(), make_spec("g", MetricKind::Gauge, None));
 
-        let (typed, pulls) = typed_wrap_with_kernel(
+        let (typed, pulls, mut kernel) = typed_wrap_with_kernel(
             Arc::new(SkipInner), &decl, &[("g", 1.0)],
         ).unwrap();
         let gauge = typed.slot_gauge("g").unwrap();
 
-        let res = run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls).unwrap();
+        let res = run_dispenser(typed.clone() as Arc<dyn OpDispenser>, &pulls, &mut kernel).unwrap();
         assert!(res.skipped);
         // Gauge default value untouched.
         assert_eq!(gauge.get(), 0.0);
     }
 
     #[test]
-    fn metrics_dispenser_non_bare_expr_errors_at_init() {
-        // Inline expression like "factor * 2.0" is deferred to
-        // SRD-13d Phase 9. The GK pull-handle resolution at wrap()
-        // time rejects it with a clear init error, so the workload
-        // fails fast — no cycles run.
-        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures: HashMap::new() });
+    fn metrics_dispenser_accepts_arbitrary_gk_expression() {
+        // Post-refactor: metric `value:` accepts any GK expression,
+        // not just bare names. The op-template synthesiser compiles
+        // each metric expression into the kernel as
+        // `__metric_<name> := <expr>` (see
+        // `crate::scope::synthesize_metric_binding_name`) and the
+        // wrap step registers a pull on that synthesised binding.
+        //
+        // This test stands in for the synthesis step by pre-baking
+        // an output named `__metric_computed` whose value is the
+        // result of `factor * 2.0` (= 6.0). The wrap call now
+        // accepts the spec and the gauge reads through the
+        // synthesised binding.
+        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
         let mut decl = HashMap::new();
         decl.insert(
             "computed".into(),
             make_spec("factor * 2.0", MetricKind::Gauge, None),
         );
 
-        let (_kernel, mut fx) = kernel_with_const_outputs(&[("factor", 3.0)]);
+        // `kernel_with_const_outputs` synthesises `__metric_<key>`
+        // outputs from each const, mirroring the op-template
+        // synthesiser's role. `computed` → `__metric_computed`.
+        let (mut kernel, mut fx) = kernel_with_const_outputs(&[("computed", 6.0)]);
         let mut comp = fresh_component();
-        let err = MetricsDispenser::wrap(inner, &decl, &mut comp, &mut fx)
-            .err()
-            .expect("non-bare expr should error at init");
-        assert!(err.contains("computed"), "msg: {err}");
-        assert!(err.contains("not a bare binding name"), "msg: {err}");
+        let _ = MetricsDispenser::wrap(inner, &decl, &mut comp, &mut fx)
+            .expect("arbitrary GK expression should wrap cleanly");
+        let plan = fx.seal();
+        kernel.set_inputs(&[0]);
+        let _pulls = plan.resolve_with(&mut kernel);
     }
 
     #[test]
@@ -2217,7 +2369,7 @@ mod tests {
         // The fixture's `register_pull` errors with a list of
         // available outputs/inputs — surface that to the workload
         // author at init time.
-        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner { captures: HashMap::new() });
+        let inner: Arc<dyn OpDispenser> = Arc::new(CapturesInner);
         let mut decl = HashMap::new();
         decl.insert(
             "missing_metric".into(),

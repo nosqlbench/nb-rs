@@ -7,7 +7,7 @@
 // This kernel models a keyspace of 50 regions × 200 stores × unlimited
 // transactions. A cycle counter iterates through every combination.
 
-inputs := (cycle)
+input cycle: u64
 
 // Mixed-radix decomposition: extract each dimension from the cycle.
 //

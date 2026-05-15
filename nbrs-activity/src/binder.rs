@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn bindnames_pull_resolves_via_wires() {
         let mut k = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"t\"\n",
         ).unwrap();
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn bindnames_pull_errors_with_failing_name() {
-        let mut k = compile_gk("inputs := (cycle)\nx := \"a\"\n").unwrap();
+        let mut k = compile_gk("input cycle: u64\nx := \"a\"\n").unwrap();
         let cw = CycleWires::new(&mut k);
         let names = BindNames::from_template("hi {nope}");
         let err = names.pull(&cw).unwrap_err();
@@ -297,7 +297,7 @@ mod tests {
         // Three names: two structural (resolved at curry time),
         // one per-cycle (deferred to pull time).
         let mut canonical = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"t\"\n",
         ).unwrap();
@@ -320,7 +320,7 @@ mod tests {
         // then pull against per-fiber wires (id resolves to the
         // formatted cycle).
         let canonical = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"t\"\n",
         ).unwrap();
@@ -334,7 +334,7 @@ mod tests {
 
         // Per-fiber wires has `id` as an output binding.
         let mut fiber = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"t\"\n\
              id := format_u64(cycle, 10)\n",
@@ -355,7 +355,7 @@ mod tests {
         // inlined into the SQL text at curry time; only the
         // per-cycle `?` positions need values.
         let canonical = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              keyspace := \"baselines\"\n\
              table := \"t\"\n",
         ).unwrap();
@@ -363,7 +363,7 @@ mod tests {
         let curried = names.curry_static(|n| canonical.lookup(n));
 
         let mut fiber = compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              id := format_u64(cycle, 10)\n",
         ).unwrap();
         fiber.set_inputs(&[7]);

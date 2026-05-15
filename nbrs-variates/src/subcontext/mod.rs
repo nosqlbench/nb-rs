@@ -75,8 +75,8 @@
 //!
 //! ```compile_fail
 //! use nbrs_variates::dsl::compile::compile_gk;
-//! let mut inner = compile_gk("inputs := (cycle)\n").unwrap();
-//! let outer = compile_gk("inputs := (cycle)\n").unwrap();
+//! let mut inner = compile_gk("input cycle: u64\n").unwrap();
+//! let outer = compile_gk("input cycle: u64\n").unwrap();
 //! inner.materialize_wiring_from_outer(&outer); // pub(crate) — must not compile
 //! ```
 //!
@@ -85,7 +85,7 @@
 //! ```compile_fail
 //! use nbrs_variates::dsl::compile::compile_gk;
 //! use nbrs_variates::kernel::GkKernel;
-//! let kernel = compile_gk("inputs := (cycle)\n").unwrap();
+//! let kernel = compile_gk("input cycle: u64\n").unwrap();
 //! let _ = GkKernel::from_program(kernel.program().clone()); // pub(crate)
 //! ```
 

@@ -32,7 +32,7 @@ params:
   cycles: "20"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
 
   // 8-bit Galois LFSR: x^8 + x^6 + x^5 + x^4 + 1
   // Polynomial mask: 0xB4 = 10110100

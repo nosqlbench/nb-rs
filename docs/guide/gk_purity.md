@@ -52,7 +52,7 @@ outputs are deterministic transforms of those inputs.
 For most workloads, the model just works. Examples:
 
 ```
-inputs := (cycle)
+input cycle: u64
 id      := mod(hash(cycle), 1000000)         # pure: cycle → u64
 shard   := id % 16                           # pure: u64 → u64
 name    := number_to_words(id)               # pure: u64 → String

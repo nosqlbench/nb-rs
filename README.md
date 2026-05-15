@@ -35,7 +35,7 @@ params:
   user_count: "100000"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   user_id := mod(hash(cycle), {user_count})
   user_name := number_to_words(mod(hash(hash(cycle)), 1000))
   is_write := mod(cycle, 5)

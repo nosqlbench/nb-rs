@@ -52,7 +52,7 @@ params:
   errors: "warn"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   id := mod(hash(cycle), 1000000)
 
 blocks:
@@ -80,7 +80,7 @@ blocks:
 
   feedback_loop:
     bindings: |
-      inputs := (cycle)
+      input cycle: u64
       err_rate := metric("errors", "rate")
       // Step throttle: above a 5%-error threshold the multiplier
       // drops to 0.5 (rate halves); below it sits at 1.05 (rate

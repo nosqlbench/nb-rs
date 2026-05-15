@@ -15,7 +15,7 @@ params:
   concurrency: "100"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   user_id := mod(hash(cycle), 1000000)
 
 ops:

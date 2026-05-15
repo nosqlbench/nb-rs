@@ -18,7 +18,7 @@
 //   init device_weights = [30.0, 30.0, 20.0, 20.0]
 //   init device_table = alias_table(device_weights)
 //
-//   inputs := (cycle)
+//   input cycle: u64
 //   (tenant, device) := mixed_radix(cycle, 1000, 0)
 //
 //   // Same kernel, different init objects

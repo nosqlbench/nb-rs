@@ -7,7 +7,7 @@
 /// @graph
 /// 50-node chain, single input, all nodes dirty every cycle.
 /// Provenance: no benefit (everything depends on cycle).
-inputs := (cycle)
+input cycle: u64
 
 n0 := hash(cycle)
 n1 := mod(n0, 997)

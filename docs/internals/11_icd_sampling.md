@@ -160,7 +160,7 @@ distributions.
 ### Example DAG: Normal-distributed reading values
 
 ```
-inputs := (cycle)
+input cycle: u64
 (tenant, device, reading) := mixed_radix(cycle, 100, 1000, 0)
 reading_seed := hash(interleave(device, reading))
 reading_unit := unit_interval(reading_seed)

@@ -47,14 +47,15 @@ pub fn analyze_dependencies(templates: &[ParsedOp]) -> Vec<DepGroup> {
         let mut prod = HashSet::new();
         let mut cons = HashSet::new();
 
+        // Capture declarations live on `ParsedOp.captures` after
+        // parse-time extraction; the op-text fields have brackets
+        // stripped by then.
+        for cp in &template.captures {
+            prod.insert(cp.as_name.clone());
+        }
+
         for value in template.op.values() {
             if let serde_json::Value::String(s) = value {
-                // Capture declarations: [name], [name as alias]
-                let result = bindpoints::parse_capture_points(s);
-                for cp in &result.captures {
-                    prod.insert(cp.as_name.clone());
-                }
-
                 // Capture references: {capture:name} or unqualified {name}
                 // that might resolve to a capture
                 let bps = bindpoints::extract_bind_points(s);
@@ -189,7 +190,13 @@ mod tests {
     use super::*;
 
     fn op(name: &str, stmt: &str) -> ParsedOp {
-        ParsedOp::simple(name, stmt)
+        // Mirrors `nbrs_workload::parse::normalize_op_object`'s
+        // parse-time capture extraction: pull `[name]` specs from
+        // the stmt, strip brackets, stash specs on `captures`.
+        let parsed = bindpoints::parse_capture_points(stmt);
+        let mut op = ParsedOp::simple(name, &parsed.raw_template);
+        op.captures = parsed.captures;
+        op
     }
 
     #[test]

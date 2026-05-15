@@ -81,18 +81,6 @@ fn has_inline_expr(op: &ParsedOp) -> bool {
     op.op.values().any(scan) || op.params.values().any(scan)
 }
 
-/// True when a metric `value:` expression references something
-/// other than a single bare binding name. Bare-name references
-/// don't add GK content (they read parent bindings); anything
-/// with operators / function calls / spaces / etc. is a new
-/// expression that contributes Definitions.
-fn metric_value_is_bare_name(value: &str) -> bool {
-    let trimmed = value.trim();
-    if trimmed.is_empty() { return false; }
-    trimmed.chars().all(|c|
-        c.is_alphanumeric() || c == '_' || c == '.'
-    )
-}
 
 // -----------------------------------------------------------
 // Trait impls
@@ -112,15 +100,18 @@ impl HasGkMatter for ParsedOp {
             return GkMatter::Definitions;
         }
 
-        // metrics: with non-bare-name value: contributes
-        // Definitions. Bare-name value: alone is Readonly
-        // (the wire is read from the parent scope).
+        // metrics: any declared metric contributes Definitions.
+        // Post-SRD-68 follow-up: the op-template synthesiser
+        // appends a `__metric_<name> := <value_expr>` binding per
+        // metric (see `crate::scope::synthesize_metric_binding_name`)
+        // so the closure-binding economy can walk the value
+        // expression's free identifiers for magic-extern slot
+        // allocation. That synthesised binding is itself a
+        // definition, so even a bare-name `value: count` requires
+        // an op-template kernel — the kernel is where the
+        // synthesised `__metric_<name>` LHS lands.
         if !self.metrics.is_empty() {
-            let any_definition = self.metrics.values()
-                .any(|m| !metric_value_is_bare_name(&m.value));
-            if any_definition {
-                return GkMatter::Definitions;
-            }
+            return GkMatter::Definitions;
         }
 
         // result: declarations expose result-body fields as
@@ -130,13 +121,10 @@ impl HasGkMatter for ParsedOp {
             return GkMatter::Definitions;
         }
 
-        // Anything that gets here either reads the parent
-        // (metrics: with bare names; result: empty) or has
-        // nothing GK-shaped at all.
-        if !self.metrics.is_empty() {
-            GkMatter::Readonly
-        } else if self.condition.is_some() || self.delay.is_some() {
-            // `if:` / `delay:` reference parent bindings.
+        // Anything that gets here reads parent bindings only
+        // (e.g. `if:` / `delay:` references) or has nothing
+        // GK-shaped at all.
+        if self.condition.is_some() || self.delay.is_some() {
             GkMatter::Readonly
         } else {
             GkMatter::None
@@ -255,27 +243,33 @@ mod tests {
     }
 
     #[test]
-    fn parsed_op_metrics_bare_value_is_readonly() {
-        // `metrics: foo: { value: existing_wire }` — references
-        // a parent binding, no new wire declared on the op.
+    fn parsed_op_metrics_bare_value_is_definitions() {
+        // Post-SRD-68 follow-up: every metric synthesises a
+        // `__metric_<name> := <value>` binding into the
+        // op-template kernel — even bare-name `value:` forms
+        // become a definition (the synthesised LHS is the
+        // definition), which requires an op-template kernel
+        // to exist. Used to return Readonly back when
+        // MetricsDispenser read parent bindings directly;
+        // that path is gone.
         let mut op = empty_op("x");
         op.metrics.insert("foo".into(), MetricSpec {
             value: "existing_wire".into(),
             family: None, kind: None, unit: None, format: None,
         });
-        assert_eq!(op.gk_matter(), GkMatter::Readonly);
+        assert_eq!(op.gk_matter(), GkMatter::Definitions);
     }
 
     #[test]
-    fn parsed_op_metrics_dotted_name_is_readonly() {
-        // Dotted bare name (e.g. `phase.recall`) is still a
-        // bare-name reference, not an expression.
+    fn parsed_op_metrics_dotted_name_is_definitions() {
+        // Same as above; dotted-name forms equally require a
+        // synthesised `__metric_<name>` binding.
         let mut op = empty_op("x");
         op.metrics.insert("foo".into(), MetricSpec {
             value: "phase.recall_at_10".into(),
             family: None, kind: None, unit: None, format: None,
         });
-        assert_eq!(op.gk_matter(), GkMatter::Readonly);
+        assert_eq!(op.gk_matter(), GkMatter::Definitions);
     }
 
     #[test]

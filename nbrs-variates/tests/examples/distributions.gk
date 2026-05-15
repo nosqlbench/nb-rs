@@ -18,7 +18,7 @@ init size_lut = dist_pareto(scale: 1.0, shape: 2.0)
 
 // === Cycle-time: the DAG ===
 
-inputs := (cycle)
+input cycle: u64
 
 // Step 1: Hash — explicitly introduce entropy.
 seed := hash(cycle)

@@ -11,7 +11,7 @@
 /// 80 nodes, 4 inputs changing at different rates.
 /// fast: every cycle. medium: every 100. slow: every 10000. stable: never.
 /// Tests provenance with mixed input cadences.
-inputs := (fast, medium, slow, stable)
+input (fast: u64, medium: u64, slow: u64, stable: u64)
 
 // fast subgraph (20 nodes, dirty every cycle)
 f0 := hash(fast)

@@ -361,6 +361,7 @@ pub fn synthesize_for_each_scope(
         required_outputs: Vec::new(),
         context_label: Some(context.to_string()),
         cursor_limit: None,
+        ..Default::default()
     };
     let matter = crate::subcontext::GkMatter::builder()
         .label(context)
@@ -589,6 +590,7 @@ pub fn synthesize_for_each_iteration(
         required_outputs: Vec::new(),
         context_label: Some(context.to_string()),
         cursor_limit: None,
+        ..Default::default()
     };
     let matter = crate::subcontext::GkMatter::builder()
         .label(context)

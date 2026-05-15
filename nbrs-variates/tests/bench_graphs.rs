@@ -25,7 +25,7 @@ fn output_dir() -> PathBuf {
 fn generate_chain(n: usize) -> String {
     let mut s = String::new();
     writeln!(s, "// Benchmark: {n}-node chain (degree=1)").unwrap();
-    writeln!(s, "inputs := (cycle)\n").unwrap();
+    writeln!(s, "input cycle: u64\n").unwrap();
     writeln!(s, "n0 := hash(cycle)").unwrap();
     for i in 1..n {
         if i % 2 == 1 {
@@ -52,7 +52,7 @@ fn generate_layered(n: usize) -> String {
     let mut count = 0usize;
 
     writeln!(s, "// Benchmark: {n}-node layered DAG (degree~3, width={width}, layers={layers})").unwrap();
-    writeln!(s, "inputs := (cycle)\n").unwrap();
+    writeln!(s, "input cycle: u64\n").unwrap();
 
     // Layer 0: seed nodes from cycle
     for j in 0..width.min(n) {
@@ -108,7 +108,7 @@ fn generate_dense(n: usize) -> String {
     let mut count = 0usize;
 
     writeln!(s, "// Benchmark: {n}-node dense DAG (degree~6, width={width}, layers={layers})").unwrap();
-    writeln!(s, "inputs := (cycle)\n").unwrap();
+    writeln!(s, "input cycle: u64\n").unwrap();
 
     // Layer 0: seed nodes
     let seed_count = width.min(n);

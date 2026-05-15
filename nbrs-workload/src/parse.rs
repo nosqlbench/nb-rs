@@ -1201,6 +1201,7 @@ fn normalize_op_entry(
                 metrics: HashMap::new(),
                 result: None,
                 wrappers: None,
+                captures: Vec::new(),
             };
             op.tags.insert("block".to_string(), block_name.to_string());
             Ok(op)
@@ -1287,7 +1288,7 @@ fn normalize_op_object(
         "verify", "relevancy", "strict", "poll", "poll_interval_ms", "timeout_ms", "poll_metric_name", "emit",
         "batch", "max_batch_size", "batchtype", "memo"];
 
-    let op_fields = if let Some(explicit_op) = op_field_names.iter()
+    let mut op_fields = if let Some(explicit_op) = op_field_names.iter()
         .find_map(|k| map.get(*k))
     {
         let mut m: HashMap<String, JVal> = match explicit_op {
@@ -1407,6 +1408,31 @@ fn normalize_op_object(
     let result = parse_result_field(map.get("result"), &name)
         .map_err(|e| format!("op '{name}' result: {e}"))?;
 
+    // Extract capture-point specs from every string-valued entry in
+    // `op` and replace each value with the bracket-stripped form.
+    // Adapters consume the cleaned text; `TraversingDispenser` and
+    // other capture-aware wrappers read the harvested specs from
+    // `ParsedOp.captures` directly — no re-parse at wrap-time.
+    //
+    // De-duplicates by `as_name` across multiple op-fields: the
+    // same wire name appearing in two fields means the same
+    // capture, not two separate writes.
+    let mut captures: Vec<crate::bindpoints::CapturePoint> = Vec::new();
+    for value in op_fields.values_mut() {
+        if let serde_json::Value::String(s) = value {
+            let parsed = crate::bindpoints::parse_capture_points(s);
+            if parsed.captures.is_empty() {
+                continue;
+            }
+            for cap in parsed.captures {
+                if !captures.iter().any(|existing| existing.as_name == cap.as_name) {
+                    captures.push(cap);
+                }
+            }
+            *s = parsed.raw_template;
+        }
+    }
+
     Ok(ParsedOp {
         name,
         description,
@@ -1419,6 +1445,7 @@ fn normalize_op_object(
         metrics,
         result,
         wrappers: None,
+        captures,
     })
 }
 
@@ -2166,7 +2193,7 @@ ops:
         let yaml = r#"
 bindings: |
   // Explicit wiring — every intermediate is named
-  inputs := (cycle)
+  input cycle: u64
   h := hash(cycle)
   user_id := mod(h, 1000000)
   code_hash := hash(user_id)
@@ -2181,7 +2208,7 @@ ops:
         let workload = parse_workload(yaml, &HashMap::new()).unwrap();
         match &workload.bindings {
             BindingsDef::GkSource(src) => {
-                assert!(src.contains("inputs := (cycle)"));
+                assert!(src.contains("input cycle: u64"));
                 assert!(src.contains("user_id := mod(h, 1000000)"));
             }
             BindingsDef::Map(_) => panic!("expected GkSource at workload level, got Map"),
@@ -2608,7 +2635,7 @@ bindings:
 blocks:
   main:
     bindings: |
-      inputs := (cycle)
+      input cycle: u64
       h := hash(cycle)
       id := mod(h, 1000)
       // Concise equivalent:
@@ -2619,7 +2646,7 @@ blocks:
         let ops = parse_ops(yaml).unwrap();
         match &ops[0].bindings {
             BindingsDef::GkSource(src) => {
-                assert!(src.contains("inputs := (cycle)"));
+                assert!(src.contains("input cycle: u64"));
                 assert!(src.contains("id := mod(h, 1000)"));
             }
             BindingsDef::Map(_) => panic!("expected GkSource, got Map"),

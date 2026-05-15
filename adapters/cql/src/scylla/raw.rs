@@ -62,7 +62,6 @@ impl OpDispenser for ScyllaRawDispenser {
             };
             Ok(OpResult {
                 body: body_box,
-                captures: std::collections::HashMap::new(),
                 skipped: false,
             })
         })

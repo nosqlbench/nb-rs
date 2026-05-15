@@ -322,7 +322,7 @@ mod tests {
 
     fn k() -> GkKernel {
         compile_gk(
-            "inputs := (cycle)\n\
+            "input cycle: u64\n\
              folded := 42\n\
              cyc_dep := hash(cycle)\n",
         ).expect("compile_gk")

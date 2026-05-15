@@ -330,7 +330,7 @@ Reusable `.gk` files that define subgraphs:
 
 ```
 // latency_model.gk
-inputs := (cycle)
+input cycle: u64
 base_ns := uniform(hash(cycle), 500000.0, 2000000.0)
 jitter := uniform(hash(add(cycle, 1)), 0.9, 1.1)
 latency_ns := mul(base_ns, jitter)

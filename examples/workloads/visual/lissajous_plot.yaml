@@ -18,7 +18,7 @@ params:
   cycles: "3000"
 
 bindings: |
-  inputs := (cycle)
+  input cycle: u64
   t := to_f64(cycle) * 0.005
   x := sin(t * {a})
   y := sin(t * {b} + to_f64({phase}) * 0.01745329)
