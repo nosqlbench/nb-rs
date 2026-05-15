@@ -29,14 +29,14 @@ params:
   fknn_profile: default
   vector_idx_suffix: _vector_idx
   meta_idx_suffix: _meta_idx
-  # Minimum wall-clock duration per ann_query / pvs_query phase
-  # in milliseconds. The query cursor extends in `base`-sized
-  # passes (one full sweep of the prebuffered query set) until
-  # this much time has elapsed since phase start, at which point
-  # the policy stops at the next whole-pass boundary. 60 s gives
-  # each (profile, k, limit) phase enough cadence-window
+  # Minimum wall-clock duration per ann_query / pvs_metadata_query
+  # / pvs_query phase in milliseconds. The query cursor extends in
+  # `base`-sized passes (one full sweep of the prebuffered query
+  # set) until this much time has elapsed since phase start, at
+  # which point the policy stops at the next whole-pass boundary.
+  # 30 s gives each (profile, k, limit) phase enough cadence-window
   # coverage for stable rate and latency averages.
-  min_query_ms: 15000
+  min_query_ms: 30000
 
 # Unified report block (SRD-46): plots + tables in declaration
 # order. Each scenario contributes its items to its own
@@ -69,7 +69,7 @@ report:
   oracles_section: |
     file oracles_report.md as 'ANN Recall Sweep'
 
-    text 
+    text heading as "Introduction":
      This report covers the **test_oracles** scenario: per-
      profile partition tests that sweep `k` and `limit` against
      a SAI-indexed vector column. Recall is measured against the
@@ -78,38 +78,40 @@ report:
      Figures below show the per-profile and aggregate recall@k
      curves; the table summarises mean recall by profile.
 
-    table recall_oracles
+    table recall_oracles:
       group_by: profile
-      query recall: avg(recall_mean{k="10"}) by (profile,limit)
-      query latency: avg(cycles_servicetime_mean) by (profile,limit)
+      query: recall: avg(recall_mean{k="10"}) by (profile,limit)
+      query: latency: avg(cycles_servicetime_mean) by (profile,limit)
 
-    plot recall_vs_qps
-      label "Recall vs QPS, (oracles & PVS)"
+    plot recall_vs_qps:
+      label: "Recall vs QPS, (oracles & PVS)"
+      scale: 2
       legend: br
       y1: (cycles_total_rate, recall_mean){phase=~".*query"} by (phase,k,limit)
       point-label1: limit
       x-legend: "QPS (log)"
-      xscale=log
+      x-scale: log
       y-side: left
       y-labels: ["recall"]
       y-legends: ["k=[k] [phase]"]
       y-ranges: [[,1.0]]
       series: phase,k
-      style phase=ann_query:line=dotted
+      style: phase=ann_query:line=dotted
 
-    plot recall_vs_qps__pvs
-      label "Recall vs QPS (PVS)"
-      legend: br
-      y1: (cycles_total_rate, recall_mean){phase=~"pvs_query"} by (phase,k,limit)
-      point-label1: limit
-      x-legend: "QPS"
-      xscale=log
-      y-side: left
-      y-labels: ["recall"]
-      y-legends: ["k=[k] [phase]"]
-      y-ranges: [[,1.0]]
-      series: phase,k
-      style phase=ann_query:line=dotted
+
+#    plot recall_vs_qps__pvs
+#      label "Recall vs QPS (PVS)"
+#      legend: br
+#      y1: (cycles_total_rate, recall_mean){phase=~"pvs_query"} by (phase,k,limit)
+#      point-label1: limit
+#      x-legend: "QPS"
+#      xscale=log
+#      y-side: left
+#      y-labels: ["recall"]
+#      y-legends: ["k=[k] [phase]"]
+#      y-ranges: [[,1.0]]
+#      series: phase,k
+#      style phase=ann_query:line=dotted
 
 
 bindings: |
@@ -123,24 +125,6 @@ scenarios:
   fulltest:
     - scenario: test_oracles
     - scenario: test_fknn
-    # One-shot diagnostic probe — runs the SAME query
-    # against both oracle and PVS tables and dumps
-    # bindings + DB result bodies to <session>/audit.log.
-    # Both tables must already exist; placement after
-    # test_fknn guarantees that.
-    - recall_audit_oracle
-    - recall_audit_pvs
-
-  # Standalone diagnostic scenario — invoke with
-  # `scenario=recall_audit_only` to run JUST the probe
-  # against leftover tables from a previous fulltest run.
-  # Skips teardown / schema / rampup / await_index, so
-  # the existing data is used as-is. Errors out if the
-  # tables `vec_label_00_recall` or `fknn_default_recall`
-  # don't exist; run `fulltest` first to populate them.
-  recall_audit_only:
-    - recall_audit_oracle
-    - recall_audit_pvs
 
   # Per-profile partition test (label_00..label_11)
   test_oracles:
@@ -466,81 +450,18 @@ phases:
             functions:
               - recall
 
-
-  # Single-cycle diagnostic phase. Runs the SAME query
-  # vector against both the oracle (label_00) and PVS
-  # (default WHERE metadata=0) paths, dumps the bindings
-  # + result bodies via log_info, so audit.log shows:
-  #
-  #   - the query vector hash (proxy for "this is the
-  #     same q across both probes"),
-  #   - oracle's ground truth (label_00 local indices),
-  #     oracle's DB result keys,
-  #   - the corresponding default-side payload (PVS
-  #     ground truth at default's q=0, predicate, and DB
-  #     keys returned).
-  #
-  # The user reads audit.log to cross-check whether the
-  # DB returns the same effective vectors on both paths
-  # (compare returned values when extracted via
-  # `SELECT key,value`).
-  #
-  # Hardcoded to label_00 / metadata=0. Requires the
-  # `fulltest` scenario to have already populated both
-  # tables; runs once after test_fknn so both targets
-  # exist.
-  # Single-op phase: oracle path only, iterates q=0..856
-  # (all label_00 queries). Pairs with `recall_audit_pvs`
-  # below; both phases iterate the SAME q range so the
-  # offline analyser can join their audit.log entries by q
-  # and compute per-q recall deltas (oracle vs pvs on the
-  # identical query vector).
-  recall_audit_oracle:
-    concurrency: 1
-    bindings: |
-      init opb = dataset_prebuffer("{dataset}:label_00")
-      cursor q = range(0, 856)
-      query           := query_vector_at(opb, q)
-      gt_oracle       := neighbor_indices_at(opb, q)
-      _audit_marker   := log_info("=== recall_audit_oracle cycle: label_00 q=" + format_u64(q, 10) + " ===")
-      _audit_gt       := log_info("gt_oracle (label_00 local indices, top-100): " + json_text(gt_oracle))
-    ops:
-      oracle_probe:
-        prepared: |
-          SELECT key, value FROM {keyspace}.vec_label_00_recall
-          ORDER BY value ANN OF {query} LIMIT 10
-        result: |
-          _audit_oracle_result := log_info("oracle_probe body: " + json_text(body))
-
-  # Single-op phase: PVS path only, iterates q=0..856 (same
-  # range as recall_audit_oracle). Uses label_00's query
-  # vectors so each q corresponds to the SAME underlying
-  # query as the oracle phase's same-q cycle.
-  recall_audit_pvs:
-    concurrency: 1
-    bindings: |
-      init opb = dataset_prebuffer("{dataset}:label_00")
-      cursor q = range(0, 856)
-      query           := query_vector_at(opb, q)
-      gt_oracle       := neighbor_indices_at(opb, q)
-      _audit_marker   := log_info("=== recall_audit_pvs cycle: label_00 q=" + format_u64(q, 10) + " ===")
-      _audit_gt       := log_info("gt_oracle (label_00 local indices, top-100): " + json_text(gt_oracle))
-    ops:
-      pvs_probe:
-        prepared: |
-          SELECT key, value FROM {keyspace}.fknn_default_recall
-          WHERE metadata = 0
-          ORDER BY value ANN OF {query} LIMIT 10
-        result: |
-          _audit_pvs_result := log_info("pvs_probe body: " + json_text(body))
-
   pvs_metadata_query:
     concurrency: "{query_concurrency}"
     errors: count
     bindings: |
       init prebuffered = dataset_prebuffer("{dataset}:{profile}")
       init query_counts = query_count(prebuffered)
-      cursor q = range(0, query_counts * 1)          
+      # Extending cursor: keep dispatching `query_counts`-sized
+      # passes through the prebuffered query set until
+      # min_query_ms of wall-clock time has elapsed (≥ 30 s by
+      # default). Stops at the next whole-pass boundary so the
+      # phase always runs an integer number of complete sweeps.
+      cursor q = until_elapsed(query_counts, min_query_ms)
       predicate := predicate_value_at(prebuffered, q % query_counts)
     ops:
       select_ann:
@@ -563,7 +484,12 @@ phases:
     bindings: |
       init prebuffered = dataset_prebuffer("{dataset}:{profile}")
       init query_counts = query_count(prebuffered)
-      cursor q = range(0, query_counts * 10)
+      # Extending cursor: keep dispatching `query_counts`-sized
+      # passes through the prebuffered query set until
+      # min_query_ms of wall-clock time has elapsed (≥ 30 s by
+      # default). Stops at the next whole-pass boundary so the
+      # phase always runs an integer number of complete sweeps.
+      cursor q = until_elapsed(query_counts, min_query_ms)
       query_vector := query_vector_at(prebuffered, q % query_counts)
       predicate := predicate_value_at(prebuffered, q % query_counts)
       ground_truth := filtered_neighbor_indices_at(prebuffered, q % query_counts)

@@ -318,16 +318,35 @@ impl SummaryConfig {
                     .collect();
                 continue;
             }
-            // `query <col>: <expr>` (multi-column, named) or
-            // `query: <expr>` (single anonymous column).
+            // Three surface forms for query columns:
+            //   query <col>: <expr>     — legacy named (space sep)
+            //   query: <col>: <expr>    — canonical named (uniform `name: value`)
+            //   query: <expr>           — single anonymous column
+            // The canonical form factors out as: after `query:`, if the
+            // remainder begins with a bare-identifier followed by `:`,
+            // the leading identifier is the column name; otherwise the
+            // whole remainder is the anonymous expression. Identifiers
+            // here are `[A-Za-z_][A-Za-z0-9_-]*` — anything containing
+            // whitespace, parens, braces, or operators forces the
+            // anonymous interpretation, which is what we want for
+            // metricsql expressions whose label-literal `:` shows up
+            // before a function-call `(`.
             if let Some(rest) = line.strip_prefix("query") {
                 let rest = rest.trim_start();
                 if let Some(after_colon) = rest.strip_prefix(':') {
-                    metricsql_columns.push(("value".to_string(), after_colon.trim().to_string()));
+                    let after_colon = after_colon.trim_start();
+                    if let Some((col, expr)) = split_named_query(after_colon) {
+                        metricsql_columns.push((col, expr));
+                    } else {
+                        metricsql_columns.push((
+                            "value".to_string(),
+                            after_colon.trim().to_string(),
+                        ));
+                    }
                     continue;
                 }
-                // `query <col>: <expr>` form — the next colon
-                // terminates the column name.
+                // Legacy `query <col>: <expr>` form — the next
+                // colon terminates the column name.
                 if let Some(colon_idx) = rest.find(':') {
                     let col = rest[..colon_idx].trim().to_string();
                     let expr = rest[colon_idx + 1..].trim().to_string();
@@ -423,6 +442,50 @@ impl SummaryConfig {
 }
 
 /// Strip `#` line comments from a multi-line spec body. A `#`
+/// Split a `query:` payload into `(column_name, expression)` when
+/// the payload's leading token is a bare identifier followed by
+/// `:`. Returns `None` for the anonymous-column form (the whole
+/// payload is the expression).
+///
+/// An identifier here is `[A-Za-z_][A-Za-z0-9_-]*`. The lookup
+/// fails as soon as any character outside that class appears
+/// before the first `:`, which is what guards a metricsql label
+/// expression like `recall_mean{k="10"}` from being mistaken for
+/// a column name (the `{` ends the candidate identifier before
+/// the eventual `:` inside `k="10"` is reached).
+fn split_named_query(text: &str) -> Option<(String, String)> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        let is_first = i == 0;
+        let ok = if is_first {
+            b.is_ascii_alphabetic() || b == b'_'
+        } else {
+            b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+        };
+        if !ok { break; }
+        i += 1;
+    }
+    if i == 0 {
+        return None;
+    }
+    // Optional whitespace, then `:` to separate name from value.
+    let mut j = i;
+    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    if j >= bytes.len() || bytes[j] != b':' {
+        return None;
+    }
+    let name = text[..i].to_string();
+    let expr = text[j + 1..].trim().to_string();
+    if name.is_empty() || expr.is_empty() {
+        return None;
+    }
+    Some((name, expr))
+}
+
 /// starts a comment only when it's at line-start or preceded by
 /// whitespace — so hex colors (`#117733`) and JSON sub-blocks
 /// (`{"color": "#fff"}`) survive. Quoted strings are honoured.

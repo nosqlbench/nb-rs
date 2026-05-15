@@ -529,7 +529,7 @@ mod tests {
             "--marker", "triangle",
             "--xlabel", "limit",
             "--ylabel", "recall",
-            "--xscale", "log",
+            "--x-scale", "log",
         ])).expect("build");
         assert_eq!(r.item.label.as_deref(), Some("Recall@10"));
         assert_eq!(r.item.style.palette.as_deref(), Some("tol_muted"));
@@ -542,7 +542,7 @@ mod tests {
         assert!(r.item.body.contains("agg=mean"));
         assert!(r.item.body.contains("xlabel=limit"));
         assert!(r.item.body.contains("ylabel=recall"));
-        assert!(r.item.body.contains("xscale=log"));
+        assert!(r.item.body.contains("x-scale=log"));
     }
 
     #[test]

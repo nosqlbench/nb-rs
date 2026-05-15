@@ -21,8 +21,8 @@
 //!             [--output <path>]             # default <db_dir>/<metric>_<x>.png
 //!             [--title <text>]              # plot title
 //!             [--xlabel <text>] [--ylabel <text>]
-//!             [--xscale linear|log]
-//!             [--yscale linear|log]
+//!             [--x-scale linear|log]
+//!             [--y-scale linear|log]
 //!             [--width <px>] [--height <px>]
 //!
 //! Worked example — "mean recall@10 vs limit at k=10":
@@ -65,7 +65,7 @@ const FLAGS_TAKING_VALUE: &[&str] = &[
     "--db", "--output", "--name", "--label", "--palette",
     "--line", "--line-width", "--marker", "--marker-size",
     "--figure-num", "--title", "--xlabel", "--ylabel",
-    "--xscale", "--yscale", "--width", "--height",
+    "--x-scale", "--y-scale", "--width", "--height", "--scale",
     "--x-min", "--x-max", "--y-min", "--y-max", "--legend",
     "--y", "--y1",
     "--y-legend",
@@ -413,15 +413,29 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             deferred_y_legends = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix("y-labels:").map(str::trim) {
             deferred_y_labels = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("style ").map(str::trim) {
+        } else if let Some(rest) = line.strip_prefix("style ").map(str::trim)
+            .or_else(|| line.strip_prefix("style:").map(str::trim))
+        {
             // Per-series style override: `style key=value:directives`
-            // — same shape the `--style` CLI flag accepts. The
-            // body parser missed this previously, so workloads
-            // with `style phase=pvs_query:line=dotted` in their
-            // plot body had their override silently dropped when
-            // dispatched via `nbrs plot --name X --workload Y`.
+            // — same shape the `--style` CLI flag accepts. Both
+            // separators are accepted: `style phase=…:line=…`
+            // (legacy space form) and `style: phase=…:line=…`
+            // (uniform `name: value` form).
             opts.series_overrides.push(parse_style_override(rest)
                 .map_err(|e| format!("style '{rest}': {e}"))?);
+        } else if apply_kv_directive(&mut opts, line)? {
+            // Generic `name: value` (or `name = value`) directive
+            // applied — fall through to the next line. Covers
+            // `width:`, `height:`, `scale:` (render-density
+            // multiplier), `title:`, `label:`, `xlabel:`,
+            // `ylabel:`, `x-scale:`, `y-scale:` (axis mode —
+            // hyphenated to disambiguate from `scale:`),
+            // `agg:`, `palette:`, `line:`, `line-width:`,
+            // `marker:`, `marker-size:`. The single-source-of-
+            // truth table lives in `apply_kv_directive`; both
+            // `:` and `=` separators work uniformly so workload
+            // authors don't have to remember per-directive
+            // separator history.
         } else {
             residual_lines.push((*line).to_string());
         }
@@ -499,9 +513,9 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
             opts.xlabel = Some(v.trim().to_string());
         } else if let Some(v) = directive.strip_prefix("ylabel=") {
             opts.ylabel = Some(v.trim().to_string());
-        } else if let Some(v) = directive.strip_prefix("xscale=") {
+        } else if let Some(v) = directive.strip_prefix("x-scale=") {
             opts.xscale = v.trim().to_string();
-        } else if let Some(v) = directive.strip_prefix("yscale=") {
+        } else if let Some(v) = directive.strip_prefix("y-scale=") {
             opts.yscale = v.trim().to_string();
         } else if !directive.contains(' ') && !directive.contains('=') && opts.metric.is_none() {
             // First bare token is the metric.
@@ -549,6 +563,91 @@ fn parse_spec(spec: &str) -> Result<PlotMetricsOpts, String> {
     }
     opts.validate_axis_contiguity()?;
     Ok(opts)
+}
+
+/// Generic `name: value` / `name = value` directive applier.
+///
+/// Returns `Ok(true)` if `line` was a recognised key/value
+/// directive (and the side effect — setting the corresponding
+/// `PlotMetricsOpts` field — happened), `Ok(false)` if the line
+/// didn't start with any known key, and `Err(_)` on a recognised
+/// key whose value failed to parse.
+///
+/// Single dispatch table for plot-body simple directives so
+/// authors don't have to remember per-directive separator
+/// history (`width=1600` vs `xlabel: foo`, etc.). Both `:` and
+/// `=` separators work uniformly. Directives whose values are
+/// non-trivial (axis specs, ranges, plural arrays, compact query
+/// pairs) keep their bespoke parsers above this fallback.
+fn apply_kv_directive(opts: &mut PlotMetricsOpts, line: &str) -> Result<bool, String> {
+    let Some((raw_key, raw_value)) = split_kv_directive(line) else {
+        return Ok(false);
+    };
+    let key = raw_key.trim();
+    let value = raw_value.trim();
+    let parse_u32 = |v: &str, name: &str| -> Result<u32, String> {
+        v.parse::<u32>().map_err(|_| format!("{name} must be a positive integer, got '{v}'"))
+    };
+    let parse_f32_pos = |v: &str, name: &str| -> Result<f32, String> {
+        let n: f32 = v.parse().map_err(|_| format!("{name} must be a positive number, got '{v}'"))?;
+        if !(n.is_finite() && n > 0.0) {
+            return Err(format!("{name} must be a positive number, got '{v}'"));
+        }
+        Ok(n)
+    };
+    match key {
+        // Render dimensions + density / style multipliers.
+        // `scale`        → pixel-density (canvas × scale, same visual layout).
+        // `style-scale`  → element-relative size (fonts/strokes/markers within canvas).
+        "width"        => opts.width  = parse_u32(value, "width")?,
+        "height"       => opts.height = parse_u32(value, "height")?,
+        "scale"        => opts.scale  = Some(parse_f32_pos(value, "scale")?),
+        "style-scale"  => opts.style_scale = Some(parse_f32_pos(value, "style-scale")?),
+
+        // Titles / labels (unquoted-friendly).
+        "title"        => opts.title  = Some(strip_quotes(value).to_string()),
+        "label"        => opts.label  = Some(strip_quotes(value).to_string()),
+        "xlabel"       => opts.xlabel = Some(strip_quotes(value).to_string()),
+        "ylabel"       => opts.ylabel = Some(strip_quotes(value).to_string()),
+
+        // Scale-mode pin. Hyphenated to disambiguate from the
+        // render-density `scale:` multiplier above.
+        "x-scale"      => opts.xscale = value.to_string(),
+        "y-scale"      => opts.yscale = value.to_string(),
+
+        // Aggregator + style cascade.
+        "agg"          => opts.agg    = value.to_string(),
+        "palette"      => opts.palette = Some(value.to_string()),
+        "line"         => opts.line    = Some(value.to_string()),
+        "line-width"   => opts.line_width = Some(parse_f32_pos(value, "line-width")?),
+        "marker"       => opts.marker  = Some(value.to_string()),
+        "marker-size"  => opts.marker_size = Some(parse_f32_pos(value, "marker-size")?),
+
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+/// Split a plot body line into `(key, value)` accepting either
+/// `:` or `=` as the separator. Returns `None` when neither
+/// appears or the key is empty. Whichever appears first wins, so
+/// `xscale: log` (colon) and `xscale=log` (equals) both work.
+fn split_kv_directive(line: &str) -> Option<(&str, &str)> {
+    let colon = line.find(':');
+    let equals = line.find('=');
+    let idx = match (colon, equals) {
+        (Some(c), Some(e)) => c.min(e),
+        (Some(c), None) => c,
+        (None, Some(e)) => e,
+        (None, None) => return None,
+    };
+    let (key, rest) = line.split_at(idx);
+    let key = key.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let value = &rest[1..];
+    Some((key, value))
 }
 
 /// Parsed CLI options for `nbrs plot` (metrics form).
@@ -616,6 +715,33 @@ struct PlotMetricsOpts {
     yscale: String,
     width: u32,
     height: u32,
+    /// Linear pixel-density multiplier applied to `width` /
+    /// `height` at render time. `None` ⇒ 1.0. Both dimensions
+    /// are scaled together so aspect ratio is preserved; font
+    /// sizes, stroke widths, and marker radii scale linearly
+    /// too (handled by plotters' internal coordinate space, so
+    /// a 2× scale produces an image with the same layout at
+    /// 4× the pixel count rather than a zoomed crop).
+    ///
+    /// Use this to bump output resolution without re-typing
+    /// width/height pairs on every plot directive:
+    /// `--scale=2` doubles 1024×640 to 2048×1280; combine with
+    /// an explicit `--width=1600 --height=1000` for
+    /// 3200×2000 etc. Accepts fractional values (e.g. 1.5).
+    scale: Option<f32>,
+    /// Visual element scale — multiplies the *relative* size of
+    /// chart elements (fonts, stroke widths, marker radii, axis
+    /// gutters) within the canvas. Independent of `scale`,
+    /// which only controls pixel density.
+    ///
+    /// Default `None` ⇒ 1.0 (legacy element-to-canvas
+    /// proportions). Values > 1 make text and lines look
+    /// chunkier relative to chart bounds; values < 1 make them
+    /// daintier. Combine with `scale` for high-DPI output that
+    /// also has bigger labels: `scale: 2, style-scale: 1.25`
+    /// produces a 2× pixel grid with text +25% larger than the
+    /// default at that resolution.
+    style_scale: Option<f32>,
     /// Print the aggregated (series, x, n, value) table to
     /// stderr alongside the plot — same data the renderer
     /// drew, in tabular form for inspection.
@@ -2022,6 +2148,8 @@ impl Default for PlotMetricsOpts {
             yscale: String::new(),
             width: 0,
             height: 0,
+            scale: None,
+            style_scale: None,
             verbose: false,
             csv_also: None,
             report: None,
@@ -2999,8 +3127,9 @@ fn print_usage() {
     eprintln!("  --title <text>         Plot title");
     eprintln!("  --xlabel <text>        X-axis label (default: <x_label>)");
     eprintln!("  --ylabel <text>        Y-axis label (default: <metric>)");
-    eprintln!("  --xscale linear|log    X-axis scale (default: linear)");
-    eprintln!("  --yscale linear|log    Y-axis scale (default: linear)");
+    eprintln!("  --x-scale linear|log   X-axis scale mode (default: linear)");
+    eprintln!("  --y-scale linear|log   Y-axis scale mode (default: linear)");
+    eprintln!("  --scale  <N>           Render pixel-density multiplier (default: 1)");
     eprintln!("  --width <px>           Image width (default: 1024)");
     eprintln!("  --height <px>          Image height (default: 640)");
     eprintln!();
@@ -3114,12 +3243,28 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                 .parse().map_err(|_| "--figure-num must be a positive integer".to_string())?),
             "--xlabel" => opts.xlabel = Some(next(&mut iter, "xlabel")?),
             "--ylabel" => opts.ylabel = Some(next(&mut iter, "ylabel")?),
-            "--xscale" => opts.xscale = next(&mut iter, "xscale")?,
-            "--yscale" => opts.yscale = next(&mut iter, "yscale")?,
+            "--x-scale" => opts.xscale = next(&mut iter, "x-scale")?,
+            "--y-scale" => opts.yscale = next(&mut iter, "y-scale")?,
             "--width" => opts.width = next(&mut iter, "width")?
                 .parse().map_err(|_| "--width must be a positive integer".to_string())?,
             "--height" => opts.height = next(&mut iter, "height")?
                 .parse().map_err(|_| "--height must be a positive integer".to_string())?,
+            "--scale" => {
+                let v: f32 = next(&mut iter, "scale")?
+                    .parse().map_err(|_| "--scale must be a positive number".to_string())?;
+                if !(v.is_finite() && v > 0.0) {
+                    return Err("--scale must be a positive number".into());
+                }
+                opts.scale = Some(v);
+            }
+            "--style-scale" => {
+                let v: f32 = next(&mut iter, "style-scale")?
+                    .parse().map_err(|_| "--style-scale must be a positive number".to_string())?;
+                if !(v.is_finite() && v > 0.0) {
+                    return Err("--style-scale must be a positive number".into());
+                }
+                opts.style_scale = Some(v);
+            }
             "--x-min" => {
                 axis_seen.note(AxisKey::X, AxisRole::Min, "--x-min")?;
                 opts.x_min = Some(next(&mut iter, "x-min")?
@@ -3260,12 +3405,28 @@ fn parse_args(args: &[String]) -> Result<PlotMetricsOpts, String> {
                         "title" => opts.title = Some(v.to_string()),
                         "xlabel" => opts.xlabel = Some(v.to_string()),
                         "ylabel" => opts.ylabel = Some(v.to_string()),
-                        "xscale" => opts.xscale = v.to_string(),
-                        "yscale" => opts.yscale = v.to_string(),
+                        "x-scale" => opts.xscale = v.to_string(),
+                        "y-scale" => opts.yscale = v.to_string(),
                         "width" => opts.width = v.parse()
                             .map_err(|_| "--width must be a positive integer".to_string())?,
                         "height" => opts.height = v.parse()
                             .map_err(|_| "--height must be a positive integer".to_string())?,
+                        "scale" => {
+                            let value: f32 = v.parse()
+                                .map_err(|_| "scale must be a positive number".to_string())?;
+                            if !(value.is_finite() && value > 0.0) {
+                                return Err("scale must be a positive number".into());
+                            }
+                            opts.scale = Some(value);
+                        }
+                        "style-scale" => {
+                            let value: f32 = v.parse()
+                                .map_err(|_| "style-scale must be a positive number".to_string())?;
+                            if !(value.is_finite() && value > 0.0) {
+                                return Err("style-scale must be a positive number".into());
+                            }
+                            opts.style_scale = Some(value);
+                        }
                         "x-min" => {
                             axis_seen.note(AxisKey::X, AxisRole::Min, "--x-min")?;
                             opts.x_min = Some(v.parse()
@@ -4296,8 +4457,33 @@ fn render_plot(
             axis.ticks);
     }
 
+    // Two orthogonal scale knobs:
+    //
+    //   scale         — pixel-density multiplier. Multiplies the
+    //                   canvas dimensions AND every absolute-pixel
+    //                   element value (fonts, strokes, margins,
+    //                   marker sizes) by the same factor, so the
+    //                   chart looks visually identical at a denser
+    //                   pixel grid.
+    //
+    //   style-scale   — element-relative size multiplier. Affects
+    //                   only the element values, not the canvas:
+    //                   bumps fonts / strokes / markers within the
+    //                   same canvas dimensions, so text and lines
+    //                   look chunkier (or daintier with `< 1`)
+    //                   relative to chart bounds.
+    //
+    // Combined: element_px = base × scale × style_scale; canvas_px
+    // = base × scale. `None` ⇒ 1.0 on either side. Both clamp to
+    // >0 so a misconfigured value can't yield a 0-pixel image.
+    let scale = opts.scale.unwrap_or(1.0);
+    let style_scale = opts.style_scale.unwrap_or(1.0);
+    let element_scale = scale * style_scale;
+    let render_w = ((opts.width as f32 * scale).round() as u32).max(1);
+    let render_h = ((opts.height as f32 * scale).round() as u32).max(1);
+
     if is_svg {
-        let root = SVGBackend::new(out_path, (opts.width, opts.height)).into_drawing_area();
+        let root = SVGBackend::new(out_path, (render_w, render_h)).into_drawing_area();
         draw_chart(&root, series, &rendered_secondary, &title, &x_axis, &y_axis,
             x_range, y_range, metric,
             opts.palette.as_deref(), opts.line.as_deref(), opts.line_width,
@@ -4308,10 +4494,11 @@ fn render_plot(
             opts.y_legend_format.as_deref(),
             opts.datapoints_mode,
             opts.point_label1.as_ref(),
-            series_labels)?;
+            series_labels,
+            element_scale)?;
         root.present().map_err(|e| format!("present: {e}"))?;
     } else {
-        let root = BitMapBackend::new(out_path, (opts.width, opts.height)).into_drawing_area();
+        let root = BitMapBackend::new(out_path, (render_w, render_h)).into_drawing_area();
         draw_chart(&root, series, &rendered_secondary, &title, &x_axis, &y_axis,
             x_range, y_range, metric,
             opts.palette.as_deref(), opts.line.as_deref(), opts.line_width,
@@ -4322,7 +4509,8 @@ fn render_plot(
             opts.y_legend_format.as_deref(),
             opts.datapoints_mode,
             opts.point_label1.as_ref(),
-            series_labels)?;
+            series_labels,
+            element_scale)?;
         root.present().map_err(|e| format!("present: {e}"))?;
     }
     Ok(())
@@ -4891,12 +5079,36 @@ fn draw_chart<DB>(
     datapoints_mode: DatapointsMode,
     point_label: Option<&PointLabelSpec>,
     series_labels: &[String],
+    // `scale` — combined `scale * style_scale` multiplier applied
+    // to every absolute-pixel value drawn by this chart (font
+    // sizes, margins, axis areas, stroke widths, marker radii).
+    // The canvas dimensions passed to the backend already include
+    // the `scale` portion separately (see the call site in
+    // `render_plot_metrics`); passing the combined product here
+    // gives the user two independent knobs:
+    //   * `scale` — pixel density (canvas × scale, elements × scale)
+    //   * `style-scale` — element-relative size (elements × style_scale)
+    // `1.0` is the identity (legacy behaviour).
+    scale: f32,
 ) -> Result<(), String>
 where
     DB: DrawingBackend,
     DB::ErrorType: 'static,
 {
     root.fill(&WHITE).map_err(|e| format!("fill: {e}"))?;
+
+    // Sizing helpers — round every logical pixel value by the
+    // density multiplier. Kept as closures so the call sites
+    // below read cleanly (`fz(24)` instead of an inline mul).
+    let fz = |base: i32| -> i32 {
+        ((base as f32) * scale).round().max(1.0) as i32
+    };
+    let stroke = |base: f32| -> u32 {
+        ((base * scale).round().max(1.0)) as u32
+    };
+    let msize = |base: i32| -> i32 {
+        ((base as f32) * scale).round().max(1.0) as i32
+    };
 
     // Right-rail allowance grows by 70px per secondary axis
     // declared. Plotters' `set_secondary_coord` natively
@@ -4911,11 +5123,11 @@ where
     // bleed slightly past the plot's right edge).
     let right_label_area = if secondary.iter().any(|a| a.side == "right") {
         match secondary.len() {
-            1 => 70,
-            n => 70 + 30 * (n as i32 - 1) as i32,
+            1 => fz(70),
+            n => fz(70) + fz(30) * (n as i32 - 1),
         }
     } else {
-        20
+        fz(20)
     };
 
     // Axis-2 coord descriptor (the only secondary plotters
@@ -4937,10 +5149,10 @@ where
     let secondary_y2 = F64Axis::new(sec_y_range, sec_y_log, sec_y_ticks);
 
     let mut chart = ChartBuilder::on(root)
-        .caption(title, ("sans-serif", 24))
-        .margin(20)
-        .x_label_area_size(50)
-        .y_label_area_size(70)
+        .caption(title, ("sans-serif", fz(24)))
+        .margin(fz(20))
+        .x_label_area_size(fz(50))
+        .y_label_area_size(fz(70))
         .right_y_label_area_size(right_label_area)
         .build_cartesian_2d(primary_x, primary_y)
         .map_err(|e| format!("build chart: {e}"))?
@@ -4949,8 +5161,8 @@ where
     chart.configure_mesh()
         .x_desc(x_axis)
         .y_desc(y_axis)
-        .label_style(("sans-serif", 14))
-        .axis_desc_style(("sans-serif", 16))
+        .label_style(("sans-serif", fz(14)))
+        .axis_desc_style(("sans-serif", fz(16)))
         .draw()
         .map_err(|e| format!("draw mesh: {e}"))?;
 
@@ -4965,17 +5177,21 @@ where
     {
         chart.configure_secondary_axes()
             .y_desc(&a2.label)
-            .label_style(("sans-serif", 14))
-            .axis_desc_style(("sans-serif", 16))
+            .label_style(("sans-serif", fz(14)))
+            .axis_desc_style(("sans-serif", fz(16)))
             .draw()
             .map_err(|e| format!("draw secondary axis: {e}"))?;
     }
 
     let palette = crate::palette::resolve_or_default(palette_spec);
-    let default_stroke = line_width.map(|w| w.max(0.0) as u32).unwrap_or(2);
+    // Logical stroke / marker sizes — the user's `line-width` /
+    // `marker-size` (or our defaults 2 / 3) are LOGICAL pixels;
+    // multiplied by the chart's scale factor at draw time so they
+    // stay visually consistent with everything else.
+    let default_stroke = stroke(line_width.unwrap_or(2.0).max(0.0));
     let default_line = line_style.unwrap_or("solid");
     let default_marker = marker_shape.unwrap_or("circle");
-    let default_m_size = marker_size.map(|s| s.max(0.0) as i32).unwrap_or(3);
+    let default_m_size = msize(marker_size.map(|s| s.max(0.0) as i32).unwrap_or(3));
 
     // Render series in natural-numeric order rather than the
     // BTreeMap's pure lexicographic order — so `limit=10`
@@ -4999,13 +5215,13 @@ where
             .and_then(parse_hex_color_for_override)
             .unwrap_or_else(|| crate::palette::series_color(series_palette, idx));
         let stroke_width = ov.and_then(|o| o.width)
-            .map(|w| w.max(0.0) as u32)
+            .map(|w| stroke(w.max(0.0)))
             .unwrap_or(default_stroke);
         let line_kind = ov.and_then(|o| o.line.as_deref()).unwrap_or(default_line);
         let marker_kind = ov.and_then(|o| o.marker.as_deref())
             .unwrap_or(default_marker);
         let m_size = ov.and_then(|o| o.size)
-            .map(|s| s.max(0.0) as i32)
+            .map(|s| msize(s.max(0.0) as i32))
             .unwrap_or(default_m_size);
 
         let series_label_for_legend = if let Some(template) = y_legend_format {
@@ -5025,32 +5241,43 @@ where
         match line_kind {
             "none" => {} // no line
             "dashed" => {
+                let dash = fz(8) as u32;
+                let gap = fz(8) as u32;
+                let swatch_len = fz(20);
+                let swatch_dash = fz(4) as u32;
+                let swatch_gap = fz(4) as u32;
                 chart.draw_series(plotters::series::DashedLineSeries::new(
-                    xy_pts.iter().cloned(), 8, 8, color.stroke_width(stroke_width),
+                    xy_pts.iter().cloned(), dash, gap, color.stroke_width(stroke_width),
                 ))
                 .map_err(|e| format!("draw dashed line: {e}"))?
                 .label(series_label_for_legend.clone())
                 .legend(move |(x, y)| plotters::element::DashedPathElement::new(
-                    vec![(x, y), (x + 20, y)], 4, 4,
+                    vec![(x, y), (x + swatch_len, y)], swatch_dash, swatch_gap,
                     color.stroke_width(stroke_width)));
             }
             "dotted" => {
+                let dash = fz(2) as u32;
+                let gap = fz(4) as u32;
+                let swatch_len = fz(20);
+                let swatch_dash = fz(2) as u32;
+                let swatch_gap = fz(3) as u32;
                 chart.draw_series(plotters::series::DashedLineSeries::new(
-                    xy_pts.iter().cloned(), 2, 4, color.stroke_width(stroke_width),
+                    xy_pts.iter().cloned(), dash, gap, color.stroke_width(stroke_width),
                 ))
                 .map_err(|e| format!("draw dotted line: {e}"))?
                 .label(series_label_for_legend.clone())
                 .legend(move |(x, y)| plotters::element::DashedPathElement::new(
-                    vec![(x, y), (x + 20, y)], 2, 3,
+                    vec![(x, y), (x + swatch_len, y)], swatch_dash, swatch_gap,
                     color.stroke_width(stroke_width)));
             }
             _ => {
+                let swatch_len = fz(20);
                 chart.draw_series(LineSeries::new(
                     xy_pts.iter().cloned(), color.stroke_width(stroke_width)))
                     .map_err(|e| format!("draw line: {e}"))?
                     .label(series_label_for_legend.clone())
                     .legend(move |(x, y)| PathElement::new(
-                        vec![(x, y), (x + 20, y)], color.stroke_width(stroke_width)));
+                        vec![(x, y), (x + swatch_len, y)], color.stroke_width(stroke_width)));
             }
         }
 
@@ -5125,7 +5352,7 @@ where
             datapoints_mode,
         );
         if !label_idxs.is_empty() {
-            let style = ("sans-serif", 11).into_font().color(&color);
+            let style = ("sans-serif", fz(11)).into_font().color(&color);
             chart.draw_series(label_idxs.into_iter().map(|i| {
                 let p = &points[i];
                 Text::new(format_datapoint(p.y), (p.x, p.y), style.clone())
@@ -5146,7 +5373,7 @@ where
             // plotters draws with the default top-left
             // anchor and end up below-right of the point.
             use plotters::style::text_anchor::{Pos, HPos, VPos};
-            let style = ("sans-serif", 10).into_font()
+            let style = ("sans-serif", fz(10)).into_font()
                 .color(&color.mix(0.85))
                 .pos(Pos::new(HPos::Center, VPos::Bottom));
             let annotated: Vec<_> = points.iter()
@@ -5220,14 +5447,16 @@ where
             // point list — produces no visible marks but
             // registers the legend item.
             let empty: Vec<(f64, f64)> = Vec::new();
+            let swatch_stroke = stroke(1.0);
+            let swatch_len = fz(20);
             chart.draw_series(LineSeries::new(empty.into_iter(),
-                placeholder_color.stroke_width(1)))
+                placeholder_color.stroke_width(swatch_stroke)))
                 .map_err(|e| format!(
                     "draw {} pending placeholder: {e}", axis.name))?
                 .label(label)
                 .legend(move |(x, y)| PathElement::new(
-                    vec![(x, y), (x + 20, y)],
-                    placeholder_color.stroke_width(1).filled()));
+                    vec![(x, y), (x + swatch_len, y)],
+                    placeholder_color.stroke_width(swatch_stroke).filled()));
             continue;
         }
         // Side-driven coord routing (SRD-65 followup —
@@ -5341,30 +5570,41 @@ where
             match line_kind {
                 "none" => {}
                 "dashed" => {
+                    let dash = fz(8) as u32;
+                    let gap = fz(8) as u32;
+                    let swatch_len = fz(20);
+                    let swatch_dash = fz(4) as u32;
+                    let swatch_gap = fz(4) as u32;
                     let line = plotters::series::DashedLineSeries::new(
-                        projected_pts.iter().cloned(), 8, 8,
+                        projected_pts.iter().cloned(), dash, gap,
                         color.stroke_width(stroke_width),
                     );
                     draw_into!(line,
                         format!("draw {} dashed line", axis.name))
                         .label(label.clone())
                         .legend(move |(x, y)| plotters::element::DashedPathElement::new(
-                            vec![(x, y), (x + 20, y)], 4, 4,
+                            vec![(x, y), (x + swatch_len, y)], swatch_dash, swatch_gap,
                             color.stroke_width(stroke_width)));
                 }
                 "dotted" => {
+                    let dash = fz(2) as u32;
+                    let gap = fz(4) as u32;
+                    let swatch_len = fz(20);
+                    let swatch_dash = fz(2) as u32;
+                    let swatch_gap = fz(3) as u32;
                     let line = plotters::series::DashedLineSeries::new(
-                        projected_pts.iter().cloned(), 2, 4,
+                        projected_pts.iter().cloned(), dash, gap,
                         color.stroke_width(stroke_width),
                     );
                     draw_into!(line,
                         format!("draw {} dotted line", axis.name))
                         .label(label.clone())
                         .legend(move |(x, y)| plotters::element::DashedPathElement::new(
-                            vec![(x, y), (x + 20, y)], 2, 3,
+                            vec![(x, y), (x + swatch_len, y)], swatch_dash, swatch_gap,
                             color.stroke_width(stroke_width)));
                 }
                 _ => {
+                    let swatch_len = fz(20);
                     let line = LineSeries::new(
                         projected_pts.iter().cloned(),
                         color.stroke_width(stroke_width));
@@ -5372,7 +5612,7 @@ where
                         format!("draw {} line", axis.name))
                         .label(label.clone())
                         .legend(move |(x, y)| PathElement::new(
-                            vec![(x, y), (x + 20, y)],
+                            vec![(x, y), (x + swatch_len, y)],
                             color.stroke_width(stroke_width)));
                 }
             }
@@ -5452,7 +5692,7 @@ where
             let original_ys: Vec<f64> = points.iter().map(|p| p.y).collect();
             let label_idxs = datapoint_label_indices(&original_ys, datapoints_mode);
             if !label_idxs.is_empty() {
-                let style = ("sans-serif", 11).into_font().color(&color);
+                let style = ("sans-serif", fz(11)).into_font().color(&color);
                 let labels: Vec<_> = label_idxs.into_iter().map(|i| {
                     let (x, _) = projected_pts[i];
                     let y_proj = projected_pts[i].1;
@@ -5476,7 +5716,7 @@ where
             // y-datapoint numeric label.
             if let Some(spec) = point_label {
                 use plotters::style::text_anchor::{Pos, HPos, VPos};
-                let style = ("sans-serif", 10).into_font()
+                let style = ("sans-serif", fz(10)).into_font()
                     .color(&color.mix(0.85))
                     .pos(Pos::new(HPos::Center, VPos::Bottom));
                 let annotated: Vec<_> = points.iter()
@@ -5518,7 +5758,7 @@ where
             chart.configure_series_labels()
                 .background_style(WHITE.mix(0.85))
                 .border_style(BLACK)
-                .label_font(("sans-serif", 14))
+                .label_font(("sans-serif", fz(14)))
                 .position(position)
                 .draw()
                 .map_err(|e| format!("draw legend: {e}"))?;

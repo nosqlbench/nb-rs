@@ -358,7 +358,7 @@ fn flag_takes_value(cur: &str) -> bool {
         | "--db" | "--output" | "--label" | "--palette"
         | "--line" | "--line-width" | "--marker" | "--marker-size"
         | "--figure-num" | "--title" | "--xlabel" | "--ylabel"
-        | "--xscale" | "--yscale" | "--width" | "--height"
+        | "--x-scale" | "--y-scale" | "--width" | "--height" | "--scale"
         | "--csv-also" | "--report" | "--update-markdown"
         | "--add-to-markdown" | "--format" | "--create"
         | "--session" | "--session-name" | "--session-path"
@@ -517,7 +517,7 @@ fn closed_set_provider_for(yaml_directive: &str)
         "line"    => Some(line_styles_provider),
         "marker"  => Some(marker_shapes_provider),
         "agg"     => Some(agg_fns_provider),
-        "xscale" | "yscale" => Some(axis_scales_provider),
+        "x-scale" | "y-scale" => Some(axis_scales_provider),
         _ => None,
     }
 }
@@ -637,7 +637,7 @@ fn plot_node() -> StrictNode<true, true> {
         &[
             "--db", "--output", "--metric", "--x", "--series",
             "--filter", "--agg", "--name", "--title", "--xlabel",
-            "--ylabel", "--xscale", "--yscale", "--width", "--height",
+            "--ylabel", "--x-scale", "--y-scale", "--width", "--height", "--scale",
             "--csv-also",
         ],
         &["--verbose"],
@@ -1398,7 +1398,7 @@ mod walker_tests {
                          "--label", "--palette", "--line",
                          "--width", "--marker", "--size",
                          "--color", "--metric",
-                         "--xlabel", "--ylabel", "--xscale", "--yscale",
+                         "--xlabel", "--ylabel", "--x-scale", "--y-scale",
                          "--style",
                          // Orthogonal dispatch flags.
                          "--add", "--at", "--contextual", "--replace",
@@ -1413,7 +1413,7 @@ mod walker_tests {
     #[test]
     fn report_table_excludes_plot_only_directives() {
         let cands = complete(&["nbrs", "report", "table", "demo", "--"]);
-        for forbidden in ["--xlabel", "--ylabel", "--xscale", "--yscale",
+        for forbidden in ["--xlabel", "--ylabel", "--x-scale", "--y-scale",
                           "--marker", "--line", "--width", "--size"]
         {
             assert!(!cands.iter().any(|c| c == forbidden),
@@ -1436,7 +1436,7 @@ mod walker_tests {
     fn report_text_excludes_figure_directives() {
         let cands = complete(&["nbrs", "report", "text", "intro", "--"]);
         for forbidden in ["--over", "--by", "--where", "--agg",
-                          "--metric", "--xscale", "--yscale", "--marker"]
+                          "--metric", "--x-scale", "--y-scale", "--marker"]
         {
             assert!(!cands.iter().any(|c| c == forbidden),
                 "text completions should not offer `{forbidden}`: {cands:?}");
@@ -1471,9 +1471,9 @@ mod walker_tests {
     }
 
     #[test]
-    fn xscale_value_completion_offers_linear_log() {
+    fn x_scale_value_completion_offers_linear_log() {
         let cands = complete(&["nbrs", "report", "plot", "demo",
-                               "--xscale", ""]);
+                               "--x-scale", ""]);
         assert!(cands.iter().any(|c| c == "linear"));
         assert!(cands.iter().any(|c| c == "log"));
     }

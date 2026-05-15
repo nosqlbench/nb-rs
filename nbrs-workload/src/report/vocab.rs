@@ -290,6 +290,15 @@ pub const ALL_DIRECTIVES: &[Directive] = &[
         repeatable: false,
     },
     Directive {
+        cli_flag: "--scale",
+        yaml_directive: "scale",
+        yaml_form: YamlForm::Equals,
+        applies_to: KindMask::PLOT,
+        target: DirectiveTarget::StyleField,
+        value: ValueProvider::Number,
+        repeatable: false,
+    },
+    Directive {
         cli_flag: "--marker",
         yaml_directive: "marker",
         yaml_form: YamlForm::Equals,
@@ -402,8 +411,8 @@ pub const ALL_DIRECTIVES: &[Directive] = &[
         repeatable: false,
     },
     Directive {
-        cli_flag: "--xscale",
-        yaml_directive: "xscale",
+        cli_flag: "--x-scale",
+        yaml_directive: "x-scale",
         yaml_form: YamlForm::Equals,
         applies_to: KindMask::PLOT,
         target: DirectiveTarget::Body,
@@ -411,8 +420,8 @@ pub const ALL_DIRECTIVES: &[Directive] = &[
         repeatable: false,
     },
     Directive {
-        cli_flag: "--yscale",
-        yaml_directive: "yscale",
+        cli_flag: "--y-scale",
+        yaml_directive: "y-scale",
         yaml_form: YamlForm::Equals,
         applies_to: KindMask::PLOT,
         target: DirectiveTarget::Body,
@@ -510,8 +519,8 @@ mod tests {
             .map(|d| d.cli_flag).collect();
         assert!(plot.contains(&"--xlabel"));
         assert!(plot.contains(&"--ylabel"));
-        assert!(plot.contains(&"--xscale"));
-        assert!(plot.contains(&"--yscale"));
+        assert!(plot.contains(&"--x-scale"));
+        assert!(plot.contains(&"--y-scale"));
         assert!(plot.contains(&"--marker"));
         assert!(plot.contains(&"--line"));
     }
@@ -522,8 +531,8 @@ mod tests {
             .map(|d| d.cli_flag).collect();
         assert!(!table.contains(&"--xlabel"));
         assert!(!table.contains(&"--ylabel"));
-        assert!(!table.contains(&"--xscale"));
-        assert!(!table.contains(&"--yscale"));
+        assert!(!table.contains(&"--x-scale"));
+        assert!(!table.contains(&"--y-scale"));
         assert!(!table.contains(&"--marker"));
         assert!(!table.contains(&"--line"));
         assert!(!table.contains(&"--width"));

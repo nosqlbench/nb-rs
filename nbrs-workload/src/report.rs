@@ -563,12 +563,25 @@ fn parse_group(
             match kind {
                 Kind::Plot | Kind::Table => {
                     let mut tokens = rest.splitn(2, char::is_whitespace);
-                    let item_name = tokens.next()
+                    let raw_item_name = tokens.next()
                         .filter(|s| !s.is_empty())
                         .ok_or_else(|| format!(
                             "report.{name}:{line_no}: `{}` must be followed by a name",
                             kind.as_str()
                         ))?;
+                    // Allow trailing `:` on the block header
+                    // (`plot recall_vs_qps:`) for visual parity with
+                    // the body's `name: value` directives. The
+                    // colon is a delimiter — strip it before the
+                    // reserved-keyword check so `plot text:` still
+                    // sees the name as `text`.
+                    let item_name = raw_item_name.strip_suffix(':').unwrap_or(raw_item_name);
+                    if item_name.is_empty() {
+                        return Err(format!(
+                            "report.{name}:{line_no}: `{}` must be followed by a name",
+                            kind.as_str()
+                        ));
+                    }
                     if ALL_RESERVED_DIRECTIVES.contains(&item_name) {
                         return Err(format!(
                             "report.{name}:{line_no}: item name '{item_name}' \
@@ -583,17 +596,59 @@ fn parse_group(
                     current = Some(p);
                 }
                 Kind::Text => {
-                    // `text <body>` — anonymous markdown prose.
-                    // Auto-name globally so the persistence
-                    // round-trip keeps unique `report.<name>`
-                    // keys; body is the remainder of this line
-                    // plus continuation lines until the next
-                    // kind keyword.
-                    *text_counter += 1;
-                    let auto_name = format!("text_{:03}", *text_counter);
+                    // Three surface forms for a `text` block:
+                    //   text <body>                              — anonymous, body on this line
+                    //   text <name>[:]                           — named, body on continuation lines
+                    //   text <name> as "<label>"[:]              — named + alias for the markdown heading
+                    //
+                    // The trailing `:` (per the new uniform
+                    // `name: value` style) is decorative and
+                    // gets stripped before the name is captured.
+                    // A bare `text` with no first token degrades
+                    // to the anonymous auto-name form, preserving
+                    // the legacy single-line shape.
+                    let rest = rest.trim();
+                    // Strip the trailing block-header colon from
+                    // the WHOLE line before tokenising, so it
+                    // doesn't get sucked into the `as "..."`
+                    // alias as `"...":`.
+                    let body = rest.strip_suffix(':').unwrap_or(rest).trim_end();
+                    let header_has_colon = body.len() < rest.len();
+                    let mut tokens = body.splitn(2, char::is_whitespace);
+                    let first = tokens.next().unwrap_or("").trim();
+                    let after = tokens.next().unwrap_or("").trim();
+                    // Decide between named and anonymous. A `text`
+                    // block is named only when the author opted in
+                    // with a positive signal:
+                    //   - a trailing `:` on the header line, or
+                    //   - an `as "<label>"` clause.
+                    // A bare `text <word>` line stays anonymous —
+                    // it's the legacy "single-line text body"
+                    // shape (preserves `text First` / `text Second`
+                    // auto-numbering tests + workloads in the wild).
+                    let has_as_alias = strip_directive_keyword(after, "as").is_some();
+                    let looks_named = !first.is_empty()
+                        && is_bare_text_name(first)
+                        && (header_has_colon || has_as_alias);
+                    let (item_name, alias) = if looks_named {
+                        let alias = strip_directive_keyword(after, "as")
+                            .map(parse_quoted_or_bare);
+                        (first.to_string(), alias)
+                    } else {
+                        // Anonymous — auto-name globally so the
+                        // persistence round-trip keeps unique
+                        // `report.<name>` keys.
+                        *text_counter += 1;
+                        let auto = format!("text_{:03}", *text_counter);
+                        (auto, None)
+                    };
                     let mut p = PartialItem::new(
-                        Kind::Text, &auto_name, name.to_string(), line_no);
-                    if !rest.trim().is_empty() {
+                        Kind::Text, &item_name, name.to_string(), line_no);
+                    if let Some(label) = alias {
+                        p.directives.push(format!("label {label}"));
+                    } else if !looks_named && !rest.is_empty() {
+                        // Anonymous: keep the original-line body
+                        // as a directive (legacy shape).
                         p.directives.push(rest.to_string());
                     }
                     current = Some(p);
@@ -879,6 +934,20 @@ fn strip_kind_keyword(line: &str) -> Option<(Kind, &str)> {
         }
     }
     None
+}
+
+/// `true` when `s` is a bare identifier-shaped token suitable to
+/// use as the name of a `text <name>` block — `[A-Za-z_][A-Za-z0-9_-]*`.
+/// Falls back to anonymous-text auto-naming when the first token
+/// has whitespace, punctuation, or starts with a digit; that's
+/// the legacy single-line `text <body>` shape.
+fn is_bare_text_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 fn parse_quoted_or_bare(s: &str) -> String {
