@@ -1216,6 +1216,13 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     // phases as grouped.
                     collect_grouped_phases(children, in_group, out);
                 }
+                nbrs_workload::model::ScenarioNode::Bindings { children, .. } => {
+                    // Scenario-tree `bindings:` (and the `set:`
+                    // sugar that lowers to it) is transparent
+                    // for grouping — it doesn't introduce
+                    // iteration. Pass `in_group` through.
+                    collect_grouped_phases(children, in_group, out);
+                }
             }
         }
     }
@@ -1591,7 +1598,15 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             /// emit no install spec; the closure-lifetime
             /// kernel reference is the parent's by walker
             /// fall-through.
-            PhaseBindings {
+            /// Phase-scope kernel install for phases declaring
+            /// their own `bindings:` block (and no `for_each:` —
+            /// that case is owned by the for_each install spec
+            /// at the same node). Also covers scenario-tree
+            /// `bindings:` nodes (and the `set:` sugar that
+            /// lowers to them) — the synthesizer is identical
+            /// for both: parent-cascaded externs + the body's
+            /// authored matter.
+            Bindings {
                 idx: crate::scope_tree::ScopeNodeIdx,
                 bindings: nbrs_workload::model::BindingsDef,
             },
@@ -1687,7 +1702,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                             phase_bindings: phase.bindings.clone(),
                         })
                     } else if !phase.bindings.is_empty() {
-                        Some(InstallSpec::PhaseBindings {
+                        Some(InstallSpec::Bindings {
                             idx,
                             bindings: phase.bindings.clone(),
                         })
@@ -1733,6 +1748,26 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         .cloned()
                         .map(|op| InstallSpec::OpTemplate { idx, op })
                 }
+                crate::scope_tree::ScopeKind::Bindings { source } => {
+                    // Scenario-tree `bindings:` block (also the
+                    // canonical lowered form of `set:` sugar)
+                    // installs through the same synthesizer
+                    // phases use for their own `bindings:`. The
+                    // body source compiles into a scope kernel
+                    // that publishes its `final`/`init`/cycle
+                    // bindings as outputs; descendants read
+                    // those through the canonical scope chain
+                    // (no HashMap merges, no side-channel
+                    // resolvers). Shadowing of upstream names is
+                    // enforced by the local-final transit-
+                    // suppression rule in
+                    // `materialize_wiring_from_outer` — uniform
+                    // with every other scope.
+                    Some(InstallSpec::Bindings {
+                        idx,
+                        bindings: nbrs_workload::model::BindingsDef::GkSource(source.clone()),
+                    })
+                }
                 _ => None,
             })
             .collect();
@@ -1742,7 +1777,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                 InstallSpec::ForComprehension { idx, .. } => *idx,
                 InstallSpec::DoLoop { idx, .. } => *idx,
                 InstallSpec::OpTemplate { idx, .. } => *idx,
-                InstallSpec::PhaseBindings { idx, .. } => *idx,
+                InstallSpec::Bindings { idx, .. } => *idx,
             };
             // Nearest installed ancestor — skips Scenario /
             // IncludedScenario nodes that don't install kernels
@@ -1829,16 +1864,20 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         &context,
                     )
                 }
-                InstallSpec::PhaseBindings { bindings, .. } => {
-                    // SRD-13d Phase 9 — synthesize the phase-
-                    // scope kernel from the phase's `bindings:`
-                    // block, layered over the parent. Phase
-                    // outputs (e.g. `load`, `latency_curve`)
-                    // appear in the phase kernel's manifest so
-                    // descendant op-template scopes can extern
-                    // them through the standard cascade. No
-                    // legacy fallback needed — the GK chain is
-                    // the single resolution surface.
+                InstallSpec::Bindings { bindings, .. } => {
+                    // Single install path for both phase-level
+                    // `bindings:` and scenario-tree-level
+                    // `bindings:` (including the `set:` sugar
+                    // form that lowers to it). The synthesizer
+                    // cascades workload params + parent
+                    // outputs/inputs as externs and appends the
+                    // body verbatim; GK handles workload-param
+                    // interpolation and expression evaluation
+                    // at compile time. Lexical shadowing of an
+                    // upstream `final NAME` by the body's own
+                    // `final NAME := …` is enforced by the
+                    // local-final transit-suppression rule in
+                    // `materialize_wiring_from_outer`.
                     crate::scope::build_phase_scope_kernel(
                         &bindings,
                         &parent_manifest,
@@ -3150,6 +3189,24 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
                 nbrs_workload::model::ScenarioNode::IncludedScenario { children, .. } => {
                     scan_scenario_nodes(children, refs);
                 }
+                nbrs_workload::model::ScenarioNode::Bindings { source, children } => {
+                    // Scenario-tree `bindings:` (and the `set:`
+                    // sugar form) carries GK matter text. Scan
+                    // the body for `{name}` placeholders and
+                    // bare identifiers and route through
+                    // `runtime_only_placeholders` so a param
+                    // referenced only by a bindings body still
+                    // counts as referenced, without tripping the
+                    // strict undeclared-placeholder guard (the
+                    // body is resolved at kernel build time,
+                    // not at op-template substitution).
+                    let mut deferred = ParamRefs::default();
+                    scan_param_refs(source, &mut deferred);
+                    refs.runtime_only_placeholders.extend(deferred.placeholders);
+                    refs.expression_idents.extend(deferred.expression_idents);
+                    refs.templates.extend(deferred.templates);
+                    scan_scenario_nodes(children, refs);
+                }
             }
         }
     }
@@ -3225,6 +3282,12 @@ fn collect_iter_vars_recursive(
             for child in children { collect_iter_vars_recursive(child, out); }
         }
         IncludedScenario { children, .. } => {
+            for child in children { collect_iter_vars_recursive(child, out); }
+        }
+        // Scenario-tree `bindings:` (and `set:` sugar) doesn't
+        // introduce an iter-var; it publishes a scope-local
+        // binding layer. Just walk children.
+        Bindings { children, .. } => {
             for child in children { collect_iter_vars_recursive(child, out); }
         }
     }
@@ -3706,6 +3769,22 @@ fn format_scenario_nodes(
             }
             IncludedScenario { name, children } => {
                 out.push_str(&format!("{indent}scenario '{name}'\n"));
+                format_scenario_nodes(children, phases, depth + 1, out);
+            }
+            Bindings { source, children } => {
+                // First non-empty line of the source as a one-
+                // line summary in the scenario-tree dump. Long
+                // bodies stay readable in the YAML; the
+                // hierarchical view just teases the binding.
+                let summary = source.lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .unwrap_or("");
+                if source.lines().filter(|l| !l.trim().is_empty()).count() > 1 {
+                    out.push_str(&format!("{indent}bindings: {summary} …\n"));
+                } else {
+                    out.push_str(&format!("{indent}bindings: {summary}\n"));
+                }
                 format_scenario_nodes(children, phases, depth + 1, out);
             }
         }

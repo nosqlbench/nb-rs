@@ -1856,7 +1856,7 @@ fn make_binder(cql_type: cass::ValueType) -> BinderFn {
                 let b = match value {
                     nbrs_variates::node::Value::Bool(v) => *v,
                     nbrs_variates::node::Value::U64(v) => *v != 0,
-                    nbrs_variates::node::Value::Str(s) => s == "true" || s == "1",
+                    nbrs_variates::node::Value::Str(s) => &**s == "true" || &**s == "1",
                     _ => false,
                 };
                 stmt.bind_bool(idx, b)?; Ok(())
@@ -1893,7 +1893,7 @@ fn make_binder(cql_type: cass::ValueType) -> BinderFn {
             Box::new(|stmt, idx, value| {
                 match value {
                     nbrs_variates::node::Value::Bytes(bytes) => {
-                        stmt.bind_bytes(idx, bytes.clone())?;
+                        stmt.bind_bytes(idx, bytes.to_vec())?;
                     }
                     _ => {
                         stmt.bind_string(idx, &value.to_display_string())?;

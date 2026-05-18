@@ -251,7 +251,7 @@ pub fn parse_list_with_types(text: &str) -> Vec<Value> {
             } else if s == "false" {
                 Value::Bool(false)
             } else {
-                Value::Str(s.to_string())
+                Value::Str(s.to_string().into())
             }
         })
         .collect()
@@ -1069,7 +1069,7 @@ fn parse_one_value(s: &str) -> Value {
     if let Ok(f) = s.parse::<f64>() { return Value::F64(f); }
     if s == "true"  { return Value::Bool(true); }
     if s == "false" { return Value::Bool(false); }
-    Value::Str(s.to_string())
+    Value::Str(s.to_string().into())
 }
 
 /// Bucket sequencer: round-robin from per-item buckets sized
@@ -1735,7 +1735,7 @@ mod tests {
             Value::U64(1),
             Value::F64(1.5),
             Value::Bool(true),
-            Value::Str("hello".to_string()),
+            Value::Str("hello".to_string().into()),
         ]);
     }
 
@@ -2265,7 +2265,7 @@ mod tests {
         // one from each remaining bucket. Total = 6.
         assert_eq!(v.len(), 6);
         let strs: Vec<&str> = v.iter().filter_map(|v| match v {
-            Value::Str(s) => Some(s.as_str()), _ => None,
+            Value::Str(s) => Some(&**s), _ => None,
         }).collect();
         // First tick: ann, scan, fetch (one from each).
         // Then ann (3 left), fetch (2 left). Next: ann, fetch.
@@ -2283,7 +2283,7 @@ mod tests {
     fn concat_seq_emits_contiguous_runs() {
         let v = evaluate_spec("concat_seq(\"2:warmup, 3:bench, 1:cooldown\")", &empty_kernel()).unwrap();
         let strs: Vec<String> = v.iter().filter_map(|v| match v {
-            Value::Str(s) => Some(s.clone()), _ => None,
+            Value::Str(s) => Some(s.to_string()), _ => None,
         }).collect();
         assert_eq!(strs, vec![
             "warmup", "warmup",
@@ -2298,7 +2298,7 @@ mod tests {
         // Total length 4. write should appear once,
         // somewhere in the middle (not bunched at edges).
         let strs: Vec<String> = v.iter().filter_map(|v| match v {
-            Value::Str(s) => Some(s.clone()), _ => None,
+            Value::Str(s) => Some(s.to_string()), _ => None,
         }).collect();
         assert_eq!(strs.len(), 4);
         let writes: Vec<usize> = strs.iter().enumerate()

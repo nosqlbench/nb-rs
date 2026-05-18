@@ -397,7 +397,7 @@ fn evaluate_default_expr(
         (Expr::IntLit(v, _), PortType::U64) => Ok(Value::U64(*v)),
         (Expr::IntLit(v, _), PortType::F64) => Ok(Value::F64(*v as f64)),
         (Expr::FloatLit(v, _), PortType::F64) => Ok(Value::F64(*v)),
-        (Expr::StringLit(s, _), PortType::Str) => Ok(Value::Str(s.clone())),
+        (Expr::StringLit(s, _), PortType::Str) => Ok(Value::Str(s.as_str().into())),
         (Expr::Ident(name, _), PortType::Bool) if name == "true" => Ok(Value::Bool(true)),
         (Expr::Ident(name, _), PortType::Bool) if name == "false" => Ok(Value::Bool(false)),
         _ => Err(format!(
@@ -428,7 +428,7 @@ fn try_fold_shared_init(
     match expr {
         Expr::IntLit(v, _) => Some((Value::U64(*v), PortType::U64)),
         Expr::FloatLit(v, _) => Some((Value::F64(*v), PortType::F64)),
-        Expr::StringLit(s, _) => Some((Value::Str(s.clone()), PortType::Str)),
+        Expr::StringLit(s, _) => Some((Value::Str(s.as_str().into()), PortType::Str)),
         Expr::Ident(name, _) if name == "true" => Some((Value::Bool(true), PortType::Bool)),
         Expr::Ident(name, _) if name == "false" => Some((Value::Bool(false), PortType::Bool)),
         _ => None,

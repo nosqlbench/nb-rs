@@ -344,7 +344,7 @@ impl GkNode for SelectStr {
         let pick = if cond != 0 { &inputs[1] } else { &inputs[2] };
         outputs[0] = match pick {
             Value::Str(s) => Value::Str(s.clone()),
-            other => Value::Str(other.to_display_string()),
+            other => Value::Str(other.to_display_string().into()),
         };
     }
 }
@@ -579,7 +579,7 @@ mod tests {
 
     #[test]
     fn select_str_picks_by_cond() {
-        let mut out = vec![Value::Str(String::new())];
+        let mut out = vec![Value::Str(String::new().into())];
         SelectStr::new().eval(
             &[Value::U64(1), Value::Str("yes".into()), Value::Str("no".into())],
             &mut out,

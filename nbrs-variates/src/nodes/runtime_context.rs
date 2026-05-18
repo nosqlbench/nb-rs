@@ -394,7 +394,7 @@ impl GkNode for ControlStr {
                 .and_then(|g| g.find_control_erased_up(&self.name))
                 .map(|c| c.value_string()))
             .unwrap_or_default();
-        outputs[0] = Value::Str(s);
+        outputs[0] = Value::Str(s.into());
     }
 }
 
@@ -497,7 +497,7 @@ impl GkNode for PhaseName {
         let name = task_phase()
             .map(|s| s.to_string())
             .unwrap_or_default();
-        outputs[0] = Value::Str(name);
+        outputs[0] = Value::Str(name.into());
     }
 }
 

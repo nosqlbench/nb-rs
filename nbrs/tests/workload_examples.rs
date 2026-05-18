@@ -613,6 +613,186 @@ fn coverage_matrix_default_runs_full_matrix() {
     }
 }
 
+// ─── Scenario-tree `set:` (workload-param shadowing) ──────────
+//
+// Six scenarios in `scenario_param_overrides.yaml` exercise the
+// canonical surfaces of `set:`: bare-token shadow, multi-key
+// shadow, expression-with-interpolation value, set-wrapping-
+// for_each composition, and nested-set composition. All resolve
+// through the GK scope-chain (no HashMap merges, no synthesizer
+// side-channels). Failures surface as the wrong shadow being
+// applied or the shadow being silently dropped.
+
+#[test]
+fn set_baseline_picks_up_workload_param_defaults() {
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/scenario_param_overrides.yaml",
+        &["scenario=baseline"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+    assert!(stdout.contains("set/default/small"),
+        "baseline must show workload-root param values:\n{stdout}");
+}
+
+#[test]
+fn set_single_shadow_overrides_one_param() {
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/scenario_param_overrides.yaml",
+        &["scenario=single_shadow"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+    assert!(stdout.contains("set/verbose/small"),
+        "single_shadow must show mode=verbose with size unchanged:\n{stdout}");
+}
+
+#[test]
+fn set_multi_shadow_overrides_two_params_at_once() {
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/scenario_param_overrides.yaml",
+        &["scenario=multi_shadow"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+    assert!(stdout.contains("set/verbose/bulk"),
+        "multi_shadow must show both mode=verbose AND size=bulk:\n{stdout}");
+}
+
+#[test]
+fn set_value_supports_workload_param_interpolation() {
+    // `set: { mode: "mode_for_{size}" }` — the RHS goes through
+    // the same two-pass evaluator as for_each clause specs:
+    // workload-param `{size}` interpolation first, then GK
+    // const-expression eval. So `mode` ends up as the literal
+    // string "mode_for_small" (since size's workload-root
+    // default is "small").
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/scenario_param_overrides.yaml",
+        &["scenario=computed_value"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+    assert!(stdout.contains("set/mode_for_small/small"),
+        "computed_value must show interpolated mode:\n{stdout}");
+}
+
+#[test]
+fn set_composes_with_for_each_inside_phases() {
+    // The override (`mode=swept`) is in force for every
+    // iteration of the inner for_each (`n in 1,2,3`). Confirms
+    // scenario-tree bindings don't interfere with iter-var
+    // propagation: the iter-var's per-step kernel chains
+    // through the bindings scope, so descendants see both
+    // the iter-var AND the shadowed workload param.
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/scenario_param_overrides.yaml",
+        &["scenario=with_for_each"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+    for n in [1, 2, 3] {
+        let expected = format!("set/n={n}/swept");
+        assert!(stdout.contains(&expected),
+            "with_for_each iteration n={n} missing `{expected}`:\n{stdout}");
+    }
+}
+
+#[test]
+fn set_nesting_composes_overrides_across_layers() {
+    // Outer `set: { mode: outer }` wraps an inner
+    // `set: { size: inner_size }`. The inner scope sees BOTH
+    // overrides simultaneously: mode from the outer scope's
+    // `init mode = "outer"` (propagated through the chain as
+    // an init output) AND size from the inner scope's own
+    // `init size = "inner_size"`. Validates the local-
+    // final/init transit-suppression behaviour in
+    // materialize_wiring_from_outer: the outer's init must
+    // shadow workload-root's "default" cell so it reaches the
+    // inner phase via the chain.
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/scenario_param_overrides.yaml",
+        &["scenario=nested"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+    assert!(stdout.contains("set/outer/inner_size"),
+        "nested must show outer's mode AND inner's size:\n{stdout}");
+}
+
+#[test]
+fn bindings_long_form_equivalent_to_set_sugar() {
+    // Direct `bindings: | init NAME = …` body — the canonical
+    // form `set:` desugars to. Same shadowing behaviour,
+    // same chain semantics, just written explicitly so
+    // authors can mix in any other GK construct (derived
+    // bindings, shared cells, `final` for true compile-time
+    // constants). This test pins the parity with the
+    // sugared form.
+    let (stdout, stderr) = run_workload(
+        "examples/workloads/scenario_param_overrides.yaml",
+        &["scenario=long_form"],
+    );
+    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
+    assert!(stdout.contains("set/verbose/bulk"),
+        "long_form must shadow both mode and size:\n{stdout}");
+}
+
+#[test]
+fn empty_bindings_and_set_blocks_emit_no_op_warning() {
+    // A scenario-tree `set:` or `bindings:` block with no
+    // `phases:` body is structurally a no-op: the scope is
+    // entered and immediately exited with no descendants
+    // reading any of its declared names. The parser warns at
+    // workload-load time and keeps the scope node out of the
+    // resolved tree (almost always an author error — typed
+    // the override and forgot the body). Pin both forms here
+    // so a future refactor that silences the warning is
+    // caught.
+    let yaml = r#"
+params:
+  mode: default
+
+scenarios:
+  good:
+    - set: { mode: verbose }
+      phases:
+        - just_say
+  empty_set:
+    - set: { mode: verbose }
+  empty_bindings:
+    - bindings: |
+        init mode = "verbose"
+
+phases:
+  just_say:
+    adapter: stdout
+    cycles: 1
+    ops:
+      msg:
+        stmt: "mode={mode}"
+"#;
+    let (path, session) = write_inline_workload("empty_set_warning", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    // Pick the `good` scenario so the run succeeds — the
+    // warnings still fire because they're parser-level
+    // (emitted once per workload-load, regardless of which
+    // scenario the operator picked).
+    cmd.arg("scenario=good");
+    let output = cmd.output().expect("failed to run nbrs");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    assert!(stderr.contains("`set:` block (overriding [\"mode\"])"),
+        "empty set: must emit the no-op warning naming the \
+         overridden keys. stderr:\n{stderr}");
+    assert!(stderr.contains("scenario-tree `bindings:` block has no"),
+        "empty bindings: must emit the no-op warning. stderr:\n{stderr}");
+
+    // The `good` scenario still completes and substitutes
+    // mode correctly — the empty blocks are warnings, not
+    // errors, and they don't poison the run.
+    assert!(stderr.contains("all phases complete"),
+        "good scenario must still complete. stderr:\n{stderr}");
+    assert!(stdout.contains("mode=verbose"),
+        "good scenario must still produce mode=verbose. stdout:\n{stdout}");
+}
+
 #[test]
 fn json_shaped_workload_param_values_round_trip() {
     // Workload params whose values are JSON-shaped or

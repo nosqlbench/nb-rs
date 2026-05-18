@@ -129,24 +129,52 @@ by the caller.
 ### Inlined constant (compile-time fold)
 
 When the outer wire's value is statically known (literal RHS,
-folded final bindings, workload params), the matter interpreter
-*inlines the value into the inner program* as a `final` constant.
-No cell, no slot, no valid bit — the value is part of the inner
-kernel's compiled artifact. Reads are direct constant lookups.
+folded final bindings) and no intermediate scope might
+legitimately want to *shadow* it (the bindings's lexical layer
+in SRD-18), the matter interpreter *inlines the value into the
+inner program* as a `final` constant. No cell, no slot, no
+valid bit — the value is part of the inner kernel's compiled
+artifact. Reads are direct constant lookups.
 
 This is the materialization for:
 
-- Workload parameters (root-level context wires; literal RHS).
-- Outer `final X := <literal>` declarations.
+- Author-declared workload `bindings: | final X := <literal>`
+  where the author asserts compile-time const semantics.
+- Outer `final X := <literal>` declarations from any scope
+  whose chain-position is known not to be a shadow site.
 - Folded init bindings whose value resolved at compile time.
 
-This is what the *original* op-template synthesizer's per-name
-workload-param loop emitted (`final X := <literal>` on the inner
-program). The unconditional cascade that emitted `extern X: type`
-for non-body-referenced params was wrong: it forced a runtime
-input slot instead of a folded constant. Workload params are
-root-level context — they belong on every scope's program as
-folded constants, full stop.
+**Workload parameters use the chain-wired form instead.** A
+separate **params-kernel** sits at the root of the chain
+(below workload-root) and holds one `final NAME := <literal>`
+per workload param. The workload-root program emits
+`extern NAME: T` for each param and is marked
+`inherited_outputs` for those names so they cascade through as
+auto-passthrough slots without being treated as workload-root's
+own iteration coordinates. Every descendant scope (phase, op-
+template, comprehension, do-loop, scenario-tree bindings)
+likewise externs them. The value flows from the params-kernel
+through each scope's input-slot wiring via
+`materialize_wiring_from_outer`.
+
+The motivation for the indirection is **lexical shadowing**: a
+scenario-tree `bindings:` (or its `set:` sugar form) needs to
+be able to redeclare a workload-param name for its subtree
+without rewriting the workload-root program. With the params-
+kernel design, the SetParam scope sits as a lexical layer
+between params-kernel and any descendant, its local
+`init NAME = <override>` shadows the chain-cascaded value, and
+descendants resolve NAME via the standard `extern NAME` lookup
+through the chain. Without the indirection, the workload-root's
+folded `final NAME := <literal>` would short-circuit lookup
+via get_constant before the chain wiring is consulted, and the
+override would be silently masked.
+
+A previous design baked `final NAME := <literal>` into the
+workload-root program for every workload param, which works
+for the common case but makes scenario-tree shadowing
+unimplementable; the current design is a deliberate trade-off
+in favor of the more general lexical-scope semantics.
 
 ### Value-only shared cell with valid bit
 
@@ -201,6 +229,80 @@ accordingly. This:
 - Lets the same wire's materialization change (literal →
   computed) without touching consumers — only the matter and
   interpreter change.
+
+### Local-authoritative shadow (transit suppression)
+
+When an inner scope declares `final NAME := …` or
+`init NAME = …` for a name that is *also* exported by an outer
+scope in the chain (as a folded constant or a passthrough
+output), the inner declaration is the new authoritative writer
+for that name over its subtree. The chain must not carry the
+upstream value past this scope, or descendants would read it
+instead of the local declaration.
+
+The materialize step enforces this through **transit
+suppression**: during step 1 (cell cascade), any shared cell
+visible at the outer scope whose name matches a local
+final/init output on `self` is dropped on the floor — not
+attached to a self slot, not transit-forwarded to descendants.
+Step 2's value-copy path then runs normally and copies the
+outer's view via `self.lookup(name)` into the self slot
+(for non-shadow names) or skips the name entirely (for
+shadow names, because `self`'s own folded buffer / init
+binding owns it).
+
+This is the same mechanism every scope-tree node uses —
+phases, op-templates, comprehensions, do-loops, scenario-tree
+bindings. The synthesizer doesn't need to coordinate; the
+materializer enforces the invariant uniformly. The result is
+standard lexical-scope shadowing: the closest declaration
+wins, transit cells stop at the first redeclaration, and the
+chain remains self-consistent.
+
+This is the mechanism that makes scenario-tree
+`bindings:` / `set:` actually shadow workload params — see
+SRD-18 §"bindings: (scenario level) and the set: sugar form"
+for the surface, this section for the underlying rule.
+
+### Value-clone economy on the chain
+
+When materialize-wiring value-copies an outer scope's output
+into an inner scope's input slot (the "no cell, plain
+passthrough" path), the cost depends on which `Value` variant
+the chain is carrying. Every non-primitive variant is Arc-
+backed:
+
+- `Str(Arc<str>)`
+- `Bytes(Arc<[u8]>)`
+- `Json(Arc<serde_json::Value>)`
+- `VecF32(SliceArc<f32>)` / `VecI32(SliceArc<i32>)`
+- `Handle(Arc<dyn Any + Send + Sync>)`
+
+All clone via `Arc::clone` — one atomic increment, no heap
+allocation. Primitive variants (U64, F64, Bool) memcpy.
+
+For per-cycle reads from the input slot via `read_input`
+(`engines.rs::EngineCore::read_input`), the same economy
+applies: the slot's stored `Value` is cloned to hand back to
+the caller. A workload referencing the same `final` / `init`
+wire across 30k cycles/sec produces ~30k atomic increments
+and zero heap allocations on that wire, regardless of the
+variant carried. The implementation aligns with what the
+grammar says: declarations signaling shareability map to
+types that clone cheaply.
+
+The Json variant being Arc-backed matters specifically for
+adapter result-body capture paths: when an op produces a row-
+shaped JSON body and downstream nodes extract multiple
+columns from it (`body_column_i32`, `body_column_str`, …),
+each consumer reads the body wire per cycle. Pre-Arc that was
+one full deep-clone of the JSON tree per column per cycle;
+post-Arc it's one atomic increment. The two consumers that
+need an owned `serde_json::Value` — adapters that mutate the
+body before serializing, validation paths that walk and
+transform — explicitly deep-clone via `(*v).clone()` at the
+consume site (`Value::to_json_value` does this for the
+`Json(...)` variant).
 
 ---
 

@@ -1,0 +1,137 @@
+# Copyright 2024-2026 Jonathan Shook
+# SPDX-License-Identifier: Apache-2.0
+#
+# scenario_param_overrides.yaml
+#
+# Demonstrates scenario-tree-level bindings — the canonical
+# mechanism for publishing a scope-local layer of bound names
+# over any subtree. Authors can write the full form (`bindings:`,
+# carrying arbitrary GK matter) or the convenience sugar (`set:`,
+# desugared to a `bindings:` block of `init NAME = <value>`
+# lines).
+#
+# Why this exists
+# ---------------
+# Without scenario-tree bindings, contextualising a value to one
+# scenario means either (a) duplicating the phase tree and
+# inlining the literal, (b) inserting a one-element `for_each`
+# whose iter-var collides with the workload-param surface, or
+# (c) relying on the operator passing the right `name=value` on
+# the CLI for every variant. Each of those is a way to get a
+# downstream bug — the same operator typing two different
+# things and expecting them to stay correlated.
+#
+# `set:` and `bindings:` both solve this through canonical GK
+# chain plumbing: the scope-tree node installs a kernel that
+# publishes its bindings as outputs, descendants resolve names
+# through the standard chain-lookup, and lexical shadowing is
+# enforced by the local-final/init transit-suppression rule in
+# `materialize_wiring_from_outer`.
+#
+# Semantics
+# ---------
+# - `set: { name: value }` is parser sugar that emits an
+#   `init NAME = <gk-literal>` body and produces a `Bindings`
+#   scope-tree node. The `init` modifier means the RHS
+#   evaluates once at scope-init, AFTER materialize-wiring has
+#   populated extern slots — so `{name}` interpolation inside
+#   string values resolves through the in-scope chain.
+# - `bindings: |` lets authors write GK matter directly when
+#   they need beyond `init NAME = <value>` (e.g. derived
+#   bindings, shared cells, or `final` const-folded values).
+# - Multiple keys in one `set:` map produce multiple `init`
+#   lines in the same source body — declaration order
+#   determines shadowing on collision.
+# - Shadowing is uniform with phase-level `bindings:`: a local
+#   `final` or `init` for NAME shadows any upstream chain value
+#   for NAME over this node's `phases:` subtree.
+
+params:
+  mode: default
+  size: small
+
+scenarios:
+
+  # 1. Baseline. No shadowing — the op-template sees the
+  #    workload-root values directly.
+  baseline:
+    - announce
+
+  # 2. Single shadow. `mode` is overridden over the inner
+  #    `phases:` subtree; `size` keeps its workload-root
+  #    default. Bare tokens (no quotes) are emitted as
+  #    quoted GK string literals.
+  single_shadow:
+    - set: { mode: verbose }
+      phases:
+        - announce
+
+  # 3. Multi-key shadow. Multiple key-value pairs in one
+  #    map produce sibling `init` lines in one source body.
+  #    Both `mode` and `size` are overridden together.
+  multi_shadow:
+    - set: { mode: verbose, size: bulk }
+      phases:
+        - announce
+
+  # 4. Expression value. The value goes through GK's
+  #    string-interpolation surface — `"mode_for_{size}"`
+  #    desugars to `printf("mode_for_{}", size)` at compile
+  #    time, evaluated at scope-init when `size` is wired
+  #    through the chain.
+  computed_value:
+    - set: { mode: "mode_for_{size}" }
+      phases:
+        - announce
+
+  # 5. Set + for_each. The override coexists with an
+  #    iteration variable — every iteration of `n` runs
+  #    under `mode=swept`. Confirms scenario-tree bindings
+  #    don't interfere with iter-var binding.
+  with_for_each:
+    - set: { mode: swept }
+      phases:
+        - for_each: "n in 1,2,3"
+          phases:
+            - announce_with_n
+
+  # 6. Nested scenario-tree bindings. The outer block's
+  #    override is in force across the inner block's
+  #    subtree too; the inner block adds its own override
+  #    on top.
+  nested:
+    - set: { mode: outer }
+      phases:
+        - set: { size: inner_size }
+          phases:
+            - announce
+
+  # 7. Long-form `bindings:` block. Equivalent to the
+  #    multi-key set above, but written as direct GK matter
+  #    — useful when the body needs a feature `set:`'s
+  #    sugar doesn't cover (derived bindings, shared cells,
+  #    explicit `final` for true compile-time constants).
+  long_form:
+    - bindings: |
+        init mode = "verbose"
+        init size = "bulk"
+      phases:
+        - announce
+
+phases:
+
+  announce:
+    adapter: stdout
+    cycles: 1
+    concurrency: 1
+    ops:
+      msg:
+        stmt: "set/{mode}/{size}"
+
+  announce_with_n:
+    adapter: stdout
+    cycles: 1
+    concurrency: 1
+    ops:
+      msg:
+        stmt: "set/n={n}/{mode}"

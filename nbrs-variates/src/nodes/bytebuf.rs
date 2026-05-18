@@ -47,7 +47,7 @@ impl U64ToBytes {
 impl GkNode for U64ToBytes {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Bytes(inputs[0].as_u64().to_le_bytes().to_vec());
+        outputs[0] = Value::Bytes(inputs[0].as_u64().to_le_bytes().to_vec().into());
     }
 }
 
@@ -87,7 +87,7 @@ impl GkNode for BytesFromHash {
             let take = (self.size - result.len()).min(8);
             result.extend_from_slice(&h.to_le_bytes()[..take]);
         }
-        outputs[0] = Value::Bytes(result);
+        outputs[0] = Value::Bytes(result.into());
     }
 }
 
@@ -161,7 +161,7 @@ impl GkNode for ByteImageExtract {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let slice = self.image.extract(inputs[0].as_u64(), self.slice_size);
-        outputs[0] = Value::Bytes(slice.to_vec());
+        outputs[0] = Value::Bytes(slice.to_vec().into());
     }
 }
 
@@ -262,7 +262,7 @@ impl GkNode for CharImageExtract {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let text = self.image.extract(inputs[0].as_u64(), self.slice_size);
-        outputs[0] = Value::Str(text.to_string());
+        outputs[0] = Value::Str(text.to_string().into());
     }
 }
 
@@ -299,7 +299,7 @@ impl GkNode for ByteSlice {
         let bytes = inputs[0].as_bytes();
         let end = (self.offset + self.length).min(bytes.len());
         let start = self.offset.min(end);
-        outputs[0] = Value::Bytes(bytes[start..end].to_vec());
+        outputs[0] = Value::Bytes(bytes[start..end].to_vec().into());
     }
 }
 
@@ -332,7 +332,7 @@ impl GkNode for ToHex {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let hex: String = inputs[0].as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-        outputs[0] = Value::Str(hex);
+        outputs[0] = Value::Str(hex.into());
     }
 }
 
@@ -369,7 +369,7 @@ impl GkNode for FromHex {
             .step_by(2)
             .filter_map(|i| s.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
             .collect();
-        outputs[0] = Value::Bytes(bytes);
+        outputs[0] = Value::Bytes(bytes.into());
     }
 }
 
@@ -553,7 +553,7 @@ mod tests {
     fn byte_slice_basic() {
         let node = ByteSlice::new(2, 3);
         let mut out = [Value::None];
-        node.eval(&[Value::Bytes(vec![10, 20, 30, 40, 50])], &mut out);
+        node.eval(&[Value::Bytes(vec![10u8, 20, 30, 40, 50].into())], &mut out[..]);
         assert_eq!(out[0].as_bytes(), &[30, 40, 50]);
     }
 
@@ -564,7 +564,7 @@ mod tests {
         let mut mid = [Value::None];
         let mut out = [Value::None];
         let input = vec![0xDE, 0xAD, 0xBE, 0xEF];
-        to.eval(&[Value::Bytes(input.clone())], &mut mid);
+        to.eval(&[Value::Bytes(input.clone().into())], &mut mid[..]);
         assert_eq!(mid[0].as_str(), "deadbeef");
         from.eval(&[mid[0].clone()], &mut out);
         assert_eq!(out[0].as_bytes(), &input);

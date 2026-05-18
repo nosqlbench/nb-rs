@@ -4,7 +4,7 @@
 //! JSON construction, serialization, and manipulation nodes.
 //!
 //! JSON is a first-class `Value` type in the GK. Nodes can produce
-//! and consume `Value::Json(serde_json::Value)` directly, avoiding
+//! and consume `Value::Json(std::sync::Arc::new(serde_json::Value))` directly, avoiding
 //! serialization/deserialization round-trips when passing structured
 //! data between nodes or to adapters that consume JSON natively.
 
@@ -59,7 +59,7 @@ impl GkNode for JsonObject {
         for (i, key) in self.keys.iter().enumerate() {
             map.insert(key.clone(), value_to_json(&inputs[i]));
         }
-        outputs[0] = Value::Json(serde_json::Value::Object(map));
+        outputs[0] = Value::Json(std::sync::Arc::new(serde_json::Value::Object(map)));
     }
 }
 
@@ -91,7 +91,7 @@ impl GkNode for JsonArray {
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let arr: Vec<serde_json::Value> = inputs.iter().map(value_to_json).collect();
-        outputs[0] = Value::Json(serde_json::Value::Array(arr));
+        outputs[0] = Value::Json(std::sync::Arc::new(serde_json::Value::Array(arr)));
     }
 }
 
@@ -119,7 +119,7 @@ impl ToJson {
 impl GkNode for ToJson {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Json(value_to_json(&inputs[0]));
+        outputs[0] = Value::Json(std::sync::Arc::new(value_to_json(&inputs[0])));
     }
 }
 
@@ -161,7 +161,7 @@ impl GkNode for JsonMerge {
                 base.insert(k.clone(), v.clone());
             }
         }
-        outputs[0] = Value::Json(result);
+        outputs[0] = Value::Json(std::sync::Arc::new(result));
     }
 }
 
@@ -199,7 +199,7 @@ impl JsonToStr {
 impl GkNode for JsonToStr {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(inputs[0].as_json().to_string());
+        outputs[0] = Value::Str(inputs[0].as_json().to_string().into());
     }
 }
 
@@ -232,7 +232,7 @@ impl GkNode for JsonToStrPretty {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::Str(
-            serde_json::to_string_pretty(inputs[0].as_json()).unwrap_or_default()
+            serde_json::to_string_pretty(inputs[0].as_json()).unwrap_or_default().into()
         );
     }
 }
@@ -267,7 +267,7 @@ impl GkNode for StrToJson {
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let parsed = serde_json::from_str(inputs[0].as_str())
             .unwrap_or(serde_json::Value::Null);
-        outputs[0] = Value::Json(parsed);
+        outputs[0] = Value::Json(std::sync::Arc::new(parsed));
     }
 }
 
@@ -306,7 +306,7 @@ impl GkNode for EscapeJson {
         let json_str = serde_json::to_string(inputs[0].as_str()).unwrap_or_default();
         // Remove leading and trailing quote
         let interior = &json_str[1..json_str.len() - 1];
-        outputs[0] = Value::Str(interior.to_string());
+        outputs[0] = Value::Str(interior.to_string().into());
     }
 }
 
@@ -340,9 +340,9 @@ impl GkNode for JsonField {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let val = inputs[0].as_json();
-        outputs[0] = Value::Json(
+        outputs[0] = Value::Json(std::sync::Arc::new(
             val.get(&self.key).cloned().unwrap_or(serde_json::Value::Null)
-        );
+        ));
     }
 }
 
@@ -355,12 +355,12 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::U64(n) => json!(*n),
         Value::F64(n) => json!(*n),
         Value::Bool(b) => json!(*b),
-        Value::Str(s) => json!(s),
+        Value::Str(s) => json!(&**s),
         Value::Bytes(b) => {
             use base64::Engine;
             json!(base64::engine::general_purpose::STANDARD.encode(b))
         }
-        Value::Json(j) => j.clone(),
+        Value::Json(j) => (**j).clone(),
         Value::Ext(v) => v.to_json_value(),
         Value::Handle(_) => serde_json::Value::Null,
         Value::VecF32(arc) => serde_json::Value::Array(
@@ -429,7 +429,7 @@ impl GkNode for JsonText {
             // value).
             other => other.to_display_string(),
         };
-        outputs[0] = Value::Str(text);
+        outputs[0] = Value::Str(text.into());
     }
 }
 
@@ -762,7 +762,7 @@ impl GkNode for NormalizeVector {
         let s = inputs[0].as_str();
         let trimmed = s.trim();
         if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
-            outputs[0] = Value::Str(s.to_string());
+            outputs[0] = Value::Str(s.to_string().into());
             return;
         }
         let inner = &trimmed[1..trimmed.len()-1];
@@ -771,13 +771,13 @@ impl GkNode for NormalizeVector {
             .collect();
         let norm = values.iter().map(|v| v * v).sum::<f64>().sqrt();
         if norm < 1e-15 {
-            outputs[0] = Value::Str(s.to_string());
+            outputs[0] = Value::Str(s.to_string().into());
             return;
         }
         let normalized: Vec<String> = values.iter()
             .map(|v| format!("{}", v / norm))
             .collect();
-        outputs[0] = Value::Str(format!("[{}]", normalized.join(",")));
+        outputs[0] = Value::Str(format!("[{}]", normalized.join(",")).into());
     }
 }
 
@@ -827,7 +827,7 @@ impl GkNode for RandomVector {
             let unit = (h as f64) / (u64::MAX as f64); // [0, 1)
             values.push(format!("{}", self.min + range * unit));
         }
-        outputs[0] = Value::Str(format!("[{}]", values.join(",")));
+        outputs[0] = Value::Str(format!("[{}]", values.join(",")).into());
     }
 }
 
@@ -904,12 +904,12 @@ impl GkNode for ArrayAt {
             let inner = &trimmed[1..trimmed.len() - 1];
             let elements: Vec<&str> = inner.split(',').map(|e| e.trim()).collect();
             if elements.is_empty() || (elements.len() == 1 && elements[0].is_empty()) {
-                outputs[0] = Value::Str(String::new());
+                outputs[0] = Value::Str(String::new().into());
             } else {
-                outputs[0] = Value::Str(elements[idx % elements.len()].to_string());
+                outputs[0] = Value::Str(elements[idx % elements.len()].to_string().into());
             }
         } else {
-            outputs[0] = Value::Str(String::new());
+            outputs[0] = Value::Str(String::new().into());
         }
     }
 }
@@ -947,11 +947,11 @@ mod tests {
     #[test]
     fn body_column_i32_extracts_array_of_rows() {
         // Standard CQL SELECT shape: top-level array of row objects.
-        let body = Value::Json(serde_json::json!([
+        let body = Value::Json(std::sync::Arc::new(serde_json::json!([
             { "key": 4, "value": 0.5 },
             { "key": 17, "value": 0.4 },
             { "key": 42, "value": 0.3 },
-        ]));
+        ])));
         let node = BodyColumnI32::new("key");
         let mut out = [Value::None];
         node.eval(&[body], &mut out);
@@ -962,14 +962,14 @@ mod tests {
     #[test]
     fn body_column_i32_extracts_envelope_rows() {
         // Envelope shape: { "rows": [...] }.
-        let body = Value::Json(serde_json::json!({
+        let body = Value::Json(std::sync::Arc::new(serde_json::json!({
             "rows": [
                 { "id": 1 },
                 { "id": 7 },
                 { "id": 13 },
             ],
             "metadata": "ignored",
-        }));
+        })));
         let node = BodyColumnI32::new("id");
         let mut out = [Value::None];
         node.eval(&[body], &mut out);
@@ -980,12 +980,12 @@ mod tests {
     #[test]
     fn body_column_i32_skips_rows_missing_column() {
         // Robustness: rows without the column don't zero-fill.
-        let body = Value::Json(serde_json::json!([
+        let body = Value::Json(std::sync::Arc::new(serde_json::json!([
             { "key": 1 },
             { "other": 2 },     // skipped
             { "key": "not_an_int" },  // skipped
             { "key": 3 },
-        ]));
+        ])));
         let node = BodyColumnI32::new("key");
         let mut out = [Value::None];
         node.eval(&[body], &mut out);
@@ -997,10 +997,10 @@ mod tests {
     fn body_column_i32_string_numeric_parses() {
         // Stringified numbers parse — common for some adapters
         // that don't preserve native numeric typing.
-        let body = Value::Json(serde_json::json!([
+        let body = Value::Json(std::sync::Arc::new(serde_json::json!([
             { "key": "42" },
             { "key": "-7" },
-        ]));
+        ])));
         let node = BodyColumnI32::new("key");
         let mut out = [Value::None];
         node.eval(&[body], &mut out);
@@ -1010,7 +1010,7 @@ mod tests {
 
     #[test]
     fn body_column_i32_empty_body_produces_empty_vec() {
-        let body = Value::Json(serde_json::json!([]));
+        let body = Value::Json(std::sync::Arc::new(serde_json::json!([])));
         let node = BodyColumnI32::new("key");
         let mut out = [Value::None];
         node.eval(&[body], &mut out);
@@ -1038,7 +1038,7 @@ mod tests {
     /// `regex_match(json_text(body), "(?im)^…TABLE foo\(…")`.
     #[test]
     fn json_text_flattens_multirow_describe_for_regex() {
-        let body = Value::Json(serde_json::json!([
+        let body = Value::Json(std::sync::Arc::new(serde_json::json!([
             {
                 "keyspace_name": "system_views",
                 "type": "table",
@@ -1051,7 +1051,7 @@ mod tests {
                 "name": "indexes",
                 "create_statement": "CREATE VIRTUAL TABLE system_views.indexes (\n    keyspace_name text\n);"
             },
-        ]));
+        ])));
 
         let node = JsonText::new();
         let mut out = [Value::None];
@@ -1133,7 +1133,7 @@ mod tests {
     fn json_to_str_compact() {
         let node = JsonToStr::new();
         let mut out = [Value::None];
-        let input = Value::Json(json!({"a": 1, "b": "hello"}));
+        let input = Value::Json(std::sync::Arc::new(json!({"a": 1, "b": "hello"})));
         node.eval(&[input], &mut out);
         let s = out[0].as_str();
         assert!(s.contains("\"a\":1") || s.contains("\"a\": 1"));
@@ -1144,7 +1144,7 @@ mod tests {
     fn str_to_json_roundtrip() {
         let to_str = JsonToStr::new();
         let from_str = StrToJson::new();
-        let original = Value::Json(json!({"key": [1, 2, 3]}));
+        let original = Value::Json(std::sync::Arc::new(json!({"key": [1, 2, 3]})));
         let mut mid = [Value::None];
         let mut out = [Value::None];
         to_str.eval(&[original.clone()], &mut mid);
@@ -1167,8 +1167,8 @@ mod tests {
     fn json_merge_basic() {
         let node = JsonMerge::new();
         let mut out = [Value::None];
-        let left = Value::Json(json!({"a": 1, "b": 2}));
-        let right = Value::Json(json!({"b": 99, "c": 3}));
+        let left = Value::Json(std::sync::Arc::new(json!({"a": 1, "b": 2})));
+        let right = Value::Json(std::sync::Arc::new(json!({"b": 99, "c": 3})));
         node.eval(&[left, right], &mut out);
         let j = out[0].as_json();
         assert_eq!(j["a"], 1);
@@ -1180,7 +1180,7 @@ mod tests {
     fn json_field_basic() {
         let node = JsonField::new("name");
         let mut out = [Value::None];
-        node.eval(&[Value::Json(json!({"name": "Alice", "age": 30}))], &mut out);
+        node.eval(&[Value::Json(std::sync::Arc::new(json!({"name": "Alice", "age": 30})))], &mut out);
         assert_eq!(out[0].as_json(), &json!("Alice"));
     }
 
@@ -1188,7 +1188,7 @@ mod tests {
     fn json_field_missing() {
         let node = JsonField::new("missing");
         let mut out = [Value::None];
-        node.eval(&[Value::Json(json!({"name": "Alice"}))], &mut out);
+        node.eval(&[Value::Json(std::sync::Arc::new(json!({"name": "Alice"})))], &mut out);
         assert!(out[0].as_json().is_null());
     }
 
@@ -1204,7 +1204,7 @@ mod tests {
     fn json_pretty_print() {
         let node = JsonToStrPretty::new();
         let mut out = [Value::None];
-        node.eval(&[Value::Json(json!({"a": 1}))], &mut out);
+        node.eval(&[Value::Json(std::sync::Arc::new(json!({"a": 1})))], &mut out);
         let s = out[0].as_str();
         assert!(s.contains('\n'), "pretty print should have newlines");
     }

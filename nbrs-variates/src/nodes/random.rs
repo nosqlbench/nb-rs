@@ -156,7 +156,7 @@ impl GkNode for RandomBytes {
             let take = (self.size - buf.len()).min(8);
             buf.extend_from_slice(&next_u64().to_le_bytes()[..take]);
         }
-        outputs[0] = Value::Bytes(buf);
+        outputs[0] = Value::Bytes(buf.into());
     }
 }
 
@@ -193,7 +193,7 @@ impl GkNode for RandomString {
         let s: String = (0..self.length)
             .map(|_| self.chars[(next_u64() as usize) % self.chars.len()])
             .collect();
-        outputs[0] = Value::Str(s);
+        outputs[0] = Value::Str(s.into());
     }
 }
 
@@ -269,7 +269,7 @@ impl GkNode for HashedLoremExtract {
         // Align to char boundaries
         let start = LOREM_IPSUM.floor_char_boundary(offset);
         let end = LOREM_IPSUM.ceil_char_boundary(end);
-        outputs[0] = Value::Str(LOREM_IPSUM[start..end].to_string());
+        outputs[0] = Value::Str(LOREM_IPSUM[start..end].to_string().into());
     }
 }
 
@@ -317,7 +317,7 @@ impl GkNode for HashedLineToString {
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let h = inputs[0].as_u64();
         let idx = (h as usize) % self.lines.len();
-        outputs[0] = Value::Str(self.lines[idx].clone());
+        outputs[0] = Value::Str(self.lines[idx].clone().into());
     }
 }
 

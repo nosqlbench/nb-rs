@@ -406,7 +406,7 @@ impl GkNode for OneOf {
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let h = xxh3_64(&inputs[0].as_u64().to_le_bytes());
         let idx = (h % self.values.len() as u64) as usize;
-        outputs[0] = Value::Str(self.values[idx].clone());
+        outputs[0] = Value::Str(self.values[idx].clone().into());
     }
 }
 
@@ -504,7 +504,7 @@ impl GkNode for OneOfWeighted {
         };
         // Clamp to valid range (should not be needed, but defensive).
         let idx = idx.min(self.values.len() - 1);
-        outputs[0] = Value::Str(self.values[idx].clone());
+        outputs[0] = Value::Str(self.values[idx].clone().into());
     }
 }
 

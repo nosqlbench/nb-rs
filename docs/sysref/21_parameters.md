@@ -237,3 +237,60 @@ in a stmt field) are injected as standalone GK constant bindings
 (e.g., `dataset := "glove-25-angular"`) before compilation. This
 makes them available as normal GK outputs at cycle time, eliminating
 the need for a separate globals mechanism on `GkProgram`.
+
+---
+
+## Where workload-param values live in the kernel chain
+
+Workload params arrive as `(name → string)` pairs from the
+YAML `params:` block plus any CLI overrides. They are
+compiled into a dedicated **params-kernel** at the root of
+the scope chain:
+
+```text
+params-kernel    final dataset := "glove-25-angular"
+                 final dim     := 25                       ← folded constants
+                 final concurrency := "100"
+   ↓
+workload-root    extern dataset: String                    ← input slots,
+                 extern dim: u64                             wired from
+                 extern concurrency: String                  params-kernel
+                 …authored `bindings:` block here…
+   ↓
+phase / op-template / for_each / do-loop / bindings scopes
+                 extern dataset: String                    ← same cascade
+                 …each scope's own bindings here…            shape downstream
+```
+
+The params-kernel is the **sole authority** for workload-param
+values. Every descendant scope (workload-root, phase scopes,
+op-template scopes, for_each / do_loop / scenario-tree
+bindings scopes) emits `extern NAME: T` declarations for the
+params it references, and their values flow in through
+`materialize_wiring_from_outer`. Each scope-tree level can
+shadow a param locally by declaring `init NAME = <override>`
+or `final NAME := <override>` in its own body — the local-
+authoritative shadow rule in SRD-13f §"Local-authoritative
+shadow (transit suppression)" suppresses the upstream cell so
+descendants resolve to the local declaration.
+
+The workload-root program marks its workload-param `extern`
+declarations as `inherited_outputs` so they don't appear as
+the workload-root's own iteration coordinates — they're
+cascade-pass-throughs, not scope-defining vars. This matters
+for phase identity (the `phase_labels` string derived from
+`scope_coordinates()` shouldn't carry every workload param)
+and for the scene-tree presentation layer.
+
+### How `set:` / `bindings:` shadow workload params
+
+The shadowing mechanism uses the same machinery the chain
+already provides. A scenario-tree `set: { rerank_mode: pinned }`
+desugars to a `Bindings` scope-tree node carrying
+`init rerank_mode = "pinned"`. That scope's kernel installs as
+a regular child of the workload-root in the chain. Its local
+init binding produces an authoritative output for
+`rerank_mode`; the transit-suppression rule drops the
+workload-root's cell for `rerank_mode` so descendants picking
+up the cascade see the override, not the default. See SRD-18
+§"bindings: (scenario level) and the set: sugar form".

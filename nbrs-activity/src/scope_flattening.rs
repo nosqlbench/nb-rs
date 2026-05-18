@@ -152,6 +152,10 @@ fn scope_kind_gk_matter(
         | ScopeKind::DoWhile { .. }
         | ScopeKind::DoUntil { .. } => GkMatter::Definitions,
         ScopeKind::IncludedScenario { .. } => GkMatter::None,
+        // Scenario-tree-level `bindings:` (and the canonical
+        // lowered form of `set:`) install GK matter — same
+        // category as the iteration constructs.
+        ScopeKind::Bindings { .. } => GkMatter::Definitions,
     }
 }
 

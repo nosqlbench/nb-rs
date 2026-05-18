@@ -120,7 +120,7 @@ impl ToTimestamp {
 impl GkNode for ToTimestamp {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(epoch_ms_to_iso(inputs[0].as_u64()));
+        outputs[0] = Value::Str(epoch_ms_to_iso(inputs[0].as_u64()).into());
     }
 }
 

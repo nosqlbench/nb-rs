@@ -215,7 +215,7 @@ impl Env {
 impl GkNode for Env {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.value.clone());
+        outputs[0] = Value::Str(self.value.clone().into());
     }
 }
 
@@ -250,7 +250,7 @@ impl EnvOr {
 impl GkNode for EnvOr {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.value.clone());
+        outputs[0] = Value::Str(self.value.clone().into());
     }
 }
 
@@ -290,7 +290,7 @@ impl TmpDir {
 impl GkNode for TmpDir {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.value.clone());
+        outputs[0] = Value::Str(self.value.clone().into());
     }
 }
 

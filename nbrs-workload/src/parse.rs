@@ -366,6 +366,9 @@ fn collect_idempotent_under_do_loop(
             ScenarioNode::IncludedScenario { children, .. } => {
                 collect_idempotent_under_do_loop(children, in_do_loop, phases, out);
             }
+            ScenarioNode::Bindings { children, .. } => {
+                collect_idempotent_under_do_loop(children, in_do_loop, phases, out);
+            }
         }
     }
 }
@@ -647,6 +650,159 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                 vec![ScenarioNode::DoWhile { condition: cond.to_string(), counter, children }]
             } else if let Some(cond) = obj.get("do_until").and_then(|v| v.as_str()) {
                 vec![ScenarioNode::DoUntil { condition: cond.to_string(), counter, children }]
+            } else if let Some(bindings_val) = obj.get("bindings") {
+                // Scenario-tree-level `bindings:` — arbitrary GK
+                // matter that installs as a scope-tree layer over
+                // the parent. The source text is whatever the
+                // author wrote (interpretation happens at kernel
+                // build time via the canonical scope synthesizer).
+                let source = match bindings_val {
+                    JVal::String(s) => s.clone(),
+                    JVal::Object(map) => {
+                        // Map form: each `name: expr` produces
+                        // one `name := <expr>` line. The GK
+                        // compiler classifies the modifier from
+                        // any leading `final`/`init`/`shared`
+                        // keyword in `name`; the bare-name case
+                        // becomes a cycle binding.
+                        let mut out = String::new();
+                        for (name, value) in map {
+                            let v_text = match value {
+                                JVal::String(s) => s.clone(),
+                                JVal::Bool(b) => b.to_string(),
+                                JVal::Number(n) => n.to_string(),
+                                JVal::Null => String::new(),
+                                other => other.to_string(),
+                            };
+                            out.push_str(&format!("{name} := {v_text}\n"));
+                        }
+                        out
+                    }
+                    _ => String::new(),
+                };
+                if source.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    if children.is_empty() {
+                        eprintln!(
+                            "warning: scenario-tree `bindings:` block has no \
+                             `phases:` body — this is a no-op (the scope is \
+                             entered and immediately exited with no descendants \
+                             reading any of its declared names). If you meant \
+                             to publish these bindings to a subtree, add a \
+                             `phases:` block; if you meant to declare workload-\
+                             level bindings, move them to the top-level \
+                             `bindings:` field of the workload."
+                        );
+                    }
+                    vec![ScenarioNode::Bindings { source, children }]
+                }
+            } else if let Some(set_val) = obj.get("set") {
+                // `set: { name: value, ... }` — convenience sugar
+                // that desugars to a `Bindings` node carrying GK
+                // matter of the shape `final NAME := <gk-literal>`.
+                // The GK compiler handles workload-param
+                // interpolation, string-literal interpolation,
+                // and full const-expression evaluation at kernel
+                // build time, so this form composes with every
+                // other GK feature (no separate two-pass
+                // evaluator). The `Bindings` node carries the
+                // synthesized source; downstream code never sees
+                // a SetParam-specific shape.
+                //
+                // String shorthand `set: name=value` is also
+                // accepted for the single-override one-liner case.
+                //
+                // Map iteration order is preserved by serde_yaml
+                // (insertion order); declaration order wins on
+                // collision via the standard GK shadow semantics
+                // for the same source.
+                let pairs: Vec<(String, String)> = match set_val {
+                    JVal::Object(map) => map.iter()
+                        .map(|(k, v)| {
+                            let raw = match v {
+                                JVal::String(s) => s.clone(),
+                                JVal::Bool(b) => b.to_string(),
+                                JVal::Number(n) => n.to_string(),
+                                JVal::Null => String::new(),
+                                other => other.to_string(),
+                            };
+                            (k.clone(), raw)
+                        })
+                        .collect(),
+                    JVal::String(s) => {
+                        match s.split_once('=') {
+                            Some((k, v)) => vec![(k.trim().to_string(), v.trim().to_string())],
+                            None => {
+                                eprintln!(
+                                    "warning: scenario `set:` string form must be \
+                                     `name=value`, got `{s}` — ignoring"
+                                );
+                                Vec::new()
+                            }
+                        }
+                    }
+                    _ => Vec::new(),
+                };
+                if pairs.is_empty() {
+                    Vec::new()
+                } else if children.is_empty() {
+                    // Same no-op condition as the explicit
+                    // `bindings:` form: a `set:` with no
+                    // `phases:` body publishes overrides to
+                    // nothing. Almost certainly an author error.
+                    let names: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+                    eprintln!(
+                        "warning: scenario-tree `set:` block (overriding {:?}) \
+                         has no `phases:` body — this is a no-op. Add a `phases:` \
+                         block listing what the override applies to.",
+                        names
+                    );
+                    Vec::new()
+                } else {
+                    // Synthesize the GK source body. Each pair
+                    // becomes `init NAME := <gk-literal>` — `init`
+                    // (not `final`) because the RHS may reference
+                    // other in-scope names (`set: { mode:
+                    // "mode_for_{size}" }`) that materialize-
+                    // wiring resolves AT scope-init time. `final`
+                    // bindings are const-folded at compile,
+                    // before materialize-wiring runs, so they'd
+                    // see `size = None` and fold the printf to
+                    // the empty string. `init` evaluates exactly
+                    // once per scope activation, after wiring,
+                    // and is then fixed for the scope's lifetime
+                    // — the canonical "compute once from
+                    // resolved inputs, then constant" lifecycle
+                    // documented in SRD-11 §"Three Evaluation
+                    // Lifecycles".
+                    //
+                    // Literal-format rules:
+                    //   - numeric-parseable → bare (no quotes)
+                    //   - "true" / "false" → bare boolean
+                    //   - everything else → quoted GK string
+                    //     literal, with `\` / `"` escaped
+                    // GK's string-interpolation surface
+                    // (`"prefix {name}"`) handles `{name}`
+                    // references inside string values at kernel
+                    // build time (desugars to `printf`).
+                    let mut source = String::new();
+                    for (name, value) in &pairs {
+                        let trimmed = value.trim();
+                        let literal = if trimmed.parse::<u64>().is_ok()
+                            || trimmed.parse::<f64>().is_ok()
+                        {
+                            trimmed.to_string()
+                        } else if trimmed == "true" || trimmed == "false" {
+                            trimmed.to_string()
+                        } else {
+                            let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+                            format!("\"{escaped}\"")
+                        };
+                        source.push_str(&format!("init {name} = {literal}\n"));
+                    }
+                    vec![ScenarioNode::Bindings { source, children }]
+                }
             } else {
                 obj.iter().map(|(name, _cmd)| ScenarioNode::Phase(name.clone())).collect()
             }
@@ -753,6 +909,12 @@ pub fn resolve_scenario_includes(
                 Ok(ScenarioNode::DoUntil {
                     condition: condition.clone(),
                     counter: counter.clone(),
+                    children: resolve_nodes(children, input, out, stack)?,
+                })
+            }
+            ScenarioNode::Bindings { source, children } => {
+                Ok(ScenarioNode::Bindings {
+                    source: source.clone(),
                     children: resolve_nodes(children, input, out, stack)?,
                 })
             }

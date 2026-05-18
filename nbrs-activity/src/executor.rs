@@ -602,6 +602,41 @@ fn execute_node<'a>(
                     &format!("do_until {condition}"), depth);
                 r?;
             }
+            ScenarioNode::Bindings { source, children } => {
+                // Push the bindings scope's installed kernel as
+                // ctx.current_parent_kernel so descendants'
+                // workload-kernel rebuilds chain through this
+                // scope's local matter. Lexical shadowing of an
+                // upstream `final NAME` by this body's own
+                // `final NAME := …` is enforced by the local-
+                // final transit-suppression rule in
+                // `materialize_wiring_from_outer` — uniform with
+                // every other scope.
+                let scope_idx = ctx.scope_tree
+                    .find_bindings_scope(source)
+                    .ok_or_else(|| format!(
+                        "bindings scope: no matching scope-tree entry — \
+                         scope-tree/scenario-tree drift bug",
+                    ))?;
+                let installed = ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
+                    .cloned()
+                    .ok_or_else(|| format!(
+                        "bindings scope at index {scope_idx} has no installed \
+                         kernel — install-spec walker missed this node",
+                    ))?;
+                if !ctx.quiet() {
+                    let one_line = source.lines().map(str::trim)
+                        .find(|l| !l.is_empty()).unwrap_or("");
+                    crate::diag!(crate::observer::LogLevel::Debug,
+                        "bindings: {one_line} ({} children)",
+                        children.len());
+                }
+                let prior_parent = ctx.current_parent_kernel.take();
+                ctx.current_parent_kernel = Some(installed);
+                let res = execute_tree_at(ctx, children, depth + 1).await;
+                ctx.current_parent_kernel = prior_parent;
+                res?;
+            }
         }
         Ok(())
     })
@@ -2965,6 +3000,27 @@ fn pre_map_recursive(
                         tree.set_own_names(scope, own);
                     }
                 }
+                pre_map_recursive(
+                    children, phases, scope_tree, scope, parent_coords,
+                    effective_parent_kernel, &scope_path, tree, strict,
+                )?;
+            }
+            ScenarioNode::Bindings { source, children } => {
+                // Pre-map sees scenario-tree `bindings:` (also
+                // the lowered `set:` sugar form) as a
+                // transparent wrapper for tree-shape purposes —
+                // it's recorded as a path segment so the scene
+                // tree shows the structural intent, but no
+                // iteration happens at this level.
+                let summary = source.lines().map(str::trim)
+                    .find(|l| !l.is_empty()).unwrap_or("");
+                let mut scope_path = parent_path.to_vec();
+                scope_path.push(PathSegment::ScenarioInclude(
+                    format!("bindings:{summary}"),
+                ));
+                let scope = tree.push(parent, NodeKind::Scope,
+                    format!("bindings: {summary}"), "");
+                tree.set_yaml_path(scope, scope_path.clone());
                 pre_map_recursive(
                     children, phases, scope_tree, scope, parent_coords,
                     effective_parent_kernel, &scope_path, tree, strict,

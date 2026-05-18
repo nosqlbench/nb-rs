@@ -491,7 +491,7 @@ fn extern_default_string_literal() {
         extern name: String = "guest"
     "#).unwrap();
     match kernel.lookup("name").unwrap() {
-        Value::Str(s) => assert_eq!(s, "guest"),
+        Value::Str(s) => assert_eq!(&*s, "guest"),
         other => panic!("expected Str, got {other:?}"),
     }
 }

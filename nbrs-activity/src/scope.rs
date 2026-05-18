@@ -643,7 +643,7 @@ fn value_to_param_string(v: &nbrs_variates::node::Value) -> Option<String> {
         Value::U64(n) => Some(n.to_string()),
         Value::F64(n) => Some(n.to_string()),
         Value::Bool(b) => Some(b.to_string()),
-        Value::Str(s) => Some(s.clone()),
+        Value::Str(s) => Some(s.to_string()),
         _ => None,
     }
 }
@@ -928,8 +928,20 @@ pub fn build_phase_scope_kernel(
 
     // Cascade every workload param through this phase scope so
     // descendants see them via materialize_wiring_from_outer. Same shape as
-    // build_do_loop_scope_kernel.
+    // build_do_loop_scope_kernel — and same shadow-aware skip the
+    // parent-output cascade applies: if the body locally
+    // declares `final NAME := …` (or any other body-level
+    // assignment for `NAME`), the local declaration is the
+    // authoritative binding for this scope and emitting
+    // `extern NAME: T` alongside it would collide. The
+    // workload-param value still propagates because the
+    // local-final transit-suppression rule in
+    // `materialize_wiring_from_outer` keeps the chain consistent
+    // across this scope; descendants pick up `NAME` from this
+    // scope's local final via the standard extern-cascade.
+    let body_locally_declared = scan_locally_declared_idents(&body_text);
     for (name, value) in workload_params {
+        if body_locally_declared.contains(name) { continue; }
         let type_name = workload_param_type_name(value);
         source.push_str(&format!("extern {name}: {type_name}\n"));
         emitted.insert(name.clone());
@@ -2207,30 +2219,61 @@ pub fn build_scope(
         }
     }
 
-    // --- Step 4: Workload param expansion ---
+    // --- Step 4: Workload param cascade as extern slots ---
     //
-    // M3.6: Every workload param injects as a `final` binding,
-    // regardless of whether it's referenced in this specific
-    // scope's ops. The workload kernel becomes the single
-    // canonical home for workload params; descendant scopes
-    // auto-extern them via the manifest chain. Phase-level
-    // build_scope callers pass an empty `workload_params`
-    // (their workload params come via the parent-scope
-    // kernel's manifest, not local injection).
-    let defined = scope.defined_names(); // refresh after externs
+    // Workload params are not the workload-root's authority — the
+    // params-kernel sits one level above this scope and owns the
+    // `final NAME := <literal>` declarations. The workload-root
+    // program declares each param as `extern NAME: T`, and the
+    // materialize-wiring-from-outer step at kernel construction
+    // time copies the value out of the params-kernel's output
+    // into this scope's input slot. Lookup for a param at the
+    // workload-root then resolves via the input slot rather than
+    // an own-folded constant — which is precisely what makes a
+    // SetParam scope-tree node inserted between params-kernel
+    // and workload-root able to shadow the value: its own
+    // `final NAME := <override>` becomes the closer
+    // materialize-source. If we baked `final NAME := <literal>`
+    // here at the workload-root, that local constant would mask
+    // the input slot via the get_constant fast-path in
+    // GkKernel::lookup, and no scope-tree-level shadow could
+    // get through.
+    //
+    // Author-declared `final` in the workload's `bindings:`
+    // block is unaffected — that source goes through
+    // workload_level_gk ingestion in build_workload_root_kernel
+    // and keeps whatever modifier the author wrote. Only the
+    // auto-cascade of the workload `params:` block changes
+    // shape.
+    //
+    // Phase-level build_scope callers pass an empty
+    // `workload_params`; their workload params arrive via the
+    // parent-scope kernel's manifest auto-extern pass.
+    //
     // SRD-13f Push D: sort by name so program build order is
     // deterministic across processes. HashMap iteration is
-    // randomized per process (Rust default hasher); pre-Push-D
-    // this didn't show up because workload-level bindings
-    // reached the workload-root via op-source ingestion (parse
-    // order, deterministic). Post-Push-D workload_params is the
-    // direct injection path, so its order matters.
+    // randomized per process (Rust default hasher).
+    let defined = scope.defined_names(); // refresh after externs
     let mut params_sorted: Vec<(&String, &String)> = workload_params.iter().collect();
     params_sorted.sort_by(|a, b| a.0.cmp(b.0));
     for (name, value) in params_sorted {
-        if !defined.contains(name) {
-            scope.add_param_binding(name, value);
+        if defined.contains(name) {
+            // Author already declared `name` in the workload's
+            // own bindings block. Honor the author's declaration
+            // (it carries whatever modifier they wrote) and skip
+            // the auto-extern — declaring an extern with the
+            // same name as a local binding would be a compile
+            // error.
+            continue;
         }
+        let type_name = workload_param_type_name(value);
+        scope.add_extern(name, type_name);
+        // Mark as required so DCE keeps the auto-passthrough
+        // output. Descendant scopes auto-extern the param via
+        // the workload-root manifest; if the workload-root's
+        // own program prunes the param away, that cascade
+        // breaks.
+        scope.add_required_output(name);
     }
     // Also check phase config values for param refs
     for phase in phases.values() {

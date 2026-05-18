@@ -463,7 +463,7 @@ pub fn plot_command(args: &[String]) {
                 }
             } else {
                 let key = match val {
-                    Value::Str(s) => s,
+                    Value::Str(s) => s.to_string(),
                     Value::Bool(b) => b.to_string(),
                     Value::U64(v) => v.to_string(),
                     Value::F64(v) => format!("{v:.6}"),

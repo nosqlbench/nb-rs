@@ -98,7 +98,7 @@ impl OpDispenser for ScyllaBatchDispenser {
                 let row_coord = cycle + row_idx as u64;
                 wires.advance(row_coord);
                 let row_values: Vec<Value> = self.bind_names.iter()
-                    .map(|n| wires.get(n).unwrap_or(Value::Str(String::new())))
+                    .map(|n| wires.get(n).unwrap_or(Value::Str(String::new().into())))
                     .collect();
                 row_value_sets.push(row_values);
             }

@@ -325,7 +325,7 @@ impl GkNode for MatchesStr {
                 self.pattern,
             );
         }
-        outputs[0] = Value::Str(s.to_string());
+        outputs[0] = Value::Str(s.to_string().into());
     }
 }
 

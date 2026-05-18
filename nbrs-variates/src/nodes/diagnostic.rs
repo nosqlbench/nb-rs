@@ -40,7 +40,7 @@ impl GkNode for TypeOf {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.input_type.to_string());
+        outputs[0] = Value::Str(self.input_type.to_string().into());
     }
 }
 
@@ -73,7 +73,7 @@ impl GkNode for DebugRepr {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(format!("{:?}", inputs[0]));
+        outputs[0] = Value::Str(format!("{:?}", inputs[0]).into());
     }
 }
 

@@ -453,14 +453,14 @@ fn describe_keyspace_body_is_multirow_not_unary() {
     use crate::nodes::exactly_one::ExactlyOneValue;
     use crate::node::GkNode;
 
-    let multi_row_body = Value::Json(serde_json::json!([
+    let multi_row_body = Value::Json(std::sync::Arc::new(serde_json::json!([
         {"keyspace_name": "system_views", "type": "keyspace", "name": "system_views",
          "create_statement": "CREATE KEYSPACE system_views WITH ..."},
         {"keyspace_name": "system_views", "type": "table", "name": "sai_column_indexes",
          "create_statement": "CREATE TABLE system_views.sai_column_indexes (..."},
         {"keyspace_name": "system_views", "type": "table", "name": "indexes",
          "create_statement": "CREATE VIRTUAL TABLE system_views.indexes (..."},
-    ]));
+    ])));
 
     let node = ExactlyOneValue::new();
     let mut out = [Value::None];
@@ -563,7 +563,7 @@ fn workload_emulation_shared_cell_through_op_template_chain() {
     let body_idx = detect_fiber.program().find_input("body").expect("body slot");
     detect_fiber.state().set_input(
         body_idx,
-        Value::Json(serde_json::json!([{"col": "hello world"}])),
+        Value::Json(std::sync::Arc::new(serde_json::json!([{"col": "hello world"}]))),
     );
 
     // 5. Run the detect fiber's per-cycle write-through commit.
@@ -715,7 +715,7 @@ fn log_info_preserves_bool_type_through_result_binding_cell() {
     let body_idx = kernel.program().find_input("body").expect("body slot");
     kernel.state().set_input(
         body_idx,
-        Value::Json(serde_json::json!([{"col": "hello world"}])),
+        Value::Json(std::sync::Arc::new(serde_json::json!([{"col": "hello world"}]))),
     );
     kernel.commit_write_throughs();
 

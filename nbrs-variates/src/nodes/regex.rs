@@ -34,7 +34,7 @@ impl GkNode for RegexReplace {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let result = self.re.replace_all(inputs[0].as_str(), &self.replacement);
-        outputs[0] = Value::Str(result.into_owned());
+        outputs[0] = Value::Str(result.into_owned().into());
     }
 }
 
@@ -113,7 +113,7 @@ impl GkNode for RegexExtract {
         } else {
             String::new()
         };
-        outputs[0] = Value::Str(result);
+        outputs[0] = Value::Str(result.into());
     }
 }
 

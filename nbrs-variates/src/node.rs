@@ -190,16 +190,30 @@ pub enum Value {
     /// Boolean. Used for conditional ops (`if:` field), selection
     /// nodes, and flag computation.
     Bool(bool),
-    /// Heap-allocated string. Used for formatted output, weighted
-    /// string selection, template interpolation, and any value
-    /// that will appear directly in an op statement.
-    Str(String),
-    /// Raw byte buffer. Used for cryptographic digests, binary
-    /// encoding/decoding, and byte-level data generation.
-    Bytes(Vec<u8>),
-    /// Structured JSON value. Used for vector representations
-    /// (JSON arrays), complex structured data, and JSON merge ops.
-    Json(serde_json::Value),
+    /// Shared, immutable UTF-8 string. Used for formatted output,
+    /// weighted string selection, template interpolation, and any
+    /// value that will appear directly in an op statement. Backed
+    /// by `Arc<str>` so cloning is one atomic increment with no
+    /// allocation — the per-cycle reads that materialize a `final`
+    /// or `init` string into op-template substitution are
+    /// pointer-share, not heap-copy.
+    Str(Arc<str>),
+    /// Shared, immutable raw byte buffer. Used for cryptographic
+    /// digests, binary encoding/decoding, and byte-level data
+    /// generation. Backed by `Arc<[u8]>` so cloning is one atomic
+    /// increment.
+    Bytes(Arc<[u8]>),
+    /// Shared, immutable structured JSON value. Used for
+    /// vector representations (JSON arrays), complex structured
+    /// data, and JSON merge ops. Backed by `Arc<serde_json::Value>`
+    /// so cloning is one atomic increment — the per-cycle reads
+    /// of result-body JSON wires (capture extraction, recall
+    /// evaluation, column projection) share the underlying
+    /// allocation rather than deep-cloning the tree. Consumers
+    /// that need an owned `serde_json::Value` (mutation,
+    /// serialization sinks) explicitly deep-clone via
+    /// `(*v).clone()` at the consume site.
+    Json(Arc<serde_json::Value>),
     /// Adapter-contributed reflected value. Carries type info and
     /// standard access methods (display, JSON, string, bytes).
     /// Enables protocol-native types (UUIDs, timestamps, inet
@@ -345,6 +359,19 @@ impl Value {
         }
     }
 
+    /// Borrow the inner `Arc<serde_json::Value>` from a
+    /// `Value::Json` variant. Use when a consumer wants to
+    /// share the JSON tree across kernels without deep-cloning
+    /// the structure — e.g. capture extraction that writes the
+    /// same JSON wire to multiple downstream slots. Panics on
+    /// type mismatch.
+    pub fn as_json_arc(&self) -> &Arc<serde_json::Value> {
+        match self {
+            Value::Json(v) => v,
+            _ => panic!("expected Json, got {:?}", self.port_type()),
+        }
+    }
+
     /// Return the `PortType` corresponding to this value's variant.
     pub fn port_type(&self) -> PortType {
         match self {
@@ -412,7 +439,7 @@ impl Value {
             Value::U64(v) => v.to_string(),
             Value::F64(v) => v.to_string(),
             Value::Bool(v) => v.to_string(),
-            Value::Str(v) => v.clone(),
+            Value::Str(v) => v.to_string(),
             Value::Bytes(v) => v.iter().map(|b| format!("{b:02x}")).collect(),
             Value::Json(v) => v.to_string(),
             Value::Ext(v) => v.display(),
@@ -455,9 +482,9 @@ impl Value {
             Value::U64(v) => serde_json::Value::from(*v),
             Value::F64(v) => serde_json::json!(*v),
             Value::Bool(v) => serde_json::Value::from(*v),
-            Value::Str(v) => serde_json::Value::from(v.as_str()),
+            Value::Str(v) => serde_json::Value::from(&**v),
             Value::Bytes(v) => serde_json::Value::from(v.iter().map(|b| format!("{b:02x}")).collect::<String>()),
-            Value::Json(v) => v.clone(),
+            Value::Json(v) => (**v).clone(),
             Value::Ext(v) => v.to_json_value(),
             Value::Handle(_) => serde_json::Value::Null,
             Value::VecF32(arc) => serde_json::Value::Array(

@@ -475,7 +475,7 @@ pub fn resolve_op_fields_via_wires(
     for (key, json_value) in op_fields {
         names.push(key.clone());
         let serde_json::Value::String(s) = json_value else {
-            values.push(Value::Str(json_value.to_string()));
+            values.push(Value::Str(json_value.to_string().into()));
             continue;
         };
         let trimmed = s.trim();
@@ -507,7 +507,7 @@ pub fn resolve_op_fields_via_wires(
         }
         let rendered = substitute_via_wires(s, wires)
             .map_err(|e| format!("field '{key}': {e}"))?;
-        values.push(Value::Str(rendered));
+        values.push(Value::Str(rendered.into()));
     }
     Ok(crate::adapter::ResolvedFields::new(names, values))
 }

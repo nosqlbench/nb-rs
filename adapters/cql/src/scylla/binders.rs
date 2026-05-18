@@ -120,7 +120,7 @@ fn native_to_cql(native: &NativeType, value: &Value) -> Result<CqlValue, String>
         NT::Boolean => Ok(CqlValue::Boolean(value.as_u64() != 0)),
         NT::Text | NT::Ascii => Ok(CqlValue::Text(value.to_display_string())),
         NT::Blob => match value {
-            Value::Bytes(b) => Ok(CqlValue::Blob(b.clone())),
+            Value::Bytes(b) => Ok(CqlValue::Blob(b.to_vec())),
             other => Err(format!("blob bind: expected Bytes, got {other:?}")),
         },
         NT::Uuid => {

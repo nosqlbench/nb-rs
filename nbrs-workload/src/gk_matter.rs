@@ -179,6 +179,10 @@ impl HasGkMatter for ScenarioNode {
             ScenarioNode::Phase(_)
             | ScenarioNode::IncludedScenario { .. }
                 => GkMatter::None,
+            // Scenario-tree-level `bindings:` block (also the
+            // canonical lowered form of `set:` sugar) installs
+            // a GK scope kernel — Definitions by definition.
+            ScenarioNode::Bindings { .. } => GkMatter::Definitions,
         }
     }
 }

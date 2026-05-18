@@ -897,7 +897,7 @@ handle_metadata_node!(
             "DOT_PRODUCT" | "DOTPRODUCT" | "DOT" | "INNER_PRODUCT" | "IP" => "DOT_PRODUCT",
             _ => raw,
         };
-        Value::Str(df.to_string())
+        Value::Str(df.to_string().into())
     }
 );
 
@@ -985,11 +985,11 @@ handle_metadata_node!(
                 let mut names: Vec<&String> = manifest.keys().collect();
                 names.sort();
                 return Value::Str(
-                    names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                    names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ").into()
                 );
             }
         }
-        Value::Str(String::new())
+        Value::Str(String::new().into())
     }
 );
 
@@ -1015,7 +1015,7 @@ handle_metadata_node!(
     ///
     /// Signature: `dataset_profile_names(group) -> (String)`
     DatasetProfileNames, "dataset_profile_names", Str,
-    eval = |h: &DatasetHandle| Value::Str(group_of(h).profile_names().join(", "))
+    eval = |h: &DatasetHandle| Value::Str(group_of(h).profile_names().join(", ").into())
 );
 
 /// Return profile names matching a prefix, comma-separated.
@@ -1070,7 +1070,7 @@ impl GkNode for MatchingProfiles {
         // label_01, label_02, label_03 instead of whatever the
         // size-sort happens to produce.
         matched.sort_by(|a, b| natural_cmp(a, b));
-        outputs[0] = Value::Str(matched.join(","));
+        outputs[0] = Value::Str(matched.join(",").into());
     }
 }
 
@@ -1152,9 +1152,9 @@ impl GkNode for DatasetProfileNameAt {
         let idx = inputs[1].as_u64() as usize;
         let names = group.profile_names();
         outputs[0] = if names.is_empty() {
-            Value::Str(String::new())
+            Value::Str(String::new().into())
         } else {
-            Value::Str(names[idx % names.len()].clone())
+            Value::Str(names[idx % names.len()].clone().into())
         };
     }
 }
@@ -1254,7 +1254,7 @@ impl GkNode for ProfileFacets {
                 None => String::new(),
             }
         };
-        outputs[0] = Value::Str(facets);
+        outputs[0] = Value::Str(facets.into());
     }
 }
 
@@ -1496,8 +1496,8 @@ impl GenericFacetDataset {
 
 fn generic_str_at(h: &DatasetHandle, idx: usize) -> Value {
     match h {
-        DatasetHandle::Generic(d) => Value::Str(d.format_scalar(idx)),
-        _ => Value::Str(String::new()),
+        DatasetHandle::Generic(d) => Value::Str(d.format_scalar(idx).into()),
+        _ => Value::Str(String::new().into()),
     }
 }
 

@@ -73,7 +73,7 @@ impl GkNode for WeightedStrings {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let idx = self.table.sample(inputs[0].as_u64()) as usize;
-        outputs[0] = Value::Str(self.values[idx].clone());
+        outputs[0] = Value::Str(self.values[idx].clone().into());
     }
 }
 
@@ -318,9 +318,9 @@ impl GkNode for DynamicWeightedSelect {
         let table = self.cached_table.borrow();
         if let Some(ref table) = *table {
             let idx = table.sample(selector) as usize;
-            outputs[0] = Value::Str(values[idx].clone());
+            outputs[0] = Value::Str(values[idx].clone().into());
         } else {
-            outputs[0] = Value::Str(String::new());
+            outputs[0] = Value::Str(String::new().into());
         }
     }
 }

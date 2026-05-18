@@ -52,7 +52,7 @@ impl GkNode for HtmlEncode {
                 _ => result.push(c),
             }
         }
-        outputs[0] = Value::Str(result);
+        outputs[0] = Value::Str(result.into());
     }
 }
 
@@ -95,7 +95,7 @@ impl GkNode for HtmlDecode {
             .replace("&quot;", "\"")
             .replace("&#x27;", "'")
             .replace("&#39;", "'");
-        outputs[0] = Value::Str(result);
+        outputs[0] = Value::Str(result.into());
     }
 }
 
@@ -147,7 +147,7 @@ impl GkNode for UrlEncode {
                 result.push_str(&format!("%{b:02X}"));
             }
         }
-        outputs[0] = Value::Str(result);
+        outputs[0] = Value::Str(result.into());
     }
 }
 
@@ -196,7 +196,7 @@ impl GkNode for UrlDecode {
             result.push(bytes[i]);
             i += 1;
         }
-        outputs[0] = Value::Str(String::from_utf8_lossy(&result).into_owned());
+        outputs[0] = Value::Str(String::from_utf8_lossy(&result).into_owned().into());
     }
 }
 

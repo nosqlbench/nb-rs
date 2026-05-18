@@ -630,7 +630,44 @@ impl GkKernel {
         let mut transit_forward: Vec<SharedCellEntry> = Vec::new();
         let mut attached_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
+        // Names this scope declares as a local authoritative
+        // output — `final NAME := …` (const-folded at compile
+        // time) or `init NAME := …` (computed once at scope-init
+        // after wiring, then fixed for the scope's lifetime).
+        // Either form means this scope owns the binding for
+        // `NAME` over its subtree, so any transit cell carrying
+        // a stale value from a grandparent must be suppressed:
+        // without that suppression, step 1's blanket cell-attach
+        // would short-circuit step 2's value-copy from
+        // `outer.lookup(name)` (already-in-attached_names
+        // guard), and descendants would read the transit cell's
+        // value instead of the local declaration's.
+        //
+        // The two forms are uniform from the chain's
+        // perspective: both produce a single authoritative
+        // value visible to descendants via the standard
+        // `extern NAME` lookup. The distinction is internal
+        // (when the value is computed) and doesn't affect the
+        // shadowing semantics.
+        let local_finals: std::collections::HashSet<&str> = self.program
+            .output_names()
+            .into_iter()
+            .filter(|n| {
+                self.program.output_modifier(n)
+                    == crate::dsl::ast::BindingModifier::FINAL
+                    || self.program.init_outputs().contains(*n)
+            })
+            .collect();
         for entry in outer_cells {
+            // A local final on this scope is the canonical writer
+            // for the name; the transit cell from above is stale.
+            // Drop it on the floor — don't attach to a slot we
+            // own, don't transit-forward to descendants. They'll
+            // see this scope's final via the standard step-2
+            // value-copy or cell-attach path.
+            if local_finals.contains(entry.name.as_str()) {
+                continue;
+            }
             if let Some(idx) = self.program.find_input(&entry.name) {
                 self.state.attach_shared_cell(idx, entry.cell.clone());
                 attached_names.insert(entry.name);

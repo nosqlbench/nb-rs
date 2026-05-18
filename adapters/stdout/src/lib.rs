@@ -559,7 +559,7 @@ mod tests {
     fn test_fields(fields: &[(&str, &str)]) -> ResolvedFields {
         ResolvedFields::new(
             fields.iter().map(|(k, _)| k.to_string()).collect(),
-            fields.iter().map(|(_, v)| nbrs_variates::node::Value::Str(v.to_string())).collect(),
+            fields.iter().map(|(_, v)| nbrs_variates::node::Value::Str((*v).into())).collect(),
         )
     }
 

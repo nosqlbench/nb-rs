@@ -371,9 +371,28 @@ pub fn build_workload_root_kernel(
         cursor_limit,
         ..Default::default()
     };
+    // Mark workload-param names as inherited so their input slots
+    // don't show up in `compute_own_coordinates` (which filters for
+    // `IterationExtern`-kind inputs that aren't marked inherited).
+    // Without this, switching the workload-param cascade from
+    // `final NAME := <literal>` to `extern NAME: T` causes every
+    // workload param to show up as a scope-coordinate on the
+    // workload-root kernel — and downstream code (phase identity
+    // construction, label formatting, scene-tree population) treats
+    // those coordinates as iter-vars belonging to this scope. The
+    // resulting phase-identity drift between pre-map registration
+    // and runtime phase_failed silently breaks checkpoint Failed
+    // recording. Marking them inherited keeps the cascade-pass-
+    // through semantics: descendants still extern these names from
+    // the workload-root's manifest, but the workload-root itself
+    // treats them as inherited rather than as its own iter-vars.
+    let mut inherited_param_names: Vec<String> = workload_params.keys()
+        .cloned().collect();
+    inherited_param_names.sort();
     let matter = nbrs_variates::subcontext::GkMatter::builder()
         .label(context)
         .source(source)
+        .inherited_outputs(inherited_param_names)
         .options(opts)
         .build()
         .map_err(|e| format!("{e:?}"))?;

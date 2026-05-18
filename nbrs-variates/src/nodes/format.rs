@@ -126,7 +126,7 @@ impl GkNode for Printf {
                 }
             }
         }
-        outputs[0] = Value::Str(result);
+        outputs[0] = Value::Str(result.into());
     }
 }
 
@@ -139,7 +139,7 @@ fn format_value(val: &Value, spec: &FormatSpec) -> String {
             if let Some(w) = spec.width {
                 format!("{:>width$}", v, width = w)
             } else {
-                v.clone()
+                v.to_string()
             }
         }
         _ => format!("{val:?}"),

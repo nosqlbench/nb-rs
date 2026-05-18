@@ -63,7 +63,7 @@ impl GkNode for CqlTimeuuid {
 
         outputs[0] = Value::Str(format!(
             "{time_low:08x}-{time_mid:04x}-{time_hi:04x}-{clock_seq:04x}-{node:012x}"
-        ));
+        ).into());
     }
 }
 
@@ -122,7 +122,7 @@ mod tests {
         let mut outs = vec![Value::None];
         node.eval(&[Value::U64(seed)], &mut outs);
         match outs.into_iter().next().unwrap() {
-            Value::Str(s) => s,
+            Value::Str(s) => s.to_string(),
             other => panic!("expected Str, got {other:?}"),
         }
     }

@@ -92,6 +92,17 @@ pub enum ScopeKind {
     /// `Component::register_instrument`) surfaces per-op
     /// rather than per-phase.
     OpTemplate { name: String },
+    /// Scenario-tree-level GK bindings block (see
+    /// [`nbrs_workload::model::ScenarioNode::Bindings`]). The
+    /// `source` is GK matter text that compiles into a kernel
+    /// layered over the parent scope. Used for any scope-tree-
+    /// level state injection: workload-param shadowing (the
+    /// `set: { ... }` sugar form), derived bindings spanning a
+    /// subtree, shared cells, etc. — the GK grammar is the
+    /// only constraint on what the source may contain.
+    Bindings {
+        source: String,
+    },
 }
 
 impl ScopeKind {
@@ -150,6 +161,20 @@ impl ScopeKind {
             },
             ScopeKind::Phase { name } => format!("phase '{name}'"),
             ScopeKind::OpTemplate { name } => format!("op '{name}'"),
+            ScopeKind::Bindings { source } => {
+                // Render as a one-line summary; long source
+                // blocks are truncated for readability in
+                // diagnostic output.
+                let one_line: String = source.lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                if one_line.len() > 80 {
+                    format!("bindings: {}…", &one_line[..77])
+                } else {
+                    format!("bindings: {one_line}")
+                }
+            }
         }
     }
 }
@@ -381,6 +406,24 @@ impl ScopeTree {
                     self.append_subtree(idx, child);
                 }
             }
+            ScenarioNode::Bindings { source, children } => {
+                let idx = self.add_node(ScopeNode {
+                    kind: ScopeKind::Bindings {
+                        source: source.clone(),
+                    },
+                    parent: Some(parent_idx),
+                    children: Vec::new(),
+                    depth,
+                    pragmas: PragmaSet::default(),
+                    cached_kernel: std::sync::OnceLock::new(),
+                    materialised: None,
+                    logical_name: String::new(),
+                });
+                self.nodes[parent_idx].children.push(idx);
+                for child in children {
+                    self.append_subtree(idx, child);
+                }
+            }
         }
     }
 
@@ -500,6 +543,32 @@ impl ScopeTree {
                 ScopeKind::IncludedScenario { name } => format!("include.{name}"),
                 ScopeKind::DoWhile { .. } => "do_while".to_string(),
                 ScopeKind::DoUntil { .. } => "do_until".to_string(),
+                ScopeKind::Bindings { source } => {
+                    // First `final NAME` / `NAME :=` in the
+                    // source distinguishes this scope-tree node
+                    // in the logical-name path. For sugar from
+                    // `set: { mode: verbose }` the source starts
+                    // with `final mode := …` so the segment is
+                    // `bindings.mode`. Sources with no clear
+                    // first name fall back to a positional tag.
+                    let first_name = source.lines()
+                        .map(str::trim)
+                        .find(|l| !l.is_empty())
+                        .and_then(|line| {
+                            let after_kw = line
+                                .strip_prefix("final ")
+                                .or_else(|| line.strip_prefix("init "))
+                                .or_else(|| line.strip_prefix("shared "))
+                                .unwrap_or(line);
+                            after_kw
+                                .split([' ', ':'])
+                                .next()
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string)
+                        })
+                        .unwrap_or_else(|| "anon".to_string());
+                    format!("bindings.{first_name}")
+                }
             };
             self.nodes[idx].logical_name = if parent_name.is_empty() {
                 segment
@@ -662,6 +731,28 @@ impl ScopeTree {
     ) -> Option<ScopeNodeIdx> {
         self.iter_dfs().find_map(|(idx, node)| match &node.kind {
             ScopeKind::Comprehension { comprehension: c } if c == comprehension => Some(idx),
+            _ => None,
+        })
+    }
+
+    /// First scope-tree node whose kind is
+    /// `ScopeKind::Bindings { source }` matching exactly. Used
+    /// by the runtime executor's `Bindings` arm to find the
+    /// scope-tree node corresponding to the scenario-node it's
+    /// currently executing, so it can push that scope's
+    /// installed kernel as `ctx.current_parent_kernel` for
+    /// children to read.
+    ///
+    /// `source` is sufficient identity: two `Bindings` nodes
+    /// with identical sources produce structurally identical
+    /// kernels, so picking either is benign — both publish the
+    /// same lexical scope.
+    pub fn find_bindings_scope(
+        &self,
+        source: &str,
+    ) -> Option<ScopeNodeIdx> {
+        self.iter_dfs().find_map(|(idx, node)| match &node.kind {
+            ScopeKind::Bindings { source: s } if s == source => Some(idx),
             _ => None,
         })
     }
@@ -1148,7 +1239,7 @@ mod tests {
         // the inherited extern is populated with the parent's
         // value.
         match kernel.get_input("k_values") {
-            Some(nbrs_variates::node::Value::Str(s)) => assert_eq!(s.as_str(), "1, 10"),
+            Some(nbrs_variates::node::Value::Str(s)) => assert_eq!(&*s, "1, 10"),
             other => panic!("expected Str(\"1, 10\"), got {other:?}"),
         }
 

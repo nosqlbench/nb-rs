@@ -71,7 +71,7 @@ impl GkNode for CsvField {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let idx = inputs[0].as_u64() as usize % self.values.len();
-        outputs[0] = Value::Str(self.values[idx].clone());
+        outputs[0] = Value::Str(self.values[idx].clone().into());
     }
 }
 
@@ -111,7 +111,7 @@ impl GkNode for CsvRow {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let idx = inputs[0].as_u64() as usize % self.rows.len();
-        outputs[0] = Value::Str(self.rows[idx].clone());
+        outputs[0] = Value::Str(self.rows[idx].clone().into());
     }
 }
 
@@ -196,7 +196,7 @@ impl GkNode for JsonlField {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let idx = inputs[0].as_u64() as usize % self.values.len();
-        outputs[0] = Value::Str(self.values[idx].clone());
+        outputs[0] = Value::Str(self.values[idx].clone().into());
     }
 }
 
@@ -235,7 +235,7 @@ impl GkNode for JsonlRow {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let idx = inputs[0].as_u64() as usize % self.rows.len();
-        outputs[0] = Value::Str(self.rows[idx].clone());
+        outputs[0] = Value::Str(self.rows[idx].clone().into());
     }
 }
 

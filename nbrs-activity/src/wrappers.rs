@@ -89,7 +89,7 @@ fn extract_captures_from_json(
             // Slurp form: collect across all rows.
             let collected = slurp_column(&json, &spec.source_name);
             captures.insert(spec.as_name.clone(), nbrs_variates::node::Value::Json(
-                serde_json::Value::Array(collected),
+                std::sync::Arc::new(serde_json::Value::Array(collected)),
             ));
             continue;
         }
@@ -150,12 +150,12 @@ fn json_to_value(v: &serde_json::Value) -> nbrs_variates::node::Value {
             } else if let Some(f) = n.as_f64() {
                 nbrs_variates::node::Value::F64(f)
             } else {
-                nbrs_variates::node::Value::Str(n.to_string())
+                nbrs_variates::node::Value::Str(n.to_string().into())
             }
         }
         serde_json::Value::Bool(b) => nbrs_variates::node::Value::Bool(*b),
-        serde_json::Value::String(s) => nbrs_variates::node::Value::Str(s.clone()),
-        other => nbrs_variates::node::Value::Str(other.to_string()),
+        serde_json::Value::String(s) => nbrs_variates::node::Value::Str(s.as_str().into()),
+        other => nbrs_variates::node::Value::Str(other.to_string().into()),
     }
 }
 
@@ -1054,7 +1054,7 @@ impl OpDispenser for ResultDispenser {
                     .as_ref()
                     .map(|b| b.to_json())
                     .unwrap_or(serde_json::Value::Null);
-                let _ = ctx.wires.write("body", nbrs_variates::node::Value::Json(body_json));
+                let _ = ctx.wires.write("body", nbrs_variates::node::Value::Json(std::sync::Arc::new(body_json)));
                 let _ = ctx.wires.write("count", nbrs_variates::node::Value::U64(count));
                 let _ = ctx.wires.write("ok", nbrs_variates::node::Value::Bool(true));
             }
@@ -1593,7 +1593,7 @@ mod tests {
         assert_eq!(captures.len(), 2);
         assert_eq!(captures["uid"].as_u64(), 42);
         match &captures["name"] {
-            nbrs_variates::node::Value::Str(s) => assert_eq!(s, "alice"),
+            nbrs_variates::node::Value::Str(s) => assert_eq!(&**s, "alice"),
             other => panic!("expected Str, got {other:?}"),
         }
     }
@@ -1633,7 +1633,10 @@ mod tests {
         let captures = extract_captures_from_json(&body, &specs);
         assert_eq!(captures.len(), 1);
         match &captures["key"] {
-            nbrs_variates::node::Value::Json(serde_json::Value::Array(items)) => {
+            nbrs_variates::node::Value::Json(arc) => {
+                let serde_json::Value::Array(items) = arc.as_ref() else {
+                    panic!("expected Value::Json(array), got {arc:?}");
+                };
                 assert_eq!(items.len(), 3);
                 assert_eq!(items[0], serde_json::json!(4));
                 assert_eq!(items[1], serde_json::json!(17));

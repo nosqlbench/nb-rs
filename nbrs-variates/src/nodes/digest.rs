@@ -38,7 +38,7 @@ impl GkNode for DigestSha256 {
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let mut hasher = Sha256::new();
         hasher.update(inputs[0].as_bytes());
-        outputs[0] = Value::Bytes(hasher.finalize().to_vec());
+        outputs[0] = Value::Bytes(hasher.finalize().to_vec().into());
     }
 }
 
@@ -73,7 +73,7 @@ impl GkNode for DigestMd5 {
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let mut hasher = Md5::new();
         hasher.update(inputs[0].as_bytes());
-        outputs[0] = Value::Bytes(hasher.finalize().to_vec());
+        outputs[0] = Value::Bytes(hasher.finalize().to_vec().into());
     }
 }
 
@@ -106,7 +106,7 @@ impl GkNode for ToBase64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         use base64::Engine;
-        outputs[0] = Value::Str(base64::engine::general_purpose::STANDARD.encode(inputs[0].as_bytes()));
+        outputs[0] = Value::Str(base64::engine::general_purpose::STANDARD.encode(inputs[0].as_bytes()).into());
     }
 }
 
@@ -142,7 +142,7 @@ impl GkNode for FromBase64 {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(inputs[0].as_str())
             .unwrap_or_default();
-        outputs[0] = Value::Bytes(bytes);
+        outputs[0] = Value::Bytes(bytes.into());
     }
 }
 
@@ -174,7 +174,7 @@ impl ToBase32 {
 impl GkNode for ToBase32 {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(data_encoding::BASE32.encode(inputs[0].as_bytes()));
+        outputs[0] = Value::Str(data_encoding::BASE32.encode(inputs[0].as_bytes()).into());
     }
 }
 
@@ -209,7 +209,7 @@ impl GkNode for FromBase32 {
         let bytes = data_encoding::BASE32
             .decode(inputs[0].as_str().as_bytes())
             .unwrap_or_default();
-        outputs[0] = Value::Bytes(bytes);
+        outputs[0] = Value::Bytes(bytes.into());
     }
 }
 
@@ -299,7 +299,7 @@ mod tests {
         let node = DigestSha256::new();
         let mut out = [Value::None];
         // SHA-256 of empty string
-        node.eval(&[Value::Bytes(vec![])], &mut out);
+        node.eval(&[Value::Bytes(vec![].into())], &mut out[..]);
         let bytes = out[0].as_bytes();
         assert_eq!(bytes.len(), 32);
         // Known hash of empty: e3b0c44298fc1c14...
@@ -312,7 +312,7 @@ mod tests {
         let node = DigestSha256::new();
         let mut out1 = [Value::None];
         let mut out2 = [Value::None];
-        let input = Value::Bytes(b"hello world".to_vec());
+        let input = Value::Bytes(b"hello world".to_vec().into());
         node.eval(&[input.clone()], &mut out1);
         node.eval(&[input], &mut out2);
         assert_eq!(out1[0].as_bytes(), out2[0].as_bytes());
@@ -322,7 +322,7 @@ mod tests {
     fn md5_known() {
         let node = DigestMd5::new();
         let mut out = [Value::None];
-        node.eval(&[Value::Bytes(vec![])], &mut out);
+        node.eval(&[Value::Bytes(vec![].into())], &mut out[..]);
         let bytes = out[0].as_bytes();
         assert_eq!(bytes.len(), 16);
         // Known MD5 of empty: d41d8cd98f00b204...
@@ -336,7 +336,7 @@ mod tests {
         let mut mid = [Value::None];
         let mut out = [Value::None];
         let input = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x42];
-        enc.eval(&[Value::Bytes(input.clone())], &mut mid);
+        enc.eval(&[Value::Bytes(input.clone().into())], &mut mid[..]);
         dec.eval(&[mid[0].clone()], &mut out);
         assert_eq!(out[0].as_bytes(), &input);
     }
@@ -348,7 +348,7 @@ mod tests {
         let mut mid = [Value::None];
         let mut out = [Value::None];
         let input = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x42];
-        enc.eval(&[Value::Bytes(input.clone())], &mut mid);
+        enc.eval(&[Value::Bytes(input.clone().into())], &mut mid[..]);
         dec.eval(&[mid[0].clone()], &mut out);
         assert_eq!(out[0].as_bytes(), &input);
     }

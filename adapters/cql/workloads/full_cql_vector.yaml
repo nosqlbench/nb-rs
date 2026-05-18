@@ -38,6 +38,36 @@ params:
   # coverage for stable rate and latency averages.
   min_query_ms: 30000
 
+  # Filtered-ANN planner mode. Drives the per-query `WITH
+  # ann_options = …` clause that the query phases bake into
+  # their `prepared:` strings at op-template construction time.
+  # Values:
+  #
+  #   `default` — empty clause. cndb's planner picks rerankK
+  #               from the source-model's tapered multiplier and
+  #               may flip to brute force per
+  #               `V2VectorIndexSearcher.CostEstimate.shouldUseBruteForce`.
+  #   `pinned`  — every ANN query carries `WITH ann_options =
+  #               {'rerank_k': '<limit>', 'use_pruning': 'false'}`,
+  #               pinning rerank_k to the LIMIT (no auto-
+  #               amplification) and disabling JVector's pruning
+  #               shortcut so the planner stays on approximate
+  #               HNSW even at large LIMIT. cndb-only — OSS
+  #               Cassandra rejects the `WITH ann_options`
+  #               extension at parse.
+  #
+  # See `local/brute_force.md` for the analysis. The
+  # `fulltest_rerank_pinned` scenario uses a scenario-tree
+  # `set: { rerank_mode: pinned }` node to shadow this default
+  # over its inner phase tree (see `scenarios:` below). The
+  # workload-param default keeps `fulltest` (and every other
+  # scenario without an override) resolvable — the
+  # `final ann_opts := select_str(str_eq(rerank_mode, "pinned"),
+  # …)` binding in each query phase reads `rerank_mode` as a
+  # plain name, so something has to bind it at the workload
+  # level even when nothing overrides it.
+  rerank_mode: default
+
 # Unified report block (SRD-46): plots + tables in declaration
 # order. Each scenario contributes its items to its own
 # scenario-specific markdown file so the post-run reports stay
@@ -125,6 +155,18 @@ scenarios:
   fulltest:
     - scenario: test_oracles
     - scenario: test_fknn
+
+  # Rerank-pinned variant: `set:` shadows the `rerank_mode`
+  # workload-param over the inner phase tree, so every query
+  # phase's `final ann_opts := select_str(str_eq(rerank_mode,
+  # "pinned"), …)` binding sees the override and constructs
+  # the `WITH ann_options = {…}` clause. No CLI plumbing
+  # needed — the scenario name itself flips the behaviour.
+  # cndb-only (OSS Cassandra rejects `WITH ann_options`).
+  fulltest_rerank_pinned:
+    - set: { rerank_mode: pinned }
+      phases:
+        - scenario: fulltest
 
   # Per-profile partition test (label_00..label_11)
   test_oracles:
@@ -415,6 +457,19 @@ phases:
       cursor q = until_elapsed(base, min_query_ms)
       query_vector := query_vector_at(prebuffered, q % base)
       ground_truth := neighbor_indices_at(prebuffered, q % base)
+      # Construction-time-folded per-query ANN options clause.
+      # `select_str` + `str_eq` evaluate once at scope-init using
+      # the workload-param-or-iter-var `rerank_mode` and the
+      # current `limit` iter-var; the result is baked into a
+      # `final` constant that the prepared-statement structural
+      # resolver inlines at op-template construction. `default` →
+      # empty clause; `pinned` → explicit `WITH ann_options` that
+      # pins `rerank_k` to LIMIT and disables pruning so the
+      # planner stays on approximate HNSW instead of switching to
+      # brute force (see `local/brute_force.md`).
+      final ann_opts := select_str(str_eq(rerank_mode, "pinned"),
+                                   "WITH ann_options = {{'rerank_k': '{limit}', 'use_pruning': 'false'}}",
+                                   "")
 
     ops:
       select_ann:
@@ -423,6 +478,7 @@ phases:
           ORDER BY value
           ANN OF {query_vector}
           LIMIT {limit}
+          {ann_opts}
         # `count` is the result-body row count (a magic extern in
         # the closure-binding economy). Referencing it directly
         # from `value:` is enough — the metrics use-site walker
@@ -441,7 +497,7 @@ phases:
             # typed Value (VecI32 / VecF32 / Str) flows directly
             # to the recall computation. Legacy `"{ground_truth}"`
             # text-template form still works (braces are stripped
-            # at wrap-time) but the bare form is canonical.
+            # at wrap-time) but the bare form is canonical.q
             expected: ground_truth
             # Bare wire-names — same one-shot wrap-time resolution
             # as the legacy "{k}" / "{limit}" text-template form.
@@ -463,6 +519,11 @@ phases:
       # phase always runs an integer number of complete sweeps.
       cursor q = until_elapsed(query_counts, min_query_ms)
       predicate := predicate_value_at(prebuffered, q % query_counts)
+      # Construction-time-folded per-query ANN options. See the
+      # `ann_query` phase above for the rationale.
+      final ann_opts := select_str(str_eq(rerank_mode, "pinned"),
+                                   "WITH ann_options = {{'rerank_k': '{limit}', 'use_pruning': 'false'}}",
+                                   "")
     ops:
       select_ann:
         # LIMIT {limit} (search depth) rather than LIMIT {k}
@@ -477,6 +538,7 @@ phases:
           SELECT key FROM {keyspace}.{table}
           WHERE metadata = {predicate}
           LIMIT {limit}
+          {ann_opts}
 
   pvs_query:
     concurrency: "{query_concurrency}"
@@ -493,6 +555,11 @@ phases:
       query_vector := query_vector_at(prebuffered, q % query_counts)
       predicate := predicate_value_at(prebuffered, q % query_counts)
       ground_truth := filtered_neighbor_indices_at(prebuffered, q % query_counts)
+      # Construction-time-folded per-query ANN options. See the
+      # `ann_query` phase above for the rationale.
+      final ann_opts := select_str(str_eq(rerank_mode, "pinned"),
+                                   "WITH ann_options = {{'rerank_k': '{limit}', 'use_pruning': 'false'}}",
+                                   "")
 
     ops:
       select_ann:
@@ -509,6 +576,7 @@ phases:
           WHERE metadata = {predicate}
           ORDER BY value
           ANN OF {query_vector} LIMIT {limit}
+          {ann_opts}
         # Same direct-reference pattern as ann_query — no
         # throw-away result-binding needed.
         metrics:

@@ -863,6 +863,69 @@ pub enum ScenarioNode {
     ///         - search
     /// ```
     IncludedScenario { name: String, children: Vec<ScenarioNode> },
+    /// Scenario-tree-level GK bindings block — the canonical way
+    /// to introduce a scope-local layer of bound names anywhere
+    /// in the scenario tree.
+    ///
+    /// `source` is GK matter text exactly as a phase-level
+    /// `bindings:` block would contain. Anything the GK grammar
+    /// accepts is valid: `final NAME := <literal>`, derived
+    /// bindings (`scaled := mul(workload_limit, 2)`), shared
+    /// cells, init bindings, etc. Workload-param `{name}` and
+    /// string-interpolation references resolve through the
+    /// scope chain at kernel build time — no separate
+    /// preprocessing pass.
+    ///
+    /// `Bindings` is also the canonical lowered form of `set:`.
+    /// The parser recognizes `set: { name: value, ... }` as
+    /// syntactic sugar and emits a `Bindings` node whose
+    /// `source` is `final <name> := <gk-literal>\n` (one line
+    /// per pair, declaration order preserved). So
+    ///
+    /// ```yaml
+    /// - set: { mode: verbose }
+    ///   phases:
+    ///     - announce
+    /// ```
+    ///
+    /// is semantically identical to
+    ///
+    /// ```yaml
+    /// - bindings: |
+    ///     final mode := "verbose"
+    ///   phases:
+    ///     - announce
+    /// ```
+    ///
+    /// Both produce one `Bindings` node. Authors keep the
+    /// short `set:` form for the common override case; the
+    /// long form unlocks the full GK grammar (derived
+    /// bindings, expressions referencing other in-scope
+    /// names, etc.) without any new variant.
+    ///
+    /// Lexical-shadow semantics are uniform with phase-level
+    /// `bindings:`: a `final NAME := <value>` shadows any
+    /// upstream binding for `NAME` over this node's `children`
+    /// subtree. The shadow is enforced via the local-final
+    /// transit-suppression rule in `materialize_wiring_from_outer`
+    /// — the same mechanism every other scope uses.
+    ///
+    /// Composition example (two siblings, each defining its
+    /// own value for the same name; the included subtree is
+    /// physically cloned per include site so encapsulation is
+    /// per-instance):
+    ///
+    /// ```yaml
+    /// scenarios:
+    ///   fanout:
+    ///     - set: { mode: verbose }
+    ///       phases:
+    ///         - scenario: load_test
+    ///     - set: { mode: quiet }
+    ///       phases:
+    ///         - scenario: load_test
+    /// ```
+    Bindings { source: String, children: Vec<ScenarioNode> },
 }
 
 /// Legacy alias.

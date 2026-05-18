@@ -146,17 +146,22 @@ impl GkNode for ConstU64 {
 /// JIT level: P1 (String output; no compiled_u64 path).
 pub struct ConstStr {
     meta: NodeMeta,
-    value: String,
+    /// `Arc<str>` so per-cycle `eval` emissions share a single
+    /// heap allocation across every kernel that uses this node
+    /// — `Value::Str` clones become atomic increments, not
+    /// heap copies. Matches the grammar's "final" / "init"
+    /// shareability intent.
+    value: std::sync::Arc<str>,
 }
 
 impl ConstStr {
-    pub fn new(value: impl Into<String>) -> Self {
-        let value: String = value.into();
+    pub fn new(value: impl Into<std::sync::Arc<str>>) -> Self {
+        let value: std::sync::Arc<str> = value.into();
         Self {
             meta: NodeMeta {
                 name: "const_str".into(),
                 outs: vec![Port::str("output")],
-                ins: vec![Slot::const_str("value", value.clone())],
+                ins: vec![Slot::const_str("value", value.to_string())],
             },
             value,
         }

@@ -97,7 +97,7 @@ impl GkNode for Combinations {
             }
         }
 
-        outputs[0] = Value::Str(result);
+        outputs[0] = Value::Str(result.into());
     }
 }
 
@@ -170,7 +170,7 @@ impl GkNode for NumberToWords {
     }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(u64_to_words(inputs[0].as_u64()));
+        outputs[0] = Value::Str(u64_to_words(inputs[0].as_u64()).into());
     }
 }
 
@@ -386,7 +386,7 @@ impl GkNode for HashedUuid {
             bytes[8], bytes[9],
             bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
         );
-        outputs[0] = Value::Str(uuid);
+        outputs[0] = Value::Str(uuid.into());
     }
 }
 
@@ -451,7 +451,7 @@ impl GkNode for CharBuf {
         let length = inputs[1].as_u64() as usize;
         let n = self.charset.len();
         if n == 0 || length == 0 {
-            outputs[0] = Value::Str(String::new());
+            outputs[0] = Value::Str(String::new().into());
             return;
         }
         let mut result = String::with_capacity(length);
@@ -460,7 +460,7 @@ impl GkNode for CharBuf {
             h = xxhash_rust::xxh3::xxh3_64(&h.to_le_bytes());
             result.push(self.charset[(h as usize) % n]);
         }
-        outputs[0] = Value::Str(result);
+        outputs[0] = Value::Str(result.into());
     }
 }
 
@@ -508,7 +508,7 @@ impl GkNode for FileLineAt {
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let idx = inputs[0].as_u64() as usize;
-        outputs[0] = Value::Str(self.lines[idx % self.lines.len()].clone());
+        outputs[0] = Value::Str(self.lines[idx % self.lines.len()].clone().into());
     }
 }
 
@@ -550,7 +550,7 @@ impl StrConcat {
 
 fn value_to_display(val: &Value) -> String {
     match val {
-        Value::Str(s) => s.clone(),
+        Value::Str(s) => s.to_string(),
         Value::U64(v) => v.to_string(),
         Value::F64(v) => v.to_string(),
         Value::Bool(v) => v.to_string(),
@@ -567,7 +567,7 @@ impl GkNode for StrConcat {
         for v in inputs {
             out.push_str(&value_to_display(v));
         }
-        outputs[0] = Value::Str(out);
+        outputs[0] = Value::Str(out.into());
     }
 }
 

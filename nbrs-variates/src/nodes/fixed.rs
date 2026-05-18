@@ -167,7 +167,7 @@ impl GkNode for FixedValuesStr {
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let idx = (inputs[0].as_u64() as usize) % self.values.len();
-        outputs[0] = Value::Str(self.values[idx].clone());
+        outputs[0] = Value::Str(self.values[idx].clone().into());
     }
 }
 

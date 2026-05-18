@@ -48,7 +48,7 @@ impl GkNode for U64ToString {
     }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(inputs[0].as_u64().to_string());
+        outputs[0] = Value::Str(inputs[0].as_u64().to_string().into());
     }
 }
 
@@ -89,7 +89,7 @@ impl GkNode for F64ToString {
     }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(inputs[0].as_f64().to_string());
+        outputs[0] = Value::Str(inputs[0].as_f64().to_string().into());
     }
 }
 
@@ -477,7 +477,7 @@ impl GkNode for I32ToString {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let i32_val = inputs[0].as_u64() as i32;
-        outputs[0] = Value::Str(i32_val.to_string());
+        outputs[0] = Value::Str(i32_val.to_string().into());
     }
 }
 
@@ -509,7 +509,7 @@ impl GkNode for I64ToString {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let i64_val = inputs[0].as_u64() as i64;
-        outputs[0] = Value::Str(i64_val.to_string());
+        outputs[0] = Value::Str(i64_val.to_string().into());
     }
 }
 
@@ -542,7 +542,7 @@ impl GkNode for F32ToString {
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let bits = inputs[0].as_u64() as u32;
         let f32_val = f32::from_bits(bits);
-        outputs[0] = Value::Str(f32_val.to_string());
+        outputs[0] = Value::Str(f32_val.to_string().into());
     }
 }
 
@@ -574,7 +574,7 @@ impl GkNode for U32ToString {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         let u32_val = (inputs[0].as_u64() & 0xFFFF_FFFF) as u32;
-        outputs[0] = Value::Str(u32_val.to_string());
+        outputs[0] = Value::Str(u32_val.to_string().into());
     }
 }
 
@@ -883,7 +883,7 @@ impl GkNode for FormatU64 {
             16 => format!("{}{:x}", self.prefix, v),
             _ => v.to_string(),
         };
-        outputs[0] = Value::Str(s);
+        outputs[0] = Value::Str(s.into());
     }
 }
 
@@ -919,7 +919,7 @@ impl GkNode for FormatF64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(format!("{:.prec$}", inputs[0].as_f64(), prec = self.precision));
+        outputs[0] = Value::Str(format!("{:.prec$}", inputs[0].as_f64(), prec = self.precision).into());
     }
 }
 
@@ -956,7 +956,7 @@ impl GkNode for ZeroPadU64 {
     fn meta(&self) -> &NodeMeta { &self.meta }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(format!("{:0>width$}", inputs[0].as_u64(), width = self.width));
+        outputs[0] = Value::Str(format!("{:0>width$}", inputs[0].as_u64(), width = self.width).into());
     }
 }
 

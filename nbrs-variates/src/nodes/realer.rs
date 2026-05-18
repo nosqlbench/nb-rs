@@ -150,7 +150,7 @@ impl FirstNames {
 impl GkNode for FirstNames {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string());
+        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
     }
 }
 
@@ -185,7 +185,7 @@ impl StateCodes {
 impl GkNode for StateCodes {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string());
+        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
     }
 }
 
@@ -221,7 +221,7 @@ impl CountryNames {
 impl GkNode for CountryNames {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string());
+        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
     }
 }
 
@@ -257,7 +257,7 @@ impl CountryCodes {
 impl GkNode for CountryCodes {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string());
+        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
     }
 }
 
@@ -292,7 +292,7 @@ impl Nationalities {
 impl GkNode for Nationalities {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
-        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string());
+        outputs[0] = Value::Str(self.sampler.sample(inputs[0].as_u64()).to_string().into());
     }
 }
 
@@ -351,7 +351,7 @@ impl GkNode for FullNames {
             self.first_male.sample(h2)
         };
         let last = self.last.sample(h3);
-        outputs[0] = Value::Str(format!("{first} {last}"));
+        outputs[0] = Value::Str(format!("{first} {last}").into());
     }
 }
 

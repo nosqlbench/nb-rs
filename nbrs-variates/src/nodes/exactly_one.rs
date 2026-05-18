@@ -186,7 +186,7 @@ fn unwrap_unary_json(j: &serde_json::Value) -> Value {
         other => other,
     };
     match leaf {
-        J::String(s) => Value::Str(s.clone()),
+        J::String(s) => Value::Str(s.as_str().into()),
         J::Bool(b) => Value::Bool(*b),
         J::Number(n) => {
             if let Some(u) = n.as_u64() {
@@ -347,7 +347,7 @@ mod tests {
         let j = serde_json::json!([
             {"create_statement": "VIRTUAL TABLE system_views.sai_column_indexes (\n  ...\n)"}
         ]);
-        let out = run(Value::Json(j));
+        let out = run(Value::Json(std::sync::Arc::new(j)));
         let s = out.as_str();
         assert!(s.starts_with("VIRTUAL TABLE"), "got: {s:?}");
     }
@@ -356,55 +356,55 @@ mod tests {
     fn unwraps_unary_json_string_leaf() {
         // Bare scalar wrapped in array → object → string.
         let j = serde_json::json!([{"value": "hello"}]);
-        let out = run(Value::Json(j));
+        let out = run(Value::Json(std::sync::Arc::new(j)));
         assert_eq!(out.as_str(), "hello");
     }
 
     #[test]
     fn unwraps_unary_json_numeric_leaf() {
         let j = serde_json::json!([{"n": 42}]);
-        let out = run(Value::Json(j));
+        let out = run(Value::Json(std::sync::Arc::new(j)));
         assert_eq!(out.as_u64(), 42);
     }
 
     #[test]
     fn unwraps_unary_json_bool_leaf() {
         let j = serde_json::json!([{"b": true}]);
-        let out = run(Value::Json(j));
+        let out = run(Value::Json(std::sync::Arc::new(j)));
         assert!(out.as_bool());
     }
 
     #[test]
     #[should_panic(expected = "found 0 rows")]
     fn rejects_empty_json_array() {
-        run(Value::Json(serde_json::json!([])));
+        run(Value::Json(std::sync::Arc::new(serde_json::json!([]))));
     }
 
     #[test]
     #[should_panic(expected = "found 2 rows")]
     fn rejects_multi_row_json() {
         let j = serde_json::json!([{"a": 1}, {"a": 2}]);
-        run(Value::Json(j));
+        run(Value::Json(std::sync::Arc::new(j)));
     }
 
     #[test]
     #[should_panic(expected = "found 1 row × 2 columns")]
     fn rejects_multi_column_json() {
         let j = serde_json::json!([{"a": 1, "b": 2}]);
-        run(Value::Json(j));
+        run(Value::Json(std::sync::Arc::new(j)));
     }
 
     #[test]
     #[should_panic(expected = "leaf cell is null")]
     fn rejects_json_null_leaf() {
         let j = serde_json::json!([{"a": null}]);
-        run(Value::Json(j));
+        run(Value::Json(std::sync::Arc::new(j)));
     }
 
     #[test]
     #[should_panic(expected = "leaf cell is itself structural")]
     fn rejects_json_nested_structural_leaf() {
         let j = serde_json::json!([{"a": {"nested": 1}}]);
-        run(Value::Json(j));
+        run(Value::Json(std::sync::Arc::new(j)));
     }
 }

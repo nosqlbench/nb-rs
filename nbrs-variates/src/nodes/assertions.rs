@@ -184,7 +184,7 @@ impl GkNode for AssertValue {
         let arg = match &inputs[0] {
             Value::U64(v) => crate::dsl::factory::ConstArg::Int(*v),
             Value::F64(v) => crate::dsl::factory::ConstArg::Float(*v),
-            Value::Str(s) => crate::dsl::factory::ConstArg::Str(s.clone()),
+            Value::Str(s) => crate::dsl::factory::ConstArg::Str(s.to_string()),
             other => panic!(
                 "{}: unsupported runtime value variant {:?}",
                 self.meta.name, other

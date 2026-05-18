@@ -79,7 +79,7 @@ impl OpDispenser for ScyllaPreparedDispenser {
             // GK compiler should have provisioned every name, but
             // an absent name shouldn't fail-stop the cycle.
             let bind_values: Vec<Value> = self.bind_names.iter()
-                .map(|name| wires.get(name).unwrap_or(Value::Str(String::new())))
+                .map(|name| wires.get(name).unwrap_or(Value::Str(String::new().into())))
                 .collect();
             let col_specs = prepared.get_variable_col_specs();
             let row = binders::build_row(col_specs, &bind_values)

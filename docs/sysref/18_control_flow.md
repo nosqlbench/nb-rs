@@ -247,6 +247,160 @@ scenarios:
         - await_compaction
 ```
 
+### bindings: (scenario level) and the set: sugar form
+
+`bindings:` is a scenario-tree node that publishes GK matter
+over its `phases:` subtree. It's the canonical way to layer
+scope-local bindings between an enclosing scenario context and
+a leaf phase — workload-param shadowing, derived expressions
+spanning a subtree, shared cells, or any other GK construct
+the grammar accepts.
+
+`set:` is the convenience sugar form for the workload-param
+override case. The two forms produce the same internal model
+(`ScenarioNode::Bindings { source, children }`) — `set:` just
+spares the author the GK-syntax boilerplate when the body is
+"declare a few names with literal values."
+
+#### Long form
+
+```yaml
+scenarios:
+  noisy_search:
+    - bindings: |
+        init mode = "verbose"
+        init batch_size = 1000
+      phases:
+        - search
+```
+
+The `source:` body is GK matter, compiled by the standard
+synthesizer that builds phase-level `bindings:` scopes. The
+modifier choice (`init`, `final`, no-modifier, `shared`,
+`volatile`) follows the standard SRD-11 §"Three Evaluation
+Lifecycles" rules:
+
+- `init NAME = expr` — evaluated **once per scope activation**
+  after materialize-wiring populates extern slots, then fixed
+  for the scope's lifetime. RHS may reference other in-scope
+  names (workload params, outer iter-vars, parent bindings)
+  via `{name}` interpolation or bare-identifier reads.
+- `final NAME := expr` — evaluated at compile time by the
+  const folder. RHS must be const-foldable end-to-end. Use
+  for true compile-time constants where no chain-resolved
+  inputs are needed.
+- `NAME := expr` — per-cycle evaluation, the default cycle-
+  binding form.
+- `shared NAME := expr` — SharedCell-backed, cross-kernel
+  mutable, see SRD-16 §"Mutability Rules: Shared Mutable".
+
+The `init` modifier is the right choice for the typical
+"shadow this param for this subtree" case because the RHS may
+reference upstream chain values (`init mode = "{mode}_bulk"`)
+that don't exist as compile-time constants but are populated
+during materialize-wiring at scope activation.
+
+#### Sugar form: set:
+
+```yaml
+scenarios:
+  noisy_search:
+    - set: { mode: verbose, batch_size: 1000 }
+      phases:
+        - search
+```
+
+The parser desugars `set: { name: value, … }` to a `bindings:`
+node carrying one `init NAME = <gk-literal>` line per pair.
+Multiple keys produce sibling `init` lines in the same source
+body, in declaration order. Value-literal rules:
+
+- numeric-parseable → bare (no quotes): `set: { count: 100 }`
+  → `init count = 100`
+- `true` / `false` → bare boolean
+- everything else → quoted GK string literal with `\` and `"`
+  escaped
+
+Strings carry GK's `"prefix {name}"` interpolation surface for
+free — `set: { mode: "for_{size}" }` desugars to
+`init mode = "for_{size}"`, which compiles to
+`init mode = printf("for_{}", size)` at the GK layer.
+
+A single-string shorthand is also accepted for the one-key
+form:
+
+```yaml
+- set: "mode=verbose"
+  phases: [search]
+```
+
+#### Lexical shadowing
+
+A local `init NAME = …` or `final NAME := …` in a scenario-
+tree bindings scope shadows any same-named binding from an
+enclosing scope. Shadowing is enforced by the local-final/init
+transit-suppression rule in `materialize_wiring_from_outer`:
+when the child kernel declares NAME as a local authoritative
+output (final OR init), the materializer drops the transit
+cell that would have carried the upstream value through this
+scope. Descendants resolve NAME via the standard
+`extern NAME` lookup, which finds this scope's freshly
+computed value rather than the stale upstream cell.
+
+Sibling bindings scopes encapsulate independently — two `set:`
+blocks under a common ancestor each publish their own
+overrides over their own `phases:` subtree, and the included
+phase subtree is **cloned per include site** at parse time so
+their kernels and state buffers are physically distinct:
+
+```yaml
+scenarios:
+  fanout:
+    - set: { mode: verbose }
+      phases:
+        - scenario: load_test
+    - set: { mode: quiet }
+      phases:
+        - scenario: load_test
+```
+
+Both `load_test` instances share the same `Arc<GkProgram>`
+AST (immutable, structural) but have distinct `GkKernel`
+state. Each materializes from its own bindings-scope parent,
+so each picks up its own override at scope-init.
+
+#### Composition with for_each
+
+A `bindings:` (or `set:`) scope is transparent to enclosing
+iterations:
+
+```yaml
+scenarios:
+  swept:
+    - set: { mode: swept }
+      phases:
+        - for_each: "n in 1,2,3"
+          phases:
+            - announce_with_n
+```
+
+The iter-var `n` and the shadowed `mode` coexist; the
+iter-var's per-step kernel chains through the bindings-scope
+kernel, so the leaf phase sees both `n` (per iteration) and
+`mode = "swept"` (constant over the subtree).
+
+#### Empty-children warning
+
+A `bindings:` or `set:` block with no `phases:` body (or an
+empty list) is structurally a no-op: the scope is entered and
+immediately exited with no descendants reading any of its
+declared names. The parser warns at workload-load time and
+keeps the scope node out of the resolved tree. Almost always
+an author error — the intended fix is to add a `phases:`
+block listing the subtree the binding applies to, or to move
+the binding to the workload's top-level `bindings:` field if
+the intent was workload-wide scope.
+
 ### scenario: <name> (logical inclusion)
 
 Wherever a phase name can appear in a scenario tree — at the
