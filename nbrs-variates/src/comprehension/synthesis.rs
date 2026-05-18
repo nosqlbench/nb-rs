@@ -187,9 +187,13 @@ pub fn synthesize_for_each_scope(
             // in the striated coord display.
             inherited_names.push(name.clone());
         } else if let Some(value) = workload_params.get(name) {
-            let literal = format_workload_param_as_gk_literal(value);
-            source.push_str(&format!("final {name} := {literal}\n"));
-            emitted_externs.insert(name.clone());
+            // Chain-aware: a `set:` / `bindings:` scope above
+            // us may have shadowed this param. Helper picks the
+            // chain value when present, the HashMap default
+            // otherwise.
+            emit_workload_param_chain_aware(
+                name, value, parent_kernel, &mut source, &mut emitted_externs, None,
+            );
         }
     }
 
@@ -243,9 +247,11 @@ pub fn synthesize_for_each_scope(
             // line.
             inherited_names.push(name.clone());
         } else if let Some(value) = workload_params.get(name) {
-            let literal = format_workload_param_as_gk_literal(value);
-            source.push_str(&format!("final {name} := {literal}\n"));
-            emitted_externs.insert(name.clone());
+            // Chain-aware: see emit_workload_param_chain_aware
+            // doc comment.
+            emit_workload_param_chain_aware(
+                name, value, parent_kernel, &mut source, &mut emitted_externs, None,
+            );
         }
     }
 
@@ -519,13 +525,16 @@ pub fn synthesize_for_each_iteration(
         emitted.insert(var.clone());
     }
 
-    // Workload params — same `final` form they always take.
+    // Workload params — emit via the chain-aware helper so any
+    // `set:` / `bindings:` scope above us that shadowed a param
+    // is honored. Iter-var names skip the workload-param cascade
+    // because the comprehension's own iter-var emission owns
+    // them.
     for (name, value) in workload_params {
-        if emitted.contains(name) { continue; }
         if iter_var_names.contains(name) { continue; }
-        let literal = format_workload_param_as_gk_literal(value);
-        source.push_str(&format!("final {name} := {literal}\n"));
-        emitted.insert(name.clone());
+        emit_workload_param_chain_aware(
+            name, value, parent_kernel, &mut source, &mut emitted, None,
+        );
     }
 
     // Parent-manifest cascade: every output that the parent
@@ -616,6 +625,73 @@ pub fn format_workload_param_as_gk_literal(value: &str) -> String {
     } else {
         let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
         format!("\"{escaped}\"")
+    }
+}
+
+/// Convert a scalar `Value` to its workload-param string form.
+/// Returns `None` for non-scalar variants (vectors, JSON, handles,
+/// bytes, ext) — those aren't representable as GK source literals.
+///
+/// Used by [`emit_workload_param_chain_aware`] to resolve a
+/// parent-kernel `lookup` result into a string the literal
+/// formatter can consume.
+pub fn value_to_param_string(v: &crate::node::Value) -> Option<String> {
+    use crate::node::Value;
+    match v {
+        Value::U64(n) => Some(n.to_string()),
+        Value::F64(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Str(s) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+/// Emit `final NAME := <literal>` for one workload param into
+/// `source`, choosing the literal value via the canonical
+/// chain-aware lookup order:
+///
+/// 1. `parent_kernel.lookup(name)` — if Some, this is the chain-
+///    resolved value. A `bindings:` / `set:` scope above us may
+///    have shadowed the workload-param default; whichever
+///    `final NAME := <override>` is closest in the chain wins
+///    via the local-final transit-suppression rule (SRD-13f
+///    §"Local-authoritative shadow"). If the lookup is non-
+///    scalar (vectors etc.), skip the chain path and fall back.
+/// 2. `hashmap_default` — the workload-load-time default from
+///    `params:` plus CLI overrides. Used when nothing in the
+///    chain has a value for `name`.
+///
+/// Pre-marks `name` in `emitted` so subsequent cascade passes
+/// in the caller skip it. Optionally appends to `inherited_names`
+/// for the inherited-output bookkeeping consumers also do.
+///
+/// **Why this helper exists**: pre-helper, seven distinct
+/// synthesizer sites each rolled their own `final NAME :=
+/// <hashmap>` emission, reading the HashMap directly without
+/// consulting the chain. Any name a scenario-tree `set:` or
+/// `bindings:` scope shadowed kept the stale HashMap default
+/// inside any sub-scope synthesized via one of those sites
+/// (op-template kernels, for_each iteration scopes, etc.) —
+/// breaking the SRD-21 / SRD-18 contract that the kernel chain
+/// is the single resolution surface. Routing through this
+/// helper closes that hole categorically.
+pub fn emit_workload_param_chain_aware(
+    name: &str,
+    hashmap_default: &str,
+    parent_kernel: &crate::kernel::GkKernel,
+    source: &mut String,
+    emitted: &mut std::collections::HashSet<String>,
+    inherited_names: Option<&mut Vec<String>>,
+) {
+    if emitted.contains(name) { return; }
+    let value_str = parent_kernel.lookup(name)
+        .and_then(|v| value_to_param_string(&v))
+        .unwrap_or_else(|| hashmap_default.to_string());
+    let literal = format_workload_param_as_gk_literal(&value_str);
+    source.push_str(&format!("final {name} := {literal}\n"));
+    emitted.insert(name.to_string());
+    if let Some(inh) = inherited_names {
+        inh.push(name.to_string());
     }
 }
 

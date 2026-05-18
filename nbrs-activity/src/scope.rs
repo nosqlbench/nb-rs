@@ -1116,9 +1116,11 @@ pub fn build_do_loop_scope_kernel(
             // Same fix shape as `synthesize_for_each_scope`.
             inherited_names.push(name.clone());
         } else if let Some(value) = workload_params.get(name) {
-            let literal = format_workload_param_as_gk_literal(value);
-            source.push_str(&format!("final {name} := {literal}\n"));
-            emitted.insert(name.clone());
+            // Chain-aware: a `set:` / `bindings:` scope above
+            // us may have shadowed the workload-param default.
+            nbrs_variates::comprehension::emit_workload_param_chain_aware(
+                name, value, parent_kernel, &mut source, &mut emitted, None,
+            );
         }
     }
 
@@ -1626,9 +1628,19 @@ pub fn build_op_template_scope_kernel(
         // input slot — exactly the surface the Phase-9 op-template
         // kernel was hitting on dataset_prebuffer / query_count.
         if let Some(value) = workload_params.get(name) {
-            let literal = format_workload_param_as_gk_literal(value);
-            source.push_str(&format!("final {name} := {literal}\n"));
-            emitted.insert(name.clone());
+            // Chain-aware: a `set:` / `bindings:` scope above
+            // us may have shadowed the workload-param default.
+            // This was the root cause of the CQL prepared-
+            // statement regression where `{ann_opts}` got
+            // emitted as a `?` bind point — the op-template
+            // kernel's local `final rerank_mode := "default"`
+            // masked the SetParam shadow, and the downstream
+            // `final ann_opts := select_str(str_eq(
+            // rerank_mode, "pinned"), …)` folded against the
+            // wrong rerank_mode value.
+            nbrs_variates::comprehension::emit_workload_param_chain_aware(
+                name, value, parent_kernel, &mut source, &mut emitted, None,
+            );
         } else if let Some(entry) = manifest_by_name.get(name.as_str()) {
             let type_name = match entry.port_type {
                 nbrs_variates::node::PortType::U64 => "u64",
@@ -1682,10 +1694,14 @@ pub fn build_op_template_scope_kernel(
     // a compile-time-constant value through the runtime input
     // path. `final` is the correct materialization.
     for (name, value) in workload_params {
-        if emitted.contains(name) { continue; }
-        let literal = format_workload_param_as_gk_literal(value);
-        source.push_str(&format!("final {name} := {literal}\n"));
-        emitted.insert(name.clone());
+        // Chain-aware emission: honors any `set:` / `bindings:`
+        // scope shadow above us. Without it, the op-template's
+        // local `final NAME := <hashmap-default>` would mask
+        // the shadow and break SRD-21's single-resolution-
+        // surface invariant.
+        nbrs_variates::comprehension::emit_workload_param_chain_aware(
+            name, value, parent_kernel, &mut source, &mut emitted, None,
+        );
     }
     if body_text.trim().is_empty() {
         // No own bindings — the kernel just re-exports parent.
@@ -2899,42 +2915,6 @@ fn resolve_placeholders_in_string(
         Ok(out)
     } else {
         Err(errors)
-    }
-}
-
-/// Apply workload param substitution to GK source text within ops.
-/// M3.6: Replace `{name}` placeholders in `bindings:` GK source
-/// with the *literal value* of the workload param. Workload
-/// params are session-static, so embedding the literal directly
-/// lets the GK compiler treat the value as a folded constant
-/// wherever the call site expects a `SlotType::ConstU64`/`ConstStr`
-/// argument (e.g. `mod(hash(cycle), {user_count})` →
-/// `mod(hash(cycle), 100000)` resolves the const-divisor slot
-/// without a wire-vs-const ambiguity).
-///
-/// Numeric and boolean values inline as bare GK literals; string
-/// values are emitted as quoted GK string literals with embedded
-/// quotes/backslashes escaped.
-///
-/// Only touches `BindingsDef::GkSource`; op-template fields keep
-/// their `{name}` placeholder syntax (rewritten to values at
-/// runtime via the parent-kernel-derived iter-var-values map).
-/// Replaces the pre-M3.6 `substitute_workload_params` text pass.
-pub fn rewrite_workload_param_idents_in_bindings(
-    ops: &mut [ParsedOp],
-    workload_params: &HashMap<String, String>,
-) {
-    if workload_params.is_empty() { return; }
-    for op in ops.iter_mut() {
-        if let BindingsDef::GkSource(ref mut src) = op.bindings {
-            for (key, value) in workload_params {
-                let placeholder = format!("{{{key}}}");
-                if src.contains(&placeholder) {
-                    let literal = format_workload_param_as_gk_literal(value);
-                    *src = src.replace(&placeholder, &literal);
-                }
-            }
-        }
     }
 }
 

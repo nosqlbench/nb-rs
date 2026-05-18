@@ -65,10 +65,10 @@ pub use eval::{
     pre_evaluate_clause, value_to_gk_type_name,
 };
 pub use synthesis::{
-    collect_leaf_placeholders, format_value_as_gk_literal,
-    format_workload_param_as_gk_literal,
+    collect_leaf_placeholders, emit_workload_param_chain_aware,
+    format_value_as_gk_literal, format_workload_param_as_gk_literal,
     iterate, propagate_parent_inputs, scan_one,
     synthesize_for_each_iteration, synthesize_for_each_scope,
-    workload_param_type_name, ComprehensionIter,
+    value_to_param_string, workload_param_type_name, ComprehensionIter,
 };
 pub use order::{apply_order, Tuple};

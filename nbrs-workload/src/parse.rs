@@ -761,34 +761,69 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                     Vec::new()
                 } else {
                     // Synthesize the GK source body. Each pair
-                    // becomes `init NAME := <gk-literal>` — `init`
-                    // (not `final`) because the RHS may reference
-                    // other in-scope names (`set: { mode:
-                    // "mode_for_{size}" }`) that materialize-
-                    // wiring resolves AT scope-init time. `final`
-                    // bindings are const-folded at compile,
-                    // before materialize-wiring runs, so they'd
-                    // see `size = None` and fold the printf to
-                    // the empty string. `init` evaluates exactly
-                    // once per scope activation, after wiring,
-                    // and is then fixed for the scope's lifetime
-                    // — the canonical "compute once from
-                    // resolved inputs, then constant" lifecycle
-                    // documented in SRD-11 §"Three Evaluation
-                    // Lifecycles".
+                    // becomes a binding whose lifecycle is
+                    // chosen by what the RHS actually needs:
+                    //
+                    //  - Pure literal (no `{name}` interp, no
+                    //    chain references): `final NAME := <lit>`.
+                    //    GK const-folds at compile time, so
+                    //    downstream `final` bindings that read
+                    //    NAME can also fold (e.g.,
+                    //    `final ann_opts := select_str(
+                    //    str_eq(mode, "pinned"), …)` folds when
+                    //    `mode` is itself a folded constant).
+                    //    This is the typical `set: { mode: pinned }`
+                    //    shape and is the only form that makes
+                    //    construction-time structural resolvers
+                    //    like the CQL prepared-statement
+                    //    builder see the value.
+                    //
+                    //  - Interpolation-bearing string (`{name}`
+                    //    appears in the value): `init NAME =
+                    //    "…"`. The string interpolation
+                    //    desugars to `printf`, which depends on
+                    //    in-scope extern slots — those aren't
+                    //    populated until materialize-wiring runs
+                    //    at scope-init. `final` would fold the
+                    //    printf with `Value::None` for the
+                    //    extern and produce the empty string;
+                    //    `init` evaluates after wiring and
+                    //    captures the correct value once per
+                    //    scope activation.
                     //
                     // Literal-format rules:
                     //   - numeric-parseable → bare (no quotes)
                     //   - "true" / "false" → bare boolean
                     //   - everything else → quoted GK string
                     //     literal, with `\` / `"` escaped
-                    // GK's string-interpolation surface
-                    // (`"prefix {name}"`) handles `{name}`
-                    // references inside string values at kernel
-                    // build time (desugars to `printf`).
                     let mut source = String::new();
                     for (name, value) in &pairs {
                         let trimmed = value.trim();
+                        // Modifier choice: scan the value text
+                        // for a `{...}` interpolation that
+                        // isn't a `{{` literal escape. Bare
+                        // numeric / boolean / no-brace string
+                        // → `final` (compile-time foldable).
+                        let has_interp = {
+                            let bytes = trimmed.as_bytes();
+                            let mut i = 0;
+                            let mut found = false;
+                            while i < bytes.len() {
+                                if bytes[i] == b'{'
+                                    && (i + 1 >= bytes.len() || bytes[i + 1] != b'{')
+                                {
+                                    found = true;
+                                    break;
+                                }
+                                i += if bytes[i] == b'{' && bytes.get(i + 1) == Some(&b'{') { 2 } else { 1 };
+                            }
+                            found
+                        };
+                        let (modifier, op) = if has_interp {
+                            ("init", "=")
+                        } else {
+                            ("final", ":=")
+                        };
                         let literal = if trimmed.parse::<u64>().is_ok()
                             || trimmed.parse::<f64>().is_ok()
                         {
@@ -799,7 +834,7 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                             let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
                             format!("\"{escaped}\"")
                         };
-                        source.push_str(&format!("init {name} = {literal}\n"));
+                        source.push_str(&format!("{modifier} {name} {op} {literal}\n"));
                     }
                     vec![ScenarioNode::Bindings { source, children }]
                 }
