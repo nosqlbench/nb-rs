@@ -977,10 +977,27 @@ pub fn build_phase_scope_kernel(
         // inline it as `final name := <literal>` rather than
         // cascading via extern. Falls through to extern cascade
         // when the value isn't representable.
+        //
+        // Workload params are also promoted: SRD-21
+        // §"Where workload-param values live in the kernel chain"
+        // puts their values in the params-kernel (and chain-wires
+        // them through every descendant) rather than baking
+        // `final` into the workload-root program, so the
+        // parent-program's output_modifier no longer says FINAL
+        // for those names. But the values *are* stable for the
+        // run, and downstream `final` bindings that reference a
+        // workload-param need it const-foldable to fold them in
+        // turn. So when the parent kernel can resolve the name's
+        // value via `lookup`, promote as if it were FINAL — as
+        // long as the name is a workload param (stable) and not
+        // an iter-var (changes per iteration).
         let modifier = parent_program.output_modifier(&owned);
-        if modifier == nbrs_variates::dsl::ast::BindingModifier::FINAL {
-            if let Some(value) = parent_kernel.get_constant(&owned) {
-                if let Some(natural) = value_to_param_string(value) {
+        let is_workload_param = workload_params.contains_key(&owned);
+        let promote = modifier == nbrs_variates::dsl::ast::BindingModifier::FINAL
+            || is_workload_param;
+        if promote {
+            if let Some(value) = parent_kernel.lookup(&owned) {
+                if let Some(natural) = value_to_param_string(&value) {
                     let line = format_param_binding_line(&owned, &natural);
                     source.push_str(&line);
                     source.push('\n');
@@ -2065,6 +2082,7 @@ pub fn build_scope(
             let manifest_modifier = outer_manifest.iter()
                 .find(|e| &e.name == name)
                 .map(|e| e.modifier);
+            let is_workload_param = workload_params.contains_key(name);
             if let Some(m) = manifest_modifier {
                 use nbrs_variates::dsl::ast::BindingModifier;
                 if m == BindingModifier::SHARED {
@@ -2092,6 +2110,27 @@ pub fn build_scope(
                         }
                     }
                     continue;
+                }
+            }
+            // SRD-21 §"Where workload-param values live in the
+            // kernel chain" — workload params are stable for the
+            // run but live in the params-kernel as folded
+            // constants, not in the workload-root program itself.
+            // `parent_kernel.lookup(name)` reads through the
+            // chain-wired input slot value, so this promotion
+            // gives us const-folded workload-param values inside
+            // every descendant scope's program — same
+            // effective semantics as the pre-SRD-21 design
+            // without poisoning the workload-root with `final`
+            // constants that would block scenario-tree
+            // shadowing.
+            if is_workload_param {
+                if let Some(value) = parent_kernel_ref.lookup(name) {
+                    if let Some(natural) = value_to_param_string(&value) {
+                        scope.add_param_binding(name, &natural);
+                        already_satisfied.insert(name.to_string());
+                        continue;
+                    }
                 }
             }
             // Pull the inclusion chain. If the name isn't in the
