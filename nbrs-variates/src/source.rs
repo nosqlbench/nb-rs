@@ -707,12 +707,49 @@ impl Cursors {
 // the cursor's base size (e.g. base=10000 but delta=1000 to
 // check the condition more often).
 
-/// Extend by `delta` while `ctx.elapsed_ms < min_ms`.
+/// Extend while `ctx.elapsed_ms < min_ms`, projecting the
+/// remaining work from the observed rate and committing it in
+/// one batch.
+///
+/// Per call: estimate `repeats = floor((consumed * remaining_ms
+/// / elapsed_ms) / base)` — the number of base-sized passes
+/// needed to fill the time remaining at the current rate. Apply
+/// a 5% under-bias (`repeats * 95 / 100`) so successive
+/// extensions converge from below the target rather than
+/// overshooting once. Commit `repeats * base` cycles.
+///
+/// The under-bias gives a geometric convergence: each call
+/// covers ~95% of the time remaining, so 3–4 calls typically
+/// land within 0.01% of the time budget. The first call (no
+/// rate signal yet — `elapsed_ms == 0` or `consumed == 0`)
+/// falls back to one base chunk via the `delta` field.
 pub struct UntilElapsedPolicy { pub min_ms: u64, pub delta: u64 }
 
 impl ExtensionPolicy for UntilElapsedPolicy {
     fn next_extension(&self, ctx: &ExtensionContext) -> Option<u64> {
-        if ctx.elapsed_ms < self.min_ms { Some(self.delta) } else { None }
+        if ctx.elapsed_ms >= self.min_ms { return None; }
+        // No rate signal yet — first end-reach with elapsed time
+        // below the clock resolution, or a degenerate empty
+        // cursor. Step by the declared `delta` (which the
+        // executor sets to `base` when the workload didn't
+        // supply an explicit `delta` arg) so the next call has
+        // a rate measurement to project from.
+        if ctx.elapsed_ms == 0 || ctx.consumed == 0 {
+            return Some(self.delta.max(1));
+        }
+        let remaining_ms = self.min_ms - ctx.elapsed_ms;
+        // u128 saturating math: consumed * remaining_ms can
+        // overflow u64 for long-running phases with high
+        // throughput (e.g. 10^9 ops over 10^4 ms).
+        let est_remaining = (ctx.consumed as u128)
+            .saturating_mul(remaining_ms as u128)
+            / (ctx.elapsed_ms as u128);
+        let biased = est_remaining.saturating_mul(95) / 100;
+        let base = ctx.base.max(1) as u128;
+        let repeats = biased / base;
+        if repeats == 0 { return None; }
+        let delta = repeats.saturating_mul(base);
+        Some(u64::try_from(delta).unwrap_or(u64::MAX))
     }
 }
 
@@ -962,12 +999,71 @@ mod tests {
     }
 
     #[test]
-    fn until_elapsed_policy_extends_while_below_min_ms() {
+    fn until_elapsed_policy_bootstrap_falls_back_to_delta_when_no_rate_signal() {
+        // First end-reach: consumed or elapsed effectively zero —
+        // no rate to project from. Policy returns `delta` exactly
+        // so the next call has a measurement to work with.
         let policy = UntilElapsedPolicy { min_ms: 50, delta: 7 };
         assert_eq!(policy.next_extension(&ctx_at(0, 0, 0)), Some(7));
         assert_eq!(policy.next_extension(&ctx_at(49, 0, 0)), Some(7));
-        assert_eq!(policy.next_extension(&ctx_at(50, 0, 0)), None);
-        assert_eq!(policy.next_extension(&ctx_at(1000, 0, 0)), None);
+        assert_eq!(policy.next_extension(&ctx_at(0, 0, 100)), Some(7));
+    }
+
+    #[test]
+    fn until_elapsed_policy_stops_at_or_past_min_ms() {
+        let policy = UntilElapsedPolicy { min_ms: 50, delta: 7 };
+        assert_eq!(policy.next_extension(&ctx_at(50, 100, 100)), None);
+        assert_eq!(policy.next_extension(&ctx_at(1000, 100, 100)), None);
+    }
+
+    #[test]
+    fn until_elapsed_policy_projects_remaining_cycles_with_under_bias() {
+        // base=100, consumed=100 (one pass), elapsed=200ms,
+        // min_ms=1000 → remaining=800ms. Rate = 100/200 = 0.5
+        // cycles/ms; project 0.5 * 800 = 400 cycles. Under-bias
+        // 5% → 380. Round to multiples of base (100) → 3 repeats
+        // → 300 cycles.
+        let policy = UntilElapsedPolicy { min_ms: 1000, delta: 100 };
+        assert_eq!(
+            policy.next_extension(&ctx_at(200, 100, 100)),
+            Some(300),
+            "expected 3-pass batch (380 under-biased, floored to base multiples)",
+        );
+    }
+
+    #[test]
+    fn until_elapsed_policy_returns_none_when_remaining_is_under_one_pass() {
+        // base=100, consumed=10000 over 990ms, min_ms=1000 →
+        // remaining=10ms. Project 10000/990*10 ≈ 101 cycles.
+        // Under-bias → 95. Rounded to base multiples → 0 repeats.
+        // Policy terminates rather than under-shooting the budget
+        // with a wasted partial pass.
+        let policy = UntilElapsedPolicy { min_ms: 1000, delta: 100 };
+        assert_eq!(policy.next_extension(&ctx_at(990, 10000, 100)), None);
+    }
+
+    #[test]
+    fn until_elapsed_policy_converges_geometrically() {
+        // Sanity: simulate the extension loop. Each iteration
+        // commits ~95% of the remaining time budget; the
+        // residual is bounded below by the base-pass rounding,
+        // so convergence is one-base-coarse rather than
+        // arbitrarily tight.
+        let policy = UntilElapsedPolicy { min_ms: 1000, delta: 10 };
+        // Pretend the first pass took 10ms (rate = 1 cycle/ms).
+        let mut elapsed = 10u64;
+        let mut consumed = 10u64;
+        let mut iters = 0;
+        while let Some(delta) = policy.next_extension(&ctx_at(elapsed, consumed, 10)) {
+            iters += 1;
+            assert!(iters < 10, "geometric series should converge fast");
+            consumed += delta;
+            // Same rate: 1 cycle/ms.
+            elapsed += delta;
+        }
+        assert!(elapsed <= 1000, "must under-shoot, got elapsed={elapsed}");
+        // Residual ≤ ~5% (under-bias) + 1 base pass (rounding) ≈ 6% of target.
+        assert!(elapsed >= 940, "must come within ~6% of target, got {elapsed}");
     }
 
     #[test]
