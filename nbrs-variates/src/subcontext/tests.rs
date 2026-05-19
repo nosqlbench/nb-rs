@@ -25,7 +25,7 @@ use crate::node::Value;
 fn parent_kernel() -> Arc<ScopeKernel<RootMarker>> {
     let kernel = compile_gk(
         "input cycle: u64\n\
-         final dataset := \"sift1m\"\n\
+         const dataset := \"sift1m\"\n\
          seed := hash(cycle)\n",
     )
     .expect("parent kernel compile");
@@ -1027,7 +1027,7 @@ fn bind_program_under_parent_rebinds_compiled_program() {
     // behaviour the legacy two-call dance produced.
     let parent_kernel = compile_gk(
         "input cycle: u64\n\
-         final n := 7\n",
+         const n := 7\n",
     )
     .expect("parent compile");
 
@@ -1056,7 +1056,7 @@ fn build_kernel_under_parent_threads_compile_options() {
     // `compile_gk_with_libs` directly produce byte-identical
     // kernels via the builder. Verify the bridge accepts a
     // non-default options struct and produces a working kernel.
-    let parent_kernel = compile_gk("input cycle: u64\nfinal n := 5\n")
+    let parent_kernel = compile_gk("input cycle: u64\nconst n := 5\n")
         .expect("parent compile");
 
     let opts = super::builder::CompileOptions {
@@ -1084,12 +1084,12 @@ fn build_kernel_under_parent_threads_compile_options() {
 
 #[test]
 fn parent_final_export_collision_still_errors() {
-    // `final X := ...` on the parent + same-named child binding
+    // `const X := ...` on the parent + same-named child binding
     // is an immutable-export violation. Rule 2 routes shared
     // collisions but final collisions remain hard errors.
     let kernel = compile_gk(
         "input cycle: u64\n\
-         final fixed := 42\n",
+         const fixed := 42\n",
     )
     .expect("parent kernel compile");
     let parent = wrap_root_kernel(kernel, "test-root-final");

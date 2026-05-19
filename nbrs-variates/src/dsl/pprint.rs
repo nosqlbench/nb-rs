@@ -30,7 +30,7 @@
 //! concern.
 
 use crate::dsl::ast::{
-    Arg, BindingModifier, CallExpr, CycleBinding, Expr, GkFile, InitBinding,
+    Arg, BindingModifier, CallExpr, Binding, Expr, GkFile,
     ModuleDef, Statement, BinOpKind, ExternPort, CursorDecl, WireModifier,
 };
 
@@ -52,8 +52,7 @@ pub fn pp_statement(stmt: &Statement) -> String {
             Some(ty) => format!("input {}: {}", d.name, ty),
             None => format!("input {}", d.name),
         },
-        Statement::InitBinding(b) => pp_init_binding(b),
-        Statement::CycleBinding(b) => pp_cycle_binding(b),
+        Statement::Binding(b) => pp_binding(b),
         Statement::ModuleDef(m) => pp_module_def(m),
         Statement::ExternPort(p) => pp_extern_port(p),
         Statement::Cursor(c) => pp_cursor(c),
@@ -83,22 +82,7 @@ pub fn pp_expr(expr: &Expr) -> String {
     }
 }
 
-fn pp_init_binding(b: &InitBinding) -> String {
-    let prefix = pp_modifier_prefix(b.modifier);
-    if b.modifier.has(WireModifier::Final) || prefix.is_empty() {
-        // No `init` keyword; either bare or `final`/`shared`/`volatile` prefix.
-        // The compiler treats `final x := lit` and `init x = lit` differently
-        // (CycleBinding vs InitBinding). InitBinding is specifically the
-        // `init name = expr` syntax. So this branch only fires when an
-        // InitBinding genuinely has the `init` keyword — meaning prefix is
-        // empty (no other modifier).
-        format!("init {} = {}", b.name, pp_expr(&b.value))
-    } else {
-        format!("init {} = {}", b.name, pp_expr(&b.value))
-    }
-}
-
-fn pp_cycle_binding(b: &CycleBinding) -> String {
+fn pp_binding(b: &Binding) -> String {
     let target = if b.targets.len() == 1 {
         b.targets[0].clone()
     } else {
@@ -154,7 +138,7 @@ fn pp_arg(arg: &Arg) -> String {
 
 fn pp_modifier_prefix(m: BindingModifier) -> String {
     let mut parts: Vec<&str> = Vec::new();
-    if m.has(WireModifier::Final)    { parts.push("final"); }
+    if m.has(WireModifier::Const)    { parts.push("const"); }
     if m.has(WireModifier::Shared)   { parts.push("shared"); }
     if m.has(WireModifier::Volatile) { parts.push("volatile"); }
     parts.join(" ")
@@ -231,17 +215,17 @@ mod tests {
 
     #[test]
     fn round_trip_simple_const() {
-        round_trip("final x := 42\n");
+        round_trip("const x := 42\n");
     }
 
     #[test]
     fn round_trip_string_const() {
-        round_trip("final dataset := \"sift1m\"\n");
+        round_trip("const dataset := \"sift1m\"\n");
     }
 
     #[test]
     fn round_trip_init_binding() {
-        round_trip("init prebuffer = dataset_prebuffer(\"example\")\n");
+        round_trip("const prebuffer := dataset_prebuffer(\"example\")\n");
     }
 
     #[test]
@@ -278,8 +262,8 @@ mod tests {
     fn round_trip_workload_typical() {
         // Mirrors the shape of full_cql_vector workload bindings.
         let src = "\
-final dataset := \"sift1m\"
-final prefix := \"vec_default\"
+const dataset := \"sift1m\"
+const prefix := \"vec_default\"
 profiles := matching_profiles(dataset, prefix)
 table := first(profiles)
 ";
@@ -288,11 +272,11 @@ table := first(profiles)
 
     #[test]
     fn round_trip_string_escapes() {
-        round_trip("final s := \"hello \\\"world\\\"\"\n");
+        round_trip("const s := \"hello \\\"world\\\"\"\n");
     }
 
     #[test]
     fn round_trip_array_literal() {
-        round_trip("final weights := [60.0, 20.0, 15.0, 5.0]\n");
+        round_trip("const weights := [60.0, 20.0, 15.0, 5.0]\n");
     }
 }

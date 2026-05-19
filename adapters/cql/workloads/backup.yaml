@@ -239,7 +239,7 @@ phases:
   rampup:
     concurrency: "{concurrency}"
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       cursor row = range(0, vector_count(prebuffered))
       id := format_u64(row, 10)
       train_vector := vector_at(prebuffered, row)
@@ -255,7 +255,7 @@ phases:
   fknn_rampup_data:
     concurrency: "{concurrency}"
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       cursor row = range(0, vector_count(prebuffered))
       id := format_u64(row, 10)
       train_vector := vector_at(prebuffered, row)
@@ -274,8 +274,8 @@ phases:
   ann_query:
     concurrency: "{query_concurrency}"
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
-      init query_counts = query_count(prebuffered)
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
+      const query_counts := query_count(prebuffered)
       cursor q = range(0, query_counts * 100)
       query_vector := query_vector_at(prebuffered, q % query_counts)
       ground_truth := neighbor_indices_at(prebuffered, q)
@@ -299,8 +299,8 @@ phases:
     concurrency: "{query_concurrency}"
     errors: count
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
-      init query_counts = query_count(prebuffered)
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
+      const query_counts := query_count(prebuffered)
       cursor q = range(0, query_counts * 100)          
       predicate := predicate_value_at(prebuffered, q % query_counts)
     ops:
@@ -322,8 +322,8 @@ phases:
     concurrency: "{query_concurrency}"
     errors: count
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
-      init query_counts = query_count(prebuffered)
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
+      const query_counts := query_count(prebuffered)
       cursor q = range(0, query_counts * 10)
       query_vector := query_vector_at(prebuffered, q % query_counts)
       predicate := predicate_value_at(prebuffered, q % query_counts)

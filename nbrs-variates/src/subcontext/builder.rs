@@ -241,16 +241,13 @@ impl<P> SubcontextBuilder<P> {
         let mut result_lhs: Vec<String> = Vec::new();
         for stmt in &file.statements {
             match stmt {
-                Statement::CycleBinding(b) => {
+                Statement::Binding(b) => {
                     for t in &b.targets {
                         local_decls.insert(t.clone());
                         if !result_lhs.contains(t) {
                             result_lhs.push(t.clone());
                         }
                     }
-                }
-                Statement::InitBinding(ib) => {
-                    local_decls.insert(ib.name.clone());
                 }
                 Statement::ExternPort(ep) => {
                     local_decls.insert(ep.name.clone());
@@ -458,7 +455,7 @@ impl<P> SubcontextBuilder<P> {
         let mut write_through_specs: Vec<(String, PortType)> = Vec::new();
         for exp in &exports {
             let parent_modifier = parent_inner.program().output_modifier(&exp.name);
-            if parent_modifier.is_final() && parent_outputs.contains(&exp.name) {
+            if parent_modifier.is_const() && parent_outputs.contains(&exp.name) {
                 return Err(ContractViolation::FinalShadow {
                     export: exp.name.clone(),
                     site: context.clone(),
@@ -534,7 +531,7 @@ impl<P> SubcontextBuilder<P> {
             // collision is real. The single-target shape is the
             // SRD-66 motivating case.
             for stmt in statements.iter_mut() {
-                if let Statement::CycleBinding(b) = stmt
+                if let Statement::Binding(b) = stmt
                     && b.targets.len() == 1
                 {
                     let target = &b.targets[0];
@@ -733,8 +730,7 @@ impl<P> SubcontextBuilder<P> {
 /// (`body` / `count` / `ok`) the source actually references.
 fn collect_free_idents(stmt: &Statement, out: &mut std::collections::HashSet<String>) {
     match stmt {
-        Statement::CycleBinding(b) => collect_expr_idents(&b.value, out),
-        Statement::InitBinding(ib) => collect_expr_idents(&ib.value, out),
+        Statement::Binding(b) => collect_expr_idents(&b.value, out),
         Statement::Cursor(c) => collect_expr_idents(&c.constructor, out),
         Statement::ModuleDef(_)
         | Statement::ExternPort(_)

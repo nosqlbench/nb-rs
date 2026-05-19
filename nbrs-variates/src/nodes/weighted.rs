@@ -736,7 +736,7 @@ mod tests {
 
         let source = r#"
             input cycle: u64
-            init spec = "alpha:0.3;beta:0.7"
+            const spec := "alpha:0.3;beta:0.7"
             result := dynamic_weighted_select(hash(cycle), spec)
         "#;
         let mut log = CompileEventLog::new();

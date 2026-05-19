@@ -94,9 +94,9 @@ fn dependent_tuple_with_dynamic_name_composition() {
     // resolving placeholders through GK's name space.
     // M3.3 routes for_each spec interpolation through the
     // installed scope kernel; workload params get injected as
-    // `final` bindings on the synthesized kernel directly
+    // `const` bindings on the synthesized kernel directly
     // (the M3.3-bridge until M3.6 promotes them to workload-
-    // kernel `init` bindings).
+    // kernel `const` bindings).
     let yaml = r#"
 params:
   k_values: "1, 10"

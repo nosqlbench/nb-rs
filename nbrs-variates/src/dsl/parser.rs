@@ -160,10 +160,9 @@ fn parse_statement_into(p: &mut Parser, out: &mut Vec<Statement>) -> Result<(), 
     match p.peek() {
         TokenKind::Pragma => out.push(parse_pragma(p)?),
         TokenKind::Input => parse_input_decl(p, out)?,
-        TokenKind::Init => out.push(parse_init_binding(p)?),
         TokenKind::Extern => out.push(parse_extern_port(p)?),
         TokenKind::Cursor => out.push(parse_cursor_decl(p)?),
-        TokenKind::Shared | TokenKind::Final | TokenKind::Volatile => {
+        TokenKind::Const | TokenKind::Shared | TokenKind::Volatile => {
             out.push(parse_modified_binding(p)?);
         }
         TokenKind::LParen => out.push(parse_destructuring_binding(p)?),
@@ -342,21 +341,6 @@ fn parse_input_decl(p: &mut Parser, out: &mut Vec<Statement>) -> Result<(), Stri
     Ok(())
 }
 
-/// `init name = expr`
-fn parse_init_binding(p: &mut Parser) -> Result<Statement, String> {
-    parse_init_binding_with_modifier(p, BindingModifier::NONE)
-}
-
-fn parse_init_binding_with_modifier(p: &mut Parser, modifier: BindingModifier) -> Result<Statement, String> {
-    let span = p.span();
-    p.advance(); // consume 'init'
-    let name = p.expect_ident()?;
-    p.expect(&TokenKind::Eq)?;
-    let value = parse_expr(p)?;
-
-    Ok(Statement::InitBinding(InitBinding { name, value, modifier, span }))
-}
-
 /// `cursor name = Cursor()` or `cursor name = expr`
 fn parse_cursor_decl(p: &mut Parser) -> Result<Statement, String> {
     let span = p.span();
@@ -367,9 +351,9 @@ fn parse_cursor_decl(p: &mut Parser) -> Result<Statement, String> {
     Ok(Statement::Cursor(CursorDecl { name, constructor, span }))
 }
 
-/// `<modifier>* name := expr` where each modifier ∈ {final,
+/// `<modifier>* name := expr` where each modifier ∈ {const,
 /// shared, volatile, ...}. Modifiers may appear in any order;
-/// duplicates and the contradictory `final` + `volatile` combo
+/// duplicates and the contradictory `const` + `volatile` combo
 /// are rejected (see [`BindingModifier::from_iter`]).
 fn parse_modified_binding(p: &mut Parser) -> Result<Statement, String> {
     let start_span = p.span();
@@ -377,7 +361,7 @@ fn parse_modified_binding(p: &mut Parser) -> Result<Statement, String> {
 
     loop {
         let m = match p.peek() {
-            TokenKind::Final    => WireModifier::Final,
+            TokenKind::Const    => WireModifier::Const,
             TokenKind::Shared   => WireModifier::Shared,
             TokenKind::Volatile => WireModifier::Volatile,
             _ => break,
@@ -398,7 +382,6 @@ fn parse_modified_binding(p: &mut Parser) -> Result<Statement, String> {
         ))?;
 
     match p.peek() {
-        TokenKind::Init => parse_init_binding_with_modifier(p, modifier),
         TokenKind::Ident(_) => parse_cycle_binding_with_modifier(p, modifier),
         _ => Err(format!(
             "expected binding name after modifiers at line {}, col {}",
@@ -418,7 +401,7 @@ fn parse_cycle_binding_with_modifier(p: &mut Parser, modifier: BindingModifier) 
     p.expect(&TokenKind::ColonEq)?;
     let value = parse_expr(p)?;
 
-    Ok(Statement::CycleBinding(CycleBinding {
+    Ok(Statement::Binding(Binding {
         targets: vec![name],
         value,
         modifier,
@@ -443,7 +426,7 @@ fn parse_destructuring_binding(p: &mut Parser) -> Result<Statement, String> {
     p.expect(&TokenKind::ColonEq)?;
     let value = parse_expr(p)?;
 
-    Ok(Statement::CycleBinding(CycleBinding {
+    Ok(Statement::Binding(Binding {
         targets,
         value,
         modifier: BindingModifier::NONE,
@@ -864,7 +847,7 @@ mod tests {
 
     fn cycle_modifier_of(f: &GkFile) -> BindingModifier {
         match &f.statements[0] {
-            Statement::CycleBinding(b) => b.modifier,
+            Statement::Binding(b) => b.modifier,
             other => panic!("expected cycle binding, got {other:?}"),
         }
     }
@@ -873,41 +856,41 @@ mod tests {
     fn parse_volatile_modifier() {
         let f = parse_str("volatile x := 42");
         let m = cycle_modifier_of(&f);
-        assert!(m.is_volatile() && !m.is_final() && !m.is_shared());
+        assert!(m.is_volatile() && !m.is_const() && !m.is_shared());
     }
 
     #[test]
     fn parse_modifiers_in_any_order_yields_same_set() {
-        let m1 = cycle_modifier_of(&parse_str("final shared x := 42"));
-        let m2 = cycle_modifier_of(&parse_str("shared final x := 42"));
+        let m1 = cycle_modifier_of(&parse_str("const shared x := 42"));
+        let m2 = cycle_modifier_of(&parse_str("shared const x := 42"));
         assert_eq!(m1, m2,
-            "ordering shouldn't matter: `final shared` and `shared final` collapse to the same set");
-        assert!(m1.is_final() && m1.is_shared());
+            "ordering shouldn't matter: `const shared` and `shared const` collapse to the same set");
+        assert!(m1.is_const() && m1.is_shared());
     }
 
     #[test]
     fn parse_shared_volatile_combination() {
         let m = cycle_modifier_of(&parse_str("shared volatile x := 42"));
-        assert!(m.is_shared() && m.is_volatile() && !m.is_final());
+        assert!(m.is_shared() && m.is_volatile() && !m.is_const());
     }
 
     #[test]
-    fn parse_rejects_final_volatile_combo() {
-        let err = parse_str_err("final volatile x := 42");
-        assert!(err.contains("final") && err.contains("volatile"),
+    fn parse_rejects_const_volatile_combo() {
+        let err = parse_str_err("const volatile x := 42");
+        assert!(err.contains("const") && err.contains("volatile"),
             "error should name the conflicting keywords: {err}");
     }
 
     #[test]
-    fn parse_rejects_volatile_final_combo_same_as_final_volatile() {
+    fn parse_rejects_volatile_const_combo_same_as_const_volatile() {
         // Order-independent rejection.
-        let err = parse_str_err("volatile final x := 42");
-        assert!(err.contains("final") && err.contains("volatile"));
+        let err = parse_str_err("volatile const x := 42");
+        assert!(err.contains("const") && err.contains("volatile"));
     }
 
     #[test]
     fn parse_rejects_duplicate_modifier() {
-        let err = parse_str_err("final final x := 42");
+        let err = parse_str_err("const const x := 42");
         assert!(err.contains("duplicate"), "error should call out duplicate: {err}");
     }
 
@@ -927,15 +910,20 @@ mod tests {
     }
 
     #[test]
-    fn parse_volatile_init_binding() {
-        // `volatile init x = 42` — init binding with volatile
-        // modifier. Both kinds of bindings share the modifier set.
-        let f = parse_str("volatile init x = 42");
+    fn parse_volatile_const_binding() {
+        // `volatile const x := 42` — const binding with volatile
+        // modifier. The grammar accepts modifier stacking; the
+        // `const + volatile` combination is rejected by
+        // `BindingModifier::from_iter` as semantically
+        // contradictory, but `volatile` alone (no const) is fine
+        // and the parser must accept the lexical sequence.
+        let f = parse_str("volatile x := 42");
         match &f.statements[0] {
-            Statement::InitBinding(b) => {
+            Statement::Binding(b) => {
                 assert!(b.modifier.is_volatile());
+                assert!(!b.modifier.is_const());
             }
-            other => panic!("expected init binding, got {other:?}"),
+            other => panic!("expected binding, got {other:?}"),
         }
     }
 
@@ -995,12 +983,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_init_binding() {
-        let f = parse_str("init lut = dist_normal(72.0, 5.0)");
+    fn parse_const_binding() {
+        let f = parse_str("const lut := dist_normal(72.0, 5.0)");
         assert_eq!(f.statements.len(), 1);
         match &f.statements[0] {
-            Statement::InitBinding(b) => {
-                assert_eq!(b.name, "lut");
+            Statement::Binding(b) => {
+                assert_eq!(b.targets, vec!["lut"]);
+                assert!(b.modifier.is_const());
                 match &b.value {
                     Expr::Call(c) => {
                         assert_eq!(c.func, "dist_normal");
@@ -1009,7 +998,7 @@ mod tests {
                     _ => panic!("expected call"),
                 }
             }
-            _ => panic!("expected init binding"),
+            _ => panic!("expected const binding"),
         }
     }
 
@@ -1017,7 +1006,7 @@ mod tests {
     fn parse_cycle_binding() {
         let f = parse_str("seed := hash(cycle)");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 assert_eq!(b.targets, vec!["seed"]);
                 match &b.value {
                     Expr::Call(c) => {
@@ -1035,7 +1024,7 @@ mod tests {
     fn parse_destructuring() {
         let f = parse_str("(tenant, device, reading) := mixed_radix(cycle, 100, 1000, 0)");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 assert_eq!(b.targets, vec!["tenant", "device", "reading"]);
                 match &b.value {
                     Expr::Call(c) => {
@@ -1051,9 +1040,9 @@ mod tests {
 
     #[test]
     fn parse_named_args() {
-        let f = parse_str("init lut = dist_normal(mean: 72.0, stddev: 5.0)");
+        let f = parse_str("const lut := dist_normal(mean: 72.0, stddev: 5.0)");
         match &f.statements[0] {
-            Statement::InitBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::Call(c) => {
                         assert!(matches!(&c.args[0], Arg::Named(n, _) if n == "mean"));
@@ -1062,7 +1051,7 @@ mod tests {
                     _ => panic!("expected call"),
                 }
             }
-            _ => panic!("expected init"),
+            _ => panic!("expected const binding"),
         }
     }
 
@@ -1072,7 +1061,7 @@ mod tests {
         // `Expr::StringLit`.
         let f = parse_str(r#"id := "static text""#);
         match &f.statements[0] {
-            Statement::CycleBinding(b) => match &b.value {
+            Statement::Binding(b) => match &b.value {
                 Expr::StringLit(s, _) => assert_eq!(s, "static text"),
                 _ => panic!("expected string lit"),
             },
@@ -1087,7 +1076,7 @@ mod tests {
         // as wires from the surrounding scope.
         let f = parse_str(r#"id := "{code}-{seq}""#);
         match &f.statements[0] {
-            Statement::CycleBinding(b) => match &b.value {
+            Statement::Binding(b) => match &b.value {
                 Expr::Call(c) => {
                     assert_eq!(c.func, "printf");
                     assert_eq!(c.args.len(), 3);
@@ -1118,7 +1107,7 @@ mod tests {
         // for printf's own parser.
         let f = parse_str(r#"id := "x={:05}""#);
         match &f.statements[0] {
-            Statement::CycleBinding(b) => match &b.value {
+            Statement::Binding(b) => match &b.value {
                 Expr::StringLit(s, _) => assert_eq!(s, "x={:05}"),
                 _ => panic!("expected literal"),
             },
@@ -1132,7 +1121,7 @@ mod tests {
         // parse as full expressions and become printf args.
         let f = parse_str(r#"email := "{format_u64(hash(cycle), 10)}@example.com""#);
         let call = match &f.statements[0] {
-            Statement::CycleBinding(b) => match &b.value {
+            Statement::Binding(b) => match &b.value {
                 Expr::Call(c) => c,
                 other => panic!("expected printf call, got {other:?}"),
             },
@@ -1167,7 +1156,7 @@ mod tests {
         // standard Pratt expression path.
         let f = parse_str(r#"id := "x={a + b * 2}""#);
         let call = match &f.statements[0] {
-            Statement::CycleBinding(b) => match &b.value {
+            Statement::Binding(b) => match &b.value {
                 Expr::Call(c) => c,
                 other => panic!("expected call, got {other:?}"),
             },
@@ -1185,7 +1174,7 @@ mod tests {
         // Field access (`base.ordinal`) inside placeholders.
         let f = parse_str(r#"k := "row {row.id}""#);
         let call = match &f.statements[0] {
-            Statement::CycleBinding(b) => match &b.value {
+            Statement::Binding(b) => match &b.value {
                 Expr::Call(c) => c,
                 other => panic!("expected call, got {other:?}"),
             },
@@ -1208,7 +1197,7 @@ mod tests {
         // and don't open a placeholder.
         let f = parse_str(r#"k := "{{not a placeholder}} but {real}""#);
         let call = match &f.statements[0] {
-            Statement::CycleBinding(b) => match &b.value {
+            Statement::Binding(b) => match &b.value {
                 Expr::Call(c) => c,
                 other => panic!("expected call, got {other:?}"),
             },
@@ -1231,7 +1220,7 @@ mod tests {
         // An unterminated `{` makes the whole string stay literal.
         let f = parse_str(r#"k := "missing close {abc""#);
         match &f.statements[0] {
-            Statement::CycleBinding(b) => match &b.value {
+            Statement::Binding(b) => match &b.value {
                 Expr::StringLit(s, _) => assert_eq!(s, "missing close {abc"),
                 other => panic!("expected literal, got {other:?}"),
             },
@@ -1246,7 +1235,7 @@ mod tests {
         // at depth zero.
         let f = parse_str(r#"k := "{abs(x - y)}""#);
         let call = match &f.statements[0] {
-            Statement::CycleBinding(b) => match &b.value {
+            Statement::Binding(b) => match &b.value {
                 Expr::Call(c) => c,
                 other => panic!("expected call, got {other:?}"),
             },
@@ -1261,15 +1250,15 @@ mod tests {
 
     #[test]
     fn parse_array_lit() {
-        let f = parse_str("init weights = [60.0, 20.0, 15.0, 5.0]");
+        let f = parse_str("const weights := [60.0, 20.0, 15.0, 5.0]");
         match &f.statements[0] {
-            Statement::InitBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::ArrayLit(elems, _) => assert_eq!(elems.len(), 4),
                     _ => panic!("expected array lit"),
                 }
             }
-            _ => panic!("expected init"),
+            _ => panic!("expected const binding"),
         }
     }
 
@@ -1277,7 +1266,7 @@ mod tests {
     fn parse_nested_call() {
         let f = parse_str("x := hash(interleave(a, b))");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::Call(c) => {
                         assert_eq!(c.func, "hash");
@@ -1300,11 +1289,11 @@ mod tests {
     #[test]
     fn parse_full_program() {
         let src = r#"
-            // Init
-            init temp_lut = dist_normal(mean: 72.0, stddev: 5.0)
-            init weights = [60.0, 20.0, 15.0]
+            // Const bindings (compile-time fold or scope-init pull)
+            const temp_lut := dist_normal(mean: 72.0, stddev: 5.0)
+            const weights := [60.0, 20.0, 15.0]
 
-            // Cycle
+            // Cycle bindings (per-cycle eval)
             input cycle: u64
             (tenant, device) := mixed_radix(cycle, 100, 0)
             tenant_h := hash(tenant)
@@ -1317,9 +1306,9 @@ mod tests {
 
     #[test]
     fn parse_mixed_positional_named() {
-        let f = parse_str("init lut = dist_normal(72.0, 5.0, resolution: 2000)");
+        let f = parse_str("const lut := dist_normal(72.0, 5.0, resolution: 2000)");
         match &f.statements[0] {
-            Statement::InitBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::Call(c) => {
                         assert!(matches!(&c.args[0], Arg::Positional(_)));
@@ -1329,7 +1318,7 @@ mod tests {
                     _ => panic!("expected call"),
                 }
             }
-            _ => panic!("expected init"),
+            _ => panic!("expected const binding"),
         }
     }
 
@@ -1337,7 +1326,7 @@ mod tests {
     fn parse_simple_addition() {
         let f = parse_str("y := a + b");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::BinOp(lhs, BinOpKind::Add, rhs) => {
                         assert!(matches!(**lhs, Expr::Ident(ref s, _) if s == "a"));
@@ -1355,7 +1344,7 @@ mod tests {
         // `a + b * c` should parse as `a + (b * c)`
         let f = parse_str("y := a + b * c");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::BinOp(lhs, BinOpKind::Add, rhs) => {
                         assert!(matches!(**lhs, Expr::Ident(ref s, _) if s == "a"));
@@ -1379,7 +1368,7 @@ mod tests {
         // `(a + b) * c` — parens override precedence
         let f = parse_str("y := (a + b) * c");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::BinOp(lhs, BinOpKind::Mul, rhs) => {
                         match &**lhs {
@@ -1399,7 +1388,7 @@ mod tests {
     fn parse_unary_negation() {
         let f = parse_str("y := -x");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::UnaryNeg(inner, _) => {
                         assert!(matches!(**inner, Expr::Ident(ref s, _) if s == "x"));
@@ -1416,7 +1405,7 @@ mod tests {
         // `sin(cycle * 0.25)` — infix inside function args
         let f = parse_str("y := sin(cycle * 0.25)");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::Call(c) => {
                         assert_eq!(c.func, "sin");
@@ -1438,7 +1427,7 @@ mod tests {
         // `a ** b ** c` should parse as `a ** (b ** c)` (right-associative)
         let f = parse_str("y := a ** b ** c");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::BinOp(lhs, BinOpKind::Pow, rhs) => {
                         assert!(matches!(**lhs, Expr::Ident(ref s, _) if s == "a"));
@@ -1462,7 +1451,7 @@ mod tests {
         // `-sin(x)` — unary negation of a function call
         let f = parse_str("y := -sin(x)");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::UnaryNeg(inner, _) => {
                         match &**inner {
@@ -1482,7 +1471,7 @@ mod tests {
         // Ensure all operators parse without error.
         let f = parse_str("y := a + b - c * d / e % f ** g");
         match &f.statements[0] {
-            Statement::CycleBinding(_) => {} // just checking it parses
+            Statement::Binding(_) => {} // just checking it parses
             _ => panic!("expected cycle binding"),
         }
     }
@@ -1492,7 +1481,7 @@ mod tests {
         // `x ** 2.0` parses as BinOp(x, Pow, 2.0)
         let f = parse_str("y := x ** 2.0");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::BinOp(lhs, BinOpKind::Pow, rhs) => {
                         assert!(matches!(**lhs, Expr::Ident(ref s, _) if s == "x"));
@@ -1510,7 +1499,7 @@ mod tests {
         // `a ^ b` parses as BinOp(a, BitXor, b)
         let f = parse_str("y := a ^ b");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::BinOp(lhs, BinOpKind::BitXor, rhs) => {
                         assert!(matches!(**lhs, Expr::Ident(ref s, _) if s == "a"));
@@ -1528,7 +1517,7 @@ mod tests {
         // `a & b | c` should parse as `(a & b) | c`
         let f = parse_str("y := a & b | c");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::BinOp(lhs, BinOpKind::BitOr, rhs) => {
                         match &**lhs {
@@ -1549,7 +1538,7 @@ mod tests {
         // `a << 4` parses as BinOp(a, Shl, 4)
         let f = parse_str("y := a << 4");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::BinOp(lhs, BinOpKind::Shl, rhs) => {
                         assert!(matches!(**lhs, Expr::Ident(ref s, _) if s == "a"));
@@ -1567,7 +1556,7 @@ mod tests {
         // `!x` parses as UnaryBitNot(x)
         let f = parse_str("y := !x");
         match &f.statements[0] {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 match &b.value {
                     Expr::UnaryBitNot(inner, _) => {
                         assert!(matches!(**inner, Expr::Ident(ref s, _) if s == "x"));

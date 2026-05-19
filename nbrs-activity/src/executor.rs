@@ -608,7 +608,7 @@ fn execute_node<'a>(
                 // workload-kernel rebuilds chain through this
                 // scope's local matter. Lexical shadowing of an
                 // upstream `final NAME` by this body's own
-                // `final NAME := …` is enforced by the local-
+                // `const NAME := …` is enforced by the local-
                 // final transit-suppression rule in
                 // `materialize_wiring_from_outer` — uniform with
                 // every other scope.
@@ -1250,7 +1250,7 @@ async fn run_phase(
 
     // Derive iteration-variable values from the current parent
     // kernel's namespace. Names visible at the parent scope —
-    // own outputs (folded constants from `final` bindings) plus
+    // own outputs (folded constants from `const` bindings) plus
     // inherited extern inputs (populated by `materialize_wiring_from_outer`
     // chain or per-iteration `set_input` from the dispatcher)
     // — flow through a single `GkKernel::lookup` call per name,
@@ -1470,7 +1470,7 @@ async fn run_phase(
         // Build typed scope from structured inputs. M3.6:
         // phase-level scope passes empty workload_params —
         // those are now scope outputs of the workload kernel
-        // (declared as `final` bindings at compile) and reach
+        // (declared as `const` bindings at compile) and reach
         // this phase via the parent-kernel manifest's
         // auto-extern. Local injection here would just create
         // duplicate locals.
@@ -1587,9 +1587,9 @@ async fn run_phase(
         // violations at compile time; Plan B catches runtime
         // failures (eval panic via catch_unwind, fatal Value::None
         // returns, missing output_map entry).
-        let init_outputs: Vec<String> = kernel.program().init_outputs()
-            .iter().cloned().collect();
-        for init_name in &init_outputs {
+        let const_outputs: Vec<String> = kernel.program().const_outputs()
+            .iter().map(|s| s.to_string()).collect();
+        for init_name in &const_outputs {
             // catch_unwind so a panicking eval becomes a clean error,
             // not a fiber-pool poisoning panic. Nodes that do blocking
             // I/O are responsible for parking the worker themselves
@@ -1613,6 +1613,65 @@ async fn run_phase(
                         "{gk_context}: init binding '{init_name}' violates the init contract: \
                          scope-init eval panicked: {msg} (per SRD 11 §\"Init Binding Contract\" \
                          Plan B)."
+                    ));
+                }
+            }
+        }
+
+        // ─── Scope-activation pull for unfolded `final` outputs ───
+        //
+        // `const NAME := <expr>` declares "this value is fixed for
+        // the scope's lifetime." When the RHS is a literal or
+        // depends only on other compile-time constants, the GK
+        // compiler const-folds the value into the program's
+        // buffer and `get_constant` returns it immediately.
+        //
+        // But `const` bindings with RHS depending on iter-vars
+        // or other extern slots (`const ann_opts := select_str(
+        // ..., "WITH ann_options = {limit}", ...)` where `limit`
+        // is an iter-var) can't fold at compile — the extern
+        // value isn't known until materialize-wiring binds it
+        // per scope activation. The unfolded result is a runtime
+        // node whose buffer stays `Value::None` until something
+        // pulls it.
+        //
+        // Construction-time consumers like the CQL adapter's
+        // structural-resolve pass call `kernel.lookup(name)` and
+        // expect to see the final's value. Without this pre-pull,
+        // they get `None` → fall back to `?` bind-point — which
+        // produces broken CQL when the placeholder isn't a value
+        // position (e.g. the trailing `WITH ann_options = …`
+        // clause after `LIMIT N`).
+        //
+        // Pull every `final` output whose buffer is currently
+        // None; this realises the "fixed for the scope" contract
+        // at scope-init time, after iter-vars and externs are
+        // populated. Same panic/None handling as init bindings —
+        // a `final` whose runtime eval fails is just as much a
+        // contract violation as an `init` that does.
+        let const_outputs: Vec<String> = kernel.program().const_outputs()
+            .iter().map(|s| s.to_string()).collect();
+        for final_name in &const_outputs {
+            if kernel.get_constant(final_name).is_some() { continue; }
+            let pull_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                kernel.pull(final_name).clone()
+            }));
+            match pull_result {
+                Ok(v) if !matches!(v, nbrs_variates::node::Value::None) => {}
+                Ok(_) => {
+                    return Err(format!(
+                        "{gk_context}: final binding '{final_name}' could not be \
+                         materialised at scope activation: eval returned Value::None. \
+                         If the RHS depends on a wire that's only available per cycle, \
+                         use a non-modifier cycle binding (`{final_name} := …`) instead \
+                         of `final`."
+                    ));
+                }
+                Err(payload) => {
+                    let msg = panic_message(&payload);
+                    return Err(format!(
+                        "{gk_context}: final binding '{final_name}' eval panicked at \
+                         scope activation: {msg}"
                     ));
                 }
             }

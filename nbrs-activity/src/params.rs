@@ -58,7 +58,7 @@ use nbrs_variates::kernel::GkKernel;
 /// inherit every workload param at once.
 ///
 /// Empty params produces a kernel with a single
-/// `final __empty := 0` placeholder so descendant scopes can
+/// `const __empty := 0` placeholder so descendant scopes can
 /// always `materialize_wiring_from_outer` to it without a "no kernel"
 /// special case.
 pub fn build_workload_params_kernel(
@@ -77,7 +77,7 @@ pub fn render_workload_params_source(
     params: &HashMap<String, String>,
 ) -> String {
     if params.is_empty() {
-        return "final __empty := 0\n".to_string();
+        return "const __empty := 0\n".to_string();
     }
     // Sort by name so the generated source is deterministic
     // across runs — matters for cache keys, diagnostic output,
@@ -88,7 +88,7 @@ pub fn render_workload_params_source(
     for name in keys {
         let value = &params[name];
         let literal = format_value_as_gk_literal(value);
-        out.push_str(&format!("final {name} := {literal}\n"));
+        out.push_str(&format!("const {name} := {literal}\n"));
     }
     out
 }
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn renders_empty_params_as_placeholder() {
         let src = render_workload_params_source(&HashMap::new());
-        assert_eq!(src, "final __empty := 0\n");
+        assert_eq!(src, "const __empty := 0\n");
     }
 
     #[test]
@@ -145,11 +145,11 @@ mod tests {
             ("strict", "true"),
         ]));
         // Sorted by name: count, dataset, k_values, ratio, strict.
-        let expected = "final count := 100\n\
-                        final dataset := \"sift1m\"\n\
-                        final k_values := \"1,10\"\n\
-                        final ratio := 0.95\n\
-                        final strict := true\n";
+        let expected = "const count := 100\n\
+                        const dataset := \"sift1m\"\n\
+                        const k_values := \"1,10\"\n\
+                        const ratio := 0.95\n\
+                        const strict := true\n";
         assert_eq!(src, expected);
     }
 
@@ -159,9 +159,9 @@ mod tests {
             ("replication", r#"{'class': 'SimpleStrategy'}"#),
             ("with_quote", r#"a"b"#),
         ]));
-        assert!(src.contains(r#"final replication := "{'class': 'SimpleStrategy'}""#),
+        assert!(src.contains(r#"const replication := "{'class': 'SimpleStrategy'}""#),
             "unexpected: {src}");
-        assert!(src.contains(r#"final with_quote := "a\"b""#),
+        assert!(src.contains(r#"const with_quote := "a\"b""#),
             "embedded double-quote not escaped: {src}");
     }
 
@@ -217,7 +217,7 @@ mod tests {
             ("flag_t", "true"),
             ("flag_f", "false"),
         ]));
-        assert!(src.contains("final flag_f := false\n"));
-        assert!(src.contains("final flag_t := true\n"));
+        assert!(src.contains("const flag_f := false\n"));
+        assert!(src.contains("const flag_t := true\n"));
     }
 }

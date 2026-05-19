@@ -234,40 +234,45 @@ fn shared_non_literal_rejected() {
         input cycle: u64
         shared counter := hash(cycle)
     "#;
-    let err = compile_gk(src).expect_err("non-literal shared init must error");
+    let err = compile_gk(src).expect_err("non-literal shared const must error");
     assert!(err.contains("shared binding 'counter'"), "error: {err}");
     assert!(err.contains("literal"), "error: {err}");
 }
 
 #[test]
-fn final_on_cycle_binding() {
+fn const_on_cycle_expr_rejected() {
+    // `const` is a hard contract: the RHS must be folded at compile
+    // time or materialised at scope-init from effectively-const
+    // sources. Wiring it through a per-cycle `cycle` input is the
+    // canonical violation — Plan A must reject.
     let src = r#"
         input cycle: u64
-        final max := mod(hash(cycle), 100)
+        const max := mod(hash(cycle), 100)
     "#;
-    let kernel = compile_gk(src).unwrap();
-    assert_eq!(kernel.program().output_modifier("max"), BindingModifier::FINAL);
+    let err = compile_gk(src).expect_err("const wired to cycle must be rejected");
+    assert!(err.contains("init contract") || err.contains("const"),
+        "diagnostic should call out the const contract: {err}");
 }
 
 #[test]
-fn shared_on_init_binding() {
+fn shared_literal_cell() {
     let src = r#"
         input cycle: u64
-        shared init budget = 500
+        shared budget := 500
     "#;
     let kernel = compile_gk(src).unwrap();
     assert_eq!(kernel.program().output_modifier("budget"), BindingModifier::SHARED);
-    assert_eq!(kernel.get_constant("budget").unwrap().as_u64(), 500);
+    assert_eq!(kernel.lookup("budget").unwrap().as_u64(), 500);
 }
 
 #[test]
-fn final_on_init_binding() {
+fn const_literal_fold() {
     let src = r#"
         input cycle: u64
-        final init dim = 128
+        const dim := 128
     "#;
     let kernel = compile_gk(src).unwrap();
-    assert_eq!(kernel.program().output_modifier("dim"), BindingModifier::FINAL);
+    assert_eq!(kernel.program().output_modifier("dim"), BindingModifier::CONST);
     assert_eq!(kernel.get_constant("dim").unwrap().as_u64(), 128);
 }
 
@@ -276,12 +281,12 @@ fn mixed_modifiers() {
     let src = r#"
         input cycle: u64
         shared s := 0
-        final f := 42
+        const f := 42
         plain := mod(hash(cycle), 100)
     "#;
     let kernel = compile_gk(src).unwrap();
     assert_eq!(kernel.program().output_modifier("s"), BindingModifier::SHARED);
-    assert_eq!(kernel.program().output_modifier("f"), BindingModifier::FINAL);
+    assert_eq!(kernel.program().output_modifier("f"), BindingModifier::CONST);
     assert_eq!(kernel.program().output_modifier("plain"), BindingModifier::NONE);
 }
 
@@ -303,12 +308,12 @@ fn shared_outputs_list() {
 fn final_outputs_list() {
     let src = r#"
         input cycle: u64
-        final x := 1
-        final y := 2
+        const x := 1
+        const y := 2
         z := hash(cycle)
     "#;
     let kernel = compile_gk(src).unwrap();
-    let mut finals = kernel.program().final_outputs();
+    let mut finals = kernel.program().const_outputs();
     finals.sort();
     assert_eq!(finals, vec!["x", "y"]);
 }
@@ -321,7 +326,7 @@ fn no_modifiers_returns_empty_lists() {
     "#;
     let kernel = compile_gk(src).unwrap();
     assert!(kernel.program().shared_outputs().is_empty());
-    assert!(kernel.program().final_outputs().is_empty());
+    assert!(kernel.program().const_outputs().is_empty());
 }
 
 // =========================================================================

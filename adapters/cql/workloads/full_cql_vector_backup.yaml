@@ -842,7 +842,7 @@ phases:
   rampup:
     concurrency: "{concurrency}"
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       cursor row = range(0, vector_count(prebuffered))
       id := format_u64(row, 10)
       train_vector := vector_at(prebuffered, row)
@@ -858,7 +858,7 @@ phases:
   fknn_rampup_data:
     concurrency: "{concurrency}"
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       cursor row = range(0, vector_count(prebuffered))
       id := format_u64(row, 10)
       train_vector := vector_at(prebuffered, row)
@@ -877,8 +877,8 @@ phases:
   ann_query:
     concurrency: "{query_concurrency}"
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
-      init query_counts = query_count(prebuffered)
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
+      const query_counts := query_count(prebuffered)
       cursor q = range(0, query_counts * 1)
       query_vector := query_vector_at(prebuffered, q % query_counts)
       ground_truth := neighbor_indices_at(prebuffered, q)
@@ -938,7 +938,7 @@ phases:
   recall_audit_oracle:
     concurrency: 1
     bindings: |
-      init opb = dataset_prebuffer("{dataset}:label_00")
+      const opb := dataset_prebuffer("{dataset}:label_00")
       cursor q = range(0, 856)
       query           := query_vector_at(opb, q)
       gt_oracle       := neighbor_indices_at(opb, q)
@@ -959,7 +959,7 @@ phases:
   recall_audit_pvs:
     concurrency: 1
     bindings: |
-      init opb = dataset_prebuffer("{dataset}:label_00")
+      const opb := dataset_prebuffer("{dataset}:label_00")
       cursor q = range(0, 856)
       query           := query_vector_at(opb, q)
       gt_oracle       := neighbor_indices_at(opb, q)
@@ -978,8 +978,8 @@ phases:
     concurrency: "{query_concurrency}"
     errors: count
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
-      init query_counts = query_count(prebuffered)
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
+      const query_counts := query_count(prebuffered)
       cursor q = range(0, query_counts * 1)          
       predicate := predicate_value_at(prebuffered, q % query_counts)
     ops:
@@ -1001,8 +1001,8 @@ phases:
     concurrency: "{query_concurrency}"
     errors: count
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
-      init query_counts = query_count(prebuffered)
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
+      const query_counts := query_count(prebuffered)
       cursor q = range(0, query_counts * 1)
       query_vector := query_vector_at(prebuffered, q % query_counts)
       predicate := predicate_value_at(prebuffered, q % query_counts)

@@ -182,14 +182,14 @@ fn shared_modifier_survives_compilation_pipeline() {
 }
 
 #[test]
-fn shared_init_constant_folds() {
+fn shared_literal_constant_folds() {
     let kernel = compile_gk(r#"
         input cycle: u64
-        shared init budget = 100
+        shared budget := 100
     "#).unwrap();
 
     assert_eq!(kernel.program().output_modifier("budget"), BindingModifier::SHARED);
-    assert_eq!(kernel.get_constant("budget").unwrap().as_u64(), 100);
+    assert_eq!(kernel.lookup("budget").unwrap().as_u64(), 100);
 }
 
 // =========================================================================
@@ -200,29 +200,29 @@ fn shared_init_constant_folds() {
 fn final_modifier_survives_compilation_pipeline() {
     let kernel = compile_gk(r#"
         input cycle: u64
-        final dataset := "example"
-        final dim := 128
+        const dataset := "example"
+        const dim := 128
         mutable_val := hash(cycle)
     "#).unwrap();
 
     let prog = kernel.program();
-    assert_eq!(prog.output_modifier("dataset"), BindingModifier::FINAL);
-    assert_eq!(prog.output_modifier("dim"), BindingModifier::FINAL);
+    assert_eq!(prog.output_modifier("dataset"), BindingModifier::CONST);
+    assert_eq!(prog.output_modifier("dim"), BindingModifier::CONST);
     assert_eq!(prog.output_modifier("mutable_val"), BindingModifier::NONE);
 
-    let mut finals = prog.final_outputs();
+    let mut finals = prog.const_outputs();
     finals.sort();
     assert_eq!(finals, vec!["dataset", "dim"]);
 }
 
 #[test]
-fn final_init_constant_folds() {
+fn const_literal_constant_folds() {
     let kernel = compile_gk(r#"
         input cycle: u64
-        final init max_dim = 512
+        const max_dim := 512
     "#).unwrap();
 
-    assert_eq!(kernel.program().output_modifier("max_dim"), BindingModifier::FINAL);
+    assert_eq!(kernel.program().output_modifier("max_dim"), BindingModifier::CONST);
     assert_eq!(kernel.get_constant("max_dim").unwrap().as_u64(), 512);
 }
 
@@ -342,13 +342,13 @@ fn scope_pipeline_with_shared_and_final() {
     let outer = compile_gk(r#"
         input cycle: u64
         shared error_budget := 100
-        final max_dim := 256
+        const max_dim := 256
         normal := hash(cycle)
     "#).unwrap();
 
     let prog = outer.program();
     assert_eq!(prog.output_modifier("error_budget"), BindingModifier::SHARED);
-    assert_eq!(prog.output_modifier("max_dim"), BindingModifier::FINAL);
+    assert_eq!(prog.output_modifier("max_dim"), BindingModifier::CONST);
     assert_eq!(prog.output_modifier("normal"), BindingModifier::NONE);
 
     // Inner scope sees the outer's constants via bind
@@ -742,7 +742,7 @@ fn shared_non_literal_init_rejected() {
     let err = compile_gk(r#"
         input cycle: u64
         shared rolling := hash(cycle)
-    "#).expect_err("non-literal shared init must error");
+    "#).expect_err("non-literal shared const must error");
     assert!(err.contains("shared binding 'rolling'"), "error: {err}");
     assert!(err.contains("literal initial value"), "error: {err}");
 }

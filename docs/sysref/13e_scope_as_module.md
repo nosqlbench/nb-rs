@@ -11,7 +11,7 @@
   extraction), SRD-13d (op-template scope layer; this SRD
   generalises its mechanism), SRD-13f §"Wire-reference
   classification" (the synthesizer's four-case rule that decides
-  what matter the ScopeModule carries: promoted-final, authored
+  what matter the ScopeModule carries: promoted-const, authored
   `extern`, local-inclusion, or unresolved-validation-error),
   SRD-18b (scenario tree, cache-and-rebind primitive), SRD-32
   (init-time fixture / pull plan — the read-side analogue of what
@@ -86,12 +86,12 @@ the missing contract surface between parent and child kernels:
    the compiler enforced — instead it was a manual rule the
    synthesiser had to remember.
 
-2. **Workload params cascading as `extern` instead of `final`
-   broke `init` folding.** `init prebuffered =
+2. **Workload params cascading as `extern` instead of `const`
+   broke `const` folding.** `const prebuffered =
    dataset_prebuffer("{dataset}:{profile}")` couldn't fold at
    compile time because the synthesiser emitted `extern dataset:
-   String` (the manifest-cascade path) instead of `final dataset
-   := "sift1m"` (the workload-params path). The init binding's
+   String` (the manifest-cascade path) instead of `const dataset
+   := "sift1m"` (the workload-params path). The const binding's
    evaluation classified as `ScopeInit`, ran with `Value::None`,
    produced `Handle("sift1m:None")`, and downstream nodes
    panicked. Fix: prefer workload-params over manifest cascade
@@ -102,10 +102,10 @@ the missing contract surface between parent and child kernels:
 
 3. **Missing post-bind init-pull on op-template kernels.** The
    phase scope kernel goes through a scope-init pass at
-   `run_phase` that re-pulls `init` outputs after
+   `run_phase` that re-pulls `const` outputs after
    `bind_outer_scope` populates externs. Op-template kernels
    (Phase 9, per-fiber instancing) had no equivalent. Their
-   `init` bindings stayed at the compile-time fold value (which
+   `const` bindings stayed at the compile-time fold value (which
    was computed before externs were bound). Fix: replicate the
    scope-init pass in `OpBuilder::create_fiber_builder` after
    `bind_outer_scope` runs. This *should* have been a single
@@ -117,9 +117,9 @@ the missing contract surface between parent and child kernels:
    per-fiber re-application loop wrote `(idx, value)` pairs
    captured against the phase scope program into op-template
    kernel input slots whose layout was completely different
-   (lazy-cascade extern emission, workload-param `final`
+   (lazy-cascade extern emission, workload-param `const`
    injection, different declaration order). `table` value
-   landed in the `profile` slot; `init` ran with mis-routed
+   landed in the `profile` slot; `const` ran with mis-routed
    externs and produced gibberish handles. Fix: re-key
    `scope_values` by name and look up `find_input(name)` per
    target kernel. This *should* have been impossible —
@@ -155,7 +155,7 @@ build_op_template_scope_kernel(op, parent_manifest, parent_kernel,
                                workload_params, ...)
   → walks `referenced` names from op fields + body
   → for each, branches on workload_params / manifest / parent_input
-  → emits `extern <name>: <type>` or `final <name> := <literal>`
+  → emits `extern <name>: <type>` or `const <name> := <literal>`
     or skips
   → string-concatenates body_text after the externs
   → calls compile_gk_with_libs on the assembled string
@@ -197,7 +197,7 @@ pub struct ScopeModule {
     imports: Vec<ImportSpec>,
 
     /// What this scope exports to its descendants. Each export
-    /// has a name, a port type, and a modifier (`final`,
+    /// has a name, a port type, and a modifier (`const`,
     /// `shared`, none). Iter vars are exports with `IterationExtern`
     /// classification.
     exports: Vec<ExportSpec>,
@@ -290,7 +290,7 @@ per scope-tree node in the workload. Each node carries:
 - The module declaration (imports / body / exports), derived
   structurally from the YAML:
   - **Workload root.** Imports: nothing (or just the runtime-
-    context module; see SRD-12). Exports: every `final` workload
+    context module; see SRD-12). Exports: every `const` workload
     param, every workload-level binding's outputs.
   - **Scenario / for_each / for_combinations / do_while /
     do_until.** Imports: every name the scope's clauses or

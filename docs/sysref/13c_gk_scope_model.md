@@ -17,7 +17,7 @@ applies to your situation.
    values from an outer kernel into an inner kernel's extern
    inputs. `GkKernel::scope_values()` extracts bound values
    for fiber replication. `GkProgram` carries output modifier
-   metadata (`shared`, `final`) so callers can query scope
+   metadata (`shared`, `const`) so callers can query scope
    behavior. These are standard API methods — callers invoke
    them at scope boundaries without interpreting GK internals.
 
@@ -152,15 +152,15 @@ shadows the outer name. No special keyword needed.
 ### Explicit Occlude Prevention
 
 To prevent accidental shadowing, a workload can mark bindings
-as `final`:
+as `const`:
 
 ```
 bindings: |
   input cycle: u64
-  final dim := vector_dim("{dataset}")
+  const dim := vector_dim("{dataset}")
 ```
 
-A `final` binding cannot be shadowed by inner scopes. Attempting
+A `const` binding cannot be shadowed by inner scopes. Attempting
 to redefine it in a phase `bindings:` block is a compile error.
 
 ---
@@ -306,7 +306,7 @@ about templating which one applies per `shared` declaration**
 
 ```
 shared(atomic) error_budget: u64 := 100         # fetch_sub
-shared(last)   latest_status: String := "init"  # last-write-wins (current default)
+shared(last)   latest_status: String := "ready" # last-write-wins (current default)
 shared(merge)  seen_keys: Set := []             # union
 shared(sum)    total_latency: f64 := 0.0        # aggregation
 ```
@@ -334,8 +334,8 @@ shape: a computation node tagged with the `Shared` modifier,
 no input slot, no cell. The Shared metadata survives but
 cross-scope mutability is not active for that binding.
 
-This is a deliberate restriction. A non-literal init
-(`shared rolling := hash(cycle)`) doesn't have a sensible
+This is a deliberate restriction. A non-literal initial-value
+expression (`shared rolling := hash(cycle)`) doesn't have a sensible
 single initial value — the cell would be populated from
 some particular cycle's evaluation, and subsequent inner
 writes would compete with the per-cycle re-evaluation. The
@@ -433,11 +433,16 @@ The `shared` keyword is only needed to propagate values
 enclosing outer scope. Without `shared`, loop-level
 mutations stay within the for_each boundary.
 
-### `final`
+### `const`
 
-A binding declared `final` cannot be shadowed or mutated
-by inner scopes. Compile error if redefined. Useful for
-values that must remain constant across all iterations.
+A binding declared `const` is effectively-const: materialised
+once at scope-init (via compile-fold when its wire chain is
+pure, or scope-init pull when it depends on iteration externs)
+and frozen for the activation. It cannot be shadowed or mutated
+by inner scopes — compile error if redefined. The wire chain
+must satisfy the const-binding contract (no `cycle`, no capture
+ports, no non-deterministic sources); see
+[SRD 11](11_gk_evaluation.md) §"Const Binding Contract".
 
 ### The 2x2 matrix
 
@@ -483,7 +488,7 @@ inherited values.
 
 The runner extracts the outer scope's output manifest before
 the outer kernel is consumed by `OpBuilder`. Each entry
-carries name, type, and binding modifier (`shared`/`final`/none):
+carries name, type, and binding modifier (`shared`/`const`/none):
 
 ```rust
 struct ManifestEntry {
@@ -500,8 +505,8 @@ op templates but not defined in inner bindings. For each such
 name found in the outer manifest, it prepends an `extern`
 declaration to the inner bindings source.
 
-**Final enforcement**: if an inner scope defines a name that
-is `final` in the outer manifest, the runner emits an error
+**Const enforcement**: if an inner scope defines a name that
+is `const` in the outer manifest, the runner emits an error
 and exits. This check happens in `BindingScope::validate()`
 (see `scope.rs`) before compilation.
 
@@ -579,16 +584,18 @@ compilation snapshot) before any phase runs. At loop entry:
 
 Binding modifiers flow through the full compilation pipeline:
 
-1. **Lexer**: `shared` and `final` keywords → `Shared`/`Final` tokens
-2. **Parser**: `shared name := expr` / `final name := expr` → `BindingModifier` on AST nodes
+1. **Lexer**: `const`, `shared`, `volatile` keywords → corresponding `TokenKind` variants
+2. **Parser**: `const name := expr` / `shared name := expr` / `volatile name := expr` → `BindingModifier` on AST nodes
 3. **Compiler**: sets `asm.set_output_modifier(name, modifier)` per binding
 4. **Assembler**: carries `output_modifiers` through `ResolvedDag`
 5. **GkKernel**: applies modifiers via `set_output_modifiers()` before Arc sharing
 6. **GkProgram**: stores `output_modifiers: HashMap<String, BindingModifier>`
 7. **Runner**: queries `program.output_modifier(name)` for manifest extraction
 
-Combined forms are supported: `shared init name = expr` and
-`final init name = expr` (modifier before `init` keyword).
+Combined forms are supported: `shared const name := expr` and
+`shared volatile name := expr`. The combination `const volatile`
+is rejected as semantically contradictory (one materialises and
+freezes, the other excludes from fold).
 
 ---
 
@@ -628,10 +635,10 @@ iteration patterns like iterating over table names.
 | Keyword | Location | Meaning |
 |---------|----------|---------|
 | `extern name: type` | bindings | Declare input from outer scope |
-| `final name := expr` | bindings | Immutable; cannot be shadowed by inner scopes |
-| `shared name := expr` | bindings | Mutable; propagates upward to outer scope after for_each |
-| `shared init name = expr` | bindings | Combined: shared + scope-init binding (per [SRD 11](11_gk_evaluation.md) §"Init Binding Contract") |
-| `final init name = expr` | bindings | Combined: final + scope-init binding (per [SRD 11](11_gk_evaluation.md) §"Init Binding Contract") |
+| `const name := expr` | bindings | Effectively-const; materialised once per scope activation, frozen for its lifetime, cannot be shadowed by inner scopes |
+| `shared name := expr` | bindings | Mutable cell; propagates upward to outer scope after for_each |
+| `shared const name := expr` | bindings | Combined: shared cell whose initial value is folded at compile time |
+| `volatile name := expr` | bindings | Excluded from compile-fold; signals per-cycle variability and from program-identity hashing |
 | `loop_scope: clean\|inherit` | phase | How loop is seeded from outer (default: `clean`) |
 | `iter_scope: clean\|inherit` | phase | How iteration is seeded from loop (default: `inherit` for for_each, `clean` otherwise) |
 | `for_each: "var in expr"` | phase | Iterate, creating per-iteration scope |

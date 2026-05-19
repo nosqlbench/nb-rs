@@ -652,7 +652,7 @@ op-template layer:
 
 - The op-template kernel auto-externs names it doesn't define;
   resolution proceeds up the parent chain (SRD-13c §"Auto-extern").
-- `final` / `shared` modifiers on op-level bindings interact with
+- `const` / `shared` modifiers on op-level bindings interact with
   outer scopes per SRD-13c §"Output Modifiers".
 - The canonical-kernel cache keyed on
   `(program_hash, parent_instance_hash)` works at this layer

@@ -157,7 +157,7 @@ fn looks_like_literal_list(text: &str) -> bool {
 /// Pre-evaluate a clause's spec text at synthesis time, using
 /// `probes` for prior clauses' first values and `workload_params`
 /// as a fallback source for names not yet promoted to workload-
-/// kernel `init` bindings.
+/// kernel `const` bindings.
 ///
 /// The runtime dispatcher uses [`evaluate_spec`] directly because
 /// (a) the runtime kernel has prior-clause values as real input
@@ -1684,7 +1684,7 @@ mod tests {
     #[test]
     fn kernel_resolves_via_get_constant() {
         let kernel = crate::dsl::compile::compile_gk(
-            "final dataset := \"example\"\n"
+            "const dataset := \"example\"\n"
         ).unwrap();
         let out = interpolate_via_kernel("path/{dataset}/data", &kernel).unwrap();
         assert_eq!(out, "path/example/data");
@@ -1693,7 +1693,7 @@ mod tests {
     #[test]
     fn kernel_resolves_via_get_input() {
         let parent = crate::dsl::compile::compile_gk(
-            "final k_values := \"1, 10\"\n"
+            "const k_values := \"1, 10\"\n"
         ).unwrap();
         let child_program = crate::dsl::compile::compile_gk(
             "extern k_values: String\n"
@@ -1706,7 +1706,7 @@ mod tests {
     #[test]
     fn kernel_unresolved_name_errors() {
         let kernel = crate::dsl::compile::compile_gk(
-            "final x := 1\n"
+            "const x := 1\n"
         ).unwrap();
         let err = interpolate_via_kernel("hello {nope}", &kernel).unwrap_err();
         assert!(err.contains("unresolved"));
@@ -1716,7 +1716,7 @@ mod tests {
     #[test]
     fn kernel_nested_template_iterates_to_fixed_point() {
         let kernel = crate::dsl::compile::compile_gk(
-            "final k := \"1\"\nfinal k_1_limits := \"1, 2, 4, 8\"\n"
+            "const k := \"1\"\nconst k_1_limits := \"1, 2, 4, 8\"\n"
         ).unwrap();
         let out = interpolate_via_kernel("{k_{k}_limits}", &kernel).unwrap();
         assert_eq!(out, "1, 2, 4, 8");
@@ -1747,8 +1747,8 @@ mod tests {
         // `__cursor_extent_<name>_{start,end}` outputs; for this
         // test we synthesize them directly.
         let kernel = crate::dsl::compile::compile_gk(
-            "final __cursor_extent_row_start := 0\n\
-             final __cursor_extent_row_end := 5\n"
+            "const __cursor_extent_row_start := 0\n\
+             const __cursor_extent_row_end := 5\n"
         ).unwrap();
         let values = evaluate_spec("all(row)", &kernel).unwrap();
         assert_eq!(values, vec![
@@ -1759,8 +1759,8 @@ mod tests {
     #[test]
     fn all_cursor_non_zero_start() {
         let kernel = crate::dsl::compile::compile_gk(
-            "final __cursor_extent_data_start := 100\n\
-             final __cursor_extent_data_end := 103\n"
+            "const __cursor_extent_data_start := 100\n\
+             const __cursor_extent_data_end := 103\n"
         ).unwrap();
         let values = evaluate_spec("all(data)", &kernel).unwrap();
         assert_eq!(values, vec![Value::U64(100), Value::U64(101), Value::U64(102)]);
@@ -1769,7 +1769,7 @@ mod tests {
     #[test]
     fn all_cursor_missing_extent_errors() {
         let kernel = crate::dsl::compile::compile_gk(
-            "final unrelated := 1\n"
+            "const unrelated := 1\n"
         ).unwrap();
         let err = evaluate_spec("all(no_such_cursor)", &kernel).unwrap_err();
         assert!(err.contains("all(no_such_cursor)"));
@@ -1789,8 +1789,8 @@ mod tests {
         // literal-list fallback masked this kind of typo six
         // layers downstream).
         let kernel = crate::dsl::compile::compile_gk(
-            "final __cursor_extent_row_start := 0\n\
-             final __cursor_extent_row_end := 5\n"
+            "const __cursor_extent_row_start := 0\n\
+             const __cursor_extent_row_end := 5\n"
         ).unwrap();
         let err = evaluate_spec("all(row, 5)", &kernel).unwrap_err();
         assert!(err.contains("all(row, 5)"), "error must mention the failing spec, got: {err}");
@@ -1823,7 +1823,7 @@ mod tests {
         // The user-visible result was a CQL parser error from a
         // malformed `DROP INDEX`. After this fix every layer
         // propagates an actionable diagnostic.
-        let kernel = crate::dsl::compile::compile_gk("final unrelated := 1\n").unwrap();
+        let kernel = crate::dsl::compile::compile_gk("const unrelated := 1\n").unwrap();
         let result = evaluate_spec(
             "matching_profiles('nonexistent_dataset_xyz_qqq', 'label_')",
             &kernel,
@@ -1851,7 +1851,7 @@ mod tests {
         // must propagate the failure rather than splitting on
         // commas. This guards the broader contract that
         // protected the dataset-resolution case above.
-        let kernel = crate::dsl::compile::compile_gk("final unrelated := 1\n").unwrap();
+        let kernel = crate::dsl::compile::compile_gk("const unrelated := 1\n").unwrap();
         let err = evaluate_spec("nonexistent_func('a', 'b', 'c')", &kernel).unwrap_err();
         assert!(err.contains("failed to evaluate") || err.contains("unknown"),
             "expected a clean eval-failure error, got: {err}");
@@ -1865,7 +1865,7 @@ mod tests {
         // (which it should — `1, 10, 100` isn't a single GK
         // expression). This is the legitimate use case that the
         // fallback exists for.
-        let kernel = crate::dsl::compile::compile_gk("final unrelated := 1\n").unwrap();
+        let kernel = crate::dsl::compile::compile_gk("const unrelated := 1\n").unwrap();
         let values = evaluate_spec("1, 10, 100", &kernel).unwrap();
         assert_eq!(values, vec![Value::U64(1), Value::U64(10), Value::U64(100)]);
 
@@ -1908,8 +1908,8 @@ mod tests {
     #[test]
     fn all_cursor_ignores_whitespace() {
         let kernel = crate::dsl::compile::compile_gk(
-            "final __cursor_extent_row_start := 0\n\
-             final __cursor_extent_row_end := 3\n"
+            "const __cursor_extent_row_start := 0\n\
+             const __cursor_extent_row_end := 3\n"
         ).unwrap();
         let values = evaluate_spec("  all( row )  ", &kernel).unwrap();
         assert_eq!(values.len(), 3);
@@ -1918,7 +1918,7 @@ mod tests {
     #[test]
     fn evaluate_spec_resolves_against_kernel() {
         let kernel = crate::dsl::compile::compile_gk(
-            "final k_values := \"1, 10, 100\"\n"
+            "const k_values := \"1, 10, 100\"\n"
         ).unwrap();
         let v = evaluate_spec("{k_values}", &kernel).unwrap();
         assert_eq!(v, vec![Value::U64(1), Value::U64(10), Value::U64(100)]);
@@ -2041,7 +2041,7 @@ mod tests {
     #[test]
     fn range_with_kernel_referenced_bounds() {
         let kernel = crate::dsl::compile::compile_gk(
-            "final lo := 5\nfinal hi := 12\n"
+            "const lo := 5\nconst hi := 12\n"
         ).unwrap();
         let v = evaluate_spec("{lo}..{hi}", &kernel).unwrap();
         assert_eq!(v, vec![

@@ -21,7 +21,7 @@
 #
 #   - All four shared-cell scalar types with literal initial
 #     values, including edge values (0, 0.0, "", false).
-#   - `final X := <literal>` modifiers (compile-time constants
+#   - `const X := <literal>` modifiers (compile-time constants
 #     that bind_outer_scope can copy without aliasing).
 #   - Mixed modifiers in one workload (final + shared + plain).
 #   - Shared cells consumed in a derived binding RHS
@@ -75,10 +75,10 @@ params:
 bindings: |
   input cycle: u64
 
-  # ── final modifier ─────────────────────────────────────────
+  # ── const modifier ─────────────────────────────────────────
   # Compile-time constant. Folded once, never mutated; outer
   # scopes can hand it to inner scopes via bind_outer_scope.
-  final base_dim := 256
+  const base_dim := 256
 
   # ── shared cells: all four scalar types ────────────────────
   # Each compiles to an input slot + passthrough output. The
@@ -104,9 +104,9 @@ scenarios:
   shared_types:
     - emit_shared_types
 
-  # ── final modifier round-trips through op template ────────
-  final_modifier:
-    - emit_final
+  # ── const modifier round-trips through op template ────────
+  const_modifier:
+    - emit_const
 
   # ── derived binding consumes shared cell value ────────────
   # Verifies the cell is wired to downstream nodes, not just
@@ -167,13 +167,13 @@ scenarios:
   sequential_phases:
     - emit_shared_types
     - emit_multi_cell
-    - emit_final
+    - emit_const
 
   # ── default: chain everything back-to-back so a single
   # `nbrs run workload=...` exercises the whole matrix ──────
   default:
     - emit_shared_types
-    - emit_final
+    - emit_const
     - emit_derived
     - for_each: "iter in {iter_list}"
       phases:
@@ -209,14 +209,14 @@ phases:
       bool_off:
         stmt: "cm/shared_types kind=bool sub=off value={flag_off}"
 
-  # `final X := 256` — folded constant, visible like any other
+  # `const X := 256` — folded constant, visible like any other
   # name through the standard scope chain.
-  emit_final:
+  emit_const:
     cycles: 1
     concurrency: 1
     ops:
       line:
-        stmt: "cm/final base_dim={base_dim}"
+        stmt: "cm/const base_dim={base_dim}"
 
   # Derived binding `doubled_count := mul(count_big, 2)` —
   # consumes a shared cell value through GK wiring; should be

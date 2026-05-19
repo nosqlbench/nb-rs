@@ -133,13 +133,13 @@ impl GkKernel {
         coord_count: usize,
         output_map: HashMap<String, (usize, usize)>,
         output_order: Vec<String>,
-        init_outputs: std::collections::HashSet<String>,
+        const_outputs: std::collections::HashSet<String>,
         output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
         source: &str,
         context: &str,
         log: Option<&mut crate::dsl::events::CompileEventLog>,
     ) -> Result<Self, String> {
-        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, init_outputs, output_modifiers, source, context, log, false)
+        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, const_outputs, output_modifiers, source, context, log, false)
     }
 
     /// Construct with strict mode.
@@ -150,13 +150,13 @@ impl GkKernel {
         coord_count: usize,
         output_map: HashMap<String, (usize, usize)>,
         output_order: Vec<String>,
-        init_outputs: std::collections::HashSet<String>,
+        const_outputs: std::collections::HashSet<String>,
         output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
         source: &str,
         context: &str,
         log: Option<&mut crate::dsl::events::CompileEventLog>,
     ) -> Result<Self, String> {
-        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, init_outputs, output_modifiers, source, context, log, true)
+        Self::new_impl(nodes, wiring, input_defs, coord_count, output_map, output_order, const_outputs, output_modifiers, source, context, log, true)
     }
 
     fn new_impl(
@@ -166,7 +166,7 @@ impl GkKernel {
         coord_count: usize,
         output_map: HashMap<String, (usize, usize)>,
         output_order: Vec<String>,
-        init_outputs: std::collections::HashSet<String>,
+        const_outputs: std::collections::HashSet<String>,
         output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
         source: &str,
         context: &str,
@@ -177,10 +177,10 @@ impl GkKernel {
             nodes, wiring, input_defs, coord_count, output_map, output_order,
             source, context,
         );
-        // Mark init bindings BEFORE fold runs so the compile-time
+        // Mark const bindings BEFORE fold runs so the compile-time
         // check (Plan A) can validate each one's upstream chain.
-        for name in &init_outputs {
-            program.mark_init_output(name);
+        for name in &const_outputs {
+            program.mark_const_output(name);
         }
         // SRD-13f Push D: install output modifiers BEFORE fold so
         // the lifecycle classifier sees `volatile`. Without this,
@@ -631,7 +631,7 @@ impl GkKernel {
         let mut attached_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         // Names this scope declares as a local authoritative
-        // output — `final NAME := …` (const-folded at compile
+        // output — `const NAME := …` (const-folded at compile
         // time) or `init NAME := …` (computed once at scope-init
         // after wiring, then fixed for the scope's lifetime).
         // Either form means this scope owns the binding for
@@ -652,10 +652,13 @@ impl GkKernel {
         let local_finals: std::collections::HashSet<&str> = self.program
             .output_names()
             .into_iter()
+            // `const_outputs()` filters output_modifiers for CONST,
+            // so checking the modifier directly is the same query —
+            // single source of truth for "this scope authoritatively
+            // owns NAME via a const binding."
             .filter(|n| {
                 self.program.output_modifier(n)
-                    == crate::dsl::ast::BindingModifier::FINAL
-                    || self.program.init_outputs().contains(*n)
+                    == crate::dsl::ast::BindingModifier::CONST
             })
             .collect();
         for entry in outer_cells {
@@ -718,7 +721,42 @@ impl GkKernel {
             }
         }
 
-        // Step 3 — scope-coordinates plumbing. Path is now
+        // Step 3 — materialize scope-init const outputs. A `const`
+        // binding whose RHS depends on inputs (auto-extern,
+        // iteration variable, params-kernel passthrough) can't
+        // fold at compile time; its wiring stays node-backed and
+        // its buffer is `Value::None` until something pulls it.
+        // Now that step 2 has populated the input slots from the
+        // outer chain, pull every const output once to capture
+        // its effectively-const value for the lifetime of this
+        // scope. After this point the buffer is frozen — the
+        // const lifecycle promises immutability — so downstream
+        // `lookup(name)` reads through `get_constant`'s buffer
+        // path and sees the materialised value.
+        //
+        // Panics during the pull are suppressed here for the same
+        // reason `fold_init_constants` suppresses them at compile
+        // time: a const binding may depend on side-effectful
+        // resolution (`dataset_prebuffer`, etc.) that isn't ready
+        // until the workload actually runs. The buffer stays
+        // `Value::None`; the consumer's eventual read will
+        // re-trigger the panic where it can be reported in
+        // context.
+        let const_outputs: Vec<String> = self.program
+            .const_outputs()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect();
+        let program = self.program.clone();
+        for name in const_outputs {
+            let state = &mut self.state;
+            let prog = &program;
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                state.pull(prog, &name);
+            }));
+        }
+
+        // Step 4 — scope-coordinates plumbing. Path is now
         // `[own] ++ outer.scope_coordinates()`. Refresh own
         // (extern values may have just been populated above),
         // then prepend outer's frozen path.

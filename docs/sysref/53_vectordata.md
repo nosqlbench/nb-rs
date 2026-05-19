@@ -58,7 +58,7 @@ before workload execution:
 ```yaml
 bindings: |
   input cycle: u64
-  init _pb = dataset_prebuffer("{dataset}")
+  const _pb := dataset_prebuffer("{dataset}")
   # ... rest of bindings use local mmap access
 ```
 
@@ -141,7 +141,7 @@ JIT speedup is not the bottleneck there.
 ### `dataset_open` resolver
 
 ```
-init handle = dataset_open(source: str, facet: str) -> Handle
+const handle := dataset_open(source: str, facet: str) -> Handle
 ```
 
 Performs catalog lookup + facet open exactly once per distinct
@@ -153,8 +153,8 @@ Provenance is `(source, facet)`. When both are scope-extern
 constants (the iter-var case), the node evaluates once at
 iteration entry and stays clean for every subsequent cycle in
 that iteration. When one or both come from dynamic inputs
-(unusual — and per the [SRD 11](11_gk_evaluation.md) init-binding
-contract, illegal for an `init` declaration), the node re-evaluates
+(unusual — and per the [SRD 11](11_gk_evaluation.md) const-binding
+contract, illegal for an `const` declaration), the node re-evaluates
 accordingly.
 
 The resolver is the *only* node that talks to `DATASET_CACHE` /
@@ -200,7 +200,7 @@ dataset_distance_function(handle: Handle) -> Str
 dataset_facets(handle: Handle) -> Str
 ```
 
-These are *scope-init* per SRD 11 §"Three Evaluation Lifecycles":
+These are *scope-init* per SRD 11 §"Two Evaluation Lifecycles":
 their provenance is the handle; the handle's provenance is the
 source / facet externs (effectively-const for the scope's
 activation); so the entire chain resolves once per scope
@@ -213,9 +213,9 @@ everywhere:
 
 ```yaml
 bindings: |
-  init base = dataset_open("{dataset}:{profile}", "base")
-  init query = dataset_open("{dataset}:{profile}", "query")
-  init neighbors = dataset_open("{dataset}:{profile}", "neighbor_indices")
+  const base := dataset_open("{dataset}:{profile}", "base")
+  const query := dataset_open("{dataset}:{profile}", "query")
+  const neighbors := dataset_open("{dataset}:{profile}", "neighbor_indices")
 
   cursor row = range(0, vector_count(base))
   cursor q   = range(0, query_count(query))
@@ -240,7 +240,7 @@ shorthand for the open + count + accessor pattern) accept any
 GK expression for the dataset and profile arguments — string
 literals, scope externs, or composite expressions. They emit:
 
-1. An `init` binding for the implicit handle
+1. An `const` binding for the implicit handle
    (`__<cursor>_handle = dataset_open(<combined>, <facet>)`).
 2. A `range(0, <metadata_count>(<cursor>_handle))` extent
    constructor for the cursor.
@@ -248,7 +248,7 @@ literals, scope externs, or composite expressions. They emit:
    the implicit handle.
 
 Users writing the explicit form (`cursor q = range(0,
-query_count(my_handle))`) just reference an `init`-bound handle
+query_count(my_handle))`) just reference an `const`-bound handle
 of their own.
 
 ---
@@ -268,7 +268,7 @@ port. The mechanism is the standard wire-type adapter pattern
    - `Group` — auto-open `dataset_group_open(<wire>)` when fed
      a `Str` source.
    - `None` — no auto-promotion; the workload must pass an
-     `init`-bound handle explicitly.
+     `const`-bound handle explicitly.
 2. When the binding compiler emits a function call, it inspects
    each `Handle`-typed input port. If the wire is `Str`-producing
    and `default_resolver` is set, it splices the resolver in
@@ -282,7 +282,7 @@ Worked example. The user writes:
 
 ```yaml
 cursor row     = range(0, vector_count("{dataset}:{profile}"))
-init prebuffer = dataset_prebuffer("{dataset}:{profile}")
+const prebuffer := dataset_prebuffer("{dataset}:{profile}")
 train_vector  := vector_at_bytes(row, "{dataset}:{profile}")
 ```
 
@@ -298,7 +298,7 @@ Both call sites' `default_resolver` is `Facet("base")`, so the
 compiler synthesizes one resolver call per call site. They
 evaluate once per iteration via provenance, and the per-cycle
 accessor reads through the cached handle. Neither call site
-needs an explicit `init` binding from the user.
+needs an explicit `const` binding from the user.
 
 **Sharing across call sites.** The compiler does not
 common-subexpression-eliminate the synthesized resolvers — each
@@ -309,7 +309,7 @@ is a small constant number of cache probes per iteration entry
 shape can bind once explicitly:
 
 ```yaml
-init base = dataset_open("{dataset}:{profile}", "base")
+const base := dataset_open("{dataset}:{profile}", "base")
 cursor row = range(0, vector_count(base))
 train_vector := vector_at_bytes(base, row)
 ```
@@ -329,7 +329,7 @@ All feature-gated behind `vectordata` in nbrs-variates.
 |------|-----------|-------------|
 | `dataset_open(source, facet)` | `str, str → handle` | Resolve catalog/cache, open facet reader, return typed facet handle. Scope-init relative to its inputs. |
 | `dataset_group_open(source)` | `str → handle` | Resolve catalog/cache, return a group handle (TestDataGroup) — used by group-level metadata accessors below. Scope-init relative to its inputs. |
-| `dataset_prebuffer(source)` | `str → handle` | Download all facets to local cache (scope-init). Returns a `Handle` carrying the prebuffered group. Bound to a name via `init prebuffered = dataset_prebuffer(...)`; consumers like `query_count(prebuffered)` and `query_vector_at(prebuffered, q)` take the handle as their first wire (see [SRD 11 §"Init Binding Contract"](11_gk_evaluation.md)). |
+| `dataset_prebuffer(source)` | `str → handle` | Download all facets to local cache (scope-init). Returns a `Handle` carrying the prebuffered group. Bound to a name via `const prebuffered := dataset_prebuffer(...)`; consumers like `query_count(prebuffered)` and `query_vector_at(prebuffered, q)` take the handle as their first wire (see [SRD 11 §"Const Binding Contract"](11_gk_evaluation.md)). |
 
 ### Vector Access
 
@@ -400,12 +400,12 @@ and take a group handle:
 
 Each of these declares `default_resolver: Group` in its
 `FuncSig`, so a workload can pass either an explicit
-`init`-bound `dataset_group_open(...)` handle or a string
+`const`-bound `dataset_group_open(...)` handle or a string
 literal that the binding compiler auto-promotes:
 
 ```yaml
 # Explicit (one open shared across calls)
-init group = dataset_group_open("{dataset}")
+const group := dataset_group_open("{dataset}")
 profile_count := dataset_profile_count(group)
 profiles := dataset_profile_names(group)
 
@@ -439,7 +439,7 @@ bindings: |
   # One open per facet, scope-init.
   init base      = dataset_open("{dataset}", "base")
   init query     = dataset_open("{dataset}", "query")
-  init neighbors = dataset_open("{dataset}", "neighbor_indices")
+  const neighbors := dataset_open("{dataset}", "neighbor_indices")
 
   # Init-time-relative-to-handle: folds with the open node.
   dim         := vector_dim(base)
@@ -473,7 +473,7 @@ ops:
 ```
 
 Per-iteration scope (e.g., `for_each profile in [...]`) treats
-`dataset` and `profile` as scope externs and the `init`-bound
+`dataset` and `profile` as scope externs and the `const`-bound
 handles re-evaluate exactly once at iteration entry. No
 per-cycle map/lock/string work.
 

@@ -223,7 +223,7 @@ impl OpBuilder {
 /// here, but defensively we don't propagate them either way.
 fn collect_init_overrides(kernel: &GkKernel) -> Vec<(usize, usize, Value)> {
     let program = kernel.program();
-    let init_outputs = program.init_outputs();
+    let init_outputs = program.const_outputs();
     if init_outputs.is_empty() { return Vec::new(); }
     let mut out = Vec::with_capacity(init_outputs.len());
     let state = kernel.state_ref();
@@ -419,9 +419,9 @@ impl FiberBuilder {
                         op_kernel.state().set_input(idx, value.clone());
                     }
                 }
-                let init_outputs: Vec<String> = op_kernel.program()
-                    .init_outputs().iter().cloned().collect();
-                for init_name in &init_outputs {
+                let const_outputs: Vec<String> = op_kernel.program()
+                    .const_outputs().iter().map(|s| s.to_string()).collect();
+                for init_name in &const_outputs {
                     let _ = std::panic::catch_unwind(
                         std::panic::AssertUnwindSafe(|| { op_kernel.pull(init_name); })
                     );
@@ -929,7 +929,7 @@ mod tests {
             calls: calls.clone(),
         }), vec![]);
         asm.add_output("ticks", WireRef::node("ticks"));
-        asm.mark_init_output("ticks");
+        asm.mark_const_output("ticks");
 
         let mut kernel = asm.compile().expect("compile");
         // Plan B normally runs in the executor; for this unit test

@@ -15,8 +15,7 @@ use std::collections::{HashMap, HashSet};
 use nbrs_workload::model::{BindingsDef, ParsedOp};
 use nbrs_variates::comprehension::{
     collect_leaf_placeholders, collect_string_interp_refs,
-    format_workload_param_as_gk_literal, propagate_parent_inputs,
-    workload_param_type_name,
+    propagate_parent_inputs, workload_param_type_name,
 };
 
 /// Where a binding was declared — its provenance in the scope chain.
@@ -84,7 +83,7 @@ pub struct ScopedBinding {
     pub name: String,
     /// The full declaration line as GK source text.
     /// For regular bindings: `"name := expr"`
-    /// For init: `"init name = \"value\""`
+    /// For init: `"const name := \"value\""`
     /// For externs: `"extern name: Type"`
     pub line: String,
     /// Where this binding came from.
@@ -165,7 +164,7 @@ impl BindingScope {
 
             // Cursor declarations use `=` not `:=`:
             //   cursor row = range(0, vector_count("example"))
-            //   init prebuffer = dataset_prebuffer("example")
+            //   const prebuffer := dataset_prebuffer("example")
             // These are GK statements that the compiler handles directly.
             // Pass them through as bindings so they survive emission.
             if trimmed.starts_with("cursor ") || trimmed.starts_with("init ") {
@@ -256,7 +255,7 @@ impl BindingScope {
     /// Add a workload param binding as a `final` (compile-time
     /// constant) binding so the compiler folds the literal value
     /// and the assembler treats references as const args rather
-    /// than wire inputs. The `final` modifier matches the M3.6
+    /// than wire inputs. The `const` modifier matches the M3.6
     /// contract: workload params are immutable for the run, so
     /// downstream nodes consume them as constants.
     ///
@@ -268,12 +267,12 @@ impl BindingScope {
     /// emitted as bare literals.
     pub fn add_param_binding(&mut self, name: &str, value: &str) {
         let line = if value.parse::<u64>().is_ok() || value.parse::<f64>().is_ok() {
-            format!("final {name} := {value}")
+            format!("const {name} := {value}")
         } else if value == "true" || value == "false" {
-            format!("final {name} := {value}")
+            format!("const {name} := {value}")
         } else {
             let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-            format!("final {name} := \"{escaped}\"")
+            format!("const {name} := \"{escaped}\"")
         };
         self.bindings.push(ScopedBinding {
             name: name.to_string(),
@@ -648,7 +647,7 @@ fn value_to_param_string(v: &nbrs_variates::node::Value) -> Option<String> {
     }
 }
 
-/// Format a single `final name := <literal>` line for raw-source
+/// Format a single `const name := <literal>` line for raw-source
 /// emission paths (build_phase_scope_kernel, synthesize_for_each_scope).
 /// Mirrors [`BindingScope::add_param_binding`]'s value-formatting
 /// rules but produces a string instead of mutating a scope. Numeric
@@ -656,12 +655,12 @@ fn value_to_param_string(v: &nbrs_variates::node::Value) -> Option<String> {
 /// with `"`/`\` escaped.
 fn format_param_binding_line(name: &str, value: &str) -> String {
     if value.parse::<u64>().is_ok() || value.parse::<f64>().is_ok() {
-        format!("final {name} := {value}")
+        format!("const {name} := {value}")
     } else if value == "true" || value == "false" {
-        format!("final {name} := {value}")
+        format!("const {name} := {value}")
     } else {
         let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-        format!("final {name} := \"{escaped}\"")
+        format!("const {name} := \"{escaped}\"")
     }
 }
 
@@ -898,7 +897,7 @@ pub fn build_phase_scope_kernel(
             // FINAL/SHARED go through the existing cascade
             // (case 1 emission lives in that loop below).
             let modifier = parent_program.output_modifier(name);
-            if modifier == nbrs_variates::dsl::ast::BindingModifier::FINAL
+            if modifier == nbrs_variates::dsl::ast::BindingModifier::CONST
                 || modifier == nbrs_variates::dsl::ast::BindingModifier::SHARED
             {
                 continue;
@@ -910,15 +909,11 @@ pub fn build_phase_scope_kernel(
                 source.push_str(&line);
                 source.push('\n');
                 match stmt {
-                    nbrs_variates::dsl::ast::Statement::CycleBinding(b) => {
+                    nbrs_variates::dsl::ast::Statement::Binding(b) => {
                         for t in &b.targets {
                             emitted.insert(t.clone());
                             already_satisfied.insert(t.clone());
                         }
-                    }
-                    nbrs_variates::dsl::ast::Statement::InitBinding(b) => {
-                        emitted.insert(b.name.clone());
-                        already_satisfied.insert(b.name.clone());
                     }
                     _ => {}
                 }
@@ -930,7 +925,7 @@ pub fn build_phase_scope_kernel(
     // descendants see them via materialize_wiring_from_outer. Same shape as
     // build_do_loop_scope_kernel — and same shadow-aware skip the
     // parent-output cascade applies: if the body locally
-    // declares `final NAME := …` (or any other body-level
+    // declares `const NAME := …` (or any other body-level
     // assignment for `NAME`), the local declaration is the
     // authoritative binding for this scope and emitting
     // `extern NAME: T` alongside it would collide. The
@@ -974,7 +969,7 @@ pub fn build_phase_scope_kernel(
         if scan_locally_declared_idents(&body_text).contains(&owned) { continue; }
         // SRD-13f case 1 — when an upstream output is `final`
         // AND its value is representable as a GK source literal,
-        // inline it as `final name := <literal>` rather than
+        // inline it as `const name := <literal>` rather than
         // cascading via extern. Falls through to extern cascade
         // when the value isn't representable.
         //
@@ -985,7 +980,7 @@ pub fn build_phase_scope_kernel(
         // `final` into the workload-root program, so the
         // parent-program's output_modifier no longer says FINAL
         // for those names. But the values *are* stable for the
-        // run, and downstream `final` bindings that reference a
+        // run, and downstream `const` bindings that reference a
         // workload-param need it const-foldable to fold them in
         // turn. So when the parent kernel can resolve the name's
         // value via `lookup`, promote as if it were FINAL — as
@@ -993,7 +988,7 @@ pub fn build_phase_scope_kernel(
         // an iter-var (changes per iteration).
         let modifier = parent_program.output_modifier(&owned);
         let is_workload_param = workload_params.contains_key(&owned);
-        let promote = modifier == nbrs_variates::dsl::ast::BindingModifier::FINAL
+        let promote = modifier == nbrs_variates::dsl::ast::BindingModifier::CONST
             || is_workload_param;
         if promote {
             if let Some(value) = parent_kernel.lookup(&owned) {
@@ -1198,7 +1193,7 @@ pub fn build_do_loop_scope_kernel(
     }
 
     if source.is_empty() {
-        source.push_str("final __empty := 0\n");
+        source.push_str("const __empty := 0\n");
     }
 
     // SRD-67 Phase 2 — migrate the do-loop synthesiser to the
@@ -1319,10 +1314,10 @@ pub(crate) fn scan_locally_declared_idents(src: &str) -> HashSet<String> {
     for line in src.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with("//") { continue; }
-        // Drop modifier prefixes (`final init x = …`,
+        // Drop modifier prefixes (`final const x := …`,
         // `shared y := …`) so the LHS ident is always the
         // last word before `:=` or `=`.
-        let prefixes = ["shared init ", "final init ", "init ",
+        let prefixes = ["shared const ", "const ", "init ",
                         "shared ", "final ", "volatile ", "extern "];
         let mut rest = line;
         loop {
@@ -1633,9 +1628,9 @@ pub fn build_op_template_scope_kernel(
             // This was the root cause of the CQL prepared-
             // statement regression where `{ann_opts}` got
             // emitted as a `?` bind point — the op-template
-            // kernel's local `final rerank_mode := "default"`
+            // kernel's local `const rerank_mode := "default"`
             // masked the SetParam shadow, and the downstream
-            // `final ann_opts := select_str(str_eq(
+            // `const ann_opts := select_str(str_eq(
             // rerank_mode, "pinned"), …)` folded against the
             // wrong rerank_mode value.
             nbrs_variates::comprehension::emit_workload_param_chain_aware(
@@ -1689,14 +1684,14 @@ pub fn build_op_template_scope_kernel(
     // so every workload param lands on this op-template kernel
     // as a folded constant. The previous emission shape
     // (`extern X: type`) was wrong — it forced a runtime input
-    // slot, which (a) prevented `init` bindings from folding
+    // slot, which (a) prevented `const` bindings from folding
     // against the param's value at compile time and (b) routed
     // a compile-time-constant value through the runtime input
     // path. `final` is the correct materialization.
     for (name, value) in workload_params {
         // Chain-aware emission: honors any `set:` / `bindings:`
         // scope shadow above us. Without it, the op-template's
-        // local `final NAME := <hashmap-default>` would mask
+        // local `const NAME := <hashmap-default>` would mask
         // the shadow and break SRD-21's single-resolution-
         // surface invariant.
         nbrs_variates::comprehension::emit_workload_param_chain_aware(
@@ -1708,7 +1703,7 @@ pub fn build_op_template_scope_kernel(
         // The flatten-elision logic upstream should have caught
         // this, but defensively keep the kernel non-empty.
         if source.is_empty() {
-            source.push_str("final __empty := 0\n");
+            source.push_str("const __empty := 0\n");
         }
     } else {
         if !source.ends_with('\n') && !source.is_empty() {
@@ -2017,7 +2012,7 @@ pub fn build_scope(
 
     // Check for final shadowing violations
     for entry in outer_manifest {
-        if entry.modifier == nbrs_variates::dsl::ast::BindingModifier::FINAL
+        if entry.modifier == nbrs_variates::dsl::ast::BindingModifier::CONST
             && defined.contains(&entry.name)
         {
             return Err(format!(
@@ -2107,11 +2102,11 @@ pub fn build_scope(
                     // SharedCell, not via const inlining.
                     continue;
                 }
-                if m == BindingModifier::FINAL {
+                if m == BindingModifier::CONST {
                     // SRD-13f §"Wire-reference classification" —
                     // case 1: promoted-final. Read the value from
                     // the parent kernel's folded-constant state
-                    // and inline it as `final name := <literal>`
+                    // and inline it as `const name := <literal>`
                     // via `add_param_binding`, which handles the
                     // numeric / boolean / quoted-string formatting
                     // already used for workload-param injection.
@@ -2170,21 +2165,17 @@ pub fn build_scope(
                 let line = nbrs_variates::dsl::pprint::pp_statement(stmt);
                 scope.ingest_gk_source(&line, BindingOrigin::Inherited);
                 let body = match stmt {
-                    nbrs_variates::dsl::ast::Statement::CycleBinding(b) => Some(&b.value),
-                    nbrs_variates::dsl::ast::Statement::InitBinding(b) => Some(&b.value),
+                    nbrs_variates::dsl::ast::Statement::Binding(b) => Some(&b.value),
                     _ => None,
                 };
                 if let Some(expr) = body {
                     nbrs_variates::dsl::collect_expr_references(expr, &mut referenced);
                 }
                 match stmt {
-                    nbrs_variates::dsl::ast::Statement::CycleBinding(b) => {
+                    nbrs_variates::dsl::ast::Statement::Binding(b) => {
                         for t in &b.targets {
                             already_satisfied.insert(t.clone());
                         }
-                    }
-                    nbrs_variates::dsl::ast::Statement::InitBinding(b) => {
-                        already_satisfied.insert(b.name.clone());
                     }
                     _ => {}
                 }
@@ -2278,7 +2269,7 @@ pub fn build_scope(
     //
     // Workload params are not the workload-root's authority — the
     // params-kernel sits one level above this scope and owns the
-    // `final NAME := <literal>` declarations. The workload-root
+    // `const NAME := <literal>` declarations. The workload-root
     // program declares each param as `extern NAME: T`, and the
     // materialize-wiring-from-outer step at kernel construction
     // time copies the value out of the params-kernel's output
@@ -2287,8 +2278,8 @@ pub fn build_scope(
     // an own-folded constant — which is precisely what makes a
     // SetParam scope-tree node inserted between params-kernel
     // and workload-root able to shadow the value: its own
-    // `final NAME := <override>` becomes the closer
-    // materialize-source. If we baked `final NAME := <literal>`
+    // `const NAME := <override>` becomes the closer
+    // materialize-source. If we baked `const NAME := <literal>`
     // here at the workload-root, that local constant would mask
     // the input slot via the get_constant fast-path in
     // GkKernel::lookup, and no scope-tree-level shadow could
@@ -2647,7 +2638,7 @@ pub fn resolve_placeholders_in_op_params(
 /// Scan `ops`' `bindings:` text for the LHS names that get
 /// produced as per-cycle wires. The scan is intentionally
 /// liberal (LHS can be `cursor q = …`, `init x = …`, `name :=
-/// expr`, `extern n: type`, `final n := expr`, `shared n := expr`,
+/// expr`, `extern n: type`, `const n := expr`, `shared n := expr`,
 /// destructured `(a, b) := …`). Anything that survives the LHS
 /// strip becomes a known name; the substitution path uses this
 /// set to distinguish "per-cycle wire — leave for the dispenser"
@@ -3247,7 +3238,7 @@ mod tests {
         // a different `ParentRefKind` arm.
         nbrs_variates::dsl::compile::compile_gk(
             "input cycle: u64\n\
-             final dim := 128\n\
+             const dim := 128\n\
              shared budget := 100\n\
              load := add(cycle, 1)\n",
         ).expect("compile parent")
@@ -3385,8 +3376,8 @@ extern table: String
                     name: e.name, port_type: e.port_type, modifier: e.modifier,
                 })
                 .collect();
-        let body = "init prebuffered = dataset_prebuffer(\"{dataset}:{profile}\")\n\
-            init query_counts = query_count(prebuffered)\n\
+        let body = "const prebuffered := dataset_prebuffer(\"{dataset}:{profile}\")\n\
+            const query_counts := query_count(prebuffered)\n\
             cursor q = range(0, query_counts * 10)\n\
             query_vector := query_vector_at(prebuffered, q % query_counts)\n\
             predicate := predicate_value_at(prebuffered, q % query_counts)\n\
@@ -3472,8 +3463,8 @@ extern keyspace: String
                     name: e.name, port_type: e.port_type, modifier: e.modifier,
                 })
                 .collect();
-        let body = "init prebuffered = dataset_prebuffer(\"dummy:default\")\n\
-            init query_counts = query_count(prebuffered)\n\
+        let body = "const prebuffered := dataset_prebuffer(\"dummy:default\")\n\
+            const query_counts := query_count(prebuffered)\n\
             cursor q = range(0, query_counts * 10)\n\
             query_vector := query_vector_at(prebuffered, q % query_counts)\n\
             predicate := predicate_value_at(prebuffered, q % query_counts)\n\
@@ -3541,10 +3532,10 @@ extern keyspace: String
         // referenced wires (so the cascade succeeds).
         let kernel_src = "\
             input cycle: u64\n\
-            final rows := 10\n\
-            final ground_truth := \"1,2,3\"\n\
-            final k_value := 5\n\
-            final limit_value := 100\n";
+            const rows := 10\n\
+            const ground_truth := \"1,2,3\"\n\
+            const k_value := 5\n\
+            const limit_value := 100\n";
         let real_parent = nbrs_variates::dsl::compile::compile_gk(kernel_src)
             .expect("parent compile");
         let real_manifest = nbrs_variates::kernel::extract_manifest(real_parent.program())
@@ -3630,10 +3621,10 @@ extern keyspace: String
     fn promoted_final_emits_inline_literal_for_str() {
         // SRD-13f case 1 — when a referenced name is `final`
         // upstream and a Str, the synthesizer emits
-        // `final name := "value"` in the child's source rather
+        // `const name := "value"` in the child's source rather
         // than auto-externing it.
         let parent = nbrs_variates::dsl::compile_gk(
-            "input cycle: u64\nfinal dataset := \"sift1m\"\n"
+            "input cycle: u64\nconst dataset := \"sift1m\"\n"
         ).expect("compile parent");
         let manifest: Vec<crate::runner::ManifestEntry> =
             nbrs_variates::kernel::extract_manifest(parent.program())
@@ -3655,7 +3646,7 @@ extern keyspace: String
         ).expect("build_scope");
         let emitted = scope.emit();
         assert!(
-            emitted.contains("final dataset := \"sift1m\""),
+            emitted.contains("const dataset := \"sift1m\""),
             "expected promoted-final emission, got:\n{emitted}"
         );
         assert!(
@@ -3667,7 +3658,7 @@ extern keyspace: String
     #[test]
     fn promoted_final_emits_inline_literal_for_u64() {
         let parent = nbrs_variates::dsl::compile_gk(
-            "input cycle: u64\nfinal count := 42\n"
+            "input cycle: u64\nconst count := 42\n"
         ).expect("compile parent");
         let manifest: Vec<crate::runner::ManifestEntry> =
             nbrs_variates::kernel::extract_manifest(parent.program())
@@ -3689,7 +3680,7 @@ extern keyspace: String
         ).expect("build_scope");
         let emitted = scope.emit();
         assert!(
-            emitted.contains("final count := 42"),
+            emitted.contains("const count := 42"),
             "expected promoted-final u64 emission, got:\n{emitted}"
         );
     }
@@ -3701,7 +3692,7 @@ extern keyspace: String
         // at the synthesizer level with a structured error,
         // not via a downstream GK compiler error.
         let parent = nbrs_variates::dsl::compile_gk(
-            "input cycle: u64\nfinal dataset := \"sift1m\"\n"
+            "input cycle: u64\nconst dataset := \"sift1m\"\n"
         ).expect("compile parent");
         let manifest: Vec<crate::runner::ManifestEntry> =
             nbrs_variates::kernel::extract_manifest(parent.program())
@@ -3998,7 +3989,7 @@ extern keyspace: String
         // touches, in-process, with the same shape that triggers
         // the failure:
         //
-        //   1. params kernel (workload params as `final` bindings).
+        //   1. params kernel (workload params as `const` bindings).
         //   2. workload-root kernel via the `compile_bindings_with_libs_excluding`-style
         //      flow: build_scope + scope.ingest_gk_source + parent.build_subscope.
         //   3. for_each scope kernel (outer iter var).
@@ -4019,7 +4010,7 @@ extern keyspace: String
         sorted.sort();
         let mut params_source = String::new();
         for k in sorted {
-            params_source.push_str(&format!("final {k} := \"{}\"\n", workload_params[k]));
+            params_source.push_str(&format!("const {k} := \"{}\"\n", workload_params[k]));
         }
         let params_kernel = nbrs_variates::dsl::compile_gk(&params_source)
             .expect("params compile");
@@ -4199,7 +4190,7 @@ extern keyspace: String
         sorted.sort();
         for k in sorted {
             let v = &workload_params[k];
-            params_source.push_str(&format!("final {k} := \"{v}\"\n"));
+            params_source.push_str(&format!("const {k} := \"{v}\"\n"));
         }
         let params_kernel = nbrs_variates::dsl::compile_gk(&params_source)
             .expect("params compile");

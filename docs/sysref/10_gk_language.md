@@ -683,7 +683,7 @@ intersects scopes:
   named position trackers used inside any scope.
 
 For everything else (when scopes are created, how outer
-values flow in, what `shared` / `final` / `volatile` mean
+values flow in, what `shared` / `const` / `volatile` mean
 across the hierarchy, the `for_each` lifecycle), see SRD 13c.
 
 ## Op-Level Bindings
@@ -702,8 +702,8 @@ merged into the enclosing scope's DAG at compile time.
 3. Each op dispenser holds a reference to the enclosing
    scope's GK context (program + state). There is no
    per-op kernel.
-4. `shared`/`final` constraints from outer scopes are
-   enforced — an op binding cannot redefine a `final` name.
+4. `shared`/`const` constraints from outer scopes are
+   enforced — an op binding cannot redefine a `const` name.
 
 If different ops need incompatible bindings, they belong in
 different phases. Phases are the scope boundary; ops are not.
@@ -736,7 +736,7 @@ that take the cursor's ordinal as input and return typed values:
 
 ```
 cursor base = range(0, vector_count("example:label_00"))
-init prebuffer = dataset_prebuffer("example:label_00")
+const prebuffer := dataset_prebuffer("example:label_00")
 id := format_u64(base, 10)
 train_vector := vector_at(base, "example:label_00")
 ```
@@ -751,7 +751,7 @@ expressed through standard GK function composition.
 
 Every vectordata-backed phase otherwise repeats the same
 boilerplate: a `range(...)` extent computed from `vector_count`,
-a `dataset_prebuffer` init binding, and a per-vector projection
+a `dataset_prebuffer` const binding, and a per-vector projection
 via `vector_at_bytes`. The compiler exposes a generic
 *cursor-sugar* registry — any node module can register a
 handler that recognizes a non-`range` constructor and rewrites
@@ -775,7 +775,7 @@ Verbose form a workload would write today without sugar:
 
 ```
 cursor row = range(0, vector_count("example:label_00"))
-init prebuffer = dataset_prebuffer("example:label_00")
+const prebuffer := dataset_prebuffer("example:label_00")
 id := format_u64(row, 10)
 train_vector := vector_at_bytes(row, "example:label_00")
 ```

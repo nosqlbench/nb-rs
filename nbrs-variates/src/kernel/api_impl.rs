@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn dataflow_indexed_set_get() {
         let mut k = compile_gk(
-            "input cycle: u64\nfinal x := 7\n"
+            "input cycle: u64\nconst x := 7\n"
         ).unwrap();
         // cycle is index 0
         k.set_wire(0_usize, Value::U64(42));
@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn metadata_listings() {
         let k = compile_gk(
-            "input (cycle: u64, thread: u64)\nextern n: u64\nfinal x := 7\n"
+            "input (cycle: u64, thread: u64)\nextern n: u64\nconst x := 7\n"
         ).unwrap();
         let inputs: Vec<String> = k.input_names();
         assert!(inputs.iter().any(|s| s == "cycle"));

@@ -213,11 +213,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
     for stmt in &ast.statements {
         match stmt {
             Statement::InputDecl(d) => input_names.push(d.name.clone()),
-            Statement::InitBinding(b) => {
-                defined_names.insert(b.name.clone());
-                all_output_names.push(b.name.clone());
-            }
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 for t in &b.targets {
                     defined_names.insert(t.clone());
                     all_output_names.push(t.clone());
@@ -235,8 +231,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
         for stmt in &ast.statements {
             let expr = match stmt {
                 Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
-                Statement::InitBinding(b) => &b.value,
-                Statement::CycleBinding(b) => &b.value,
+                Statement::Binding(b) => &b.value,
             };
             collect_expr_idents(expr, &mut refs);
         }
@@ -251,8 +246,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
     for stmt in &ast.statements {
         let expr = match stmt {
             Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
-            Statement::InitBinding(b) => &b.value,
-            Statement::CycleBinding(b) => &b.value,
+            Statement::Binding(b) => &b.value,
         };
         collect_expr_idents(expr, &mut consumed);
     }
@@ -286,33 +280,7 @@ fn build_graph(source: &str) -> Result<(Vec<VizNode>, Vec<VizEdge>), String> {
     for stmt in &ast.statements {
         match stmt {
             Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
-            Statement::InitBinding(b) => {
-                let id = format!("n{node_counter}");
-                node_counter += 1;
-
-                let mut input_refs: Vec<String> = Vec::new();
-                collect_expr_idents_ordered(&b.value, &mut input_refs);
-
-                let label = format_node_label(&b.value, &b.name);
-                let output_names = vec![b.name.clone()];
-
-                for ref_name in &input_refs {
-                    if let Some(src_id) = name_to_node_id.get(ref_name) {
-                        edges.push(VizEdge {
-                            from_node: src_id.clone(),
-                            from_port: ref_name.clone(),
-                            to_node: id.clone(),
-                            to_port: ref_name.clone(),
-                        });
-                    }
-                }
-
-                name_to_node_id.insert(b.name.clone(), id.clone());
-                nodes.push(VizNode {
-                    id, label, inputs: input_refs, outputs: output_names, is_coord: false,
-                });
-            }
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 let id = format!("n{node_counter}");
                 node_counter += 1;
 

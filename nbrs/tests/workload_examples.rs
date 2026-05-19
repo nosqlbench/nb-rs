@@ -404,14 +404,14 @@ fn coverage_matrix_shared_types_all_four_with_edge_values() {
 }
 
 #[test]
-fn coverage_matrix_final_modifier_round_trips() {
+fn coverage_matrix_const_modifier_round_trips() {
     let (stdout, stderr) = run_workload(
         "examples/workloads/workload_coverage_matrix.yaml",
-        &["scenario=final_modifier"],
+        &["scenario=const_modifier"],
     );
     assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
-    assert!(stdout.contains("cm/final base_dim=256"),
-        "final-modifier value missing:\n{stdout}");
+    assert!(stdout.contains("cm/const base_dim=256"),
+        "const-modifier value missing:\n{stdout}");
 }
 
 #[test]
@@ -600,7 +600,7 @@ fn coverage_matrix_default_runs_full_matrix() {
 
     let prefixes = [
         "cm/shared_types ",
-        "cm/final ",
+        "cm/const ",
         "cm/derived ",
         "cm/for_each_chain ",
         "cm/do_while_chain ",
@@ -716,7 +716,7 @@ fn set_nesting_composes_overrides_across_layers() {
 
 #[test]
 fn bindings_long_form_equivalent_to_set_sugar() {
-    // Direct `bindings: | init NAME = …` body — the canonical
+    // Direct `bindings: | const NAME := …` body — the canonical
     // form `set:` desugars to. Same shadowing behaviour,
     // same chain semantics, just written explicitly so
     // authors can mix in any other GK construct (derived
@@ -756,7 +756,7 @@ scenarios:
     - set: { mode: verbose }
   empty_bindings:
     - bindings: |
-        init mode = "verbose"
+        const mode := "verbose"
 
 phases:
   just_say:

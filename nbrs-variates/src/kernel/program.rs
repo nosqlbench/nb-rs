@@ -144,12 +144,12 @@ pub struct GkProgram {
     /// Source schemas declared in the GK program. The runtime queries
     /// these to discover data sources and their extents.
     cursor_schemas: Vec<crate::source::SourceSchema>,
-    /// Names declared with the `init` keyword in the source. Subject
+    /// Names declared with the `const` keyword in the source. Subject
     /// to the init-binding contract (SRD 11 §"Init Binding Contract"):
     /// every name listed here must reach exactly one effectively-const
     /// value at scope-init time. Plan A (compile-time) and Plan B
     /// (scope-activation) checks both consult this set.
-    pub(crate) init_outputs: std::collections::HashSet<String>,
+    pub(crate) const_outputs: std::collections::HashSet<String>,
     /// Rule 2 write-through bindings produced when this program
     /// was synthesized by the SRD-67 builder's finalize step.
     /// Each entry pairs an export name (a cell-bound input slot
@@ -226,7 +226,7 @@ impl GkProgram {
             output_modifiers: HashMap::new(),
             inherited_outputs: std::collections::HashSet::new(),
             cursor_schemas: Vec::new(),
-            init_outputs: std::collections::HashSet::new(),
+            const_outputs: std::collections::HashSet::new(),
             write_throughs: Vec::new(),
             ast: None,
         }
@@ -255,16 +255,16 @@ impl GkProgram {
             output_modifiers: HashMap::new(),
             inherited_outputs: std::collections::HashSet::new(),
             cursor_schemas: Vec::new(),
-            init_outputs: std::collections::HashSet::new(),
+            const_outputs: std::collections::HashSet::new(),
             write_throughs: Vec::new(),
             ast: None,
         }
     }
 
-    /// Mark a binding as declared with the `init` keyword. The
+    /// Mark a binding as declared with the `const` keyword. The
     /// init-binding contract (SRD 11) is checked against this set.
-    pub(crate) fn mark_init_output(&mut self, name: &str) {
-        self.init_outputs.insert(name.to_string());
+    pub(crate) fn mark_const_output(&mut self, name: &str) {
+        self.const_outputs.insert(name.to_string());
     }
 
     /// Set the program's Rule 2 write-through bindings. Called
@@ -311,8 +311,7 @@ impl GkProgram {
     pub fn binding_ast_for(&self, name: &str) -> Option<&Statement> {
         let ast = self.ast.as_ref()?;
         ast.statements.iter().find(|stmt| match stmt {
-            Statement::InitBinding(b) => b.name == name,
-            Statement::CycleBinding(b) => b.targets.iter().any(|t| t == name),
+            Statement::Binding(b) => b.targets.iter().any(|t| t == name),
             _ => false,
         })
     }
@@ -365,15 +364,14 @@ impl GkProgram {
         // (promoted-final or shared-cell) at the call site, not
         // case 3. Skip silently.
         let modifier = self.output_modifier(name);
-        if modifier == crate::dsl::ast::BindingModifier::FINAL
+        if modifier == crate::dsl::ast::BindingModifier::CONST
             || modifier == crate::dsl::ast::BindingModifier::SHARED
         {
             return;
         }
         let Some(stmt) = self.binding_ast_for(name) else { return };
         let value = match stmt {
-            Statement::CycleBinding(b) => &b.value,
-            Statement::InitBinding(b) => &b.value,
+            Statement::Binding(b) => &b.value,
             _ => return,
         };
         // Recurse into dependencies first, then push this stmt —
@@ -386,11 +384,6 @@ impl GkProgram {
             self.collect_chain_into(&r, out, visited);
         }
         out.push(stmt);
-    }
-
-    /// Read the set of names declared with the `init` keyword.
-    pub fn init_outputs(&self) -> &std::collections::HashSet<String> {
-        &self.init_outputs
     }
 
     /// Read the input classification for slot `idx`.
@@ -460,10 +453,10 @@ impl GkProgram {
             .collect()
     }
 
-    /// Return all output names that have the `final` modifier.
-    pub fn final_outputs(&self) -> Vec<&str> {
+    /// Return all output names that have the `const` modifier.
+    pub fn const_outputs(&self) -> Vec<&str> {
         self.output_modifiers.iter()
-            .filter(|(_, m)| **m == crate::dsl::ast::BindingModifier::FINAL)
+            .filter(|(_, m)| **m == crate::dsl::ast::BindingModifier::CONST)
             .map(|(n, _)| n.as_str())
             .collect()
     }
@@ -810,7 +803,7 @@ impl GkProgram {
     /// piece of state that should affect identity lives in
     /// some attached GK module — e.g. nbrs injects workload
     /// `params:` as a synthetic root module
-    /// (`build_workload_params_kernel`) whose `final` bindings
+    /// (`build_workload_params_kernel`) whose `const` bindings
     /// land in const slots `canonical_hash` covers.
     pub fn instance_hash(&self, ancestors: &[&GkProgram]) -> [u8; 32] {
         use sha2::{Sha256, Digest};
@@ -874,7 +867,7 @@ impl GkProgram {
             // stable under struct-field reordering.
             if let Some(m) = self.output_modifiers.get(name.as_str()) {
                 h.update(b"  mod:");
-                h.update(if m.is_final()    { b"F" } else { b"-" });
+                h.update(if m.is_const()    { b"F" } else { b"-" });
                 h.update(if m.is_shared()   { b"S" } else { b"-" });
                 h.update(if m.is_volatile() { b"V" } else { b"-" });
                 h.update(b"\n");
@@ -900,7 +893,7 @@ impl GkProgram {
         // edit that promotes a binding from `final` to `init`
         // (or vice versa) changes the eval-lifecycle of the
         // node graph — distinct programs.
-        let mut init_outs: Vec<&String> = self.init_outputs.iter().collect();
+        let mut init_outs: Vec<&String> = self.const_outputs.iter().collect();
         init_outs.sort();
         for name in init_outs {
             h.update(b"init:");
@@ -1177,8 +1170,8 @@ impl GkProgram {
         // A Dynamic classification on an init binding is a hard
         // structural error. The diagnostic names the binding and
         // the offending wire. There is no soft fall-through.
-        if !self.init_outputs.is_empty() {
-            for init_name in &self.init_outputs {
+        if !self.const_outputs.is_empty() {
+            for init_name in &self.const_outputs {
                 let Some((node_idx, _)) = self.output_map.get(init_name) else { continue };
                 if lifecycle[*node_idx] == EvalLifecycle::Dynamic {
                     let offending = first_dynamic_wire(&self.nodes, &self.wiring, &lifecycle, &self.input_defs, *node_idx);
@@ -1359,7 +1352,7 @@ impl GkProgram {
                 Value::Handle(arc) => {
                     let original_name = self.nodes[i].meta().name.clone();
                     // Per-node compile-time mechanic; one
-                    // line per `init` binding pollutes
+                    // line per `const` binding pollutes
                     // session output with no actionable
                     // signal for the operator. Demote to
                     // Debug — visible under `--log-level
@@ -1465,7 +1458,7 @@ mod canonical_hash_tests {
 
     #[test]
     fn identical_source_produces_identical_hash() {
-        let src = "final dataset := \"sift1m\"\nfinal count := 100\n";
+        let src = "const dataset := \"sift1m\"\nconst count := 100\n";
         let k1 = compile_gk(src).expect("compile1");
         let k2 = compile_gk(src).expect("compile2");
         assert_eq!(k1.program().canonical_hash(), k2.program().canonical_hash());
@@ -1473,16 +1466,16 @@ mod canonical_hash_tests {
 
     #[test]
     fn different_const_value_changes_hash() {
-        let a = compile_gk("final x := 100\n").expect("compile a");
-        let b = compile_gk("final x := 101\n").expect("compile b");
+        let a = compile_gk("const x := 100\n").expect("compile a");
+        let b = compile_gk("const x := 101\n").expect("compile b");
         assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
             "differing const value must change canonical hash");
     }
 
     #[test]
     fn different_string_value_changes_hash() {
-        let a = compile_gk("final s := \"sift1m\"\n").expect("compile a");
-        let b = compile_gk("final s := \"sift10m\"\n").expect("compile b");
+        let a = compile_gk("const s := \"sift1m\"\n").expect("compile a");
+        let b = compile_gk("const s := \"sift10m\"\n").expect("compile b");
         assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
             "differing string value must change canonical hash");
     }
@@ -1492,16 +1485,16 @@ mod canonical_hash_tests {
         // Same RHS, different output name → different program
         // identity. The output map contributes to canonical
         // identity.
-        let a = compile_gk("final foo := 42\n").expect("compile a");
-        let b = compile_gk("final bar := 42\n").expect("compile b");
+        let a = compile_gk("const foo := 42\n").expect("compile a");
+        let b = compile_gk("const bar := 42\n").expect("compile b");
         assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
             "renamed output must change canonical hash");
     }
 
     #[test]
     fn comment_only_change_does_not_change_hash() {
-        let a = compile_gk("final x := 42\n").expect("compile a");
-        let b = compile_gk("# explanatory comment\nfinal x := 42\n# trailing comment\n")
+        let a = compile_gk("const x := 42\n").expect("compile a");
+        let b = compile_gk("# explanatory comment\nconst x := 42\n# trailing comment\n")
             .expect("compile b");
         assert_eq!(a.program().canonical_hash(), b.program().canonical_hash(),
             "comment-only edits should not affect canonical hash — \
@@ -1510,16 +1503,16 @@ mod canonical_hash_tests {
 
     #[test]
     fn whitespace_change_does_not_change_hash() {
-        let a = compile_gk("final x := 42\n").expect("compile a");
-        let b = compile_gk("final  x  :=  42\n\n\n").expect("compile b");
+        let a = compile_gk("const x := 42\n").expect("compile a");
+        let b = compile_gk("const  x  :=  42\n\n\n").expect("compile b");
         assert_eq!(a.program().canonical_hash(), b.program().canonical_hash(),
             "whitespace-only edits should not affect canonical hash");
     }
 
     #[test]
     fn additional_binding_changes_hash() {
-        let a = compile_gk("final x := 1\n").expect("compile a");
-        let b = compile_gk("final x := 1\nfinal y := 2\n").expect("compile b");
+        let a = compile_gk("const x := 1\n").expect("compile a");
+        let b = compile_gk("const x := 1\nconst y := 2\n").expect("compile b");
         assert_ne!(a.program().canonical_hash(), b.program().canonical_hash(),
             "added output must change canonical hash");
     }
@@ -1533,7 +1526,7 @@ mod canonical_hash_tests {
         // The integer literal in `mod(..., N)` lives in a const
         // slot that canonical_hash should cover — even when it's
         // an argument to a function call rather than a top-level
-        // `final X := <literal>` binding.
+        // `const X := <literal>` binding.
         let a = compile_gk("input cycle: u64\nshard := mod(hash(cycle), 8)\n")
             .expect("a");
         let b = compile_gk("input cycle: u64\nshard := mod(hash(cycle), 16)\n")
@@ -1549,7 +1542,7 @@ mod canonical_hash_tests {
         // distinguishable. Prevents a caller from accidentally
         // comparing an instance_hash against a canonical_hash
         // and getting a coincidental match.
-        let p = compile_gk("final x := 1\n").expect("compile");
+        let p = compile_gk("const x := 1\n").expect("compile");
         let prog = p.program();
         assert_ne!(prog.instance_hash(&[]), prog.canonical_hash());
     }
@@ -1559,9 +1552,9 @@ mod canonical_hash_tests {
         // Parent A vs B differ only in a const-slot literal —
         // canonical_hash distinguishes them, so instance_hash
         // computed against the same child must distinguish too.
-        let parent_a = compile_gk("final ds := \"v1\"\n").expect("a");
-        let parent_b = compile_gk("final ds := \"v2\"\n").expect("b");
-        let child = compile_gk("final y := 42\n").expect("child");
+        let parent_a = compile_gk("const ds := \"v1\"\n").expect("a");
+        let parent_b = compile_gk("const ds := \"v2\"\n").expect("b");
+        let child = compile_gk("const y := 42\n").expect("child");
         let cp = child.program();
         let h_a = cp.instance_hash(&[parent_a.program().as_ref()]);
         let h_b = cp.instance_hash(&[parent_b.program().as_ref()]);
@@ -1576,9 +1569,9 @@ mod canonical_hash_tests {
         // must map to different identities. The hash mixes
         // ancestor[i].canonical_hash() in chain order, so swapping
         // ancestors yields a different result.
-        let g = compile_gk("final g := 1\n").expect("g");
-        let p = compile_gk("final p := 2\n").expect("p");
-        let c = compile_gk("final c := 3\n").expect("c");
+        let g = compile_gk("const g := 1\n").expect("g");
+        let p = compile_gk("const p := 2\n").expect("p");
+        let c = compile_gk("const c := 3\n").expect("c");
         let cp = c.program();
         let chain1 = cp.instance_hash(&[p.program().as_ref(), g.program().as_ref()]);
         let chain2 = cp.instance_hash(&[g.program().as_ref(), p.program().as_ref()]);
@@ -1589,10 +1582,10 @@ mod canonical_hash_tests {
     fn instance_hash_is_deterministic_across_rebuilds() {
         // Two independent compiles of the same source feeding
         // the same child must produce the same instance_hash.
-        let parent_src = "final ds := \"sift1m\"\n";
+        let parent_src = "const ds := \"sift1m\"\n";
         let p1 = compile_gk(parent_src).expect("p1");
         let p2 = compile_gk(parent_src).expect("p2");
-        let child = compile_gk("final y := 42\n").expect("child");
+        let child = compile_gk("const y := 42\n").expect("child");
         let cp = child.program();
         let h1 = cp.instance_hash(&[p1.program().as_ref()]);
         let h2 = cp.instance_hash(&[p2.program().as_ref()]);
@@ -1603,7 +1596,7 @@ mod canonical_hash_tests {
 
     #[test]
     fn is_equivalent_to_identical_programs() {
-        let src = "final x := 100\n";
+        let src = "const x := 100\n";
         let a = compile_gk(src).expect("a");
         let b = compile_gk(src).expect("b");
         assert!(a.program().is_equivalent_to(b.program()));
@@ -1612,14 +1605,14 @@ mod canonical_hash_tests {
 
     #[test]
     fn is_equivalent_to_differs_when_const_differs() {
-        let a = compile_gk("final x := 100\n").expect("a");
-        let b = compile_gk("final x := 101\n").expect("b");
+        let a = compile_gk("const x := 100\n").expect("a");
+        let b = compile_gk("const x := 101\n").expect("b");
         assert!(!a.program().is_equivalent_to(b.program()));
     }
 
     #[test]
     fn is_subset_of_self_is_true() {
-        let p = compile_gk("final x := 1\n").expect("p");
+        let p = compile_gk("const x := 1\n").expect("p");
         // A program is trivially a subset of itself (the
         // equivalence shortcut at the top of is_subset_of).
         assert!(p.program().is_subset_of(p.program()));
@@ -1629,8 +1622,8 @@ mod canonical_hash_tests {
     fn is_subset_of_distinct_definitions_is_false() {
         // Inner declares a NEW output the parent doesn't —
         // structurally not a subset.
-        let parent = compile_gk("final x := 1\n").expect("parent");
-        let inner = compile_gk("final y := 2\n").expect("inner");
+        let parent = compile_gk("const x := 1\n").expect("parent");
+        let inner = compile_gk("const y := 2\n").expect("inner");
         assert!(!inner.program().is_subset_of(parent.program()));
     }
 }
@@ -1642,19 +1635,19 @@ mod ast_metadata_tests {
 
     #[test]
     fn retained_ast_is_present_after_compile() {
-        let src = "final dataset := \"sift1m\"\ncount := 100\n";
+        let src = "const dataset := \"sift1m\"\ncount := 100\n";
         let k = compile_gk(src).expect("compile");
         assert!(k.program().ast().is_some(), "AST should be retained on program");
     }
 
     #[test]
     fn binding_ast_for_finds_init_binding() {
-        let src = "init dataset = \"sift1m\"\nratio := 2.5\n";
+        let src = "const dataset := \"sift1m\"\nratio := 2.5\n";
         let k = compile_gk(src).expect("compile");
         let stmt = k.program().binding_ast_for("dataset")
             .expect("dataset binding should be retrievable");
         match stmt {
-            Statement::InitBinding(b) => assert_eq!(b.name, "dataset"),
+            Statement::Binding(b) => assert_eq!(b.targets[0], "dataset"),
             other => panic!("expected InitBinding for 'dataset', got {other:?}"),
         }
     }
@@ -1666,7 +1659,7 @@ mod ast_metadata_tests {
         let stmt = k.program().binding_ast_for("count")
             .expect("count binding should be retrievable");
         match stmt {
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 assert!(b.targets.iter().any(|t| t == "count"),
                     "CycleBinding targets should include 'count'");
             }
@@ -1676,7 +1669,7 @@ mod ast_metadata_tests {
 
     #[test]
     fn binding_ast_for_unknown_name_returns_none() {
-        let k = compile_gk("final x := 1\n").expect("compile");
+        let k = compile_gk("const x := 1\n").expect("compile");
         assert!(k.program().binding_ast_for("does_not_exist").is_none());
     }
 
@@ -1693,11 +1686,11 @@ bar := mod(foo, 100)
             .local_inclusion_chain("bar", &std::collections::HashSet::new());
         assert_eq!(chain.len(), 2, "expected 2 bindings in chain, got {}", chain.len());
         match chain[0] {
-            Statement::CycleBinding(b) => assert!(b.targets.iter().any(|t| t == "foo")),
+            Statement::Binding(b) => assert!(b.targets.iter().any(|t| t == "foo")),
             _ => panic!("expected foo first"),
         }
         match chain[1] {
-            Statement::CycleBinding(b) => assert!(b.targets.iter().any(|t| t == "bar")),
+            Statement::Binding(b) => assert!(b.targets.iter().any(|t| t == "bar")),
             _ => panic!("expected bar second"),
         }
     }
@@ -1707,7 +1700,7 @@ bar := mod(foo, 100)
         // `seed` is `final` — should NOT appear in the chain
         // (case 1, promoted-final, is the caller's job).
         let src = "\
-final seed := 12345
+const seed := 12345
 mixed := hash(seed)
 ";
         let k = compile_gk(src).expect("compile");
@@ -1716,7 +1709,7 @@ mixed := hash(seed)
         // Just `mixed` — `seed` is final, walk stops.
         assert_eq!(chain.len(), 1);
         match chain[0] {
-            Statement::CycleBinding(b) => assert!(b.targets.iter().any(|t| t == "mixed")),
+            Statement::Binding(b) => assert!(b.targets.iter().any(|t| t == "mixed")),
             _ => panic!("expected mixed"),
         }
     }
@@ -1736,14 +1729,14 @@ bar := mod(foo, 100)
             .local_inclusion_chain("bar", &excluded);
         assert_eq!(chain.len(), 1);
         match chain[0] {
-            Statement::CycleBinding(b) => assert!(b.targets.iter().any(|t| t == "bar")),
+            Statement::Binding(b) => assert!(b.targets.iter().any(|t| t == "bar")),
             _ => panic!("expected bar"),
         }
     }
 
     #[test]
     fn local_inclusion_chain_unknown_name_is_empty() {
-        let k = compile_gk("final x := 1\n").expect("compile");
+        let k = compile_gk("const x := 1\n").expect("compile");
         let chain = k.program()
             .local_inclusion_chain("missing", &std::collections::HashSet::new());
         assert!(chain.is_empty());

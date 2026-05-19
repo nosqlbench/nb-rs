@@ -58,7 +58,7 @@ fn field_access_parses() {
     ).unwrap();
     let ast = nbrs_variates::dsl::parser::parse(tokens).unwrap();
     match &ast.statements[1] {
-        nbrs_variates::dsl::ast::Statement::CycleBinding(b) => {
+        nbrs_variates::dsl::ast::Statement::Binding(b) => {
             match &b.value {
                 nbrs_variates::dsl::ast::Expr::FieldAccess { source, field, .. } => {
                     assert_eq!(source, "base");
@@ -67,7 +67,7 @@ fn field_access_parses() {
                 other => panic!("expected FieldAccess, got {:?}", other),
             }
         }
-        other => panic!("expected CycleBinding, got {:?}", other),
+        other => panic!("expected Binding, got {:?}", other),
     }
 }
 

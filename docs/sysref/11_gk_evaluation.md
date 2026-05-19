@@ -69,25 +69,24 @@ for the broader discussion of provenance-based invalidation.
 
 ---
 
-## Three Evaluation Lifecycles
+## Two Evaluation Lifecycles
 
 A GK node's *lifecycle* is the granularity at which it is
-re-evaluated. Three are recognised, ordered from coldest to
-hottest:
+re-evaluated. Two are recognised:
 
 | Lifecycle | When evaluated | Re-evaluated when… |
 |-----------|----------------|---------------------|
-| **compile-const** | Once, during GK compilation | Never. Replaced in the DAG with a leaf const node. |
-| **scope-init** | Once per scope activation, immediately after `bind_outer_scope` populates iteration-variable externs | The enclosing comprehension advances to its next iteration (the scope is re-activated with new extern values). Never per cycle. |
+| **effectively-const** | Once, for the duration of a scope activation. Two implementation paths: (a) **compile-fold** — evaluated during GK compilation and replaced with a leaf const node; (b) **scope-init pull** — evaluated once after `bind_outer_scope` populates iteration-variable externs, then frozen for the activation. The choice between (a) and (b) is decided by the compiler based on the wire chain; the author writes `const NAME := <expr>` in both cases. | Never within an activation. The enclosing comprehension advancing to its next iteration triggers a fresh activation, which re-runs scope-init pull (compile-folded leaves are immutable across activations). |
 | **dynamic** | Once per pull, on demand at execution time | Whenever a transitively dependent input changes (provenance-based invalidation). Includes per-cycle pulls *and* intra-stanza recomputation when capture ports or `do_while`/`do_until` counters tick. |
 
-The previous binary "init-time vs cycle-time" terminology
-collapsed compile-const and scope-init into one bucket. They are
-distinct: compile-const is resolved before the kernel is even
-shared; scope-init is resolved each time an enclosing comprehension
-re-activates the scope. Both are **scope-stable** — they hold a
-single value for the entire activation of their owning scope —
-which is the property the init-binding contract below depends on.
+The `const` modifier is the single author-facing surface for
+effectively-const bindings. The previous `init` / `final`
+keyword pair split the surface artificially: `final` advertised
+"please compile-fold," `init` advertised "please scope-init
+pull," but both meant the same thing semantically — materialise
+once, freeze for the scope's lifetime. Authors don't need to
+know which implementation path the compiler picked; the
+guarantee is the same either way.
 
 ### Effectively-Const Nodes
 
@@ -101,7 +100,7 @@ is itself effectively-const.
 |----------|-------------------|-----|
 | Literal in source | Yes | Resolved at parse / compile. |
 | Compile-const fold result | Yes | Already a leaf const node. |
-| Workload param (`final` binding) | Yes | Bound once at workload-kernel init, never reassigned. |
+| Workload param (`const` binding) | Yes | Bound once at workload-kernel init, never reassigned. |
 | `for_each` / `for_combinations` iteration extern | Yes — *for the duration of one activation* | Rebound by `bind_outer_scope` on each iteration; held constant for every cycle within that iteration. See [SRD 18b §"Iteration variables as scope outputs"](18b_scenario_tree_and_scheduler.md). |
 | `do_while` / `do_until` counter | **No** | Dynamic — ticks within the scope's own evaluation; not stable for the activation. |
 | Graph input (e.g. `cycle`) | **No** | Dynamic — changes every cycle. |
@@ -116,14 +115,14 @@ downstream of those slots as dynamic and refused to fold it.
 But `profile` is rebound exactly once per phase activation and
 held fixed for every cycle — the same stability guarantee as a
 folded literal. Treating iteration externs as effectively-const
-is what permits `init prebuffered = dataset_prebuffer("{dataset}:{profile}")`
-to be a legal init binding inside such a scope.
+is what permits `const prebuffered := dataset_prebuffer("{dataset}:{profile}")`
+to be a legal const binding inside such a scope.
 
 ### Compile-Time Constant Folding
 
-Compile-time fold is the implementation of the compile-const
-lifecycle. It runs once per `GkProgram` build, before the program
-is wrapped in `Arc` and shared:
+Compile-time fold is the compile-fold implementation path for
+the effectively-const lifecycle. It runs once per `GkProgram`
+build, before the program is wrapped in `Arc` and shared:
 
 ```
 Phase 1: Classify each node by upstream wire chain
@@ -153,34 +152,36 @@ Folded constants are available via `kernel.get_constant(name)` for
 activity config resolution (cycles, concurrency from dataset
 metadata).
 
-### Scope-Init Pass
+### Scope-Init Pull
 
-The scope-init pass is the implementation of the scope-init
-lifecycle. It runs once per scope activation, *after*
-`bind_outer_scope` has populated the kernel's iteration-extern
-input slots and *before* any fiber is created.
+The scope-init pull is the scope-init-pull implementation path
+for the effectively-const lifecycle. It runs once per scope
+activation, *after* `bind_outer_scope` has populated the
+kernel's iteration-extern input slots and *before* any fiber
+is created.
 
 ```
-For each declared init binding b in this scope's program:
+For each const-modifier output b in this scope's program:
   1. Pull b's name on the activation kernel's state. The standard
      pull walks back through b's subgraph, evaluating each upstream
      node against the populated externs and caching the result in
      the state's per-node buffer (clean flag set to true).
   2. Verify the resulting value is non-`None` (Plan B, below).
 
-After every init binding has been pulled, the executor wraps the
+After every const output has been pulled, the executor wraps the
 kernel in an `OpBuilder` that snapshots the
 `(node_idx, port_idx, Value)` triples for those bindings as
 `init_overrides`. Each fiber spawned from this `OpBuilder` seeds
 the triples into its own state's buffers and marks the
-corresponding nodes clean. A fiber's first dynamic pull of an
-init binding reads the seeded buffer directly — the binding's
+corresponding nodes clean. A fiber's first dynamic pull of a
+const binding reads the seeded buffer directly — the binding's
 eval function does not re-fire, regardless of how many cycles
 or fibers traverse it.
 ```
 
-This is the runtime side of the init-binding contract: one eval
-per scope activation, full stop, regardless of fiber count.
+This is the runtime side of the const-binding contract: one
+eval per scope activation, full stop, regardless of fiber
+count.
 
 Reference points in the code:
 - `nbrs_variates::kernel::engines::GkState::seed_node_buffer` —
@@ -188,54 +189,55 @@ Reference points in the code:
   marks it clean.
 - `nbrs_activity::synthesis::OpBuilder::init_overrides` — the
   per-activation snapshot that fiber state inherits.
-- `nbrs_activity::executor::run_phase` Plan B block — the
-  per-init-binding pull + non-None verification, immediately
-  after `kernel.bind_outer_scope(parent_kernel)`.
+- `nbrs_variates::kernel::gkkernel::GkKernel::materialize_wiring_from_outer`
+  Step 3 — the per-const-output pull + non-None verification,
+  immediately after the extern-slot bind step.
 
 ---
 
-## Init Binding Contract
+## Const Binding Contract
 
-`init <name> = <expr>` is a **const-like constraint**: it asserts
-that `<expr>` evaluates to a single value for the entire
-activation of the enclosing scope. The compiler and runtime
-together enforce two checks:
+`const <name> := <expr>` is the canonical surface for an
+effectively-const binding: it asserts that `<expr>` evaluates
+to a single value for the entire activation of the enclosing
+scope. The compiler and runtime together enforce two checks:
 
 ### Compile-Time Check (Plan A)
 
 During GK compilation, after wire resolution and topological
 sort:
 
-> For every binding declared `init`, every node in its upstream
-> wire chain must be either compile-const or an iteration extern
-> (effectively-const at scope-init time per the table above).
+> For every binding declared `const`, every node in its upstream
+> wire chain must be effectively-const (either compile-foldable
+> or an iteration extern that materialise-wiring populates at
+> scope activation).
 
 If any upstream node is non-effectively-const — a graph input,
 a capture port, a `do_while`/`do_until` counter, a chain through
 a non-deterministic source — compilation **fails** with a
-diagnostic naming the init binding and the offending wire. There
-is no soft fall-through to dynamic evaluation.
+diagnostic naming the const binding and the offending wire.
+There is no soft fall-through to dynamic evaluation.
 
-This check runs in the compile-time fold pass. Compile-const
-classification (above) and the init-binding check share the same
-upstream walk; the init check simply demands the upstream set be
-a subset of `{compile-const ∪ iteration externs}`.
+This check runs in the compile-time fold pass. Effectively-const
+classification (above) and the const-binding check share the
+same upstream walk; the const check simply demands the upstream
+set be a subset of `{compile-foldable ∪ iteration externs}`.
 
 ### Scope-Activation Check (Plan B)
 
-After scope-init evaluation runs (the scope is activated, externs
-populated, the scope-init pass has stashed values), the kernel
-verifies:
+After scope-init evaluation runs (the scope is activated,
+externs populated, the scope-init pull pass has stashed values),
+the kernel verifies:
 
-> Every binding declared `init` has produced a single concrete
+> Every binding declared `const` has produced a single concrete
 > value and is materialized as a leaf const-like node (ConstU64,
-> ConstF64, ConstStr, ConstHandle, etc.) — no remaining wires,
-> no deferred eval.
+> ConstF64, ConstStr, ConstHandle, etc.) or a populated buffer
+> on its node-backed output — no `Value::None`, no deferred eval.
 
-If any init binding fails to materialize — most commonly because
-its value type is not foldable to a leaf node, or its eval
-returned `Value::None`, or a panic was caught and the node was
-left unfolded — this is a **hard runtime error** at scope
+If any const binding fails to materialize — most commonly
+because its value type is not foldable to a leaf node, or its
+eval returned `Value::None`, or a panic was caught and the node
+was left unfolded — this is a **hard runtime error** at scope
 activation, before any cycles run. The phase fails to start;
 the diagnostic names the binding, the residual node type, and
 the eval result.
@@ -244,7 +246,7 @@ Plan A is the type-system-style check that runs at compile time
 when iteration-extern values are unknown but the wire structure
 is fully visible. Plan B is the construction-correctness check
 that runs at scope activation when the values are known and the
-fold pass has had its chance. Together they ensure: an init
+fold pass has had its chance. Together they ensure: a const
 binding either evaluates exactly once per scope activation, or
 the workload refuses to run.
 
@@ -254,11 +256,11 @@ Plan A alone catches structural errors at workload-author time
 (no need to wait for runtime; failures travel with the source).
 But it cannot catch runtime conditions — a remote facet that
 returns 403, an opaque eval panic, a `Value::None` from an
-otherwise-valid init function — because those depend on real
+otherwise-valid scope-init pull — because those depend on real
 extern values.
 
 Plan B alone is robust against runtime conditions but defers
-clear structural errors (e.g. an init binding that wires through
+clear structural errors (e.g. a const binding that wires through
 a `cycle`-dependent node) to runtime, where the failure surface
 is larger and the diagnostic less localized to the source line.
 
@@ -267,8 +269,8 @@ combined check is the contract.
 
 ### Diagnostic Format
 
-Both checks emit the same shape — `init binding '<name>'
-violates the init contract: <reason>`. The reason names the
+Both checks emit the same shape — `const binding '<name>'
+violates the const contract: <reason>`. The reason names the
 offending wire (Plan A) or the runtime failure mode (Plan B).
 Plan B errors carry the executor's `gk_context` prefix
 identifying the phase / scope.
@@ -277,10 +279,10 @@ Plan A reasons (compile-time, from
 `fold_init_constants_impl`):
 
 - **`wire on node '<n>' reaches coordinate input '<name>'
-  (dynamic; changes every cycle)`** — init binding wired to a
+  (dynamic; changes every cycle)`** — const binding wired to a
   graph input declared by `input ...: u64`.
 - **`wire on node '<n>' reaches capture port '<name>' (dynamic;
-  mutated by op execution)`** — init binding wired to an
+  mutated by op execution)`** — const binding wired to an
   `extern X: T = default` port (capture surface).
 - **`wire on node '<n>' reaches non-deterministic source '<name>'
   (dynamic by construction)`** — `counter`, `current_epoch_millis`,
@@ -290,12 +292,13 @@ Plan A reasons (compile-time, from
   immediate seed isn't one of the patterns above (e.g. a chain
   through a `do_while` counter).
 
-Plan B reasons (scope-activation, from `executor::run_phase`):
+Plan B reasons (scope-activation, from
+`GkKernel::materialize_wiring_from_outer` Step 3):
 
-- **`scope-init eval returned Value::None`** — the eval function
+- **`scope-init pull returned Value::None`** — the eval function
   signaled a fatal failure (e.g. `dataset_prebuffer` couldn't
   resolve the source) and refused to produce a value.
-- **`scope-init eval panicked: <message>`** — the eval function
+- **`scope-init pull panicked: <message>`** — the eval function
   panicked; details captured via `catch_unwind`. The panic does
   *not* poison the fiber pool; the phase fails to start cleanly.
 
@@ -304,11 +307,11 @@ Plan B reasons (scope-activation, from `executor::run_phase`):
 ## Non-Deterministic Nodes
 
 `counter`, `current_epoch_millis`, `elapsed_millis`, `thread_id`
-are excluded from compile-const folding *and* from
-effectively-const classification regardless of their input
-wires. They are inherently dynamic even when a static analysis
-would suggest otherwise. An `init` binding that depends on one
-of these fails the Plan A check.
+are excluded from compile-fold *and* from effectively-const
+classification regardless of their input wires. They are
+inherently dynamic even when a static analysis would suggest
+otherwise. A `const` binding that depends on one of these fails
+the Plan A check.
 
 ---
 

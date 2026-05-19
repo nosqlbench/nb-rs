@@ -98,7 +98,7 @@ pub fn compile_gk_with_outputs(
     let extended = if required_outputs.is_empty() {
         Vec::new()
     } else {
-        extend_required_with_init_bindings(required_outputs, &ast)
+        extend_required_with_const_bindings(required_outputs, &ast)
     };
     let filter = if extended.is_empty() {
         None
@@ -113,7 +113,7 @@ pub fn compile_gk_with_outputs(
 /// `init <name> = <expr>` declares a side-effect-carrying init-time
 /// computation: download a dataset, prebuffer a facet, register a
 /// resource, etc. The user's signal that they want it evaluated is
-/// the `init` keyword itself, not a downstream wire reference. Yet
+/// the `const` keyword itself, not a downstream wire reference. Yet
 /// the assembler's DCE pass walks back from the requested-outputs
 /// set and prunes anything not in that ancestry, which silently
 /// removes init bindings whose result nothing reads.
@@ -127,16 +127,20 @@ pub fn compile_gk_with_outputs(
 /// Cycle bindings (`name := ...`) are *not* added; they only run
 /// when consumed. Modules and other statements are likewise not
 /// auto-promoted.
-fn extend_required_with_init_bindings(
+fn extend_required_with_const_bindings(
     required_outputs: &[String],
     ast: &crate::dsl::ast::GkFile,
 ) -> Vec<String> {
     let mut out: Vec<String> = required_outputs.to_vec();
     for stmt in &ast.statements {
-        if let crate::dsl::ast::Statement::InitBinding(b) = stmt
-            && !out.iter().any(|n| n == &b.name)
+        if let crate::dsl::ast::Statement::Binding(b) = stmt
+            && b.modifier.is_const()
         {
-            out.push(b.name.clone());
+            for name in &b.targets {
+                if !out.iter().any(|n| n == name) {
+                    out.push(name.clone());
+                }
+            }
         }
     }
     out
@@ -160,7 +164,7 @@ pub fn compile_gk_with_libs(
     let extended = if required_outputs.is_empty() {
         Vec::new()
     } else {
-        extend_required_with_init_bindings(required_outputs, &ast)
+        extend_required_with_const_bindings(required_outputs, &ast)
     };
     let filter = if extended.is_empty() {
         None
@@ -195,7 +199,7 @@ pub fn compile_gk_with_libs_and_limit(
     let extended = if required_outputs.is_empty() {
         Vec::new()
     } else {
-        extend_required_with_init_bindings(required_outputs, &ast)
+        extend_required_with_const_bindings(required_outputs, &ast)
     };
     let filter = if extended.is_empty() {
         None
@@ -492,7 +496,7 @@ pub fn compile_ast_with_libs(
     let extended = if required_outputs.is_empty() {
         Vec::new()
     } else {
-        extend_required_with_init_bindings(required_outputs, file)
+        extend_required_with_const_bindings(required_outputs, file)
     };
     let filter = if extended.is_empty() {
         None
@@ -947,8 +951,7 @@ impl Compiler {
         if !has_explicit_inputs {
             let defined: HashSet<String> = file.statements.iter().flat_map(|stmt| {
                 match stmt {
-                    Statement::InitBinding(b) => vec![b.name.clone()],
-                    Statement::CycleBinding(b) => b.targets.clone(),
+                    Statement::Binding(b) => b.targets.clone(),
                     Statement::ModuleDef(m) => vec![m.name.clone()],
                     Statement::ExternPort(p) => vec![p.name.clone()],
                     Statement::InputDecl(_) => vec![],
@@ -961,8 +964,7 @@ impl Compiler {
             for stmt in &file.statements {
                 let expr = match stmt {
                     Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
-                    Statement::InitBinding(b) => &b.value,
-                    Statement::CycleBinding(b) => &b.value,
+                    Statement::Binding(b) => &b.value,
                 };
                 collect_references(expr, &mut referenced);
             }
@@ -1017,18 +1019,7 @@ impl Compiler {
         for stmt in &file.statements {
             match stmt {
                 Statement::InputDecl(_) => {} // already handled in first pass
-                Statement::InitBinding(b) => {
-                    self.compile_binding(
-                        &mut asm,
-                        &[b.name.clone()],
-                        &b.value,
-                    )?;
-                    if b.modifier != BindingModifier::NONE {
-                        asm.set_output_modifier(&b.name, b.modifier);
-                    }
-                    asm.mark_init_output(&b.name);
-                }
-                Statement::CycleBinding(b) => {
+                Statement::Binding(b) => {
                     // `shared X := <literal>` compiles to an input
                     // slot + passthrough output, so `materialize_wiring_from_outer`
                     // can wire a `SharedCell` for cross-scope
@@ -1085,6 +1076,18 @@ impl Compiler {
                     if b.modifier != BindingModifier::NONE {
                         for target in &b.targets {
                             asm.set_output_modifier(target, b.modifier);
+                        }
+                    }
+                    // `const NAME := …` — register every target as a
+                    // const output so the runtime's scope-activation
+                    // materialization pass knows to pull these. Const-
+                    // modifier bindings collapse the former `init` and
+                    // `const` keywords into a single lifecycle: fold
+                    // at compile when possible, materialize at scope-
+                    // init otherwise, immutable thereafter.
+                    if b.modifier.is_const() {
+                        for target in &b.targets {
+                            asm.mark_const_output(target);
                         }
                     }
                 }
@@ -1217,8 +1220,7 @@ impl Compiler {
         if self.input_names.is_empty() {
             let defined: HashSet<String> = file.statements.iter().flat_map(|stmt| {
                 match stmt {
-                    Statement::InitBinding(b) => vec![b.name.clone()],
-                    Statement::CycleBinding(b) => b.targets.clone(),
+                    Statement::Binding(b) => b.targets.clone(),
                     Statement::ModuleDef(m) => vec![m.name.clone()],
                     Statement::ExternPort(p) => vec![p.name.clone()],
                     Statement::InputDecl(_) => vec![],
@@ -1231,8 +1233,7 @@ impl Compiler {
             for stmt in &file.statements {
                 let expr = match stmt {
                     Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
-                    Statement::InitBinding(b) => &b.value,
-                    Statement::CycleBinding(b) => &b.value,
+                    Statement::Binding(b) => &b.value,
                 };
                 collect_references(expr, &mut referenced);
             }
@@ -1251,18 +1252,17 @@ impl Compiler {
 
         for stmt in file.statements.clone() {
             match &stmt {
-                Statement::CycleBinding(binding) => {
+                Statement::Binding(binding) => {
                     self.compile_binding(&mut asm, &binding.targets, &binding.value)?;
                     if binding.modifier != BindingModifier::NONE {
                         for target in &binding.targets {
                             asm.set_output_modifier(target, binding.modifier);
                         }
                     }
-                }
-                Statement::InitBinding(binding) => {
-                    self.compile_binding(&mut asm, &[binding.name.clone()], &binding.value)?;
-                    if binding.modifier != BindingModifier::NONE {
-                        asm.set_output_modifier(&binding.name, binding.modifier);
+                    if binding.modifier.is_const() {
+                        for target in &binding.targets {
+                            asm.mark_const_output(target);
+                        }
                     }
                 }
                 Statement::ExternPort(_) => {}
@@ -1317,8 +1317,7 @@ impl Compiler {
         if self.input_names.is_empty() {
             let defined: HashSet<String> = file.statements.iter().flat_map(|stmt| {
                 match stmt {
-                    Statement::InitBinding(b) => vec![b.name.clone()],
-                    Statement::CycleBinding(b) => b.targets.clone(),
+                    Statement::Binding(b) => b.targets.clone(),
                     Statement::ModuleDef(m) => vec![m.name.clone()],
                     Statement::ExternPort(p) => vec![p.name.clone()],
                     Statement::InputDecl(_) => vec![],
@@ -1331,8 +1330,7 @@ impl Compiler {
             for stmt in &file.statements {
                 let expr = match stmt {
                     Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
-                    Statement::InitBinding(b) => &b.value,
-                    Statement::CycleBinding(b) => &b.value,
+                    Statement::Binding(b) => &b.value,
                 };
                 collect_references(expr, &mut referenced);
             }
@@ -1367,18 +1365,7 @@ impl Compiler {
         for stmt in &file.statements {
             match stmt {
                 Statement::InputDecl(_) => {}
-                Statement::InitBinding(b) => {
-                    self.compile_binding(
-                        &mut asm,
-                        &[b.name.clone()],
-                        &b.value,
-                    )?;
-                    if b.modifier != BindingModifier::NONE {
-                        asm.set_output_modifier(&b.name, b.modifier);
-                    }
-                    asm.mark_init_output(&b.name);
-                }
-                Statement::CycleBinding(b) => {
+                Statement::Binding(b) => {
                     // Mirror `compile()`: literal-init `shared`
                     // bindings compile to slot+passthrough so
                     // SharedCells can be wired across kernels.
@@ -1411,6 +1398,11 @@ impl Compiler {
                     if b.modifier != BindingModifier::NONE {
                         for target in &b.targets {
                             asm.set_output_modifier(target, b.modifier);
+                        }
+                    }
+                    if b.modifier.is_const() {
+                        for target in &b.targets {
+                            asm.mark_const_output(target);
                         }
                     }
                 }
@@ -1485,7 +1477,7 @@ impl Compiler {
                 // producing node.
                 let mut required_owned: Vec<String> = required.to_vec();
                 for stmt in &file.statements {
-                    if let crate::dsl::ast::Statement::CycleBinding(b) = stmt
+                    if let crate::dsl::ast::Statement::Binding(b) = stmt
                         && b.modifier.is_volatile()
                     {
                         for t in &b.targets {
@@ -1631,7 +1623,7 @@ mod tests {
             input cycle: u64
             shared rolling := hash(cycle)
         "#;
-        let err = compile_gk(src).expect_err("non-literal shared init must error");
+        let err = compile_gk(src).expect_err("non-literal shared const must error");
         assert!(err.contains("shared binding 'rolling'"), "error: {err}");
         assert!(err.contains("literal initial value"), "error: {err}");
     }
@@ -1640,40 +1632,41 @@ mod tests {
     fn final_modifier_tracked() {
         let src = r#"
             input cycle: u64
-            final dim := 128
+            const dim := 128
         "#;
         let kernel = compile_gk(src).unwrap();
         assert_eq!(
             kernel.program().output_modifier("dim"),
-            crate::dsl::ast::BindingModifier::FINAL
+            crate::dsl::ast::BindingModifier::CONST
         );
     }
 
     #[test]
-    fn shared_init_modifier_tracked() {
+    fn shared_literal_modifier_tracked() {
         let src = r#"
             input cycle: u64
-            shared init budget = 100
+            shared budget := 100
         "#;
         let kernel = compile_gk(src).unwrap();
         assert_eq!(
             kernel.program().output_modifier("budget"),
             crate::dsl::ast::BindingModifier::SHARED
         );
-        // Verify it also compiles as an init-time constant
-        assert!(kernel.get_constant("budget").is_some());
+        // Shared cells back the output via a port-passthrough node
+        // reading the input slot; `lookup` is the cell-aware read.
+        assert_eq!(kernel.lookup("budget").unwrap().as_u64(), 100);
     }
 
     #[test]
-    fn final_init_modifier_tracked() {
+    fn const_literal_modifier_tracked() {
         let src = r#"
             input cycle: u64
-            final init max_dim = 256
+            const max_dim := 256
         "#;
         let kernel = compile_gk(src).unwrap();
         assert_eq!(
             kernel.program().output_modifier("max_dim"),
-            crate::dsl::ast::BindingModifier::FINAL
+            crate::dsl::ast::BindingModifier::CONST
         );
         assert_eq!(kernel.get_constant("max_dim").unwrap().as_u64(), 256);
     }
@@ -1690,19 +1683,19 @@ mod tests {
         let mut shared = kernel.program().shared_outputs();
         shared.sort();
         assert_eq!(shared, vec!["budget", "counter"]);
-        assert!(kernel.program().final_outputs().is_empty());
+        assert!(kernel.program().const_outputs().is_empty());
     }
 
     #[test]
     fn final_outputs_query() {
         let src = r#"
             input cycle: u64
-            final dim := 128
-            final dataset := "example"
+            const dim := 128
+            const dataset := "example"
             normal := hash(cycle)
         "#;
         let kernel = compile_gk(src).unwrap();
-        let mut finals = kernel.program().final_outputs();
+        let mut finals = kernel.program().const_outputs();
         finals.sort();
         assert_eq!(finals, vec!["dataset", "dim"]);
         assert!(kernel.program().shared_outputs().is_empty());
@@ -1973,7 +1966,7 @@ mod tests {
     #[test]
     fn init_binding_survives_dce_even_when_unconsumed() {
         // Regression test for the prebuffer-not-firing bug. An
-        // `init` binding declares a side-effect-bearing init-time
+        // `const` binding declares a side-effect-bearing init-time
         // computation (download, register, prebuffer). The user's
         // signal that they want it evaluated is the `init`
         // keyword itself, *not* a downstream wire reference. Yet
@@ -1984,12 +1977,12 @@ mod tests {
         // `init side_effect = …` binding, the `side_effect` node
         // (and its constant-fold call) got pruned. Post-fix:
         // `compile_gk_with_outputs` extends the required list
-        // with every `init` binding's name, so DCE keeps the
+        // with every `const` binding's name, so DCE keeps the
         // node, fold evaluates it, and `kernel.pull("side_effect")`
         // returns the folded result.
         let src = r#"
             input cycle: u64
-            init side_effect = 42
+            const side_effect := 42
             b := mod(hash(cycle), 100)
         "#;
         let required = vec!["b".to_string()];
@@ -2219,10 +2212,10 @@ mod tests {
         // Pure init: literal arg, no externs. Folds at compile
         // time; the compiled program's output_map points at a
         // ConstU64 leaf.
-        let src = "init dim = 128\n";
+        let src = "const dim := 128\n";
         let kernel = compile_gk(src).expect("init compile-const");
         let prog = kernel.program();
-        assert!(prog.init_outputs().contains("dim"));
+        assert!(prog.const_outputs().contains(&"dim"));
         let &(node_idx, _) = prog.output_map_lookup("dim").expect("dim in output map");
         // After fold, the node has empty wiring (leaf const).
         assert!(prog.wiring[node_idx].is_empty(),
@@ -2237,7 +2230,7 @@ mod tests {
         // scope-init time. Plan B (executor-side) is what actually
         // evaluates it; the compile step just must not reject.
         let src = "extern profile: String\n\
-                   init label = format_str(\"label_%s\", profile)\n";
+                   const label := format_str(\"label_%s\", profile)\n";
         let result = compile_gk(src);
         // We don't care if format_str exists in the stdlib — what
         // we're testing is that the contract check itself doesn't
@@ -2256,7 +2249,7 @@ mod tests {
         // Init binding wired to `cycle` (Coordinate input) is a
         // hard structural violation. Plan A must reject.
         let src = "input cycle: u64\n\
-                   init bad = hash(cycle)\n";
+                   const bad := hash(cycle)\n";
         let err = compile_gk(src).expect_err(
             "Plan A must reject init binding wired to a coordinate input");
         assert!(err.contains("init binding 'bad'") && err.contains("init contract"),
@@ -2270,7 +2263,7 @@ mod tests {
         // Capture port (extern with default) is dynamic; init
         // bindings must not depend on one.
         let src = "extern session_id: u64 = 0\n\
-                   init derived = mod(session_id, 100)\n";
+                   const derived := mod(session_id, 100)\n";
         let err = compile_gk(src).expect_err(
             "Plan A must reject init binding wired to a capture port");
         assert!(err.contains("init binding 'derived'") && err.contains("init contract"),
@@ -2283,7 +2276,7 @@ mod tests {
     fn init_binding_wired_to_nondeterministic_rejected() {
         // `counter()` is non-deterministic; init bindings must not
         // depend on it.
-        let src = "init bad = counter()\n";
+        let src = "const bad := counter()\n";
         let err = compile_gk(src).expect_err(
             "Plan A must reject init binding wired to a non-deterministic source");
         assert!(err.contains("init binding 'bad'") && err.contains("init contract"),
@@ -2304,16 +2297,16 @@ mod tests {
     #[test]
     fn init_outputs_threaded_into_program() {
         // Sanity: the compiler records every `init`-declared name
-        // on GkProgram.init_outputs so Plan B (executor side) can
+        // on GkProgram.const_outputs so Plan B (executor side) can
         // walk them at scope activation.
-        let src = "init a = 1\n\
-                   init b = 2\n\
+        let src = "const a := 1\n\
+                   const b := 2\n\
                    c := 3\n";
         let kernel = compile_gk(src).unwrap();
-        let init_set = kernel.program().init_outputs();
-        assert!(init_set.contains("a"), "init 'a' should be tracked");
-        assert!(init_set.contains("b"), "init 'b' should be tracked");
-        assert!(!init_set.contains("c"), "non-init 'c' must not be tracked");
+        let init_set = kernel.program().const_outputs();
+        assert!(init_set.contains(&"a"), "const 'a' should be tracked");
+        assert!(init_set.contains(&"b"), "const 'b' should be tracked");
+        assert!(!init_set.contains(&"c"), "non-const 'c' must not be tracked");
     }
 
     #[test]

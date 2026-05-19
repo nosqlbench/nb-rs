@@ -630,7 +630,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // Extract workload structure before consuming. M3.6:
     // `workload_params` is the set of *workload-declared* params
     // (the YAML `params:` block, with CLI overrides applied) —
-    // these are what get injected as `final` bindings on the
+    // these are what get injected as `const` bindings on the
     // workload kernel. The full `workload.params` map also
     // contains ad-hoc CLI params like `cycles=`, `workload=`,
     // `tags=`, etc., which are not declared bindings and must
@@ -1051,7 +1051,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     //
     // What's left here: rewrite inline `{{expr}}` constructs to
     // named bindings so the GK compiler can hoist them as
-    // `final __expr_N := …` entries. That pass is a bind-point
+    // `const __expr_N := …` entries. That pass is a bind-point
     // shape transform, not a value substitution — it operates
     // independently of workload params.
     crate::scope::rewrite_inline_exprs(&mut all_ops_for_compile);
@@ -1546,7 +1546,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         // M3.2: install per-scope kernels for for_each /
         // for_combinations nodes. Each kernel re-exports its
         // iteration variables and any referenced inherited
-        // values as outputs (`final x := x` passthrough), so
+        // values as outputs (`const x := x` passthrough), so
         // children's standard `materialize_wiring_from_outer(parent)`
         // chains inheritance through arbitrary nesting depth
         // — no caller-side scope-tree walking for name
@@ -1875,7 +1875,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     // interpolation and expression evaluation
                     // at compile time. Lexical shadowing of an
                     // upstream `final NAME` by the body's own
-                    // `final NAME := …` is enforced by the
+                    // `const NAME := …` is enforced by the
                     // local-final transit-suppression rule in
                     // `materialize_wiring_from_outer`.
                     crate::scope::build_phase_scope_kernel(
@@ -3074,10 +3074,10 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
                 // Two reference shapes inside GK source:
                 //   - `{name}` placeholders inside string literals
                 //     (resolved by GK string-interpolation against
-                //     `final` bindings),
+                //     `const` bindings),
                 //   - bare identifier references in GK expressions
                 //     (e.g. `row := char_buf(..., cols)` — `cols`
-                //     resolves directly to its `final` binding).
+                //     resolves directly to its `const` binding).
                 // The unused-param validator must recognise both
                 // or it falsely flags params that the workload
                 // legitimately consumes via the bare path.
@@ -3309,10 +3309,10 @@ fn collect_iter_vars_recursive(
 /// Scanner is line-based and recognises six shapes:
 ///   * `input NAME[: TYPE]` — kernel input slot (bare form)
 ///   * `input (NAME[: TYPE], ...)` — kernel input slot (tuple form)
-///   * `init NAME = …`     — init binding (eager, once per scope)
+///   * `const NAME := …`     — init binding (eager, once per scope)
 ///   * `cursor NAME = …`   — cursor declaration
 ///   * `shared NAME := …`  — shared output (cross-scope cell)
-///   * `final NAME := …`   — final binding
+///   * `const NAME := …`   — final binding
 ///   * `NAME := …`         — ordinary `:=` output binding
 ///
 /// The collector also mirrors the workload-root kernel's auto-input
@@ -3527,8 +3527,8 @@ fn scan_gk_braced_refs(source: &str) -> Vec<String> {
 }
 
 /// Line-by-line scan of GK source for locally-bound names —
-/// `init NAME = …`, `cursor NAME = …`, `shared NAME := …`,
-/// `final NAME := …`, bare `NAME := …` assignments, and
+/// `cursor NAME = …`, `shared NAME := …`, `const NAME := …`,
+/// `volatile NAME := …`, bare `NAME := …` assignments, and
 /// `input NAME[: TYPE]` / `input (NAME[: TYPE], ...)` declarations.
 /// Skips comments and blank lines. Lines that don't match any of
 /// these shapes (function-call statements, comments, expression
@@ -3547,16 +3547,16 @@ fn scan_gk_binding_lhs(
             scan_input_decl_names(out, rest.trim());
             continue;
         }
-        // Strip leading modifier (`init `, `cursor `, …); body is
-        // what follows. Modifiers can be combined in a few cases
-        // (e.g. `volatile final`, `final shared`), so loop until
-        // no recognised prefix remains.
+        // Strip leading modifier (`const `, `cursor `, `shared `,
+        // `volatile `); body is what follows. Modifiers can be
+        // combined in a few cases (e.g. `shared const`,
+        // `shared volatile`), so loop until no recognised prefix
+        // remains.
         let mut body = line;
         loop {
-            let stripped = body.strip_prefix("init ")
+            let stripped = body.strip_prefix("const ")
                 .or_else(|| body.strip_prefix("cursor "))
                 .or_else(|| body.strip_prefix("shared "))
-                .or_else(|| body.strip_prefix("final "))
                 .or_else(|| body.strip_prefix("volatile "));
             match stripped {
                 Some(rest) => body = rest,
@@ -4070,7 +4070,7 @@ mod tests {
         // The user's case: `{name}` outside any string literal,
         // sitting where GK expects an expression. Always invalid.
         let refs = scan_gk_braced_refs(
-            "init passes = multiples_at_least({min_query_cycles}, base)\n"
+            "const passes := multiples_at_least({min_query_cycles}, base)\n"
         );
         assert_eq!(refs, vec!["min_query_cycles".to_string()]);
     }
@@ -4082,7 +4082,7 @@ mod tests {
         // GK string interpolation (parser turns it into printf).
         // Either way, scan_gk_braced_refs must NOT flag them.
         let refs = scan_gk_braced_refs(
-            "init prebuffered = dataset_prebuffer(\"{dataset}:{profile}\")\n"
+            "const prebuffered := dataset_prebuffer(\"{dataset}:{profile}\")\n"
         );
         assert!(refs.is_empty(),
             "must not flag `{{dataset}}` / `{{profile}}` inside string \
@@ -4113,7 +4113,7 @@ mod tests {
     fn scan_gk_braced_refs_ignores_comments() {
         let refs = scan_gk_braced_refs(
             "# this is a comment with {fake} placeholder\n\
-             init real = 1\n"
+             const real := 1\n"
         );
         assert!(refs.is_empty(),
             "`{{fake}}` inside a comment must not be flagged: {refs:?}");
@@ -4150,11 +4150,11 @@ mod tests {
         // init / cursor / shared / final modifier-prefixed
         // bindings, plus bare `NAME := …` assignments.
         let names = scan_to_set(
-            "init prebuffered = dataset_prebuffer(\"foo\")\n\
+            "const prebuffered := dataset_prebuffer(\"foo\")\n\
              cursor q = range(0, 100)\n\
              query_vector := query_vector_at(prebuffered, q)\n\
              shared query_passes := set_or_get(query_passes, 7)\n\
-             final tag := \"label_00\"\n",
+             const tag := \"label_00\"\n",
         );
         for expected in ["prebuffered", "q", "query_vector",
                          "query_passes", "tag"] {
@@ -4168,7 +4168,7 @@ mod tests {
         let names = scan_to_set(
             "# comment\n\
              \n\
-             init real_binding = 1\n\
+             const real_binding := 1\n\
              # another comment\n",
         );
         assert_eq!(names.len(), 1);
@@ -4182,7 +4182,7 @@ mod tests {
         let names = scan_to_set(
             "foo(1, 2)\n\
              bar.baz\n\
-             init real = 1\n",
+             const real := 1\n",
         );
         assert_eq!(names.len(), 1);
         assert!(names.contains("real"));

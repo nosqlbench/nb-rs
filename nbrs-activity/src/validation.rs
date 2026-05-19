@@ -1576,8 +1576,8 @@ mod tests {
         use nbrs_variates::dsl::compile::compile_gk;
         let kernel = compile_gk(
             "input cycle: u64\n\
-             final k := 10\n\
-             final limit := 100\n",
+             const k := 10\n\
+             const limit := 100\n",
         ).expect("compile_gk wires");
         let wires: &dyn WireSource = &kernel;
 

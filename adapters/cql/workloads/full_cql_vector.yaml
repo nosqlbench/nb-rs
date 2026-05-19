@@ -62,7 +62,7 @@ params:
   # over its inner phase tree (see `scenarios:` below). The
   # workload-param default keeps `fulltest` (and every other
   # scenario without an override) resolvable — the
-  # `final ann_opts := select_str(str_eq(rerank_mode, "pinned"),
+  # `const ann_opts := select_str(str_eq(rerank_mode, "pinned"),
   # …)` binding in each query phase reads `rerank_mode` as a
   # plain name, so something has to bind it at the workload
   # level even when nothing overrides it.
@@ -158,7 +158,7 @@ scenarios:
 
   # Rerank-pinned variant: `set:` shadows the `rerank_mode`
   # workload-param over the inner phase tree, so every query
-  # phase's `final ann_opts := select_str(str_eq(rerank_mode,
+  # phase's `const ann_opts := select_str(str_eq(rerank_mode,
   # "pinned"), …)` binding sees the override and constructs
   # the `WITH ann_options = {…}` clause. No CLI plumbing
   # needed — the scenario name itself flips the behaviour.
@@ -409,7 +409,7 @@ phases:
   rampup:
     concurrency: "{concurrency}"
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       cursor row = range(0, vector_count(prebuffered))
       id := format_u64(row, 10)
       train_vector := vector_at(prebuffered, row)
@@ -425,7 +425,7 @@ phases:
   fknn_rampup_data:
     concurrency: "{concurrency}"
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       cursor row = range(0, vector_count(prebuffered))
       id := format_u64(row, 10)
       train_vector := vector_at(prebuffered, row)
@@ -444,8 +444,8 @@ phases:
   ann_query:
     concurrency: "{query_concurrency}"
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
-      init base = query_count(prebuffered)
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
+      const base := query_count(prebuffered)
       # Extending cursor: dispatch one full `base`-sized pass
       # through the prebuffered query set, then keep extending
       # by another `base` each time the cursor reaches its end
@@ -467,7 +467,7 @@ phases:
       # pins `rerank_k` to LIMIT and disables pruning so the
       # planner stays on approximate HNSW instead of switching to
       # brute force (see `local/brute_force.md`).
-      final ann_opts := select_str(str_eq(rerank_mode, "pinned"),
+      const ann_opts := select_str(str_eq(rerank_mode, "pinned"),
                                    "WITH ann_options = {{'rerank_k': '{limit}', 'use_pruning': 'false'}}",
                                    "")
 
@@ -510,8 +510,8 @@ phases:
     concurrency: "{query_concurrency}"
     errors: count
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
-      init query_counts = query_count(prebuffered)
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
+      const query_counts := query_count(prebuffered)
       # Extending cursor: keep dispatching `query_counts`-sized
       # passes through the prebuffered query set until
       # min_query_ms of wall-clock time has elapsed (≥ 30 s by
@@ -521,7 +521,7 @@ phases:
       predicate := predicate_value_at(prebuffered, q % query_counts)
       # Construction-time-folded per-query ANN options. See the
       # `ann_query` phase above for the rationale.
-      final ann_opts := select_str(str_eq(rerank_mode, "pinned"),
+      const ann_opts := select_str(str_eq(rerank_mode, "pinned"),
                                    "WITH ann_options = {{'rerank_k': '{limit}', 'use_pruning': 'false'}}",
                                    "")
     ops:
@@ -544,8 +544,8 @@ phases:
     concurrency: "{query_concurrency}"
     errors: count
     bindings: |
-      init prebuffered = dataset_prebuffer("{dataset}:{profile}")
-      init query_counts = query_count(prebuffered)
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
+      const query_counts := query_count(prebuffered)
       # Extending cursor: keep dispatching `query_counts`-sized
       # passes through the prebuffered query set until
       # min_query_ms of wall-clock time has elapsed (≥ 30 s by
@@ -557,7 +557,7 @@ phases:
       ground_truth := filtered_neighbor_indices_at(prebuffered, q % query_counts)
       # Construction-time-folded per-query ANN options. See the
       # `ann_query` phase above for the rationale.
-      final ann_opts := select_str(str_eq(rerank_mode, "pinned"),
+      const ann_opts := select_str(str_eq(rerank_mode, "pinned"),
                                    "WITH ann_options = {{'rerank_k': '{limit}', 'use_pruning': 'false'}}",
                                    "")
 

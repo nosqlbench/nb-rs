@@ -36,11 +36,7 @@ pub(crate) fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
                 input_names.insert(d.name.clone());
                 defined.insert(d.name.clone());
             }
-            Statement::InitBinding(b) => {
-                defined.insert(b.name.clone());
-                definition_order.push((b.name.clone(), b.span));
-            }
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 for t in &b.targets {
                     defined.insert(t.clone());
                     definition_order.push((t.clone(), b.span));
@@ -61,8 +57,7 @@ pub(crate) fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
     for stmt in &file.statements {
         let expr = match stmt {
             Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
-            Statement::InitBinding(b) => &b.value,
-            Statement::CycleBinding(b) => &b.value,
+            Statement::Binding(b) => &b.value,
         };
         validate_expr(expr, &defined, &input_names, &mut referenced, report);
     }
@@ -122,11 +117,7 @@ pub(crate) fn validate_ast(file: &GkFile, report: &mut DiagnosticReport) {
     for stmt in &file.statements {
         match stmt {
             Statement::InputDecl(_) => {}
-            Statement::InitBinding(b) => {
-                check_forward_refs(&b.value, &seen_defs, b.span, report);
-                seen_defs.insert(b.name.clone());
-            }
-            Statement::CycleBinding(b) => {
+            Statement::Binding(b) => {
                 check_forward_refs(&b.value, &seen_defs, b.span, report);
                 for t in &b.targets {
                     seen_defs.insert(t.clone());

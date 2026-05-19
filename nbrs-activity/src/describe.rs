@@ -51,7 +51,7 @@ pub fn print_kernel_analysis(
         // stable.
         let mod_str = {
             let mut tags: Vec<&str> = Vec::new();
-            if modifier.is_final() { tags.push("final"); }
+            if modifier.is_const() { tags.push("final"); }
             if modifier.is_shared() { tags.push("shared"); }
             if modifier.is_volatile() { tags.push("volatile"); }
             if tags.is_empty() {

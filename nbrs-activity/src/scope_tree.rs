@@ -548,7 +548,7 @@ impl ScopeTree {
                     // source distinguishes this scope-tree node
                     // in the logical-name path. For sugar from
                     // `set: { mode: verbose }` the source starts
-                    // with `final mode := …` so the segment is
+                    // with `const mode := …` so the segment is
                     // `bindings.mode`. Sources with no clear
                     // first name fall back to a positional tag.
                     let first_name = source.lines()
@@ -1192,7 +1192,7 @@ mod tests {
         // the install primitive; the GK side already has its own
         // tests for composition.
         let tree = ScopeTree::build("default", &[phase("p")]);
-        let workload_kernel = compile_kernel("final dataset := \"example\"\n");
+        let workload_kernel = compile_kernel("const dataset := \"example\"\n");
         assert!(tree.install_kernel(0, workload_kernel));
 
         let cached = tree.nodes[0].cached_kernel.get()
@@ -1216,7 +1216,7 @@ mod tests {
         use std::sync::Arc;
 
         // Parent: a workload-shaped kernel exposing `k_values`.
-        let parent_src = "final k_values := \"1, 10\"\n";
+        let parent_src = "const k_values := \"1, 10\"\n";
         let parent: Arc<GkKernel> = Arc::new(
             nbrs_variates::dsl::compile::compile_gk(parent_src).unwrap(),
         );
@@ -1276,7 +1276,7 @@ mod tests {
         use nbrs_variates::kernel::GkKernel;
         use std::sync::Arc;
 
-        let parent_src = "final k_values := \"1, 10\"\n";
+        let parent_src = "const k_values := \"1, 10\"\n";
         let parent: Arc<GkKernel> = Arc::new(
             nbrs_variates::dsl::compile::compile_gk(parent_src).unwrap(),
         );
@@ -1315,9 +1315,9 @@ mod tests {
         use std::sync::Arc;
 
         let parent_src = concat!(
-            "final k_values := \"1, 10\"\n",
-            "final k_1_limits := \"1, 2, 4, 8\"\n",
-            "final k_10_limits := \"10, 20, 30\"\n",
+            "const k_values := \"1, 10\"\n",
+            "const k_1_limits := \"1, 2, 4, 8\"\n",
+            "const k_10_limits := \"10, 20, 30\"\n",
         );
         let parent: Arc<GkKernel> = Arc::new(
             nbrs_variates::dsl::compile::compile_gk(parent_src).unwrap(),
@@ -1509,8 +1509,8 @@ mod tests {
         // callers detect duplicate installs (likely a logic bug
         // in the runner) without panicking.
         let tree = ScopeTree::build("default", &[phase("p")]);
-        let k1 = compile_kernel("final x := 1\n");
-        let k2 = compile_kernel("final x := 2\n");
+        let k1 = compile_kernel("const x := 1\n");
+        let k2 = compile_kernel("const x := 2\n");
         assert!(tree.install_kernel(0, k1), "first install succeeds");
         assert!(!tree.install_kernel(0, k2), "second install no-ops");
 

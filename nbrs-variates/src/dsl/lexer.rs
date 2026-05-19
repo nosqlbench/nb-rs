@@ -25,8 +25,16 @@ pub struct Token {
 pub enum TokenKind {
     /// A bare identifier: `cycle`, `hash`, `temp_lut`
     Ident(String),
-    /// `init` keyword
-    Init,
+    /// `const` keyword — declares an effectively-const binding.
+    /// Replaces the former `final` / `init` distinction; both
+    /// surfaces collapsed into one. The value is materialized at
+    /// the earliest opportunity (compile-time fold if possible,
+    /// scope-init pull otherwise) and is then immutable for the
+    /// scope's lifetime. Independent of provenance: a `const`
+    /// binding's RHS may reference workload params, iter-vars
+    /// bound by an enclosing comprehension, or other in-scope
+    /// names — whatever the GK compiler can resolve.
+    Const,
     /// `input` keyword — declares one per-cycle kernel input slot.
     /// Surface: `input <name>[: <type>]` (single) or
     /// `input (<name>[: <type>], ...)` (tuple sugar). Mirrors the
@@ -36,8 +44,6 @@ pub enum TokenKind {
     Extern,
     /// `shared` keyword
     Shared,
-    /// `final` keyword
-    Final,
     /// `volatile` keyword (SRD-44 + design memo
     /// `resumable_test_fixture.md`). Wire-coloring modifier
     /// excluding the binding's value from `hash_const`.
@@ -58,9 +64,11 @@ pub enum TokenKind {
     FloatLit(f64),
     /// String literal (contents only, no quotes): `"hello {name}"`
     StringLit(String),
-    /// `:=` (cycle-time binding operator)
+    /// `:=` (binding operator, used by every binding shape:
+    /// cycle bindings, `const`, `shared`, `volatile`)
     ColonEq,
-    /// `=` (init-time binding operator, used after `init`)
+    /// `=` (reserved for future use in expression-level
+    /// comparisons; not currently emitted by any binding form)
     Eq,
     /// `(`
     LParen,
@@ -465,11 +473,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
             }
             let word: String = chars[start..pos].iter().collect();
             let kind = match word.as_str() {
-                "init" => TokenKind::Init,
+                "const" => TokenKind::Const,
                 "input" => TokenKind::Input,
                 "extern" => TokenKind::Extern,
                 "shared" => TokenKind::Shared,
-                "final" => TokenKind::Final,
                 "volatile" => TokenKind::Volatile,
                 "cursor" => TokenKind::Cursor,
                 "pragma" => TokenKind::Pragma,
@@ -573,11 +580,11 @@ mod tests {
     }
 
     #[test]
-    fn lex_init_binding() {
-        let tokens = lex("init lut = dist_normal(72.0, 5.0)").unwrap();
-        assert!(matches!(tokens[0].kind, TokenKind::Init));
+    fn lex_const_binding() {
+        let tokens = lex("const lut := dist_normal(72.0, 5.0)").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Const));
         assert!(matches!(tokens[1].kind, TokenKind::Ident(ref s) if s == "lut"));
-        assert!(matches!(tokens[2].kind, TokenKind::Eq));
+        assert!(matches!(tokens[2].kind, TokenKind::ColonEq));
         assert!(matches!(tokens[3].kind, TokenKind::Ident(ref s) if s == "dist_normal"));
         assert!(matches!(tokens[5].kind, TokenKind::FloatLit(v) if v == 72.0));
         assert!(matches!(tokens[7].kind, TokenKind::FloatLit(v) if v == 5.0));

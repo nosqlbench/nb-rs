@@ -26,10 +26,32 @@ pub enum Statement {
     /// input (cycle: u64, q: f64)
     /// ```
     InputDecl(InputDecl),
-    /// `init name = expr`
-    InitBinding(InitBinding),
-    /// `name := expr` or `(a, b) := expr`
-    CycleBinding(CycleBinding),
+    /// A name-to-expression binding. The modifier on the
+    /// binding determines its lifecycle:
+    ///
+    /// - **no modifier** — per-cycle: re-evaluated every cycle.
+    /// - **`const`** — effectively-const for the scope's
+    ///   lifetime: materialized at the earliest opportunity
+    ///   (compile-time fold if the RHS is fold-eligible,
+    ///   otherwise scope-init pull after materialize-wiring
+    ///   has populated extern slots). Authors don't need to
+    ///   know which path the runtime takes — the contract is
+    ///   "fixed once, then immutable."
+    /// - **`shared`** — cell-backed, mutable across kernel
+    ///   instances in the same lineage. See SRD-16
+    ///   §"Mutability Rules: Shared Mutable".
+    /// - **`volatile`** — per-cycle, excluded from
+    ///   `hash_const`. See SRD-44.
+    ///
+    /// Surface forms:
+    /// ```text
+    /// x := mul(cycle, 2)                  // per-cycle
+    /// const pi := 3.14                    // const, folds at compile
+    /// const ann_opts := str_concat(...)   // const, materializes at scope-init
+    /// shared budget := 100                // shared cell
+    /// (a, b) := split_pair(...)           // tuple destructuring
+    /// ```
+    Binding(Binding),
     /// `name(param: type, ...) -> (output: type, ...) := { body }`
     ModuleDef(ModuleDef),
     /// `extern name: type = default`
@@ -91,9 +113,18 @@ pub struct InputDecl {
 /// or more of these, stored as a [`BindingModifier`] set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WireModifier {
-    /// `final` — folded into a const slot at compile/init time;
-    /// immutable, cannot be shadowed by inner scopes.
-    Final,
+    /// `const` — effectively-const for the scope's lifetime.
+    /// Materialized at the earliest opportunity: compile-time
+    /// const-fold when the RHS is fold-eligible, otherwise the
+    /// scope-init pull pass after materialize-wiring has
+    /// populated extern slots. The runtime contract is "fixed
+    /// once per scope activation, then immutable for the rest of
+    /// the scope's lifetime." Replaces the former `final` /
+    /// `init` distinction — the two were redundant axes of the
+    /// same lifecycle, and the surface now collapses to one
+    /// keyword whose materialization timing is an internal
+    /// optimization.
+    Const,
     /// `shared` — mutable cell visible across kernel instances.
     /// The runtime propagates iteration N's end state into
     /// iteration N+1's start state.
@@ -112,17 +143,15 @@ pub enum WireModifier {
 /// [`Self::has`] to test for individual modifiers and
 /// [`Self::insert`] / [`Self::from_iter`] to build instances.
 ///
-/// **Validity:** the combination `final` + `volatile` is
+/// **Validity:** the combination `const` + `volatile` is
 /// rejected at parse time as contradictory ([`Self::from_iter`]
 /// is the validating builder). All other combinations are
 /// representable.
 ///
-/// **AST distinction is preserved separately** — `InitBinding` /
-/// `CycleBinding` / `ExternPort` remain distinct AST node types
-/// because their right-hand-side contracts differ. The
-/// modifier set lives on the binding-kind structs that have a
-/// notion of wire identity (currently `InitBinding` and
-/// `CycleBinding`); kinds without that notion don't carry it.
+/// Lives on every [`Statement::Binding`] — the modifier set
+/// determines the binding's lifecycle. Other statement kinds
+/// (`ExternPort`, `InputDecl`, etc.) don't carry modifiers
+/// because their semantics are fixed by their statement form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BindingModifier {
     bits: u8,
@@ -130,12 +159,12 @@ pub struct BindingModifier {
 
 impl BindingModifier {
     /// All-modifiers-off; the default state of an unannotated
-    /// binding.
+    /// binding (per-cycle).
     pub const NONE: Self = Self { bits: 0 };
 
     /// Single-modifier convenience constants. Tests reach for
     /// these to express their intent compactly.
-    pub const FINAL:    Self = Self { bits: Self::bit(WireModifier::Final) };
+    pub const CONST:    Self = Self { bits: Self::bit(WireModifier::Const) };
     pub const SHARED:   Self = Self { bits: Self::bit(WireModifier::Shared) };
     pub const VOLATILE: Self = Self { bits: Self::bit(WireModifier::Volatile) };
 
@@ -156,29 +185,30 @@ impl BindingModifier {
 
     /// Build a modifier set from an iterator of variants. The
     /// parser uses this after collecting tokens. Rejects the
-    /// contradictory `final` + `volatile` combo with a clear
+    /// contradictory `const` + `volatile` combo with a clear
     /// error.
     pub fn from_iter<I: IntoIterator<Item = WireModifier>>(items: I) -> Result<Self, &'static str> {
         let mut out = Self::NONE;
         for m in items {
             out.insert(m);
         }
-        if out.has(WireModifier::Final) && out.has(WireModifier::Volatile) {
+        if out.has(WireModifier::Const) && out.has(WireModifier::Volatile) {
             return Err(
-                "modifier conflict: `final` and `volatile` are contradictory \
-                 — `final` folds the value into a const slot at compile time, \
-                 `volatile` excludes it from const-fold. Drop one.",
+                "modifier conflict: `const` and `volatile` are contradictory \
+                 — `const` materializes the value once and freezes it; \
+                 `volatile` excludes the wire from const-fold and signals \
+                 per-cycle variability. Drop one.",
             );
         }
         Ok(out)
     }
 
     /// Iterate the modifiers in the set, in fixed declaration
-    /// order (`Final`, `Shared`, `Volatile`). Used for
+    /// order (`Const`, `Shared`, `Volatile`). Used for
     /// re-emission and stable hash output.
     pub fn iter(&self) -> impl Iterator<Item = WireModifier> + '_ {
         const ORDER: &[WireModifier] = &[
-            WireModifier::Final,
+            WireModifier::Const,
             WireModifier::Shared,
             WireModifier::Volatile,
         ];
@@ -189,32 +219,29 @@ impl BindingModifier {
     /// pattern-match on individual flags. Mechanically derive
     /// from `has(...)` so adding a new modifier is one variant
     /// + one bit assignment + (optionally) one accessor.
-    #[inline] pub const fn is_final(&self)    -> bool { self.has(WireModifier::Final) }
+    #[inline] pub const fn is_const(&self)    -> bool { self.has(WireModifier::Const) }
     #[inline] pub const fn is_shared(&self)   -> bool { self.has(WireModifier::Shared) }
     #[inline] pub const fn is_volatile(&self) -> bool { self.has(WireModifier::Volatile) }
 
     /// Compile-time bit index for a modifier.
     const fn bit(m: WireModifier) -> u8 {
         match m {
-            WireModifier::Final    => 1 << 0,
+            WireModifier::Const    => 1 << 0,
             WireModifier::Shared   => 1 << 1,
             WireModifier::Volatile => 1 << 2,
         }
     }
 }
 
-/// An init-time binding: `init name = expr`
+/// A name-to-expression binding (per-cycle by default;
+/// `const`/`shared`/`volatile` modifier changes the
+/// lifecycle). Replaces the former `CycleBinding` and
+/// `InitBinding` AST variants — the surface unified to one
+/// shape `name := expr` (or `(a, b, c) := expr` for tuple
+/// destructuring), with the modifier driving runtime
+/// lifecycle.
 #[derive(Debug, Clone)]
-pub struct InitBinding {
-    pub name: String,
-    pub value: Expr,
-    pub modifier: BindingModifier,
-    pub span: Span,
-}
-
-/// A cycle-time binding: `name := expr` or `(a, b, c) := expr`
-#[derive(Debug, Clone)]
-pub struct CycleBinding {
+pub struct Binding {
     pub targets: Vec<String>,
     pub value: Expr,
     pub modifier: BindingModifier,
@@ -356,28 +383,28 @@ mod modifier_tests {
     fn empty_set_has_no_modifiers() {
         let m = BindingModifier::NONE;
         assert!(!m.has_any());
-        assert!(!m.is_final() && !m.is_shared() && !m.is_volatile());
+        assert!(!m.is_const() && !m.is_shared() && !m.is_volatile());
     }
 
     #[test]
     fn single_modifier_consts_match_expected_flags() {
-        assert!(BindingModifier::FINAL.is_final());
-        assert!(!BindingModifier::FINAL.is_shared());
-        assert!(!BindingModifier::FINAL.is_volatile());
+        assert!(BindingModifier::CONST.is_const());
+        assert!(!BindingModifier::CONST.is_shared());
+        assert!(!BindingModifier::CONST.is_volatile());
 
         assert!(BindingModifier::SHARED.is_shared());
-        assert!(!BindingModifier::SHARED.is_final());
+        assert!(!BindingModifier::SHARED.is_const());
 
         assert!(BindingModifier::VOLATILE.is_volatile());
-        assert!(!BindingModifier::VOLATILE.is_final());
+        assert!(!BindingModifier::VOLATILE.is_const());
     }
 
     #[test]
     fn from_iter_collects_combinations() {
         let m = BindingModifier::from_iter(
-            [WireModifier::Final, WireModifier::Shared]
-        ).expect("final+shared is valid");
-        assert!(m.is_final() && m.is_shared());
+            [WireModifier::Const, WireModifier::Shared]
+        ).expect("const+shared is valid");
+        assert!(m.is_const() && m.is_shared());
         assert!(!m.is_volatile());
 
         let m = BindingModifier::from_iter(
@@ -387,21 +414,21 @@ mod modifier_tests {
     }
 
     #[test]
-    fn from_iter_rejects_final_plus_volatile() {
+    fn from_iter_rejects_const_plus_volatile() {
         let err = BindingModifier::from_iter(
-            [WireModifier::Final, WireModifier::Volatile]
-        ).expect_err("final+volatile must be rejected");
-        assert!(err.contains("final") && err.contains("volatile"),
+            [WireModifier::Const, WireModifier::Volatile]
+        ).expect_err("const+volatile must be rejected");
+        assert!(err.contains("const") && err.contains("volatile"),
             "error should name both keywords: {err}");
     }
 
     #[test]
-    fn from_iter_rejects_final_shared_volatile() {
+    fn from_iter_rejects_const_shared_volatile() {
         // Triple combination subsumes the contradiction.
         let err = BindingModifier::from_iter(
-            [WireModifier::Final, WireModifier::Shared, WireModifier::Volatile]
+            [WireModifier::Const, WireModifier::Shared, WireModifier::Volatile]
         ).expect_err("triple combo includes the contradictory pair");
-        assert!(err.contains("final") && err.contains("volatile"));
+        assert!(err.contains("const") && err.contains("volatile"));
     }
 
     #[test]
@@ -410,18 +437,18 @@ mod modifier_tests {
             [WireModifier::Volatile, WireModifier::Shared]
         ).unwrap();
         // Insertion order was Volatile, Shared — but iter yields
-        // in fixed declaration order: Final, Shared, Volatile.
+        // in fixed declaration order: Const, Shared, Volatile.
         let collected: Vec<_> = m.iter().collect();
         assert_eq!(collected, vec![WireModifier::Shared, WireModifier::Volatile]);
     }
 
     #[test]
     fn equality_distinguishes_combinations() {
-        let final_only = BindingModifier::FINAL;
-        let final_shared = BindingModifier::from_iter(
-            [WireModifier::Final, WireModifier::Shared]
+        let const_only = BindingModifier::CONST;
+        let const_shared = BindingModifier::from_iter(
+            [WireModifier::Const, WireModifier::Shared]
         ).unwrap();
-        assert_ne!(final_only, final_shared,
-            "final-only must not equal final+shared");
+        assert_ne!(const_only, const_shared,
+            "const-only must not equal const+shared");
     }
 }

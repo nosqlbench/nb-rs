@@ -150,7 +150,7 @@ pub trait DriverImpl: Send + Sync + 'static {
 
     /// Build the heavy instance. Called by the pool on first
     /// attach for a key, exactly once per key per session
-    /// (modulo `init` failure → poison; see §"Failure isolation").
+    /// (modulo `const` failure → poison; see §"Failure isolation").
     /// The pool emits `resource.init.{started,completed,failed}`
     /// events around this call.
     fn create_instance(&self, params: &Params)
@@ -766,7 +766,7 @@ the additional fields specific to that event.
   never happened) and the event line carries the residual
   count for diagnostic purposes.
 
-`reason` on `init.started` distinguishes:
+`reason` on `const.started` distinguishes:
 
 - **`first-attach`** — the first phase to need this key has
   arrived. Generation 0 spinning up.
@@ -986,7 +986,7 @@ Three pushes, each independently shippable:
 - Add `nbrs-activity::resource_pool` with the new traits, the
   multi-generation `Entry` machinery, the pre-map-driven
   refcount walker, and the lifecycle event emitters
-  (`attach` / `init.{started,completed,failed}` /
+  (`attach` / `const.{started,completed,failed}` /
   `share.spawn` / `detach` / `close.{started,completed,failed}`).
 - Add `ShareCapability` + `ResourceSharePolicy` enums and the
   CLI / workload-param surface (SRD-04 umbrella).
@@ -1019,7 +1019,7 @@ Three pushes, each independently shippable:
   contention-aware capacity logic that drops to `false`
   under saturation.
 - Smoke test: 50-phase sequential workload should emit one
-  `init.started` / `init.completed` (gen=0) and one
+  `const.started` / `const.completed` (gen=0) and one
   `close.started` / `close.completed` for the whole run,
   with `attach` / `detach` events at every phase boundary
   and no `share.spawn` events.

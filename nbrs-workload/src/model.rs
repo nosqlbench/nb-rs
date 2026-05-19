@@ -869,7 +869,7 @@ pub enum ScenarioNode {
     ///
     /// `source` is GK matter text exactly as a phase-level
     /// `bindings:` block would contain. Anything the GK grammar
-    /// accepts is valid: `final NAME := <literal>`, derived
+    /// accepts is valid: `const NAME := <literal>`, derived
     /// bindings (`scaled := mul(workload_limit, 2)`), shared
     /// cells, init bindings, etc. Workload-param `{name}` and
     /// string-interpolation references resolve through the
@@ -892,7 +892,7 @@ pub enum ScenarioNode {
     ///
     /// ```yaml
     /// - bindings: |
-    ///     final mode := "verbose"
+    ///     const mode := "verbose"
     ///   phases:
     ///     - announce
     /// ```
@@ -904,7 +904,7 @@ pub enum ScenarioNode {
     /// names, etc.) without any new variant.
     ///
     /// Lexical-shadow semantics are uniform with phase-level
-    /// `bindings:`: a `final NAME := <value>` shadows any
+    /// `bindings:`: a `const NAME := <value>` shadows any
     /// upstream binding for `NAME` over this node's `children`
     /// subtree. The shadow is enforced via the local-final
     /// transit-suppression rule in `materialize_wiring_from_outer`

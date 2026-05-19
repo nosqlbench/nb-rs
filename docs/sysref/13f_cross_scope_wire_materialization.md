@@ -129,24 +129,24 @@ by the caller.
 ### Inlined constant (compile-time fold)
 
 When the outer wire's value is statically known (literal RHS,
-folded final bindings) and no intermediate scope might
+folded const bindings) and no intermediate scope might
 legitimately want to *shadow* it (the bindings's lexical layer
 in SRD-18), the matter interpreter *inlines the value into the
-inner program* as a `final` constant. No cell, no slot, no
+inner program* as a `const` constant. No cell, no slot, no
 valid bit — the value is part of the inner kernel's compiled
 artifact. Reads are direct constant lookups.
 
 This is the materialization for:
 
-- Author-declared workload `bindings: | final X := <literal>`
+- Author-declared workload `bindings: | const X := <literal>`
   where the author asserts compile-time const semantics.
-- Outer `final X := <literal>` declarations from any scope
+- Outer `const X := <literal>` declarations from any scope
   whose chain-position is known not to be a shadow site.
-- Folded init bindings whose value resolved at compile time.
+- Folded const bindings whose value resolved at compile time.
 
 **Workload parameters use the chain-wired form instead.** A
 separate **params-kernel** sits at the root of the chain
-(below workload-root) and holds one `final NAME := <literal>`
+(below workload-root) and holds one `const NAME := <literal>`
 per workload param. The workload-root program emits
 `extern NAME: T` for each param and is marked
 `inherited_outputs` for those names so they cascade through as
@@ -163,14 +163,14 @@ be able to redeclare a workload-param name for its subtree
 without rewriting the workload-root program. With the params-
 kernel design, the SetParam scope sits as a lexical layer
 between params-kernel and any descendant, its local
-`init NAME = <override>` shadows the chain-cascaded value, and
+`const NAME := <override>` shadows the chain-cascaded value, and
 descendants resolve NAME via the standard `extern NAME` lookup
 through the chain. Without the indirection, the workload-root's
-folded `final NAME := <literal>` would short-circuit lookup
+folded `const NAME := <literal>` would short-circuit lookup
 via get_constant before the chain wiring is consulted, and the
 override would be silently masked.
 
-A previous design baked `final NAME := <literal>` into the
+A previous design baked `const NAME := <literal>` into the
 workload-root program for every workload param, which works
 for the common case but makes scenario-tree shadowing
 unimplementable; the current design is a deliberate trade-off
@@ -232,8 +232,8 @@ accordingly. This:
 
 ### Local-authoritative shadow (transit suppression)
 
-When an inner scope declares `final NAME := …` or
-`init NAME = …` for a name that is *also* exported by an outer
+When an inner scope declares `const NAME := …` or
+`const NAME := …` for a name that is *also* exported by an outer
 scope in the chain (as a folded constant or a passthrough
 output), the inner declaration is the new authoritative writer
 for that name over its subtree. The chain must not carry the
@@ -243,7 +243,7 @@ instead of the local declaration.
 The materialize step enforces this through **transit
 suppression**: during step 1 (cell cascade), any shared cell
 visible at the outer scope whose name matches a local
-final/init output on `self` is dropped on the floor — not
+const output on `self` is dropped on the floor — not
 attached to a self slot, not transit-forwarded to descendants.
 Step 2's value-copy path then runs normally and copies the
 outer's view via `self.lookup(name)` into the self slot
@@ -284,7 +284,7 @@ allocation. Primitive variants (U64, F64, Bool) memcpy.
 For per-cycle reads from the input slot via `read_input`
 (`engines.rs::EngineCore::read_input`), the same economy
 applies: the slot's stored `Value` is cloned to hand back to
-the caller. A workload referencing the same `final` / `init`
+the caller. A workload referencing the same `const` / `const`
 wire across 30k cycles/sec produces ~30k atomic increments
 and zero heap allocations on that wire, regardless of the
 variant carried. The implementation aligns with what the
@@ -315,19 +315,19 @@ wire name a subscope's body references, the synthesizer chooses
 exactly one outcome. The rule is intentionally narrow:
 
 > A wire reference is **non-local** if and only if the wire is
-> (a) effectively `final`/`init`/`const` in a parent lineage
+> (a) effectively `const`/`const` in a parent lineage
 > scope, or (b) explicitly declared `extern` in the subscope's
 > authored matter. Everything else is **local**.
 
 This yields four terminal cases at the synthesizer:
 
-### 1. Promoted-final (compile-time fold)
+### 1. Promoted-const (compile-time fold)
 
-The referenced wire is effectively `final`/`init`/`const`
+The referenced wire is effectively `const`/`const`
 upstream — its value is structurally stable from the moment
 the upstream kernel is compiled.
 
-- Synthesizer emits `final X := <folded-value>` in the
+- Synthesizer emits `const X := <folded-value>` in the
   subscope's matter.
 - Lands as the **Inlined constant** materialization (see
   §"Materialization gradient" above).
@@ -354,7 +354,7 @@ time I read it."
 
 ### 3. Local matter inclusion (the default)
 
-The referenced wire is neither promoted-final nor authored as
+The referenced wire is neither promoted-const nor authored as
 `extern`. The synthesizer **inlines the binding's matter** into
 the subscope, walking transitive references recursively (each
 recursion classified into the same four cases).
@@ -430,7 +430,7 @@ This classification is the synthesizer's job at every scope
 boundary:
 
 - **Workload-root** — no parent. Its matter is the author's
-  full `bindings:` block plus workload-param `final`
+  full `bindings:` block plus workload-param `const`
   injections. No classification needed (no upstream).
 - **Phase / for_each / for_combinations / do_while /
   do_until / op-template** — the synthesizer walks the
@@ -515,12 +515,12 @@ The original `build_op_template_scope_kernel` emitted `extern X:
 type` for every workload param via an unconditional cascade
 loop (post the per-name `referenced` pass). That made every
 workload param a runtime *input slot* on the op-template kernel
-— wrong, because it (a) prevents `init` bindings from folding
+— wrong, because it (a) prevents `const` bindings from folding
 against the param value, and (b) forces the value to be set per
 runtime input rather than known at compile time.
 
 The correct emission for workload params on op-template kernels
-is **`final X := <literal>`** — the "inlined constant" form from
+is **`const X := <literal>`** — the "inlined constant" form from
 the materialization gradient. Workload params are root-level
 context, always available, always literal, always foldable.
 
@@ -529,7 +529,7 @@ the wrong direction — it would leave workload params off the
 op-template program when they're only referenced in op fields,
 relying on chain composition at read time to find them. That
 contradicts the "root-level context wire on every kernel" rule.
-The cascade stays; the emission *kind* changes to `final`.
+The cascade stays; the emission *kind* changes to `const`.
 
 ---
 
@@ -541,22 +541,22 @@ nbrs-activity); B.2 — the full cell-on-outputs mechanism in
 nbrs-variates — remains for a follow-up SRD-67 / SRD-13e
 intersection.
 
-### Push A — Workload-param cascade as `final` *(shipped)*
+### Push A — Workload-param cascade as `const` *(shipped)*
 
 Scope: `nbrs-activity/src/scope.rs::build_op_template_scope_kernel`.
 
-Change: emit each workload param as `final {name} := {literal}`
+Change: emit each workload param as `const {name} := {literal}`
 (folded constant) on every op-template kernel's synthesized
 program. Replaces the previous unconditional cascade that
 emitted `extern {name}: {type}`. The per-name loop above already
 handles body-referenced params; the catch-all cascade now emits
-`final` (not `extern`) for the rest, so every workload param
+`const` (not `extern`) for the rest, so every workload param
 lands as a compile-time constant on every op-template kernel —
 inlined-constant materialization per the gradient above.
 
 Test surface: `op_template_pvs_query_full_shape_with_workload_params`
 pins `find_input(param).is_none()` for workload params; passes
-with the cascade-as-`final` form.
+with the cascade-as-`const` form.
 
 ### Push B.1 — Construction-time slot wiring + per-cycle refresh *(shipped)*
 
@@ -721,7 +721,7 @@ plumbing more than external callers.
 
 Materialization gradient after B.2:
 
-- Inlined constant (`final` + literal): unchanged, already
+- Inlined constant (`const` + literal): unchanged, already
   works via the GK compiler's fold pass.
 - Value-only shared cell (read-only inner side, recomputable
   upstream): new path under B.2, replaces both today's

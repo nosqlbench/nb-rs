@@ -7,7 +7,7 @@
 # mechanism for publishing a scope-local layer of bound names
 # over any subtree. Authors can write the full form (`bindings:`,
 # carrying arbitrary GK matter) or the convenience sugar (`set:`,
-# desugared to a `bindings:` block of `init NAME = <value>`
+# desugared to a `bindings:` block of `const NAME := <value>`
 # lines).
 #
 # Why this exists
@@ -25,26 +25,28 @@
 # chain plumbing: the scope-tree node installs a kernel that
 # publishes its bindings as outputs, descendants resolve names
 # through the standard chain-lookup, and lexical shadowing is
-# enforced by the local-final/init transit-suppression rule in
+# enforced by the local-const transit-suppression rule in
 # `materialize_wiring_from_outer`.
 #
 # Semantics
 # ---------
-# - `set: { name: value }` is parser sugar that emits an
-#   `init NAME = <gk-literal>` body and produces a `Bindings`
-#   scope-tree node. The `init` modifier means the RHS
-#   evaluates once at scope-init, AFTER materialize-wiring has
-#   populated extern slots — so `{name}` interpolation inside
+# - `set: { name: value }` is parser sugar that emits a
+#   `const NAME := <gk-literal>` body and produces a `Bindings`
+#   scope-tree node. The `const` modifier defines a single
+#   effectively-const lifecycle: try compile-time fold first,
+#   fall back to scope-init materialization once
+#   materialize-wiring has populated extern slots, then freeze
+#   for the scope's lifetime. So `{name}` interpolation inside
 #   string values resolves through the in-scope chain.
 # - `bindings: |` lets authors write GK matter directly when
-#   they need beyond `init NAME = <value>` (e.g. derived
-#   bindings, shared cells, or `final` const-folded values).
-# - Multiple keys in one `set:` map produce multiple `init`
+#   they need beyond `const NAME := <value>` (e.g. derived
+#   bindings or shared cells).
+# - Multiple keys in one `set:` map produce multiple `const`
 #   lines in the same source body — declaration order
 #   determines shadowing on collision.
 # - Shadowing is uniform with phase-level `bindings:`: a local
-#   `final` or `init` for NAME shadows any upstream chain value
-#   for NAME over this node's `phases:` subtree.
+#   `const` for NAME shadows any upstream chain value for NAME
+#   over this node's `phases:` subtree.
 
 params:
   mode: default
@@ -109,12 +111,11 @@ scenarios:
   # 7. Long-form `bindings:` block. Equivalent to the
   #    multi-key set above, but written as direct GK matter
   #    — useful when the body needs a feature `set:`'s
-  #    sugar doesn't cover (derived bindings, shared cells,
-  #    explicit `final` for true compile-time constants).
+  #    sugar doesn't cover (derived bindings, shared cells).
   long_form:
     - bindings: |
-        init mode = "verbose"
-        init size = "bulk"
+        const mode := "verbose"
+        const size := "bulk"
       phases:
         - announce
 

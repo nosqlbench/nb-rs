@@ -71,7 +71,7 @@ phases:
     cycles: "{vector_count('{dataset}:{profile}')}"
     concurrency: "{concurrency}"
     bindings: |
-      init prebuffer = dataset_prebuffer("{dataset}:{profile}")
+      const prebuffer := dataset_prebuffer("{dataset}:{profile}")
       id := format_u64(cycle, 10)
       train_vector := vector_at("{dataset}:{profile}", cycle)
     ops:
@@ -113,7 +113,7 @@ phases:
     cycles: 10
     concurrency: 1
     bindings: |
-      init prebuffer = dataset_prebuffer("{dataset}:{profile}")
+      const prebuffer := dataset_prebuffer("{dataset}:{profile}")
       query_vector := query_vector_at("{dataset}:{profile}", cycle)
     ops:
       query:

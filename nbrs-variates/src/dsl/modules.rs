@@ -304,14 +304,7 @@ impl Compiler {
         for stmt in &module_stmts {
             match stmt {
                 Statement::InputDecl(_) => {} // skip — kernel inputs handled by caller
-                Statement::InitBinding(b) => {
-                    let prefixed_name = format!("{prefix}{}", b.name);
-                    let rewritten = self.rewrite_module_expr(
-                        &b.value, &prefix, &module_inputs, &arg_map,
-                    );
-                    self.compile_binding(asm, &[prefixed_name], &rewritten)?;
-                }
-                Statement::CycleBinding(b) => {
+                Statement::Binding(b) => {
                     let prefixed_targets: Vec<String> = b.targets.iter()
                         .map(|t| format!("{prefix}{t}"))
                         .collect();
@@ -570,8 +563,7 @@ impl Compiler {
                     stmt_refs.push(HashSet::new());
                     continue;
                 }
-                Statement::InitBinding(b) => (vec![b.name.clone()], &b.value),
-                Statement::CycleBinding(b) => (b.targets.clone(), &b.value),
+                Statement::Binding(b) => (b.targets.clone(), &b.value),
             };
             for name in &names {
                 name_to_idx.insert(name.clone(), i);
@@ -619,8 +611,7 @@ impl Compiler {
                 Statement::InputDecl(d) => {
                     defined.insert(d.name.clone());
                 }
-                Statement::InitBinding(b) => { defined.insert(b.name.clone()); }
-                Statement::CycleBinding(b) => {
+                Statement::Binding(b) => {
                     for t in &b.targets { defined.insert(t.clone()); }
                 }
                 Statement::ModuleDef(_) | Statement::ExternPort(_) => {}
@@ -631,8 +622,7 @@ impl Compiler {
         for stmt in &extracted {
             let expr = match stmt {
                 Statement::InputDecl(_) | Statement::ModuleDef(_) | Statement::ExternPort(_) | Statement::Cursor(_) | Statement::Pragma { .. } => continue,
-                Statement::InitBinding(b) => &b.value,
-                Statement::CycleBinding(b) => &b.value,
+                Statement::Binding(b) => &b.value,
             };
             collect_references(expr, &mut referenced);
         }

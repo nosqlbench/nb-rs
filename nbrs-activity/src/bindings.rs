@@ -275,7 +275,7 @@ pub(crate) fn prepend_effective_pragmas(
 ///   bindings at the workload or phase level).
 /// - The workload's `bindings:` block, ingested as Inherited
 ///   matter.
-/// - Workload params as `final` bindings — descendants pick
+/// - Workload params as `const` bindings — descendants pick
 ///   them up via the standard manifest auto-extern.
 /// - DCE filter that retains every workload param plus
 ///   caller-supplied config refs (`cycles=` etc.).
@@ -299,7 +299,7 @@ pub fn build_workload_root_kernel(
     workload_level_gk: Option<&str>,
 ) -> Result<GkKernel, String> {
     // Build the workload-root scope. workload_params get
-    // injected as `final` bindings so descendants resolve them
+    // injected as `const` bindings so descendants resolve them
     // via the standard manifest auto-extern.
     let mut scope = crate::scope::build_scope(
         ops,
@@ -375,7 +375,7 @@ pub fn build_workload_root_kernel(
     // don't show up in `compute_own_coordinates` (which filters for
     // `IterationExtern`-kind inputs that aren't marked inherited).
     // Without this, switching the workload-param cascade from
-    // `final NAME := <literal>` to `extern NAME: T` causes every
+    // `const NAME := <literal>` to `extern NAME: T` causes every
     // workload param to show up as a scope-coordinate on the
     // workload-root kernel — and downstream code (phase identity
     // construction, label formatting, scene-tree population) treats

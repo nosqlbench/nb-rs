@@ -405,7 +405,7 @@ applier walks.
 
 ### Final declarations — "this scope fixes the value"
 
-A control can be declared `final` at a parent GK scope. A
+A control can be declared `const` at a parent GK scope. A
 final declaration pins the committed value for the scope and
 **rejects runtime writes targeting descendants of that scope
 with a logical error**, not a silent drop. The write surfaces
@@ -423,7 +423,7 @@ pin lives.
 
 Testability: the final-violation path is a required test
 case — concurrency, rate, and log-level controls each need a
-test that declares `final` at a parent, attempts a runtime
+test that declares `const` at a parent, attempts a runtime
 write at a descendant, and asserts the specific
 `SetError::FinalViolation` outcome plus an unchanged
 committed value. Otherwise a regression could silently

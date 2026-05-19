@@ -41,7 +41,7 @@ pub enum ImportClassification {
 pub enum ExportClassification {
     /// Locally-defined output of the body. The default shape.
     Local,
-    /// `final` modifier on the body's binding.
+    /// `const` modifier on the body's binding.
     Final,
     /// `shared` modifier on the body's binding — shared cell
     /// available to descendants.
@@ -129,7 +129,7 @@ impl ExportSpec {
         Self {
             name: name.into(),
             port_type,
-            modifier: BindingModifier::FINAL,
+            modifier: BindingModifier::CONST,
             classification: ExportClassification::Final,
         }
     }

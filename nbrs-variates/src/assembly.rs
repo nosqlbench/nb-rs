@@ -151,7 +151,7 @@ struct ResolvedDag {
     /// Output binding modifiers.
     output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
     /// Names declared with `init` (SRD 11 §"Init Binding Contract").
-    init_outputs: std::collections::HashSet<String>,
+    const_outputs: std::collections::HashSet<String>,
 }
 
 impl ResolvedDag {
@@ -178,9 +178,9 @@ pub struct GkAssembler {
     context: String,
     /// Binding modifiers for named outputs.
     output_modifiers: HashMap<String, crate::dsl::ast::BindingModifier>,
-    /// Names declared with the `init` keyword. Subject to the
+    /// Names declared with the `const` keyword. Subject to the
     /// init-binding contract (SRD 11 §"Init Binding Contract").
-    init_outputs: std::collections::HashSet<String>,
+    const_outputs: std::collections::HashSet<String>,
     /// SRD 15 §"Strict Wire Mode": when true, the resolver
     /// auto-inserts `AssertValue` nodes in front of every wire
     /// input whose declared `Port.constraint` can't be statically
@@ -217,7 +217,7 @@ impl GkAssembler {
             source: String::new(),
             context: "(assembler)".into(),
             output_modifiers: HashMap::new(),
-            init_outputs: std::collections::HashSet::new(),
+            const_outputs: std::collections::HashSet::new(),
             strict_values: false,
             strict_types: false,
         }
@@ -260,12 +260,12 @@ impl GkAssembler {
         }
     }
 
-    /// Mark an output as declared with the `init` keyword. Compile-
+    /// Mark an output as declared with the `const` keyword. Compile-
     /// time and scope-activation checks (SRD 11 §"Init Binding
     /// Contract") read this set to enforce const-like-constraint
     /// semantics on the binding.
-    pub fn mark_init_output(&mut self, name: &str) {
-        self.init_outputs.insert(name.to_string());
+    pub fn mark_const_output(&mut self, name: &str) {
+        self.const_outputs.insert(name.to_string());
     }
 
     /// Designate a wire as a named output variate.
@@ -365,7 +365,7 @@ impl GkAssembler {
             resolved.coord_count,
             resolved.output_map,
             resolved.output_order,
-            resolved.init_outputs,
+            resolved.const_outputs,
             modifiers,
             &resolved.source,
             &resolved.context,
@@ -407,7 +407,7 @@ impl GkAssembler {
             resolved.coord_count,
             resolved.output_map,
             resolved.output_order,
-            resolved.init_outputs,
+            resolved.const_outputs,
             modifiers,
             &resolved.source,
             &resolved.context,
@@ -1264,7 +1264,7 @@ impl GkAssembler {
             source: self.source,
             context: self.context,
             output_modifiers: self.output_modifiers,
-            init_outputs: self.init_outputs,
+            const_outputs: self.const_outputs,
         })
     }
 }

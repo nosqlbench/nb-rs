@@ -1583,7 +1583,7 @@ pub fn signatures() -> &'static [FuncSig] {
         FuncSig {
             name: "dataset_open", category: C::RealData, outputs: 1,
             description: "open a dataset facet, returning a handle",
-            help: "Resolve a (source, facet) pair to a typed handle. The handle\nflows on a wire to per-cycle accessors, which downcast and read\nat the requested index — no per-cycle string lookup.\nProvenance follows source/facet inputs; with scope-extern\ninputs this evaluates once per iteration via the engine's\nstandard provenance caching.\nExample: init base = dataset_open(\"glove-25\", \"base\")",
+            help: "Resolve a (source, facet) pair to a typed handle. The handle\nflows on a wire to per-cycle accessors, which downcast and read\nat the requested index — no per-cycle string lookup.\nProvenance follows source/facet inputs; with scope-extern\ninputs this evaluates once per iteration via the engine's\nstandard provenance caching.\nExample: const base := dataset_open(\"glove-25\", \"base\")",
             identity: None, variadic_ctor: None,
             params: &[
                 ParamSpec { name: "source", slot_type: SlotType::Wire, required: true, example: "\"glove-25\"", constraint: None },
@@ -1597,7 +1597,7 @@ pub fn signatures() -> &'static [FuncSig] {
         FuncSig {
             name: "dataset_group_open", category: C::RealData, outputs: 1,
             description: "open a dataset group, returning a handle",
-            help: "Resolve a dataset to a group-level handle. Used by group\nmetadata accessors (dataset_profile_count, dataset_facets, ...)\nthat operate on TestDataGroup before any profile/facet is selected.\nExample: init group = dataset_group_open(\"glove-25\")",
+            help: "Resolve a dataset to a group-level handle. Used by group\nmetadata accessors (dataset_profile_count, dataset_facets, ...)\nthat operate on TestDataGroup before any profile/facet is selected.\nExample: const group := dataset_group_open(\"glove-25\")",
             identity: None, variadic_ctor: None,
             params: &[
                 ParamSpec { name: "source", slot_type: SlotType::Wire, required: true, example: "\"glove-25\"", constraint: None },
@@ -1734,7 +1734,7 @@ pub fn signatures() -> &'static [FuncSig] {
         FuncSig {
             name: "dataset_prebuffer", category: C::RealData, outputs: 1,
             description: "eagerly download dataset facets to local cache",
-            help: "Downloads all facets for a dataset to the local cache. Returns 0\n(side-effect resolver). Subsequent loads use fast local mmap access.\nKept on a string source — typically called once per workload at\ninit time.\nExample: init _pb = dataset_prebuffer(\"example\")",
+            help: "Downloads all facets for a dataset to the local cache. Returns 0\n(side-effect resolver). Subsequent loads use fast local mmap access.\nKept on a string source — typically called once per workload at\ninit time.\nExample: const _pb := dataset_prebuffer(\"example\")",
             identity: None, variadic_ctor: None,
             params: &[ParamSpec { name: "source", slot_type: SlotType::Wire, required: true, example: "\"test\"", constraint: None }],
             arity: Arity::Fixed,

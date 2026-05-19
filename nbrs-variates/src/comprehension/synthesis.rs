@@ -63,7 +63,7 @@ use super::eval::{enumerate_tuples, pre_evaluate_clause, value_to_gk_type_name};
 /// program). `parent_kernel` provides the in-scope name space
 /// for clause pre-evaluation. `workload_params` is the
 /// fallback string-substitute source for names not yet promoted
-/// to kernel `init` bindings.
+/// to kernel `const` bindings.
 ///
 /// Returns a kernel with:
 /// - One output per name visible at this scope (via the extern
@@ -142,7 +142,7 @@ pub fn synthesize_for_each_scope(
         for name in refs_sorted {
             if already_satisfied.contains(name.as_str()) { continue; }
             let modifier = parent_program.output_modifier(name);
-            if modifier == crate::dsl::ast::BindingModifier::FINAL
+            if modifier == crate::dsl::ast::BindingModifier::CONST
                 || modifier == crate::dsl::ast::BindingModifier::SHARED
             {
                 continue;
@@ -154,15 +154,11 @@ pub fn synthesize_for_each_scope(
                 source.push_str(&line);
                 source.push('\n');
                 match stmt {
-                    crate::dsl::ast::Statement::CycleBinding(b) => {
+                    crate::dsl::ast::Statement::Binding(b) => {
                         for t in &b.targets {
                             emitted_externs.insert(t.clone());
                             already_satisfied.insert(t.clone());
                         }
-                    }
-                    crate::dsl::ast::Statement::InitBinding(b) => {
-                        emitted_externs.insert(b.name.clone());
-                        already_satisfied.insert(b.name.clone());
                     }
                     _ => {}
                 }
@@ -296,14 +292,14 @@ pub fn synthesize_for_each_scope(
         if !cascade_external(&emitted_externs, &iter_vars, &coord_names, &owned) { continue; }
         // SRD-13f case 1 — when an upstream output is `final` AND
         // its value is representable as a GK source literal,
-        // inline it as `final name := <literal>` instead of
+        // inline it as `const name := <literal>` instead of
         // cascading via extern. Falls through to extern cascade
         // when the value isn't representable.
         let modifier = parent_program.output_modifier(&owned);
-        if modifier == crate::dsl::ast::BindingModifier::FINAL {
+        if modifier == crate::dsl::ast::BindingModifier::CONST {
             if let Some(value) = parent_kernel.get_constant(&owned) {
                 if let Some(literal) = format_value_as_final_literal(value) {
-                    source.push_str(&format!("final {owned} := {literal}\n"));
+                    source.push_str(&format!("const {owned} := {literal}\n"));
                     emitted_externs.insert(owned);
                     continue;
                 }
@@ -349,7 +345,7 @@ pub fn synthesize_for_each_scope(
     }
 
     if source.is_empty() {
-        source.push_str("final __empty := 0\n");
+        source.push_str("const __empty := 0\n");
     }
 
     // SRD-67 Phase 3 — route through the
@@ -521,7 +517,7 @@ pub fn synthesize_for_each_iteration(
     // compiled program with its iter-var values baked in.
     for (var, value) in iter_values {
         let literal = format_value_as_gk_literal(value);
-        source.push_str(&format!("final {var} := {literal}\n"));
+        source.push_str(&format!("const {var} := {literal}\n"));
         emitted.insert(var.clone());
     }
 
@@ -589,7 +585,7 @@ pub fn synthesize_for_each_iteration(
     }
 
     if source.is_empty() {
-        source.push_str("final __empty := 0\n");
+        source.push_str("const __empty := 0\n");
     }
 
     let compile_options = crate::subcontext::CompileOptions {
@@ -646,14 +642,14 @@ pub fn value_to_param_string(v: &crate::node::Value) -> Option<String> {
     }
 }
 
-/// Emit `final NAME := <literal>` for one workload param into
+/// Emit `const NAME := <literal>` for one workload param into
 /// `source`, choosing the literal value via the canonical
 /// chain-aware lookup order:
 ///
 /// 1. `parent_kernel.lookup(name)` — if Some, this is the chain-
 ///    resolved value. A `bindings:` / `set:` scope above us may
 ///    have shadowed the workload-param default; whichever
-///    `final NAME := <override>` is closest in the chain wins
+///    `const NAME := <override>` is closest in the chain wins
 ///    via the local-final transit-suppression rule (SRD-13f
 ///    §"Local-authoritative shadow"). If the lookup is non-
 ///    scalar (vectors etc.), skip the chain path and fall back.
@@ -666,7 +662,7 @@ pub fn value_to_param_string(v: &crate::node::Value) -> Option<String> {
 /// for the inherited-output bookkeeping consumers also do.
 ///
 /// **Why this helper exists**: pre-helper, seven distinct
-/// synthesizer sites each rolled their own `final NAME :=
+/// synthesizer sites each rolled their own `const NAME :=
 /// <hashmap>` emission, reading the HashMap directly without
 /// consulting the chain. Any name a scenario-tree `set:` or
 /// `bindings:` scope shadowed kept the stale HashMap default
@@ -688,7 +684,7 @@ pub fn emit_workload_param_chain_aware(
         .and_then(|v| value_to_param_string(&v))
         .unwrap_or_else(|| hashmap_default.to_string());
     let literal = format_workload_param_as_gk_literal(&value_str);
-    source.push_str(&format!("final {name} := {literal}\n"));
+    source.push_str(&format!("const {name} := {literal}\n"));
     emitted.insert(name.to_string());
     if let Some(inh) = inherited_names {
         inh.push(name.to_string());
@@ -1003,7 +999,7 @@ mod tests {
     fn iterate_cartesian_yields_bound_child_kernels() {
         // Parent holds a final string-list workload param.
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final k_values := \"1, 10, 100\"\n"
+            "const k_values := \"1, 10, 100\"\n"
         ).unwrap());
 
         let comp = Comprehension::cartesian(vec![
@@ -1026,7 +1022,7 @@ mod tests {
     fn iterate_union_concatenates_subspaces() {
         // Two sub-spaces, each its own values for `k`.
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final small_k := \"1, 2\"\nfinal big_k := \"100, 200\"\n"
+            "const small_k := \"1, 2\"\nconst big_k := \"100, 200\"\n"
         ).unwrap());
 
         let comp = Comprehension::union(vec![
@@ -1048,7 +1044,7 @@ mod tests {
     #[test]
     fn iterate_cartesian_two_clauses_emits_cross_product() {
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final ks := \"1, 2\"\nfinal limits := \"10, 20\"\n"
+            "const ks := \"1, 2\"\nconst limits := \"10, 20\"\n"
         ).unwrap());
 
         let comp = Comprehension::cartesian(vec![
@@ -1077,8 +1073,8 @@ mod tests {
         // would produce. The comprehension `for xval in all(row)`
         // resolves them and emits the half-open ordinal range.
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final __cursor_extent_row_start := 0\n\
-             final __cursor_extent_row_end := 50\n"
+            "const __cursor_extent_row_start := 0\n\
+             const __cursor_extent_row_end := 50\n"
         ).unwrap());
         let comp = Comprehension::cartesian(vec![
             Clause::new("xval", "all(row)"),
@@ -1099,8 +1095,8 @@ mod tests {
     #[test]
     fn iterate_with_all_cursor_and_filter_truncates() {
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final __cursor_extent_row_start := 0\n\
-             final __cursor_extent_row_end := 20\n"
+            "const __cursor_extent_row_start := 0\n\
+             const __cursor_extent_row_end := 20\n"
         ).unwrap());
         let comp = Comprehension::cartesian(vec![
             Clause::new("xval", "all(row)"),
@@ -1121,7 +1117,7 @@ mod tests {
     #[test]
     fn iterate_order_extrema_first_visits_corners() {
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final ks := \"1, 5, 10\"\nfinal limits := \"1, 5, 10\"\n"
+            "const ks := \"1, 5, 10\"\nconst limits := \"1, 5, 10\"\n"
         ).unwrap());
 
         let comp = Comprehension::cartesian(vec![
@@ -1152,7 +1148,7 @@ mod tests {
     #[test]
     fn iterate_order_with_lex_count_truncates() {
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final xs := \"1, 2, 3, 4, 5\"\n"
+            "const xs := \"1, 2, 3, 4, 5\"\n"
         ).unwrap());
         let comp = Comprehension::cartesian(vec![
             Clause::new("x", "{xs}"),
@@ -1175,7 +1171,7 @@ mod tests {
         // filter `k * limit < 1000` keeps only those whose
         // product is below the threshold.
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final ks := \"10, 100\"\nfinal limits := \"1, 10, 50, 100\"\n"
+            "const ks := \"10, 100\"\nconst limits := \"1, 10, 50, 100\"\n"
         ).unwrap());
 
         let comp = Comprehension::cartesian(vec![
@@ -1212,7 +1208,7 @@ mod tests {
         // uniformly to every tuple regardless of which sub-space
         // produced it.
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final s1 := \"1, 2, 3\"\nfinal s2 := \"10, 20, 30\"\n"
+            "const s1 := \"1, 2, 3\"\nconst s2 := \"10, 20, 30\"\n"
         ).unwrap());
 
         let comp = Comprehension::union(vec![
@@ -1238,7 +1234,7 @@ mod tests {
         // A parent-scope name (workload param expressed as final)
         // must be visible from inside the child kernel.
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final dataset := \"glove-100\"\nfinal ks := \"1, 2\"\n"
+            "const dataset := \"glove-100\"\nconst ks := \"1, 2\"\n"
         ).unwrap());
 
         let comp = Comprehension::cartesian(vec![
@@ -1302,7 +1298,7 @@ mod tests {
     #[test]
     fn iterate_parallel_zips_two_axes_in_lockstep() {
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final xs := \"1, 2, 3\"\nfinal ys := \"10, 20, 30\"\n"
+            "const xs := \"1, 2, 3\"\nconst ys := \"10, 20, 30\"\n"
         ).unwrap());
         let comp = Comprehension::cartesian(vec![
             Clause::parallel(["x", "y"], ["{xs}", "{ys}"]),
@@ -1328,7 +1324,7 @@ mod tests {
         // values. This is independent of the `strict` flag,
         // which controls empty-clause vs warn-and-skip policy.
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final xs := \"1, 2, 3\"\nfinal ys := \"10, 20\"\n"
+            "const xs := \"1, 2, 3\"\nconst ys := \"10, 20\"\n"
         ).unwrap());
         let comp = Comprehension::cartesian(vec![
             Clause::parallel(["x", "y"], ["{xs}", "{ys}"]),
@@ -1347,7 +1343,7 @@ mod tests {
     fn iterate_parallel_zip_truncate_cuts_to_shortest() {
         use super::super::ast::ZipMode;
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final xs := \"1, 2, 3, 4, 5\"\nfinal ys := \"10, 20, 30\"\n"
+            "const xs := \"1, 2, 3, 4, 5\"\nconst ys := \"10, 20, 30\"\n"
         ).unwrap());
         let comp = Comprehension::cartesian(vec![
             Clause::parallel_with_mode(ZipMode::Truncate, ["x", "y"], ["{xs}", "{ys}"]),
@@ -1370,7 +1366,7 @@ mod tests {
     fn iterate_parallel_zip_cycle_repeats_shorter() {
         use super::super::ast::ZipMode;
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final xs := \"1, 2, 3, 4\"\nfinal ys := \"10, 20\"\n"
+            "const xs := \"1, 2, 3, 4\"\nconst ys := \"10, 20\"\n"
         ).unwrap());
         let comp = Comprehension::cartesian(vec![
             Clause::parallel_with_mode(ZipMode::Cycle, ["x", "y"], ["{xs}", "{ys}"]),
@@ -1394,7 +1390,7 @@ mod tests {
     #[test]
     fn clause_sizes_parallel_strict_uses_min_len() {
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final xs := \"1, 2, 3, 4, 5\"\nfinal ys := \"10, 20, 30\"\n"
+            "const xs := \"1, 2, 3, 4, 5\"\nconst ys := \"10, 20, 30\"\n"
         ).unwrap());
         let clauses = vec![
             Clause::parallel(["x", "y"], ["{xs}", "{ys}"]),
@@ -1408,7 +1404,7 @@ mod tests {
     fn clause_sizes_parallel_truncate_uses_min_len() {
         use super::super::ast::ZipMode;
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final xs := \"1, 2, 3, 4\"\nfinal ys := \"10, 20\"\n"
+            "const xs := \"1, 2, 3, 4\"\nconst ys := \"10, 20\"\n"
         ).unwrap());
         let clauses = vec![
             Clause::parallel_with_mode(ZipMode::Truncate, ["x", "y"], ["{xs}", "{ys}"]),
@@ -1421,7 +1417,7 @@ mod tests {
     fn clause_sizes_parallel_cycle_uses_max_len() {
         use super::super::ast::ZipMode;
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final xs := \"1, 2, 3, 4\"\nfinal ys := \"10, 20\"\n"
+            "const xs := \"1, 2, 3, 4\"\nconst ys := \"10, 20\"\n"
         ).unwrap());
         let clauses = vec![
             Clause::parallel_with_mode(ZipMode::Cycle, ["x", "y"], ["{xs}", "{ys}"]),
@@ -1434,7 +1430,7 @@ mod tests {
     #[test]
     fn clause_sizes_parallel_then_single_two_axes() {
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final xs := \"1, 2, 3\"\nfinal ys := \"10, 20, 30\"\nfinal zs := \"100, 200\"\n"
+            "const xs := \"1, 2, 3\"\nconst ys := \"10, 20, 30\"\nconst zs := \"100, 200\"\n"
         ).unwrap());
         let clauses = vec![
             Clause::parallel(["x", "y"], ["{xs}", "{ys}"]),
@@ -1458,7 +1454,7 @@ mod tests {
         // miscount lattice positions. This test pins the
         // contract.
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final xs := \"1, 2\"\nfinal ys := \"10, 20\"\nfinal zs := \"100, 200\"\n"
+            "const xs := \"1, 2\"\nconst ys := \"10, 20\"\nconst zs := \"100, 200\"\n"
         ).unwrap());
         let comp = Comprehension::cartesian(vec![
             Clause::new("x", "{xs}"),
@@ -1495,10 +1491,10 @@ mod tests {
         use super::super::ast::Subspace;
         let parent = Arc::new(crate::dsl::compile::compile_gk(
             concat!(
-                "final small_x := \"1, 2, 3\"\n",
-                "final small_y := \"10, 20, 30\"\n",
-                "final big_x := \"100, 200\"\n",
-                "final big_y := \"1000, 2000\"\n",
+                "const small_x := \"1, 2, 3\"\n",
+                "const small_y := \"10, 20, 30\"\n",
+                "const big_x := \"100, 200\"\n",
+                "const big_y := \"1000, 2000\"\n",
             )
         ).unwrap());
         let comp = Comprehension::union_from(vec![
@@ -1536,7 +1532,7 @@ mod tests {
         // would be 4×4×3 with 8 corners.
         use super::super::ast::TraversalOrder;
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final xs := \"1, 2, 3, 4\"\nfinal ys := \"10, 20, 30, 40\"\nfinal zs := \"100, 200, 300\"\n"
+            "const xs := \"1, 2, 3, 4\"\nconst ys := \"10, 20, 30, 40\"\nconst zs := \"100, 200, 300\"\n"
         ).unwrap());
         let comp = Comprehension::cartesian(vec![
             Clause::parallel(["x", "y"], ["{xs}", "{ys}"]),
@@ -1571,7 +1567,7 @@ mod tests {
         // Parallel group `(x, y)` is one axis; `z` is another.
         // Result is the 3-step zip × 2-step single = 6 tuples.
         let parent = Arc::new(crate::dsl::compile::compile_gk(
-            "final xs := \"1, 2, 3\"\nfinal ys := \"10, 20, 30\"\nfinal zs := \"100, 200\"\n"
+            "const xs := \"1, 2, 3\"\nconst ys := \"10, 20, 30\"\nconst zs := \"100, 200\"\n"
         ).unwrap());
         let comp = Comprehension::cartesian(vec![
             Clause::parallel(["x", "y"], ["{xs}", "{ys}"]),
@@ -1603,7 +1599,7 @@ mod tests {
     #[test]
     fn iter_var_as_final_const() {
         use crate::kernel::extract_manifest;
-        let parent = crate::dsl::compile::compile_gk("final __anchor := 0\n").unwrap();
+        let parent = crate::dsl::compile::compile_gk("const __anchor := 0\n").unwrap();
         let parent_manifest = extract_manifest(parent.program());
         let workload_params: HashMap<String, String> = HashMap::new();
 
