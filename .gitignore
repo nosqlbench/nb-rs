@@ -28,3 +28,4 @@ local/
 **/*.db-journal
 **/logs
 **/tmp
+/.cl*

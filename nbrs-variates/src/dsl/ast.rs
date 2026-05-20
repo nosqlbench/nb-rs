@@ -248,16 +248,30 @@ pub struct Binding {
     pub span: Span,
 }
 
-/// A cursor declaration: `cursor name = Cursor()`
+/// A cursor declaration: `cursor name = Cursor() [over partition_source]`
 ///
 /// Declares a named positional cursor. The cursor's extent is
 /// discovered at init time by interrogating its downstream consumers
 /// for cardinality. The runtime advances the cursor to drive
 /// phase iteration.
+///
+/// The optional `over` clause (SRD 71) names a partition source
+/// — an in-scope wire that resolves to a `Partition` or a
+/// `PartitionList`. When bound, the cursor's effective extent
+/// narrows to the named partition's `[start_ord, end_ord)`
+/// range; without it, the cursor uses its full declared extent.
 #[derive(Debug, Clone)]
 pub struct CursorDecl {
     pub name: String,
     pub constructor: Expr,
+    /// SRD 71 `over <expr>` clause. The expression is parsed
+    /// the same way as any other GK expression so authors can
+    /// name a workload parameter's `.partitions` projection
+    /// (e.g. `cursor.partitions`), an iter-var bound by an
+    /// enclosing `for:`, or a sibling cursor's `.cursor`
+    /// projection (`q1.cursor`). `None` means no narrowing —
+    /// the cursor uses its full declared extent.
+    pub over: Option<Expr>,
     pub span: Span,
 }
 

@@ -108,6 +108,7 @@
 
 pub mod audit;
 pub mod cache;
+pub mod cursor_partition;
 pub mod node;
 pub mod source;
 pub mod kernel;

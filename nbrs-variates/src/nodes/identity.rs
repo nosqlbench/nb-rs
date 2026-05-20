@@ -227,3 +227,38 @@ impl GkNode for ConstHandle {
         outputs[0] = Value::Handle(self.value.clone());
     }
 }
+
+/// SRD 71 — leaf const for [`Value::Ext`]-typed values
+/// (Partition, PartitionSpec, PartitionList, …).
+///
+/// Mirrors [`ConstHandle`]'s shape for `Handle`-typed values:
+/// fold-pass synthesises one of these in place of any
+/// node-with-wiring whose evaluated output is an `Ext` value,
+/// so the post-fold kernel can read the constant via
+/// `get_constant` (no input slots, eval just emits the stored
+/// value).
+pub struct ConstExt {
+    meta: NodeMeta,
+    value: Box<dyn crate::node::ReflectedValue>,
+}
+
+impl ConstExt {
+    pub fn new(value: Box<dyn crate::node::ReflectedValue>) -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "const_ext".into(),
+                outs: vec![Port::new("output", PortType::Ext)],
+                ins: vec![],
+            },
+            value,
+        }
+    }
+}
+
+impl GkNode for ConstExt {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+
+    fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::Ext(self.value.clone());
+    }
+}

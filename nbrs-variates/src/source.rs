@@ -85,6 +85,20 @@ pub struct SourceSchema {
     /// to pick between `RangeSourceFactory` and
     /// `ExtendingRangeSourceFactory` at phase setup.
     pub cursor_kind: CursorKind,
+    /// SRD 71: name of the kernel output that carries the
+    /// partition-narrowing source (the `over <expr>` clause on
+    /// the cursor declaration). The executor pulls this output
+    /// at phase setup and applies it to the source factory's
+    /// `[start, end)` range. The output value's type drives
+    /// the resolution:
+    /// - `Value::Str(s)`         — parse `s` as a partition spec, resolve, use partition 0.
+    /// - `Value::Ext(Partition)` — use the resolved partition's `start_ord` / `end_ord`.
+    /// - `Value::Ext(PartitionSpec)` — resolve against the cursor's extent, use partition 0.
+    /// - `Value::Ext(PartitionList)` — use partition 0.
+    /// - `Value::None`           — no narrowing (cursor uses its full extent).
+    /// `None` means the cursor was declared without an `over`
+    /// clause; the cursor uses its full declared extent.
+    pub partition_output: Option<String>,
 }
 
 /// Cursor-construction discriminator. Set by the GK compiler
@@ -270,6 +284,7 @@ impl RangeSourceFactory {
                 extent_outputs: None,
                 extent_limit: None,
                 cursor_kind: CursorKind::Range,
+                partition_output: None,
             },
         }
     }
@@ -433,6 +448,7 @@ impl ExtendingRangeSourceFactory {
                 extent_outputs: None,
                 cursor_kind: CursorKind::Range,
                 extent_limit: None,
+                partition_output: None,
             },
         }
     }

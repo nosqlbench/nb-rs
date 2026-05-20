@@ -50,6 +50,12 @@ pub enum TokenKind {
     Volatile,
     /// `cursor` keyword
     Cursor,
+    /// `over` keyword — SRD 71 partition-source binding on
+    /// cursor declarations: `cursor q = range(0, N) over p`.
+    /// Soft keyword: only recognised at statement level after
+    /// a cursor decl's constructor expression; in expression
+    /// position it's a plain identifier.
+    Over,
     /// `pragma` keyword (module-level directive opening, SRD 15
     /// §"Module-Level Pragmas"). Followed by an `Ident` naming the
     /// pragma. Distinct from line comments so the parser sees
@@ -479,6 +485,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                 "shared" => TokenKind::Shared,
                 "volatile" => TokenKind::Volatile,
                 "cursor" => TokenKind::Cursor,
+                "over" => TokenKind::Over,
                 "pragma" => TokenKind::Pragma,
                 _ => TokenKind::Ident(word),
             };

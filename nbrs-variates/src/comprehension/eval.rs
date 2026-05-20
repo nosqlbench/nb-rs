@@ -97,6 +97,17 @@ pub fn evaluate_spec(
     }
     let value_str = match crate::dsl::compile::eval_const_expr(&interpolated) {
         Ok(Value::Str(s)) => s.to_string(),
+        // SRD 71: `<param>.partitions` and `partitions(spec, ...)`
+        // both evaluate to a `PartitionList` Ext value. Unpack
+        // its entries into a vec of individual `Partition`
+        // values so the for-clause iterates partition-by-
+        // partition.
+        Ok(ref v) if v.as_partition_list().is_some() => {
+            let list = v.as_partition_list().unwrap();
+            return Ok(list.as_slice().iter()
+                .map(|p| Value::from_partition(*p))
+                .collect());
+        }
         Ok(other) => return Ok(vec![other]),
         // Fall back to the literal-list parse only when the text
         // is unambiguously a comma-separated list of literals
@@ -210,6 +221,17 @@ pub fn pre_evaluate_clause(
     }
     let value_str = match crate::dsl::compile::eval_const_expr(&interpolated) {
         Ok(Value::Str(s)) => s.to_string(),
+        // SRD 71: `<param>.partitions` and `partitions(spec, ...)`
+        // both evaluate to a `PartitionList` Ext value. Unpack
+        // its entries into a vec of individual `Partition`
+        // values so the for-clause iterates partition-by-
+        // partition.
+        Ok(ref v) if v.as_partition_list().is_some() => {
+            let list = v.as_partition_list().unwrap();
+            return Ok(list.as_slice().iter()
+                .map(|p| Value::from_partition(*p))
+                .collect());
+        }
         Ok(other) => return Ok(vec![other]),
         // Mirrors `evaluate_spec`'s gating: only fall back to
         // parse_list_with_types when the text is unambiguously a
@@ -1145,6 +1167,9 @@ pub fn value_to_gk_type_name(v: &Value) -> &'static str {
         Value::U64(_) => "u64",
         Value::F64(_) => "f64",
         Value::Bool(_) => "bool",
+        // SRD 71: adapter-contributed reflected types (Partition,
+        // PartitionSpec, PartitionList, …) declare as `Ext`.
+        Value::Ext(_) => "Ext",
         _ => "String",
     }
 }
@@ -1922,6 +1947,71 @@ mod tests {
         ).unwrap();
         let v = evaluate_spec("{k_values}", &kernel).unwrap();
         assert_eq!(v, vec![Value::U64(1), Value::U64(10), Value::U64(100)]);
+    }
+
+    // ── SRD-71: partition-list unpacking ─────────────────────
+
+    #[test]
+    fn evaluate_spec_unpacks_partition_list_into_partition_values() {
+        // `partitions("linear:3")` evaluates to a PartitionList
+        // Ext value. evaluate_spec must unpack the list into a
+        // Vec of individual Partition values so the for-clause
+        // iterates partition-by-partition (one iteration per
+        // partition).
+        let kernel = empty_kernel();
+        let v = evaluate_spec("partitions(\"linear:3\")", &kernel).unwrap();
+        assert_eq!(v.len(), 3, "expected 3 partitions, got {}", v.len());
+        for value in &v {
+            assert!(value.as_partition().is_some(),
+                "every iter value should be a Partition, got {value:?}");
+        }
+    }
+
+    #[test]
+    fn evaluate_spec_unpacks_partition_list_with_explicit_extent() {
+        let kernel = empty_kernel();
+        let v = evaluate_spec("partitions(\"fib:5\", 1000)", &kernel).unwrap();
+        assert_eq!(v.len(), 5);
+        // Partition indices increment from 0.
+        for (i, value) in v.iter().enumerate() {
+            let p = value.as_partition().unwrap();
+            assert_eq!(p.idx, i as u64);
+            assert_eq!(p.base_extent, 1000);
+        }
+    }
+
+    #[test]
+    fn pre_evaluate_clause_returns_partition_values_for_partitions_call() {
+        // Same as the evaluate_spec test above but via the
+        // synthesis-side pre_evaluate_clause entry point.
+        let kernel = empty_kernel();
+        let v = pre_evaluate_clause(
+            "partitions(\"linear:4\")",
+            &kernel,
+            &HashMap::new(),
+            &HashMap::new(),
+        ).unwrap();
+        assert_eq!(v.len(), 4);
+        for value in &v {
+            assert!(value.as_partition().is_some(),
+                "pre_evaluate_clause must unpack PartitionList, got {value:?}");
+        }
+    }
+
+    #[test]
+    fn value_to_gk_type_name_returns_ext_for_partition_value() {
+        // The for_each scope synthesizer uses this to emit
+        // `extern <var>: <type>` for each iter-var. Ext-typed
+        // values (Partition, PartitionSpec, PartitionList) must
+        // declare as `Ext` so the resulting input port is
+        // PortType::Ext and downstream `over <iter-var>` clauses
+        // see the right shape.
+        let p = crate::cursor_partition::Partition {
+            idx: 0, start_ord: 0, end_ord: 10,
+            start_pct: 0.0, end_pct: 100.0, base_extent: 10,
+        };
+        let v = Value::from_partition(p);
+        assert_eq!(value_to_gk_type_name(&v), "Ext");
     }
 
     // ── SRD-18c Layer 2 / SRD-18e Push 3: range operator ──

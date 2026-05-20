@@ -1,0 +1,460 @@
+# Copyright 2024-2026 Jonathan Shook
+# SPDX-License-Identifier: Apache-2.0
+#
+# cursor_partitions_coverage.yaml
+#
+# Comprehensive coverage of SRD 71 cursor partitioning shapes.
+# Every scenario exercises exactly one shape — number form,
+# partition-list form, pre-baked recipe, `over`-clause form,
+# stdlib partition function, or operator-surface convention —
+# and emits a `cp/...` prefixed line that the matching
+# `cursor_partitions_*` test in `nbrs/tests/cursor_partitions.rs`
+# scans and asserts against.
+#
+# Themes (each one is a scenario in this file):
+#   - Form 1 single sub-range, all number forms + brackets
+#   - Form 2 delta lists (pct, fraction, literal, mixed, with/without `*`)
+#   - Form 3 pre-baked recipes
+#   - Cursor `over` clause: workload-param, iter-var, cross-cursor
+#   - Stdlib partition functions
+#   - Reified custom-named cursor parameter
+#   - Cursor without `over` ignores the parameter
+
+params:
+  # Workload-level default — exercised by the `over_workload_param`
+  # scenario via `over cursor`. Other scenarios provide their own
+  # spec inline in the phase bindings, so this default is just a
+  # value the runtime accepts.
+  cursor: "0..100%"
+  # Reified params for the `reified_warmup_steady` scenario.
+  warmup_cursor: "0..10%"
+  steady_cursor: "10%..100%"
+
+scenarios:
+
+  # ─────────────────────────────────────────────────────────────
+  # Form 1 — single sub-range (`start..end`)
+  # ─────────────────────────────────────────────────────────────
+
+  form1_percentage_end:
+    - form1_pct_phase
+
+  form1_fraction_end:
+    - form1_frac_phase
+
+  form1_literal_ordinals:
+    - form1_literal_phase
+
+  form1_mixed_literal_then_pct:
+    - form1_mixed_lp_phase
+
+  form1_mixed_frac_then_literal:
+    - form1_mixed_fl_phase
+
+  form1_brackets_tolerated:
+    - form1_brackets_phase
+
+  # ─────────────────────────────────────────────────────────────
+  # Form 2 — delta list (with and without `*` remainder)
+  # ─────────────────────────────────────────────────────────────
+
+  form2_pct_with_star:
+    - for: "p in partitions(\"2%,10%,*%\")"
+      phases: [emit_p]
+
+  form2_fraction_with_star:
+    - for: "p in partitions(\"0.02,0.10,*\")"
+      phases: [emit_p]
+
+  form2_literal_with_star:
+    - for: "p in partitions(\"1000,5000,*\", 10000)"
+      phases: [emit_p]
+
+  form2_mixed_literal_pct_with_star:
+    - for: "p in partitions(\"1000,10%,*\", 10000)"
+      phases: [emit_p]
+
+  form2_short_list_drops_gap:
+    - for: "p in partitions(\"20%,30%\")"
+      phases: [emit_p]
+
+  # ─────────────────────────────────────────────────────────────
+  # Form 3 — pre-baked recipes
+  # ─────────────────────────────────────────────────────────────
+
+  recipe_linear:
+    - for: "p in partitions(\"linear:4\")"
+      phases: [emit_p]
+
+  recipe_ratios:
+    - for: "p in partitions(\"ratios:1,1,2\")"
+      phases: [emit_p]
+
+  recipe_bin:
+    - for: "p in partitions(\"bin:5\")"
+      phases: [emit_p]
+
+  recipe_fib:
+    - for: "p in partitions(\"fib:5\")"
+      phases: [emit_p]
+
+  recipe_ln:
+    - for: "p in partitions(\"ln:5\")"
+      phases: [emit_p]
+
+  recipe_mul_decay:
+    - for: "p in partitions(\"mul:0.5\")"
+      phases: [emit_p_count]
+
+  recipe_mul_with_start:
+    - for: "p in partitions(\"mul:5,0.5\")"
+      phases: [emit_p_count]
+
+  recipe_geom:
+    - for: "p in partitions(\"geom:4,2\")"
+      phases: [emit_p]
+
+  recipe_zipf:
+    - for: "p in partitions(\"zipf:1,4\")"
+      phases: [emit_p_count]
+
+  recipe_pareto:
+    - for: "p in partitions(\"pareto:1,4\")"
+      phases: [emit_p_count]
+
+  recipe_front_heavy:
+    - for: "p in partitions(\"front_heavy:4\")"
+      phases: [emit_p]
+
+  recipe_back_heavy:
+    - for: "p in partitions(\"back_heavy:4\")"
+      phases: [emit_p]
+
+  # ─────────────────────────────────────────────────────────────
+  # `over` clause — different binding shapes
+  # ─────────────────────────────────────────────────────────────
+
+  over_workload_param:
+    # Cursor decl names the workload's `cursor` parameter
+    # directly via `over cursor`. No `for:` scaffold; the
+    # single-partition spec narrows the cursor unconditionally.
+    - over_cursor_phase
+
+  over_iter_var:
+    # Cursor decl names the for-clause's iter-var via `over p`.
+    # Per-iteration the cursor's effective range narrows to the
+    # active partition.
+    - for: "p in partitions(\"linear:3\", 1000)"
+      phases: [over_p_phase]
+
+  over_cross_cursor:
+    # One cursor's resolved `.cursor` projection drives another
+    # cursor — cross-cursor composition. Both cursors walk the
+    # same partition window with their own iteration policies.
+    - for: "p in partitions(\"linear:2\", 1000)"
+      phases: [over_cross_phase]
+
+  # ─────────────────────────────────────────────────────────────
+  # Stdlib partition functions
+  # ─────────────────────────────────────────────────────────────
+
+  fn_cardinality:
+    - for: "p in partitions(\"linear:3\", 300)"
+      phases: [fn_cardinality_phase]
+
+  fn_idx_and_bounds:
+    - for: "p in partitions(\"linear:4\")"
+      phases: [fn_idx_bounds_phase]
+
+  fn_mod_in:
+    - for: "p in partitions(\"linear:1\", 100)"
+      phases: [fn_mod_in_phase]
+
+  fn_at:
+    - for: "p in partitions(\"linear:1\", 100)"
+      phases: [fn_at_phase]
+
+  fn_clamp_in:
+    - for: "p in partitions(\"linear:1\", 100)"
+      phases: [fn_clamp_in_phase]
+
+  # ─────────────────────────────────────────────────────────────
+  # Reified custom-named cursor parameters
+  # ─────────────────────────────────────────────────────────────
+
+  reified_warmup_steady:
+    # Workload exposes `warmup_cursor` / `steady_cursor` as the
+    # operator-facing knobs. Each phase's cursor names its
+    # corresponding parameter; operator overrides via
+    # `warmup_cursor=...` without knowing it routes to a cursor.
+    - over_warmup_phase
+    - over_steady_phase
+
+  # ─────────────────────────────────────────────────────────────
+  # Operator-surface negatives
+  # ─────────────────────────────────────────────────────────────
+
+  no_over_ignores_cursor_param:
+    # A cursor declared without `over` ignores `cursor=...` from
+    # the CLI entirely — uses its full declared extent.
+    - no_over_phase
+
+phases:
+
+  # ── Form 1 phases ─────────────────────────────────────────────
+
+  form1_pct_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over "0..53%"
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/form1 lo={lo} hi={hi}"
+
+  form1_frac_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over "0..0.53"
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/form1 lo={lo} hi={hi}"
+
+  form1_literal_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over "100..500"
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/form1 lo={lo} hi={hi}"
+
+  form1_mixed_lp_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over "100..50%"
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/form1 lo={lo} hi={hi}"
+
+  form1_mixed_fl_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over "0.10..800"
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/form1 lo={lo} hi={hi}"
+
+  form1_brackets_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over "[0..53%)"
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/form1 lo={lo} hi={hi}"
+
+  # ── Generic partition-list emit phases ────────────────────────
+
+  emit_p:
+    # Used by every scenario whose for-clause iterates a
+    # partition list and wants per-partition bounds + indices.
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      i := idx_of(p)
+      lo := start_of(p)
+      hi := end_of(p)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/iter idx={i} lo={lo} hi={hi}"
+
+  emit_p_count:
+    # Used by recipes whose exact partition boundaries are
+    # numerically sensitive (zipf / pareto / mul-decay); tests
+    # assert only on partition COUNT, not specific bounds. The
+    # phase still emits one line per partition so test counts
+    # are easy.
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      i := idx_of(p)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/count idx={i}"
+
+  # ── `over` clause shape phases ────────────────────────────────
+
+  over_cursor_phase:
+    # `cursor q = range(...) over cursor` — narrow by workload param.
+    # The test passes `cursor=0..50%` and asserts the cursor
+    # yields 500 ordinals starting at 0.
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over cursor
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/over_cursor lo={lo} hi={hi}"
+
+  over_p_phase:
+    # `over p` where `p` is the for-clause iter-var.
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over p
+      i := idx_of(q.cursor)
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/over_p idx={i} lo={lo} hi={hi}"
+
+  over_cross_phase:
+    # Cross-cursor: q2 takes q1's resolved `.cursor` projection.
+    # Both cursors narrow to the same per-iteration partition.
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q1 = range(0, 1000) over p
+      cursor q2 = range(0, 1000) over q1.cursor
+      i := idx_of(q1.cursor)
+      q1_lo := start_of(q1.cursor)
+      q1_hi := end_of(q1.cursor)
+      q2_lo := start_of(q2.cursor)
+      q2_hi := end_of(q2.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/cross idx={i} q1=[{q1_lo}..{q1_hi}) q2=[{q2_lo}..{q2_hi})"
+
+  # ── Stdlib partition function phases ──────────────────────────
+
+  fn_cardinality_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      i := idx_of(p)
+      n := cardinality(p)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/fn cardinality idx={i} n={n}"
+
+  fn_idx_bounds_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      i := idx_of(p)
+      lo := start_of(p)
+      hi := end_of(p)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/fn bounds idx={i} lo={lo} hi={hi}"
+
+  fn_mod_in_phase:
+    # Iterate 5 cycles, mod_in wraps cycle inside the partition's
+    # range [0..100). Output: 0, 1, 2, 3, 4 (the cycles themselves).
+    cycles: 5
+    concurrency: 1
+    bindings: |
+      v := mod_in(cycle, p)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/fn mod_in v={v}"
+
+  fn_at_phase:
+    # Iterate 3 cycles, at(p, cycle) returns p.start_ord + cycle.
+    # Bounds-checked; cardinality(p) is 100 so cycle 0..2 is safe.
+    cycles: 3
+    concurrency: 1
+    bindings: |
+      v := at(p, cycle)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/fn at v={v}"
+
+  fn_clamp_in_phase:
+    # cycle 0..4 maps cleanly: clamp_in(cycle, p) where p is
+    # [0..100). Values 0..4 are inside the range; emit them.
+    cycles: 5
+    concurrency: 1
+    bindings: |
+      v := clamp_in(cycle, p)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/fn clamp_in v={v}"
+
+  # ── Reified params phases ─────────────────────────────────────
+
+  over_warmup_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over warmup_cursor
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/warmup lo={lo} hi={hi}"
+
+  over_steady_phase:
+    cycles: 1
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 1000) over steady_cursor
+      lo := start_of(q.cursor)
+      hi := end_of(q.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/steady lo={lo} hi={hi}"
+
+  # ── Negative: cursor without `over` ───────────────────────────
+
+  no_over_phase:
+    # No `over` clause — cursor `q` uses its full declared
+    # extent (50 ordinals) regardless of any `cursor=...` the
+    # operator passes on the CLI. The phase has no `cycles:`
+    # field, so the cursor's extent drives the cycle count;
+    # we count the emit lines in the test.
+    concurrency: 1
+    bindings: |
+      cursor q = range(0, 50)
+      n := q
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "cp/no_over n={n}"

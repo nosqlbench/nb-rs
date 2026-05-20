@@ -807,9 +807,15 @@ impl Compiler {
                 // Source projection: wire target to the source__field node.
                 let wire_name = format!("{source}__{field}");
                 let name = &targets[0];
-                // Create an identity passthrough wired to the projection node
+                // Infer the passthrough's port type from the source
+                // wire (e.g. `q.cursor` → Ext when q is partition-bound).
+                // Without this inference, Ext-typed projections like
+                // SRD 71's `q.cursor` would be forced to u64 and fail
+                // downstream type-checking.
+                let port_type = asm.output_type(&wire_name)
+                    .unwrap_or(crate::node::PortType::U64);
                 let identity = Box::new(
-                    crate::nodes::identity::PortPassthrough::new(name, crate::node::PortType::U64)
+                    crate::nodes::identity::PortPassthrough::new(name, port_type)
                 );
                 asm.add_node(name, identity, vec![WireRef::node(&wire_name)]);
                 self.all_names.push(name.clone());

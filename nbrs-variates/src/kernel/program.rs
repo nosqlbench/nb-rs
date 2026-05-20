@@ -1059,7 +1059,7 @@ impl GkProgram {
         mut log: Option<&mut crate::dsl::events::CompileEventLog>,
         strict: bool,
     ) -> Result<usize, String> {
-        use crate::nodes::identity::{ConstU64, ConstStr, ConstHandle};
+        use crate::nodes::identity::{ConstExt, ConstU64, ConstStr, ConstHandle};
         use crate::nodes::fixed::ConstF64;
         use crate::node::Value;
 
@@ -1363,6 +1363,21 @@ impl GkProgram {
                         "fold: replacing init node '{original_name}' with ConstHandle \
                          (Arc<dyn Any>) — eval will not re-fire post-fold"));
                     Box::new(ConstHandle::new(arc.clone()))
+                }
+                // SRD 71: Ext-typed init values (Partition,
+                // PartitionSpec, PartitionList, …) replace the
+                // original node with a ConstExt leaf — same
+                // shape as the Handle path so post-fold kernels
+                // can read the value via `get_constant` and
+                // descendant scopes see it as a stable Ext wire.
+                Value::Ext(b) => {
+                    let original_name = self.nodes[i].meta().name.clone();
+                    crate::audit::debug(&format!(
+                        "fold: replacing init node '{original_name}' with ConstExt \
+                         ({}) — eval will not re-fire post-fold",
+                        b.type_name(),
+                    ));
+                    Box::new(ConstExt::new(b.clone()))
                 }
                 _ => continue,
             };

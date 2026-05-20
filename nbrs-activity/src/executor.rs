@@ -1369,7 +1369,8 @@ async fn run_phase(
     // --- Compile inner kernel via BindingScope ---
     let (iter_op_builder, iter_ops, runtime_cursor_extents,
          runtime_cursor_min_ms, runtime_cursor_min_passes,
-         runtime_cursor_min_count, runtime_cursor_delta) = if is_iter || has_bindings {
+         runtime_cursor_min_count, runtime_cursor_delta,
+         runtime_cursor_partition) = if is_iter || has_bindings {
         let mut ops = phase.ops.clone();
 
         // SRD-16 single read path: every `{name}` placeholder
@@ -1695,20 +1696,74 @@ async fn run_phase(
         let mut runtime_min_passes: HashMap<String, u64> = HashMap::new();
         let mut runtime_min_count: HashMap<String, u64> = HashMap::new();
         let mut runtime_delta: HashMap<String, u64> = HashMap::new();
-        let cursor_specs: Vec<(String, Option<(String, String)>, Option<u64>, nbrs_variates::source::CursorKind)>
+        // SRD 71: per-cursor narrowed `(start_ord, end_ord)` from the
+        // `over` clause's resolved partition. Empty when the cursor
+        // wasn't declared with an `over` clause.
+        let mut runtime_partition: HashMap<String, (u64, u64)> = HashMap::new();
+        let cursor_specs: Vec<(String, Option<(String, String)>, Option<u64>, nbrs_variates::source::CursorKind, Option<String>)>
             = kernel.program()
             .cursor_schemas()
             .iter()
             .map(|s| (s.name.clone(), s.extent_outputs.clone(),
-                      s.extent_limit, s.cursor_kind.clone()))
+                      s.extent_limit, s.cursor_kind.clone(),
+                      s.partition_output.clone()))
             .collect();
-        for (name, outputs, limit, cursor_kind) in cursor_specs {
+        for (name, outputs, limit, cursor_kind, partition_output) in cursor_specs {
             if let Some((start_out, end_out)) = outputs {
                 let start = kernel.pull(&start_out).as_u64();
                 let end = kernel.pull(&end_out).as_u64();
                 let extent = end.saturating_sub(start);
                 let final_extent = limit.map(|l| extent.min(l)).unwrap_or(extent);
                 runtime_extents.insert(name.clone(), final_extent);
+            }
+            // SRD 71: resolve the `over` expression now that externs
+            // are populated. Accepts a string spec (parsed on the
+            // fly), or any Partition / PartitionSpec / PartitionList
+            // value flowing through Value::Ext.
+            if let Some(out) = &partition_output {
+                let value = kernel.pull(out).clone();
+                let cursor_extent = runtime_extents
+                    .get(&name)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        kernel.program()
+                            .cursor_schemas()
+                            .iter()
+                            .find(|s| s.name == name)
+                            .and_then(|s| s.extent)
+                            .unwrap_or(0)
+                    });
+                match resolve_over(&value, cursor_extent) {
+                    Ok(Some(partition)) => {
+                        // Narrow the source factory's range using
+                        // the partition's bounds.
+                        runtime_partition.insert(
+                            name.clone(),
+                            (partition.start_ord, partition.end_ord),
+                        );
+                        // Write the resolved Partition into the
+                        // `<source>__cursor` input slot so downstream
+                        // partition-typed nodes (mod_in, cardinality,
+                        // etc.) can consume it. Looking up the slot
+                        // by name is the contract from process_cursor.
+                        let cursor_slot_name = format!("{name}__cursor");
+                        if let Some(idx) = kernel.program().find_input(&cursor_slot_name) {
+                            kernel.state().set_input(
+                                idx,
+                                nbrs_variates::node::Value::from_partition(partition),
+                            );
+                        }
+                    }
+                    Ok(None) => {
+                        // Value::None — over expression evaluated to
+                        // nothing; treat as no narrowing.
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "cursor '{name}': `over` clause failed to resolve: {e}"
+                        ).into());
+                    }
+                }
             }
             use nbrs_variates::source::CursorKind::*;
             // Each branch pulls only the outputs its policy needs.
@@ -1774,7 +1829,8 @@ async fn run_phase(
             Arc::new(b)
         };
         (op_builder, ops, runtime_extents, runtime_min_ms,
-         runtime_min_passes, runtime_min_count, runtime_delta)
+         runtime_min_passes, runtime_min_count, runtime_delta,
+         runtime_partition)
     } else {
         // Workload-kernel fallback: no per-iteration values to
         // inject. Materialize a fresh subscope of the live
@@ -1794,7 +1850,7 @@ async fn run_phase(
             }
         }
         (Arc::new(b), phase.ops.clone(), HashMap::new(), HashMap::new(),
-         HashMap::new(), HashMap::new(), HashMap::new())
+         HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new())
     };
 
     let op_sequence = OpSequence::from_ops(iter_ops, ctx.seq_type);
@@ -1926,16 +1982,24 @@ async fn run_phase(
             let extent = runtime_cursor_extents.get(&schema.name).copied()
                 .or(schema.extent)
                 .unwrap_or(phase_cycles);
+            // SRD 71: narrow `[0, extent)` to `[start_ord, end_ord)`
+            // when the cursor was declared with `over`. Falls back
+            // to the full range when no narrowing applies.
+            let (range_start, range_end) = runtime_cursor_partition
+                .get(&schema.name)
+                .copied()
+                .unwrap_or((0, extent));
+            let effective_extent = range_end.saturating_sub(range_start);
             use nbrs_variates::source as src;
             // Effective extension delta — `runtime_cursor_delta`
             // when the workload supplied an explicit `delta` arg,
-            // else the cursor's base (the initial extent).
+            // else the cursor's narrowed extent.
             let delta = runtime_cursor_delta.get(&schema.name).copied()
-                .unwrap_or(extent);
+                .unwrap_or(effective_extent);
             match &schema.cursor_kind {
                 src::CursorKind::Range => {
                     Some(Arc::new(
-                        src::RangeSourceFactory::named(&schema.name, 0, extent)
+                        src::RangeSourceFactory::named(&schema.name, range_start, range_end)
                     ) as Arc<dyn src::DataSourceFactory>)
                 }
                 src::CursorKind::ExtendingTimed { .. } => {
@@ -1944,7 +2008,7 @@ async fn run_phase(
                         src::UntilElapsedPolicy { min_ms, delta },
                     );
                     Some(Arc::new(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, 0, extent, policy)
+                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, effective_extent, policy)
                     ) as Arc<dyn src::DataSourceFactory>)
                 }
                 src::CursorKind::ExtendingPasses { .. } => {
@@ -1953,7 +2017,7 @@ async fn run_phase(
                         src::UntilPassesPolicy { min_passes, delta },
                     );
                     Some(Arc::new(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, 0, extent, policy)
+                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, effective_extent, policy)
                     ) as Arc<dyn src::DataSourceFactory>)
                 }
                 src::CursorKind::ExtendingCount { .. } => {
@@ -1962,7 +2026,7 @@ async fn run_phase(
                         src::UntilCountPolicy { min_count, delta },
                     );
                     Some(Arc::new(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, 0, extent, policy)
+                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, effective_extent, policy)
                     ) as Arc<dyn src::DataSourceFactory>)
                 }
                 src::CursorKind::ExtendingElapsedAndPasses { .. } => {
@@ -1978,7 +2042,7 @@ async fn run_phase(
                         src::AndPolicy { policies: vec![elapsed, passes] },
                     );
                     Some(Arc::new(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, 0, extent, policy)
+                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, effective_extent, policy)
                     ) as Arc<dyn src::DataSourceFactory>)
                 }
                 src::CursorKind::ExtendingElapsedOrPasses { .. } => {
@@ -1994,7 +2058,7 @@ async fn run_phase(
                         src::OrPolicy { policies: vec![elapsed, passes] },
                     );
                     Some(Arc::new(
-                        src::ExtendingRangeSourceFactory::new(&schema.name, 0, extent, policy)
+                        src::ExtendingRangeSourceFactory::new(&schema.name, range_start, effective_extent, policy)
                     ) as Arc<dyn src::DataSourceFactory>)
                 }
             }
@@ -3152,6 +3216,92 @@ fn premap_iterate(
 // here used to inline both, with two parallel implementations
 // (one in pre-map, one in runtime); both now consume the same GK
 // primitive.
+
+/// SRD 71: decode a cursor's `over` clause result into a
+/// concrete `(start_ord, end_ord)` narrowing range against the
+/// cursor's declared extent.
+///
+/// Accepts:
+/// - `Value::Str(spec)` — parse `spec` as a partition spec,
+///   resolve against `[0, extent)`, use partition 0.
+/// - `Value::Ext(Partition)` — already resolved, use directly.
+/// - `Value::Ext(PartitionSpec)` — resolve against `[0, extent)`,
+///   use partition 0.
+/// - `Value::Ext(PartitionList)` — already resolved, use entry 0.
+/// - `Value::None` — no narrowing applied.
+///
+/// Returns `Ok(None)` for the no-narrowing case so the caller
+/// keeps the cursor's full extent. Returns `Err` on a malformed
+/// spec, empty partition list, or unsupported value type.
+fn resolve_over(
+    value: &nbrs_variates::node::Value,
+    extent: u64,
+) -> Result<Option<nbrs_variates::cursor_partition::Partition>, String> {
+    use nbrs_variates::cursor_partition::{parse, resolve, Partition};
+    use nbrs_variates::node::Value;
+
+    let first_of = |parts: Vec<Partition>| -> Result<Partition, String> {
+        parts.into_iter().next().ok_or_else(|| {
+            "partition list is empty — spec produced no partitions".to_string()
+        })
+    };
+
+    // SRD 71: when a `Partition` value flows into `over` from a
+    // comprehension iter-var or sibling cursor's `.cursor`
+    // projection, its `base_extent` may not match the consuming
+    // cursor's extent (e.g. `partitions("linear:3", 100)` then
+    // used by a cursor of extent 1000). Re-resolve from the
+    // partition's percentage bounds against the cursor's actual
+    // extent — that's the cursor's "narrow by this partition"
+    // contract. When `base_extent == extent`, the ordinals are
+    // already correct; pass through unchanged.
+    let reproject = |p: &Partition| -> Partition {
+        if p.base_extent == extent || extent == 0 {
+            return *p;
+        }
+        let start_ord = ((p.start_pct / 100.0) * extent as f64).round() as u64;
+        let end_ord   = ((p.end_pct   / 100.0) * extent as f64).round() as u64;
+        Partition {
+            idx: p.idx,
+            start_ord,
+            end_ord,
+            start_pct: p.start_pct,
+            end_pct: p.end_pct,
+            base_extent: extent,
+        }
+    };
+
+    match value {
+        Value::None => Ok(None),
+        Value::Str(s) => {
+            let spec = parse(s.as_ref())?;
+            let parts = resolve(&spec, 0, extent)?;
+            Ok(Some(first_of(parts)?))
+        }
+        Value::Ext(b) => {
+            if let Some(p) = value.as_partition() {
+                Ok(Some(reproject(p)))
+            } else if let Some(spec) = value.as_partition_spec() {
+                let parts = resolve(spec, 0, extent)?;
+                Ok(Some(first_of(parts)?))
+            } else if let Some(list) = value.as_partition_list() {
+                let first = list.as_slice().first().ok_or_else(|| {
+                    "partition list is empty — spec produced no partitions".to_string()
+                })?;
+                Ok(Some(reproject(first)))
+            } else {
+                Err(format!(
+                    "`over` expression produced an Ext value of unexpected type `{}` — \
+                     expected Partition, PartitionSpec, or PartitionList",
+                    b.type_name(),
+                ))
+            }
+        }
+        other => Err(format!(
+            "`over` expression produced unsupported value type — expected Str or partition-typed Ext, got {other:?}"
+        )),
+    }
+}
 
 /// Extract a human-readable message from a `catch_unwind` payload.
 /// Used by the init-binding scope-activation check (SRD 11

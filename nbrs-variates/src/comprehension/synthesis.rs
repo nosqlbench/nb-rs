@@ -995,6 +995,69 @@ mod tests {
     use super::*;
     use super::super::ast::Clause;
 
+    // SRD-71: comprehension iteration over a partition list.
+
+    #[test]
+    fn synthesize_for_each_scope_declares_partition_iter_var_as_ext() {
+        // When the for-clause spec evaluates to a PartitionList,
+        // the synthesized canonical kernel must declare the
+        // iter-var with PortType::Ext on BOTH the input slot
+        // (consumed by per-iteration set_input) AND the
+        // passthrough output (consumed by the phase scope's
+        // cascade via parent_program.output_names()). Both
+        // sides must match or the phase compile sees a
+        // mismatched type for descendants reading `p`.
+        let parent = crate::dsl::compile::compile_gk("\n").unwrap();
+        let bindings = [("p".to_string(), "partitions(\"linear:3\")".to_string())];
+        let kernel = synthesize_for_each_scope(
+            &bindings, &[], &parent,
+            &HashMap::new(), Vec::new(), None, false, "test", None,
+        ).expect("for-each scope synthesis");
+
+        let in_port = kernel.program().input_port_type("p")
+            .expect("iter-var `p` should be an input on the canonical kernel");
+        assert_eq!(in_port, crate::node::PortType::Ext,
+            "PartitionList iter-var must declare as Ext on the input slot, got {in_port:?}");
+
+        // The phase cascade reads the OUTPUT port type via
+        // node_meta(...).outs[port_idx].typ — verify that path
+        // surfaces Ext too.
+        let prog = kernel.program();
+        let (node_idx, port_idx) = prog.output_map_lookup("p")
+            .expect("iter-var `p` should be in output_map");
+        let out_port = prog.node_meta(*node_idx).outs[*port_idx].typ;
+        assert_eq!(out_port, crate::node::PortType::Ext,
+            "iter-var `p`'s passthrough output must be Ext, got {out_port:?}");
+    }
+
+    #[test]
+    fn iterate_partition_list_yields_partition_iter_values() {
+        // End-to-end: a for-clause over `partitions("linear:3")`
+        // should yield 3 child kernels, each carrying a
+        // Partition value bound to the iter-var `p`.
+        let parent = Arc::new(crate::dsl::compile::compile_gk("\n").unwrap());
+
+        let comp = Comprehension::cartesian(vec![
+            Clause::new("p", "partitions(\"linear:3\")"),
+        ]);
+
+        let iter = iterate(
+            &comp, &parent, &HashMap::new(),
+            Vec::new(), None, false, "test",
+        ).expect("iterate over partition list");
+
+        let mut idx_seen: Vec<u64> = Vec::new();
+        for child in iter {
+            let v = child.lookup("p")
+                .expect("iter-var `p` should be readable on the bound child kernel");
+            let p = v.as_partition()
+                .unwrap_or_else(|| panic!("expected Partition, got {v:?}"));
+            idx_seen.push(p.idx);
+        }
+        assert_eq!(idx_seen, vec![0, 1, 2],
+            "expected three partitions with indices 0, 1, 2");
+    }
+
     #[test]
     fn iterate_cartesian_yields_bound_child_kernels() {
         // Parent holds a final string-list workload param.

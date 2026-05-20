@@ -97,6 +97,22 @@ impl Parser {
                 self.advance();
                 Ok("input".to_string())
             }
+            // SRD 71: `cursor` is a soft keyword. At statement start
+            // it opens a `cursor q = …` decl; in identifier position
+            // (param names, binding LHS, body references) it's the
+            // workload-level cursor parameter.
+            TokenKind::Cursor => {
+                self.advance();
+                Ok("cursor".to_string())
+            }
+            // SRD 71: `over` is a soft keyword used only by the
+            // cursor-decl syntax. In identifier position it's a
+            // plain identifier — pre-SRD-71 workloads that happened
+            // to name a wire `over` keep working.
+            TokenKind::Over => {
+                self.advance();
+                Ok("over".to_string())
+            }
             _ => Err(format!(
                 "expected identifier, got {:?} at line {}, col {}",
                 self.peek(), self.span().line, self.span().col
@@ -341,14 +357,24 @@ fn parse_input_decl(p: &mut Parser, out: &mut Vec<Statement>) -> Result<(), Stri
     Ok(())
 }
 
-/// `cursor name = Cursor()` or `cursor name = expr`
+/// `cursor name = Cursor()` or `cursor name = expr [over partition_source]`
+///
+/// The trailing `over <expr>` clause (SRD 71) names a partition
+/// source the cursor narrows by — see [`CursorDecl::over`].
 fn parse_cursor_decl(p: &mut Parser) -> Result<Statement, String> {
     let span = p.span();
     p.advance(); // consume 'cursor'
     let name = p.expect_ident()?;
     p.expect(&TokenKind::Eq)?;
     let constructor = parse_expr(p)?;
-    Ok(Statement::Cursor(CursorDecl { name, constructor, span }))
+    // Optional `over <expr>` clause — partition narrowing source.
+    let over = if matches!(p.peek(), TokenKind::Over) {
+        p.advance();
+        Some(parse_expr(p)?)
+    } else {
+        None
+    };
+    Ok(Statement::Cursor(CursorDecl { name, constructor, over, span }))
 }
 
 /// `<modifier>* name := expr` where each modifier ∈ {const,
@@ -382,7 +408,15 @@ fn parse_modified_binding(p: &mut Parser) -> Result<Statement, String> {
         ))?;
 
     match p.peek() {
-        TokenKind::Ident(_) => parse_cycle_binding_with_modifier(p, modifier),
+        // Soft keywords (`input`, `cursor`, `over`) and regular
+        // identifiers are all accepted as binding names. The
+        // soft-keyword recognition lives in `expect_ident`; this
+        // guard just dispatches to the binding-with-modifier
+        // path when the upcoming token can serve as an ident.
+        TokenKind::Ident(_)
+        | TokenKind::Input
+        | TokenKind::Cursor
+        | TokenKind::Over => parse_cycle_binding_with_modifier(p, modifier),
         _ => Err(format!(
             "expected binding name after modifiers at line {}, col {}",
             p.span().line, p.span().col
@@ -558,6 +592,37 @@ fn parse_atom(p: &mut Parser) -> Result<Expr, String> {
         TokenKind::Input => {
             p.advance();
             let name = "input".to_string();
+            if matches!(p.peek(), TokenKind::Dot) {
+                p.advance();
+                let field = p.expect_ident()?;
+                Ok(Expr::FieldAccess { source: name, field, span })
+            } else {
+                Ok(Expr::Ident(name, span))
+            }
+        }
+        // `cursor` is also a soft keyword in expression position:
+        // SRD 71's `over cursor.partitions` form names the
+        // workload's `cursor` parameter. The statement-level
+        // `cursor q = …` decl is handled by `parse_statement_into`
+        // before expression parsing kicks in.
+        TokenKind::Cursor => {
+            p.advance();
+            let name = "cursor".to_string();
+            if matches!(p.peek(), TokenKind::Dot) {
+                p.advance();
+                let field = p.expect_ident()?;
+                Ok(Expr::FieldAccess { source: name, field, span })
+            } else {
+                Ok(Expr::Ident(name, span))
+            }
+        }
+        // `over` is a soft keyword used only by the cursor-decl
+        // syntax; in expression position it's a plain identifier.
+        // (Useful if a workload reuses the name `over` for a
+        // wire — backward compat with anything pre-SRD-71.)
+        TokenKind::Over => {
+            p.advance();
+            let name = "over".to_string();
             if matches!(p.peek(), TokenKind::Dot) {
                 p.advance();
                 let field = p.expect_ident()?;
@@ -1549,6 +1614,56 @@ mod tests {
             }
             _ => panic!("expected cycle binding"),
         }
+    }
+
+    #[test]
+    fn parse_cursor_without_over_clause() {
+        let f = parse_str("cursor q = range(0, 100)");
+        match &f.statements[0] {
+            Statement::Cursor(c) => {
+                assert_eq!(c.name, "q");
+                assert!(c.over.is_none(), "no `over` → over is None");
+            }
+            other => panic!("expected Cursor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cursor_with_over_iter_var() {
+        let f = parse_str("cursor q = range(0, 100) over p");
+        match &f.statements[0] {
+            Statement::Cursor(c) => {
+                assert_eq!(c.name, "q");
+                match &c.over {
+                    Some(Expr::Ident(name, _)) => assert_eq!(name, "p"),
+                    other => panic!("expected Some(Ident('p')), got {other:?}"),
+                }
+            }
+            other => panic!("expected Cursor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cursor_with_over_dotted_param_projection() {
+        let f = parse_str("cursor q = range(0, 100) over cursor.partitions");
+        match &f.statements[0] {
+            Statement::Cursor(c) => {
+                assert!(c.over.is_some(), "should have over clause");
+                // `cursor.partitions` parses as a field access.
+                match &c.over {
+                    Some(Expr::FieldAccess { .. }) => {} // OK
+                    Some(other) => panic!("expected FieldAccess, got {other:?}"),
+                    None => panic!("expected Some"),
+                }
+            }
+            other => panic!("expected Cursor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cursor_over_does_not_swallow_following_statement() {
+        let f = parse_str("cursor q = range(0, 100) over p\nother := 42");
+        assert_eq!(f.statements.len(), 2);
     }
 
     #[test]

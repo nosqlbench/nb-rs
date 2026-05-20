@@ -900,6 +900,56 @@ impl Compiler {
         let schema_idx = self.cursor_schemas.len();
         let extent_outputs = deferred.as_ref()
             .map(|(_, start, _, end)| (start.clone(), end.clone()));
+
+        // SRD 71: if the cursor decl carries an `over <expr>`
+        // clause, set up two pieces of plumbing:
+        //
+        // 1. An auxiliary output `<source>__over_raw` carrying
+        //    the raw expression value (typically a string spec
+        //    or a workload-param-typed value). The executor
+        //    pulls this at phase setup to determine the
+        //    narrowing range.
+        //
+        // 2. An input slot + passthrough output `<source>__cursor`
+        //    of type `Ext` — this is the field-access wire that
+        //    workload authors reference as `<source>.cursor`. At
+        //    phase setup the executor resolves the raw value to
+        //    a concrete `Partition` and writes it into this slot,
+        //    so downstream nodes (`mod_in`, `cardinality`, etc.)
+        //    can consume it as a `Partition`-typed wire.
+        let partition_output = if let Some(over_expr) = decl.over.as_ref() {
+            let raw_name = format!("__cursor_{source_name}_over_raw");
+            self.compile_binding(asm, &[raw_name.clone()], over_expr)
+                .map_err(|e| format!(
+                    "cursor '{source_name}': failed to compile `over` expression: {e}"))?;
+            // Allocate the resolved-Partition input slot. Default
+            // is `Value::None` until the executor writes the
+            // resolved value at phase setup.
+            let cursor_input_name = format!("{source_name}__cursor");
+            asm.add_input(
+                &cursor_input_name,
+                crate::node::Value::None,
+                crate::node::PortType::Ext,
+                crate::kernel::InputKind::CapturePort,
+            );
+            self.input_names.push(cursor_input_name.clone());
+            let passthrough = Box::new(
+                crate::nodes::identity::PortPassthrough::new(
+                    &cursor_input_name,
+                    crate::node::PortType::Ext,
+                )
+            );
+            asm.add_node(
+                &cursor_input_name,
+                passthrough,
+                vec![WireRef::input(&cursor_input_name)],
+            );
+            asm.add_output(&cursor_input_name, WireRef::node(&cursor_input_name));
+            Some(raw_name)
+        } else {
+            None
+        };
+
         self.cursor_schemas.push(crate::source::SourceSchema {
             name: source_name.clone(),
             projections,
@@ -907,6 +957,7 @@ impl Compiler {
             extent_outputs,
             extent_limit: self.cursor_limit,
             cursor_kind: cursor_kind_for_decl.clone(),
+            partition_output,
         });
 
         // Record deferred extent resolution if the range bounds are not
@@ -1115,6 +1166,10 @@ impl Compiler {
                         "f64" => crate::node::PortType::F64,
                         "bool" => crate::node::PortType::Bool,
                         "json" | "Json" => crate::node::PortType::Json,
+                        // SRD 71: adapter-contributed reflected types
+                        // (Partition, PartitionSpec, PartitionList,
+                        // and any future ReflectedValue impl).
+                        "Ext" | "ext" => crate::node::PortType::Ext,
                         _ => crate::node::PortType::Str,
                     };
                     let (default_value, kind) = match &port.default {
@@ -1418,6 +1473,10 @@ impl Compiler {
                         "f64" => crate::node::PortType::F64,
                         "bool" => crate::node::PortType::Bool,
                         "json" | "Json" => crate::node::PortType::Json,
+                        // SRD 71: adapter-contributed reflected types
+                        // (Partition, PartitionSpec, PartitionList,
+                        // and any future ReflectedValue impl).
+                        "Ext" | "ext" => crate::node::PortType::Ext,
                         _ => crate::node::PortType::Str,
                     };
                     let (default_value, kind) = match &port.default {

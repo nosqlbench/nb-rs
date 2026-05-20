@@ -1010,6 +1010,7 @@ pub fn build_phase_scope_kernel(
             nbrs_variates::node::PortType::F64 => "f64",
             nbrs_variates::node::PortType::Str => "String",
             nbrs_variates::node::PortType::Bool => "bool",
+            nbrs_variates::node::PortType::Ext => "Ext",
             _ => "String",
         };
         source.push_str(&format!("extern {owned}: {type_name}\n"));
@@ -1026,6 +1027,7 @@ pub fn build_phase_scope_kernel(
             nbrs_variates::node::PortType::F64 => "f64",
             nbrs_variates::node::PortType::Str => "String",
             nbrs_variates::node::PortType::Bool => "bool",
+            nbrs_variates::node::PortType::Ext => "Ext",
             _ => "String",
         };
         source.push_str(&format!("extern {name}: {type_name}\n"));
@@ -3797,6 +3799,92 @@ extern keyspace: String
             "expected `has_indexes` in shared_outputs after scope-ingest/emit/compile;\n\
              got shared_outputs={shared:?}\nemitted source:\n{source}",
         );
+    }
+
+    #[test]
+    fn build_phase_scope_kernel_with_mod_in_binding_over_partition_iter_var() {
+        // Matches the production workload shape:
+        //   for: "p in partitions(\"linear:3\")"
+        //   phases.walk.bindings: n := mod_in(cycle, p)
+        //
+        // The phase compile must see `p` as Ext so mod_in's
+        // second arg (Partition input) type-checks. Reproduces
+        // the integration error "u64 ─▶ ext expects ext".
+        let parent_kernel = nbrs_variates::comprehension::synthesize_for_each_scope(
+            &[("p".to_string(), "partitions(\"linear:3\")".to_string())],
+            &[],
+            &nbrs_variates::dsl::compile_gk("\n").unwrap(),
+            &HashMap::new(),
+            Vec::new(), None, false, "test_for_each", None,
+        ).expect("for-each scope synthesis");
+
+        let phase_bindings = nbrs_workload::model::BindingsDef::GkSource(
+            "n := mod_in(cycle, p)\n".to_string()
+        );
+        let phase_kernel = build_phase_scope_kernel(
+            &phase_bindings,
+            &[], &parent_kernel,
+            &HashMap::new(),
+            Vec::new(), None, false,
+            "test_phase",
+        ).expect("phase kernel build with mod_in(cycle, p) binding");
+
+        // Sanity: phase has p as Ext-typed input slot.
+        assert_eq!(
+            phase_kernel.program().input_port_type("p"),
+            Some(nbrs_variates::node::PortType::Ext),
+            "phase kernel's `p` must be Ext-typed",
+        );
+        // Sanity: phase has `n` as an output (the mod_in result).
+        assert!(phase_kernel.program().output_names().iter().any(|name| *name == "n"),
+            "phase kernel should expose `n` as an output");
+    }
+
+    #[test]
+    fn build_phase_scope_kernel_cascades_partition_iter_var_as_extern_ext() {
+        // SRD-71: when a for-each scope iterates a PartitionList
+        // and binds an iter-var `p`, descendant phases must see
+        // `p` as `extern p: Ext` — NOT cast to String / u64 by
+        // the cascade. The phase body's `over p` clause then
+        // resolves `p` as a partition-typed wire.
+        //
+        // Reproduces the integration failure where the phase's
+        // build_phase_scope_kernel cascade was emitting
+        // `extern p: u64` (or Str fallback) because the
+        // type-name lookup didn't handle PortType::Ext.
+        let parent_kernel = nbrs_variates::comprehension::synthesize_for_each_scope(
+            &[("p".to_string(), "partitions(\"linear:3\")".to_string())],
+            &[], // empty parent_manifest is fine; for_each scope only
+                 // cascades names it actually references.
+            &nbrs_variates::dsl::compile_gk("\n").unwrap(),
+            &HashMap::new(),
+            Vec::new(), None, false, "test_for_each", None,
+        ).expect("for-each scope synthesis");
+
+        // Sanity: the for-each scope's iter-var p is Ext-typed.
+        assert_eq!(
+            parent_kernel.program().input_port_type("p"),
+            Some(nbrs_variates::node::PortType::Ext),
+            "for-each scope's iter-var `p` must declare as Ext",
+        );
+
+        // Now build a phase under it that references `p` in a
+        // cursor's `over` clause.
+        let phase_bindings = nbrs_workload::model::BindingsDef::GkSource(
+            "cursor row = range(0, 1000) over p\n".to_string()
+        );
+        let phase_kernel = build_phase_scope_kernel(
+            &phase_bindings,
+            &[], &parent_kernel,
+            &HashMap::new(),
+            Vec::new(), None, false,
+            "test_phase",
+        ).expect("phase kernel build");
+
+        // The phase kernel must see `p` as Ext-typed.
+        let port_type = phase_kernel.program().input_port_type("p");
+        assert_eq!(port_type, Some(nbrs_variates::node::PortType::Ext),
+            "phase kernel's `p` slot must be Ext (preserved through cascade), got {port_type:?}");
     }
 
     #[test]

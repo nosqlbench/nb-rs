@@ -3563,6 +3563,25 @@ fn scan_gk_binding_lhs(
                 None => break,
             }
         }
+        // Tuple-destructure LHS: `(a, b, c) := <expr>`. Each
+        // identifier inside the parens becomes a separate
+        // declared name. Used by multi-output stdlib nodes
+        // (e.g. `(y, mo, d, h, mi, s, ms) := date_components(0)`)
+        // and any other binding that unpacks multiple outputs.
+        if body.starts_with('(') {
+            if let Some(close) = body.find(')') {
+                let after = body[close + 1..].trim_start();
+                if after.starts_with(":=") || after.starts_with('=') {
+                    for raw in body[1..close].split(',') {
+                        let name = raw.trim();
+                        if !name.is_empty() {
+                            out.insert(name.to_string());
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         // Pull the leading identifier.
         let bytes = body.as_bytes();
         let mut i = 0;
@@ -3910,7 +3929,38 @@ const RECOGNIZED_BARE_FLAGS: &[&str] = &[
     "--force-retry-failed",  // SRD-44: prepend retry,warn to errors.
 ];
 
+/// Strip a single layer of matching outer quotes (single or
+/// double) from a string slice. Idempotent for un-quoted input.
+///
+/// Per SRD 71 §"CLI parsing — quote elision": this lets wrapper
+/// scripts forwarding `"$@"`, or `key="value"` constructions
+/// that double-passed through a shell, parse the same as their
+/// bare equivalents. Backtick and other quote-like characters
+/// are deliberately not handled — they carry shell-evaluation
+/// semantics that don't survive into our argv.
+fn elide_outer_quotes(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    if bytes.len() < 2 {
+        return s;
+    }
+    let first = bytes[0];
+    let last = bytes[bytes.len() - 1];
+    if (first == b'\'' || first == b'"') && first == last {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
 /// Parse `key=value` pairs from command line args.
+///
+/// Quote handling (SRD 71): if the whole arg or just the value
+/// portion is wrapped in matching `'…'` / `"…"` quotes, those
+/// quotes are stripped. So `cursor=0..53%`, `cursor='0..53%'`,
+/// `cursor="0..53%"`, `'cursor=0..53%'`, and `"cursor=0..53%"`
+/// all parse to the same `(name="cursor", value="0..53%")`
+/// pair. The first `=` still splits name from value, so values
+/// containing `=` retain everything after the first split.
 pub fn parse_params(args: &[String]) -> HashMap<String, String> {
     // Flags consumed by `crate::session::resolve_session_dir`
     // at startup. They appear in raw `args` but shouldn't reach
@@ -3945,11 +3995,17 @@ pub fn parse_params(args: &[String]) -> HashMap<String, String> {
             continue;
         }
 
+        // Quote elision (SRD 71): strip matching outer quotes
+        // from the whole arg first — handles `'key=value'` and
+        // `"key=value"` — then again from the value portion
+        // after the `=` split — handles `key='value'` and
+        // `key="value"`.
+        let unquoted = elide_outer_quotes(arg.as_str());
         // Strip leading dashes: --dryrun=phase,gk → dryrun=phase,gk
-        let stripped = arg.trim_start_matches('-');
+        let stripped = unquoted.trim_start_matches('-');
         if let Some(eq_pos) = stripped.find('=') {
             let key = stripped[..eq_pos].to_string();
-            let value = stripped[eq_pos + 1..].to_string();
+            let value = elide_outer_quotes(&stripped[eq_pos + 1..]).to_string();
             params.insert(key, value);
         } else if arg.ends_with(".yaml") || arg.ends_with(".yml") {
             // Workload file path — handled elsewhere
@@ -3980,13 +4036,14 @@ pub fn collect_repeated_flag(args: &[String], name: &str) -> Vec<String> {
     let long_eq = format!("--{name}=");
     let bare_eq = format!("{name}=");
     while let Some(arg) = iter.next() {
-        if let Some(v) = arg.strip_prefix(&long_eq) {
-            out.push(v.to_string());
-        } else if let Some(v) = arg.strip_prefix(&bare_eq) {
-            out.push(v.to_string());
-        } else if arg == &format!("--{name}") {
+        let unquoted = elide_outer_quotes(arg.as_str());
+        if let Some(v) = unquoted.strip_prefix(&long_eq) {
+            out.push(elide_outer_quotes(v).to_string());
+        } else if let Some(v) = unquoted.strip_prefix(&bare_eq) {
+            out.push(elide_outer_quotes(v).to_string());
+        } else if unquoted == format!("--{name}") {
             if let Some(v) = iter.next() {
-                out.push(v.clone());
+                out.push(elide_outer_quotes(v.as_str()).to_string());
             }
         }
     }
@@ -4054,6 +4111,70 @@ pub use nbrs_variates::kernel::{extract_manifest, ManifestEntry};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── parse_params quote elision (SRD 71) ──────────────────
+
+    fn pp(args: &[&str]) -> HashMap<String, String> {
+        parse_params(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn parse_params_bare_unchanged() {
+        let m = pp(&["cursor=0..53%"]);
+        assert_eq!(m.get("cursor").map(String::as_str), Some("0..53%"));
+    }
+
+    #[test]
+    fn parse_params_value_single_quoted_stripped() {
+        let m = pp(&["cursor='0..53%'"]);
+        assert_eq!(m.get("cursor").map(String::as_str), Some("0..53%"));
+    }
+
+    #[test]
+    fn parse_params_value_double_quoted_stripped() {
+        let m = pp(&["cursor=\"0..53%\""]);
+        assert_eq!(m.get("cursor").map(String::as_str), Some("0..53%"));
+    }
+
+    #[test]
+    fn parse_params_whole_arg_single_quoted_stripped() {
+        let m = pp(&["'cursor=0..53%'"]);
+        assert_eq!(m.get("cursor").map(String::as_str), Some("0..53%"));
+    }
+
+    #[test]
+    fn parse_params_whole_arg_double_quoted_stripped() {
+        let m = pp(&["\"cursor=0..53%\""]);
+        assert_eq!(m.get("cursor").map(String::as_str), Some("0..53%"));
+    }
+
+    #[test]
+    fn parse_params_bracket_value_with_quotes() {
+        let m = pp(&["cursor='[0..53%)'"]);
+        assert_eq!(m.get("cursor").map(String::as_str), Some("[0..53%)"));
+    }
+
+    #[test]
+    fn parse_params_mismatched_quotes_not_stripped() {
+        let m = pp(&["cursor='0..53%\""]);
+        // First char `'`, last char `"` — no matching pair.
+        assert_eq!(m.get("cursor").map(String::as_str), Some("'0..53%\""));
+    }
+
+    #[test]
+    fn parse_params_equals_in_value_preserved() {
+        // `key='a=b'` → name=`key`, value=`a=b`.
+        let m = pp(&["key='a=b'"]);
+        assert_eq!(m.get("key").map(String::as_str), Some("a=b"));
+    }
+
+    #[test]
+    fn parse_params_multiple_params_independent() {
+        let m = pp(&["dataset=example", "cursor='0..1%'", "concurrency=\"100\""]);
+        assert_eq!(m.get("dataset").map(String::as_str), Some("example"));
+        assert_eq!(m.get("cursor").map(String::as_str), Some("0..1%"));
+        assert_eq!(m.get("concurrency").map(String::as_str), Some("100"));
+    }
 
     // ── GK binding-LHS-name scanner ──────────────────────────
 
@@ -4143,6 +4264,22 @@ mod tests {
     }
 
     // ── GK binding-LHS-name scanner ──────────────────────────
+
+    #[test]
+    fn scan_gk_binding_lhs_handles_tuple_destructure() {
+        // Multi-output stdlib calls bind multiple names via
+        // tuple destructure: `(a, b, c) := func(...)`. The
+        // scanner must register every name on the LHS so the
+        // placeholder validator doesn't false-flag downstream
+        // `{a}` / `{b}` references.
+        let names = scan_to_set(
+            "(y, mo, d, h, mi, s, ms) := date_components(0)\n"
+        );
+        for expected in ["y", "mo", "d", "h", "mi", "s", "ms"] {
+            assert!(names.contains(expected),
+                "tuple-LHS scanner missed `{expected}` — got {names:?}");
+        }
+    }
 
     #[test]
     fn scan_gk_binding_lhs_finds_all_recognised_shapes() {

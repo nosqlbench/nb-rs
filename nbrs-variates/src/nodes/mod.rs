@@ -37,6 +37,7 @@ pub mod exactly_one;
 pub mod log_levels;
 #[cfg(feature = "metrics")]
 pub mod metrics;
+pub mod partition;
 #[cfg(feature = "vectordata")]
 pub mod vectors;
 

@@ -365,54 +365,13 @@ fn shared_cells_default_scenario_runs_all() {
         "default scenario must include the mixed-types demo:\n{stdout}");
 }
 
-// ─── Coverage matrix: workload_coverage_matrix.yaml ─────────────
+// ─── Coverage matrix tests moved to nbrs/tests/scope.rs ─────────
 //
-// Single-file matrix exercising every user-accessible workload
-// construct that's wired end-to-end. Each scenario emits
-// stable line prefixes (`cm/<scenario>/...`) so assertions
-// match exact shapes rather than substring-fuzzing.
-//
-// Scenarios *not* exercised here (constructs that are documented
-// but not yet wired or not deterministically testable via stdout)
-// are listed at the bottom of this section as commented-out
-// `#[test]` stubs paired with the `# ... :` blocks at the end of
-// `workload_coverage_matrix.yaml`. When the corresponding
-// construct lands, uncomment both halves together.
-
-#[test]
-fn coverage_matrix_shared_types_all_four_with_edge_values() {
-    let (stdout, stderr) = run_workload(
-        "examples/workloads/workload_coverage_matrix.yaml",
-        &["scenario=shared_types"],
-    );
-    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
-
-    let expected_lines = [
-        "cm/shared_types kind=u64 sub=zero value=0",
-        "cm/shared_types kind=u64 sub=big value=1000",
-        "cm/shared_types kind=f64 sub=zero value=0",
-        "cm/shared_types kind=f64 sub=pi value=3.14159",
-        "cm/shared_types kind=str sub=empty value=[]",
-        "cm/shared_types kind=str sub=text value=matrix",
-        "cm/shared_types kind=bool sub=on value=true",
-        "cm/shared_types kind=bool sub=off value=false",
-    ];
-    for expected in expected_lines {
-        assert!(stdout.contains(expected),
-            "missing line `{expected}` in:\n{stdout}");
-    }
-}
-
-#[test]
-fn coverage_matrix_const_modifier_round_trips() {
-    let (stdout, stderr) = run_workload(
-        "examples/workloads/workload_coverage_matrix.yaml",
-        &["scenario=const_modifier"],
-    );
-    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
-    assert!(stdout.contains("cm/const base_dim=256"),
-        "const-modifier value missing:\n{stdout}");
-}
+// The `scope_coverage.yaml` workload (formerly
+// `workload_coverage_matrix.yaml`) and its matching
+// `scope_*` tests now live in their own thematic file, per the
+// `<theme>_coverage.yaml` + `nbrs/tests/<theme>.rs` pattern
+// established alongside `cursor_partitions_coverage`.
 
 #[test]
 fn shared_bool_through_for_each_into_consumer_phase_bindings() {
@@ -467,149 +426,6 @@ fn shared_bool_through_for_each_into_consumer_phase_bindings() {
     for line in &lines {
         assert!(line.contains("chosen=alpha_table"),
             "pick should select alpha_table (has_a=true); got line: {line}");
-    }
-}
-
-#[test]
-fn coverage_matrix_derived_binding_consumes_shared_cell() {
-    // `doubled_count := mul(count_big, 2)` reads the cell
-    // value (1000) through standard GK wiring. Output must
-    // show the multiplied result, proving the cell value
-    // flows downstream (not just visible via `lookup`).
-    let (stdout, stderr) = run_workload(
-        "examples/workloads/workload_coverage_matrix.yaml",
-        &["scenario=derived_from_shared"],
-    );
-    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
-    assert!(stdout.contains("cm/derived count_big=1000 doubled=2000"),
-        "derived binding output missing:\n{stdout}");
-}
-
-#[test]
-fn coverage_matrix_for_each_chain_three_levels() {
-    // 3-level chain: workload → for_each → phase. The phase
-    // sees both the for_each iter var (0,1,2 from the CSV)
-    // and the workload-scope shared values via the
-    // bind_outer_scope chain.
-    let (stdout, stderr) = run_workload(
-        "examples/workloads/workload_coverage_matrix.yaml",
-        &["scenario=for_each_chain"],
-    );
-    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
-
-    let lines: Vec<&str> = stdout.lines()
-        .filter(|l| l.starts_with("cm/for_each_chain "))
-        .collect();
-    assert_eq!(lines.len(), 3, "expected 3 iterations:\n{stdout}");
-    for (i, line) in lines.iter().enumerate() {
-        assert_eq!(line, &format!(
-            "cm/for_each_chain iter={i} count_big=1000 label=matrix"
-        ), "line {i} shape mismatch: {line}");
-    }
-}
-
-#[test]
-fn coverage_matrix_do_while_chain_three_levels() {
-    let (stdout, stderr) = run_workload(
-        "examples/workloads/workload_coverage_matrix.yaml",
-        &["scenario=do_while_chain"],
-    );
-    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
-
-    let lines: Vec<&str> = stdout.lines()
-        .filter(|l| l.starts_with("cm/do_while_chain "))
-        .collect();
-    assert_eq!(lines.len(), 3, "expected 3 do-while iterations:\n{stdout}");
-    for (i, line) in lines.iter().enumerate() {
-        assert_eq!(line, &format!(
-            "cm/do_while_chain i={i} count_big=1000 label=matrix"
-        ), "line {i} shape mismatch: {line}");
-    }
-}
-
-#[test]
-fn coverage_matrix_conditional_op_gated_by_shared_bool() {
-    let (stdout, stderr) = run_workload(
-        "examples/workloads/workload_coverage_matrix.yaml",
-        &["scenario=conditional_op"],
-    );
-    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
-
-    // gated_on (if: flag_on=true) fires, gated_off (if:
-    // flag_off=false) is suppressed, always fires.
-    assert!(stdout.contains("cm/conditional gated=on result=fired"),
-        "gated_on (true) must fire:\n{stdout}");
-    assert!(stdout.contains("cm/conditional gated=always result=fired"),
-        "always must fire:\n{stdout}");
-    assert!(!stdout.contains("cm/conditional gated=off"),
-        "gated_off (false) must be suppressed:\n{stdout}");
-}
-
-#[test]
-fn coverage_matrix_multi_cell_no_cross_name_interference() {
-    let (stdout, stderr) = run_workload(
-        "examples/workloads/workload_coverage_matrix.yaml",
-        &["scenario=multi_cell"],
-    );
-    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
-    assert!(stdout.contains(
-        "cm/multi_cell zero=0 big=1000 pi=3.14159 text=matrix on=true off=false"
-    ), "multi-cell output missing or malformed:\n{stdout}");
-}
-
-#[test]
-fn coverage_matrix_nested_for_each_inner_sees_outer_iter_var() {
-    // Inner for_each spec `inner in pre_{outer}` references the
-    // outer for_each's iter var. The fix routes the inner's
-    // dispatcher to the outer's *live execution* kernel (via
-    // `effective_parent_kernel` preferring `ctx.current_parent_kernel`
-    // over the scope-tree canonical ancestor), so spec
-    // interpolation resolves `{outer}` to the current iteration's
-    // value rather than the canonical default.
-    let (stdout, stderr) = run_workload(
-        "examples/workloads/workload_coverage_matrix.yaml",
-        &["scenario=nested_for_each"],
-    );
-    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
-
-    // Outer iterates over a,b,c — three iterations. Each
-    // inner_for_each enumerates a single value (`pre_<outer>`),
-    // so the leaf phase fires three times total.
-    let lines: Vec<&str> = stdout.lines()
-        .filter(|l| l.starts_with("cm/nested "))
-        .collect();
-    assert_eq!(lines.len(), 3,
-        "expected 3 nested-iteration leaf calls:\n{stdout}");
-    for (outer, expected) in [("a", "pre_a"), ("b", "pre_b"), ("c", "pre_c")] {
-        let target = format!("cm/nested outer={outer} inner={expected}");
-        assert!(lines.contains(&target.as_str()),
-            "missing nested line `{target}`:\n{stdout}");
-    }
-}
-
-#[test]
-fn coverage_matrix_default_runs_full_matrix() {
-    // Round-trip: every other scenario's identifying line
-    // appears at least once in the default-scenario combined
-    // output.
-    let (stdout, stderr) = run_workload(
-        "examples/workloads/workload_coverage_matrix.yaml",
-        &[],
-    );
-    assert!(stderr.contains("all phases complete"), "stderr: {stderr}");
-
-    let prefixes = [
-        "cm/shared_types ",
-        "cm/const ",
-        "cm/derived ",
-        "cm/for_each_chain ",
-        "cm/do_while_chain ",
-        "cm/conditional ",
-        "cm/multi_cell ",
-    ];
-    for prefix in prefixes {
-        assert!(stdout.lines().any(|l| l.starts_with(prefix)),
-            "default scenario missing prefix `{prefix}`:\n{stdout}");
     }
 }
 
@@ -843,56 +659,6 @@ fn unresolved_placeholder_error_carries_yaml_location() {
     assert!(stderr.contains("unresolved placeholder '{undeclared_thing}'"),
         "error must still describe the failing placeholder:\n{stderr}");
 }
-
-// ── Documented-but-not-yet-exercised tests ──────────────────
-//
-// Each `#[test]` below pairs with a commented-out scenario at
-// the bottom of `workload_coverage_matrix.yaml`. When the
-// corresponding construct lands, uncomment both halves
-// together. Keeping them here makes the gap visible in the
-// test binary's symbol table without breaking compilation.
-
-// #[test]
-// fn coverage_matrix_concurrent_shared_writes_lwwins() {
-//     // Concurrent for_each branches all decrement the same
-//     // shared cell. Last-write-wins baseline (SRD-16
-//     // §"Concurrent semantics: last-write-wins") makes the
-//     // exact final count non-deterministic, so this test is
-//     // gated on the templated patterns shipping
-//     // (`shared(atomic)` / `shared(sum)`). The kernel-level
-//     // test `shared_last_write_wins_under_concurrent_writers`
-//     // covers the Mutex serialization API surface today.
-// }
-
-// #[test]
-// fn coverage_matrix_state_driven_do_while_termination() {
-//     // do_while: "{count_big} > 0" with a child phase that
-//     // decrements `count_big`. Requires per-cycle propagation
-//     // from the leaf phase's per-cycle kernel back to the
-//     // loop scope's SharedCell, which isn't yet wired (no GK
-//     // binding syntax targets an outer shared cell, and the
-//     // dispatcher only writes the counter, not arbitrary
-//     // shared names). Tracked in SRD-18b §"Open: per-cycle
-//     // propagation".
-// }
-
-// #[test]
-// fn coverage_matrix_cursor_driven_phase() {
-//     // `cycles: ===auto` with a cursor-bound source. Needs a
-//     // mock source the adapter-testkit doesn't currently
-//     // provide. Vectordata integration tests cover this with
-//     // real datasets; the synthetic single-file demo is gated
-//     // on a mock source crate.
-// }
-
-// #[test]
-// fn coverage_matrix_delay_field_reads_shared_cell() {
-//     // `delay: rate_pi` resolves the cell value per cycle.
-//     // Mechanically should work today, but verifying delay
-//     // application requires timing measurement that stdout
-//     // grepping can't perform. Gated on a metric-based
-//     // assertion path that compares wall-clock to expected.
-// }
 
 // ─── Synthetic metrics (SRD-40b) end-to-end ─────────────────
 
@@ -1271,4 +1037,289 @@ phases:
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(output.status.success() && stderr.contains("done"),
         "workload did not complete: {stderr}");
+}
+
+// ─── SRD-71: cursor partitioning ────────────────────────────────
+
+#[test]
+fn cursor_over_narrows_to_first_percentage() {
+    // Cursor declared `over cursor` with the operator passing
+    // `cursor=0..10%` should narrow `range(0, 1000)` to
+    // `[0, 100)` — emitting 100 cycles instead of 1000.
+    let yaml = r#"
+params:
+  cursor: "0..100%"
+
+phases:
+  walk:
+    concurrency: 1
+    bindings: |
+      cursor row = range(0, 1000) over cursor
+      n := row
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "row={n}"
+"#;
+    let (path, session) = write_inline_workload("cursor_over_pct", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    cmd.arg("cursor=0..10%");
+    let output = cmd.output().expect("failed to run nbrs");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(output.status.success(), "workload failed: {stderr}");
+    let count = stdout.lines().filter(|l| l.starts_with("row=")).count();
+    assert_eq!(count, 100,
+        "expected 100 narrowed rows from `cursor=0..10%`, got {count}.\nstdout:\n{stdout}");
+}
+
+#[test]
+fn cursor_over_with_literal_ordinals() {
+    // Literal-ordinal partition spec: `cursor=100..200` should
+    // narrow `range(0, 1000)` to `[100, 200)` — 100 cycles
+    // starting at row 100.
+    let yaml = r#"
+params:
+  cursor: "0..100%"
+
+phases:
+  walk:
+    concurrency: 1
+    bindings: |
+      cursor row = range(0, 1000) over cursor
+      n := row
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "row={n}"
+"#;
+    let (path, session) = write_inline_workload("cursor_over_literal", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    cmd.arg("cursor=100..200");
+    let output = cmd.output().expect("failed to run nbrs");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(output.status.success(), "workload failed: {stderr}");
+    let rows: Vec<u64> = stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("row="))
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    assert_eq!(rows.len(), 100, "expected 100 rows, got {}", rows.len());
+    assert_eq!(*rows.iter().min().unwrap(), 100);
+    assert_eq!(*rows.iter().max().unwrap(), 199);
+}
+
+#[test]
+fn cursor_without_over_ignores_cursor_param() {
+    // A cursor declared without `over` should be unaffected by
+    // the `cursor=...` parameter — the cursor uses its full
+    // declared extent even when the operator passes a narrowing
+    // spec. The workload must still declare `cursor` in its
+    // `params:` for the runtime to accept the CLI override at
+    // all; this test verifies that even with the param set, the
+    // cursor that doesn't opt in via `over` stays at full extent.
+    let yaml = r#"
+params:
+  cursor: "0..100%"
+
+phases:
+  walk:
+    concurrency: 1
+    bindings: |
+      cursor row = range(0, 50)
+      n := row
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "row={n}"
+"#;
+    let (path, session) = write_inline_workload("cursor_no_over", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    cmd.arg("cursor=0..10%");
+    let output = cmd.output().expect("failed to run nbrs");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let count = stdout.lines().filter(|l| l.starts_with("row=")).count();
+    assert_eq!(count, 50,
+        "cursor without `over` must ignore `cursor=...`; got {count} rows");
+}
+
+#[test]
+fn mod_in_maps_cycle_into_narrowed_partition() {
+    // `mod_in(cycle, row.cursor)` maps cycle to an ordinal that
+    // stays inside the cursor's narrowed range. With
+    // `cursor=100..200` against `range(0, 1000)`, the cursor
+    // narrows to [100, 200), and mod_in wraps `cycle` (0..100)
+    // into that range — yielding 100, 101, ..., 199.
+    let yaml = r#"
+params:
+  cursor: "0..100%"
+
+phases:
+  walk:
+    concurrency: 1
+    bindings: |
+      cursor row = range(0, 1000) over cursor
+      n := mod_in(cycle, row.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "n={n}"
+"#;
+    let (path, session) = write_inline_workload("cursor_mod_in", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    cmd.arg("cursor=100..200");
+    let output = cmd.output().expect("failed to run nbrs");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(output.status.success(), "workload failed: {stderr}");
+    let ns: Vec<u64> = stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("n="))
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    assert_eq!(ns.len(), 100, "expected 100 outputs, got {}", ns.len());
+    assert_eq!(*ns.iter().min().unwrap(), 100);
+    assert_eq!(*ns.iter().max().unwrap(), 199);
+}
+
+#[test]
+fn comprehension_iterates_partition_list_per_partition() {
+    // SRD-71 §"Comprehension iteration": a scenario-tree
+    // `for: "p in <expr>"` over `partitions(...)` iterates
+    // partition-by-partition. Each iteration's bound kernel
+    // carries the per-partition `Partition` value to descendant
+    // phases, where `mod_in(cycle, p)` (or `over p` on a cursor
+    // decl) consumes it as an Ext-typed wire.
+    let yaml = r#"
+scenarios:
+  sweep:
+    - for: "p in partitions(\"linear:3\", 99)"
+      phases:
+        - walk
+
+phases:
+  walk:
+    cycles: 5
+    concurrency: 1
+    bindings: |
+      lo := start_of(p)
+      hi := end_of(p)
+      i := idx_of(p)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "part={i} lo={lo} hi={hi}"
+"#;
+    let (path, session) = write_inline_workload("partition_comprehension", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    cmd.arg("scenario=sweep");
+    let output = cmd.output().expect("failed to run nbrs");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(output.status.success(), "workload failed: {stderr}");
+
+    // 3 partitions × 5 cycles = 15 emit lines.
+    let emit_lines: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.starts_with("part="))
+        .collect();
+    assert_eq!(emit_lines.len(), 15,
+        "expected 3 partitions × 5 cycles = 15 emits, got {}.\nstdout:\n{stdout}",
+        emit_lines.len());
+
+    // Each partition emits 5 lines; the three partition indices
+    // (0, 1, 2) all appear, and the lo/hi values are distinct
+    // per partition.
+    let parts_seen: std::collections::HashSet<&str> = emit_lines.iter()
+        .filter_map(|l| l.split(' ').next())
+        .collect();
+    assert_eq!(parts_seen.len(), 3, "expected 3 distinct partition indices");
+    assert!(parts_seen.contains("part=0"));
+    assert!(parts_seen.contains("part=1"));
+    assert!(parts_seen.contains("part=2"));
+
+    // Partition 0 covers [0..33), partition 1 [33..66), partition 2 [66..99).
+    let part0_line = emit_lines.iter().find(|l| l.starts_with("part=0 ")).unwrap();
+    assert!(part0_line.contains("lo=0") && part0_line.contains("hi=33"),
+        "partition 0 should be [0, 33), got: {part0_line}");
+    let part2_line = emit_lines.iter().find(|l| l.starts_with("part=2 ")).unwrap();
+    assert!(part2_line.contains("lo=66") && part2_line.contains("hi=99"),
+        "partition 2 should be [66, 99), got: {part2_line}");
+}
+
+#[test]
+fn cardinality_and_start_of_expose_partition_metadata() {
+    // `cardinality(row.cursor)` and `start_of(row.cursor)` are
+    // effectively-const for the activation — they should
+    // produce the same value every cycle.
+    let yaml = r#"
+params:
+  cursor: "0..100%"
+
+phases:
+  walk:
+    cycles: 3
+    concurrency: 1
+    bindings: |
+      cursor row = range(0, 1000) over cursor
+      card := cardinality(row.cursor)
+      lo := start_of(row.cursor)
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "card={card} lo={lo}"
+"#;
+    let (path, session) = write_inline_workload("partition_metadata", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    cmd.arg("cursor=100..200");
+    let output = cmd.output().expect("failed to run nbrs");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(output.status.success(), "workload failed: {stderr}");
+    let lines: Vec<&str> = stdout.lines().filter(|l| l.contains("card=")).collect();
+    assert!(!lines.is_empty(), "no card= lines emitted:\n{stdout}");
+    for line in &lines {
+        assert!(line.contains("card=100"),
+            "expected card=100 (200-100), got: {line}");
+        assert!(line.contains("lo=100"),
+            "expected lo=100, got: {line}");
+    }
+}
+
+#[test]
+fn cursor_param_quote_elision_works_end_to_end() {
+    // Quote elision on the CLI surface: `cursor='0..10%'` and
+    // `'cursor=0..10%'` and `cursor="0..10%"` should all parse
+    // identically and narrow the cursor to 10%.
+    let yaml = r#"
+params:
+  cursor: "0..100%"
+
+phases:
+  walk:
+    concurrency: 1
+    bindings: |
+      cursor row = range(0, 1000) over cursor
+      n := row
+    ops:
+      emit:
+        adapter: stdout
+        stmt: "row={n}"
+"#;
+    let (path, session) = write_inline_workload("cursor_over_quoted", yaml);
+    let mut cmd = nbrs(&session);
+    cmd.arg(format!("workload={}", path.display()));
+    cmd.arg("cursor='0..10%'");
+    let output = cmd.output().expect("failed to run nbrs");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let count = stdout.lines().filter(|l| l.starts_with("row=")).count();
+    assert_eq!(count, 100,
+        "single-quoted cursor='0..10%' should narrow to 100 rows; got {count}");
 }

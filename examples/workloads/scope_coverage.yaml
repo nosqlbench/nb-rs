@@ -1,20 +1,24 @@
 #!/usr/bin/env nbrs
-# workload_coverage_matrix.yaml — One-file coverage matrix for
-# user-accessible workload constructs.
+# scope_coverage.yaml — Thematic coverage workload for the
+# scope-model / GK comprehension / modifier surface (SRD 13c /
+# 13d / 13f / 16 / 18b).
+#
+# Follows the `<theme>_coverage.yaml` pattern: one operator-
+# readable artifact carrying every supported shape on a given
+# axis, paired with a matching `nbrs/tests/<theme>.rs` test
+# file (`scope.rs` for this one).
 #
 # Each scenario exercises a specific construct (or combination)
-# and emits a stable, line-prefixed message that a single Rust
-# integration test can grep against. The line-prefix convention
-# is `cm/<scenario>/<sublabel> <key>=<value> [...]` so partition
-# tests can filter by prefix without ambiguity.
+# and emits a stable, line-prefixed message that the matching
+# Rust integration test asserts against. The line-prefix
+# convention is `cm/<scenario>/<sublabel> <key>=<value> [...]`.
 #
-# Scenarios are independent — running any one of them in
-# isolation should produce the same lines for that scenario as
-# running the default (which chains them all). The default
-# scenario is the round-trip target for `cargo test`.
+# Scenarios are independent — running any one in isolation
+# produces the same lines for that scenario as running the
+# default (which chains them all).
 #
 # Run individually:
-#   nbrs run workload=examples/workloads/workload_coverage_matrix.yaml \
+#   nbrs run workload=examples/workloads/scope_coverage.yaml \
 #            scenario=<one of the scenario names below>
 #
 # Constructs exercised:

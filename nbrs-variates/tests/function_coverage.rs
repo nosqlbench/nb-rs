@@ -1914,6 +1914,27 @@ fn every_registered_function_compiles() {
         // with `to_json(cycle)` so the signature smoke compiles.
         ("body_column_i32",
             "input cycle: u64\nout := body_column_i32(to_json(cycle), \"key\")".into()),
+        // SRD 71: partition-typed inputs come from a cursor's
+        // `.cursor` projection — declare a small cursor and
+        // pull from there. The cursor's `over` clause takes a
+        // string-literal spec (parsed at phase setup); the
+        // generic `cycle` input slot is the wrong type.
+        ("cardinality",
+            "input cycle: u64\ncursor q = range(0, 100) over \"0..50%\"\nout := cardinality(q.cursor)".into()),
+        ("start_of",
+            "input cycle: u64\ncursor q = range(0, 100) over \"0..50%\"\nout := start_of(q.cursor)".into()),
+        ("end_of",
+            "input cycle: u64\ncursor q = range(0, 100) over \"0..50%\"\nout := end_of(q.cursor)".into()),
+        ("idx_of",
+            "input cycle: u64\ncursor q = range(0, 100) over \"0..50%\"\nout := idx_of(q.cursor)".into()),
+        ("mod_in",
+            "input cycle: u64\ncursor q = range(0, 100) over \"0..50%\"\nout := mod_in(cycle, q.cursor)".into()),
+        ("at",
+            "input cycle: u64\ncursor q = range(0, 100) over \"0..50%\"\nout := at(q.cursor, cycle)".into()),
+        ("clamp_in",
+            "input cycle: u64\ncursor q = range(0, 100) over \"0..50%\"\nout := clamp_in(cycle, q.cursor)".into()),
+        ("partitions",
+            "input cycle: u64\nout := partitions(\"linear:4\", 1000)".into()),
     ].into_iter().collect();
 
     // File I/O nodes — use real fixture files
