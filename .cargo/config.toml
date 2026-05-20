@@ -39,19 +39,33 @@ CASSANDRA_SYS_INCLUDE_PATH = { value = "adapters/cql/target/sysroot/include", re
 # binary — negligible for the workload-driver path. The tradeoff is
 # documented in `nbrs-activity::profiler` next to the call-graph
 # selection logic.
-[target.x86_64-unknown-linux-gnu]
-# `-lz` covers zlib symbols (`inflateInit2_`, …) that the
-# vendored `libcassandra_static.a` references but the
-# upstream `cassandra-cpp-sys` build.rs doesn't declare. With
-# `-Wl,--as-needed` (mold's default) the lib drops out of
-# any binary that doesn't actually use it, so adding it
-# globally is free for non-cassandra binaries and lets
-# `cargo test --workspace` link the vendor/cassandra-cpp
-# test bins against the sysroot prepared by
+# Linux (x86_64 + aarch64): clang + mold + frame pointers + -lz.
+# Splitting by triple would force the CI matrix to keep two
+# identical blocks in sync; the `cfg(...)` form covers both ubuntu
+# runners with one source of truth.
+#
+# `-lz` covers zlib symbols (`inflateInit2_`, …) that
+# `libcassandra_static.a` references but the upstream
+# `cassandra-cpp-sys` build.rs doesn't declare. With
+# `-Wl,--as-needed` (mold's default) zlib drops out of binaries
+# that don't actually use it, so adding it globally is free for
+# non-cassandra builds and lets `cargo test --workspace` link the
+# vendor/cassandra-cpp test bins against the sysroot prepared by
 # `bash adapters/cql/build.sh driver`.
+[target.'cfg(target_os = "linux")']
 linker = "clang"
 rustflags = [
     "-C", "link-arg=-fuse-ld=mold",
+    "-C", "force-frame-pointers=yes",
+    "-C", "link-arg=-lz",
+]
+
+# macOS (aarch64 + x86_64): system ld64 (mold is Linux-only) +
+# frame pointers + -lz (same libcassandra_static.a zlib reference
+# as on Linux; libz lives in the macOS SDK so the system linker
+# resolves -lz directly).
+[target.'cfg(target_os = "macos")']
+rustflags = [
     "-C", "force-frame-pointers=yes",
     "-C", "link-arg=-lz",
 ]

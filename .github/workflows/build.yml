@@ -1,0 +1,234 @@
+# Copyright 2024-2026 Jonathan Shook
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build (and on tag pushes, publish) nbrs release artifacts.
+#
+#   build-artifact — 4-way matrix producing bare per-platform
+#     binaries, every one built with `--features all-engines`
+#     (pure-Rust scylla + cassandra-cpp via FFI). All runners are
+#     native (no QEMU emulation):
+#       linux/amd64   → ubuntu-24.04        + apt deps
+#       linux/arm64   → ubuntu-24.04-arm    + apt deps
+#       macos/arm64   → macos-14            + brew deps
+#       macos/x86_64  → macos-13            + brew deps
+#     Each entry calls `bash adapters/cql/build.sh driver`
+#     (DRIVER_BUILD_MODE=native) so the driver recipe stays
+#     single-source with the local docker path.
+#
+#   build-image    — multi-arch (linux/amd64+linux/arm64) docker
+#     image built from `adapters/cql/nbrs-cassandra-cpp.Dockerfile`
+#     via buildx + QEMU. Pushed to GHCR on tag refs only.
+#
+# Note: Windows is intentionally not in the matrix. Upstream
+# `cassandra-cpp-sys` has no Windows support (emits Unix-style
+# link directives and library names), so honoring "cassandra-cpp
+# on every platform we build" requires dropping Windows rather
+# than shipping a half-supported binary. Revisit when upstream
+# adds MSVC support or we decide to fork the -sys crate.
+
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      cassandra_cpp_driver_ref:
+        description: 'apache/cassandra-cpp-driver git ref (branch or tag)'
+        type: string
+        default: 'trunk'
+
+env:
+  CASSANDRA_CPP_DRIVER_REF: ${{ github.event.inputs.cassandra_cpp_driver_ref || 'trunk' }}
+
+jobs:
+  build-artifact:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # One platform failing should not stop the others — release
+      # readiness wants the full per-platform signal.
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            os:     linux
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            os:     linux
+          - target: aarch64-apple-darwin
+            runner: macos-14            # Apple Silicon (M-series)
+            os:     macos
+          - target: x86_64-apple-darwin
+            runner: macos-13            # Intel
+            os:     macos
+    steps:
+      - uses: actions/checkout@v4
+
+      # ─── Linux deps: C++ driver build + workspace linker
+      # (mold/clang per .cargo/config.toml).
+      - name: Install Linux build dependencies
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake git \
+            libuv1-dev libssl-dev zlib1g-dev \
+            pkg-config mold clang ca-certificates
+
+      # ─── macOS deps: cmake/libuv/openssl@3 via Homebrew.
+      # openssl@3 is keg-only; `_build_driver_native` will pick
+      # the right PKG_CONFIG_PATH + OPENSSL_ROOT_DIR.
+      - name: Install macOS build dependencies
+        if: matrix.os == 'macos'
+        run: |
+          brew update
+          brew install cmake libuv openssl@3 pkg-config
+
+      # ─── Cache the libcassandra static archive + header.
+      # Keyed on driver ref + target triple + recipe-source hashes
+      # so any drift invalidates the cache.
+      - name: Cache cassandra-cpp-driver sysroot
+        id: cache-sysroot
+        uses: actions/cache@v4
+        with:
+          path: adapters/cql/target/sysroot
+          key: cass-cpp-${{ env.CASSANDRA_CPP_DRIVER_REF }}-${{ matrix.target }}-${{ hashFiles('adapters/cql/build.sh', 'adapters/cql/cassandra-cpp-driver.Dockerfile') }}
+
+      - name: Build cassandra-cpp-driver (native mode)
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        env:
+          DRIVER_BUILD_MODE: native
+          CASSANDRA_CPP_DRIVER_VERSION: ${{ env.CASSANDRA_CPP_DRIVER_REF }}
+        run: bash adapters/cql/build.sh driver
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nbrs-${{ matrix.target }}
+
+      # ─── Build nbrs with all-engines for every platform.
+      # On macOS, augment CASSANDRA_SYS_LIB_PATH with brew's libuv
+      # and openssl@3 lib dirs so rustc-link-search finds them
+      # (upstream cassandra-cpp-sys/build.rs hardcodes Intel-mac
+      # /usr/local paths and doesn't cover Apple Silicon's
+      # /opt/homebrew).
+      - name: Build nbrs (all-engines)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.os }}" == "macos" ]]; then
+            uv="$(brew --prefix libuv)/lib"
+            ssl="$(brew --prefix openssl@3)/lib"
+            sysroot="$PWD/adapters/cql/target/sysroot/lib"
+            export CASSANDRA_SYS_LIB_PATH="$sysroot;$uv;$ssl"
+          fi
+          cargo build --release -p nbrs \
+            --target ${{ matrix.target }} \
+            --no-default-features --features all-engines
+
+      # ─── Assert libcassandra is statically linked. ldd on
+      # Linux, otool -L on macOS — same intent, different inspector.
+      - name: Verify libcassandra static link
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/nbrs"
+          file "$bin"
+          case "${{ matrix.os }}" in
+            linux) deps="$(ldd "$bin" || true)" ;;
+            macos) deps="$(otool -L "$bin" || true)" ;;
+          esac
+          if echo "$deps" | grep -q libcassandra; then
+            echo "FAIL: libcassandra is dynamically linked"
+            echo "$deps" | grep libcassandra
+            exit 1
+          fi
+          echo "OK: libcassandra is statically linked"
+
+      - name: Smoke test
+        shell: bash
+        run: target/${{ matrix.target }}/release/nbrs --version
+
+      - name: Package binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar -C target/${{ matrix.target }}/release \
+            -czf dist/nbrs-${{ matrix.target }}.tar.gz nbrs
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nbrs-${{ matrix.target }}
+          path: dist/nbrs-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  build-image:
+    name: docker image (multi-arch)
+    runs-on: ubuntu-24.04
+    # Skip on PRs (multi-arch emulation is slow). Build on main
+    # pushes to catch Dockerfile breakage; build + push on tags.
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # QEMU enables building linux/arm64 layers on the amd64
+      # runner. Slower than a native arm runner but keeps the
+      # image job on a single host with one manifest list.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/nbrs
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.title=nbrs
+            org.opencontainers.image.description=Rust rewrite of nosqlbench — workload generation and benchmarking engine
+
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Same Dockerfile invocation that `bash build.sh docker`
+      # produces locally, extended with multi-arch platforms +
+      # BuildKit + GHA layer cache.
+      - name: Build (and push on tags) multi-arch docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: adapters/cql/nbrs-cassandra-cpp.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -27,6 +27,19 @@
 #   bash build.sh install   # cargo install --path nbrs with the cpp engine
 #   bash build.sh docker    # build nbrs entirely inside Docker
 #   bash build.sh clean     # `cargo clean` (this crate) + docker rmi
+#
+# Driver build mode (selects how the C++ driver is compiled):
+#   DRIVER_BUILD_MODE=docker  (default) — build in Docker, no host
+#                              package pollution. Right for local dev.
+#   DRIVER_BUILD_MODE=native            — build directly on the host.
+#                              Caller is responsible for apt deps
+#                              (build-essential cmake git libuv1-dev
+#                              libssl-dev zlib1g-dev). Used by CI
+#                              runners whose OS == target ABI.
+# Both modes produce an identical `target/sysroot/` layout; the
+# `cargo`, `install`, and `docker` subcommands don't care which
+# one was used. The CMake recipe + sysroot post-processing live
+# in shared functions so divergence is impossible.
 
 set -euo pipefail
 
@@ -49,9 +62,31 @@ DOCKER_NBRS="$ADAPTER_TARGET/nbrs"
 DOCKER_CONTEXT="$ADAPTER_TARGET/docker-context"
 DOCKER_IMAGE="nbrs-cql-cpp-driver-builder"
 
-# ─── Build the C++ driver in Docker (matching host OS) ───
+# ─── Build the C++ driver — dispatches on DRIVER_BUILD_MODE ───
+#
+# Both modes populate $SYSROOT/{lib,include} with the same files
+# (the CMake recipe lives in cassandra-cpp-driver.Dockerfile and
+# in `_build_driver_native` and is identical across the two —
+# the only difference is where the compile happens). Both share
+# `_finalize_sysroot` for the multiarch flatten and the
+# libcassandra.a alias, so a downstream consumer cannot tell
+# which mode produced the sysroot.
 
 build_driver() {
+    mkdir -p "$SYSROOT/lib" "$SYSROOT/include"
+    local mode="${DRIVER_BUILD_MODE:-docker}"
+    case "$mode" in
+        docker) _build_driver_docker ;;
+        native) _build_driver_native ;;
+        *)
+            echo "ERROR: unknown DRIVER_BUILD_MODE: $mode (expected docker|native)" >&2
+            exit 1
+            ;;
+    esac
+    _finalize_sysroot
+}
+
+_build_driver_docker() {
     # Detect host OS for matching Docker base image
     local base_image="ubuntu:22.04"
     if [ -f /etc/os-release ]; then
@@ -61,41 +96,140 @@ build_driver() {
             base_image="ubuntu:${version_id}"
         fi
     fi
-    echo "==> Host OS: $(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d'"' -f2)"
-    echo "==> Docker base: $base_image"
-    echo "==> Building Apache Cassandra C++ driver..."
+    echo "==> [docker] Host OS: $(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d'"' -f2)"
+    echo "==> [docker] Docker base: $base_image"
+    echo "==> [docker] Building Apache Cassandra C++ driver..."
     docker build \
         --build-arg BASE_IMAGE="$base_image" \
         -f "$SCRIPT_DIR/cassandra-cpp-driver.Dockerfile" \
         -t "$DOCKER_IMAGE" \
         "$SCRIPT_DIR"
 
-    echo "==> Extracting libraries and headers to $SYSROOT..."
+    echo "==> [docker] Extracting libraries and headers to $SYSROOT..."
     # Fresh-state mechanics:
-    #   - mkdir -p is non-destructive over an existing dir.
-    #   - The Dockerfile builds with `CASS_BUILD_SHARED=OFF`
-    #     so only `libcassandra_static.a` lands in
-    #     `/usr/local/lib/` — no `.so*` for us to clean up.
-    #   - `docker cp` overwrites existing files of the same
-    #     name; old ones are replaced rather than appended.
-    # The user runs `cd adapters/cql && cargo clean` when
-    # they want a totally fresh start.
-    mkdir -p "$SYSROOT/lib" "$SYSROOT/include"
-
-    # Create a temporary container to copy files from
+    #   - The Dockerfile builds with `CASS_BUILD_SHARED=OFF` so only
+    #     `libcassandra_static.a` lands in `/usr/local/lib/` — no
+    #     `.so*` to clean up.
+    #   - `docker cp` overwrites existing files of the same name.
+    # The user runs `cd adapters/cql && cargo clean` for fresh start.
     local cid
     cid=$(docker create "$DOCKER_IMAGE")
     docker cp "$cid:/usr/local/lib/." "$SYSROOT/lib/"
     docker cp "$cid:/usr/local/include/cassandra.h" "$SYSROOT/include/"
     docker rm "$cid" > /dev/null
+}
 
+_build_driver_native() {
+    # Native build: clone + cmake + make on the host. Caller must
+    # have already installed build deps. Used by CI runners where
+    # host OS == target ABI environment, so Docker adds only
+    # overhead. Staging dir lives under $ADAPTER_TARGET so
+    # `cd adapters/cql && cargo clean` wipes it.
+    local ref="${CASSANDRA_CPP_DRIVER_VERSION:-trunk}"
+    local stage="$ADAPTER_TARGET/native-driver"
+    local src="$stage/src"
+    local prefix="$stage/prefix"
+    local uname_s
+    uname_s="$(uname -s)"
+
+    # Platform-specific cmake hints + parallelism.
+    local cmake_extra=()
+    local jobs
+    case "$uname_s" in
+        Linux)
+            jobs="$(nproc)"
+            ;;
+        Darwin)
+            # brew's openssl@3 is keg-only; cmake's find_package
+            # needs OPENSSL_ROOT_DIR to pick it up over the
+            # deprecated /usr/lib/libssl.dylib.
+            jobs="$(sysctl -n hw.ncpu)"
+            if command -v brew >/dev/null 2>&1; then
+                local brew_openssl
+                brew_openssl="$(brew --prefix openssl@3 2>/dev/null || true)"
+                if [ -n "$brew_openssl" ]; then
+                    cmake_extra+=(-DOPENSSL_ROOT_DIR="$brew_openssl")
+                    export PKG_CONFIG_PATH="$brew_openssl/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+                fi
+                # libuv is brewable as a normal formula — cmake's
+                # find_library handles it via standard /opt/homebrew
+                # or /usr/local search paths, so no explicit hint.
+            fi
+            ;;
+        *)
+            echo "ERROR: DRIVER_BUILD_MODE=native does not yet support $uname_s" >&2
+            exit 1
+            ;;
+    esac
+
+    # Pre-flight dep check — friendly error rather than a deep
+    # cmake/make failure if the runner forgot to install deps.
+    local missing=()
+    command -v cmake >/dev/null 2>&1 || missing+=("cmake")
+    command -v git   >/dev/null 2>&1 || missing+=("git")
+    command -v make  >/dev/null 2>&1 || missing+=("make")
+    if command -v pkg-config >/dev/null 2>&1; then
+        pkg-config --exists libuv    2>/dev/null || missing+=("libuv")
+        pkg-config --exists openssl  2>/dev/null || missing+=("openssl")
+    else
+        missing+=("pkg-config")
+    fi
+    if [ ${#missing[@]} -ne 0 ]; then
+        echo "ERROR: DRIVER_BUILD_MODE=native needs: ${missing[*]}" >&2
+        case "$uname_s" in
+            Linux)
+                echo "  ubuntu/debian: sudo apt-get install -y \\" >&2
+                echo "    build-essential cmake git libuv1-dev libssl-dev zlib1g-dev pkg-config" >&2
+                ;;
+            Darwin)
+                echo "  macOS (brew): brew install cmake libuv openssl@3 pkg-config" >&2
+                ;;
+        esac
+        exit 1
+    fi
+
+    echo "==> [native] uname -s: $uname_s"
+    echo "==> [native] cassandra-cpp-driver @ $ref"
+    [ ${#cmake_extra[@]} -gt 0 ] && echo "==> [native] cmake hints: ${cmake_extra[*]}"
+
+    mkdir -p "$stage" "$prefix"
+    if [ ! -d "$src/.git" ]; then
+        git clone --depth 1 --branch "$ref" \
+            https://github.com/apache/cassandra-cpp-driver.git "$src"
+    else
+        echo "==> [native] reusing existing source clone at $src"
+    fi
+
+    echo "==> [native] cmake + make -j$jobs ..."
+    mkdir -p "$src/build"
+    (
+        cd "$src/build"
+        cmake .. \
+            -DCMAKE_INSTALL_PREFIX="$prefix" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCASS_BUILD_STATIC=ON \
+            -DCASS_BUILD_SHARED=OFF \
+            -DCMAKE_C_FLAGS="-fPIC" \
+            -DCMAKE_CXX_FLAGS="-fPIC" \
+            "${cmake_extra[@]}"
+        make -j"$jobs"
+        make install
+    )
+
+    echo "==> [native] Copying libraries and headers to $SYSROOT..."
+    cp -a "$prefix/lib/." "$SYSROOT/lib/"
+    cp    "$prefix/include/cassandra.h" "$SYSROOT/include/"
+}
+
+_finalize_sysroot() {
+    # Shared post-processing: identical regardless of build mode.
     # Flatten multiarch: if libs are in lib/x86_64-linux-gnu/, copy to lib/
     if [ -d "$SYSROOT/lib/x86_64-linux-gnu" ]; then
         cp -a "$SYSROOT/lib/x86_64-linux-gnu/"* "$SYSROOT/lib/"
     fi
 
     # Create libcassandra.a symlink if only _static.a exists
-    # (the -sys crate links -lcassandra, not -lcassandra_static)
+    # (the -sys crate links -lcassandra, not -lcassandra_static).
     if [ -f "$SYSROOT/lib/libcassandra_static.a" ] && [ ! -f "$SYSROOT/lib/libcassandra.a" ]; then
         ln -sf libcassandra_static.a "$SYSROOT/lib/libcassandra.a"
     fi
@@ -302,12 +436,16 @@ case "${1:-default}" in
     *)
         echo "Usage: bash build.sh [driver|cargo|install|docker|clean]"
         echo ""
-        echo "  (default)    Build C++ driver in Docker, extract libs, cargo build on host"
-        echo "  driver       Build only the C++ driver in Docker, extract to target/sysroot/"
+        echo "  (default)    Build C++ driver, extract libs, cargo build on host"
+        echo "  driver       Build only the C++ driver, extract to target/sysroot/"
         echo "  cargo        Build only nbrs --features engine-cassandra-cpp (driver must exist)"
         echo "  install      cargo install --path nbrs --features engine-cassandra-cpp (driver must exist)"
         echo "  docker       Build everything inside Docker (no host Rust needed)"
         echo "  clean        cargo clean (this crate's target/) + docker rmi"
+        echo ""
+        echo "Env vars:"
+        echo "  DRIVER_BUILD_MODE=docker (default) | native"
+        echo "  CASSANDRA_CPP_DRIVER_VERSION=<git ref> (default: trunk; native mode only)"
         exit 1
         ;;
 esac
