@@ -200,6 +200,16 @@ _build_driver_native() {
         echo "==> [native] reusing existing source clone at $src"
     fi
 
+    # Upstream CMakeLists.txt uses `STREQUAL "Clang"` for compiler
+    # detection, which excludes AppleClang and aborts with
+    # "Unsupported compiler: AppleClang". AppleClang has been
+    # binary-compatible with LLVM Clang for years; relaxing the
+    # comparison to a regex match accepts both. Idempotent — sed
+    # is a no-op once the patch has already been applied.
+    if [ "$uname_s" = "Darwin" ]; then
+        sed -i.bak 's/STREQUAL "Clang"/MATCHES "Clang"/g' "$src/CMakeLists.txt"
+    fi
+
     echo "==> [native] cmake + make -j$jobs ..."
     mkdir -p "$src/build"
     (

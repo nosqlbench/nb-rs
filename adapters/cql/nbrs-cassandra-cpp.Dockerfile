@@ -30,10 +30,12 @@ RUN git clone --depth 1 \
 # --- Stage 2: Build nbrs with Rust ---
 FROM ubuntu:24.04 AS rust-builder
 
-# Install Rust + mold (workspace .cargo/config.toml sets
-# rustflags = ["-C", "link-arg=-fuse-ld=mold"]).
+# Install Rust + clang + mold. Workspace .cargo/config.toml sets
+# `linker = "clang"` and rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+# for every Linux target — both must be present in this stage.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl build-essential pkg-config libuv1-dev libssl-dev mold ca-certificates \
+    curl build-essential pkg-config libuv1-dev libssl-dev \
+    clang mold ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
