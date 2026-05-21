@@ -125,7 +125,7 @@ _build_driver_native() {
     # host OS == target ABI environment, so Docker adds only
     # overhead. Staging dir lives under $ADAPTER_TARGET so
     # `cd adapters/cql && cargo clean` wipes it.
-    local ref="${CASSANDRA_CPP_DRIVER_VERSION:-trunk}"
+    local ref="${CASSANDRA_CPP_DRIVER_VERSION:-2.17.1}"
     local stage="$ADAPTER_TARGET/native-driver"
     local src="$stage/src"
     local prefix="$stage/prefix"
@@ -465,7 +465,7 @@ case "${1:-default}" in
         echo ""
         echo "Env vars:"
         echo "  DRIVER_BUILD_MODE=docker (default) | native"
-        echo "  CASSANDRA_CPP_DRIVER_VERSION=<git ref> (default: trunk; native mode only)"
+        echo "  CASSANDRA_CPP_DRIVER_VERSION=<git ref> (default: 2.17.1; native mode only)"
         exit 1
         ;;
 esac

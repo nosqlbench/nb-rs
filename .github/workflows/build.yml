@@ -43,10 +43,12 @@ on:
       cassandra_cpp_driver_ref:
         description: 'apache/cassandra-cpp-driver git ref (branch or tag)'
         type: string
-        default: 'trunk'
+        default: '2.17.1'
 
 env:
-  CASSANDRA_CPP_DRIVER_REF: ${{ github.event.inputs.cassandra_cpp_driver_ref || 'trunk' }}
+  # Pinned ref so docker layer cache + sysroot cache are stable
+  # across runs. Override at dispatch time if needed.
+  CASSANDRA_CPP_DRIVER_REF: ${{ github.event.inputs.cassandra_cpp_driver_ref || '2.17.1' }}
 
 jobs:
   build-artifact:

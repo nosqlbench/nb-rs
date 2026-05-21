@@ -6,7 +6,9 @@ ARG BASE_IMAGE=ubuntu:22.04
 
 FROM ${BASE_IMAGE} AS builder
 
-ARG CASSANDRA_CPP_DRIVER_VERSION=trunk
+# Pin to a release tag so the cpp-driver layer cache is stable
+# across runs. Override via --build-arg for ad-hoc bumps.
+ARG CASSANDRA_CPP_DRIVER_VERSION=2.17.1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
