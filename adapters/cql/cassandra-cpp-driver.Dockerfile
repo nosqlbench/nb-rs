@@ -28,6 +28,7 @@ RUN cd /tmp/cass \
     && cmake .. \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
         -DCMAKE_INSTALL_LIBDIR=lib \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DCMAKE_BUILD_TYPE=Release \
         -DCASS_BUILD_STATIC=ON \
         -DCASS_BUILD_SHARED=OFF \

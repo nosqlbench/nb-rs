@@ -53,6 +53,7 @@ RUN git clone --depth 1 --branch ${CASSANDRA_CPP_DRIVER_VERSION} \
         -DCMAKE_BUILD_TYPE=Release \
         -DCASS_BUILD_STATIC=ON \
         -DCMAKE_INSTALL_LIBDIR=lib \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     && make -j$(nproc) && make install && ldconfig
 
 # ─── Stage 2: rust-base — toolchain, apt deps, cargo-chef ─────

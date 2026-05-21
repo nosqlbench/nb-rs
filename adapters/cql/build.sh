@@ -219,9 +219,15 @@ _build_driver_native() {
         # GNUInstallDirs may pick lib/<arch-triple>/ for prefixes
         # like /usr/local, and the rustc linker search paths
         # don't follow the multiarch convention.
+        #
+        # CMAKE_POLICY_VERSION_MINIMUM=3.5 keeps cassandra-cpp-driver
+        # compatible with cmake 4.x — upstream's CMakeLists.txt
+        # declares an older `cmake_minimum_required` that cmake 4
+        # rejects outright. Harmless on cmake 3.x.
         cmake .. \
             -DCMAKE_INSTALL_PREFIX="$prefix" \
             -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_BUILD_TYPE=Release \
             -DCASS_BUILD_STATIC=ON \
             -DCASS_BUILD_SHARED=OFF \
