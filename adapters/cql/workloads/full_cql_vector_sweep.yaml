@@ -170,7 +170,23 @@ scenarios:
         # (`1.0 → "1p0"`) so the table name can use the label
         # while the workload-param shadow below uses the numeric
         # value.
-        - for: "sm in OTHER, ADA002,
+        #
+        # source_model values are LOWERCASE in the iter list so
+        # the table name (which interpolates `{sm}`) matches the
+        # schema Cassandra actually stores: unquoted CQL
+        # identifiers are folded to lowercase at parse time, so
+        # `CREATE TABLE fknn_oat_OTHER_...` is stored as
+        # `fknn_oat_other_...`. The JMX `forceKeyspaceCompaction`
+        # endpoint does a case-sensitive lookup against that
+        # stored name, so an uppercase table-name string passed
+        # in via jolokia would fail with "Unknown keyspace/cf
+        # pair" even though the table exists. cndb's
+        # `VectorSourceModel.fromString` calls
+        # `valueOf(value.toUpperCase())` internally, so passing
+        # lowercase to the `'source_model': '...'` OPTIONS value
+        # works equally well — the case-folding side handles
+        # itself.
+        - for: "sm in other, ada002,
                 mnc in 8, 128,
                 bw in 50, 800,
                 eh in false, true,
