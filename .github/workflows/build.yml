@@ -56,11 +56,11 @@ env:
   # Pinned ref so docker layer cache + sysroot cache are stable
   # across runs. Override at dispatch time if needed.
   CASSANDRA_CPP_DRIVER_REF: ${{ github.event.inputs.cassandra_cpp_driver_ref || '2.17.1' }}
-  # Opt in to Node 24 for all JS-based actions ahead of the
-  # June 2026 forced-cutover. Every action this workflow uses
-  # (actions/checkout, actions/cache, actions/upload-artifact,
-  # docker/*) ships a Node-24-capable runtime already.
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  # Every JS-based action below is pinned to a major version that
+  # natively targets Node 24 — no `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24`
+  # shim needed. If a bump regresses (action removed an input,
+  # changed semantics), pin back to the previous major and reopen
+  # the upgrade as its own change.
 
 jobs:
   build-artifact:
@@ -87,7 +87,7 @@ jobs:
           # exceed an hour. Apple Silicon now dominates the
           # macOS install base; Intel users build from source.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # ─── Linux deps: C++ driver build + workspace linker
       # (mold/clang per .cargo/config.toml).
@@ -118,7 +118,7 @@ jobs:
       # so any drift invalidates the cache.
       - name: Cache cassandra-cpp-driver sysroot
         id: cache-sysroot
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: adapters/cql/target/sysroot
           key: cass-cpp-${{ env.CASSANDRA_CPP_DRIVER_REF }}-${{ matrix.target }}-${{ hashFiles('adapters/cql/build.sh', 'adapters/cql/cassandra-cpp-driver.Dockerfile') }}
@@ -211,7 +211,7 @@ jobs:
       # GHA still wraps every downloaded artifact in a zip at the
       # web UI; that's a platform behavior we can't disable.
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nbrs-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/nbrs
@@ -256,17 +256,17 @@ jobs:
             platform: linux/arm64
             runner:   ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # Build the single-arch image to a Docker-format tarball.
       # Layer cache (`type=gha,scope=...`) persists across runs
       # for incremental builds; the tarball itself is written
       # to /tmp and handed to the next step.
       - name: Build per-arch image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: adapters/cql/nbrs-cassandra-cpp.Dockerfile
@@ -279,7 +279,7 @@ jobs:
       # Save the tarball to a run-scoped cache slot so the merge
       # job (running on a different runner) can pick it up.
       - name: Save tarball to run-scoped cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: /tmp/image-${{ matrix.arch }}.tar
           key: nbrs-image-tarball-${{ matrix.arch }}-${{ github.run_id }}
@@ -304,20 +304,20 @@ jobs:
         image: registry:2
         ports: ['5000:5000']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Restore amd64 tarball
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: /tmp/image-amd64.tar
           key: nbrs-image-tarball-amd64-${{ github.run_id }}
           fail-on-cache-miss: true
 
       - name: Restore arm64 tarball
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: /tmp/image-arm64.tar
           key: nbrs-image-tarball-arm64-${{ github.run_id }}
@@ -336,7 +336,7 @@ jobs:
 
       - name: Compute image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository_owner }}/nbrs
           tags: |
@@ -352,7 +352,7 @@ jobs:
 
       - name: Log in to GHCR
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -413,7 +413,7 @@ jobs:
       contents: write
     steps:
       - name: Download per-target binary artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: nbrs-*

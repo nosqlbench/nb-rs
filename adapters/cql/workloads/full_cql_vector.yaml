@@ -477,9 +477,20 @@ phases:
           INSERT INTO {keyspace}.{table} 
                  ( key,    value) 
           VALUES ( '{id}', {train_vector})
-  # Filtered-KNN rampup: includes metadata column for predicate filtering
+  # Filtered-KNN rampup: includes metadata column for predicate filtering.
+  #
+  # `errors: "count,retry"` — log a counter for each error class
+  # (no stop) and mark the op retryable so the executor reissues
+  # it. Bulk-insert workloads regularly trip transient cluster-
+  # side timeouts (`SERVER_WRITE_TIMEOUT` etc.) under sustained
+  # load; we want the rampup to ride through those instead of
+  # halting the phase the first time the cluster catches its
+  # breath. Same chain shape as `pvs_*_query` phases use further
+  # down, with `retry` added so failed inserts don't leave gaps
+  # in the loaded data that would later corrupt recall numbers.
   fknn_rampup_data:
     concurrency: "{concurrency}"
+    errors: "count,retry"
     bindings: |
       const prebuffered := dataset_prebuffer("{dataset}:{profile}")
       cursor row = range(0, vector_count(prebuffered))
