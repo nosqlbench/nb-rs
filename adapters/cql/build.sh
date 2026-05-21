@@ -214,8 +214,14 @@ _build_driver_native() {
     mkdir -p "$src/build"
     (
         cd "$src/build"
+        # CMAKE_INSTALL_LIBDIR=lib forces a flat lib/ install
+        # regardless of multiarch detection. Otherwise cmake's
+        # GNUInstallDirs may pick lib/<arch-triple>/ for prefixes
+        # like /usr/local, and the rustc linker search paths
+        # don't follow the multiarch convention.
         cmake .. \
             -DCMAKE_INSTALL_PREFIX="$prefix" \
+            -DCMAKE_INSTALL_LIBDIR=lib \
             -DCMAKE_BUILD_TYPE=Release \
             -DCASS_BUILD_STATIC=ON \
             -DCASS_BUILD_SHARED=OFF \
@@ -233,10 +239,14 @@ _build_driver_native() {
 
 _finalize_sysroot() {
     # Shared post-processing: identical regardless of build mode.
-    # Flatten multiarch: if libs are in lib/x86_64-linux-gnu/, copy to lib/
-    if [ -d "$SYSROOT/lib/x86_64-linux-gnu" ]; then
-        cp -a "$SYSROOT/lib/x86_64-linux-gnu/"* "$SYSROOT/lib/"
-    fi
+    # Flatten any multiarch subdirs (e.g. x86_64-linux-gnu,
+    # aarch64-linux-gnu) into lib/. The cmake recipes set
+    # CMAKE_INSTALL_LIBDIR=lib to avoid this, but keep the
+    # flatten as defense in depth against future drift.
+    for sub in "$SYSROOT"/lib/*-linux-gnu; do
+        [ -d "$sub" ] || continue
+        cp -a "$sub"/* "$SYSROOT/lib/"
+    done
 
     # Create libcassandra.a symlink if only _static.a exists
     # (the -sys crate links -lcassandra, not -lcassandra_static).

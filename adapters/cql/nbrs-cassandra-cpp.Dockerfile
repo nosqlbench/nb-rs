@@ -24,7 +24,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN git clone --depth 1 \
     https://github.com/apache/cassandra-cpp-driver.git /tmp/cass \
     && cd /tmp/cass && mkdir build && cd build \
-    && cmake .. -DCMAKE_BUILD_TYPE=Release -DCASS_BUILD_STATIC=ON \
+    && cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCASS_BUILD_STATIC=ON \
+        -DCMAKE_INSTALL_LIBDIR=lib \
     && make -j$(nproc) && make install && ldconfig
 
 # --- Stage 2: Build nbrs with Rust ---
@@ -45,9 +48,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Copy the built C driver libraries and headers. The cpp-driver
-# CMake install lays libs under /usr/local/lib/x86_64-linux-gnu/
-# on multiarch Ubuntu, so copy the whole tree and let ldconfig +
-# linker search paths find them.
+# stage forces `CMAKE_INSTALL_LIBDIR=lib` so libcassandra lands
+# in /usr/local/lib/ directly on every arch (not the
+# `lib/<triple>/` multiarch path cmake picks by default under
+# /usr/local) — upstream cassandra-cpp-sys build.rs hardcodes
+# x86_64-linux-gnu in its link-search list and won't find an
+# arm64 multiarch dir.
 COPY --from=cpp-driver /usr/local/lib/ /usr/local/lib/
 COPY --from=cpp-driver /usr/local/include/cassandra.h /usr/local/include/
 RUN ldconfig
