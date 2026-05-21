@@ -52,6 +52,21 @@ default-members = [
     "adapters/openapi",
 ]
 
+# Shared package metadata inherited by every member via
+# `field.workspace = true` (Cargo workspace.package inheritance).
+# This is the single source of truth for the run-wide version
+# bump: edit `version` here and every workspace member moves in
+# lockstep. The vendored `vendor/cassandra-cpp` fork is excluded
+# (it carries its own upstream-tracking version + `publish =
+# false`); see its Cargo.toml for the rationale.
+[workspace.package]
+version = "0.1.2"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/nosqlbench/nb-rs"
+homepage = "https://github.com/nosqlbench/nb-rs"
+readme = "README.md"
+
 # vectordata + veks-completion 1.0.0 are now published; the
 # storage-transport refactor and the cache-aware typed-scalar
 # reader (which we previously pulled from the local working

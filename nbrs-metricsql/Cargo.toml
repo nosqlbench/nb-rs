@@ -1,9 +1,12 @@
 [package]
 name = "nbrs-metricsql"
-version = "0.1.0"
-edition = "2024"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "MetricsQL parser/evaluator (Rust port). Compatibility-tested against VictoriaMetrics' upstream test suite."
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

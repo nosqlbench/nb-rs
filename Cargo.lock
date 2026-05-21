@@ -2758,7 +2758,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "cassandra-cpp 3.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "glob",
@@ -2795,7 +2795,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-activity"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arc-swap",
  "futures",
@@ -2820,7 +2820,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-adapter-cql"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "cassandra-cpp 3.0.2",
  "cassandra-cpp-sys",
@@ -2839,7 +2839,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-adapter-http"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "inventory",
  "nbrs-activity",
@@ -2851,7 +2851,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-adapter-openapi"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "nbrs-workload",
  "openapiv3",
@@ -2862,7 +2862,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-adapter-plotter"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "inventory",
  "libc",
@@ -2874,7 +2874,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-adapter-stdout"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "inventory",
  "nbrs-activity",
@@ -2886,7 +2886,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-adapter-testkit"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "inventory",
  "nbrs-activity",
@@ -2900,7 +2900,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-errorhandler"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "log",
  "regex",
@@ -2908,7 +2908,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-metrics"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arc-swap",
  "base64 0.22.1",
@@ -2924,7 +2924,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-metricsql"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "arc-swap",
  "crossbeam-channel",
@@ -2937,7 +2937,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-rate"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "futures",
  "nbrs-metrics",
@@ -2946,7 +2946,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-tui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arc-swap",
  "crossterm",
@@ -2963,7 +2963,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-variates"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "cranelift-codegen",
@@ -2991,7 +2991,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-web"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "askama 0.15.6",
  "askama-derive-axum",
@@ -3010,7 +3010,7 @@ dependencies = [
 
 [[package]]
 name = "nbrs-workload"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "fs4",
  "marked-yaml",

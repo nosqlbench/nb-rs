@@ -1,14 +1,14 @@
 [package]
 name = "nbrs"
-version = "0.1.1"
-edition = "2024"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Rust rewrite of nosqlbench: a pluggable workload generation and benchmarking engine"
 keywords = ["nosqlbench", "workload", "benchmark", "data-generation"]
 categories = ["command-line-utilities", "simulation"]
-repository = "https://github.com/nosqlbench/nb-rs"
-homepage = "https://github.com/nosqlbench/nb-rs"
-readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
 
 [[bin]]
 name = "nbrs"

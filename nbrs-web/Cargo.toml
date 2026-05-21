@@ -1,14 +1,14 @@
 [package]
 name = "nbrs-web"
-version = "0.1.1"
-edition = "2024"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Web UI for nb-rs: htmx-powered dashboard for workload monitoring and control"
 keywords = ["nosqlbench", "workload", "benchmark", "web-ui", "htmx"]
 categories = ["command-line-utilities", "web-programming::http-server"]
-repository = "https://github.com/nosqlbench/nb-rs"
-homepage = "https://github.com/nosqlbench/nb-rs"
-readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
