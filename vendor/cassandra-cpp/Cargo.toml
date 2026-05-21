@@ -11,6 +11,12 @@ name = "cassandra-cpp"
 version = "3.0.2"
 authors = ["Keith Wansbrough <keithw@lochan.org>"]
 edition = "2018"
+# Vendored fork of upstream cassandra-cpp 3.0.2 with the
+# trace_id retrieval surface added (see CHANGES.local.md).
+# Must NEVER be published to crates.io: the name + version
+# collide with the real `cassandra-cpp` crate we don't own,
+# and forks belong in vendor/, not on the public index.
+publish = false
 
 [dependencies]
 slog = { version = "2", optional = true }
