@@ -609,14 +609,15 @@ pub fn synthesize_for_each_iteration(
 }
 
 /// Format a workload-param string as a GK literal (for emission
-/// as `final <name> := <literal>`). Numbers and booleans pass
-/// through; everything else becomes a quoted string with escape
-/// handling so the GK source stays parsable.
+/// as `final <name> := <literal>`). Integers pass through as
+/// `IntLit`, floats as `FloatLit`; everything else becomes a
+/// quoted string. `true` / `false` are NOT special-cased — GK's
+/// lexer has no boolean token kind, so a bare `false` would
+/// parse as an identifier (wire reference) and break kernel
+/// compilation.
 pub fn format_workload_param_as_gk_literal(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.parse::<u64>().is_ok() || trimmed.parse::<f64>().is_ok() {
-        trimmed.to_string()
-    } else if trimmed == "true" || trimmed == "false" {
         trimmed.to_string()
     } else {
         let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
@@ -1351,7 +1352,11 @@ mod tests {
     fn format_workload_param_quotes_strings() {
         assert_eq!(format_workload_param_as_gk_literal("42"), "42");
         assert_eq!(format_workload_param_as_gk_literal("1.5"), "1.5");
-        assert_eq!(format_workload_param_as_gk_literal("true"), "true");
+        // `true` / `false` are NOT bare-literal — GK's lexer has
+        // no boolean token kind, so they round-trip as quoted
+        // strings.
+        assert_eq!(format_workload_param_as_gk_literal("true"), "\"true\"");
+        assert_eq!(format_workload_param_as_gk_literal("false"), "\"false\"");
         assert_eq!(format_workload_param_as_gk_literal("hello"), "\"hello\"");
         assert_eq!(format_workload_param_as_gk_literal("a\"b"), "\"a\\\"b\"");
     }

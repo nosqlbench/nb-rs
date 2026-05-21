@@ -1,7 +1,7 @@
 # 50: CQL Adapter
 
 The CQL adapter provides native Cassandra protocol access via the
-Apache Cassandra C++ driver. Part of the `nbrs` persona.
+Apache Cassandra C++ driver.
 
 ---
 

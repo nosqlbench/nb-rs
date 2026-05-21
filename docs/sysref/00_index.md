@@ -16,7 +16,7 @@ explains the design intent behind it.
 
 | # | Document | Scope |
 |---|----------|-------|
-| 01 | [System Overview](01_system_overview.md) | Crate map, data flow, persona model, build structure |
+| 01 | [System Overview](01_system_overview.md) | Crate map, data flow, build structure |
 | 02 | [Concurrency Model](02_concurrency_model.md) | Async fibers, tokio runtime, cycle source, rate limiting |
 | 03 | [Error Handling](03_error_handling.md) | Error scoping, routing, retry semantics, silent failure policy |
 
@@ -66,6 +66,7 @@ explains the design intent behind it.
 | 35 | [Driver Resource Lifecycle and Sharing](35_driver_resources.md) *(DESIGN — Push A/B implemented)* | Two-layer split (shell vs instance); `ResourceKey` value-equality identity; instance-shaping vs shell-shaping param partition; `ShareCapability` (driver-declared, planning-time) + `ResourceSharePolicy` (user-elevatable); paired live-instance trait methods `can_share()` (capability: thread-safe + designed for sharing) and `can_support_more_load()` (live capacity: can the instance take another caller right now? `true` = yes, route here; `false` = saturated, spawn a sibling) — driver decides the criterion, no canonical shape imposed; pool-level guard catches `quiescent-decline` driver bugs (saturation reported at zero load); pre-map-driven multi-generation refcount lifecycle, explicit async `close()` with bounded teardown, debug `resource.{attach,init,share.spawn,detach,close}` event surface with stable `generation` field; CQL adapter is the prototype consumer |
 | 68 | [Dispenser-Owned GK Context and Single-Surface Resolution](68_dispenser_owned_gk_context.md) *(DESIGN — Push 1+ in flight)* | Dispenser owns its canonical GK kernel; one resolution surface per dispenser; narrow `WireSource` trait walls adapter code off from kernel internals; `map_op` takes a `SubcontextBuilder` and uses SRD-67 two-phase materialisation; per-fiber kernel fan-out via `build_subscope` from canonical kernels (no `op_template_kernels` LUT); workload-load pre-flight is non-mutating; CQL prepared compilation is dispenser-init-time work using the canonical kernel via `WireSource`; collapses several existing parallel structures (`OpBuilder::op_template_kernels`/`op_template_programs`, `synthesis::substitute_bind_points*`, `resolve_placeholders_via_kernel`'s mutation half) into the standard subcontext mechanism |
 | 71 | [Cursor Partitioning and the `cursor` Parameter](71_cursor_partitions.md) *(DRAFT — not yet implemented)* | One operator surface for projecting a cursor's domain into contiguous sub-ranges: CLI quote elision (`'cursor=0..53%'` and friends all parse the same), spec parser supporting percentages / fractions / literal ordinals in mixed form, partition lists with `*` remainder, pre-baked ratio recipes (`fib:7`, `bin:5`, `mul:R`, `geom`, `zipf`, `pareto`, `linear`, `ratios:…`, etc.). New GK value types `PartitionSpec` and `Partition` plus stdlib functions (`cardinality`, `mod_in`, `at`, `clamp_in`, `random_in`, `subdivide`, `resolve`) so `until_elapsed` and the family converge within a partition's cardinality and index-arithmetic stays inside the active range. Explicit `over <name>` clause on cursor declarations names the partition source — no implicit ambient narrowing. `<wire>.cursor.{idx,start_pct,end_pct,start_ordinal,end_ordinal,partition_count,partitions}` projections. CLI scoping via `phase.cursor=…` plus globs (`phase42_*.cursor=…`); workload-author reification through a custom param name. Renames the parameter from `limit` to `cursor` to avoid collision with SQL/CQL `LIMIT`. Phased P1→P3 rollout |
+| 72 | [Workload `extends:`](72_workload_extends.md) *(DESIGN — not yet implemented)* | Single-parent workload composition: top-level `extends: <relative-path>` directive, per-field merge rules (params/tags per-key, bindings concat, status_metrics union, report/scenarios/phases per-name whole-entry replace), chain semantics with cycle detection, validation runs once on merged result. Enables sibling diagnostic / sweep workloads that extend a production parent without duplication. |
 
 ### 5. Metrics and Observability (nbrs-metrics)
 
@@ -89,12 +90,12 @@ explains the design intent behind it.
 | 52 | [Stdout and Model Adapters](52_stdout_model.md) | Format modes, field rendering, diagnostic output |
 | 53 | [Vector Data Integration](53_vectordata.md) | Dataset nodes, catalog resolution, caching, metadata/predicates |
 
-### 7. CLI and Personas
+### 7. CLI and Build
 
 | # | Document | Scope |
 |---|----------|-------|
 | 60 | [CLI Structure](60_cli.md) | Command tree, completions, workload discovery, bench command |
-| 61 | [Single Binary, Feature-Gated Drivers](61_personas.md) | nbrs binary, Cargo features, adapter selection, future drivers |
+| 61 | [Single Binary, Feature-Gated Drivers](61_single_binary.md) | nbrs binary, Cargo features, adapter selection, future drivers |
 | 62 | [TUI Layout](62_tui_layout.md) | Tree-centric layout, per-phase detail blocks, dynamic Focus LOD, 120-col baseline |
 | 63 | [Status Readout Templates](63_status_readouts.md) *(DRAFT)* | Component-based template engine for status / summary lines, pre-baked render-step lists, compactness levels, layout ↔ content separation |
 | 64 | [Report CLI](64_report_cli.md) *(DRAFT)* | `nbrs report` command family, dynamic completion with full SRD-46 grammar parity, scratch-rendering against active session, `--add`/`--contextual`/`--replace` promotion to workload YAML |
@@ -131,7 +132,7 @@ explains the design intent behind it.
 | 52 Stdout/Model | 29 |
 | 53 Vectordata | 46, (vectordata nodes) |
 | 60 CLI | 23, 32, 35 |
-| 61 Personas | 37 |
+| 61 Single Binary | 37 |
 
 ## Known Tensions — resolved
 

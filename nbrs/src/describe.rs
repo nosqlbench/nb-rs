@@ -784,10 +784,20 @@ fn describe_gk_dag(args: &[String]) {
 /// was read.
 fn render_flattening_summary(yaml_source: &str, path: &str) -> Result<String, String> {
     use nbrs_activity::scope_tree::{ScopeTree, ScopeKind};
-    use nbrs_workload::parse::parse_workload;
+    use nbrs_workload::parse::{parse_workload, parse_workload_from_path};
     use std::collections::HashMap;
 
-    let workload = parse_workload(yaml_source, &HashMap::new())
+    // SRD-72: when invoked with a real on-disk file, route
+    // through parse_workload_from_path so `extends:` chains
+    // resolve. Tests pass synthetic literals with fake paths
+    // ("test.yaml", "two.yaml") that don't exist on disk; fall
+    // back to the in-memory parser there.
+    let path_obj = std::path::Path::new(path);
+    let workload = if path_obj.is_file() {
+        parse_workload_from_path(path_obj, &HashMap::new())
+    } else {
+        parse_workload(yaml_source, &HashMap::new())
+    }
         .map_err(|e| format!("parse_workload('{path}'): {e}"))?;
 
     // Pick the scenario the same way the runner does: take the
@@ -1041,9 +1051,7 @@ pub fn render_op_description(workload_path: &str, op_name: &str) -> Result<Strin
     if !path.exists() {
         return Err(format!("workload '{resolved}' not found"));
     }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("read '{}': {e}", path.display()))?;
-    let workload = nbrs_workload::parse::parse_workload(&text, &HashMap::new())
+    let workload = nbrs_workload::parse::parse_workload_from_path(&path, &HashMap::new())
         .map_err(|e| format!("parse workload '{}': {e}", path.display()))?;
 
     // Collect every (phase_label, &ParsedOp) pair so we can

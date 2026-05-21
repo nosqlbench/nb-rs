@@ -967,43 +967,87 @@ pub fn build_phase_scope_kernel(
         // Locally-declared phase bindings shadow ancestor names —
         // skip the cascade for any name the phase body assigns.
         if scan_locally_declared_idents(&body_text).contains(&owned) { continue; }
-        // SRD-13f case 1 — when an upstream output is `final`
-        // AND its value is representable as a GK source literal,
-        // inline it as `const name := <literal>` rather than
-        // cascading via extern. Falls through to extern cascade
-        // when the value isn't representable.
+        // SRD-13f §"Materialization gradient" — choose between
+        // **inlined constant** and **extern cascade** for each
+        // upstream output based on whether the upstream's value
+        // is statically known.
         //
-        // Workload params are also promoted: SRD-21
-        // §"Where workload-param values live in the kernel chain"
-        // puts their values in the params-kernel (and chain-wires
-        // them through every descendant) rather than baking
-        // `final` into the workload-root program, so the
-        // parent-program's output_modifier no longer says FINAL
-        // for those names. But the values *are* stable for the
-        // run, and downstream `const` bindings that reference a
-        // workload-param need it const-foldable to fold them in
-        // turn. So when the parent kernel can resolve the name's
-        // value via `lookup`, promote as if it were FINAL — as
-        // long as the name is a workload param (stable) and not
-        // an iter-var (changes per iteration).
-        let modifier = parent_program.output_modifier(&owned);
-        let is_workload_param = workload_params.contains_key(&owned);
-        let promote = modifier == nbrs_variates::dsl::ast::BindingModifier::CONST
-            || is_workload_param;
-        if promote {
-            if let Some(value) = parent_kernel.lookup(&owned) {
-                if let Some(natural) = value_to_param_string(&value) {
-                    let line = format_param_binding_line(&owned, &natural);
-                    source.push_str(&line);
-                    source.push('\n');
-                    emitted.insert(owned);
-                    continue;
-                }
-            }
-        }
+        // Per SRD-13f, "inlined constant" applies only when "the
+        // outer wire's value is statically known (literal RHS,
+        // folded const bindings)". Per SRD-11 §"Two Evaluation
+        // Lifecycles", the `const` modifier has two
+        // implementation paths:
+        //
+        //   1. compile-fold — upstream's `fold_init_constants`
+        //      replaces the producing node with a *leaf const
+        //      node* (ConstU64/ConstStr/ConstF64/…). The value is
+        //      part of the upstream's compiled artifact, identical
+        //      across every activation.
+        //   2. scope-init pull — when the binding's wire chain
+        //      touches iteration externs, the producing node
+        //      stays as the original computation node (with
+        //      wiring to those externs). The value is computed
+        //      per scope activation in
+        //      `materialize_wiring_from_outer` Step 3, and only
+        //      lives for that activation (SRD-13c §"const":
+        //      "frozen for the activation").
+        //
+        // The cascaded source we emit here gets compiled and
+        // cached on the downstream's scope-tree node, so its
+        // lifetime is the workload run — longer than any
+        // single activation. Inlining a scope-init-pulled value
+        // as a literal in that source would freeze the first
+        // activation's value into the cached program forever,
+        // violating the per-activation lifecycle (the symptom
+        // is `mode=alpha` for every iteration of a for_each
+        // whose inner Bindings declared `const mode := sm`).
+        //
+        // The structural distinction is observable in
+        // `parent_program` via provenance: SRD-11 §"Provenance-
+        // Based Invalidation" tags every node with a bitmask of
+        // the graph inputs it transitively depends on. A
+        // compile-fold leaf const has provenance == 0 (no input
+        // dependence — its value is part of the compiled
+        // artifact). An auto-passthrough `__port_<name>` node
+        // has a single bit set for the input slot it reads — its
+        // value tracks that slot, which can be rebound on each
+        // scope activation (per SRD-13f §"Value-only shared
+        // cell"). A computation node depending on iter-externs
+        // has bits set for those externs — same per-activation
+        // re-eval story.
+        //
+        // We use provenance == 0 as the discriminator: only
+        // truly-input-independent values are safe to inline as
+        // literals into the cached downstream program. Everything
+        // else cascades as `extern`, and SRD-13f's per-activation
+        // materialization (matter interpreter's cell wiring +
+        // `materialize_wiring_from_outer` Step 3 const pull)
+        // delivers the correct value on each fresh subscope
+        // build.
+        //
+        // Workload params naturally fall into the leaf-const
+        // branch: each scope's cascade emits
+        // `const NAME := <literal>` for them, which the next
+        // scope's compile-fold pass collapses to a literal leaf
+        // node (provenance == 0). By the time a phase cascade
+        // examines its parent's workload-param outputs, they're
+        // leaf consts and get inlined automatically — no
+        // `is_workload_param` special case needed.
         let (node_idx, port_idx) = parent_program.resolve_output_by_index(
             parent_program.output_index(&owned).unwrap()
         );
+        let upstream_is_statically_known =
+            parent_program.input_provenance_for(node_idx) == 0;
+        if upstream_is_statically_known
+            && let Some(value) = parent_kernel.lookup(&owned)
+            && let Some(natural) = value_to_param_string(&value)
+        {
+            let line = format_param_binding_line(&owned, &natural);
+            source.push_str(&line);
+            source.push('\n');
+            emitted.insert(owned);
+            continue;
+        }
         let port_type = parent_program.node_meta(node_idx).outs[port_idx].typ;
         let type_name = match port_type {
             nbrs_variates::node::PortType::U64 => "u64",
@@ -2105,22 +2149,60 @@ pub fn build_scope(
                     continue;
                 }
                 if m == BindingModifier::CONST {
-                    // SRD-13f §"Wire-reference classification" —
-                    // case 1: promoted-final. Read the value from
-                    // the parent kernel's folded-constant state
-                    // and inline it as `const name := <literal>`
-                    // via `add_param_binding`, which handles the
-                    // numeric / boolean / quoted-string formatting
-                    // already used for workload-param injection.
-                    // Falls back to extern cascade when the value
-                    // isn't representable as a GK source literal
-                    // (vectors, JSON, Ext, Handle, Bytes).
-                    if let Some(value) = parent_kernel_ref.get_constant(name) {
-                        if let Some(natural) = value_to_param_string(value) {
-                            scope.add_param_binding(name, &natural);
-                            already_satisfied.insert(name.to_string());
-                            continue;
-                        }
+                    // SRD-13f §"Materialization gradient" — inline
+                    // as `const NAME := <literal>` only when the
+                    // upstream value is **statically known**. Per
+                    // SRD-11 §"Two Evaluation Lifecycles", the
+                    // `const` modifier has two implementation
+                    // paths: compile-fold (the producing node is
+                    // replaced with a leaf const node, value is
+                    // part of the compiled artifact and identical
+                    // across every activation) vs. scope-init pull
+                    // (when the binding's wire chain touches
+                    // iteration externs, the producing node stays
+                    // as the original computation node; the value
+                    // is computed per scope activation and lives
+                    // only for that activation per SRD-13c
+                    // §"const").
+                    //
+                    // The cascaded source built here gets compiled
+                    // and cached on the phase scope-tree node, so
+                    // its lifetime is the workload run — longer
+                    // than any single activation. Inlining a
+                    // scope-init-pulled value would freeze the
+                    // first activation's value into the cached
+                    // program forever, breaking every subsequent
+                    // iteration of an enclosing comprehension
+                    // (the symptom: `const mode := sm` inside a
+                    // `for_each sm in alpha, beta` reads `alpha`
+                    // for both iters).
+                    //
+                    // SRD-11 §"Provenance-Based Invalidation"
+                    // gives the discriminator at zero cost: a
+                    // truly statically-known node has empty input
+                    // provenance (it depends on no graph inputs);
+                    // a passthrough or computation node has bits
+                    // set for the input slots it reads. We inline
+                    // only when provenance is empty; otherwise we
+                    // fall through to the auto-extern cascade
+                    // below so each activation re-pulls the value
+                    // through the chain via
+                    // `materialize_wiring_from_outer` Step 3.
+                    let prov = parent_kernel_ref.program()
+                        .output_index(name)
+                        .map(|out_idx| {
+                            let (node_idx, _) = parent_kernel_ref.program()
+                                .resolve_output_by_index(out_idx);
+                            parent_kernel_ref.program().input_provenance_for(node_idx)
+                        })
+                        .unwrap_or(0);
+                    if prov == 0
+                        && let Some(value) = parent_kernel_ref.get_constant(name)
+                        && let Some(natural) = value_to_param_string(value)
+                    {
+                        scope.add_param_binding(name, &natural);
+                        already_satisfied.insert(name.to_string());
+                        continue;
                     }
                     continue;
                 }

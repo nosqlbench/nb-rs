@@ -81,20 +81,25 @@ fn first_line(stdout: &str, prefix: &str) -> String {
 #[test]
 fn stdlib_arithmetic_u64() {
     // 10 + 3 = 13, 10 - 3 = 7, 10 * 3 = 30, 10 / 3 = 3 (integer),
-    // 10 % 3 = 1, 10 ** 2 = 100.
+    // 10 % 3 = 1, 10 ** 2 = 100. `pow` returns f64 even for
+    // integer operands, so it renders with the explicit-float
+    // suffix (whole-number floats are `<n>.0` in display per
+    // `Value::F64::to_display_string`).
     let (stdout, stderr, ok) = run_scenario("arithmetic_u64");
     assert!(ok, "scenario failed: {stderr}");
     assert_eq!(first_line(&stdout, "lib/arith_u64 "),
-        "lib/arith_u64 sum=13 diff=7 prod=30 quot=3 rem=1 pow=100");
+        "lib/arith_u64 sum=13 diff=7 prod=30 quot=3 rem=1 pow=100.0");
 }
 
 #[test]
 fn stdlib_arithmetic_f64() {
     // 2 + 8 = 10, 8 - 2 = 6, 2 * 8 = 16, 8 / 2 = 4, 2 ** 3 = 8.
+    // Each result is f64; whole-number floats render with the
+    // explicit `.0` suffix per `Value::F64::to_display_string`.
     let (stdout, stderr, ok) = run_scenario("arithmetic_f64");
     assert!(ok, "scenario failed: {stderr}");
     assert_eq!(first_line(&stdout, "lib/arith_f64 "),
-        "lib/arith_f64 sum=10 diff=6 prod=16 quot=4 power=8");
+        "lib/arith_f64 sum=10.0 diff=6.0 prod=16.0 quot=4.0 power=8.0");
 }
 
 #[test]
@@ -143,11 +148,14 @@ fn stdlib_comparison_ops() {
 
 #[test]
 fn stdlib_conversion_to_f64_to_u64() {
-    // 42 → 42.0 → 42 round-trip.
+    // 42 → 42.0 → 42 round-trip. The f64 intermediate renders
+    // with the explicit `.0` suffix per
+    // `Value::F64::to_display_string`; the u64 round-trip
+    // strips it back to bare `42`.
     let (stdout, stderr, ok) = run_scenario("conversion_to_f64_to_u64");
     assert!(ok, "scenario failed: {stderr}");
     assert_eq!(first_line(&stdout, "lib/convert "),
-        "lib/convert as_f64=42 back_u64=42");
+        "lib/convert as_f64=42.0 back_u64=42");
 }
 
 #[test]

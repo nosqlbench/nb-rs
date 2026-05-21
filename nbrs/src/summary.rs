@@ -91,10 +91,8 @@ pub fn list_workload_summary_names(workload_path: &Path) -> Vec<String> {
 /// `(name, spec_text)` pairs for every `table` item, in
 /// declaration order (SRD-46).
 fn load_workload_summaries(path: &Path) -> Result<Vec<(String, String)>, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("read: {e}"))?;
-    let workload = nbrs_workload::parse::parse_workload(
-        &text, &std::collections::HashMap::new(),
+    let workload = nbrs_workload::parse::parse_workload_from_path(
+        path, &std::collections::HashMap::new(),
     ).map_err(|e| format!("parse: {e}"))?;
     let entries: Vec<(String, String)> = workload.report.items()
         .filter(|i| matches!(i.kind, nbrs_workload::report::Kind::Table))

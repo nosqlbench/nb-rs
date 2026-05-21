@@ -437,7 +437,16 @@ impl Value {
     pub fn to_display_string(&self) -> String {
         match self {
             Value::U64(v) => v.to_string(),
-            Value::F64(v) => v.to_string(),
+            // `{v:?}` (Rust Debug) for f64 always includes at
+            // least one fractional digit, so whole-number floats
+            // render as `1.0` instead of `1` — distinguishing
+            // them from integers in CQL OPTIONS strings, plot
+            // labels, and other surfaces where the type matters.
+            // Display-formatted (`v.to_string()`) strips the
+            // trailing zero, conflating ints with whole-number
+            // floats. Both forms produce identical output for
+            // non-whole floats (`1.5 → "1.5"`).
+            Value::F64(v) => format!("{v:?}"),
             Value::Bool(v) => v.to_string(),
             Value::Str(v) => v.to_string(),
             Value::Bytes(v) => v.iter().map(|b| format!("{b:02x}")).collect(),
@@ -447,6 +456,10 @@ impl Value {
             Value::VecF32(arc) => {
                 // JSON-array text. Per-element format-write into a
                 // pre-sized String avoids the intermediate Vec<String>.
+                // Debug formatter (`{v:?}`) matches the F64 element
+                // rule above: whole-number floats render as `1.0`
+                // so VecF32 stays distinguishable from VecI32 at the
+                // display surface.
                 let mut s = String::with_capacity(arc.len() * 8 + 2);
                 s.push('[');
                 let mut first = true;
@@ -454,7 +467,7 @@ impl Value {
                     if !first { s.push(','); }
                     first = false;
                     use std::fmt::Write;
-                    let _ = write!(&mut s, "{v}");
+                    let _ = write!(&mut s, "{v:?}");
                 }
                 s.push(']');
                 s

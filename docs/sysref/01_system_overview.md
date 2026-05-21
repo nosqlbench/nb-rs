@@ -140,16 +140,13 @@ deterministic from the cycle input.
 
 ---
 
-## Persona Model
+## Single Binary, Feature-Gated Drivers
 
-The core `nbrs` binary includes lightweight universal adapters
-(stdout, HTTP, model). Protocol-specific testing requires native
-drivers that bring heavy dependencies (C++ libraries, system
-packages). These are built as separate **persona** binaries.
-
-`nbrs` is the single user-facing binary. Protocol drivers that
-need heavy or non-portable build dependencies are gated behind
-Cargo features so users compile in only what they need:
+`nbrs` is the single user-facing binary. Lightweight universal
+adapters (stdout, HTTP, model) are always linked in. Protocol
+drivers that need heavy or non-portable build dependencies are
+gated behind Cargo features so users compile in only what they
+need:
 
 - **engine-scylla** (default) — pure-Rust ScyllaDB driver
 - **engine-cassandra-cpp** (opt-in) — Apache Cassandra C++
@@ -159,8 +156,8 @@ Cargo features so users compile in only what they need:
 - **openapi** — OpenAPI 3.x workload synthesis (adds
   `describe-openapi` / `run-openapi` subcommands)
 
-See [SRD 61](61_personas.md) for the feature-gating model and
-the rationale for retiring the earlier persona-binary approach.
+See [SRD 61](61_single_binary.md) for the full feature-gating
+model and adapter selection.
 
 ---
 

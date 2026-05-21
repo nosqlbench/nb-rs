@@ -15,6 +15,12 @@ use crate::model::{
 use crate::template::expand_templates;
 
 /// Parse a YAML workload string into a normalized Workload.
+///
+/// In-memory entry point: callers that have already resolved the
+/// source text. **Rejects `extends:`** because there is no
+/// resolution context for the relative path (no including-file
+/// directory). Callers that need `extends:` support must use
+/// [`parse_workload_from_path`].
 pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Result<Workload, String> {
     // Stage 1: TEMPLATE expansion
     let expanded = expand_templates(yaml_source, params);
@@ -25,6 +31,18 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
 
     let obj = doc.as_object()
         .ok_or("workload must be a YAML mapping")?;
+
+    // SRD-72: `extends:` requires a resolution context. The
+    // text-only entry point has no including-file directory, so
+    // a top-level `extends:` here is unresolvable. Direct the
+    // caller to `parse_workload_from_path` instead.
+    if obj.contains_key("extends") {
+        return Err(
+            "workload declares `extends:` but parse_workload was called \
+             without a file path; use parse_workload_from_path instead"
+                .to_string(),
+        );
+    }
 
     // Stage 3: Extract top-level fields
     let description = obj.get("description")
@@ -224,6 +242,20 @@ pub fn parse_workload(yaml_source: &str, params: &HashMap<String, String>) -> Re
         readouts,
         wrappers: None,
     })
+}
+
+/// Path-based entry point: load a workload YAML from disk,
+/// follow its `extends:` chain (SRD-72), and parse the merged
+/// result into a [`Workload`].
+///
+/// `path` MUST be an existing file. Relative paths are resolved
+/// against the cwd before being passed to the loader.
+pub fn parse_workload_from_path(
+    path: &std::path::Path,
+    params: &HashMap<String, String>,
+) -> Result<Workload, String> {
+    let merged_yaml = crate::extends::load_and_merge(path)?;
+    parse_workload(&merged_yaml, params)
 }
 
 /// Parse the workload's `readouts:` block per SRD-63 §5.0.

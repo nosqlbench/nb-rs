@@ -1,0 +1,132 @@
+# Copyright 2024-2026 Jonathan Shook
+# SPDX-License-Identifier: Apache-2.0
+#
+# scenario_set_iter_var.yaml
+#
+# Verifies the load-bearing pattern used by the index-sweep
+# workload (`full_cql_vector_sweep.yaml`'s `idx_sweep`
+# scenario): an outer `for_each` binds an iter-var, a nested
+# `set:` block shadows a workload-param using the iter-var via
+# text-template, and a further-nested `for_each` clause source
+# references the same outer iter-var.
+#
+# Three invariants the test checks:
+#
+#   1. `set: { mode: "{sm}" }` interpolates the OUTER iter-var
+#      `sm` per-iter and produces `const mode := "<value-of-sm>"`
+#      in the local scope.
+#   2. A phase inside the set: scope reading `{mode}` sees the
+#      shadowed value, not the workload-param default.
+#   3. A further-nested `for_each: "table in fknn_{sm}"` resolves
+#      `{sm}` against the outer iter-var (the set: scope between
+#      them does NOT occlude the parent for_each var).
+#
+# Spec references:
+#   - SRD-18b §"Scope tree and scheduler" — chain composition
+#   - SRD-18c §"Layered grammar" — for_each clause interpolation
+#   - SRD-13f §"Local-authoritative shadow" — set: shadowing rule
+#   - `examples/workloads/scenario_param_overrides.yaml` —
+#     the basic set: cases this extends.
+
+params:
+  # Workload-root default. Should be shadowed by `set: { mode:
+  # "{sm}" }` per-iter, so no `mode=default` should appear in
+  # output for the sweep scenario.
+  mode: default
+
+scenarios:
+
+  # Baseline: set: shadows a workload-param via a constant
+  # (no iter-var involved). Should print `mode=verbose`.
+  baseline_constant:
+    - set: { mode: verbose }
+      phases:
+        - announce_mode
+
+  # Case 2: phase reads iter-var directly (no set: shadow).
+  # Should print:
+  #   mode=default sm=alpha
+  #   mode=default sm=beta
+  iter_var_passthrough:
+    - for_each: "sm in alpha, beta"
+      phases:
+        - announce_mode_and_sm
+
+  # Case 3: long-form bindings: block referencing iter-var as
+  # a bare identifier (no `{...}` string interpolation). Should
+  # print:
+  #   mode=alpha
+  #   mode=beta
+  bare_iter_var_in_bindings:
+    - for_each: "sm in alpha, beta"
+      phases:
+        - bindings: |
+            const mode := sm
+          phases:
+            - announce_mode
+
+  # Case 4: long-form bindings: with string interpolation of
+  # the iter-var. Should print:
+  #   mode=alpha
+  #   mode=beta
+  string_interp_iter_var_in_bindings:
+    - for_each: "sm in alpha, beta"
+      phases:
+        - bindings: |
+            const mode := "{sm}"
+          phases:
+            - announce_mode
+
+  # Case 5: the load-bearing pattern. set: sugar with
+  # `{iter-var}` text-template. Should print:
+  #   mode=alpha
+  #   mode=beta
+  set_sugar_iter_var:
+    - for_each: "sm in alpha, beta"
+      phases:
+        - set: { mode: "{sm}" }
+          phases:
+            - announce_mode
+
+  # Case 6: nested for_each inside set: scope, with the inner
+  # source referencing the outer iter-var. Should print four
+  # lines:
+  #   mode=alpha
+  #   table=fknn_alpha mode=alpha
+  #   mode=beta
+  #   table=fknn_beta mode=beta
+  nested_for_under_set:
+    - for_each: "sm in alpha, beta"
+      phases:
+        - set: { mode: "{sm}" }
+          phases:
+            - announce_mode
+            - for_each: "table in fknn_{sm}"
+              phases:
+                - announce_table
+
+phases:
+
+  announce_mode:
+    adapter: stdout
+    cycles: 1
+    concurrency: 1
+    ops:
+      msg:
+        stmt: "mode={mode}"
+
+  announce_mode_and_sm:
+    adapter: stdout
+    cycles: 1
+    concurrency: 1
+    ops:
+      msg:
+        stmt: "mode={mode} sm={sm}"
+
+  announce_table:
+    adapter: stdout
+    cycles: 1
+    concurrency: 1
+    ops:
+      msg:
+        stmt: "table={table} mode={mode}"

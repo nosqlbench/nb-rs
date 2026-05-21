@@ -796,10 +796,8 @@ pub(crate) fn resolve_items(
         if !resolved.exists() {
             return Err(format!("workload '{}' not found", resolved.display()));
         }
-        let text = std::fs::read_to_string(&resolved)
-            .map_err(|e| format!("read '{}': {e}", resolved.display()))?;
-        let workload = nbrs_workload::parse::parse_workload(
-            &text, &std::collections::HashMap::new())?;
+        let workload = nbrs_workload::parse::parse_workload_from_path(
+            &resolved, &std::collections::HashMap::new())?;
         // Workload-param interpolation: report items (the
         // `label "..."` and the body lines) routinely
         // contain `{cql_dialect}`-style placeholders that

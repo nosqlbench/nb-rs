@@ -1645,7 +1645,7 @@ impl OpDispenser for CqlBatchDispenser {
 
 // =========================================================================
 // CqlTimeuuid GK node + its inventory registration moved to
-// `crate::common::nodes`. Every CQL persona that links this
+// `crate::common::nodes`. Every CQL engine that links this
 // adapter gets the node for free regardless of which engine
 // feature is enabled.
 // =========================================================================

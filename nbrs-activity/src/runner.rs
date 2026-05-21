@@ -436,14 +436,20 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
 
         workload_file = Some(workload_path.clone());
 
+        // SRD-72: parse_workload_from_path resolves any
+        // `extends:` chain before delegating to parse_workload.
+        // The merged YAML text is what the parser consumes; the
+        // raw on-disk text is still kept for diagnostic
+        // `<path>:<line>:<col>` reporting (no source-map across
+        // include boundaries today — diagnostics on inherited
+        // fields point at the merged-output position).
         let yaml_source = std::fs::read_to_string(&workload_path)
             .map_err(|e| format!("read workload '{workload_path}': {e}"))?;
-        let workload = nbrs_workload::parse::parse_workload(&yaml_source, &params)
+        let workload = nbrs_workload::parse::parse_workload_from_path(
+            std::path::Path::new(&workload_path),
+            &params,
+        )
             .map_err(|e| format!("parse workload: {e}"))?;
-        // Stash the raw YAML for runtime error diagnostics — the
-        // dispatch layer formats `<path>:<line>:<col>: …` when a
-        // for_each spec or do_while condition fails interpolation,
-        // so the user can jump to the exact source location.
         workload_source_text = Some(yaml_source);
         workload
     };

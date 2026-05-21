@@ -20,7 +20,7 @@ compile_error!(
 // Engine-agnostic surface (config / consistency / op-mode / GK
 // nodes / `cql` alias resolver). Always compiled — the resolver's
 // inventory submission is what makes `adapter=cql` work even
-// when the persona links a single engine.
+// when only a single engine feature is linked.
 pub mod common;
 
 #[cfg(feature = "engine-scylla")]

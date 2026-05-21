@@ -612,6 +612,22 @@ fn execute_node<'a>(
                 // final transit-suppression rule in
                 // `materialize_wiring_from_outer` — uniform with
                 // every other scope.
+                //
+                // The installed kernel was synthesised once at
+                // workload-load time. When this Bindings scope
+                // appears under a `for_each`, the enclosing
+                // iteration's per-iter `bound_kernel` is what's
+                // currently in `ctx.current_parent_kernel`; the
+                // installed kernel's chain was wired against the
+                // STRUCTURAL parent (no per-iter values). To pick
+                // up iter-var bindings (and any per-iter shadows
+                // from outer-scope `set:` nodes), build a fresh
+                // subscope from the installed kernel's program
+                // chained to the current parent. This is the
+                // same chain-extension `dispatch_comprehension`
+                // does for its per-iter bound_kernel
+                // (`from_program → materialize_wiring_from_outer`
+                // sequence, SRD-67 Phase 3).
                 let scope_idx = ctx.scope_tree
                     .find_bindings_scope(source)
                     .ok_or_else(|| format!(
@@ -631,8 +647,39 @@ fn execute_node<'a>(
                         "bindings: {one_line} ({} children)",
                         children.len());
                 }
+                // Per-iter compile from the program preserves the
+                // cached parse + wiring (same Arc<GkProgram>) while
+                // giving us a fresh state that re-runs the const
+                // materialisation (step 3 of
+                // `materialize_wiring_from_outer`) against the
+                // current parent's outputs. This is the same
+                // recipe the for_each dispatcher uses for its
+                // own per-iter `bound_kernel` (from_program →
+                // materialize_wiring_from_outer). The cached
+                // `installed` kernel's state held iter-1's
+                // computed values; reusing it directly froze
+                // every `const X := <expr-with-iter-var>` at the
+                // first iter's value.
+                let chained = match ctx.current_parent_kernel.as_ref() {
+                    Some(parent) => {
+                        let matter = nbrs_variates::subcontext::GkMatter::builder()
+                            .program(installed.program().clone())
+                            .build()
+                            .map_err(|e| format!(
+                                "bindings scope at index {scope_idx}: \
+                                 build subscope matter: {e:?}",
+                            ))?;
+                        parent.build_subscope(matter)
+                            .map(std::sync::Arc::new)
+                            .map_err(|e| format!(
+                                "bindings scope at index {scope_idx}: \
+                                 chain to current parent kernel: {e:?}",
+                            ))?
+                    }
+                    None => installed,
+                };
                 let prior_parent = ctx.current_parent_kernel.take();
-                ctx.current_parent_kernel = Some(installed);
+                ctx.current_parent_kernel = Some(chained);
                 let res = execute_tree_at(ctx, children, depth + 1).await;
                 ctx.current_parent_kernel = prior_parent;
                 res?;

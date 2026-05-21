@@ -68,6 +68,46 @@ params:
   # level even when nothing overrides it.
   rerank_mode: default
 
+  # ────────────────────────────────────────────────────────────
+  # SAI vector index build knobs — emitted into every
+  # `CREATE CUSTOM INDEX … WITH OPTIONS = {…}` (SRD-72 schema
+  # extension).
+  #
+  # Each knob has a documented stable default. Sibling sweep
+  # workloads (`full_cql_vector_sweep.yaml`) shadow individual
+  # values via scenario-tree `set:` to probe the parameter
+  # space; production scenarios run with the defaults below
+  # so the schema is reproducible across cndb releases (i.e.
+  # we don't depend on the cluster's current build-path
+  # defaults for `neighborhood_overflow` / `alpha`).
+  #
+  # source_model — picks compression ratio + overquery factor.
+  #   `OTHER` is the cndb-fallback (generic compression, generic
+  #   overquery), chosen so the schema doesn't assume a specific
+  #   embedding family. Sweepable: ADA002, OPENAI_V3_SMALL,
+  #   OPENAI_V3_LARGE, BERT, GECKO, NV_QA_4, COHERE_V3, OTHER.
+  source_model: OTHER
+  # maximum_node_connections — HNSW M parameter (doubled
+  #   internally → effective max-degree = 32 at M=16). cndb
+  #   default. Range 1..512. Sweepable.
+  maximum_node_connections: 16
+  # construction_beam_width — HNSW efConstruction. cndb
+  #   default. Up to 3200. Sweepable.
+  construction_beam_width: 100
+  # enable_hierarchy — hierarchical layers atop the jVector
+  #   graph. cndb default off. Sweepable.
+  enable_hierarchy: false
+  # neighborhood_overflow — Vamana/DiskANN edge-pruning slack
+  #   during build. cndb default varies by build path
+  #   (in-memory vs compaction); 1.2 is a stable mid-range
+  #   value used widely in jVector tuning notes. Sweepable.
+  neighborhood_overflow: 1.2
+  # alpha — Vamana relative-density pruning factor. Same
+  #   "default varies by build path" caveat as
+  #   neighborhood_overflow; 1.2 is the canonical cosine-space
+  #   tuning. Sweepable.
+  alpha: 1.2
+
 # Unified report block (SRD-46): plots + tables in declaration
 # order. Each scenario contributes its items to its own
 # scenario-specific markdown file so the post-run reports stay
@@ -244,11 +284,27 @@ phases:
           }
 
       create_vector_index:
+        # Every SAI vector-index build knob is emitted here. Values
+        # come from the workload's `params:` block (documented
+        # defaults) and may be shadowed by scenario-tree `set:`
+        # nodes for sweep workloads. Keeping the schema explicit
+        # (rather than relying on cndb's build-path defaults for
+        # alpha / neighborhood_overflow) makes runs reproducible
+        # across cluster versions — see SRD-72 §"Schema phase
+        # extension" and the per-knob comments in `params:`.
         raw: |
           CREATE CUSTOM INDEX IF NOT EXISTS {table}{vector_idx_suffix}
           ON {keyspace}.{table} (value)
           USING 'StorageAttachedIndex'
-          WITH OPTIONS = {'similarity_function': '{similarity_function}'}
+          WITH OPTIONS = {
+            'similarity_function': '{similarity_function}',
+            'source_model': '{source_model}',
+            'maximum_node_connections': '{maximum_node_connections}',
+            'construction_beam_width': '{construction_beam_width}',
+            'enable_hierarchy': '{enable_hierarchy}',
+            'neighborhood_overflow': '{neighborhood_overflow}',
+            'alpha': '{alpha}'
+          }
       create_metadata_index:
         raw: |
           CREATE CUSTOM INDEX IF NOT EXISTS {table}{meta_idx_suffix}

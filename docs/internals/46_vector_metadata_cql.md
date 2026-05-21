@@ -14,7 +14,7 @@ queries involve:
 
 The `vectordata` crate provides these as structured binary data via
 the `veks-anode` wire format (MNode for metadata, PNode for
-predicates). The `nbrs` persona needs to translate this data
+predicates). `nbrs` needs to translate this data
 into CQL for Cassandra/SAI vector workloads.
 
 ## The Translation Problem

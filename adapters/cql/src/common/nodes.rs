@@ -6,7 +6,7 @@
 //! Currently just [`CqlTimeuuid`] — a deterministic RFC 4122
 //! version-1 UUID generator suited for `timeuuid` columns. Lives
 //! here (rather than in any one engine adapter) so that every
-//! CQL persona registers the same node set and workloads using
+//! CQL engine registers the same node set and workloads using
 //! `cql_timeuuid(...)` are portable across engines.
 
 use nbrs_variates::node::{

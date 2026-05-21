@@ -6,8 +6,8 @@
 //! Shell completion is owned by [`nbrs_activity::completions`] — the
 //! same harness `nbrs` uses — so `nbrs run workload=<TAB>`,
 //! `scenario=<TAB>`, `adapter=<TAB>`, etc. all expand identically
-//! across personas. `main.rs` wires it up; nothing in this file
-//! duplicates that logic.
+//! regardless of which adapter features are linked. `main.rs` wires
+//! it up; nothing in this file duplicates that logic.
 
 /// Legacy human-readable usage text. Today's CLI surface is built
 /// from `cli_spec` and renders help via that path; this function

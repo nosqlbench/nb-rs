@@ -5,12 +5,6 @@ that need heavy or non-portable build requirements (C++
 toolchain, system libraries) are gated behind Cargo features,
 so users compile in only what they need.
 
-This is a deliberate flip from the earlier *persona* model
-(separate binaries per protocol family). Personas were retired
-in favor of features once the cost of multi-binary maintenance
-(duplicate `main.rs`, duplicate TUI wiring, fork drift) outgrew
-the benefit (avoiding optional deps).
-
 ---
 
 ## Architecture
@@ -125,7 +119,7 @@ nbrs run adapter=cql cqldriver=cassandra-cpp
 
 ---
 
-## Why features instead of personas
+## Why feature-gating
 
 - **Single composition root.** One `main.rs`, one TUI wiring,
   one set of subcommand dispatch. No fork drift.

@@ -94,9 +94,18 @@ pub fn render_workload_params_source(
 }
 
 /// Format a workload-param string as a GK literal, detecting
-/// the natural type. Numbers and booleans pass through; any
-/// other string becomes a quoted string literal with embedded
-/// quotes / backslashes properly escaped.
+/// the natural type. Integers parse as `IntLit`, floats as
+/// `FloatLit`; everything else is emitted as a quoted string
+/// literal so the GK lexer always has a token kind to read.
+///
+/// `true` / `false` are NOT special-cased: GK's lexer has no
+/// boolean token kind, so a bare `false` would parse as an
+/// identifier (wire reference) and fail kernel compilation.
+/// Workload params carrying boolean-looking strings are
+/// emitted as `"true"` / `"false"`; downstream consumers can
+/// `str_eq(x, "true")` if they need a real comparison, and the
+/// CQL `WITH OPTIONS` interpolation path already wants string
+/// values inside the single-quoted clause.
 ///
 /// Mirrors `crate::scope::format_workload_param_as_gk_literal`
 /// — kept private here for the params-kernel path so this
@@ -108,9 +117,6 @@ fn format_value_as_gk_literal(value: &str) -> String {
         return trimmed.to_string();
     }
     if trimmed.parse::<f64>().is_ok() {
-        return trimmed.to_string();
-    }
-    if trimmed == "true" || trimmed == "false" {
         return trimmed.to_string();
     }
     // Embed as a quoted string. Escape any embedded backslash
@@ -145,12 +151,34 @@ mod tests {
             ("strict", "true"),
         ]));
         // Sorted by name: count, dataset, k_values, ratio, strict.
+        // Numbers pass through as bare literals; booleans round-
+        // trip as quoted strings because GK has no bool token kind
+        // (a bare `true` would parse as an identifier).
         let expected = "const count := 100\n\
                         const dataset := \"sift1m\"\n\
                         const k_values := \"1,10\"\n\
                         const ratio := 0.95\n\
-                        const strict := true\n";
+                        const strict := \"true\"\n";
         assert_eq!(src, expected);
+    }
+
+    #[test]
+    fn boolean_strings_compile_as_string_consts() {
+        // Regression: workload params like
+        //   enable_hierarchy: "false"
+        // used to emit `const enable_hierarchy := false`, which
+        // GK rejected as an unknown wire. They must round-trip as
+        // quoted strings so the params-kernel compiles.
+        let kernel = build_workload_params_kernel(&h(&[
+            ("enable_hierarchy", "false"),
+            ("debug_mode", "true"),
+        ])).unwrap();
+        let eh = kernel.lookup("enable_hierarchy")
+            .expect("enable_hierarchy must resolve");
+        let dm = kernel.lookup("debug_mode")
+            .expect("debug_mode must resolve");
+        assert_eq!(eh.to_display_string(), "false");
+        assert_eq!(dm.to_display_string(), "true");
     }
 
     #[test]
@@ -206,18 +234,18 @@ mod tests {
     }
 
     #[test]
-    fn boolean_values_emit_unquoted_literals() {
-        // GK's bool literal handling lives in the DSL compiler;
-        // here we just verify the source we emit matches the
-        // legacy `format_workload_param_as_gk_literal`
-        // convention. Names are arbitrary — `flag_t` and
-        // `flag_f` are placeholders chosen to make the
-        // true/false correspondence obvious in the assertion.
+    fn boolean_values_emit_quoted_strings() {
+        // GK's lexer has no boolean token kind, so bare `true` /
+        // `false` would parse as identifiers (wire references)
+        // and fail kernel compilation. The formatter therefore
+        // emits boolean-looking strings as quoted string
+        // literals; downstream consumers that need a real
+        // boolean comparison can `str_eq(x, "true")`.
         let src = render_workload_params_source(&h(&[
             ("flag_t", "true"),
             ("flag_f", "false"),
         ]));
-        assert!(src.contains("const flag_f := false\n"));
-        assert!(src.contains("const flag_t := true\n"));
+        assert!(src.contains("const flag_f := \"false\"\n"));
+        assert!(src.contains("const flag_t := \"true\"\n"));
     }
 }

@@ -161,7 +161,12 @@ fn format_f64(v: f64, spec: &FormatSpec) -> String {
     let raw = if let Some(prec) = spec.precision {
         format!("{v:.prec$}")
     } else {
-        v.to_string()
+        // Bare `{}` for f64 uses Debug formatting so whole-number
+        // floats render as `1.0` instead of `1`, matching
+        // `Value::F64::to_display_string`. Authors who want
+        // integer-style output for whole floats specify a
+        // precision (`{:.0}`) or convert via `format_u64`.
+        format!("{v:?}")
     };
     apply_width(&raw, spec)
 }

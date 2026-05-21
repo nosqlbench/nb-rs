@@ -1,0 +1,297 @@
+#!/usr/bin/env nbrs
+# CQL Vector Search — Parameter-Space Sweep Sibling
+#
+# Diagnostic workload that extends `full_cql_vector.yaml` (SRD-72
+# `extends:`) and adds two scenarios that probe the cndb SAI vector
+# index parameter space:
+#
+#   - `query_sweep` — runs against the existing fknn_default table
+#     (no schema/rampup). Single comprehension level over the
+#     query-only params (rerank_k_strategy × pruning_strategy ×
+#     k × limit) at full LIMIT density.
+#
+#   - `idx_sweep`   — two-level comprehension. Outer level: index-
+#     affecting params (source_model, maximum_node_connections,
+#     construction_beam_width, enable_hierarchy,
+#     neighborhood_overflow, alpha), `order extrema/1` so corners
+#     run first. Each outer iter owns one table+index lifecycle
+#     (teardown → schema → rampup → flush+compact+await). Inner
+#     level: query-only params, one query phase per inner iter
+#     against the just-built table.
+#
+# Usage:
+#   nbrs run workload=full_cql_vector_sweep.yaml scenario=query_sweep
+#   nbrs run workload=full_cql_vector_sweep.yaml scenario=idx_sweep
+#
+# Phase A precondition: `test_fknn` (or `fulltest`) from the parent
+# workload must have populated `fknn_default` first; this scenario
+# reuses that data.
+#
+# Phase B cost: 2^6 = 64 outer index variants × ~30 min rampup
+# ≈ ~32 h dominated by rampup. Inner query slice is 4 cells × 30 s
+# per variant = ~2 min. See `local/brute_force.md` for the cost-model
+# analysis driving the strategy choices.
+
+extends: ./full_cql_vector.yaml
+
+# Strategy params (`rerank_k_strategy`, `pruning_strategy`) are
+# NOT declared as workload params because both sweep scenarios
+# bind them as iter-vars at every cell — workload-param name
+# collision with iter-var is rejected at scenario-tree compile
+# time. The new `pvs_query_sweep` phase reads them through the
+# scope chain that `set:` populates inside each inner-level
+# comprehension.
+#
+# Value taxonomy (for reference, used in the iter clauses):
+#
+#   rerank_k_strategy ∈ { default, pin1, pin2, pin4, pin_max }
+#     default — emit no `rerank_k` key; cndb picks rerank_k from
+#               the source_model's tapered multiplier and may
+#               flip to brute force.
+#     pin1    — rerank_k = LIMIT
+#     pin2    — rerank_k = 2 * LIMIT
+#     pin4    — rerank_k = 4 * LIMIT
+#     pin_max — rerank_k = 1000 (effectively the SAI cap;
+#               `sai_ann_rerank_k_max_value` guardrail).
+#
+#   pruning_strategy ∈ { default, off, on }
+#     default — emit no `use_pruning` key; cndb's
+#               JVECTOR_USE_PRUNING_DEFAULT applies.
+#     off     — use_pruning = false (forces denser traversal).
+#     on      — use_pruning = true.
+
+# No workload-level bindings — the sweep computes per-iter
+# label values via parallel-iter (concat-based) zipped clauses
+# inside the comprehension; see the `idx_sweep` scenario below.
+# Workload-level bindings can't see scenario-tree `set:` shadows,
+# so any label that varies per iter must live inside the iter
+# itself.
+
+# Sweep-specific report sections — child-merged into the parent's
+# `report:` (SRD-72 per-section merge). Parent's `oracles_section`
+# stays intact for any test_oracles run.
+report:
+  sweep_query_section: |
+    file sweep_query_report.md as 'PVS Query Strategy Sweep'
+
+    text query_sweep_heading as "Introduction":
+     This report covers `query_sweep`: per-query-strategy ANN/recall
+     sweep against the existing `fknn_default` table. The plots
+     surface the bimodal-recall regime (low-LIMIT approximate ANN)
+     vs the brute-force-selected regime (high-LIMIT exact). Series
+     are faceted per `(rerank_k_strategy, pruning_strategy)` so the
+     two regimes are visible without averaging across LIMIT.
+
+    plot recall_vs_qps_by_strategy:
+      label: "Recall vs QPS, by query strategy"
+      scale: 2
+      legend: br
+      y1: (cycles_total_rate, recall_mean){phase=~"pvs_query_sweep"} by (rerank_k_strategy,pruning_strategy,k,limit)
+      point-label1: limit
+      x-legend: "QPS (log)"
+      x-scale: log
+      y-side: left
+      y-labels: ["recall"]
+      y-legends: ["[rerank_k_strategy]/[pruning_strategy] k=[k]"]
+      y-ranges: [[,1.0]]
+      series: rerank_k_strategy,pruning_strategy,k
+
+    table recall_query_sweep:
+      group_by: rerank_k_strategy,pruning_strategy
+      query: recall: avg(recall_mean{k="10"}) by (rerank_k_strategy,pruning_strategy,limit)
+      query: latency: avg(cycles_servicetime_mean) by (rerank_k_strategy,pruning_strategy,limit)
+
+  sweep_idx_section: |
+    file sweep_idx_report.md as 'Index-Build Parameter Sweep'
+
+    text idx_sweep_heading as "Introduction":
+     This report covers `idx_sweep`: 64 corner variants of the
+     6-dimensional index-build parameter cube (source_model ×
+     maximum_node_connections × construction_beam_width ×
+     enable_hierarchy × neighborhood_overflow × alpha). Each
+     variant runs a fixed 4-cell query slice (rerank_k_strategy
+     ∈ {default, pin1} × pruning_strategy ∈ {default, off}) at
+     k=10, limit=50. Tuples are emitted in extrema-first order
+     so early-stopping the run still covers the corners.
+
+    table recall_idx_sweep:
+      group_by: source_model,maximum_node_connections,construction_beam_width
+      query: recall: avg(recall_mean) by (source_model,maximum_node_connections,construction_beam_width,enable_hierarchy,neighborhood_overflow,alpha,rerank_k_strategy,pruning_strategy)
+      query: latency_p99: avg(cycles_servicetime_p99) by (source_model,maximum_node_connections,construction_beam_width,enable_hierarchy,neighborhood_overflow,alpha,rerank_k_strategy,pruning_strategy)
+
+scenarios:
+
+  # ── Phase A: query-path sweep on existing data ───────────────
+  #
+  # Single comprehension level — all query-only params bundled
+  # into one clause list. k declared before limit so
+  # `limit in {k_{k}_limits}` resolves against the freshly-bound k.
+  # No schema/rampup; reuses fknn_default populated by a prior
+  # `test_fknn` run.
+  query_sweep:
+    - for: "profile in {fknn_profile}, table in fknn_{profile}"
+      phases:
+        # Iter-var names here don't collide with any workload param
+        # (rerank_k_strategy / pruning_strategy aren't declared in
+        # the parent), so the phase below reads them directly via
+        # the scope chain — no `set:` needed.
+        - for: "rerank_k_strategy in default, pin1, pin2, pin4, pin_max,
+                pruning_strategy in default, off,
+                k in {k_values},
+                limit in {k_{k}_limits}"
+          phases:
+            - pvs_query_sweep
+
+  # ── Phase B: two-level index-build × query sweep ─────────────
+  #
+  # Outer comprehension: index-affecting params, 2 values per dim,
+  # `order extrema/1`. Each tuple owns one table+index lifecycle —
+  # the lifecycle phases (teardown/schema/rampup/flush/compact/
+  # await) are scoped to the outer iter's closure.
+  #
+  # Inner comprehension: query-only params (rerank_k_strategy ×
+  # pruning_strategy at fixed k=10, limit=50 in the bimodal-recall
+  # zone). Each inner tuple is one query phase against the
+  # just-built table.
+  idx_sweep:
+    # Outermost iter binds `profile` to `{fknn_profile}` so the
+    # downstream `fknn_rampup_data` / `pvs_query_sweep` phases can
+    # resolve `{dataset}:{profile}` in their `dataset_prebuffer(...)`
+    # init-binding. Single-element iter — `fknn_profile` is a
+    # workload param with a literal default.
+    - for: "profile in {fknn_profile}"
+      phases:
+        # OUTER comprehension: index-affecting params.
+        #
+        # Short iter-var names (`sm`, `mnc`, `bw`, `eh`, `nbo_v`,
+        # `alf_v`) to avoid the unconditional iter-var/workload-
+        # param name-collision rule. Parallel-iter form for the
+        # float-valued knobs zips each value with its label
+        # (`1.0 → "1p0"`) so the table name can use the label
+        # while the workload-param shadow below uses the numeric
+        # value.
+        - for: "sm in OTHER, ADA002,
+                mnc in 8, 128,
+                bw in 50, 800,
+                eh in false, true,
+                (nbo_v, nbo_label) in (concat(1.0, 3.0), concat(\"1p0\", \"3p0\")),
+                (alf_v, alf_label) in (concat(1.0, 2.0), concat(\"1p0\", \"2p0\"))"
+          order: extrema/1
+          phases:
+            # Table-name uses the short iter-var names + label
+            # forms for the floats (`1.0 → "1p0"` via the
+            # parallel-iter zip above). A single-element source
+            # so the lifecycle phases close over `{table}`. The
+            # `for: table` sits ABOVE the `set:` so its source
+            # interpolation sees the outer iter-vars `sm`/`mnc`/
+            # etc. directly (`set:` would otherwise interpose a
+            # scope boundary that hides them).
+            - for: "table in fknn_oat_{sm}_m{mnc}_bw{bw}_h{eh}_nbo{nbo_label}_a{alf_label}"
+              phases:
+                # `set:` shadows each workload-param with the
+                # iter-var's value via text-template substitution.
+                # `set:` values are text-templates (not GK
+                # expressions), so `{sm}` resolves to the iter-
+                # var's current value at iter time and the set:
+                # writes `const source_model := "<value>"` into
+                # the local scope, shadowing the workload-param
+                # default. Downstream `{source_model}` bind-points
+                # in the schema phase pick up the shadow at
+                # op-execution time.
+                - set: { source_model: "{sm}",
+                         maximum_node_connections: "{mnc}",
+                         construction_beam_width: "{bw}",
+                         enable_hierarchy: "{eh}",
+                         neighborhood_overflow: "{nbo_v}",
+                         alpha: "{alf_v}" }
+                  phases:
+                    # Table + index lifecycle — runs once per outer tuple.
+                    - teardown
+                    - schema
+                    - fknn_rampup_data
+                    - jolokia_flush
+                    - jolokia_compact
+                    - jolokia_await_compaction
+                    # INNER comprehension: query-only params. Iter-
+                    # var names don't collide with any workload
+                    # param, so the phase reads them directly via
+                    # the scope chain — no `set:` needed.
+                    - for: "rerank_k_strategy in default, pin1,
+                            pruning_strategy in default, off,
+                            k in 10,
+                            limit in 50"
+                      phases:
+                        - pvs_query_sweep
+
+phases:
+
+  # ── New phase: pvs_query_sweep ───────────────────────────────
+  #
+  # Same shape as the parent's `pvs_query`, but the `ann_opts`
+  # const reads two orthogonal strategy axes
+  # (rerank_k_strategy × pruning_strategy) instead of the parent's
+  # single `rerank_mode` flat enum. Composes a `WITH ann_options
+  # = {...}` clause from two pieces or emits the empty string when
+  # both axes are at "default".
+  pvs_query_sweep:
+    concurrency: "{query_concurrency}"
+    errors: count
+    bindings: |
+      const prebuffered := dataset_prebuffer("{dataset}:{profile}")
+      const query_counts := query_count(prebuffered)
+      cursor q = until_elapsed(query_counts, min_query_ms)
+      query_vector := query_vector_at(prebuffered, q % query_counts)
+      predicate := predicate_value_at(prebuffered, q % query_counts)
+      ground_truth := filtered_neighbor_indices_at(prebuffered, q % query_counts)
+
+      # ── Per-query ann_options clause assembly ───────────────
+      # `select_str` is binary (cond, then, else); nesting picks
+      # the rerank_k value for the current rerank_k_strategy.
+      # "default" produces an empty string (no rerank_k key);
+      # any other value produces a `'rerank_k': '<N>'` fragment.
+      const rerank_k_part := select_str(str_eq(rerank_k_strategy, "default"), "",
+                             select_str(str_eq(rerank_k_strategy, "pin1"),
+                                        str_concat("'rerank_k': '", format_u64(limit, 10), "'"),
+                             select_str(str_eq(rerank_k_strategy, "pin2"),
+                                        str_concat("'rerank_k': '", format_u64(2 * limit, 10), "'"),
+                             select_str(str_eq(rerank_k_strategy, "pin4"),
+                                        str_concat("'rerank_k': '", format_u64(4 * limit, 10), "'"),
+                                        "'rerank_k': '1000'"))))
+      # pruning fragment. "default" → no key; "off"/"on" set the
+      # JVECTOR_USE_PRUNING toggle explicitly.
+      const pruning_part := select_str(str_eq(pruning_strategy, "off"), "'use_pruning': 'false'",
+                            select_str(str_eq(pruning_strategy, "on"),  "'use_pruning': 'true'",
+                                                                         ""))
+      # Stitch. Comma-join when both fragments are non-empty,
+      # otherwise emit whichever is present, otherwise an empty
+      # opts body.
+      const have_rerank  := str_ne(rerank_k_part, "")
+      const have_pruning := str_ne(pruning_part, "")
+      const opts_body := select_str(have_rerank,
+                          select_str(have_pruning,
+                                     str_concat(rerank_k_part, ", ", pruning_part),
+                                     rerank_k_part),
+                          select_str(have_pruning, pruning_part, ""))
+      const ann_opts := select_str(str_eq(opts_body, ""), "",
+                                   str_concat("WITH ann_options = {", opts_body, "}"))
+
+    ops:
+      select_ann:
+        prepared: |
+          SELECT key,value FROM {keyspace}.{table}
+          WHERE metadata = {predicate}
+          ORDER BY value
+          ANN OF {query_vector} LIMIT {limit}
+          {ann_opts}
+        metrics:
+          rows_per_op:
+            kind: gauge
+            value: count
+        evaluations:
+          relevancy:
+            actual: key
+            expected: ground_truth
+            k: k
+            r: limit
+            functions:
+              - recall

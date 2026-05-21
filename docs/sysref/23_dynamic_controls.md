@@ -517,7 +517,7 @@ Concretely:
   a dynamic control is for. The wrapper registers the
   control when the dispenser (or the wrapper instance) is
   constructed and ties its own applier to the new value.
-- **Per-adapter / per-persona extensibility.** Adapters
+- **Per-adapter extensibility.** Adapters
   registered via the `inventory` crate can contribute their
   own controls at adapter-registration time, at op-template-
   instance time, or at dispenser-instance time. The

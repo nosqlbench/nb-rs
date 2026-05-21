@@ -78,6 +78,7 @@ specifies how the kernel runs.
 
 - [SRD 20: Workload Model](sysref/20_workload_model.md) — YAML → ParsedOp → blocks/tags/normalization.
 - [SRD 21: Parameters and Bind Points](sysref/21_parameters.md) — param resolution, scope hierarchy.
+- [SRD 72: Workload `extends:`](sysref/72_workload_extends.md) *(DESIGN — not yet implemented)* — single-parent composition for sibling workloads.
 - [SRD 23: Dynamic Controls](sysref/23_dynamic_controls.md) — runtime-mutable parameters via the component tree.
 - [SRD 24: Component Lookup](sysref/24_component_lookup.md) — selector grammar, dimensional-label predicates.
 
@@ -107,9 +108,9 @@ specifies how the kernel runs.
 - [SRD 03: Error Handling](sysref/03_error_handling.md) — error scoping, retry, silent-failure policy.
 - [SRD 15: Strict Mode](sysref/15_strict_mode.md) — compile-time enforcement of explicit declarations.
 
-### TUI / CLI / personas
+### TUI / CLI / build
 
-- [SRD 60: CLI Structure](sysref/60_cli.md), [SRD 61: Personas](sysref/61_personas.md), [SRD 62: TUI Layout](sysref/62_tui_layout.md), [SRD 64: Report CLI](sysref/64_report_cli.md) *(DRAFT)*.
+- [SRD 60: CLI Structure](sysref/60_cli.md), [SRD 61: Single Binary, Feature-Gated Drivers](sysref/61_single_binary.md), [SRD 62: TUI Layout](sysref/62_tui_layout.md), [SRD 64: Report CLI](sysref/64_report_cli.md) *(DRAFT)*.
 
 ---
 

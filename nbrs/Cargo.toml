@@ -69,7 +69,7 @@ nbrs-activity = { path = "../nbrs-activity", version = "0.1.1" }
 # (`open_facet_typed`, `facet_manifest`, `open_facet_storage`)
 # lets the tool read any facet by name + element type without
 # baking in per-facet helpers.
-vectordata = "1.1.1"
+vectordata = "1.1.4"
 tokio = { version = "1", features = ["full"] }
 # parking_lot::RwLock used by `RunState` shared with TuiObserver —
 # the std RwLock is writer-preferring on Linux and deadlocks
