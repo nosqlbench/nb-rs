@@ -1,5 +1,7 @@
 # nbrs
 
+[![build](https://github.com/nosqlbench/nb-rs/actions/workflows/build.yml/badge.svg)](https://github.com/nosqlbench/nb-rs/actions/workflows/build.yml)
+
 High-performance workload generation and database testing in Rust.
 
 nbrs generates deterministic, reproducible request streams at scale.
