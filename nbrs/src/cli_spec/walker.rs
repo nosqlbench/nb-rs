@@ -23,22 +23,30 @@
 use super::*;
 
 pub fn parse(root: &Command, argv: &[String]) -> Result<ParsedCommand, String> {
-    // Help short-circuit: if `--help` or `-h` appears anywhere
-    // in argv, walk the subcommand path *up to* the help flag,
-    // then return immediately with `help_requested=true`. main.rs
-    // renders usage for that command path. Handlers never see
-    // `--help` — they don't have to declare or handle it.
-    let help_at = argv.iter().position(|a| a == "--help" || a == "-h");
-    let effective_end = help_at.unwrap_or(argv.len());
+    // Help / version short-circuit: if `--help` / `-h` or
+    // `--version` / `-V` appears anywhere in argv, walk the
+    // subcommand path *up to* the earliest such flag, then
+    // return immediately with the appropriate request bit set.
+    // main.rs renders usage / prints the version string and
+    // exits; handlers never see these flags.
+    let help_at    = argv.iter().position(|a| a == "--help"    || a == "-h");
+    let version_at = argv.iter().position(|a| a == "--version" || a == "-V");
+    let short_at = match (help_at, version_at) {
+        (Some(h), Some(v)) => Some(h.min(v)),
+        (Some(h), None)    => Some(h),
+        (None,    Some(v)) => Some(v),
+        (None,    None)    => None,
+    };
+    let effective_end = short_at.unwrap_or(argv.len());
 
     let mut path: Vec<String> = vec![root.name.to_string()];
     let mut current: &Command = root;
     let mut i = 0usize;
 
-    // Greedy subcommand descent within the pre-help slice. Stop
-    // at the first token that doesn't name a subcommand of the
-    // current node — that token becomes the start of the leaf's
-    // argument tail.
+    // Greedy subcommand descent within the pre-short-circuit
+    // slice. Stop at the first token that doesn't name a
+    // subcommand of the current node — that token becomes the
+    // start of the leaf's argument tail.
     loop {
         if i >= effective_end { break; }
         let tok = &argv[i];
@@ -53,7 +61,7 @@ pub fn parse(root: &Command, argv: &[String]) -> Result<ParsedCommand, String> {
         }
     }
 
-    if help_at.is_some() {
+    if short_at.is_some() {
         return Ok(ParsedCommand {
             path,
             flags: BTreeMap::new(),
@@ -61,7 +69,8 @@ pub fn parse(root: &Command, argv: &[String]) -> Result<ParsedCommand, String> {
             positionals: Vec::new(),
             raw: Vec::new(),
             argv: argv.to_vec(),
-            help_requested: true,
+            help_requested:    help_at.is_some(),
+            version_requested: version_at.is_some(),
         });
     }
 
@@ -77,6 +86,7 @@ pub fn parse(root: &Command, argv: &[String]) -> Result<ParsedCommand, String> {
             raw: remaining.to_vec(),
             argv: argv.to_vec(),
             help_requested: false,
+            version_requested: false,
         });
     }
 
@@ -152,6 +162,7 @@ pub fn parse(root: &Command, argv: &[String]) -> Result<ParsedCommand, String> {
         raw: Vec::new(),
         argv: argv.to_vec(),
         help_requested: false,
+        version_requested: false,
     })
 }
 
@@ -281,6 +292,26 @@ mod tests {
         let root = cmd_leaf("nbrs", vec![]);
         let err = parse(&root, &["--bogus".into()]).unwrap_err();
         assert!(err.contains("unknown flag"));
+    }
+
+    #[test]
+    fn version_short_circuit_sets_request_bit() {
+        let root = cmd_leaf("nbrs", vec![]);
+        let p = parse(&root, &["--version".into()]).unwrap();
+        assert!(p.version_requested);
+        assert!(!p.help_requested);
+        // Short alias -V works too.
+        let p = parse(&root, &["-V".into()]).unwrap();
+        assert!(p.version_requested);
+    }
+
+    #[test]
+    fn version_short_circuits_before_unknown_flags() {
+        // `--version` must short-circuit even when the rest of
+        // argv would otherwise produce an unknown-flag error.
+        let root = cmd_leaf("nbrs", vec![]);
+        let p = parse(&root, &["--version".into(), "--bogus".into()]).unwrap();
+        assert!(p.version_requested);
     }
 
     #[test]

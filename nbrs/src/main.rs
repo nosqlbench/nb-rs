@@ -97,6 +97,15 @@ fn main() {
         }
     };
 
+    // `--version` / `-V` short-circuit: print the version
+    // string + the set of compile-time engine/feature flags
+    // and exit. Side-channel surface like `--help`; no
+    // subcommand path interaction.
+    if parsed.version_requested {
+        print_version();
+        return;
+    }
+
     // `--help` / `-h` short-circuit: render usage for the matched
     // command path and exit 0 without invoking the handler. Walker
     // already stopped at the deepest subcommand seen *before* the
@@ -142,6 +151,12 @@ fn lookup_handler<'a>(root: &'a cli_spec::Command, path: &[String]) -> Option<cl
         current = current.subcommands.iter().find(|s| s.name == seg.as_str())?;
     }
     current.handler
+}
+
+/// `--version` / `-V` output. Single bare line: `nbrs <ver>`.
+/// Engine availability is surfaced via `describe adapter cql`.
+fn print_version() {
+    println!("nbrs {}", env!("CARGO_PKG_VERSION"));
 }
 
 /// Translate `nbrs <workload.yaml> [scenario] [params...]` into

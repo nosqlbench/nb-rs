@@ -205,6 +205,12 @@ pub struct ParsedCommand {
     /// usage for that command path instead of dispatching to
     /// the handler. Means handlers never have to handle help.
     pub help_requested: bool,
+    /// True when `--version` or `-V` appeared anywhere in argv.
+    /// Same short-circuit shape as [`help_requested`]: walker
+    /// stops at the deepest subcommand seen before the flag and
+    /// returns immediately; main.rs prints the version string
+    /// and exits without dispatching.
+    pub version_requested: bool,
 }
 
 impl ParsedCommand {

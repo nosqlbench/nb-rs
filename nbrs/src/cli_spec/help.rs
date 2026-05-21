@@ -45,6 +45,10 @@ fn print_command(cmd: &Command, full_path: &[&str]) {
             eprintln!("  {:<name_width$}  {}", sub.name, one_line);
         }
         eprintln!();
+        eprintln!("GLOBAL OPTIONS:");
+        eprintln!("  --help, -h     Show usage for the current command path");
+        eprintln!("  --version, -V  Print the nbrs version");
+        eprintln!();
         eprintln!("Run `{invocation} <subcommand> --help` for per-subcommand help.");
         return;
     }

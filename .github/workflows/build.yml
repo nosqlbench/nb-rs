@@ -154,11 +154,9 @@ jobs:
           fi
           echo "OK: libcassandra is statically linked"
 
-      # Bare invocation prints the CLI usage and exits 0; nbrs
-      # has no `--version` flag (the help text is the surface).
       - name: Smoke test
         shell: bash
-        run: target/${{ matrix.target }}/release/nbrs
+        run: target/${{ matrix.target }}/release/nbrs --version
 
       - name: Package binary
         shell: bash

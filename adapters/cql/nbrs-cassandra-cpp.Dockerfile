@@ -30,11 +30,14 @@ RUN git clone --depth 1 \
 # --- Stage 2: Build nbrs with Rust ---
 FROM ubuntu:24.04 AS rust-builder
 
-# Install Rust + clang + mold. Workspace .cargo/config.toml sets
-# `linker = "clang"` and rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-# for every Linux target — both must be present in this stage.
+# Install Rust + clang + mold + zlib1g-dev.
+# Workspace .cargo/config.toml sets `linker = "clang"` and
+# rustflags = ["-C", "link-arg=-fuse-ld=mold", …, "-C", "link-arg=-lz"]
+# for every Linux target. zlib1g-dev supplies the `libz.so` symlink
+# the linker resolves `-lz` against; the runtime-only `zlib1g`
+# only ships `libz.so.1`.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl build-essential pkg-config libuv1-dev libssl-dev \
+    curl build-essential pkg-config libuv1-dev libssl-dev zlib1g-dev \
     clang mold ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
