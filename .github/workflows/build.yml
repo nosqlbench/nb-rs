@@ -20,6 +20,13 @@
 #     stages them in a workflow-local registry:2 service and
 #     creates the manifest list. Pushed to GHCR on tag refs only.
 #
+#   release — fires only on `v*` tag pushes. Downloads each
+#     per-target binary artifact, renames it to include the
+#     target triple, generates SHA256SUMS, and attaches the
+#     binaries to a GitHub Release. Release-asset downloads are
+#     served unwrapped, unlike workflow-artifact downloads which
+#     GHA always wraps in a zip at the web UI.
+#
 # Two platforms intentionally NOT in the matrix:
 #
 # - Windows (`x86_64-pc-windows-msvc`): upstream `cassandra-cpp-sys`
@@ -49,6 +56,11 @@ env:
   # Pinned ref so docker layer cache + sysroot cache are stable
   # across runs. Override at dispatch time if needed.
   CASSANDRA_CPP_DRIVER_REF: ${{ github.event.inputs.cassandra_cpp_driver_ref || '2.17.1' }}
+  # Opt in to Node 24 for all JS-based actions ahead of the
+  # June 2026 forced-cutover. Every action this workflow uses
+  # (actions/checkout, actions/cache, actions/upload-artifact,
+  # docker/*) ships a Node-24-capable runtime already.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   build-artifact:
@@ -91,11 +103,15 @@ jobs:
       # ─── macOS deps: cmake/libuv/openssl@3 via Homebrew.
       # openssl@3 is keg-only; `_build_driver_native` will pick
       # the right PKG_CONFIG_PATH + OPENSSL_ROOT_DIR.
+      # Skip `brew install` when the formula is already present —
+      # otherwise brew emits "already installed and up-to-date"
+      # warnings that GHA flags on the run summary.
       - name: Install macOS build dependencies
         if: matrix.os == 'macos'
         run: |
-          brew update
-          brew install cmake libuv openssl@3 pkg-config
+          for pkg in cmake libuv openssl@3 pkg-config; do
+            brew list "$pkg" >/dev/null 2>&1 || brew install "$pkg"
+          done
 
       # ─── Cache the libcassandra static archive + header.
       # Keyed on driver ref + target triple + recipe-source hashes
@@ -125,28 +141,43 @@ jobs:
           shared-key: nbrs-${{ matrix.target }}
 
       # ─── Build nbrs with all-engines for every platform.
-      # On macOS, augment CASSANDRA_SYS_LIB_PATH with brew's libuv
-      # and openssl@3 lib dirs so rustc-link-search finds them
-      # (upstream cassandra-cpp-sys/build.rs hardcodes Intel-mac
-      # /usr/local paths and doesn't cover Apple Silicon's
-      # /opt/homebrew).
+      # On macOS we want a single self-contained binary — same
+      # shape as Linux. cassandra-cpp-sys forces dynamic-link
+      # directives (`dylib=crypto/ssl/uv`), but ld64 picks .dylib
+      # over .a only WITHIN a search path. By staging .a archives
+      # in our sysroot (which contains no .dylib) and listing it
+      # FIRST in CASSANDRA_SYS_LIB_PATH, the linker resolves
+      # -lcrypto/-lssl/-luv against the static archives before
+      # ever reaching brew's dual-format paths.
       - name: Build nbrs (all-engines)
         shell: bash
         run: |
           set -euo pipefail
           if [[ "${{ matrix.os }}" == "macos" ]]; then
+            sysroot="$PWD/adapters/cql/target/sysroot/lib"
+            cp "$(brew --prefix openssl@3)/lib/libcrypto.a" "$sysroot/"
+            cp "$(brew --prefix openssl@3)/lib/libssl.a"    "$sysroot/"
+            cp "$(brew --prefix libuv)/lib/libuv.a"         "$sysroot/"
+            # Brew paths kept as fallback in case any transitive
+            # dep we haven't anticipated still needs dynamic resolve.
             uv="$(brew --prefix libuv)/lib"
             ssl="$(brew --prefix openssl@3)/lib"
-            sysroot="$PWD/adapters/cql/target/sysroot/lib"
             export CASSANDRA_SYS_LIB_PATH="$sysroot;$uv;$ssl"
           fi
           cargo build --release -p nbrs \
             --target ${{ matrix.target }} \
             --no-default-features --features all-engines
 
-      # ─── Assert libcassandra is statically linked. ldd on
-      # Linux, otool -L on macOS — same intent, different inspector.
-      - name: Verify libcassandra static link
+      # ─── Assert the binary doesn't depend on any non-system
+      # dynamic library. On Linux: libcassandra must be static
+      # (libuv/libssl are standard at known system paths and fine
+      # to keep dynamic). On macOS: in addition to the libcassandra
+      # static check, the binary must not reference any
+      # /opt/homebrew or /usr/local/Cellar paths — those won't
+      # exist on user Macs without homebrew. ld64 picks .a over
+      # .dylib when the sysroot search path has only the static
+      # archives, which is what the build step above arranges.
+      - name: Verify static link posture
         shell: bash
         run: |
           set -euo pipefail
@@ -156,29 +187,34 @@ jobs:
             linux) deps="$(ldd "$bin" || true)" ;;
             macos) deps="$(otool -L "$bin" || true)" ;;
           esac
+          echo "$deps"
           if echo "$deps" | grep -q libcassandra; then
             echo "FAIL: libcassandra is dynamically linked"
-            echo "$deps" | grep libcassandra
             exit 1
           fi
-          echo "OK: libcassandra is statically linked"
+          if [[ "${{ matrix.os }}" == "macos" ]]; then
+            if echo "$deps" | grep -E '/opt/homebrew|/usr/local/Cellar|/usr/local/opt'; then
+              echo "FAIL: binary has brew-pathed dylib deps; would not run on a Mac without brew"
+              exit 1
+            fi
+          fi
+          echo "OK: only system dynamic libs"
 
       - name: Smoke test
         shell: bash
         run: target/${{ matrix.target }}/release/nbrs --version
 
-      - name: Package binary
-        shell: bash
-        run: |
-          mkdir -p dist
-          tar -C target/${{ matrix.target }}/release \
-            -czf dist/nbrs-${{ matrix.target }}.tar.gz nbrs
-
-      - name: Upload artifact
+      # Single-file upload: upload-artifact@v4 flattens to the
+      # basename when given one file (rootDirectory becomes the
+      # file's parent), so the artifact zip contains just `nbrs`
+      # — no nested target/release dirs and no tarball layer.
+      # GHA still wraps every downloaded artifact in a zip at the
+      # web UI; that's a platform behavior we can't disable.
+      - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: nbrs-${{ matrix.target }}
-          path: dist/nbrs-${{ matrix.target }}.tar.gz
+          path: target/${{ matrix.target }}/release/nbrs
           if-no-files-found: error
           retention-days: 14
 
@@ -357,3 +393,100 @@ jobs:
               "/repos/${{ github.repository }}/actions/caches?key=nbrs-image-tarball-$arch-${{ github.run_id }}" \
               || true
           done
+
+  # ───────────────────────────────────────────────────────────
+  # GitHub Release — only on `v*` tag refs. Downloads each
+  # per-target binary artifact, renames each to include the
+  # target triple, generates a SHA256SUMS file, and attaches
+  # everything as Release assets (which the GitHub UI serves
+  # without zip wrapping — unlike workflow artifacts). Auto-
+  # generated changelog from commits since the previous tag.
+  # Tags containing `-` (e.g. `v1.0.0-rc1`) get marked
+  # `prerelease=true` automatically.
+  # ───────────────────────────────────────────────────────────
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-24.04
+    needs: [build-artifact, build-image-merge]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download per-target binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: nbrs-*
+
+      - name: Stage release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          for dir in artifacts/nbrs-*; do
+            target="${dir##*/nbrs-}"
+            cp "$dir/nbrs" "release/nbrs-$target"
+            chmod +x "release/nbrs-$target"
+          done
+          (cd release && sha256sum * > SHA256SUMS)
+          ls -la release/
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IS_PRERELEASE: ${{ contains(github.ref_name, '-') }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          notes_file=$(mktemp)
+          cat > "$notes_file" <<EOF
+          ## Binaries
+
+          Single-binary release per platform — no archive, no install step.
+
+          | Platform | Asset |
+          | --- | --- |
+          | Linux amd64 | \`nbrs-x86_64-unknown-linux-gnu\` |
+          | Linux arm64 | \`nbrs-aarch64-unknown-linux-gnu\` |
+          | macOS Apple Silicon | \`nbrs-aarch64-apple-darwin\` |
+
+          Verify with \`SHA256SUMS\`.
+
+          ## Docker image
+
+          \`\`\`
+          docker pull ghcr.io/$OWNER/nbrs:$TAG
+          \`\`\`
+
+          Multi-arch manifest covering linux/amd64 + linux/arm64.
+
+          ## Changes
+
+          EOF
+          # Append GitHub's auto-generated changelog (commits +
+          # PRs since the previous tag).
+          gh api "repos/$REPO/releases/generate-notes" \
+            -f tag_name="$TAG" \
+            --jq .body >> "$notes_file"
+
+          prerelease_flag=()
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            prerelease_flag+=(--prerelease)
+          fi
+
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$REPO" \
+              --notes-file "$notes_file" "${prerelease_flag[@]}"
+          else
+            gh release create "$TAG" --repo "$REPO" \
+              --title "$TAG" \
+              --notes-file "$notes_file" "${prerelease_flag[@]}"
+          fi
+
+          # --clobber overwrites assets with the same name, so
+          # the step is idempotent across retries.
+          gh release upload "$TAG" --repo "$REPO" release/* --clobber
