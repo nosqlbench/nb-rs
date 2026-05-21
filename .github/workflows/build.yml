@@ -3,28 +3,33 @@
 #
 # Build (and on tag pushes, publish) nbrs release artifacts.
 #
-#   build-artifact — 4-way matrix producing bare per-platform
+#   build-artifact — 3-way matrix producing bare per-platform
 #     binaries, every one built with `--features all-engines`
 #     (pure-Rust scylla + cassandra-cpp via FFI). All runners are
 #     native (no QEMU emulation):
 #       linux/amd64   → ubuntu-24.04        + apt deps
 #       linux/arm64   → ubuntu-24.04-arm    + apt deps
 #       macos/arm64   → macos-14            + brew deps
-#       macos/x86_64  → macos-13            + brew deps
 #     Each entry calls `bash adapters/cql/build.sh driver`
 #     (DRIVER_BUILD_MODE=native) so the driver recipe stays
 #     single-source with the local docker path.
 #
-#   build-image    — multi-arch (linux/amd64+linux/arm64) docker
-#     image built from `adapters/cql/nbrs-cassandra-cpp.Dockerfile`
-#     via buildx + QEMU. Pushed to GHCR on tag refs only.
+#   build-image-arch / build-image-merge — multi-arch
+#     (linux/amd64+linux/arm64) docker image. Per-arch tarballs
+#     transit through a run-scoped GHA cache slot; merge job
+#     stages them in a workflow-local registry:2 service and
+#     creates the manifest list. Pushed to GHCR on tag refs only.
 #
-# Note: Windows is intentionally not in the matrix. Upstream
-# `cassandra-cpp-sys` has no Windows support (emits Unix-style
-# link directives and library names), so honoring "cassandra-cpp
-# on every platform we build" requires dropping Windows rather
-# than shipping a half-supported binary. Revisit when upstream
-# adds MSVC support or we decide to fork the -sys crate.
+# Two platforms intentionally NOT in the matrix:
+#
+# - Windows (`x86_64-pc-windows-msvc`): upstream `cassandra-cpp-sys`
+#   has no Windows support. Revisit when upstream adds MSVC
+#   support or we decide to fork the -sys crate.
+#
+# - Intel macOS (`x86_64-apple-darwin` / macos-13): GHA's last
+#   Intel mac runner pool is heavily contended; queue times
+#   routinely exceed an hour. Apple Silicon dominates the macOS
+#   install base today; Intel users build from source.
 
 name: build
 
@@ -62,9 +67,11 @@ jobs:
           - target: aarch64-apple-darwin
             runner: macos-14            # Apple Silicon (M-series)
             os:     macos
-          - target: x86_64-apple-darwin
-            runner: macos-13            # Intel
-            os:     macos
+          # Intel macOS (x86_64-apple-darwin / macos-13) is
+          # intentionally omitted: GHA's last Intel mac runner
+          # pool is heavily contended and queue times routinely
+          # exceed an hour. Apple Silicon now dominates the
+          # macOS install base; Intel users build from source.
     steps:
       - uses: actions/checkout@v4
 
@@ -173,26 +180,121 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  build-image:
-    name: docker image (multi-arch)
+  # ───────────────────────────────────────────────────────────
+  # Multi-arch docker image. Two stages:
+  #
+  #   build-image-arch  — matrix across native arch runners. Each
+  #     entry builds the single-arch image, exports it to a
+  #     Docker-format tarball, and saves the tarball to GHA cache
+  #     under a `${run_id}`-scoped key. No GHCR pushes here.
+  #
+  #   build-image-merge — restores both tarballs from the
+  #     run-scoped cache, stages them in a workflow-local
+  #     `registry:2` service container, then on tag refs uses
+  #     `docker buildx imagetools create` to copy layers from
+  #     localhost:5000 to GHCR and write the multi-arch manifest
+  #     list. Skipped entirely for non-tag refs (cleanup runs
+  #     either way so the run-scoped cache entries don't linger).
+  #
+  # Why GHA cache and not artifacts: artifacts persist for the
+  # configured retention (≥1 day, billable storage). Run-id-keyed
+  # cache slots are unreachable from any other run, get LRU-
+  # evicted from the 10 GB repo cache, and the cleanup step at
+  # the end of the merge job removes them eagerly.
+  # ───────────────────────────────────────────────────────────
+
+  build-image-arch:
+    name: image build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch:     amd64
+            platform: linux/amd64
+            runner:   ubuntu-24.04
+          - arch:     arm64
+            platform: linux/arm64
+            runner:   ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build the single-arch image to a Docker-format tarball.
+      # Layer cache (`type=gha,scope=...`) persists across runs
+      # for incremental builds; the tarball itself is written
+      # to /tmp and handed to the next step.
+      - name: Build per-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: adapters/cql/nbrs-cassandra-cpp.Dockerfile
+          platforms: ${{ matrix.platform }}
+          tags: nbrs:${{ matrix.arch }}
+          outputs: type=docker,dest=/tmp/image-${{ matrix.arch }}.tar
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,scope=image-${{ matrix.arch }},mode=max
+
+      # Save the tarball to a run-scoped cache slot so the merge
+      # job (running on a different runner) can pick it up.
+      - name: Save tarball to run-scoped cache
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/image-${{ matrix.arch }}.tar
+          key: nbrs-image-tarball-${{ matrix.arch }}-${{ github.run_id }}
+
+  build-image-merge:
+    name: image manifest + push
     runs-on: ubuntu-24.04
-    # Skip on PRs (multi-arch emulation is slow). Build on main
-    # pushes to catch Dockerfile breakage; build + push on tags.
+    needs: build-image-arch
     if: github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write
+      # Needed for the run-scoped GHA cache cleanup step
+      # (DELETE /repos/{repo}/actions/caches?key=…).
+      actions: write
+    # Workflow-local Docker registry. Per-arch images are pushed
+    # to localhost:5000 so `docker buildx imagetools create` has
+    # registry references to assemble into a manifest list. The
+    # service container is gone the moment this job ends.
+    services:
+      registry:
+        image: registry:2
+        ports: ['5000:5000']
     steps:
       - uses: actions/checkout@v4
 
-      # QEMU enables building linux/arm64 layers on the amd64
-      # runner. Slower than a native arm runner but keeps the
-      # image job on a single host with one manifest list.
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Restore amd64 tarball
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/image-amd64.tar
+          key: nbrs-image-tarball-amd64-${{ github.run_id }}
+          fail-on-cache-miss: true
+
+      - name: Restore arm64 tarball
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/image-arm64.tar
+          key: nbrs-image-tarball-arm64-${{ github.run_id }}
+          fail-on-cache-miss: true
+
+      - name: Load tarballs + stage in workflow-local registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker load -i /tmp/image-amd64.tar
+          docker load -i /tmp/image-arm64.tar
+          docker tag nbrs:amd64 localhost:5000/nbrs:amd64
+          docker tag nbrs:arm64 localhost:5000/nbrs:arm64
+          docker push localhost:5000/nbrs:amd64
+          docker push localhost:5000/nbrs:arm64
 
       - name: Compute image metadata
         id: meta
@@ -218,17 +320,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Same Dockerfile invocation that `bash build.sh docker`
-      # produces locally, extended with multi-arch platforms +
-      # BuildKit + GHA layer cache.
-      - name: Build (and push on tags) multi-arch docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: adapters/cql/nbrs-cassandra-cpp.Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      # Copies layers from localhost:5000 to GHCR while
+      # assembling the manifest list. Source images and the
+      # workflow-local registry vanish when the job ends; only
+      # the final tagged manifest list lands in GHCR.
+      - name: Create + push multi-arch manifest list to GHCR
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_args=""
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            tag_args="$tag_args -t $tag"
+          done <<EOF
+          ${{ steps.meta.outputs.tags }}
+          EOF
+          docker buildx imagetools create $tag_args \
+            localhost:5000/nbrs:amd64 \
+            localhost:5000/nbrs:arm64
+
+      # Always clean up the run-scoped cache entries so they
+      # don't sit consuming repo cache quota until LRU eviction.
+      # Best-effort: ignore failures (cache may already be gone
+      # if the workflow was cancelled).
+      - name: Delete run-scoped tarball caches
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          for arch in amd64 arm64; do
+            gh api -X DELETE \
+              "/repos/${{ github.repository }}/actions/caches?key=nbrs-image-tarball-$arch-${{ github.run_id }}" \
+              || true
+          done
