@@ -4,19 +4,64 @@
 # cursor_partitions_coverage.yaml
 #
 # Comprehensive coverage of SRD 71 cursor partitioning shapes.
-# Every scenario exercises exactly one shape — number form,
-# partition-list form, pre-baked recipe, `over`-clause form,
-# stdlib partition function, or operator-surface convention —
-# and emits a `cp/...` prefixed line that the matching
-# `cursor_partitions_*` test in `nbrs/tests/cursor_partitions.rs`
-# scans and asserts against.
+# Every scenario exercises exactly one shape and emits a `cp/...`
+# prefixed line that the matching `cursor_partitions_*` test in
+# `nbrs/tests/cursor_partitions.rs` scans and asserts against.
 #
-# Themes (each one is a scenario in this file):
+# ── Background: what a partition spec IS ──────────────────────
+#
+# A partition spec is a tiny string DSL that carves a cursor's
+# ordinal extent into a contiguous, ordered list of half-open
+# sub-ranges `[start_ord, end_ord)`. Three orthogonal shape
+# families exist (SRD 71 §"Cursor partition specs"):
+#
+#   Form 1 — single sub-range          e.g. "0..53%"
+#   Form 2 — delta list                e.g. "2%,10%,*%"
+#   Form 3 — pre-baked recipe          e.g. "linear:4"
+#
+# Each numeric in a spec is one of three forms, derived from
+# the literal's shape (never from context):
+#
+#   Percentage — digits + `%`          e.g.  53%        → 53% of extent
+#   Fraction   — number containing `.` e.g.  0.53       → 53% of extent
+#   Literal    — bare integer          e.g.  100        → absolute ordinal 100
+#
+# `partitions(spec [, extent])` is the stdlib node that parses
+# the spec and materialises it against the given ordinal extent
+# (default 100 — so pure-percentage specs resolve in `[0, 100)`
+# directly, which is convenient for inline inspection). When the
+# spec is attached to a cursor via `over`, the cursor's own
+# declared extent is the resolution context instead.
+#
+#   partitions("linear:2", 1000)
+#     └─ recipe "linear:2" produces weights [1, 1] (uniform 2-way
+#        split). Normalised, that's two partitions of 50% each.
+#        Resolved against extent 1000: [0, 500), [500, 1000).
+#
+#   partitions("0.02,0.10,*", 1000)
+#     └─ delta list. 2% then 10% then "*" absorbs the remainder.
+#        Resolved against extent 1000: [0, 20), [20, 120), [120, 1000).
+#
+# Inside a phase, a cursor declared `cursor q = range(...) over X`
+# materialises `q` narrowed to whatever partition `X` resolves to.
+# `X` may be a partition iter-var (`p` from a `for:` clause), a
+# workload-param projection (`cursor`), or another cursor's
+# `.cursor` projection (cross-cursor composition). The cursor
+# wire then exposes `q.cursor.{idx,start_pct,end_pct,start_ordinal,
+# end_ordinal,partition_count}` projections that the workload can
+# interpolate or read via stdlib helpers (`start_of(p)`, `end_of(p)`,
+# `idx_of(p)`, `cardinality(p)`, `mod_in(n,p)`, `at(p,i)`,
+# `clamp_in(n,p)`).
+#
+# ── Scenario themes (one per shape) ───────────────────────────
 #   - Form 1 single sub-range, all number forms + brackets
 #   - Form 2 delta lists (pct, fraction, literal, mixed, with/without `*`)
-#   - Form 3 pre-baked recipes
+#   - Form 3 pre-baked recipes (linear, ratios, bin, fib, ln,
+#                                mul, geom, zipf, pareto,
+#                                front_heavy, back_heavy)
 #   - Cursor `over` clause: workload-param, iter-var, cross-cursor
-#   - Stdlib partition functions
+#   - Stdlib partition functions (cardinality, start/end_of,
+#                                  idx_of, mod_in, at, clamp_in)
 #   - Reified custom-named cursor parameter
 #   - Cursor without `over` ignores the parameter
 
@@ -34,169 +79,442 @@ scenarios:
 
   # ─────────────────────────────────────────────────────────────
   # Form 1 — single sub-range (`start..end`)
+  #
+  # Every Form 1 scenario uses the same cursor extent: `range(0, 1000)`.
+  # Each spec narrows that extent to exactly one partition via the
+  # phase's `over "<spec>"` clause. The phase emits the resolved
+  # `[lo, hi)` so the test can assert the narrowing arithmetic.
+  # Bracket / parenthesis markers (`[ ]`, `( )`) are accepted but
+  # advisory — closure is always `[start, end)` (left-closed,
+  # right-open), so adjacent partitions never double-count.
   # ─────────────────────────────────────────────────────────────
 
+  # Spec `"0..53%"` against extent 1000 → [0, 530).
+  # Percentage form: `53%` resolves to floor(53/100 * 1000) = 530.
   form1_percentage_end:
     - form1_pct_phase
 
+  # Spec `"0..0.53"` against extent 1000 → [0, 530).
+  # Fraction form: `0.53` ≡ `53%`. A decimal in [0.0, 1.0] is the
+  # fractional representation of the same percentage. Identical
+  # output to the percentage form above.
   form1_fraction_end:
     - form1_frac_phase
 
+  # Spec `"100..500"` → [100, 500), regardless of cursor extent.
+  # Literal form: bare integers are absolute cursor ordinals
+  # (clamped to the cursor's extent if they walk outside it).
   form1_literal_ordinals:
     - form1_literal_phase
 
+  # Spec `"100..50%"` against extent 1000 → [100, 500).
+  # Mixed endpoints: start is a literal ordinal (100), end is a
+  # percentage (50% of 1000 = 500). Each endpoint's form is
+  # decided independently from its literal shape.
   form1_mixed_literal_then_pct:
     - form1_mixed_lp_phase
 
+  # Spec `"0.10..800"` against extent 1000 → [100, 800).
+  # Mixed endpoints in the other order: start is a fraction
+  # (0.10 * 1000 = 100), end is a literal ordinal (800).
   form1_mixed_frac_then_literal:
     - form1_mixed_fl_phase
 
+  # Spec `"[0..53%)"` against extent 1000 → [0, 530).
+  # Brackets are decorative — same result as the bare `"0..53%"`.
+  # Their job is to let humans signal intent; the parser strips
+  # them and uses `[start, end)` closure regardless.
   form1_brackets_tolerated:
     - form1_brackets_phase
 
   # ─────────────────────────────────────────────────────────────
   # Form 2 — delta list (with and without `*` remainder)
+  #
+  # A delta list is comma-separated entries; each entry is the
+  # SIZE of the next partition (a delta from the running start),
+  # not its endpoint. The literal `*` ("star") is the remainder
+  # token — exactly one entry may be `*`, and it absorbs whatever
+  # ordinals are needed for the list to span the full extent.
+  #
+  #   "2%,10%,*%"   on extent E → three partitions sized
+  #                                2% E, 10% E, then 88% E to fill.
+  #   "1000,5000,*" on extent E → three partitions sized
+  #                                1000 ords, 5000 ords, then E-6000.
+  #
+  # Rules:
+  #   - A list summing exactly to the extent doesn't need `*`.
+  #   - A list summing < extent without `*` drops the trailing gap
+  #     (intentional — operator chose to ignore the remainder).
+  #   - A list summing > extent is a startup error at resolution.
+  #
+  # All these scenarios use `for: "p in partitions(...)"` — the
+  # comprehension iterates the resolved partition list and binds
+  # `p` to each `Partition` value in turn. The `emit_p` phase
+  # below emits one line per iteration with `idx_of(p)`,
+  # `start_of(p)`, `end_of(p)`.
   # ─────────────────────────────────────────────────────────────
 
+  # Spec `"2%,10%,*%"` resolved against default extent 100 →
+  #   [ 0,  2), [ 2, 12), [12, 100)
+  # `*%` and `*` are interchangeable (the `%` is decorative on the
+  # star). The trailing 88% is absorbed by `*`. Three iterations.
   form2_pct_with_star:
     - for: "p in partitions(\"2%,10%,*%\")"
       phases: [emit_p]
 
+  # Spec `"0.02,0.10,*"` resolved against default extent 100 →
+  #   [ 0,  2), [ 2, 12), [12, 100)
+  # Fraction equivalents of the previous scenario — same three
+  # partitions, just written using `0.02` instead of `2%`. The
+  # form is decided per-entry; you can mix fractions and pcts.
   form2_fraction_with_star:
     - for: "p in partitions(\"0.02,0.10,*\")"
       phases: [emit_p]
 
+  # Spec `"1000,5000,*"` resolved against extent 10000 →
+  #   [    0,  1000), [ 1000,  6000), [ 6000, 10000)
+  # Literal deltas: first partition is exactly 1000 ordinals wide,
+  # next is 5000, `*` absorbs the remaining 4000. The explicit
+  # extent argument (10000) is required here because pure-literal
+  # specs need to know what extent to clamp `*` against.
   form2_literal_with_star:
     - for: "p in partitions(\"1000,5000,*\", 10000)"
       phases: [emit_p]
 
+  # Spec `"1000,10%,*"` resolved against extent 10000 →
+  #   [    0,  1000), [ 1000,  2000), [ 2000, 10000)
+  # Mixed literal + percentage deltas. First partition is exactly
+  # 1000 ordinals wide; second is 10% of the extent (1000 ords);
+  # `*` absorbs the remaining 8000. Demonstrates that resolution
+  # interleaves literal and percentage arithmetic correctly.
   form2_mixed_literal_pct_with_star:
     - for: "p in partitions(\"1000,10%,*\", 10000)"
       phases: [emit_p]
 
+  # Spec `"20%,30%"` resolved against default extent 100 →
+  #   [ 0, 20), [20, 50)
+  # No `*` and the sum (50%) is less than 100% — the trailing 50%
+  # gap is DROPPED, not implicitly filled. This is the
+  # documented escape valve for "iterate the first half only,
+  # ignore the rest" without writing an explicit upper bound.
   form2_short_list_drops_gap:
     - for: "p in partitions(\"20%,30%\")"
       phases: [emit_p]
 
   # ─────────────────────────────────────────────────────────────
   # Form 3 — pre-baked recipes
+  #
+  # A recipe `name:args` expands to a weight list, which is then
+  # normalised to sum to 100% and laid out left-to-right as
+  # contiguous partitions covering exactly `[0, extent)`. Recipes
+  # let the workload author pick a distribution shape without
+  # spelling out the deltas by hand — important when the shape's
+  # math is non-obvious (binomial, Fibonacci, Zipf).
+  #
+  # Recipes whose boundary arithmetic is numerically sensitive
+  # (mul / zipf / pareto with their tail-off rules) emit through
+  # `emit_p_count`, which only asserts on partition COUNT rather
+  # than specific ordinals — tests stay stable against
+  # rounding-mode tweaks. The others assert exact bounds via
+  # `emit_p`.
+  #
+  # All recipe scenarios below omit the extent argument, so they
+  # resolve against the default extent 100. Boundary values shown
+  # in comments are in that [0, 100) ordinal space.
   # ─────────────────────────────────────────────────────────────
 
+  # Recipe `linear:N` → N equal partitions. Weights are `[1] * N`.
+  # `"linear:4"` → 4 partitions: [0,25), [25,50), [50,75), [75,100).
+  # This is the simplest "split into N equal slices" case.
   recipe_linear:
     - for: "p in partitions(\"linear:4\")"
       phases: [emit_p]
 
+  # Recipe `ratios:a,b,c,…` → literal weights, normalised.
+  # `"ratios:1,1,2"` → weights [1,1,2] sum 4 → 25%, 25%, 50%
+  #   → [ 0, 25), [25, 50), [50, 100).
+  # Use this when you want an explicit non-uniform split with
+  # weights you control directly (no recipe math involved).
   recipe_ratios:
     - for: "p in partitions(\"ratios:1,1,2\")"
       phases: [emit_p]
 
+  # Recipe `bin:N` → coefficients of (1+x)^(N-1), i.e. C(N-1, k)
+  # for k in 0..N-1. NOT the binomial PMF — these are the
+  # coefficients themselves.
+  # `"bin:5"` → C(4,k) for k∈{0..4} = [1, 4, 6, 4, 1] sum 16
+  #   → 6.25%, 25%, 37.5%, 25%, 6.25%
+  #   → [0, 6), [6, 31), [31, 68), [68, 93), [93, 100)
+  # Symmetric bell-shape — useful for "warm up, peak, cool down".
   recipe_bin:
     - for: "p in partitions(\"bin:5\")"
       phases: [emit_p]
 
+  # Recipe `fib:N` → first N DISTINCT Fibonacci numbers (skips
+  # the redundant leading `1,1` of the classical sequence).
+  # `"fib:5"` → [1, 2, 3, 5, 8] sum 19
+  #   → ~5.26%, ~10.53%, ~15.79%, ~26.32%, ~42.11%
+  # Growing partitions where each is roughly the sum of all
+  # earlier ones — useful for "ramp-up with rapidly widening
+  # measurement windows".
   recipe_fib:
     - for: "p in partitions(\"fib:5\")"
       phases: [emit_p]
 
+  # Recipe `ln:N` → weights `ln(1+k)` for k in 1..N.
+  # `"ln:5"` → [ln 2, ln 3, ln 4, ln 5, ln 6]
+  #         ≈ [0.693, 1.099, 1.386, 1.609, 1.792] sum ≈ 6.58
+  # Slowly-growing partitions — the gap between adjacent
+  # partition sizes shrinks as the index grows. Good for
+  # "log-spaced workload phases" where you want diminishing
+  # marginal coverage.
   recipe_ln:
     - for: "p in partitions(\"ln:5\")"
       phases: [emit_p]
 
+  # Recipe `mul:R` → geometric series `1, R, R², R³, …` with an
+  # AUTO-TERMINATING tail: terms continue until each new term's
+  # contribution to the running total rounds to <0.1%.
+  # `"mul:0.5"` → [1, 0.5, 0.25, 0.125, 0.0625, …] — partition
+  # count depends on the tail-off threshold, so the test asserts
+  # COUNT only (via `emit_p_count`), not specific bounds.
+  # Useful for "exponentially decaying coverage" where the author
+  # doesn't want to hand-pick how many terms to emit.
   recipe_mul_decay:
     - for: "p in partitions(\"mul:0.5\")"
       phases: [emit_p_count]
 
+  # Recipe `mul:S,R` → same as `mul:R` but with a starting weight
+  # `S` instead of 1: `S, S·R, S·R², …`.
+  # `"mul:5,0.5"` → [5, 2.5, 1.25, 0.625, …] terminating at the
+  # same <0.1%-of-running-total threshold.
+  # The starting weight changes only the initial absolute size;
+  # after normalisation the SHAPE is the same as `mul:R` alone.
+  # Useful when composing into a `ratios:` list manually.
   recipe_mul_with_start:
     - for: "p in partitions(\"mul:5,0.5\")"
       phases: [emit_p_count]
 
+  # Recipe `geom:N,R` → fixed-count geometric series:
+  # `1, R, R², …, R^(N-1)`. Like `mul:R` but with a hard term
+  # count instead of a tail-off threshold.
+  # `"geom:4,2"` → [1, 2, 4, 8] sum 15
+  #   → ~6.67%, ~13.33%, ~26.67%, ~53.33%
+  # Pick `geom` when you want exactly N partitions; pick `mul`
+  # when you want "as many as it takes to decay to noise".
   recipe_geom:
     - for: "p in partitions(\"geom:4,2\")"
       phases: [emit_p]
 
+  # Recipe `zipf:s,N` → Zipfian weights `1/k^s` for k in 1..N.
+  # `"zipf:1,4"` → [1/1, 1/2, 1/3, 1/4] = [1.0, 0.5, 0.333, 0.25]
+  # sum ≈ 2.083 → ~48%, ~24%, ~16%, ~12%.
+  # Heavy-head distribution — the first partition dominates.
+  # Models "popularity follows Zipf" workloads (web traffic,
+  # cache hit distributions, vocab frequency). `s > 1` makes the
+  # head heavier still. Count-only assert via `emit_p_count`.
   recipe_zipf:
     - for: "p in partitions(\"zipf:1,4\")"
       phases: [emit_p_count]
 
+  # Recipe `pareto:alpha,N` → Pareto-style weights `(1/k)^alpha`
+  # for k in 1..N.
+  # `"pareto:1,4"` → [(1/1)^1, (1/2)^1, (1/3)^1, (1/4)^1]
+  #                 = [1.0, 0.5, 0.333, 0.25]
+  # (with alpha=1, identical to `zipf:1,4`; the families diverge
+  # for alpha != 1). Heavy-tail / power-law shape — useful when
+  # modelling "long tail" access patterns. Count-only assert.
   recipe_pareto:
     - for: "p in partitions(\"pareto:1,4\")"
       phases: [emit_p_count]
 
+  # Recipe `front_heavy:N` → linearly declining weights:
+  # `[N, N-1, …, 2, 1]`.
+  # `"front_heavy:4"` → [4, 3, 2, 1] sum 10 → 40%, 30%, 20%, 10%
+  #   → [ 0, 40), [40, 70), [70, 90), [90, 100).
+  # The earliest partitions are the largest — useful for
+  # "warm-then-coast" patterns where the bulk of work happens
+  # up front and trailing partitions get small finishing slices.
   recipe_front_heavy:
     - for: "p in partitions(\"front_heavy:4\")"
       phases: [emit_p]
 
+  # Recipe `back_heavy:N` → linearly growing weights:
+  # `[1, 2, …, N]`.
+  # `"back_heavy:4"` → [1, 2, 3, 4] sum 10 → 10%, 20%, 30%, 40%
+  #   → [ 0, 10), [10, 30), [30, 60), [60, 100).
+  # Mirror image of `front_heavy` — useful for "ramp-up to peak"
+  # patterns where each successive partition consumes a larger
+  # fraction of the cursor.
   recipe_back_heavy:
     - for: "p in partitions(\"back_heavy:4\")"
       phases: [emit_p]
 
   # ─────────────────────────────────────────────────────────────
   # `over` clause — different binding shapes
+  #
+  # The `over X` clause on a cursor declaration attaches that
+  # cursor to a partition source `X`. `X` resolves through the
+  # standard scope chain and may be:
+  #
+  #   1. A workload-param name (e.g. `over cursor`) — the cursor
+  #      follows whatever the operator passed on the CLI / what
+  #      the workload defaulted to. Only valid for single-
+  #      partition specs (a multi-partition param without a
+  #      scenario-level `for:` is a startup error).
+  #
+  #   2. An iter-var bound by an enclosing `for:` clause
+  #      (e.g. `over p`) — per-iteration the cursor narrows to
+  #      the current partition.
+  #
+  #   3. Another cursor's `.cursor` projection (e.g. `over q1.cursor`)
+  #      — cross-cursor composition. Both cursors share the same
+  #      partition window but may apply different iteration policies.
+  #
+  # Without an `over` clause, a cursor uses its full declared
+  # extent — partition state in scope is IGNORED. That's the
+  # intentional cost of explicit opt-in: workloads not wired up
+  # for partitioning won't be partitioned silently.
   # ─────────────────────────────────────────────────────────────
 
+  # Shape 1: `over cursor` — names the workload param directly.
+  # The workload param `cursor` is "0..100%" (full extent), so the
+  # cursor here doesn't actually narrow. The test passes
+  # `cursor=0..50%` on the CLI to verify the override path; the
+  # narrowing math then yields [0, 500) of the 1000-ordinal range.
+  # No `for:` scaffold needed because the spec is single-partition.
   over_workload_param:
-    # Cursor decl names the workload's `cursor` parameter
-    # directly via `over cursor`. No `for:` scaffold; the
-    # single-partition spec narrows the cursor unconditionally.
     - over_cursor_phase
 
+  # Shape 2: `over p` — names the iter-var bound by the enclosing
+  # `for:`. The spec `partitions("linear:3", 1000)` resolves
+  # against extent 1000 to three equal partitions:
+  #   [0, 333), [333, 666), [666, 1000)
+  # The phase runs three times; per iteration `q` narrows to the
+  # active partition.
   over_iter_var:
-    # Cursor decl names the for-clause's iter-var via `over p`.
-    # Per-iteration the cursor's effective range narrows to the
-    # active partition.
     - for: "p in partitions(\"linear:3\", 1000)"
       phases: [over_p_phase]
 
+  # Shape 3: cross-cursor — one cursor consumes another cursor's
+  # already-resolved `.cursor` projection. The spec
+  # `partitions("linear:2", 1000)` resolves to two equal partitions:
+  #   [0, 500), [500, 1000)
+  # Inside the phase, `q1` narrows to the active `p`; then `q2`
+  # is declared `over q1.cursor`, meaning q2 narrows to the SAME
+  # partition q1 just resolved. Each cursor has its own iteration
+  # policy but shares the partition window.
   over_cross_cursor:
-    # One cursor's resolved `.cursor` projection drives another
-    # cursor — cross-cursor composition. Both cursors walk the
-    # same partition window with their own iteration policies.
     - for: "p in partitions(\"linear:2\", 1000)"
       phases: [over_cross_phase]
 
   # ─────────────────────────────────────────────────────────────
   # Stdlib partition functions
+  #
+  # Each scenario exercises one stdlib helper against a known
+  # partition list. The helpers all take a `Partition` value as
+  # their primary argument and return a `u64`:
+  #
+  #   cardinality(p)  → p.end_ord - p.start_ord
+  #   start_of(p)     → p.start_ord (inclusive)
+  #   end_of(p)       → p.end_ord (exclusive)
+  #   idx_of(p)       → p's 0-based position in the list
+  #   mod_in(n, p)    → p.start_ord + (n mod cardinality(p))
+  #                     — wraps n into p's range
+  #   at(p, i)        → p.start_ord + i
+  #                     — bounds-checked: errors if i ≥ cardinality(p)
+  #   clamp_in(n, p)  → max(p.start_ord, min(n, p.end_ord - 1))
+  #                     — saturating projection (no wrap)
   # ─────────────────────────────────────────────────────────────
 
+  # Spec `partitions("linear:3", 300)` → 3 equal partitions of
+  # extent 300: [0, 100), [100, 200), [200, 300). Each has
+  # `cardinality(p) == 100`. The phase emits idx + cardinality
+  # per iteration to verify the helper math.
   fn_cardinality:
     - for: "p in partitions(\"linear:3\", 300)"
       phases: [fn_cardinality_phase]
 
+  # Spec `partitions("linear:4")` → 4 equal partitions of default
+  # extent 100: [0, 25), [25, 50), [50, 75), [75, 100). The phase
+  # emits idx_of(p), start_of(p), end_of(p) per iteration —
+  # straightforward field-projection verification.
   fn_idx_and_bounds:
     - for: "p in partitions(\"linear:4\")"
       phases: [fn_idx_bounds_phase]
 
+  # Single-partition spec covering the full default extent:
+  # `partitions("linear:1", 100)` → [[0, 100)]. The phase iterates
+  # 5 cycles and emits `mod_in(cycle, p)` per cycle. Because the
+  # partition's start_ord is 0 and cardinality is 100, the result
+  # is just `cycle mod 100 == cycle` for cycles 0..4. Verifies the
+  # modulo-into-range arithmetic without wrap (cycle < cardinality).
   fn_mod_in:
     - for: "p in partitions(\"linear:1\", 100)"
       phases: [fn_mod_in_phase]
 
+  # Same single-partition [0, 100) as above. The phase iterates
+  # 3 cycles (well under cardinality=100, so the bounds-check
+  # passes) and emits `at(p, cycle)` per cycle. Because
+  # p.start_ord == 0, the result is `cycle` itself: 0, 1, 2.
+  # If cycles >= cardinality, `at` would error at evaluation —
+  # that's the contract that distinguishes `at` from `mod_in`.
   fn_at:
     - for: "p in partitions(\"linear:1\", 100)"
       phases: [fn_at_phase]
 
+  # Same single-partition [0, 100) again. The phase iterates 5
+  # cycles and emits `clamp_in(cycle, p)`. All cycles 0..4 are
+  # already inside the range so they pass through unchanged. The
+  # clamp would only kick in if cycle were < 0 or >= end_of(p);
+  # this scenario verifies the pass-through path. Together with
+  # `fn_at` and `fn_mod_in`, this completes the trio of
+  # "what happens when n maps into p" semantics:
+  #   mod_in   → wrap modulo cardinality
+  #   at       → strict bounds check (error if out of range)
+  #   clamp_in → saturate to the partition's bounds
   fn_clamp_in:
     - for: "p in partitions(\"linear:1\", 100)"
       phases: [fn_clamp_in_phase]
 
   # ─────────────────────────────────────────────────────────────
   # Reified custom-named cursor parameters
+  #
+  # Instead of using the built-in `cursor` workload param, a
+  # workload can declare its OWN params (here `warmup_cursor` and
+  # `steady_cursor`) and have each cursor name the corresponding
+  # param via `over <param_name>`. This lets the workload expose
+  # multiple independent cursor knobs through the param surface:
+  # an operator can override `warmup_cursor=0..1%` without having
+  # to know which phase or cursor consumes it.
+  #
+  # SRD 71 §"Reified parameter names" — same routing as the
+  # built-in `cursor` param, just under a workload-chosen name.
   # ─────────────────────────────────────────────────────────────
 
+  # Two phases, each consuming its own dedicated cursor param.
+  # The workload defaults `warmup_cursor: "0..10%"` and
+  # `steady_cursor: "10%..100%"`. The operator may override
+  # either independently from the CLI.
   reified_warmup_steady:
-    # Workload exposes `warmup_cursor` / `steady_cursor` as the
-    # operator-facing knobs. Each phase's cursor names its
-    # corresponding parameter; operator overrides via
-    # `warmup_cursor=...` without knowing it routes to a cursor.
     - over_warmup_phase
     - over_steady_phase
 
   # ─────────────────────────────────────────────────────────────
   # Operator-surface negatives
+  #
+  # Verify the OPT-IN contract: a cursor without `over` ignores
+  # partition state entirely. This is the documented escape
+  # hatch — workloads that don't want partition narrowing simply
+  # omit the `over` clause and pass any operator-supplied
+  # `cursor=...` straight through to the floor.
   # ─────────────────────────────────────────────────────────────
 
+  # `no_over_phase` declares `cursor q = range(0, 50)` with NO
+  # `over` clause. Even if the operator passes `cursor=0..10%`
+  # on the CLI, this cursor still walks its full 50-ordinal
+  # extent. The test verifies the emit-line count is exactly 50.
   no_over_ignores_cursor_param:
-    # A cursor declared without `over` ignores `cursor=...` from
-    # the CLI entirely — uses its full declared extent.
     - no_over_phase
 
 phases:
