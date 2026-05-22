@@ -27,25 +27,52 @@ without (or with controlled) execution.
 
 ## Execution Depth
 
-Controls how far through the pipeline to execute.
+Controls how far through the pipeline to execute. Depth is a
+**single discriminant** read by **the same walker** every level
+of diagnosis and execution shares — there is no parallel
+"describe" walker or "pre-map" walker that re-implements
+traversal at a different fidelity. The walker descends the
+scenario tree, performing each layer's *structural* work
+unconditionally; the depth value chooses the deepest layer whose
+*executional* work runs for real vs. via an observer / dryrun
+wrapper.
 
-| Depth | Compiles? | Resolves for_each? | Runs cycles? | Creates adapters? |
-|-------|-----------|-------------------|--------------|-------------------|
-| `phase` | Yes | Yes | No | No |
-| `cycle` | Yes | Yes | Yes (dry-run adapter) | Dry-run only |
-| `full` | Yes | Yes | Yes | Yes (normal) |
+Pre-map (the SceneTree-and-scope-build pass that the TUI and
+checkpoint subsystem consume) is **the walker at `depth=phase`**;
+full execution is **the walker at `depth=cycle` or `depth=full`**.
+They are not different code. See SRD 18b §"Single Walker
+Contract" for the load-bearing version of this commitment.
+
+| Depth | Compiles? | Resolves for_each? | Builds SceneTree? | Runs cycles? | Creates adapters? |
+|-------|-----------|-------------------|-------------------|--------------|-------------------|
+| `phase` | Yes | Yes | Yes | No | No |
+| `cycle` | Yes | Yes | Yes | Yes (dry-run adapter) | Dry-run only |
+| `full` | Yes | Yes | Yes | Yes | Yes (normal) |
 
 - **`phase`**: compiles all kernels, resolves all scope
-  composition, validates all bind points. Stops before
-  creating adapters or running cycles. Use for compile-time
-  validation and GK explanation.
+  composition, materialises every comprehension iteration's
+  bound kernel, validates all bind points, populates the
+  SceneTree. Stops before creating adapters or running cycles.
+  This is the depth pre-map runs at. Use for compile-time
+  validation, GK explanation, and TUI plan-preview.
 
-- **`cycle`**: runs cycles with a dry-run adapter that
-  prints resolved op text (or silently discards). Tests the
-  full per-cycle pipeline including GK evaluation, field
-  resolution, and op template rendering.
+- **`cycle`**: enters `run_phase`, builds the wrapper stack with
+  the **dryrun wrapper** at the leaf instead of the real adapter
+  wrapper, runs cycles through it. Exercises the full per-cycle
+  pipeline (GK evaluation, field resolution, op-template render,
+  wrapper composition) without contacting the real backend.
 
-- **`full`**: normal execution (default).
+- **`full`**: same walk, real adapter wrapper at the leaf.
+
+### Visitor framing
+
+Each scope-tree layer (scenario, comprehension, bindings, phase,
+op, cycle) is a visitor with two responsibilities: *structural*
+(always runs at all depths ≥ that layer) and *executional*
+(runs only when depth equals or exceeds that layer's "real"
+threshold; lower depth substitutes an observer). New depth
+values extend this enum along one axis; they don't introduce new
+code paths.
 
 ---
 

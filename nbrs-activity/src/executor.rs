@@ -21,7 +21,7 @@ use crate::synthesis::OpBuilder;
 use nbrs_metrics::cadence_reporter::CadenceReporter;
 use nbrs_metrics::component::{self, Component, ComponentState};
 use nbrs_metrics::labels::Labels;
-use nbrs_variates::kernel::{format_scope_coordinate_path, GkKernel, ScopeCoord};
+use nbrs_variates::kernel::{format_scope_coordinate_path, ScopeCoord};
 use nbrs_workload::model::{ScenarioNode, WorkloadPhase};
 
 /// Shared context for the recursive executor.
@@ -164,6 +164,21 @@ pub struct ExecCtx {
     /// `resource.init.*` / `resource.detach` /
     /// `resource.close.*`) lands at every boundary.
     pub resource_pool: Arc<crate::resource_pool::ResourcePool>,
+    /// Current SceneTree parent node id — the walker pushes
+    /// child nodes under this id as it descends each
+    /// scenario-tree arm. Saved+restored on the way out of
+    /// each arm, so siblings share the same parent and
+    /// children land under their own scope. Per SRD 18b
+    /// §"Single Walker Contract" point 2 + §"Display: flat
+    /// or hierarchical, same source": the walker IS what
+    /// builds the SceneTree, not a separate pre-pass.
+    pub scene_tree_parent_id: crate::scene_tree::SceneNodeId,
+    /// Current SceneTree YAML path — the walker appends one
+    /// `PathSegment` per arm (Scenario / Phase / ForEach /
+    /// ForCombinations / DoWhile / DoUntil / ScenarioInclude
+    /// / bindings) and assigns it to each created node via
+    /// `set_yaml_path`. Per SRD-44 §"Phase identity".
+    pub scene_tree_path: Vec<crate::checkpoint::PathSegment>,
 }
 
 /// Workload YAML source kept alongside the parsed model so
@@ -261,6 +276,13 @@ pub fn execute_tree<'a>(
 /// children, ForCombinations children, DoWhile / DoUntil bodies,
 /// or phase-level iterations) bumps `depth`. The `schedule_spec`
 /// on `ctx` is consulted at `depth` to decide sibling strategy.
+///
+/// Per SRD 02 §"One Concurrency Path": there is only one dispatch
+/// path — semaphore-gated `JoinSet`. `Bounded(1)` is the
+/// sequential case (one permit at a time → spawn order = drain
+/// order). No in-place serial loop; no special branch for
+/// `nodes.len() <= 1`. The `concurrency_limit` is configuration
+/// of the same harness, never a code branch.
 fn execute_tree_at<'a>(
     ctx: &'a mut ExecCtx,
     nodes: &'a [ScenarioNode],
@@ -268,14 +290,7 @@ fn execute_tree_at<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
         let limit = ctx.schedule_spec.limit_at(depth);
-        if matches!(limit, crate::scheduler::ConcurrencyLimit::Serial) || nodes.len() <= 1 {
-            for node in nodes {
-                execute_node(ctx, node, depth).await?;
-            }
-            Ok(())
-        } else {
-            run_siblings_concurrently(ctx, nodes, depth, limit).await
-        }
+        run_siblings_concurrently(ctx, nodes, depth, limit).await
     })
 }
 
@@ -302,38 +317,49 @@ async fn run_siblings_concurrently(
     // Emit a single ordered line up-front so operators always
     // see the dispatch in declaration order, even if the per-
     // phase headers interleave below.
-    let scheduled_phases: Vec<(usize, String)> = nodes.iter()
-        .filter_map(|node| match node {
-            ScenarioNode::Phase(name) => Some(name.clone()),
-            _ => None,
-        })
-        .filter_map(|name| {
-            crate::scene_tree::current()
-                .and_then(|t| t.dfs_phases()
-                    .find(|n| n.name == name)
-                    .and_then(|n| n.seq).map(|seq| (seq, name.clone())))
-        })
-        .collect();
-    if !scheduled_phases.is_empty() {
-        let limit_disp = match limit {
-            ConcurrencyLimit::Bounded(n) => format!("limit={n}"),
-            ConcurrencyLimit::Unlimited => "limit=*".to_string(),
-            ConcurrencyLimit::Serial => unreachable!(),
-        };
-        let total = crate::scene_tree::current()
-            .map(|t| t.total_phases())
-            .unwrap_or(scheduled_phases.len());
-        let listing: Vec<String> = scheduled_phases.iter()
-            .map(|(seq, name)| format!("[{seq}/{total}] {name}"))
+    //
+    // Presentation-only guard: at `Bounded(1)` the dispatch IS
+    // sequential (one permit, JoinSet drains in spawn order =
+    // declaration order), so the per-phase headers come out in
+    // order naturally and the preview adds nothing. Skip it. This
+    // is NOT a code-path branch (the dispatch loop below is
+    // identical for every limit per SRD 02 §"One Concurrency
+    // Path"); it's just suppressing a log line that conveys the
+    // wrong intent ("concurrent dispatch (limit=1)" reads as
+    // parallelism when there is none).
+    let preview_useful = !matches!(limit, ConcurrencyLimit::Bounded(1));
+    if preview_useful {
+        let scheduled_phases: Vec<(usize, String)> = nodes.iter()
+            .filter_map(|node| match node {
+                ScenarioNode::Phase(name) => Some(name.clone()),
+                _ => None,
+            })
+            .filter_map(|name| {
+                crate::scene_tree::current()
+                    .and_then(|t| t.dfs_phases()
+                        .find(|n| n.name == name)
+                        .and_then(|n| n.seq).map(|seq| (seq, name.clone())))
+            })
             .collect();
-        crate::diag!(crate::observer::LogLevel::Info,
-            "concurrent dispatch ({limit_disp}): {}", listing.join(", "));
+        if !scheduled_phases.is_empty() {
+            let limit_disp = match limit {
+                ConcurrencyLimit::Bounded(n) => format!("limit={n}"),
+                ConcurrencyLimit::Unlimited => "limit=*".to_string(),
+            };
+            let total = crate::scene_tree::current()
+                .map(|t| t.total_phases())
+                .unwrap_or(scheduled_phases.len());
+            let listing: Vec<String> = scheduled_phases.iter()
+                .map(|(seq, name)| format!("[{seq}/{total}] {name}"))
+                .collect();
+            crate::diag!(crate::observer::LogLevel::Info,
+                "concurrent dispatch ({limit_disp}): {}", listing.join(", "));
+        }
     }
 
     let sem: Option<Arc<tokio::sync::Semaphore>> = match limit {
         ConcurrencyLimit::Bounded(n) => Some(Arc::new(tokio::sync::Semaphore::new(n as usize))),
         ConcurrencyLimit::Unlimited => None,
-        ConcurrencyLimit::Serial => unreachable!("serial handled by caller"),
     };
     // Dispatch is serialised on the deterministic
     // declaration-order of scenario nodes; execution is
@@ -352,12 +378,45 @@ async fn run_siblings_concurrently(
     //   - With `Serial`: the caller already routed to the
     //     non-concurrent loop above; we never reach here.
     let mut set = tokio::task::JoinSet::new();
+    let mut first_err: Option<String> = None;
     for node in nodes {
         let permit = match sem.as_ref() {
             Some(s) => Some(s.clone().acquire_owned().await
                 .map_err(|e| e.to_string())?),
             None => None,
         };
+        // After waiting for a permit, drain any completed
+        // tasks and check for errors. Cascade-stop preserves
+        // the semantic that an erroring sibling halts dispatch
+        // of subsequent siblings (matches the in-place serial
+        // loop's `?`-propagation behaviour). At `Bounded(1)`
+        // the permit acquire above blocks until the previous
+        // task is fully done; at `Bounded(N)` up to N-1 tasks
+        // may already be in flight when we see the first
+        // error — those continue to completion, but no further
+        // dispatch happens. Same loop body for every limit;
+        // the only difference is how many in-flight tasks the
+        // cap allows.
+        while let Some(res) = set.try_join_next() {
+            match res {
+                Err(join_err) => {
+                    if first_err.is_none() {
+                        first_err = Some(format!("concurrent task panicked: {join_err}"));
+                    }
+                }
+                Ok(Err(e)) => {
+                    if first_err.is_none() { first_err = Some(e); }
+                }
+                Ok(Ok(())) => {}
+            }
+        }
+        if first_err.is_some() {
+            // Drop the permit we just acquired — it would
+            // otherwise sit unused until the dispatch loop
+            // exits.
+            drop(permit);
+            break;
+        }
         let node = node.clone();
         let mut task_ctx = ctx.clone();
         set.spawn(async move {
@@ -368,7 +427,8 @@ async fn run_siblings_concurrently(
             execute_node(&mut task_ctx, &node, depth).await
         });
     }
-    let mut first_err: Option<String> = None;
+    // Drain any still-running tasks (those spawned before the
+    // first error was observed).
     while let Some(res) = set.join_next().await {
         match res {
             Err(join_err) => {
@@ -386,6 +446,96 @@ async fn run_siblings_concurrently(
         Some(e) => Err(e),
         None => Ok(()),
     }
+}
+
+// ─── SceneTree push helpers ───────────────────────────────────────
+//
+// Per SRD 18b §"Single Walker Contract" point 2: every walker arm
+// pushes its scene-tree node as part of its structural work. These
+// helpers encapsulate the global-mutex dance + auxiliary setters
+// (op_names / own_names / yaml_path) so each arm reads as the
+// minimal "what does this arm push" statement.
+//
+// The walker is the SOLE populator of `crate::scene_tree::current()`
+// — there is no separate pre-map walk that pre-populates the tree
+// (SRD 18b §"Single Walker Contract" point 1). At depth >= Cycle
+// the walker descends both structural (push) and executional
+// (run_phase) work; at depth = Phase the walker still pushes every
+// node but skips the execution at run_phase's internal short-circuit.
+
+fn push_phase_scene_node(
+    parent_id: crate::scene_tree::SceneNodeId,
+    yaml_path: Vec<crate::checkpoint::PathSegment>,
+    name: String,
+    labels: String,
+    op_names: Vec<String>,
+) -> crate::scene_tree::SceneNodeId {
+    let mut id: crate::scene_tree::SceneNodeId = 0;
+    crate::scene_tree::with_global_mut(|t| {
+        id = t.push(parent_id, crate::scene_tree::NodeKind::Phase, name, labels);
+        t.set_phase_op_names(id, op_names);
+        t.set_yaml_path(id, yaml_path);
+    });
+    id
+}
+
+fn push_scope_scene_node(
+    parent_id: crate::scene_tree::SceneNodeId,
+    yaml_path: Vec<crate::checkpoint::PathSegment>,
+    header: String,
+    own_names: Vec<String>,
+) -> crate::scene_tree::SceneNodeId {
+    let mut id: crate::scene_tree::SceneNodeId = 0;
+    crate::scene_tree::with_global_mut(|t| {
+        id = t.push(parent_id, crate::scene_tree::NodeKind::Scope, header, String::new());
+        if !own_names.is_empty() {
+            t.set_own_names(id, own_names);
+        }
+        t.set_yaml_path(id, yaml_path);
+    });
+    id
+}
+
+/// Format a per-iter binding tuple as `k=v, k=v`. Same shape
+/// pre-map used; surface visible in TUI / post-run summary.
+fn format_iter_label(bindings: &[(String, nbrs_variates::node::Value)]) -> String {
+    bindings.iter()
+        .map(|(k, v)| format!("{k}={}", v.to_display_string()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Format the canonical phase label from a root-first coord chain.
+/// Reverses to leaf-first and runs the GK-side formatter — same
+/// string the runtime's `phase_labels` produces, so scene-tree
+/// `find_phase` matches at execution time.
+fn canonical_phase_label(parent_coords: &[ScopeCoord]) -> String {
+    let leaf_first: Vec<_> = parent_coords.iter().rev().cloned().collect();
+    format_scope_coordinate_path(&leaf_first)
+}
+
+/// Look up the own-output names of a do-loop's installed kernel by
+/// matching the scope-tree DoWhile/DoUntil variant on
+/// (condition, counter). Used by the walker's DoWhile/DoUntil
+/// arms to seed `own_names` on the pushed scene-tree node so
+/// downstream consumers can render the loop's own coordinates.
+fn do_loop_own_names(
+    ctx: &ExecCtx,
+    condition: &str,
+    counter: Option<&str>,
+    invert: bool,
+) -> Vec<String> {
+    let idx = ctx.scope_tree.iter_dfs().find_map(|(idx, n)| match &n.kind {
+        crate::scope_tree::ScopeKind::DoWhile { condition: c, counter: ct }
+            if !invert && c == condition && ct.as_deref() == counter => Some(idx),
+        crate::scope_tree::ScopeKind::DoUntil { condition: c, counter: ct }
+            if invert && c == condition && ct.as_deref() == counter => Some(idx),
+        _ => None,
+    });
+    idx.and_then(|i| ctx.scope_tree.nodes[i].cached_kernel.get().cloned())
+        .map(|k| k.program().own_output_names()
+            .into_iter().map(String::from).collect::<Vec<String>>())
+        .unwrap_or_default()
 }
 
 /// Resolve the parent kernel for a scope dispatched at runtime.
@@ -424,10 +574,14 @@ fn execute_node<'a>(
     depth: usize,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
+        use crate::checkpoint::PathSegment;
         match node {
             ScenarioNode::Phase(name) => {
                 let phase_fe = ctx.phases.get(name.as_str())
                     .and_then(|p| p.for_each.clone());
+                let op_names: Vec<String> = ctx.phases.get(name.as_str())
+                    .map(|p| p.ops.iter().map(|op| op.name.clone()).collect())
+                    .unwrap_or_default();
                 if let Some(spec) = phase_fe {
                     // Phase-level for_each routes through the
                     // unified dispatcher with terminal action
@@ -452,7 +606,7 @@ fn execute_node<'a>(
                         .ok_or_else(|| format!(
                             "phase '{name}' for_each '{spec}': no installed ancestor kernel."
                         ))?;
-                    let clauses = vec![nbrs_variates::comprehension::Clause::new(var_parsed, expr_parsed)];
+                    let clauses = vec![nbrs_variates::comprehension::Clause::new(var_parsed.clone(), expr_parsed)];
                     let needle = spec.clone();
                     let parent_coords = ctx.current_parent_kernel.as_ref()
                         .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
@@ -460,14 +614,64 @@ fn execute_node<'a>(
                     let steps = runtime_iterate(
                         ctx, &canonical, &parent, &parent_coords, &clauses, None, None, None,
                     ).map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?;
-                    return dispatch_comprehension(
+                    // Structural push: outer phase.for_each scope
+                    // header. Per SRD 18b §"Single Walker Contract"
+                    // point 2 — runs at every depth.
+                    let mut scope_path = ctx.scene_tree_path.clone();
+                    scope_path.push(PathSegment::ForEach { var: var_parsed.clone() });
+                    let header = format!("phase.for_each {var_parsed} in [{}]",
+                        steps.iter()
+                            .filter_map(|s| s.bindings.first().map(|(_, v)| v.to_display_string()))
+                            .collect::<Vec<_>>().join(", "));
+                    let scope_id = push_scope_scene_node(
+                        ctx.scene_tree_parent_id, scope_path.clone(), header, Vec::new(),
+                    );
+                    // dispatch_comprehension pushes per-iter Phase
+                    // nodes under this scope (TerminalAction::Phase).
+                    // Save+update ctx.scene_tree_* so iterations land
+                    // under the outer scope; restore on the way out.
+                    let saved_parent = ctx.scene_tree_parent_id;
+                    let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
+                    ctx.scene_tree_parent_id = scope_id;
+                    let phase_path_for_iters: Vec<PathSegment> = {
+                        let mut p = ctx.scene_tree_path.clone();
+                        p.push(PathSegment::Phase(name.clone()));
+                        p
+                    };
+                    let res = dispatch_comprehension(
                         ctx, steps,
                         TerminalAction::Phase(name), depth + 1, false,
                         "for_each",
-                    ).await
-                        .map_err(|e| enrich_with_yaml_location(ctx, &needle, e));
+                        Some((name.clone(), op_names, phase_path_for_iters)),
+                    ).await;
+                    ctx.scene_tree_parent_id = saved_parent;
+                    ctx.scene_tree_path = saved_path;
+                    return res.map_err(|e| enrich_with_yaml_location(ctx, &needle, e));
                 } else {
-                    run_phase(ctx, name).await?;
+                    // Structural push: leaf Phase node. Labels are
+                    // the canonical leaf-first scope-coord path so
+                    // run_phase's later `set_phase_running(name,
+                    // &phase_labels, ..)` find_phase lookup matches.
+                    let phase_labels = canonical_phase_label(
+                        &ctx.current_parent_kernel.as_ref()
+                            .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
+                            .unwrap_or_default(),
+                    );
+                    let mut phase_path = ctx.scene_tree_path.clone();
+                    phase_path.push(PathSegment::Phase(name.clone()));
+                    push_phase_scene_node(
+                        ctx.scene_tree_parent_id, phase_path, name.clone(),
+                        phase_labels, op_names,
+                    );
+                    // Depth gating per SRD 17 §"Execution Depth"
+                    // + SRD 18b §"Single Walker Contract" point
+                    // 3: structural push always runs; executional
+                    // run_phase only runs at depth >= Op. run_phase's
+                    // internal short-circuit then handles
+                    // Op-vs-Cycle-vs-Full at the cycle boundary.
+                    if ctx.diag.depth >= crate::runner::ExecDepth::Op {
+                        run_phase(ctx, name).await?;
+                    }
                 }
             }
             ScenarioNode::Comprehension { comprehension, children } => {
@@ -488,6 +692,8 @@ fn execute_node<'a>(
                     .ok_or_else(|| format!(
                         "{label}: no installed ancestor kernel.",
                     ))?;
+                let own_names: Vec<String> = canonical.program().own_output_names()
+                    .into_iter().map(String::from).collect();
                 let filter = comprehension.filter.as_deref();
                 let order = comprehension.order.as_ref();
                 match &comprehension.mode {
@@ -512,12 +718,36 @@ fn execute_node<'a>(
                         } else {
                             "for_combinations"
                         };
-                        return dispatch_comprehension(
+                        // Structural push: outer "each <vars>" scope
+                        // header. dispatch_comprehension pushes per-
+                        // iter inner scopes under this.
+                        let mut scope_path = ctx.scene_tree_path.clone();
+                        let header = if clauses.len() == 1 {
+                            scope_path.push(PathSegment::ForEach { var: clauses[0].var().to_string() });
+                            format!("each {}", clauses[0].var())
+                        } else {
+                            scope_path.push(PathSegment::ForCombinations {
+                                vars: clauses.iter().map(|c| c.var().to_string()).collect(),
+                            });
+                            let summary = clauses.iter().map(|c| c.var())
+                                .collect::<Vec<_>>().join(", ");
+                            format!("each {summary}")
+                        };
+                        let scope_id = push_scope_scene_node(
+                            ctx.scene_tree_parent_id, scope_path.clone(),
+                            header, own_names.clone(),
+                        );
+                        let saved_parent = ctx.scene_tree_parent_id;
+                        let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
+                        ctx.scene_tree_parent_id = scope_id;
+                        let res = dispatch_comprehension(
                             ctx, steps,
                             TerminalAction::Children(children), depth + 1, false,
-                            kind,
-                        ).await
-                            .map_err(|e| enrich_with_yaml_location(ctx, &needle, e));
+                            kind, None,
+                        ).await;
+                        ctx.scene_tree_parent_id = saved_parent;
+                        ctx.scene_tree_path = saved_path;
+                        return res.map_err(|e| enrich_with_yaml_location(ctx, &needle, e));
                     }
                     ComprehensionMode::Union(subspaces) => {
                         if !ctx.quiet() {
@@ -525,7 +755,26 @@ fn execute_node<'a>(
                                 "for_each_union ({} sub-spaces) × {} children",
                                 subspaces.len(), children.len());
                         }
+                        // Structural push: outer union envelope.
+                        let union_names = comprehension.coordinate_names().join(", ");
+                        let mut scope_path = ctx.scene_tree_path.clone();
+                        scope_path.push(PathSegment::ForCombinations {
+                            vars: comprehension.coordinate_names()
+                                .into_iter().map(String::from).collect(),
+                        });
+                        let header = format!(
+                            "for_each_union [{union_names}] ({} sub-spaces)",
+                            subspaces.len(),
+                        );
+                        let scope_id = push_scope_scene_node(
+                            ctx.scene_tree_parent_id, scope_path.clone(),
+                            header, own_names.clone(),
+                        );
+                        let saved_parent = ctx.scene_tree_parent_id;
+                        let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
+                        ctx.scene_tree_parent_id = scope_id;
                         let total = subspaces.len();
+                        let mut union_result: Result<(), String> = Ok(());
                         for (i, sub) in subspaces.iter().enumerate() {
                             if !ctx.quiet() {
                                 crate::diag!(crate::observer::LogLevel::Debug,
@@ -540,46 +789,77 @@ fn execute_node<'a>(
                             let parent_coords = ctx.current_parent_kernel.as_ref()
                                 .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
                                 .unwrap_or_default();
-                            let steps = runtime_iterate(
+                            let steps = match runtime_iterate(
                                 ctx, &canonical, &parent, &parent_coords, sub, filter, order,
                                 Some((i, total)),
-                            ).map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?;
-                            // for_each_union sub-spaces are
-                            // for_each / for_combinations bodies
-                            // sequenced under a `union` envelope
-                            // (SRD-18e). Tag each iteration with
-                            // its sub-space's intrinsic shape so
-                            // the JSONL log discriminates the same
-                            // way a non-union comprehension would.
+                            ) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    union_result = Err(enrich_with_yaml_location(ctx, &needle, e));
+                                    break;
+                                }
+                            };
                             let union_kind = if sub.len() == 1 {
                                 "for_each"
                             } else {
                                 "for_combinations"
                             };
-                            dispatch_comprehension(
+                            if let Err(e) = dispatch_comprehension(
                                 ctx, steps,
                                 TerminalAction::Children(children), depth + 1, false,
-                                union_kind,
-                            ).await
-                                .map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?;
+                                union_kind, None,
+                            ).await {
+                                union_result = Err(enrich_with_yaml_location(ctx, &needle, e));
+                                break;
+                            }
                         }
-                        return Ok(());
+                        ctx.scene_tree_parent_id = saved_parent;
+                        ctx.scene_tree_path = saved_path;
+                        return union_result;
                     }
                 }
             }
             ScenarioNode::IncludedScenario { name, children } => {
-                // Transparent at runtime — the wrapper exists
-                // only so the scope/scene trees can show the
-                // include hierarchy. Walk straight through.
+                // Structural push: scenario-include node. The
+                // wrapper is "transparent" only in the sense that
+                // it doesn't trigger execution — it still shows in
+                // the scene tree so operators can trace the include
+                // chain (SRD-44 §"Phase identity").
                 if !ctx.quiet() {
                     crate::diag!(crate::observer::LogLevel::Debug,
                         "include scenario '{name}' ({} children)",
                         children.len());
                 }
-                execute_tree_at(ctx, children, depth + 1).await?;
+                let mut scope_path = ctx.scene_tree_path.clone();
+                scope_path.push(PathSegment::ScenarioInclude(name.clone()));
+                let scope_id = push_scope_scene_node(
+                    ctx.scene_tree_parent_id, scope_path.clone(),
+                    format!("scenario '{name}'"), Vec::new(),
+                );
+                let saved_parent = ctx.scene_tree_parent_id;
+                let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
+                ctx.scene_tree_parent_id = scope_id;
+                let res = execute_tree_at(ctx, children, depth + 1).await;
+                ctx.scene_tree_parent_id = saved_parent;
+                ctx.scene_tree_path = saved_path;
+                res?;
             }
             ScenarioNode::DoWhile { condition, counter, children } => {
                 crate::diag!(crate::observer::LogLevel::Debug, "=== do_while: {condition} ===");
+                // Structural push: do_while scope header. Iteration
+                // count is unknown a priori (condition-driven), so
+                // there's no per-iter expansion at the scene tree
+                // level — one scope node represents the whole loop.
+                let mut scope_path = ctx.scene_tree_path.clone();
+                scope_path.push(PathSegment::DoWhile { counter: counter.clone() });
+                let own_names = do_loop_own_names(ctx, condition, counter.as_deref(), false);
+                let scope_id = push_scope_scene_node(
+                    ctx.scene_tree_parent_id, scope_path.clone(),
+                    format!("do_while {condition}"), own_names,
+                );
+                let saved_parent = ctx.scene_tree_parent_id;
+                let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
+                ctx.scene_tree_parent_id = scope_id;
                 fire_scope_lifecycle(
                     ctx, crate::readouts::Event::ScopeStart,
                     &format!("do_while {condition}"), depth);
@@ -588,10 +868,22 @@ fn execute_node<'a>(
                 fire_scope_lifecycle(
                     ctx, crate::readouts::Event::ScopeEnd,
                     &format!("do_while {condition}"), depth);
+                ctx.scene_tree_parent_id = saved_parent;
+                ctx.scene_tree_path = saved_path;
                 r?;
             }
             ScenarioNode::DoUntil { condition, counter, children } => {
                 crate::diag!(crate::observer::LogLevel::Debug, "=== do_until: {condition} ===");
+                let mut scope_path = ctx.scene_tree_path.clone();
+                scope_path.push(PathSegment::DoUntil { counter: counter.clone() });
+                let own_names = do_loop_own_names(ctx, condition, counter.as_deref(), true);
+                let scope_id = push_scope_scene_node(
+                    ctx.scene_tree_parent_id, scope_path.clone(),
+                    format!("do_until {condition}"), own_names,
+                );
+                let saved_parent = ctx.scene_tree_parent_id;
+                let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
+                ctx.scene_tree_parent_id = scope_id;
                 fire_scope_lifecycle(
                     ctx, crate::readouts::Event::ScopeStart,
                     &format!("do_until {condition}"), depth);
@@ -600,6 +892,8 @@ fn execute_node<'a>(
                 fire_scope_lifecycle(
                     ctx, crate::readouts::Event::ScopeEnd,
                     &format!("do_until {condition}"), depth);
+                ctx.scene_tree_parent_id = saved_parent;
+                ctx.scene_tree_path = saved_path;
                 r?;
             }
             ScenarioNode::Bindings { source, children } => {
@@ -678,9 +972,31 @@ fn execute_node<'a>(
                     }
                     None => installed,
                 };
+                // Structural push: bindings scope header. SRD 18b
+                // §"Single Walker Contract" point 2 — the bindings
+                // arm pushes the scene-tree node uniformly with
+                // every other arm. The original asymmetry bug had
+                // this arm "transparent" in pre-map while the
+                // runtime did build_subscope; the unified walker
+                // does both at every depth.
+                let one_line = source.lines().map(str::trim)
+                    .find(|l| !l.is_empty()).unwrap_or("");
+                let mut scope_path = ctx.scene_tree_path.clone();
+                scope_path.push(PathSegment::ScenarioInclude(
+                    format!("bindings:{one_line}"),
+                ));
+                let scope_id = push_scope_scene_node(
+                    ctx.scene_tree_parent_id, scope_path.clone(),
+                    format!("bindings: {one_line}"), Vec::new(),
+                );
                 let prior_parent = ctx.current_parent_kernel.take();
                 ctx.current_parent_kernel = Some(chained);
+                let saved_scene_parent = ctx.scene_tree_parent_id;
+                let saved_scene_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
+                ctx.scene_tree_parent_id = scope_id;
                 let res = execute_tree_at(ctx, children, depth + 1).await;
+                ctx.scene_tree_parent_id = saved_scene_parent;
+                ctx.scene_tree_path = saved_scene_path;
                 ctx.current_parent_kernel = prior_parent;
                 res?;
             }
@@ -793,8 +1109,11 @@ impl OwnedTerminal {
 }
 
 /// Unified comprehension dispatcher. Drains the strategy into a
-/// flat tuple list, then walks it serially or concurrently per
-/// the level's `schedule=` policy. Each iteration:
+/// flat tuple list, then walks it through the semaphore-gated
+/// `JoinSet` harness per the level's `schedule=` policy. Per SRD
+/// 02 §"One Concurrency Path": one path, parameterised by
+/// `concurrency_limit`. `Bounded(1)` is the sequential case (one
+/// permit at a time → spawn order = drain order). Each iteration:
 ///
 /// 1. Builds a fresh per-branch `GkKernel` via `from_program`.
 /// 2. `materialize_wiring_from_outer(parent_kernel)` for inheritance.
@@ -808,10 +1127,12 @@ impl OwnedTerminal {
 ///    phase-level `for_each`.
 /// 7. Pops labels, restores `current_parent_kernel`.
 ///
-/// `sequential_only` forces serial dispatch regardless of
-/// `schedule=` — used for do-loops where iteration N depends on
-/// iteration N-1's effects (would need to be revisited for
-/// `shared`-state propagation; SRD-16 §"Shared Mutable").
+/// `sequential_only` forces the per-iteration limit to
+/// `Bounded(1)` regardless of `schedule=` — used for do-loops
+/// where iteration N depends on iteration N-1's effects (would
+/// need to be revisited for `shared`-state propagation; SRD-16
+/// §"Shared Mutable"). The harness is unchanged; only the limit
+/// value differs.
 fn dispatch_comprehension<'a>(
     ctx: &'a mut ExecCtx,
     steps: Vec<nbrs_variates::comprehension::IterationStep>,
@@ -819,6 +1140,15 @@ fn dispatch_comprehension<'a>(
     depth: usize,
     sequential_only: bool,
     kind: &'static str,
+    // Phase-terminal scene-tree metadata. `Some((name,
+    // op_names, phase_yaml_path))` for `TerminalAction::Phase`
+    // — the dispatcher pushes one Phase scene node per
+    // iteration, labels = canonical_phase_label(step.coord_path),
+    // so run_phase's later `set_phase_running` find_phase
+    // lookup matches. `None` for `TerminalAction::Children`
+    // — per-iter inner scope is derived from the step
+    // bindings + outer `ctx.scene_tree_path`.
+    phase_terminal_meta: Option<(String, Vec<String>, Vec<crate::checkpoint::PathSegment>)>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
     use crate::scheduler::ConcurrencyLimit;
     Box::pin(async move {
@@ -831,24 +1161,22 @@ fn dispatch_comprehension<'a>(
             return Ok(());
         }
 
-        let limit = ctx.schedule_spec.limit_at(depth);
-        let serial = sequential_only
-            || matches!(limit, ConcurrencyLimit::Serial)
-            || steps.len() <= 1;
-
-        if serial {
-            for step in &steps {
-                run_one_iteration(ctx, step, &terminal, depth, kind).await?;
-            }
-            return Ok(());
-        }
+        // Effective limit: `sequential_only` (do-loop ordering
+        // dependency) clamps to Bounded(1); otherwise read the
+        // schedule spec. There is no separate serial code path —
+        // Bounded(1) flows through the same semaphore-gated
+        // dispatcher as any other limit.
+        let limit = if sequential_only {
+            ConcurrencyLimit::Bounded(1)
+        } else {
+            ctx.schedule_spec.limit_at(depth)
+        };
 
         let sem: Option<std::sync::Arc<tokio::sync::Semaphore>> = match limit {
             ConcurrencyLimit::Bounded(n) => {
                 Some(std::sync::Arc::new(tokio::sync::Semaphore::new(n as usize)))
             }
             ConcurrencyLimit::Unlimited => None,
-            ConcurrencyLimit::Serial => unreachable!("handled by serial branch"),
         };
         // The TerminalAction borrows from the caller's slice;
         // for spawning into 'static futures, materialize into an
@@ -857,6 +1185,20 @@ fn dispatch_comprehension<'a>(
         let owned_terminal = match &terminal {
             TerminalAction::Children(c) => OwnedTerminal::Children(std::sync::Arc::new(c.to_vec())),
             TerminalAction::Phase(name) => OwnedTerminal::Phase(name.to_string()),
+        };
+
+        // Inner-scope per-iter pushes need own_names from the
+        // outer comprehension's installed kernel. Caller has
+        // pushed the outer scope and updated ctx.scene_tree_*
+        // before invoking us; we read own_names from the outer
+        // scope's node so per-iter inner scopes inherit the same
+        // (matches pre_map's set_own_names(inner_scope, own.clone())).
+        let inner_own_names: Vec<String> = if phase_terminal_meta.is_none() {
+            crate::scene_tree::current()
+                .and_then(|t| t.nodes.get(ctx.scene_tree_parent_id).map(|n| n.own_names.clone()))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
         };
 
         // Permit acquired in the dispatcher loop, not the
@@ -874,7 +1216,36 @@ fn dispatch_comprehension<'a>(
                     .map_err(|e| e.to_string())?),
                 None => None,
             };
+            // Structural push: per-iter scene-tree node. Pushed
+            // in the dispatcher loop (not the spawned task) so
+            // order is deterministic and stable phase seq numbers
+            // get assigned in DFS / iteration order.
+            let per_iter_scene_id = match &phase_terminal_meta {
+                Some((phase_name, op_names, phase_yaml_path)) => {
+                    let labels = canonical_phase_label(&step.coord_path);
+                    push_phase_scene_node(
+                        ctx.scene_tree_parent_id,
+                        phase_yaml_path.clone(),
+                        phase_name.clone(),
+                        labels,
+                        op_names.clone(),
+                    )
+                }
+                None => {
+                    push_scope_scene_node(
+                        ctx.scene_tree_parent_id,
+                        ctx.scene_tree_path.clone(),
+                        format_iter_label(&step.bindings),
+                        inner_own_names.clone(),
+                    )
+                }
+            };
             let mut task_ctx = ctx.clone();
+            // For Children terminal: per-iter inner scope becomes
+            // the parent for descended children. For Phase
+            // terminal: the per-iter Phase node IS the leaf — no
+            // descent — but set parent anyway for consistency.
+            task_ctx.scene_tree_parent_id = per_iter_scene_id;
             let owned_terminal = owned_terminal.clone();
             set.spawn(async move {
                 let _permit = permit;
@@ -1191,7 +1562,16 @@ async fn run_one_iteration(
             execute_tree_at(ctx, children, depth).await
         }
         TerminalAction::Phase(name) => {
-            run_phase(ctx, name).await
+            // Depth gating: structural Phase scene node was
+            // pushed by `dispatch_comprehension` before
+            // spawning this iteration; the executional
+            // `run_phase` only runs at depth >= Op. SRD 18b
+            // §"Single Walker Contract" point 3.
+            if ctx.diag.depth >= crate::runner::ExecDepth::Op {
+                run_phase(ctx, name).await
+            } else {
+                Ok(())
+            }
         }
     };
 
@@ -2841,428 +3221,6 @@ fn parse_var_in_expr(spec: &str) -> (String, String) {
     }
 }
 
-// =========================================================================
-// Scenario tree pre-mapping (walk without executing)
-// =========================================================================
-
-use crate::scene_tree::{NodeKind, SceneNodeId, SceneTree};
-
-/// Walk the scenario tree without executing and build a
-/// [`SceneTree`] of every concrete phase and scope header.
-///
-/// `for_each` / `for_combinations` specs are resolved here so each
-/// iteration appears as its own concrete phase under a per-iteration
-/// scope header. `do_while` / `do_until` are shown once (iteration
-/// count is unknown at pre-map time).
-pub fn pre_map_tree(
-    nodes: &[ScenarioNode],
-    phases: &HashMap<String, WorkloadPhase>,
-    scope_tree: &crate::scope_tree::ScopeTree,
-    strict: bool,
-    // `initial_path`: caller seeds this with the scenario's
-    // location (`vec![PathSegment::Scenario(name)]`); pre-map
-    // extends it through every nested for_each /
-    // for_combinations / do-loop / sub-scenario as it walks,
-    // so each phase node carries its full identity per
-    // SRD-44 §"Phase identity".
-    initial_path: Vec<crate::checkpoint::PathSegment>,
-) -> Result<SceneTree, String> {
-    let mut tree = SceneTree::new();
-    let root = tree.root();
-    pre_map_recursive(nodes, phases, scope_tree, root, &[], None, &initial_path, &mut tree, strict)?;
-    Ok(tree)
-}
-
-/// Pre-map walker — uses the same scope-tree-installed kernels
-/// the runtime dispatcher uses, so the SceneTree displayed
-/// at session start is an exact preview of the runtime's
-/// iteration shape. No separate session-start logic; the plan
-/// view IS what the session does.
-///
-/// `parent_coords` is the root-first scope-coordinate chain
-/// accumulated through enclosing comprehension iterations. Each
-/// concrete phase emits its labels via
-/// [`format_scope_coordinate_path`] applied to the leaf-first
-/// reversal of this chain — same formatter the runtime uses on
-/// `parent_kernel.scope_coordinates()`, so pre-mapped phase
-/// nodes share their structural identity with the runtime
-/// transitions that activate them.
-///
-/// `effective_parent_kernel` is the **bound** kernel of the
-/// immediately-enclosing iteration. Inner comprehensions and
-/// phase-level for_each clauses interpolate placeholders like
-/// `vec_{profile}` against this kernel, so a nested for_each
-/// whose spec depends on an outer iter-var resolves correctly
-/// at pre-map time. `None` at the top-level call; populated
-/// per-iteration as we descend through outer comprehensions.
-/// Mirrors the runtime's `ExecCtx::current_parent_kernel`
-/// (`effective_parent_kernel` in [`execute_node`]).
-fn pre_map_recursive(
-    nodes: &[ScenarioNode],
-    phases: &HashMap<String, WorkloadPhase>,
-    scope_tree: &crate::scope_tree::ScopeTree,
-    parent: SceneNodeId,
-    parent_coords: &[ScopeCoord],
-    effective_parent_kernel: Option<&std::sync::Arc<nbrs_variates::kernel::GkKernel>>,
-    // `parent_path`: structural YAML path accumulated from the
-    // workload root down to the current parent scope. Each
-    // call appends one PathSegment per scenario / for_each /
-    // for_combinations / do-loop level, populating each
-    // created scene-tree node with its own complete path. See
-    // SRD-44 §"Phase identity".
-    parent_path: &[crate::checkpoint::PathSegment],
-    tree: &mut SceneTree,
-    strict: bool,
-) -> Result<(), String> {
-    use crate::checkpoint::PathSegment;
-    for node in nodes {
-        match node {
-            ScenarioNode::Phase(name) => {
-                let op_names: Vec<String> = phases.get(name.as_str())
-                    .map(|p| p.ops.iter().map(|op| op.name.clone()).collect())
-                    .unwrap_or_default();
-                let phase_fe = phases.get(name.as_str())
-                    .and_then(|p| p.for_each.clone());
-                if let Some(spec) = phase_fe {
-                    let (var, expr) = parse_var_in_expr(&spec);
-                    let scope_idx = scope_tree.phase_node_by_name(name)
-                        .ok_or_else(|| format!(
-                            "phase '{name}' for_each '{spec}': no scope-tree entry"
-                        ))?;
-                    let canonical = scope_tree.nodes[scope_idx].cached_kernel.get();
-                    let parent_kernel = effective_parent_kernel.cloned()
-                        .or_else(|| scope_tree.nearest_installed_ancestor_kernel(scope_idx));
-                    let phase_clauses = vec![nbrs_variates::comprehension::Clause::new(var.clone(), expr.clone())];
-                    let steps = match (canonical, parent_kernel.as_ref()) {
-                        (Some(c), Some(p)) => premap_iterate(
-                            c, p, parent_coords,
-                            &phase_clauses,
-                            None, None, None, strict,
-                        )?,
-                        _ => Vec::new(),
-                    };
-                    // Phase-level for_each: the wrapping scope
-                    // node represents the for_each construct
-                    // (one path level), and each per-iteration
-                    // phase node sits under it with the phase
-                    // name as the terminal segment.
-                    let mut scope_path = parent_path.to_vec();
-                    scope_path.push(PathSegment::ForEach { var: var.clone() });
-                    let scope = tree.push(
-                        parent,
-                        NodeKind::Scope,
-                        format!("phase.for_each {var} in [{}]",
-                            steps.iter()
-                                .filter_map(|s| s.bindings.first().map(|(_, v)| v.to_display_string()))
-                                .collect::<Vec<_>>()
-                                .join(", ")),
-                        "",
-                    );
-                    tree.set_yaml_path(scope, scope_path.clone());
-                    let mut phase_path = scope_path;
-                    phase_path.push(PathSegment::Phase(name.clone()));
-                    for step in &steps {
-                        let id = tree.push(
-                            scope,
-                            NodeKind::Phase,
-                            name.clone(),
-                            canonical_phase_label(&step.coord_path),
-                        );
-                        tree.set_phase_op_names(id, op_names.clone());
-                        tree.set_yaml_path(id, phase_path.clone());
-                    }
-                } else {
-                    let mut phase_path = parent_path.to_vec();
-                    phase_path.push(PathSegment::Phase(name.clone()));
-                    let id = tree.push(
-                        parent,
-                        NodeKind::Phase,
-                        name.clone(),
-                        canonical_phase_label(parent_coords),
-                    );
-                    tree.set_phase_op_names(id, op_names);
-                    tree.set_yaml_path(id, phase_path);
-                }
-            }
-            ScenarioNode::Comprehension { comprehension, children } => {
-                use nbrs_variates::comprehension::ComprehensionMode;
-                let scope_idx = scope_tree.find_comprehension_scope(comprehension)
-                    .ok_or_else(|| "comprehension: no scope-tree entry".to_string())?;
-                let canonical = scope_tree.nodes[scope_idx].cached_kernel.get();
-                let parent_kernel = effective_parent_kernel.cloned()
-                    .or_else(|| scope_tree.nearest_installed_ancestor_kernel(scope_idx));
-                let own_names: Vec<String> = canonical
-                    .map(|k| k.program().own_output_names()
-                        .into_iter().map(String::from).collect())
-                    .unwrap_or_default();
-                let filter = comprehension.filter.as_deref();
-
-                match &comprehension.mode {
-                    ComprehensionMode::Cartesian(clauses) if clauses.len() == 1 => {
-                        let steps = match (canonical, parent_kernel.as_ref()) {
-                            (Some(c), Some(p)) => premap_iterate(
-                                c, p, parent_coords, clauses, filter, None, None, strict,
-                            )?,
-                            _ => Vec::new(),
-                        };
-                        // Single-clause for_each. Render
-                        // structurally the same as
-                        // multi-clause: a header scope
-                        // naming the iter variable, with
-                        // one child scope per iteration
-                        // carrying the bound value(s). The
-                        // operator sees a uniform
-                        //
-                        //   each <vars>
-                        //     <var>=<value>
-                        //
-                        // shape regardless of arity, and
-                        // the variable identity stays in
-                        // the header where it belongs.
-                        let mut scope_path = parent_path.to_vec();
-                        scope_path.push(PathSegment::ForEach { var: clauses[0].var().to_string() });
-                        let header = format!("each {}", clauses[0].var());
-                        let scope = tree.push(parent, NodeKind::Scope, header, "");
-                        tree.set_own_names(scope, own_names.clone());
-                        tree.set_yaml_path(scope, scope_path.clone());
-                        if steps.is_empty() {
-                            // No iterations produced —
-                            // descend under the header so
-                            // a downstream zero-iteration
-                            // diagnostic still has the
-                            // right scope context.
-                            pre_map_recursive(
-                                children, phases, scope_tree, scope, parent_coords,
-                                effective_parent_kernel, &scope_path, tree, strict,
-                            )?;
-                        } else {
-                            for step in &steps {
-                                let inner_scope = tree.push(scope, NodeKind::Scope,
-                                    iter_label(&step.bindings), "");
-                                tree.set_own_names(inner_scope, own_names.clone());
-                                tree.set_yaml_path(inner_scope, scope_path.clone());
-                                pre_map_recursive(
-                                    children, phases, scope_tree, inner_scope, &step.coord_path,
-                                    Some(&step.bound_kernel), &scope_path, tree, strict,
-                                )?;
-                            }
-                        }
-                    }
-                    ComprehensionMode::Cartesian(clauses) => {
-                        let summary = clauses.iter().map(|c| c.var())
-                            .collect::<Vec<_>>().join(", ");
-                        let mut scope_path = parent_path.to_vec();
-                        scope_path.push(PathSegment::ForCombinations {
-                            vars: clauses.iter().map(|c| c.var().to_string()).collect(),
-                        });
-                        // No brackets — symmetric with the
-                        // single-clause shape above. The
-                        // header is just `each var1, var2`;
-                        // values flow into per-iteration
-                        // child scopes below.
-                        let scope = tree.push(parent, NodeKind::Scope,
-                            format!("each {summary}"), "");
-                        tree.set_own_names(scope, own_names.clone());
-                        tree.set_yaml_path(scope, scope_path.clone());
-                        let steps = match (canonical, parent_kernel.as_ref()) {
-                            (Some(c), Some(p)) => premap_iterate(
-                                c, p, parent_coords, clauses, filter, None, None, strict,
-                            )?,
-                            _ => Vec::new(),
-                        };
-                        for step in &steps {
-                            let inner_scope = tree.push(scope, NodeKind::Scope,
-                                iter_label(&step.bindings), "");
-                            tree.set_own_names(inner_scope, own_names.clone());
-                            tree.set_yaml_path(inner_scope, scope_path.clone());
-                            pre_map_recursive(
-                                children, phases, scope_tree, inner_scope, &step.coord_path,
-                                Some(&step.bound_kernel), &scope_path, tree, strict,
-                            )?;
-                        }
-                    }
-                    ComprehensionMode::Union(subspaces) => {
-                        let names = comprehension.coordinate_names().join(", ");
-                        // Union: treat as ForCombinations with
-                        // the merged variable list. Sub-spaces
-                        // don't create distinct path levels —
-                        // they're alternative materialisations
-                        // of the same conceptual iteration.
-                        let mut scope_path = parent_path.to_vec();
-                        scope_path.push(PathSegment::ForCombinations {
-                            vars: comprehension.coordinate_names()
-                                .into_iter().map(String::from).collect(),
-                        });
-                        let scope = tree.push(parent, NodeKind::Scope,
-                            format!("for_each_union [{names}] ({} sub-spaces)", subspaces.len()), "");
-                        tree.set_own_names(scope, own_names.clone());
-                        tree.set_yaml_path(scope, scope_path.clone());
-                        let total = subspaces.len();
-                        for (i, sub) in subspaces.iter().enumerate() {
-                            let steps = match (canonical, parent_kernel.as_ref()) {
-                                (Some(c), Some(p)) => premap_iterate(
-                                    c, p, parent_coords, sub, filter, None,
-                                    Some((i, total)), strict,
-                                )?,
-                                _ => Vec::new(),
-                            };
-                            for step in &steps {
-                                let inner_scope = tree.push(scope, NodeKind::Scope,
-                                    iter_label(&step.bindings), "");
-                                tree.set_own_names(inner_scope, own_names.clone());
-                                tree.set_yaml_path(inner_scope, scope_path.clone());
-                                pre_map_recursive(
-                                    children, phases, scope_tree, inner_scope, &step.coord_path,
-                                    Some(&step.bound_kernel), &scope_path, tree, strict,
-                                )?;
-                            }
-                        }
-                    }
-                }
-            }
-            ScenarioNode::IncludedScenario { name, children } => {
-                let mut scope_path = parent_path.to_vec();
-                scope_path.push(PathSegment::ScenarioInclude(name.clone()));
-                let scope = tree.push(parent, NodeKind::Scope, format!("scenario '{name}'"), "");
-                tree.set_yaml_path(scope, scope_path.clone());
-                pre_map_recursive(
-                    children, phases, scope_tree, scope, parent_coords,
-                    effective_parent_kernel, &scope_path, tree, strict,
-                )?;
-            }
-            ScenarioNode::DoWhile { condition, counter, children } => {
-                // Iteration count is unknown a priori (condition-
-                // driven); show one scope header without
-                // enumerating iterations.
-                let mut scope_path = parent_path.to_vec();
-                scope_path.push(PathSegment::DoWhile { counter: counter.clone() });
-                let scope = tree.push(parent, NodeKind::Scope, format!("do_while {condition}"), "");
-                tree.set_yaml_path(scope, scope_path.clone());
-                if let Some(idx) = scope_tree.iter_dfs().find_map(|(i, n)| match &n.kind {
-                    crate::scope_tree::ScopeKind::DoWhile { condition: c, counter: ct }
-                        if c == condition && ct == counter => Some(i),
-                    _ => None,
-                }) {
-                    if let Some(k) = scope_tree.nodes[idx].cached_kernel.get() {
-                        let own: Vec<String> = k.program().own_output_names()
-                            .into_iter().map(String::from).collect();
-                        tree.set_own_names(scope, own);
-                    }
-                }
-                pre_map_recursive(
-                    children, phases, scope_tree, scope, parent_coords,
-                    effective_parent_kernel, &scope_path, tree, strict,
-                )?;
-            }
-            ScenarioNode::DoUntil { condition, counter, children } => {
-                let mut scope_path = parent_path.to_vec();
-                scope_path.push(PathSegment::DoUntil { counter: counter.clone() });
-                let scope = tree.push(parent, NodeKind::Scope, format!("do_until {condition}"), "");
-                tree.set_yaml_path(scope, scope_path.clone());
-                if let Some(idx) = scope_tree.iter_dfs().find_map(|(i, n)| match &n.kind {
-                    crate::scope_tree::ScopeKind::DoUntil { condition: c, counter: ct }
-                        if c == condition && ct == counter => Some(i),
-                    _ => None,
-                }) {
-                    if let Some(k) = scope_tree.nodes[idx].cached_kernel.get() {
-                        let own: Vec<String> = k.program().own_output_names()
-                            .into_iter().map(String::from).collect();
-                        tree.set_own_names(scope, own);
-                    }
-                }
-                pre_map_recursive(
-                    children, phases, scope_tree, scope, parent_coords,
-                    effective_parent_kernel, &scope_path, tree, strict,
-                )?;
-            }
-            ScenarioNode::Bindings { source, children } => {
-                // Pre-map sees scenario-tree `bindings:` (also
-                // the lowered `set:` sugar form) as a
-                // transparent wrapper for tree-shape purposes —
-                // it's recorded as a path segment so the scene
-                // tree shows the structural intent, but no
-                // iteration happens at this level.
-                let summary = source.lines().map(str::trim)
-                    .find(|l| !l.is_empty()).unwrap_or("");
-                let mut scope_path = parent_path.to_vec();
-                scope_path.push(PathSegment::ScenarioInclude(
-                    format!("bindings:{summary}"),
-                ));
-                let scope = tree.push(parent, NodeKind::Scope,
-                    format!("bindings: {summary}"), "");
-                tree.set_yaml_path(scope, scope_path.clone());
-                pre_map_recursive(
-                    children, phases, scope_tree, scope, parent_coords,
-                    effective_parent_kernel, &scope_path, tree, strict,
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Build the canonical phase label from a root-first scope-coordinate
-/// chain. Reverses to leaf-first and runs [`format_scope_coordinate_path`],
-/// the GK-side formatter the executor uses on
-/// `parent_kernel.scope_coordinates()` at runtime — so pre-map and
-/// runtime produce identical strings for the same iteration position.
-fn canonical_phase_label(parent_coords: &[ScopeCoord]) -> String {
-    let leaf_first: Vec<_> = parent_coords.iter().rev().cloned().collect();
-    format_scope_coordinate_path(&leaf_first)
-}
-
-/// Format a typed binding list as the `k=v, k=v` text that
-/// scope-header rows show under the parent comprehension. Uses
-/// `Value::to_display_string` so the rendering matches what every
-/// other scope-coordinate consumer produces.
-fn iter_label(bindings: &[(String, nbrs_variates::node::Value)]) -> String {
-    bindings.iter()
-        .map(|(k, v)| format!("{k}={}", v.to_display_string()))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Pre-map's adapter over the GK-side
-/// [`nbrs_variates::comprehension::iterate_scope`]: applies the
-/// activity's strict-vs-warn empty-clause policy with diagnostic
-/// emission suppressed (pre-map walks every workload at session
-/// start, so a warn here would double-fire alongside the runtime's
-/// own emission). Returns the materialised iteration list — pre-map
-/// is a tree-build step, no concurrency or streaming needed.
-#[allow(clippy::too_many_arguments)]
-fn premap_iterate(
-    canonical: &std::sync::Arc<GkKernel>,
-    parent: &std::sync::Arc<GkKernel>,
-    parent_coords: &[ScopeCoord],
-    clauses: &[nbrs_variates::comprehension::Clause],
-    filter: Option<&str>,
-    order: Option<&nbrs_variates::comprehension::TraversalOrder>,
-    union_context: Option<(usize, usize)>,
-    strict: bool,
-) -> Result<Vec<nbrs_variates::comprehension::IterationStep>, String> {
-    let on_empty = |clause: &nbrs_variates::comprehension::Clause| -> Result<(), String> {
-        let context_label = match union_context {
-            Some((i, n)) => format!(
-                "for_each_union sub-space {}/{} clause '{clause}'", i + 1, n,
-            ),
-            None => format!("for_each clause '{clause}'"),
-        };
-        let msg = format!("{context_label}: produced no values");
-        if strict { return Err(format!("strict: {msg}")); }
-        Ok(())
-    };
-    let iter = nbrs_variates::comprehension::iterate_scope(
-        canonical, parent, parent_coords, clauses, filter, order, &[], on_empty,
-    )?;
-    Ok(iter.collect())
-}
-
-// Per-iteration kernel construction lives on the GK side as
-// `GkKernel::for_iteration`. Tuple drain + per-iteration binding
-// is now `nbrs_variates::comprehension::iterate_scope`. Call sites
-// here used to inline both, with two parallel implementations
-// (one in pre-map, one in runtime); both now consume the same GK
-// primitive.
 
 /// SRD 71: decode a cursor's `over` clause result into a
 /// concrete `(start_ord, end_ord)` narrowing range against the

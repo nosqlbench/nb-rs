@@ -1930,36 +1930,112 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
 
         // Observer is passed from the caller (default: StderrObserver).
 
-        // Pre-map the scenario tree for observer (TUI phase tree
-        // population) and publish to the global accessor so
-        // out-of-band consumers (web API, post-run scripting)
-        // can snapshot the structure. In strict mode, empty
-        // iteration sources fail the run here — before any
-        // phase executes — so a CI run can't silently skip
-        // a sub-space (SRD-15 §"Empty Iteration Sources").
-        let pre_mapped_tree = match crate::executor::pre_map_tree(
-            &scenario_nodes, &phases, &scope_tree, strict,
-            // Seed the path with the top-level scenario name —
-            // pre_map_recursive extends it through every nested
-            // construct as it walks. See SRD-44 §"Phase
-            // identity" for the path-segment vocabulary.
-            vec![crate::checkpoint::PathSegment::Scenario(
-                scenario_name.to_string(),
-            )],
-        ) {
-            Ok(scene_tree) => {
-                observer.scenario_pre_mapped(&scene_tree);
-                Some(scene_tree)
+        // ─── Unified walker: structural pre-map pass ─────────────────
+        //
+        // Per SRD 18b §"Single Walker Contract", there is ONE walker
+        // function (`crate::executor::execute_tree`). It runs twice
+        // here: first at depth=Phase to populate the scene tree (so
+        // resume_plan / declare_scene_tree_phases / pre_map_pending_uses
+        // can read the populated tree), then again at the configured
+        // depth to actually execute. SceneTree::push is idempotent
+        // by `(parent, kind, name)` so the second pass re-encounters
+        // every node from the first without duplicating.
+        //
+        // The pre-map ExecCtx uses stub post-pre-map fields
+        // (checkpoint_writer = None, fresh resume_plan, fresh
+        // resource_pool); they're updated to the real values after
+        // pre-map produces the tree.
+        let schedule_spec = std::sync::Arc::new(match params.get("schedule") {
+            Some(s) => crate::scheduler::ScheduleSpec::parse(s)
+                .map_err(|e| format!("schedule= param: {e}"))?,
+            None => crate::scheduler::ScheduleSpec::default_serial(),
+        });
+        let dry_run_static: Option<&'static str> = match dry_run {
+            Some("silent") => Some("silent"),
+            Some("emit") => Some("emit"),
+            _ => None,
+        };
+        let resource_pool = Arc::new(crate::resource_pool::ResourcePool::new());
+        let initial_scene_tree_path = vec![crate::checkpoint::PathSegment::Scenario(
+            scenario_name.to_string(),
+        )];
+        let mut exec_ctx = crate::executor::ExecCtx {
+            phases: phases.clone(),
+            workload_readouts: workload_readouts.clone(),
+            cli_readout_override: cli_readout_override.clone(),
+            workload_params: workload_params.clone(),
+            wrappers_override: workload_wrappers_override.clone(),
+            wrap_default_order: cli_wrap_default_order.clone(),
+            program: program.clone(),
+            gk_lib_paths: gk_lib_paths.clone(),
+            workload_dir: workload_dir.map(|p| p.to_path_buf()),
+            strict,
+            driver: driver.clone(),
+            merged_params: merged_params.clone(),
+            dry_run: dry_run_static,
+            diag: {
+                let mut d = diag.clone();
+                d.depth = ExecDepth::Phase;
+                d
+            },
+            openmetrics_url: openmetrics_url.clone(),
+            seq_type,
+            concurrency,
+            rate,
+            error_spec: error_spec.clone(),
+            session_id: session_id.clone(),
+            workload_name: session.workload.clone(),
+            label_stack: Vec::new(),
+            session_component: session.component.clone(),
+            cadence_reporter: cadence_reporter.clone(),
+            stop_handle: stop_handle.clone(),
+            observer: observer.clone(),
+            scope_tree: scope_tree.clone(),
+            schedule_spec: schedule_spec.clone(),
+            current_parent_kernel: scope_tree.nodes[scope_tree.root]
+                .cached_kernel.get().cloned(),
+            workload_source: workload_file.as_ref().and_then(|path| {
+                workload_source_text.as_ref().map(|text| {
+                    std::sync::Arc::new(crate::executor::WorkloadSource {
+                        path: path.clone(),
+                        text: text.clone(),
+                    })
+                })
+            }),
+            // Stub post-pre-map fields: replaced after the pre-map
+            // walk populates the scene tree. Pre-map walks at depth
+            // Phase, so no run_phase / run_do_loop / checkpoint
+            // events fire — the stubs are not consulted.
+            checkpoint_writer: None,
+            resume_plan: std::sync::Arc::new(crate::checkpoint::ResumePlan::fresh()),
+            sqlite_reporter: sqlite_reporter.clone(),
+            resource_pool: resource_pool.clone(),
+            scene_tree_parent_id: 0,
+            scene_tree_path: initial_scene_tree_path.clone(),
+        };
+
+        // Install empty SceneTree global; the walker populates it.
+        crate::scene_tree::install_global(crate::scene_tree::SceneTree::new());
+
+        // Pre-map structural pass. Errors propagate in strict mode
+        // (SRD-15 §"Empty Iteration Sources"); otherwise the walker
+        // logs and continues — downstream code handles the partial
+        // / empty tree.
+        let pre_map_result = crate::executor::execute_tree(
+            &mut exec_ctx, &scenario_nodes,
+        ).await;
+        let pre_mapped_tree = match pre_map_result {
+            Ok(()) => {
+                let tree = crate::scene_tree::current();
+                if let Some(ref t) = tree {
+                    observer.scenario_pre_mapped(t);
+                }
+                tree
             }
-            Err(e) if strict => {
-                return Err(e);
-            }
+            Err(e) if strict => return Err(e),
             Err(e) => {
                 crate::diag!(crate::observer::LogLevel::Warn,
                     "pre-map walker failed (scope hierarchy will be flat in summaries / TUI): {e}");
-                // Non-strict: the pre-map failure is purely a
-                // diagnostic affordance. The TUI will populate
-                // its tree lazily as phases run.
                 None
             }
         };
@@ -2096,7 +2172,6 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         // can close `Shared`/`PerScenario` entries the moment
         // their last predicted phase detaches, instead of
         // holding them until session end.
-        let resource_pool = Arc::new(crate::resource_pool::ResourcePool::new());
         if let Some(tree) = pre_mapped_tree.as_ref() {
             crate::resource_pool::pre_map_pending_uses(
                 &resource_pool,
@@ -2107,109 +2182,36 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             )?;
         }
 
-        if let Some(scene_tree) = pre_mapped_tree {
-            crate::scene_tree::install_global(scene_tree);
-        }
+        // ─── Unified walker: execution pass ──────────────────────────
+        //
+        // Update the post-pre-map fields on the same `exec_ctx`
+        // used for the pre-map pass: real `checkpoint_writer`,
+        // resolved `resume_plan`, restored execution depth. Per
+        // SRD 18b §"Single Walker Contract" point 1, this is the
+        // SAME walker function — `execute_tree` — invoked again at
+        // the configured depth. SceneTree::push is idempotent so
+        // every node the pre-map pass pushed is reused.
+        exec_ctx.checkpoint_writer = Some(checkpoint_writer.clone());
+        exec_ctx.resume_plan = resume_plan.clone();
+        exec_ctx.diag = diag.clone();
+        exec_ctx.scene_tree_parent_id = 0;
+        exec_ctx.scene_tree_path = initial_scene_tree_path.clone();
 
-        // Execute the scenario tree recursively via the executor module.
-        {
-            let dry_run_static: Option<&'static str> = match dry_run {
-                Some("silent") => Some("silent"),
-                Some("emit") => Some("emit"),
-                _ => None,
-            };
-            // Pluggable scheduler (SRD 18b §"Scheduler
-            // abstraction"). The `schedule=` workload param
-            // controls per-level concurrency: `1` (default,
-            // serial), `*` (unlimited), `N`, or a slash-list
-            // like `1/4/*` per depth. Non-serial specs dispatch
-            // `ConcurrentScheduler`, which forks per-task ExecCtx
-            // clones under a Semaphore for bounded levels.
-            let schedule_spec = std::sync::Arc::new(match params.get("schedule") {
-                Some(s) => crate::scheduler::ScheduleSpec::parse(s)
-                    .map_err(|e| format!("schedule= param: {e}"))?,
-                None => crate::scheduler::ScheduleSpec::default_serial(),
-            });
-            let mut exec_ctx = crate::executor::ExecCtx {
-                phases: phases.clone(),
-                workload_readouts: workload_readouts.clone(),
-                cli_readout_override: cli_readout_override.clone(),
-                workload_params: workload_params.clone(),
-                wrappers_override: workload_wrappers_override.clone(),
-                wrap_default_order: cli_wrap_default_order.clone(),
-                program: program.clone(),
-                gk_lib_paths: gk_lib_paths.clone(),
-                workload_dir: workload_dir.map(|p| p.to_path_buf()),
-                strict,
-                driver: driver.clone(),
-                merged_params: merged_params.clone(),
-                dry_run: dry_run_static,
-                diag: diag.clone(),
-                openmetrics_url: openmetrics_url.clone(),
-                seq_type,
-                concurrency,
-                rate,
-                error_spec: error_spec.clone(),
-                session_id: session_id.clone(),
-                workload_name: session.workload.clone(),
-                label_stack: Vec::new(),
-                session_component: session.component.clone(),
-                cadence_reporter: cadence_reporter.clone(),
-                stop_handle: stop_handle.clone(),
-                observer: observer.clone(),
-                scope_tree: scope_tree.clone(),
-                schedule_spec: schedule_spec.clone(),
-                // M3.4b: workload kernel as the default parent
-                // for any phase that runs without an enclosing
-                // for_each scope's per-branch kernel set on top.
-                // The dispatcher overrides this within for_each
-                // scopes (saving/restoring at each recursion
-                // boundary). Leaf phases at the workload level
-                // therefore also flow through the standard GK
-                // chain (`materialize_wiring_from_outer` from workload kernel)
-                // rather than the legacy flat
-                // `outer_manifest` / `outer_scope_values` data
-                // path.
-                current_parent_kernel: scope_tree.nodes[scope_tree.root]
-                    .cached_kernel.get().cloned(),
-                workload_source: workload_file.as_ref().and_then(|path| {
-                    workload_source_text.as_ref().map(|text| {
-                        std::sync::Arc::new(crate::executor::WorkloadSource {
-                            path: path.clone(),
-                            text: text.clone(),
-                        })
-                    })
-                }),
-                checkpoint_writer: Some(checkpoint_writer.clone()),
-                resume_plan: resume_plan.clone(),
-                sqlite_reporter: sqlite_reporter.clone(),
-                // SRD-35: one resource pool per session,
-                // owning the lifecycle of every shared
-                // driver-side resource the executor attaches
-                // to during phase activation. Pre-seeded
-                // with `pending_uses` per shared key by
-                // `pre_map_pending_uses` above (Push D).
-                resource_pool: resource_pool.clone(),
-            };
-            let scheduler = crate::scheduler::build(&schedule_spec);
-            let scheduler_result = scheduler.run(
-                &mut exec_ctx,
-                &scenario_nodes,
-            ).await;
+        let scheduler = crate::scheduler::build(&schedule_spec);
+        let scheduler_result = scheduler.run(
+            &mut exec_ctx,
+            &scenario_nodes,
+        ).await;
 
-            // SRD-35: drain the resource pool at session
-            // end. `Shared`/`PerScenario` entries
-            // intentionally stay alive across phases (the
-            // whole reason the pool exists), so this is
-            // the close trigger that releases their
-            // network resources. Runs even if the
-            // scenario errored out — half-open clusters
-            // would otherwise leak FDs into the next
-            // session in TUI / `metrics watch` host
-            // processes.
-            exec_ctx.resource_pool.shutdown().await;
-            scheduler_result?;
-        }
+        // SRD-35: drain the resource pool at session end.
+        // `Shared`/`PerScenario` entries intentionally stay alive
+        // across phases (the whole reason the pool exists), so
+        // this is the close trigger that releases their network
+        // resources. Runs even if the scenario errored out —
+        // half-open clusters would otherwise leak FDs into the
+        // next session in TUI / `metrics watch` host processes.
+        exec_ctx.resource_pool.shutdown().await;
+        scheduler_result?;
 
         // Workload-end lifecycle boundary: every phase in the
         // scenario has completed. Individual phase paths already

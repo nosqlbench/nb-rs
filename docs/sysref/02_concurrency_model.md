@@ -288,6 +288,68 @@ async fn executor_task(activity, dispensers, field_pulls, pull_plans, program, .
 
 ---
 
+## One Concurrency Path (load-bearing)
+
+> **Concurrency is configuration, never a code branch.**
+>
+> Iteration / sibling / cycle dispatch has **one** implementation
+> — always concurrent-by-design, parameterised by a
+> `concurrency_limit`. `serial == concurrency_limit = 1`
+> traverses the SAME code path as `concurrency_limit = N > 1`,
+> gated by a semaphore. There is no second "serial" branch
+> anywhere in the executor, the scheduler, or the comprehension
+> dispatcher.
+
+### Why this is load-bearing
+
+Whenever code distinguishes "serial path" from "concurrent path"
+as two separate functions or two arms of an `if`, the two paths
+drift. A bug fixed in the concurrent branch fails to land in the
+serial branch (or vice versa); an asymmetry surfaces months
+later when a workload happens to take the unmaintained branch.
+The cleanest defence is to never have the second branch.
+
+### The contract
+
+1. **Iteration dispatch** at every level — scenario-tree siblings,
+   comprehension iter-steps, do-loop iterations — flows through
+   one always-concurrent harness. The harness drives a `JoinSet`
+   gated by a `Semaphore` of size `concurrency_limit`. With
+   `concurrency_limit = 1`, the semaphore admits one task at a
+   time; the `JoinSet` joins them in completion order (which for
+   one-at-a-time equals spawn order). Sequential ordering is a
+   *property of the configured limit*, not a separate code path.
+
+2. **No "spawn-cost optimisation" branch for N=1.** A reflexive
+   "for N=1 just inline the work, save the spawn cost" branch
+   would be a second arm with the same drift hazard. The
+   marginal spawn cost at N=1 is small relative to the work each
+   iteration does (running a phase, building a kernel chain,
+   etc.); the value of one code path is far higher than the
+   value of saving that overhead. If a hot-path benchmark ever
+   shows it matters, the answer is to swap the *harness* (e.g.
+   `FuturesUnordered` with no `'static` requirement) — still one
+   path, just a different implementation primitive — never to
+   reintroduce a second arm.
+
+3. **The `schedule=` per-level concurrency spec** (SRD 18b
+   §"Per-level concurrency spec") and the per-phase
+   `concurrency=N` parameter both feed the same harness as
+   `concurrency_limit` values at their respective levels. They
+   don't trigger separate execution code.
+
+### Relationship to the Single Walker Contract
+
+The single-walker contract (SRD 18b §"Single Walker Contract")
+says: pre-map, dryrun, and full execution are one walker at
+different depths. This concurrency contract says: serial and
+concurrent are one harness at different limits. Together they
+form the load-bearing invariant: **one execution machine, with
+behavior dimensions exposed as configuration, not as duplicated
+code paths.**
+
+---
+
 ## No Blocking Primitives in Async Contexts
 
 A hard rule: **code reachable from a tokio worker (every

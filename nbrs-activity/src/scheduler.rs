@@ -35,22 +35,28 @@ pub struct ScheduleSpec {
     pub levels: Vec<ConcurrencyLimit>,
 }
 
+/// Per-depth concurrency cap. Per SRD 02 §"One Concurrency Path":
+/// concurrency is configuration, not a code branch. The walker /
+/// dispatcher always runs through the semaphore-gated harness;
+/// `Bounded(1)` produces sequential ordering naturally (the
+/// semaphore admits one permit at a time, the JoinSet drains in
+/// completion order = spawn order when only one is in-flight).
+/// There is no separate "serial" code path anywhere; `Bounded(1)`
+/// IS the serial case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConcurrencyLimit {
-    /// Serial — at most one child at a time.
-    Serial,
-    /// Up to N children concurrent.
+    /// Up to N children concurrent. `Bounded(1)` is sequential.
     Bounded(u32),
     /// Unlimited concurrency.
     Unlimited,
 }
 
 impl ScheduleSpec {
-    /// Default spec: serial at every level. Equivalent to the
-    /// pre-scheduler runner behavior; what callers get when no
-    /// `schedule=` parameter is supplied.
+    /// Default spec: sequential at every level (`Bounded(1)`).
+    /// Equivalent to the pre-scheduler runner behavior; what
+    /// callers get when no `schedule=` parameter is supplied.
     pub fn default_serial() -> Self {
-        Self { levels: vec![ConcurrencyLimit::Serial] }
+        Self { levels: vec![ConcurrencyLimit::Bounded(1)] }
     }
 
     /// Parse the slash-separated form, e.g. `"1/4/*"`. Empty
@@ -66,21 +72,16 @@ impl ScheduleSpec {
             let part = part.trim();
             let limit = match part {
                 "*" => ConcurrencyLimit::Unlimited,
-                "1" => ConcurrencyLimit::Serial,
                 _ => {
                     let n: u32 = part.parse().map_err(|_| {
-                        format!("schedule spec level {i}: '{part}' is not a number, '*', or '1'")
+                        format!("schedule spec level {i}: '{part}' is not a number or '*'")
                     })?;
                     if n == 0 {
                         return Err(format!(
                             "schedule spec level {i}: 0 is not a valid concurrency limit (use '1' for serial)"
                         ));
                     }
-                    if n == 1 {
-                        ConcurrencyLimit::Serial
-                    } else {
-                        ConcurrencyLimit::Bounded(n)
-                    }
+                    ConcurrencyLimit::Bounded(n)
                 }
             };
             levels.push(limit);
@@ -91,20 +92,20 @@ impl ScheduleSpec {
     /// The effective concurrency limit at the given depth.
     /// Trailing depths beyond the spec inherit the last entry.
     /// A spec with no entries (shouldn't happen via `parse`) is
-    /// treated as serial.
+    /// treated as sequential.
     pub fn limit_at(&self, depth: usize) -> ConcurrencyLimit {
         if self.levels.is_empty() {
-            return ConcurrencyLimit::Serial;
+            return ConcurrencyLimit::Bounded(1);
         }
         let idx = depth.min(self.levels.len() - 1);
         self.levels[idx]
     }
 
-    /// True when every level is serial — the spec is
-    /// behaviorally equivalent to the default. Used by the
-    /// scheduler to suppress "non-trivial spec" warnings.
+    /// True when every level is sequential (`Bounded(1)`) — the
+    /// spec is behaviorally equivalent to the default. Used by
+    /// the scheduler to suppress "non-trivial spec" warnings.
     pub fn is_serial(&self) -> bool {
-        self.levels.iter().all(|l| matches!(l, ConcurrencyLimit::Serial))
+        self.levels.iter().all(|l| matches!(l, ConcurrencyLimit::Bounded(1)))
     }
 }
 
@@ -171,7 +172,6 @@ pub fn build(_spec: &ScheduleSpec) -> Box<dyn PhaseScheduler> {
 fn format_spec(spec: &ScheduleSpec) -> String {
     let parts: Vec<String> = spec.levels.iter()
         .map(|l| match l {
-            ConcurrencyLimit::Serial => "1".into(),
             ConcurrencyLimit::Bounded(n) => n.to_string(),
             ConcurrencyLimit::Unlimited => "*".into(),
         })
@@ -185,8 +185,10 @@ mod tests {
 
     #[test]
     fn parse_serial() {
+        // `1` is `Bounded(1)` — sequential is just N=1 through the
+        // same harness; no separate variant.
         let s = ScheduleSpec::parse("1").unwrap();
-        assert_eq!(s.levels, vec![ConcurrencyLimit::Serial]);
+        assert_eq!(s.levels, vec![ConcurrencyLimit::Bounded(1)]);
         assert!(s.is_serial());
     }
 
@@ -201,7 +203,7 @@ mod tests {
     fn parse_multilevel() {
         let s = ScheduleSpec::parse("1/4/*").unwrap();
         assert_eq!(s.levels, vec![
-            ConcurrencyLimit::Serial,
+            ConcurrencyLimit::Bounded(1),
             ConcurrencyLimit::Bounded(4),
             ConcurrencyLimit::Unlimited,
         ]);
@@ -210,7 +212,7 @@ mod tests {
     #[test]
     fn limit_at_extends_trailing() {
         let s = ScheduleSpec::parse("1/4").unwrap();
-        assert_eq!(s.limit_at(0), ConcurrencyLimit::Serial);
+        assert_eq!(s.limit_at(0), ConcurrencyLimit::Bounded(1));
         assert_eq!(s.limit_at(1), ConcurrencyLimit::Bounded(4));
         // Beyond explicit levels: inherit the last.
         assert_eq!(s.limit_at(2), ConcurrencyLimit::Bounded(4));
@@ -237,10 +239,9 @@ mod tests {
     }
 
     #[test]
-    fn n_one_normalises_to_serial() {
-        // Both `1` (canonical) and `Bounded(1)` (degenerate)
-        // should compare equal — the parser folds 1 → Serial so
-        // is_serial() works regardless of how the user spelled it.
+    fn n_one_is_serial() {
+        // `1/1` is two levels of sequential (Bounded(1) at each).
+        // is_serial() matches because every level is Bounded(1).
         let s = ScheduleSpec::parse("1/1").unwrap();
         assert!(s.is_serial());
     }

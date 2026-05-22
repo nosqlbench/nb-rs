@@ -171,22 +171,19 @@ scenarios:
         # while the workload-param shadow below uses the numeric
         # value.
         #
-        # source_model values are LOWERCASE in the iter list so
-        # the table name (which interpolates `{sm}`) matches the
-        # schema Cassandra actually stores: unquoted CQL
-        # identifiers are folded to lowercase at parse time, so
-        # `CREATE TABLE fknn_oat_OTHER_...` is stored as
-        # `fknn_oat_other_...`. The JMX `forceKeyspaceCompaction`
-        # endpoint does a case-sensitive lookup against that
-        # stored name, so an uppercase table-name string passed
-        # in via jolokia would fail with "Unknown keyspace/cf
-        # pair" even though the table exists. cndb's
-        # `VectorSourceModel.fromString` calls
-        # `valueOf(value.toUpperCase())` internally, so passing
-        # lowercase to the `'source_model': '...'` OPTIONS value
-        # works equally well — the case-folding side handles
-        # itself.
-        - for: "sm in other, ada002,
+        # source_model values are the canonical UPPERCASE enum
+        # spellings from cndb's `VectorSourceModel`. Cassandra
+        # folds unquoted CQL identifiers to lowercase at parse
+        # time, so a literal `{sm}` in the table-name expression
+        # would silently mismatch the stored identifier whenever
+        # we look the table up by JMX (`forceKeyspaceCompaction`
+        # does a case-sensitive lookup → "Unknown keyspace/cf
+        # pair"). The bindings: block below normalises via
+        # `str_lower(sm)` to give the table-name expression a
+        # lowercase wire (`sm_lc`) that matches the stored
+        # identifier; the canonical uppercase `{sm}` still flows
+        # into the CQL OPTIONS clause via the `set:` shadow.
+        - for: "sm in OTHER, ADA002,
                 mnc in 8, 128,
                 bw in 50, 800,
                 eh in false, true,
@@ -194,50 +191,81 @@ scenarios:
                 (alf_v, alf_label) in (concat(1.0, 2.0), concat(\"1p0\", \"2p0\"))"
           order: extrema/1
           phases:
-            # Table-name uses the short iter-var names + label
-            # forms for the floats (`1.0 → "1p0"` via the
-            # parallel-iter zip above). A single-element source
-            # so the lifecycle phases close over `{table}`. The
-            # `for: table` sits ABOVE the `set:` so its source
-            # interpolation sees the outer iter-vars `sm`/`mnc`/
-            # etc. directly (`set:` would otherwise interpose a
-            # scope boundary that hides them).
-            - for: "table in fknn_oat_{sm}_m{mnc}_bw{bw}_h{eh}_nbo{nbo_label}_a{alf_label}"
+            # Per-iter case-fold of the source_model value so the
+            # table-name expression below uses the same lowercase
+            # form Cassandra stores. `str_lower` is the SRD-12
+            # stdlib helper added for this kind of upstream
+            # case-normalisation; the wire produced here lives
+            # only for this outer iter's activation (its value
+            # depends on the iter-var `sm`, so the cascade
+            # discriminator declines to bake it into the cached
+            # downstream phase program).
+            - bindings: |
+                const sm_lc := str_lower(sm)
               phases:
-                # `set:` shadows each workload-param with the
-                # iter-var's value via text-template substitution.
-                # `set:` values are text-templates (not GK
-                # expressions), so `{sm}` resolves to the iter-
-                # var's current value at iter time and the set:
-                # writes `const source_model := "<value>"` into
-                # the local scope, shadowing the workload-param
-                # default. Downstream `{source_model}` bind-points
-                # in the schema phase pick up the shadow at
-                # op-execution time.
-                - set: { source_model: "{sm}",
-                         maximum_node_connections: "{mnc}",
-                         construction_beam_width: "{bw}",
-                         enable_hierarchy: "{eh}",
-                         neighborhood_overflow: "{nbo_v}",
-                         alpha: "{alf_v}" }
+                # Table-name uses the short iter-var names + label
+                # forms for the floats (`1.0 → "1p0"` via the
+                # parallel-iter zip above), plus `sm_lc` from the
+                # bindings block above. A single-element source so
+                # the lifecycle phases close over `{table}`. Sits
+                # ABOVE the `set:` so its source interpolation
+                # sees the outer iter-vars `sm`/`mnc`/etc.
+                # directly (`set:` would otherwise interpose a
+                # scope boundary that hides them).
+                - for: "table in fknn_oat_{sm_lc}_m{mnc}_bw{bw}_h{eh}_nbo{nbo_label}_a{alf_label}"
                   phases:
-                    # Table + index lifecycle — runs once per outer tuple.
-                    - teardown
-                    - schema
-                    - fknn_rampup_data
-                    - jolokia_flush
-                    - jolokia_compact
-                    - jolokia_await_compaction
-                    # INNER comprehension: query-only params. Iter-
-                    # var names don't collide with any workload
-                    # param, so the phase reads them directly via
-                    # the scope chain — no `set:` needed.
-                    - for: "rerank_k_strategy in default, pin1,
-                            pruning_strategy in default, off,
-                            k in 10,
-                            limit in 50"
+                    # `set:` shadows each workload-param with the
+                    # iter-var's value via text-template substitution.
+                    # `set:` values are text-templates (not GK
+                    # expressions), so `{sm}` resolves to the iter-
+                    # var's current value at iter time and the set:
+                    # writes `const source_model := "<value>"` into
+                    # the local scope, shadowing the workload-param
+                    # default. Downstream `{source_model}` bind-points
+                    # in the schema phase pick up the shadow at
+                    # op-execution time.
+                    - set: { source_model: "{sm}",
+                             maximum_node_connections: "{mnc}",
+                             construction_beam_width: "{bw}",
+                             enable_hierarchy: "{eh}",
+                             neighborhood_overflow: "{nbo_v}",
+                             alpha: "{alf_v}" }
                       phases:
-                        - pvs_query_sweep
+                        # Table + index lifecycle — runs once per
+                        # outer tuple. The LEADING teardown handles
+                        # the re-run case: if a prior session crashed
+                        # mid-iter, its table/indexes still exist and
+                        # need to go before schema's CREATE.
+                        - teardown
+                        - schema
+                        - fknn_rampup_data
+                        - jolokia_flush
+                        - jolokia_compact
+                        - jolokia_await_compaction
+                        # INNER comprehension: query-only params. Iter-
+                        # var names don't collide with any workload
+                        # param, so the phase reads them directly via
+                        # the scope chain — no `set:` needed.
+                        - for: "rerank_k_strategy in default, pin1,
+                                pruning_strategy in default, off,
+                                k in 10,
+                                limit in 50"
+                          phases:
+                            - pvs_query_sweep
+                        # TRAILING teardown — drop the variant's
+                        # table + 2 SAI indexes now that all query
+                        # cells have completed. Without this, every
+                        # variant's indexes stay live; the cluster
+                        # has a global SAI index cap (cndb's
+                        # `Cannot have more than 100 StorageAttachedIndex
+                        # secondary indexes`) and a 64-variant sweep
+                        # with 2 indexes/table would breach it
+                        # around iter 50. The leading teardown above
+                        # can't free prior variants because each iter
+                        # binds its own `{table}` name — the LEADING
+                        # teardown only ever sees the CURRENT
+                        # variant's name.
+                        - teardown
 
 phases:
 

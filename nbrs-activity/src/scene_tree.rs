@@ -216,12 +216,24 @@ impl SceneTree {
     /// Index of the synthetic root.
     pub fn root(&self) -> SceneNodeId { 0 }
 
-    /// Append a node under `parent` and return its id. `Phase`
-    /// nodes are auto-assigned a 1-based sequence number in
-    /// insertion order (see [`SceneNode::seq`]); since the
-    /// pre-map walker pushes phases in DFS-of-the-scenario-tree
-    /// order, the resulting numbers match the order in which the
-    /// runtime will execute them.
+    /// Append a node under `parent` and return its id.
+    ///
+    /// **Idempotent by `(parent, kind, name)`**: if a child with
+    /// the same kind and name already exists under `parent`, its
+    /// id is returned and no new node is created. Per SRD 18b
+    /// §"Single Walker Contract" point 1, the same walker runs
+    /// once at depth=Phase to populate the tree (so subsequent
+    /// `resume_plan` / `declare_scene_tree_phases` /
+    /// `pre_map_pending_uses` reads see a populated tree) and
+    /// once at the configured execution depth to run cycles —
+    /// re-encountering nodes pushed by the first walk must be a
+    /// no-op, not a duplicate insertion.
+    ///
+    /// `Phase` nodes are auto-assigned a 1-based sequence number
+    /// in insertion order (see [`SceneNode::seq`]); since the
+    /// walker pushes phases in DFS-of-the-scenario-tree order,
+    /// the resulting numbers match the order in which the
+    /// runtime executes them.
     pub fn push(
         &mut self,
         parent: SceneNodeId,
@@ -229,6 +241,17 @@ impl SceneTree {
         name: impl Into<String>,
         labels: impl Into<String>,
     ) -> SceneNodeId {
+        let name: String = name.into();
+        let labels: String = labels.into();
+        // Find-or-create: scan `parent`'s children for an
+        // existing match on (kind, name). Matches are returned
+        // unchanged — the second walk pass re-encounters every
+        // node from the first pass and must not duplicate.
+        if let Some(&existing) = self.nodes[parent].children.iter()
+            .find(|&&c| self.nodes[c].kind == kind && self.nodes[c].name == name)
+        {
+            return existing;
+        }
         let id = self.nodes.len();
         let depth = self.nodes[parent].depth + 1;
         let seq = match kind {
@@ -246,8 +269,8 @@ impl SceneTree {
             children: Vec::new(),
             depth,
             kind,
-            name: name.into(),
-            labels: labels.into(),
+            name,
+            labels,
             status: PhaseStatus::Pending,
             op_count: 0,
             duration_secs: None,

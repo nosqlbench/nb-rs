@@ -261,15 +261,132 @@ the load-bearing mechanism when they do.
 
 ---
 
-## Pre-mapping vs. dynamic walk
+## Single Walker Contract (load-bearing)
 
-The scenario tree is *pre-mapped* before execution:
+> **One walker, one tree, one machine — different depths.**
+>
+> Pre-map, dryrun, and full execution are **the same code**,
+> parameterised by an execution-depth discriminant (SRD 17
+> §"Execution Depth"). They are NOT parallel implementations of
+> the same scenario-tree traversal. The structural visitor work
+> at every layer (scope-tree push, kernel chain assembly,
+> iter-step materialisation) ALWAYS runs; the discriminant only
+> gates which layer is the deepest one whose executional work
+> fires for real vs. via a dryrun observer.
+>
+> Concurrency is configuration of that one walker, not a code
+> branch. `serial == concurrency_limit = 1` traverses the SAME
+> path as `concurrency_limit = N`, gated by a semaphore. See
+> SRD 02 §"One Concurrency Path".
+
+### Why this matters
+
+Every time scenario-walk logic has been duplicated (a parallel
+"pre-map" walker, a separate "serial" branch alongside a
+"concurrent" branch), the duplication has generated drift bugs.
+Each arm of a parallel walker handles a `ScenarioNode` variant
+slightly differently; the next workload feature that touches one
+arm fails to land in the other, and a user-visible asymmetry
+surfaces months later. The canonical example: a pre-map walker
+that didn't propagate scenario-tree `bindings:` declarations into
+the kernel chain when descending, while the runtime walker did —
+identical workload, different name-resolution results between
+plan-preview and execution.
+
+### The contract
+
+1. **One walker function** owns scenario-tree traversal. Today
+   that's `nbrs_activity::executor::execute_tree_at`. There is no
+   sibling function with a similar shape that does "the same walk
+   but for pre-map" or "the same walk but serial." Any new dryrun
+   level, any new diagnostic surface, any new concurrency policy
+   plugs into this walker — not next to it.
+2. **Every `ScenarioNode` arm always runs its structural work**:
+   - SceneTree push (the plan visualisation).
+   - Scope-kernel construction or rebind via `build_subscope` for
+     scopes (Bindings, Comprehension, DoWhile/DoUntil), so the
+     current parent kernel reflects every enclosing
+     materialisation visible at this layer.
+   - Iteration-step computation (`iterate_scope`) for
+     Comprehension / phase-level `for_each`.
+3. **The depth discriminant gates the executional work** at each
+   layer (see SRD 17 §"Execution Depth"):
+   - `depth=Scenario` — walk shape only, don't materialise iters.
+   - `depth=Comprehension` — materialise iters, recurse into
+     bindings/children, stop before phases.
+   - `depth=Phase` — push phases to SceneTree, register op-
+     templates, stop before phase activity setup. (This is what
+     pre-map is.)
+   - `depth=Op` — enter `run_phase`, build the wrapper stack with
+     the **dryrun wrapper** at the leaf instead of the adapter
+     wrapper, run cycles through it observing.
+   - `depth=Cycle` — full execution; real adapter wrapper at the
+     leaf.
+4. **No "describe" or "pre-map" parallel code path exists.** SRD
+   17 §"Principles" already states this for the broader pipeline;
+   it applies in particular to scenario-tree walking. Pre-map
+   builds the SceneTree as a side-effect of the walker running at
+   `depth=Phase`. Full execution builds the SceneTree as the same
+   side-effect of the walker running at `depth=Cycle`.
+
+### Why a depth discriminant rather than a mode flag
+
+A binary `mode ∈ {PreMap, Run}` switch is duplication wearing a
+different costume — the walker still branches between two
+behaviours, and any future intermediate level (`dryrun=op`,
+`describe=phase`, replay-from-checkpoint) becomes a third
+branch. A depth discriminant is a single dimension along which
+every present and future variant fits; the walker descends to the
+configured layer and stops doing "real" execution past it,
+substituting an observer at that layer (dryrun wrapper, no-op
+adapter, etc.). New depth values extend the enum without
+introducing a new code path.
+
+### Visitor framing
+
+Each scope-tree layer is a visitor with two responsibilities:
+*structural* (always runs) and *executional* (gated by depth).
+The structural side maintains the SceneTree, scope kernel chain,
+and iteration coordinates so descendants see the right namespace.
+The executional side is what the depth value controls — at the
+target depth, it runs the layer's real work; deeper than that, it
+substitutes an observer.
+
+This mirrors the well-known visitor pattern, with the twist that
+the visitor's leaf action is *configurable per layer* rather than
+fixed. A dryrun=op visitor runs full structural work through Op
+layer, then swaps the adapter wrapper for a dryrun wrapper.
+
+### Enforcement
+
+The contract is load-bearing enough to deserve more than
+documentation:
+
+1. **Doc-comment at the walker entry point** in
+   `nbrs-activity/src/executor.rs` repeats this contract verbatim
+   and redirects to this SRD section.
+2. **Regression test**: an integration test runs the same workload
+   at `depth=Phase` and at `depth=Cycle` (with a no-op stub
+   adapter at the leaf), then asserts the structural fields of the
+   resulting `SceneTree` are byte-identical. Any future parallel
+   walker that drifts in any arm fails this test.
+3. **Tripwire memory entry** `feedback_one_walker` advises future
+   sessions: when touching the executor walker code, or adding a
+   "dryrun mode" or "pre-map anything," read THIS section first.
+   The instinct to add a parallel arm is the bug.
+
+---
+
+## Pre-mapping vs. dynamic walk (implementation expression)
+
+The scenario tree is *pre-mapped* before execution as one
+expression of the single-walker contract:
 
 1. Parse the scenario tree from the workload model.
-2. Walk it depth-first, building the scope tree: at each node,
-   construct the inner scope by attaching the parent. Compile its
-   GK kernel (extern wiring + pragma attach). Record the scope as
-   a child of its parent.
+2. Run the walker at `depth=Phase`, building the scope tree
+   along the way: at each node, construct the inner scope by
+   attaching the parent. Compile its GK kernel (extern wiring +
+   pragma attach). Record the scope as a child of its parent.
 3. Result: a fully-compiled tree where every leaf is ready to
    execute. No further compilation happens at runtime — only
    value-rebinding through the extern wires.
@@ -282,7 +399,9 @@ listing — extending it to the scope tree is straightforward).
 The *dynamic walk* is then purely about scheduling: pick which
 scope to activate next, set its extern inputs, run its kernel /
 op stanza, repeat. The walk strategy is the scheduler's
-responsibility.
+responsibility. Both pre-map and dynamic walk are the same
+walker — the dynamic walk is the walker at `depth=Cycle`, the
+pre-map is the walker at `depth=Phase`.
 
 ---
 

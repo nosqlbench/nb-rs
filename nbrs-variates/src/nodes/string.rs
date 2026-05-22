@@ -331,6 +331,32 @@ pub fn signatures() -> &'static [FuncSig] {
             default_resolver: None,
             output_type: crate::dsl::registry::OutputType::Fixed,
         },
+        FuncSig {
+            name: "str_lower", category: C::String, outputs: 1,
+            description: "fold a string to lowercase",
+            help: "Return the lowercase form of the input string using\nUnicode case-folding. Useful for normalizing identifiers at\nupstream interpolation points — e.g. CQL stores unquoted\ntable names lowercased, so a sweep workload baking\n`{source_model}` into a table name should pass it through\n`str_lower(source_model)` so the local label matches the\nstored identifier when JMX / jolokia lookups happen later.\nParameters:\n  input — string wire\nExample: const table_lc := str_lower(table)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "\"HELLO\"", constraint: None },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
+        },
+        FuncSig {
+            name: "str_upper", category: C::String, outputs: 1,
+            description: "fold a string to uppercase",
+            help: "Return the uppercase form of the input string using\nUnicode case-folding. Mirror of `str_lower`; useful when a\ndownstream consumer (e.g. an enum-string config value) wants\nan uppercase form regardless of how the upstream binding\nwas written.\nParameters:\n  input — string wire\nExample: const model_uc := str_upper(source_model)",
+            identity: None, variadic_ctor: None,
+            params: &[
+                ParamSpec { name: "input", slot_type: SlotType::Wire, required: true, example: "\"hello\"", constraint: None },
+            ],
+            arity: Arity::Fixed,
+            commutativity: crate::node::Commutativity::Positional,
+            default_resolver: None,
+            output_type: crate::dsl::registry::OutputType::Fixed,
+        },
     ]
 }
 
@@ -571,6 +597,62 @@ impl GkNode for StrConcat {
     }
 }
 
+// =================================================================
+// StrLower / StrUpper: Unicode case-folding helpers
+// =================================================================
+
+/// Fold a string to lowercase (`str.to_lowercase()` semantics).
+///
+/// Signature: `str_lower(input: Str) -> (Str)`
+pub struct StrLower {
+    meta: NodeMeta,
+}
+
+impl StrLower {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "str_lower".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
+            },
+        }
+    }
+}
+
+impl GkNode for StrLower {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::Str(value_to_display(&inputs[0]).to_lowercase().into());
+    }
+}
+
+/// Fold a string to uppercase (`str.to_uppercase()` semantics).
+///
+/// Signature: `str_upper(input: Str) -> (Str)`
+pub struct StrUpper {
+    meta: NodeMeta,
+}
+
+impl StrUpper {
+    pub fn new() -> Self {
+        Self {
+            meta: NodeMeta {
+                name: "str_upper".into(),
+                outs: vec![Port::new("output", PortType::Str)],
+                ins: vec![Slot::Wire(Port::new("input", PortType::Str))],
+            },
+        }
+    }
+}
+
+impl GkNode for StrUpper {
+    fn meta(&self) -> &NodeMeta { &self.meta }
+    fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        outputs[0] = Value::Str(value_to_display(&inputs[0]).to_uppercase().into());
+    }
+}
+
 /// Try to build a string node from a function name and const args.
 ///
 /// Returns `None` if the name is not handled by this module.
@@ -589,6 +671,8 @@ pub(crate) fn build_node(name: &str, wires: &[crate::assembly::WireRef], _wire_t
             Some(FileLineAt::new(path).map(|n| Box::new(n) as Box<dyn crate::node::GkNode>))
         }
         "str_concat" => Some(Ok(Box::new(StrConcat::new(wires.len())))),
+        "str_lower" => Some(Ok(Box::new(StrLower::new()))),
+        "str_upper" => Some(Ok(Box::new(StrUpper::new()))),
         _ => None,
     }
 }
@@ -751,5 +835,46 @@ mod tests {
         let mut out = [Value::None];
         node.eval(&[], &mut out);
         assert_eq!(out[0].as_str(), "");
+    }
+
+    #[test]
+    fn str_lower_ascii_and_unicode() {
+        let node = StrLower::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("OTHER_M8".into())], &mut out);
+        assert_eq!(out[0].as_str(), "other_m8");
+        // Unicode folding (Rust's str::to_lowercase is full Unicode).
+        node.eval(&[Value::Str("ÄPFEL".into())], &mut out);
+        assert_eq!(out[0].as_str(), "äpfel");
+    }
+
+    #[test]
+    fn str_lower_idempotent_on_already_lowercase() {
+        let node = StrLower::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("fknn_oat_other".into())], &mut out);
+        assert_eq!(out[0].as_str(), "fknn_oat_other");
+    }
+
+    #[test]
+    fn str_upper_ascii_and_unicode() {
+        let node = StrUpper::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::Str("other_m8".into())], &mut out);
+        assert_eq!(out[0].as_str(), "OTHER_M8");
+        node.eval(&[Value::Str("äpfel".into())], &mut out);
+        assert_eq!(out[0].as_str(), "ÄPFEL");
+    }
+
+    #[test]
+    fn str_lower_accepts_non_string_via_display() {
+        // Same display-form ingestion as str_concat — convenience for
+        // callers chaining `str_lower(format_u64(...))` style.
+        let node = StrLower::new();
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(123)], &mut out);
+        assert_eq!(out[0].as_str(), "123");
+        node.eval(&[Value::Bool(true)], &mut out);
+        assert_eq!(out[0].as_str(), "true");
     }
 }
