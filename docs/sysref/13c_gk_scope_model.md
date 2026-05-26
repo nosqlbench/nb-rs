@@ -149,6 +149,18 @@ phases:
 Shadowing is implicit — defining a name in the inner scope
 shadows the outer name. No special keyword needed.
 
+**None-valued shadow attempts do not shadow.** If an inner
+binding's RHS evaluates to `Value::None` (most commonly because
+a string interpolation references an unbound name — see
+[SRD 74](74_none_propagation.md)), `get_constant` filters that
+output and the lookup falls through to the next tier. This is
+what makes the `set:` sugar from SRD-73 / SRD-22 behave as a
+*conditional* shadow: a shadow that didn't actually bind to a
+value leaves the upstream default in place. The desugar itself
+is unchanged canonical GK (`const NAME := <expr>`); the
+behavior emerges from how GK compiles and resolves any
+`const` declaration.
+
 ### Explicit Occlude Prevention
 
 To prevent accidental shadowing, a workload can mark bindings

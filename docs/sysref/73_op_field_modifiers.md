@@ -515,3 +515,10 @@ field list.
   the `JsonEventSink` target.
 - [SRD 50](50_cql_adapter.md) — CQL adapter specifics; per-engine
   modifier impls land alongside the existing per-engine modules.
+- [SRD 74](74_none_propagation.md) — None propagation through
+  string interpolation. Required for the `set:` desugar in this
+  SRD to behave correctly when an iter-var-driven shadow can't
+  bind: Rule 1 (shipped) makes the bad path produce
+  `Value::None` instead of `Str("None")`; conditional-shadow
+  `const` (designed) makes lookup fall through to upstream
+  defaults transparently.

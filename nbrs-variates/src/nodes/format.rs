@@ -115,6 +115,36 @@ impl GkNode for Printf {
     }
 
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
+        // SRD-73 follow-up: None propagation through string
+        // interpolation. If any REFERENCED input is Value::None,
+        // the whole result is Value::None — not the literal text
+        // "None" (which was the pre-fix Debug-formatting path),
+        // not Value::Str("").
+        //
+        // Rationale: Value::None is the canonical "absent"
+        // sentinel. The GK kernel's `lookup` / `get_constant`
+        // already treat None-valued outputs as "not present in
+        // this scope" and fall through to the parent scope.
+        // String interpolation is the surface where that
+        // discipline was being silently broken — an unresolved
+        // `{X}` in a source-level string literal compiles to a
+        // `printf` call with the unresolved name's slot, and
+        // when that slot evaluates to None the printf result
+        // should likewise be None so the binding doesn't
+        // shadow upstream defaults.
+        //
+        // SQL-style propagation: any None input → None output.
+        // Only inputs actually referenced by a `{}` placeholder
+        // are checked (not unused trailing args).
+        for seg in &self.segments {
+            if let Segment::Placeholder(spec) = seg
+                && matches!(&inputs[spec.index], Value::None)
+            {
+                outputs[0] = Value::None;
+                return;
+            }
+        }
+
         let mut result = String::new();
         for seg in &self.segments {
             match seg {
@@ -431,5 +461,63 @@ mod tests {
         let mut out = [Value::None];
         node.eval(&[Value::Str("world".into())], &mut out);
         assert_eq!(out[0].as_str(), "hello world");
+    }
+
+    // ────────────────────────────────────────────────────────
+    // None propagation (SRD-73 follow-up)
+    //
+    // String interpolation evaluates to Value::None when any
+    // referenced input is Value::None. Distinguishing the
+    // "absent" sentinel from an empty-string-that-is-present
+    // is required for the GK scope chain's fall-through
+    // semantics: lookup() filters Value::None out of a scope's
+    // outputs, so a const whose RHS interpolation yields None
+    // doesn't shadow the parent scope — workload-param defaults
+    // win. Silently substituting the literal text "None" (the
+    // pre-fix _ => format!("{val:?}") path) corrupted wire-
+    // protocol bytes, e.g. sent `'source_model': 'None'` to a
+    // CQL cluster when the intended iter-var shadow was unbound.
+    // ────────────────────────────────────────────────────────
+
+    #[test]
+    fn printf_none_input_yields_none() {
+        let node = Printf::new("hello {}", &[PortType::Str]);
+        // Start `out` non-None so we prove the eval overwrote it.
+        let mut out = [Value::Str("untouched".into())];
+        node.eval(&[Value::None], &mut out);
+        assert!(matches!(out[0], Value::None), "got: {:?}", out[0]);
+    }
+
+    #[test]
+    fn printf_partial_none_taints_whole_result() {
+        // Multi-placeholder: a single None argument taints the
+        // entire result. Mirrors SQL NULL propagation and Rust's
+        // `?`: any absent input yields an absent output.
+        let node = Printf::new("a={} b={}", &[PortType::U64, PortType::U64]);
+        let mut out = [Value::Str("untouched".into())];
+        node.eval(&[Value::U64(1), Value::None], &mut out);
+        assert!(matches!(out[0], Value::None), "got: {:?}", out[0]);
+    }
+
+    #[test]
+    fn printf_all_present_unchanged() {
+        // Sanity: with no None inputs the existing path is
+        // unchanged. This is the regression guard for the
+        // overwhelming common case.
+        let node = Printf::new("a={} b={}", &[PortType::U64, PortType::U64]);
+        let mut out = [Value::None];
+        node.eval(&[Value::U64(1), Value::U64(2)], &mut out);
+        assert_eq!(out[0].as_str(), "a=1 b=2");
+    }
+
+    #[test]
+    fn printf_no_placeholders_still_renders() {
+        // Edge: a format with no placeholders is unaffected by
+        // None propagation (nothing to be None about). The
+        // result is the literal string.
+        let node = Printf::new("static text", &[]);
+        let mut out = [Value::None];
+        node.eval(&[], &mut out);
+        assert_eq!(out[0].as_str(), "static text");
     }
 }

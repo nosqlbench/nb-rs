@@ -746,3 +746,129 @@ fn shared_non_literal_init_rejected() {
     assert!(err.contains("shared binding 'rolling'"), "error: {err}");
     assert!(err.contains("literal initial value"), "error: {err}");
 }
+
+// =========================================================================
+// None propagation through string interpolation (SRD-73 follow-up)
+// =========================================================================
+//
+// `set: { X: "{Y}" }` desugars to `const X := "{Y}"`. With None-
+// propagating string interpolation, when `Y` resolves to None
+// (because it wasn't bound by the outer scope), the printf-backed
+// interpolation yields Value::None for X, and `get_constant`'s
+// existing None filter (gkkernel.rs:458-462) elides X from the
+// scope's outputs. Inner `lookup("X")` then falls through to the
+// outer scope's binding for X — exactly the shadow-semantics
+// behavior the set: sugar promises.
+//
+// Before the fix: printf rendered Value::None as the literal
+// "None" via the catch-all `_ => format!("{val:?}")` arm. That
+// shadowed any outer binding with `Str("None")` and corrupted
+// wire-protocol bytes downstream (e.g. CQL CREATE INDEX seeing
+// `'source_model': 'None'` instead of the workload-param default).
+
+#[test]
+fn const_with_unbound_interpolation_yields_none_locally() {
+    // Step 1 of the None-propagation chain: the printf-backed
+    // string interpolation produces Value::None when an input
+    // is unbound. `get_constant`'s existing filter
+    // (gkkernel.rs:458-462) then elides the binding from the
+    // scope's outputs. inner.lookup("X") returns None —
+    // *without shadowing* the outer X with the literal text
+    // "None" (the pre-fix bug).
+    //
+    // Full fall-through to the outer X (i.e. inner.lookup("X")
+    // returning "DEFAULT") requires a complementary compiler
+    // change: a `const NAME := <expr>` should auto-extern
+    // NAME so the two-tier read in `lookup` finds the wired
+    // outer value when the const RHS evaluates to None.
+    // Tracked separately; that change converts every `const`
+    // binding into a conditional shadow uniformly.
+    let outer = compile_gk(r#"
+        input cycle: u64
+        const X := "DEFAULT"
+    "#).unwrap();
+
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        extern Y: str
+        const X := "{Y}"
+    "#).unwrap().program().clone();
+    let inner = outer.subscope(
+        GkMatter::builder().program(inner_program).build().unwrap()
+    ).unwrap();
+
+    // Y is unbound; the printf yields Value::None; get_constant
+    // filters X out of the scope outputs; lookup falls to
+    // find_input("X") which finds nothing (no extern X declared
+    // in inner). Returns None — NOT Str("None").
+    //
+    // Critically: NO literal "None" text was rendered. The
+    // wire-protocol-corrupting path from the pre-fix Debug
+    // formatter is gone.
+    assert_eq!(inner.lookup("X"), None,
+        "X should be None (absent), not Str('None'); got: {:?}",
+        inner.lookup("X"));
+}
+
+#[test]
+fn const_with_unbound_interpolation_with_explicit_extern_falls_through() {
+    // Demonstrates the working fall-through path when the
+    // workload author / compiler arranges for the inner scope
+    // to ALSO extern the name being conditionally shadowed.
+    // This is what the eventual auto-extern-of-const-names
+    // compiler change will do implicitly; for now it works
+    // when declared explicitly.
+    let outer = compile_gk(r#"
+        input cycle: u64
+        const X := "DEFAULT"
+    "#).unwrap();
+
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        extern X: str
+        extern Y: str
+        const X := "{Y}"
+    "#).unwrap().program().clone();
+    let inner = outer.subscope(
+        GkMatter::builder().program(inner_program).build().unwrap()
+    ).unwrap();
+
+    // Two-tier read: get_constant("X") returns None (filtered
+    // because the const folded to None), then find_input("X")
+    // finds the extern slot wired from outer's "DEFAULT".
+    assert_eq!(
+        inner.lookup("X").map(|v| v.as_str().to_string()),
+        Some("DEFAULT".to_string()),
+        "fall-through should reach outer DEFAULT via wired extern X; got: {:?}",
+        inner.lookup("X"),
+    );
+}
+
+#[test]
+fn const_with_bound_interpolation_shadows_outer() {
+    // Regression guard for the happy path: when the interpolation
+    // input IS bound, the const shadows the outer binding as
+    // expected. None propagation must not break the normal case.
+    let outer = compile_gk(r#"
+        input cycle: u64
+        const X := "DEFAULT"
+        const Y := "OVERRIDE"
+    "#).unwrap();
+
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        extern Y: str
+        const X := "{Y}"
+    "#).unwrap().program().clone();
+    let inner = outer.subscope(
+        GkMatter::builder().program(inner_program).build().unwrap()
+    ).unwrap();
+
+    // Y is bound by outer ("OVERRIDE"), so the interpolation
+    // produces Str("OVERRIDE"), get_constant returns it, and
+    // the inner X shadows the outer "DEFAULT".
+    assert_eq!(
+        inner.lookup("X").map(|v| v.as_str().to_string()),
+        Some("OVERRIDE".to_string()),
+    );
+}
