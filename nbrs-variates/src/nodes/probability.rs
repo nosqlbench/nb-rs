@@ -619,6 +619,11 @@ impl GkNode for DefaultOr {
             inputs[0].clone()
         };
     }
+    /// `default_or` exists precisely to consume `Value::None` —
+    /// it's the canonical coalesce / fallback operator. Opt
+    /// out of the kernel-level SRD-74 Rule 1 propagation so
+    /// `None` reaches `eval` instead of short-circuiting.
+    fn accepts_none_inputs(&self) -> bool { true }
 }
 
 // ---------------------------------------------------------------------------

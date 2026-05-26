@@ -200,6 +200,35 @@ impl EngineCore {
         }
 
         let input_count = wiring.len();
+
+        // SRD-74 Rule 1 — None propagation lifted to the kernel
+        // level. Any node whose inputs include `Value::None`
+        // emits `Value::None` on every output without invoking
+        // the node's `eval`. This holds the SQL-NULL / Rust
+        // `Option::?` propagation rule uniformly for ALL GK
+        // nodes, avoiding the dozens of duplicate per-node
+        // `if matches!(input, Value::None)` checks. Individual
+        // nodes (e.g. `Printf`) keep their checks redundant but
+        // harmless — the kernel guard fires first.
+        //
+        // Opt-out: nodes whose semantics explicitly consume
+        // `Value::None` (coalesce-style `default_or`, explicit
+        // optionality handlers per SRD-74 Rule 2) override
+        // `GkNode::accepts_none_inputs` to skip this guard. Such
+        // nodes handle `None` in their own `eval`.
+        let node_ref = &*program.nodes[node_idx];
+        if !node_ref.accepts_none_inputs()
+            && self.input_scratch[..input_count]
+                .iter()
+                .any(|v| matches!(v, Value::None))
+        {
+            for slot in &mut self.buffers[node_idx] {
+                *slot = Value::None;
+            }
+            self.node_clean[node_idx] = true;
+            return;
+        }
+
         // Wrap the node's eval in catch_unwind so a node-level
         // panic (e.g. `Value::as_u64` on a Str) can be re-raised
         // with the diagnostic context the user actually needs:

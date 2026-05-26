@@ -68,6 +68,11 @@ impl GkNode for RequiredU64 {
         }
         outputs[0] = inputs[0].clone();
     }
+    /// `required` exists to ASSERT that None is unacceptable —
+    /// receiving None is the whole point of its contract. Opt
+    /// out of kernel-level Rule 1 propagation so the assertion
+    /// fires.
+    fn accepts_none_inputs(&self) -> bool { true }
 }
 
 // =========================================================================
@@ -114,6 +119,10 @@ impl GkNode for ThisOrU64 {
             inputs[0].clone()
         };
     }
+    /// `this_or` is the typed coalesce equivalent of
+    /// `default_or` — consumes None as part of its fallback
+    /// semantics. Opt out of Rule 1 propagation.
+    fn accepts_none_inputs(&self) -> bool { true }
 }
 
 // =========================================================================

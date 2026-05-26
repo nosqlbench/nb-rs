@@ -755,14 +755,18 @@ impl GkKernel {
         // `lookup(name)` reads through `get_constant`'s buffer
         // path and sees the materialised value.
         //
-        // Panics during the pull are suppressed here for the same
-        // reason `fold_init_constants` suppresses them at compile
-        // time: a const binding may depend on side-effectful
-        // resolution (`dataset_prebuffer`, etc.) that isn't ready
-        // until the workload actually runs. The buffer stays
-        // `Value::None`; the consumer's eventual read will
-        // re-trigger the panic where it can be reported in
-        // context.
+        // Panics during the pull are caught (not swallowed) — a
+        // const binding may depend on side-effectful resolution
+        // (`dataset_prebuffer`, etc.) that isn't ready until the
+        // workload actually runs, AND we want to surface real
+        // type / arity / Value::None-coercion errors so they're
+        // not hidden by the same catch. The recovery shape
+        // (buffer stays None, consumer's eventual read re-
+        // triggers the panic in context) is unchanged; the
+        // additional behavior is a diagnostic on every caught
+        // panic so operators can see the eval failure even when
+        // the conditional-shadow fall-through papers over the
+        // None buffer at the next lookup.
         let const_outputs: Vec<String> = self.program
             .const_outputs()
             .into_iter()
@@ -772,9 +776,29 @@ impl GkKernel {
         for name in const_outputs {
             let state = &mut self.state;
             let prog = &program;
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 state.pull(prog, &name);
             }));
+            if let Err(payload) = result {
+                let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else if let Some(s) = payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else {
+                    "<non-string panic payload>".to_string()
+                };
+                // Single-line, diag-routed warning. Operators
+                // see this in stderr / session.log immediately;
+                // they don't have to wait until the const's
+                // downstream consumer re-pulls and the panic
+                // re-fires with full context.
+                eprintln!(
+                    "warning: scope-init const pull failed for '{name}': {msg} \
+                     (buffer left at Value::None; downstream lookup will \
+                     fall through to wired-in input or surface the error \
+                     when the binding is consumed)"
+                );
+            }
         }
 
         // Step 4 — scope-coordinates plumbing. Path is now
@@ -915,9 +939,21 @@ impl GkKernel {
             let kind = self.program.input_kind(idx);
             if kind != Some(InputKind::IterationExtern) { continue; }
             if self.program.is_inherited(&name) { continue; }
-            let value = self.state.get_input(idx);
+            // Use `lookup` (two-tier: const buffer first, input
+            // slot second) rather than reading the input slot
+            // directly. The conditional-shadow `const NAME :=
+            // <expr>` pattern from SRD-74 P2 makes NAME both an
+            // input slot (wired with the outer scope's binding —
+            // typically a workload-param default) AND a const
+            // output (the iter-shadow result). The own-coordinate
+            // should report the AUTHORITATIVE value the scope
+            // publishes, which is the const buffer when present.
+            // Reading the input slot directly would report the
+            // wired-in default, masking the per-iter shadow value
+            // in activity labels / scope-coord display paths.
+            let Some(value) = self.lookup(&name) else { continue; };
             if matches!(value, Value::None) { continue; }
-            vars.insert(name, value.clone());
+            vars.insert(name, value);
         }
         super::ScopeCoord { vars }
     }

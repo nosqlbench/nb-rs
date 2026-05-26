@@ -978,6 +978,27 @@ pub trait GkNode: Send + Sync {
         Commutativity::Positional
     }
 
+    /// True iff this node should receive `Value::None` inputs
+    /// directly rather than have the kernel propagate None through
+    /// it. Default: false — most nodes follow SRD-74 Rule 1
+    /// (None in → None out, no eval invocation).
+    ///
+    /// Override to true for nodes whose semantics explicitly
+    /// consume None: coalesce-style fallbacks (`default_or`),
+    /// optional/maybe handlers, anything that distinguishes
+    /// "present" from "absent" as part of its contract.
+    /// Override-true nodes are responsible for handling
+    /// `Value::None` in their own `eval` implementation.
+    ///
+    /// See [SRD 74](../../../docs/sysref/74_none_propagation.md)
+    /// §"Rule 1 — String-interpolation propagates None" — the
+    /// rule is general (lifted to the kernel level) rather than
+    /// per-node; this flag is the opt-out for legitimate None-
+    /// aware operators.
+    fn accepts_none_inputs(&self) -> bool {
+        false
+    }
+
     /// Return a compiled u64-only evaluation closure, if this node
     /// operates entirely in u64 space.
     ///
