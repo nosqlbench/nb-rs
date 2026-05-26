@@ -709,7 +709,28 @@ impl GkKernel {
             if attached_names.contains(name) { continue; }
             let Some(inner_idx) = self.program.find_input(name) else { continue };
             let outer_has_slot = outer.program.find_input(name).is_some();
+            // SRD-74 P2 transitive composition: when outer's output
+            // is a `const` binding, ALWAYS go through outer.lookup
+            // (value-copy), never through the broadcast cell. The
+            // const's output buffer may be Value::None (Rule 1
+            // None-propagation, e.g. set:'s `const X := "{Y}"` when
+            // Y is unbound); outer.lookup applies the two-tier read
+            // so None falls through to outer's wired-from-grandparent
+            // input slot, giving us the canonical chain-walked
+            // value. Cell-attaching the None-valued buffer would
+            // defeat that fall-through.
+            //
+            // Const outputs are effectively-const for the scope's
+            // lifetime (SRD-11) — value-copy is semantically
+            // equivalent to cell-attach and avoids the dynamic-cell
+            // overhead.
+            let outer_is_const = outer.program.output_modifier(name)
+                == crate::dsl::ast::BindingModifier::CONST;
             if outer_has_slot {
+                if let Some(value) = outer.lookup(name) {
+                    self.state.set_input(inner_idx, value);
+                }
+            } else if outer_is_const {
                 if let Some(value) = outer.lookup(name) {
                     self.state.set_input(inner_idx, value);
                 }

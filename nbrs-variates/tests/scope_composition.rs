@@ -767,22 +767,27 @@ fn shared_non_literal_init_rejected() {
 // `'source_model': 'None'` instead of the workload-param default).
 
 #[test]
-fn const_with_unbound_interpolation_yields_none_locally() {
-    // Step 1 of the None-propagation chain: the printf-backed
-    // string interpolation produces Value::None when an input
-    // is unbound. `get_constant`'s existing filter
-    // (gkkernel.rs:458-462) then elides the binding from the
-    // scope's outputs. inner.lookup("X") returns None —
-    // *without shadowing* the outer X with the literal text
-    // "None" (the pre-fix bug).
+fn const_with_unbound_interpolation_falls_through_to_outer() {
+    // Full SRD-74 conditional-shadow chain in one test:
     //
-    // Full fall-through to the outer X (i.e. inner.lookup("X")
-    // returning "DEFAULT") requires a complementary compiler
-    // change: a `const NAME := <expr>` should auto-extern
-    // NAME so the two-tier read in `lookup` finds the wired
-    // outer value when the const RHS evaluates to None.
-    // Tracked separately; that change converts every `const`
-    // binding into a conditional shadow uniformly.
+    // 1. Rule 1 (Printf::eval None-propagation): the
+    //    interpolation `"{Y}"` with Y unbound yields
+    //    `Value::None` instead of `Str("None")`.
+    // 2. `get_constant("X")` filter (gkkernel.rs:458-462):
+    //    None-valued output is elided from the scope.
+    // 3. SRD-74 P2 (auto-extern for `const X := <expr>` with
+    //    name references in RHS): the compiler adds an
+    //    implicit input slot for X.
+    // 4. `materialize_wiring_from_outer` wires that slot from
+    //    outer's `const X := "DEFAULT"`.
+    // 5. `lookup("X")` two-tier read: get_constant returns
+    //    None (filtered), find_input returns the wired slot
+    //    holding "DEFAULT".
+    //
+    // Net behavior: inner's `const X := "{Y}"` is a CONDITIONAL
+    // shadow. Real value → shadow wins. None → outer's
+    // "DEFAULT" passes through. The `set:` desugar from SRD-73
+    // works correctly without any change to the desugar itself.
     let outer = compile_gk(r#"
         input cycle: u64
         const X := "DEFAULT"
@@ -797,51 +802,96 @@ fn const_with_unbound_interpolation_yields_none_locally() {
         GkMatter::builder().program(inner_program).build().unwrap()
     ).unwrap();
 
-    // Y is unbound; the printf yields Value::None; get_constant
-    // filters X out of the scope outputs; lookup falls to
-    // find_input("X") which finds nothing (no extern X declared
-    // in inner). Returns None — NOT Str("None").
-    //
-    // Critically: NO literal "None" text was rendered. The
-    // wire-protocol-corrupting path from the pre-fix Debug
-    // formatter is gone.
-    assert_eq!(inner.lookup("X"), None,
-        "X should be None (absent), not Str('None'); got: {:?}",
-        inner.lookup("X"));
+    // No literal "None" text. No empty string. The conditional
+    // shadow falls through transparently to the outer DEFAULT.
+    assert_eq!(
+        inner.lookup("X").map(|v| v.as_str().to_string()),
+        Some("DEFAULT".to_string()),
+        "inner X should fall through to outer DEFAULT; got: {:?}",
+        inner.lookup("X"),
+    );
 }
 
 #[test]
-fn const_with_unbound_interpolation_with_explicit_extern_falls_through() {
-    // Demonstrates the working fall-through path when the
-    // workload author / compiler arranges for the inner scope
-    // to ALSO extern the name being conditionally shadowed.
-    // This is what the eventual auto-extern-of-const-names
-    // compiler change will do implicitly; for now it works
-    // when declared explicitly.
-    let outer = compile_gk(r#"
+fn three_scope_chain_transitive_fall_through() {
+    // SRD-74 P2 + wiring fix: a None-valued conditional shadow
+    // in a MIDDLE scope must be transparent — descendants see
+    // the workload-scope default, not the middle's None.
+    //
+    // Scope chain:
+    //   workload:  const X := "WORKLOAD_DEFAULT"
+    //     middle:  const X := "{undef_in_middle}"
+    //              (RHS interpolation yields Value::None →
+    //               Rule 1 propagation → const folds to None
+    //               → get_constant filter elides → middle's
+    //               two-tier lookup falls through to its own
+    //               wired-from-workload input slot → returns
+    //               "WORKLOAD_DEFAULT")
+    //       inner: extern X: str
+    //              (wired from middle via materialize_wiring_from_outer.
+    //               With Step 2's preference for outer.lookup over
+    //               output_cell for const outputs, the wiring value-
+    //               copies middle.lookup("X") which is
+    //               "WORKLOAD_DEFAULT", NOT the None buffer.)
+    let workload = compile_gk(r#"
         input cycle: u64
-        const X := "DEFAULT"
+        const X := "WORKLOAD_DEFAULT"
     "#).unwrap();
+
+    let middle_program = compile_gk(r#"
+        input cycle: u64
+        extern undef_in_middle: str
+        const X := "{undef_in_middle}"
+    "#).unwrap().program().clone();
+    let middle = workload.subscope(
+        GkMatter::builder().program(middle_program).build().unwrap()
+    ).unwrap();
+
+    // Middle's own lookup demonstrates the inner-to-middle
+    // fall-through:
+    assert_eq!(
+        middle.lookup("X").map(|v| v.as_str().to_string()),
+        Some("WORKLOAD_DEFAULT".to_string()),
+        "middle.lookup(X) should fall through to workload default",
+    );
 
     let inner_program = compile_gk(r#"
         input cycle: u64
         extern X: str
-        extern Y: str
-        const X := "{Y}"
     "#).unwrap().program().clone();
-    let inner = outer.subscope(
+    let inner = middle.subscope(
         GkMatter::builder().program(inner_program).build().unwrap()
     ).unwrap();
 
-    // Two-tier read: get_constant("X") returns None (filtered
-    // because the const folded to None), then find_input("X")
-    // finds the extern slot wired from outer's "DEFAULT".
+    // Inner's lookup demonstrates the transitive fall-through:
+    // the None in middle's const buffer DOES NOT propagate to
+    // inner. The wiring uses middle.lookup which already walked
+    // up to workload's value.
     assert_eq!(
         inner.lookup("X").map(|v| v.as_str().to_string()),
-        Some("DEFAULT".to_string()),
-        "fall-through should reach outer DEFAULT via wired extern X; got: {:?}",
-        inner.lookup("X"),
+        Some("WORKLOAD_DEFAULT".to_string()),
+        "inner.lookup(X) should reach workload default through middle's transparent shadow",
     );
+}
+
+#[test]
+fn pure_literal_const_does_not_auto_extern() {
+    // SRD-74 P2 only auto-externs consts whose RHS references
+    // at least one name. Pure-literal consts (e.g. the
+    // SRD-13f Gate 2 iter-var emission, `const x := 1`) MUST
+    // NOT get an input slot — they always fold to a real value
+    // and there's nothing for the chain to fall through to.
+    // The Gate 2 invariant in
+    // comprehension::synthesis::tests::iter_var_as_final_const
+    // is the canonical assertion for this case.
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        const x := 42
+    "#).unwrap();
+
+    assert!(kernel.program().find_input("x").is_none(),
+        "pure-literal const must not get an auto-extern input slot");
+    assert_eq!(kernel.get_constant("x").unwrap().as_u64(), 42);
 }
 
 #[test]

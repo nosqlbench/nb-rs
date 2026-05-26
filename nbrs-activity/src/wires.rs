@@ -408,8 +408,30 @@ pub fn substitute_via_wires(
             continue;
         }
         // Bare identifier — wires.get resolves or errors.
+        //
+        // SRD-74 Rule 3 (strict render): `Value::None` reaching the
+        // wire-protocol substitution surface is an error, NOT a
+        // silent empty string. The display-strict primitive returns
+        // `None` for `Value::None` so we can surface a clear
+        // diagnostic. The catch-all `to_display_string` legacy
+        // (which maps None to "") stays in place for log /
+        // diagnostic contexts where empty is acceptable; render
+        // sites use the strict form.
         match wires.get(body) {
-            Some(v) => out.push_str(&v.to_display_string()),
+            Some(v) => match v.to_display_strict() {
+                Some(s) => out.push_str(&s),
+                None => {
+                    return Err(format!(
+                        "unresolved bind point `{{{body}}}`: wire \
+                         `{body}` resolved to `Value::None` (no value \
+                         bound in the dispenser's GK context chain). \
+                         Set a workload-param default for `{body}`, \
+                         bind it via `bindings:` / `set:`, or mark \
+                         the bind-point as optional once SRD-74 \
+                         Rule 2 syntax lands."
+                    ));
+                }
+            },
             None => {
                 return Err(format!(
                     "unresolved bind point `{{{body}}}`: no wire named \
@@ -696,6 +718,40 @@ mod tests {
         let err = substitute_via_wires("hi {nonexistent}", &cw).unwrap_err();
         assert!(err.contains("nonexistent"), "diagnostic should name the wire: {err}");
         assert!(err.contains("unresolved"), "diagnostic should call out unresolved: {err}");
+    }
+
+    #[test]
+    fn substitute_via_wires_errors_when_wire_resolves_to_none() {
+        // SRD-74 Rule 3 strict render: a wire that EXISTS but
+        // resolves to `Value::None` (e.g. a `const X := "{undef}"`
+        // whose RHS interpolation propagated None per Rule 1, then
+        // the conditional-shadow chain found no upstream binding
+        // either) must error at substitution time — NOT silently
+        // render as `""`. Empty string is a real value; absent is
+        // not the same thing, and conflating them was the
+        // wire-protocol corruption class this SRD closes.
+        let mut k = compile_gk(
+            "input cycle: u64\n\
+             extern undef: str\n\
+             const x := \"{undef}\"\n"
+        ).unwrap();
+        let cw = CycleWires::new(&mut k);
+        let err = substitute_via_wires("source_model='{x}'", &cw).unwrap_err();
+        assert!(err.contains("`{x}`"),
+            "diagnostic should name the bind-point: {err}");
+        assert!(err.contains("Value::None") || err.contains("no value bound"),
+            "diagnostic should explain the None resolution: {err}");
+    }
+
+    #[test]
+    fn to_display_strict_returns_none_for_value_none() {
+        // The strict primitive itself; render sites consume it.
+        use nbrs_variates::node::Value;
+        assert_eq!(Value::None.to_display_strict(), None);
+        assert_eq!(Value::Str("hello".into()).to_display_strict(),
+                   Some("hello".to_string()));
+        assert_eq!(Value::U64(42).to_display_strict(),
+                   Some("42".to_string()));
     }
 
     #[test]

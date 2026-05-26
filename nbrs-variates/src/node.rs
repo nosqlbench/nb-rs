@@ -489,6 +489,27 @@ impl Value {
         }
     }
 
+    /// Strict-render variant of [`Self::to_display_string`] for use
+    /// at wire-protocol render sites (op-template substitution,
+    /// adapter byte-emission paths).
+    ///
+    /// Returns `None` for [`Value::None`] instead of converting it
+    /// to `""`. The empty-string mapping in `to_display_string` is
+    /// convenient for diagnostic / log contexts but lethal at the
+    /// wire boundary — it silently coerces "absent" into "present
+    /// but empty," corrupting downstream bytes (e.g. sending
+    /// `'source_model': ''` to a CQL cluster when the intended
+    /// shadow didn't bind). Render paths use this primitive and
+    /// surface a clear error when an unresolved bind-point reaches
+    /// them. See [SRD 74](../../../docs/sysref/74_none_propagation.md)
+    /// §"Rule 3 — Op-template render refuses silent None".
+    pub fn to_display_strict(&self) -> Option<String> {
+        match self {
+            Value::None => None,
+            other => Some(other.to_display_string()),
+        }
+    }
+
     /// JSON representation for any value. Works across all variants.
     pub fn to_json_value(&self) -> serde_json::Value {
         match self {

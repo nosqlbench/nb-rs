@@ -736,17 +736,13 @@ impl ScopeTree {
     }
 
     /// First scope-tree node whose kind is
-    /// `ScopeKind::Bindings { source }` matching exactly. Used
-    /// by the runtime executor's `Bindings` arm to find the
-    /// scope-tree node corresponding to the scenario-node it's
-    /// currently executing, so it can push that scope's
-    /// installed kernel as `ctx.current_parent_kernel` for
-    /// children to read.
+    /// `ScopeKind::Bindings { source }` matching exactly,
+    /// searched globally from root in DFS pre-order.
     ///
-    /// `source` is sufficient identity: two `Bindings` nodes
-    /// with identical sources produce structurally identical
-    /// kernels, so picking either is benign — both publish the
-    /// same lexical scope.
+    /// **Prefer [`Self::find_bindings_scope_under`]** when the
+    /// executor's current scope position is known — see that
+    /// method's doc for why a global content-only lookup is
+    /// currently unsafe.
     pub fn find_bindings_scope(
         &self,
         source: &str,
@@ -755,6 +751,76 @@ impl ScopeTree {
             ScopeKind::Bindings { source: s } if s == source => Some(idx),
             _ => None,
         })
+    }
+
+    /// **TRANSITIONAL WORKAROUND** — see task #19 for the
+    /// canonical end-state plan. Constrains the lookup of a
+    /// `Bindings` scope to descendants of `parent` so that two
+    /// `Bindings` nodes sharing source text at different scope-
+    /// tree positions resolve to the right one based on the
+    /// executor's current position.
+    ///
+    /// The deeper problem: today the AST/source we use as the
+    /// lookup key is LOSSY — two scope-tree nodes that produce
+    /// semantically-distinct installed kernels (different
+    /// cascaded externs from different parent chains) can share
+    /// AST/source. Per SRD-13d §"Op-template scope synthesis" +
+    /// SRD-13f §"The read invariant", installed kernels are
+    /// determined by their PARENT chain, not by their own
+    /// content alone. The current scope-aware lookup adds the
+    /// missing context (parent subtree) at the call site to
+    /// disambiguate.
+    ///
+    /// **Future direction:** make the AST/source self-
+    /// identifying so that semantically-distinct kernels never
+    /// share matter (embed parent-chain signature, encode
+    /// scenario-tree path, or some equivalent invariant). Once
+    /// that lands, content-only `find_bindings_scope` is
+    /// correct again and this `_under` variant can be retired.
+    pub fn find_bindings_scope_under(
+        &self,
+        parent: ScopeNodeIdx,
+        source: &str,
+    ) -> Option<ScopeNodeIdx> {
+        self.find_descendant_matching(parent, &mut |node| match &node.kind {
+            ScopeKind::Bindings { source: s } => s == source,
+            _ => false,
+        })
+    }
+
+    /// **TRANSITIONAL WORKAROUND** — see
+    /// [`Self::find_bindings_scope_under`] for the underlying
+    /// principle and task #19 for the canonical end-state plan.
+    /// Retired once the AST becomes self-identifying.
+    pub fn find_comprehension_scope_under(
+        &self,
+        parent: ScopeNodeIdx,
+        comprehension: &Comprehension,
+    ) -> Option<ScopeNodeIdx> {
+        self.find_descendant_matching(parent, &mut |node| match &node.kind {
+            ScopeKind::Comprehension { comprehension: c } => c == comprehension,
+            _ => false,
+        })
+    }
+
+    /// DFS pre-order search through the descendants of `parent`
+    /// (excluding `parent` itself). Returns the first node whose
+    /// predicate returns true.
+    fn find_descendant_matching(
+        &self,
+        parent: ScopeNodeIdx,
+        predicate: &mut dyn FnMut(&ScopeNode) -> bool,
+    ) -> Option<ScopeNodeIdx> {
+        let mut stack: Vec<ScopeNodeIdx> = self.nodes[parent].children.iter().rev().copied().collect();
+        while let Some(idx) = stack.pop() {
+            if predicate(&self.nodes[idx]) {
+                return Some(idx);
+            }
+            for &child in self.nodes[idx].children.iter().rev() {
+                stack.push(child);
+            }
+        }
+        None
     }
 
     /// Validate iteration-variable name uniqueness against the
@@ -1519,5 +1585,124 @@ mod tests {
             Some(nbrs_variates::node::Value::U64(n)) => assert_eq!(*n, 1),
             other => panic!("expected U64(1), got {other:?}"),
         }
+    }
+
+    /// **WORKAROUND-PINNING TEST — retire when AST becomes
+    /// self-identifying** (task #19).
+    ///
+    /// Today's lookup key (raw Comprehension AST) is LOSSY:
+    /// two scope-tree positions produce semantically-distinct
+    /// installed kernels (different cascaded externs from
+    /// different parent chains) but can share AST. The
+    /// `_under(parent_idx, ...)` lookup adds the missing
+    /// context — parent-subtree restriction — at the call
+    /// site to disambiguate. This test pins that behavior in
+    /// place.
+    ///
+    /// When the AST becomes self-identifying (so two
+    /// distinct kernels never share matter), `find_comprehension_scope`
+    /// is correct again, `find_comprehension_scope_under` can
+    /// be retired, and this test should be deleted along with
+    /// it.
+    ///
+    /// Workload shape modeled here:
+    ///
+    /// ```text
+    /// for_each "a in [1]" {       // outer A
+    ///   for_each "x in xs" { P }  // x-comprehension #1, under A
+    /// }
+    /// for_each "b in [2]" {       // outer B
+    ///   for_each "x in xs" { P }  // x-comprehension #2, under B
+    /// }
+    /// ```
+    ///
+    /// Both `for_each "x in xs"` blocks have IDENTICAL AST.
+    /// Under the lossy-AST model, `find_comprehension_scope_under(B_idx,
+    /// x_comp)` MUST return #2's idx, not #1's, because the
+    /// installed kernels at #1 and #2 differ in their cascade
+    /// even though the AST does not. When AST becomes
+    /// self-identifying the two `for_each "x in xs"` blocks
+    /// will no longer share AST — they will carry distinct
+    /// context — and the global lookup will work.
+    #[test]
+    fn find_comprehension_scope_under_disambiguates_identical_ast() {
+        let tree = ScopeTree::build("default", &[
+            for_each("a in [1]", vec![
+                for_each("x in xs", vec![phase("P")]),
+            ]),
+            for_each("b in [2]", vec![
+                for_each("x in xs", vec![phase("P")]),
+            ]),
+        ]);
+        // Tree layout (DFS):
+        //   0 workload
+        //   1 scenario
+        //   2 for_each(a)
+        //   3   for_each(x) #1
+        //   4     phase(P)
+        //   5 for_each(b)
+        //   6   for_each(x) #2
+        //   7     phase(P)
+        //
+        // Build the x-comprehension AST that both inner scopes
+        // share, then verify the path-aware lookup picks the
+        // right one from each side.
+        let x_clauses = nbrs_variates::comprehension::parse_clause_list("x in xs").unwrap();
+        let x_comp = nbrs_variates::comprehension::Comprehension::cartesian(x_clauses);
+
+        // Sanity: the legacy global lookup picks #1 (first DFS
+        // match) for both — this is the buggy behavior.
+        assert_eq!(tree.find_comprehension_scope(&x_comp), Some(3),
+            "legacy lookup returns FIRST match — documented bug");
+
+        // The fix: searching under the A outer (idx 2) returns
+        // #1 (idx 3); searching under the B outer (idx 5)
+        // returns #2 (idx 6). The same x AST resolves to
+        // different scope idx based on the parent context.
+        assert_eq!(tree.find_comprehension_scope_under(2, &x_comp), Some(3),
+            "under A outer, x-comprehension is the descendant at idx 3");
+        assert_eq!(tree.find_comprehension_scope_under(5, &x_comp), Some(6),
+            "under B outer, x-comprehension is the descendant at idx 6");
+
+        // Cross-search: looking for x under the OTHER side's
+        // sub-tree should return None (the comprehension isn't
+        // a descendant).
+        assert_eq!(tree.find_comprehension_scope_under(3, &x_comp), None,
+            "x-comp is not a descendant of itself");
+    }
+
+    /// **WORKAROUND-PINNING TEST — retire when AST becomes
+    /// self-identifying** (task #19). See
+    /// [`find_comprehension_scope_under_disambiguates_identical_ast`]
+    /// for the architectural framing. Same shape applied to
+    /// `Bindings` nodes whose source text matches at different
+    /// scope-tree positions.
+    #[test]
+    fn find_bindings_scope_under_disambiguates_identical_source() {
+        let bindings_source = "const k := 1\n".to_string();
+        let bindings_node = || ScenarioNode::Bindings {
+            source: bindings_source.clone(),
+            children: vec![phase("P")],
+        };
+        let tree = ScopeTree::build("default", &[
+            for_each("a in [1]", vec![bindings_node()]),
+            for_each("b in [2]", vec![bindings_node()]),
+        ]);
+        // Layout:
+        //   0 workload
+        //   1 scenario
+        //   2 for_each(a)
+        //   3   bindings #1
+        //   4     phase(P)
+        //   5 for_each(b)
+        //   6   bindings #2
+        //   7     phase(P)
+
+        // Legacy: FIRST match (bug).
+        assert_eq!(tree.find_bindings_scope(&bindings_source), Some(3));
+
+        // Fix: scoped lookup picks the right descendant.
+        assert_eq!(tree.find_bindings_scope_under(2, &bindings_source), Some(3));
+        assert_eq!(tree.find_bindings_scope_under(5, &bindings_source), Some(6));
     }
 }

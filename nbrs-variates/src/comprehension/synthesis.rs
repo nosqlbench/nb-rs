@@ -1702,4 +1702,587 @@ mod tests {
             "x must fold to U64(2) in iter1 — per-iteration recompile");
         assert!(iter1.program().find_input("x").is_none());
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // SRD-74 follow-up: parallel-iter destructure scope-output
+    //
+    // Bug: workload pattern `(nbo_v, nbo_label) in
+    // (concat(1.0, 3.0), concat("1p0", "3p0"))` was losing the
+    // f64-typed first var. Downstream scopes that read `nbo_v`
+    // via `{nbo_v}` interpolation got Value::None instead of the
+    // bound iter-value.
+    //
+    // Pin the shape directly: synthesize the for_each scope, check
+    // that BOTH iter-vars from the parallel-iter clause appear as
+    // input slots AND as passthrough outputs with their detected
+    // types.
+    // ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn parallel_iter_destructure_declares_both_vars_as_inputs() {
+        let parent = crate::dsl::compile::compile_gk("\n").unwrap();
+        // Match the workload's exact shape: f64 and str column
+        // pair from a parallel-iter clause's `(nbo_v, nbo_label)
+        // in (concat(1.0, 3.0), concat("1p0", "3p0"))`.
+        let bindings = [
+            ("nbo_v".to_string(), "concat(1.0, 3.0)".to_string()),
+            ("nbo_label".to_string(), "concat(\"1p0\", \"3p0\")".to_string()),
+        ];
+        let kernel = synthesize_for_each_scope(
+            &bindings, &[], &parent,
+            &HashMap::new(), Vec::new(), None, false, "test", None,
+        ).expect("for-each scope synthesis");
+
+        let prog = kernel.program();
+
+        // Both iter-vars must appear as input slots so the
+        // per-iter `materialize_subscope` set_input call can
+        // populate them.
+        assert!(prog.find_input("nbo_v").is_some(),
+            "nbo_v must be declared as an input slot");
+        assert!(prog.find_input("nbo_label").is_some(),
+            "nbo_label must be declared as an input slot");
+
+        // Types should match the detected types of the
+        // concat-list elements: f64 for numerics, Str for strings.
+        let nbo_v_type = prog.input_port_type("nbo_v").unwrap();
+        let nbo_label_type = prog.input_port_type("nbo_label").unwrap();
+        assert_eq!(nbo_v_type, crate::node::PortType::F64,
+            "nbo_v should be f64 (detected from concat(1.0, 3.0)); got {nbo_v_type:?}");
+        assert_eq!(nbo_label_type, crate::node::PortType::Str,
+            "nbo_label should be Str (detected from concat(\"1p0\", \"3p0\")); got {nbo_label_type:?}");
+
+        // Both must also appear as outputs (via the extern
+        // passthrough mechanism) so downstream scopes can
+        // cascade them via parent.output_names().
+        let outputs: std::collections::HashSet<String> = prog.output_names()
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert!(outputs.contains("nbo_v"),
+            "nbo_v must be in output_names() so descendant scopes can cascade it; outputs: {outputs:?}");
+        assert!(outputs.contains("nbo_label"),
+            "nbo_label must be in output_names() so descendant scopes can cascade it; outputs: {outputs:?}");
+    }
+
+    #[test]
+    fn parallel_iter_destructure_through_workload_like_chain() {
+        // Mirror the workload's exact chain:
+        //   workload (params)
+        //     for_each: sm, mnc, (nbo_v, nbo_label)
+        //       (bindings: const sm_lc := str_lower(sm))    ← omitted for brevity
+        //         for_each: table
+        //           lookup sm/mnc/nbo_v/nbo_label
+        //
+        // The bug is that f64 iter-vars from a parallel-iter
+        // destructure get lost SOMEWHERE in the cascade chain.
+        // Single-clause iter-vars (sm, mnc) survive; parallel-iter
+        // value-column iter-vars (nbo_v) don't reach descendants.
+        let workload = std::sync::Arc::new(
+            crate::dsl::compile::compile_gk("\n").unwrap()
+        );
+
+        let outer_bindings = [
+            ("sm".to_string(), "concat(\"OTHER\", \"ADA002\")".to_string()),
+            ("mnc".to_string(), "concat(8, 128)".to_string()),
+            ("nbo_v".to_string(), "concat(1.0, 3.0)".to_string()),
+            ("nbo_label".to_string(), "concat(\"1p0\", \"3p0\")".to_string()),
+        ];
+        let outer = std::sync::Arc::new(synthesize_for_each_scope(
+            &outer_bindings, &[], &workload,
+            &HashMap::new(), Vec::new(), None, false, "outer", None,
+        ).expect("outer synthesis"));
+
+        // Bind iter values per a single step.
+        let iter_step: Vec<(String, Value)> = vec![
+            ("sm".to_string(), Value::Str(std::sync::Arc::from("OTHER"))),
+            ("mnc".to_string(), Value::U64(8)),
+            ("nbo_v".to_string(), Value::F64(1.0)),
+            ("nbo_label".to_string(), Value::Str(std::sync::Arc::from("1p0"))),
+        ];
+        let outer_bound = crate::kernel::GkKernel::for_iteration(
+            &outer, &workload, &iter_step,
+        );
+
+        // Inner for_each(table) — declares ITS OWN iter-var
+        // (table) and cascades the outer iter-vars through. This
+        // is the scope that the schema phase actually reads its
+        // ops against in the workload.
+        let inner_bindings = [
+            ("table".to_string(), "concat(\"t0\")".to_string()),
+        ];
+        let inner = synthesize_for_each_scope(
+            &inner_bindings, &[], &outer_bound,
+            &HashMap::new(), Vec::new(), None, false, "inner", None,
+        ).expect("inner synthesis");
+
+        let inner_input_names: std::collections::HashSet<String> =
+            inner.program().input_names().into_iter().collect();
+        let inner_output_names: std::collections::HashSet<String> =
+            inner.program().output_names().into_iter().map(String::from).collect();
+
+        // Diagnostic: which iter-vars reach the inner scope?
+        for v in ["sm", "mnc", "nbo_v", "nbo_label"] {
+            let in_inputs = inner_input_names.contains(v);
+            let in_outputs = inner_output_names.contains(v);
+            let value = inner.lookup(v);
+            eprintln!(
+                "iter-var {v}: inputs={in_inputs} outputs={in_outputs} lookup={value:?}",
+            );
+        }
+
+        // Hard assertion: every iter-var bound in the outer step
+        // MUST be lookupable in the inner scope. If this fails for
+        // some vars and not others, the test pinpoints which
+        // cascade path drops them.
+        assert_eq!(inner.lookup("sm").map(|v| v.as_str().to_string()),
+            Some("OTHER".to_string()), "sm should reach inner scope");
+        assert_eq!(inner.lookup("mnc"),
+            Some(Value::U64(8)), "mnc should reach inner scope");
+        assert_eq!(inner.lookup("nbo_v"),
+            Some(Value::F64(1.0)), "nbo_v should reach inner scope");
+        assert_eq!(inner.lookup("nbo_label").map(|v| v.as_str().to_string()),
+            Some("1p0".to_string()), "nbo_label should reach inner scope");
+    }
+
+    #[test]
+    fn parallel_iter_destructure_through_chain_with_bindings_layer() {
+        // Insert a bindings(sm_lc) layer between outer for_each
+        // and inner for_each — matches the workload's exact chain.
+        let workload = std::sync::Arc::new(
+            crate::dsl::compile::compile_gk("\n").unwrap()
+        );
+
+        // Outer for_each: parallel-iter destructure + simple-iter.
+        let outer_bindings = [
+            ("sm".to_string(), "concat(\"OTHER\", \"ADA002\")".to_string()),
+            ("mnc".to_string(), "concat(8, 128)".to_string()),
+            ("nbo_v".to_string(), "concat(1.0, 3.0)".to_string()),
+            ("nbo_label".to_string(), "concat(\"1p0\", \"3p0\")".to_string()),
+        ];
+        let outer = std::sync::Arc::new(synthesize_for_each_scope(
+            &outer_bindings, &[], &workload,
+            &HashMap::new(), Vec::new(), None, false, "outer", None,
+        ).expect("outer synthesis"));
+
+        let iter_step: Vec<(String, Value)> = vec![
+            ("sm".to_string(), Value::Str(std::sync::Arc::from("OTHER"))),
+            ("mnc".to_string(), Value::U64(8)),
+            ("nbo_v".to_string(), Value::F64(1.0)),
+            ("nbo_label".to_string(), Value::Str(std::sync::Arc::from("1p0"))),
+        ];
+        let outer_bound = std::sync::Arc::new(
+            crate::kernel::GkKernel::for_iteration(&outer, &workload, &iter_step)
+        );
+
+        // bindings(sm_lc) — simulate what build_phase_scope_kernel
+        // emits: cascade outer's outputs/inputs as externs, then
+        // append the local binding body.
+        let mut middle_src = String::new();
+        let outer_prog = outer_bound.program();
+        for name in outer_prog.output_names() {
+            let owned = name.to_string();
+            if owned.starts_with("__") { continue; }
+            let (node_idx, port_idx) = outer_prog.resolve_output_by_index(
+                outer_prog.output_index(&owned).unwrap()
+            );
+            let port_type = outer_prog.node_meta(node_idx).outs[port_idx].typ;
+            let type_name = port_type_to_extern_name(port_type);
+            middle_src.push_str(&format!("extern {owned}: {type_name}\n"));
+        }
+        middle_src.push_str("const sm_lc := str_lower(sm)\n");
+
+        let matter = crate::subcontext::GkMatter::builder()
+            .label("middle")
+            .source(middle_src.clone())
+            .build()
+            .expect("middle matter build");
+        let middle = std::sync::Arc::new(
+            outer_bound.build_subscope(matter).expect("middle subscope")
+        );
+
+        // Inner for_each(table)
+        let inner_bindings = [
+            ("table".to_string(), "concat(\"t0\")".to_string()),
+        ];
+        let inner = synthesize_for_each_scope(
+            &inner_bindings, &[], &middle,
+            &HashMap::new(), Vec::new(), None, false, "inner", None,
+        ).expect("inner synthesis");
+
+        eprintln!("middle source:\n{middle_src}");
+        eprintln!("middle outputs: {:?}", middle.program().output_names());
+
+        for v in ["sm", "mnc", "nbo_v", "nbo_label", "sm_lc"] {
+            let value = inner.lookup(v);
+            eprintln!("iter-var {v}: lookup={value:?}");
+        }
+
+        // Every iter-var should still reach inner through the
+        // bindings(sm_lc) layer.
+        assert_eq!(inner.lookup("sm").map(|v| v.as_str().to_string()),
+            Some("OTHER".to_string()), "sm should reach inner");
+        assert_eq!(inner.lookup("mnc"),
+            Some(Value::U64(8)), "mnc should reach inner");
+        assert_eq!(inner.lookup("nbo_v"),
+            Some(Value::F64(1.0)), "nbo_v should reach inner");
+        assert_eq!(inner.lookup("nbo_label").map(|v| v.as_str().to_string()),
+            Some("1p0".to_string()), "nbo_label should reach inner");
+        assert_eq!(inner.lookup("sm_lc").map(|v| v.as_str().to_string()),
+            Some("other".to_string()), "sm_lc should be computed from sm");
+    }
+
+    /// Full scope-chain test mimicking the actual workload:
+    ///
+    ///   workload (params)
+    ///     for_each(profile)
+    ///       for_each(sm, mnc, (nbo_v, nbo_label), (alf_v, alf_label))  ← parallel-iter
+    ///         bindings(sm_lc)
+    ///           for_each(table)
+    ///             bindings(set:)
+    ///               (phase reads via lookup)
+    ///
+    /// Per SRD-13c §"Visibility Rules: Shadowing" + SRD-13f
+    /// §"The read invariant", every name bound at the outer iter
+    /// MUST be readable via `lookup` at the innermost scope. If
+    /// any iter-var becomes unreadable at any level, this test
+    /// pinpoints the exact level where it dropped.
+    #[test]
+    fn full_workload_like_chain_preserves_all_iter_vars() {
+        // Mimic the workload's params block.
+        let workload_src = "\
+            input cycle: u64\n\
+            const source_model := \"OTHER\"\n\
+            const neighborhood_overflow := 1.2\n\
+            const alpha := 1.2\n";
+        let workload = std::sync::Arc::new(
+            crate::dsl::compile::compile_gk(workload_src).unwrap()
+        );
+
+        // for_each(profile)  — single-iter outer wrapper.
+        let profile_bindings = [
+            ("profile".to_string(), "concat(\"default\")".to_string()),
+        ];
+        let profile_scope = std::sync::Arc::new(synthesize_for_each_scope(
+            &profile_bindings, &[], &workload,
+            &HashMap::new(), Vec::new(), None, false, "profile", None,
+        ).expect("profile scope"));
+
+        // Bind profile=default.
+        let profile_iter = vec![
+            ("profile".to_string(), Value::Str(std::sync::Arc::from("default"))),
+        ];
+        let profile_bound = std::sync::Arc::new(
+            crate::kernel::GkKernel::for_iteration(&profile_scope, &workload, &profile_iter)
+        );
+
+        // for_each(sm, mnc, (nbo_v, nbo_label), (alf_v, alf_label))
+        // — multi-clause Cartesian + parallel-iter destructure.
+        let sweep_bindings = [
+            ("sm".to_string(), "concat(\"OTHER\", \"ADA002\")".to_string()),
+            ("mnc".to_string(), "concat(8, 128)".to_string()),
+            ("nbo_v".to_string(), "concat(1.0, 3.0)".to_string()),
+            ("nbo_label".to_string(), "concat(\"1p0\", \"3p0\")".to_string()),
+            ("alf_v".to_string(), "concat(1.0, 2.0)".to_string()),
+            ("alf_label".to_string(), "concat(\"1p0\", \"2p0\")".to_string()),
+        ];
+        let sweep_scope = std::sync::Arc::new(synthesize_for_each_scope(
+            &sweep_bindings, &[], &profile_bound,
+            &HashMap::new(), Vec::new(), None, false, "sweep", None,
+        ).expect("sweep scope"));
+
+        // Check the sweep scope itself first.
+        eprintln!("\n=== sweep scope (for_each sm,mnc,nbo_v,...) ===");
+        eprintln!("input_names: {:?}", sweep_scope.program().input_names());
+        eprintln!("output_names: {:?}", sweep_scope.program().output_names());
+
+        // Bind iter values (first sweep iter: all "low" values).
+        let sweep_iter = vec![
+            ("sm".to_string(), Value::Str(std::sync::Arc::from("OTHER"))),
+            ("mnc".to_string(), Value::U64(8)),
+            ("nbo_v".to_string(), Value::F64(1.0)),
+            ("nbo_label".to_string(), Value::Str(std::sync::Arc::from("1p0"))),
+            ("alf_v".to_string(), Value::F64(1.0)),
+            ("alf_label".to_string(), Value::Str(std::sync::Arc::from("1p0"))),
+        ];
+        let sweep_bound = std::sync::Arc::new(
+            crate::kernel::GkKernel::for_iteration(&sweep_scope, &profile_bound, &sweep_iter)
+        );
+
+        // Assert: at sweep_bound, every iter-var is readable.
+        eprintln!("\n=== sweep_bound lookup ===");
+        for name in ["sm", "mnc", "nbo_v", "nbo_label", "alf_v", "alf_label", "profile"] {
+            eprintln!("  {name}: {:?}", sweep_bound.lookup(name));
+        }
+        assert_eq!(sweep_bound.lookup("nbo_v"), Some(Value::F64(1.0)));
+        assert_eq!(sweep_bound.lookup("alf_v"), Some(Value::F64(1.0)));
+        assert_eq!(sweep_bound.lookup("sm").map(|v| v.as_str().to_string()),
+            Some("OTHER".to_string()));
+
+        // bindings(sm_lc) — `const sm_lc := str_lower(sm)`.
+        // Mimic build_phase_scope_kernel's cascade behavior by
+        // manually emitting the same source it would. This is
+        // critical because that's what the runner actually does.
+        let bindings_sm_lc_src = build_bindings_scope_source(
+            &sweep_bound,
+            "const sm_lc := str_lower(sm)\n",
+        );
+        eprintln!("\n=== bindings(sm_lc) source ===\n{bindings_sm_lc_src}");
+        let matter = crate::subcontext::GkMatter::builder()
+            .label("bindings_sm_lc")
+            .source(bindings_sm_lc_src)
+            .build()
+            .expect("bindings sm_lc matter");
+        let bindings_sm_lc = std::sync::Arc::new(
+            sweep_bound.build_subscope(matter).expect("bindings sm_lc subscope")
+        );
+
+        eprintln!("\n=== bindings(sm_lc) lookup ===");
+        for name in ["sm", "mnc", "nbo_v", "alf_v", "sm_lc"] {
+            eprintln!("  {name}: {:?}", bindings_sm_lc.lookup(name));
+        }
+        assert_eq!(bindings_sm_lc.lookup("nbo_v"), Some(Value::F64(1.0)),
+            "nbo_v should be readable at bindings(sm_lc)");
+        assert_eq!(bindings_sm_lc.lookup("alf_v"), Some(Value::F64(1.0)),
+            "alf_v should be readable at bindings(sm_lc)");
+
+        // for_each(table) — single-iter inner.
+        let table_bindings = [
+            ("table".to_string(), "concat(\"t0\")".to_string()),
+        ];
+        let table_scope = std::sync::Arc::new(synthesize_for_each_scope(
+            &table_bindings, &[], &bindings_sm_lc,
+            &HashMap::new(), Vec::new(), None, false, "table", None,
+        ).expect("table scope"));
+
+        let table_iter = vec![
+            ("table".to_string(), Value::Str(std::sync::Arc::from("t0"))),
+        ];
+        let table_bound = std::sync::Arc::new(
+            crate::kernel::GkKernel::for_iteration(&table_scope, &bindings_sm_lc, &table_iter)
+        );
+
+        eprintln!("\n=== for_each(table) bound lookup ===");
+        for name in ["sm", "mnc", "nbo_v", "alf_v", "sm_lc", "table"] {
+            eprintln!("  {name}: {:?}", table_bound.lookup(name));
+        }
+        assert_eq!(table_bound.lookup("nbo_v"), Some(Value::F64(1.0)),
+            "nbo_v should be readable at for_each(table)");
+        assert_eq!(table_bound.lookup("alf_v"), Some(Value::F64(1.0)),
+            "alf_v should be readable at for_each(table)");
+
+        // bindings(set:) — body shadows workload params with iter-vars.
+        let set_body = "\
+            const source_model := \"{sm}\"\n\
+            const maximum_node_connections := \"{mnc}\"\n\
+            const neighborhood_overflow := \"{nbo_v}\"\n\
+            const alpha := \"{alf_v}\"\n";
+        let bindings_set_src = build_bindings_scope_source(&table_bound, set_body);
+        eprintln!("\n=== bindings(set:) source ===\n{bindings_set_src}");
+        let matter = crate::subcontext::GkMatter::builder()
+            .label("bindings_set")
+            .source(bindings_set_src)
+            .build()
+            .expect("bindings set matter");
+        let bindings_set = table_bound.build_subscope(matter).expect("bindings set subscope");
+
+        eprintln!("\n=== bindings(set:) FINAL lookup (phase sees this) ===");
+        for name in ["sm", "mnc", "nbo_v", "alf_v", "sm_lc", "table",
+                     "source_model", "maximum_node_connections",
+                     "neighborhood_overflow", "alpha"] {
+            eprintln!("  {name}: {:?}", bindings_set.lookup(name));
+        }
+
+        // The smoking-gun assertion: source_model and
+        // neighborhood_overflow should reflect the ITER values,
+        // not the workload defaults.
+        assert_eq!(bindings_set.lookup("source_model").map(|v| v.as_str().to_string()),
+            Some("OTHER".to_string()),
+            "source_model should reflect iter value");
+        assert_eq!(bindings_set.lookup("neighborhood_overflow").map(|v| v.as_str().to_string()),
+            Some("1.0".to_string()),
+            "neighborhood_overflow should reflect iter value (1.0), not workload default 1.2");
+        assert_eq!(bindings_set.lookup("alpha").map(|v| v.as_str().to_string()),
+            Some("1.0".to_string()),
+            "alpha should reflect iter value (1.0), not workload default 1.2");
+    }
+
+    /// Mirror of `build_phase_scope_kernel`'s cascade logic from
+    /// nbrs-activity/src/scope.rs:839+. Critical to match the
+    /// runner's actual behavior: workload-param consts get
+    /// inlined as `const X := <literal>`, externs get cascaded
+    /// as `extern X: T`, and body-locally-declared names skip
+    /// the cascade.
+    #[cfg(test)]
+    fn build_bindings_scope_source(parent: &GkKernel, body: &str) -> String {
+        use crate::dsl::ast::BindingModifier;
+        use crate::node::{PortType, Value};
+
+        let mut source = String::new();
+        let parent_program = parent.program();
+
+        // Names locally declared in body — skip cascade.
+        let body_locally_declared: std::collections::HashSet<&str> = body.lines()
+            .filter_map(|l| {
+                let l = l.trim();
+                if let Some(rest) = l.strip_prefix("const ") {
+                    rest.split([' ', ':']).next()
+                } else if let Some(rest) = l.strip_prefix("shared ") {
+                    rest.split([' ', ':']).next()
+                } else if let Some((lhs, _)) = l.split_once(":=") {
+                    Some(lhs.trim())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Determine coord names (cycle etc.) to skip in cascade.
+        let coord_count = parent_program.coord_count();
+        let coord_names: std::collections::HashSet<String> = parent_program.input_names()
+            .into_iter().take(coord_count).collect();
+
+        let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // Output cascade.
+        for name in parent_program.output_names() {
+            let owned = name.to_string();
+            if emitted.contains(&owned) { continue; }
+            if coord_names.contains(&owned) { continue; }
+            if owned.starts_with("__") { continue; }
+            if body_locally_declared.contains(owned.as_str()) { continue; }
+
+            let (node_idx, port_idx) = parent_program.resolve_output_by_index(
+                parent_program.output_index(&owned).unwrap()
+            );
+            let upstream_is_statically_known =
+                parent_program.input_provenance_for(node_idx) == 0;
+
+            if upstream_is_statically_known
+                && let Some(value) = parent.lookup(&owned)
+            {
+                let natural = match &value {
+                    Value::U64(n) => Some(n.to_string()),
+                    Value::F64(n) => Some(n.to_string()),
+                    Value::Bool(b) => Some(b.to_string()),
+                    Value::Str(s) => Some(s.to_string()),
+                    _ => None,
+                };
+                if let Some(literal) = natural {
+                    let line = if literal.parse::<u64>().is_ok() || literal.parse::<f64>().is_ok() {
+                        format!("const {owned} := {literal}\n")
+                    } else if literal == "true" || literal == "false" {
+                        format!("const {owned} := {literal}\n")
+                    } else {
+                        let escaped = literal.replace('\\', "\\\\").replace('"', "\\\"");
+                        format!("const {owned} := \"{escaped}\"\n")
+                    };
+                    source.push_str(&line);
+                    emitted.insert(owned);
+                    continue;
+                }
+            }
+
+            let port_type = parent_program.node_meta(node_idx).outs[port_idx].typ;
+            let type_name = match port_type {
+                PortType::U64 => "u64",
+                PortType::F64 => "f64",
+                PortType::Str => "String",
+                PortType::Bool => "bool",
+                PortType::Ext => "Ext",
+                _ => "String",
+            };
+            source.push_str(&format!("extern {owned}: {type_name}\n"));
+            emitted.insert(owned);
+        }
+
+        // Input cascade (input slots not already covered).
+        for name in parent_program.input_names() {
+            if emitted.contains(&name) { continue; }
+            if coord_names.contains(&name) { continue; }
+            if body_locally_declared.contains(name.as_str()) { continue; }
+            let port_type = parent_program.input_port_type(&name).unwrap_or(PortType::Str);
+            let type_name = match port_type {
+                PortType::U64 => "u64",
+                PortType::F64 => "f64",
+                PortType::Str => "String",
+                PortType::Bool => "bool",
+                PortType::Ext => "Ext",
+                _ => "String",
+            };
+            source.push_str(&format!("extern {name}: {type_name}\n"));
+            emitted.insert(name);
+        }
+
+        if !source.ends_with('\n') && !source.is_empty() {
+            source.push('\n');
+        }
+        source.push_str(body);
+        if !source.ends_with('\n') {
+            source.push('\n');
+        }
+
+        let _ = BindingModifier::CONST; // silence unused warning
+        source
+    }
+
+    #[test]
+    fn parallel_iter_destructure_iter_values_reach_downstream_scope() {
+        // End-to-end: build the parent for_each scope, populate
+        // iter-vars per a single iter step, build a downstream
+        // for_each(table) scope on top, and verify the downstream
+        // can lookup() each iter-var and get the iter-time value
+        // back. This is the path the workload's
+        // `for: "(nbo_v, nbo_label) in ..."` → `for: "table in
+        // fknn_oat_{nbo_label}..."` → `set: "{nbo_v}"` chain
+        // actually traverses.
+        let workload = std::sync::Arc::new(
+            crate::dsl::compile::compile_gk("\n").unwrap()
+        );
+
+        // Outer scope: the parallel-iter clause.
+        let outer_bindings = [
+            ("nbo_v".to_string(), "concat(1.0, 3.0)".to_string()),
+            ("nbo_label".to_string(), "concat(\"1p0\", \"3p0\")".to_string()),
+        ];
+        let outer = std::sync::Arc::new(synthesize_for_each_scope(
+            &outer_bindings, &[], &workload,
+            &HashMap::new(), Vec::new(), None, false, "outer", None,
+        ).expect("outer synthesis"));
+
+        // Per-iter binding: set iter-var slots to a known value
+        // pair, then drive the downstream scope's wiring through
+        // for_iteration (which mirrors what the runtime does
+        // every iteration).
+        let iter_step: Vec<(String, Value)> = vec![
+            ("nbo_v".to_string(), Value::F64(1.0)),
+            ("nbo_label".to_string(), Value::Str(std::sync::Arc::from("1p0"))),
+        ];
+        let outer_bound = crate::kernel::GkKernel::for_iteration(
+            &outer, &workload, &iter_step,
+        );
+
+        // Downstream scope: a for_each(table) that doesn't itself
+        // mention nbo_v / nbo_label but should propagate them via
+        // the cascade chain so further descendants (the `set:`
+        // scope, the `schema` phase) can read them.
+        let inner_bindings = [
+            ("table".to_string(), "concat(\"t0\")".to_string()),
+        ];
+        let inner = synthesize_for_each_scope(
+            &inner_bindings, &[], &outer_bound,
+            &HashMap::new(), Vec::new(), None, false, "inner", None,
+        ).expect("inner synthesis");
+
+        // The descendant must see both iter-vars via lookup —
+        // this is exactly the read path the `set:` desugar's
+        // `const source_model := "{sm}"` interpolation uses.
+        let nbo_v_value = inner.lookup("nbo_v");
+        let nbo_label_value = inner.lookup("nbo_label");
+        assert_eq!(nbo_v_value, Some(Value::F64(1.0)),
+            "downstream lookup('nbo_v') must return the bound iter-value; got {nbo_v_value:?}");
+        assert_eq!(nbo_label_value.as_ref().map(|v| v.as_str().to_string()),
+            Some("1p0".to_string()),
+            "downstream lookup('nbo_label') must return the bound iter-value; got {nbo_label_value:?}");
+    }
 }

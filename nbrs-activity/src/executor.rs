@@ -179,6 +179,25 @@ pub struct ExecCtx {
     /// / bindings) and assigns it to each created node via
     /// `set_yaml_path`. Per SRD-44 §"Phase identity".
     pub scene_tree_path: Vec<crate::checkpoint::PathSegment>,
+    /// Current scope-tree position threaded through the
+    /// scenario-tree walker.
+    ///
+    /// **TRANSITIONAL WORKAROUND (task #19):** the AST alone
+    /// is not yet self-identifying — two scope-tree positions
+    /// can share AST/source but produce semantically-distinct
+    /// installed kernels via different parent-chain cascades.
+    /// Carrying the current position through the walker lets
+    /// `find_*_scope_under(parent_idx, ast)` add the missing
+    /// context at the lookup site. When the AST becomes the
+    /// canonical sole-source identity, this field becomes
+    /// unnecessary and can be removed along with the `_under`
+    /// variants and their save/restore plumbing in the
+    /// Comprehension and Bindings arms.
+    ///
+    /// Defaults to 0 (the workload root). Each Comprehension /
+    /// Bindings descent pushes the matched scope_idx; restored
+    /// on the way out.
+    pub current_scope_idx: crate::scope_tree::ScopeNodeIdx,
 }
 
 /// Workload YAML source kept alongside the parsed model so
@@ -679,9 +698,21 @@ fn execute_node<'a>(
                 let label = crate::scope_tree::ScopeKind::Comprehension {
                     comprehension: comprehension.clone(),
                 }.label();
-                let scope_idx = ctx.scope_tree.find_comprehension_scope(comprehension)
+                // TRANSITIONAL WORKAROUND (task #19): the AST
+                // alone is not yet self-identifying — two scope-
+                // tree positions can share Comprehension AST but
+                // produce semantically-distinct kernels via
+                // different parent-chain cascades. Restrict the
+                // lookup to descendants of the executor's current
+                // scope to disambiguate. When AST becomes the
+                // sole-source canonical identity, this reverts
+                // to a plain `find_comprehension_scope` call.
+                let scope_idx = ctx.scope_tree
+                    .find_comprehension_scope_under(ctx.current_scope_idx, comprehension)
                     .ok_or_else(|| format!(
-                        "{label}: no matching scope-tree entry — scenario/scope-tree drift bug.",
+                        "{label}: no matching scope-tree entry under scope idx \
+                         {} — scenario/scope-tree drift bug.",
+                        ctx.current_scope_idx,
                     ))?;
                 let canonical = ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
                     .cloned()
@@ -739,7 +770,9 @@ fn execute_node<'a>(
                         );
                         let saved_parent = ctx.scene_tree_parent_id;
                         let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
+                        let saved_scope_idx = ctx.current_scope_idx;
                         ctx.scene_tree_parent_id = scope_id;
+                        ctx.current_scope_idx = scope_idx;
                         let res = dispatch_comprehension(
                             ctx, steps,
                             TerminalAction::Children(children), depth + 1, false,
@@ -747,6 +780,7 @@ fn execute_node<'a>(
                         ).await;
                         ctx.scene_tree_parent_id = saved_parent;
                         ctx.scene_tree_path = saved_path;
+                        ctx.current_scope_idx = saved_scope_idx;
                         return res.map_err(|e| enrich_with_yaml_location(ctx, &needle, e));
                     }
                     ComprehensionMode::Union(subspaces) => {
@@ -772,7 +806,9 @@ fn execute_node<'a>(
                         );
                         let saved_parent = ctx.scene_tree_parent_id;
                         let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
+                        let saved_scope_idx = ctx.current_scope_idx;
                         ctx.scene_tree_parent_id = scope_id;
+                        ctx.current_scope_idx = scope_idx;
                         let total = subspaces.len();
                         let mut union_result: Result<(), String> = Ok(());
                         for (i, sub) in subspaces.iter().enumerate() {
@@ -815,6 +851,7 @@ fn execute_node<'a>(
                         }
                         ctx.scene_tree_parent_id = saved_parent;
                         ctx.scene_tree_path = saved_path;
+                        ctx.current_scope_idx = saved_scope_idx;
                         return union_result;
                     }
                 }
@@ -922,11 +959,17 @@ fn execute_node<'a>(
                 // does for its per-iter bound_kernel
                 // (`from_program → materialize_wiring_from_outer`
                 // sequence, SRD-67 Phase 3).
+                // TRANSITIONAL WORKAROUND (task #19): same
+                // disambiguation as the Comprehension arm —
+                // see `find_bindings_scope_under` doc. Reverts
+                // to plain `find_bindings_scope` when AST/source
+                // becomes the sole-source canonical identity.
                 let scope_idx = ctx.scope_tree
-                    .find_bindings_scope(source)
+                    .find_bindings_scope_under(ctx.current_scope_idx, source)
                     .ok_or_else(|| format!(
-                        "bindings scope: no matching scope-tree entry — \
-                         scope-tree/scenario-tree drift bug",
+                        "bindings scope: no matching scope-tree entry \
+                         under scope idx {} — scope-tree/scenario-tree drift bug",
+                        ctx.current_scope_idx,
                     ))?;
                 let installed = ctx.scope_tree.nodes[scope_idx].cached_kernel.get()
                     .cloned()
@@ -993,10 +1036,13 @@ fn execute_node<'a>(
                 ctx.current_parent_kernel = Some(chained);
                 let saved_scene_parent = ctx.scene_tree_parent_id;
                 let saved_scene_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
+                let saved_scope_idx = ctx.current_scope_idx;
                 ctx.scene_tree_parent_id = scope_id;
+                ctx.current_scope_idx = scope_idx;
                 let res = execute_tree_at(ctx, children, depth + 1).await;
                 ctx.scene_tree_parent_id = saved_scene_parent;
                 ctx.scene_tree_path = saved_scene_path;
+                ctx.current_scope_idx = saved_scope_idx;
                 ctx.current_parent_kernel = prior_parent;
                 res?;
             }

@@ -1136,9 +1136,38 @@ impl Compiler {
                     // `const` keywords into a single lifecycle: fold
                     // at compile when possible, materialize at scope-
                     // init otherwise, immutable thereafter.
+                    //
+                    // SRD-74 P2: auto-extern const targets whose RHS
+                    // references at least one name. Pure-literal
+                    // consts (e.g. `const x := 1` from iter-var
+                    // synthesis, SRD-13f Gate 2) DO NOT get auto-
+                    // externed — they always fold to a real value and
+                    // there's nothing for the chain to fall through
+                    // to. Consts with name references CAN fold to
+                    // None (the SRD-74 Rule 1 path when any
+                    // referenced name reads as Value::None at scope-
+                    // init); the auto-extern slot is the conditional-
+                    // shadow fallback path that two-tier lookup uses
+                    // when the const-fold yields None. Skipped when
+                    // the name is already declared as an input.
                     if b.modifier.is_const() {
+                        let rhs_has_refs = {
+                            let mut refs = std::collections::HashSet::new();
+                            crate::dsl::validate::collect_references(&b.value, &mut refs);
+                            !refs.is_empty()
+                        };
                         for target in &b.targets {
                             asm.mark_const_output(target);
+                            if rhs_has_refs
+                                && !asm.input_names().iter().any(|n| *n == target.as_str())
+                            {
+                                asm.add_input(
+                                    target.as_str(),
+                                    crate::node::Value::None,
+                                    crate::node::PortType::Ext,
+                                    crate::kernel::InputKind::IterationExtern,
+                                );
+                            }
                         }
                     }
                 }
@@ -1455,9 +1484,31 @@ impl Compiler {
                             asm.set_output_modifier(target, b.modifier);
                         }
                     }
+                    // SRD-74 P2: auto-extern const targets whose RHS
+                    // references at least one name. See the parallel
+                    // block in `compile()` for rationale — makes
+                    // `const NAME := <expr>` a conditional shadow when
+                    // its RHS could fold to None, while leaving
+                    // pure-literal consts (SRD-13f Gate 2 iter-vars)
+                    // alone.
                     if b.modifier.is_const() {
+                        let rhs_has_refs = {
+                            let mut refs = std::collections::HashSet::new();
+                            crate::dsl::validate::collect_references(&b.value, &mut refs);
+                            !refs.is_empty()
+                        };
                         for target in &b.targets {
                             asm.mark_const_output(target);
+                            if rhs_has_refs
+                                && !asm.input_names().iter().any(|n| *n == target.as_str())
+                            {
+                                asm.add_input(
+                                    target.as_str(),
+                                    crate::node::Value::None,
+                                    crate::node::PortType::Ext,
+                                    crate::kernel::InputKind::IterationExtern,
+                                );
+                            }
                         }
                     }
                 }

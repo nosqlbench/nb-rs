@@ -1,6 +1,6 @@
 # SRD 74: None Propagation and Optional-Value Semantics in GK
 
-*(NORMATIVE for Rule 1 — IMPLEMENTED; Rules 2 & 3 — DESIGN, not yet implemented)*
+*(NORMATIVE — Rule 1, Rule 3, and the conditional-shadow `const` compiler change all IMPLEMENTED; Rule 2 explicit-optionality syntax — DESIGN, not yet implemented)*
 
 ## Motivation
 
@@ -94,48 +94,32 @@ Parser landing site: extension of `parse_placeholder_body` in
 GK call that the kernel can JIT (e.g.
 `coalesce(X, "default")` for `{X ?? "default"}`).
 
-### Rule 3 — Op-template render refuses silent None *(DESIGN)*
+### Rule 3 — Op-template render refuses silent None *(IMPLEMENTED)*
 
-`Value::to_display_string()` (`nbrs-variates/src/node.rs:488`)
-currently renders `Value::None` as `""`. Convenient in some
-contexts, fatal at the wire-protocol boundary — it pushed the
-absent→empty conflation past the kernel and into bytes sent
-to remote systems.
+Status: **shipped**. `Value::to_display_strict` lives in
+`nbrs-variates/src/node.rs` and returns `Option<String>` (None for
+`Value::None`, Some(string) otherwise). `substitute_via_wires` in
+`nbrs-activity/src/wires.rs` uses the strict primitive and returns
+an explicit "wire resolved to `Value::None`" error naming the
+bind-point and pointing operators at the resolution options
+(workload-param default, `bindings:` / `set:`, or optional-syntax
+opt-in once Rule 2 lands). Unit tests:
+`substitute_via_wires_errors_when_wire_resolves_to_none` and
+`to_display_strict_returns_none_for_value_none`.
 
-The render path (`substitute_via_wires` in `nbrs-activity` and
-analogous adapter-side renderers) must use a *strict*
-primitive that returns `Option<String>` (or
-`Result<String, RenderError>`) and errors on None unless the
-bind-point is marked optional per Rule 2. Concretely:
-
-```rust
-pub fn to_display_strict(&self) -> Option<String> {
-    match self {
-        Value::None => None,
-        other => Some(other.to_display_string()),
-    }
-}
-```
-
-`to_display_string` stays as a convenience method for callers
-that want the legacy lossy behavior; the render path uses
-`to_display_strict` and surfaces a clear error when an
-unmarked bind-point resolves to None.
+The render path is the wire-protocol boundary — bytes leaving via
+this path go to a remote system, so the silent-empty default
+that `to_display_string` used to provide had to be removed here.
+`to_display_string` stays unchanged for log / diagnostic contexts
+where empty is acceptable (it's renamed conceptually as the "lossy"
+form; render sites must use the strict variant).
 
 A complementary surface for structural omission (whole
-`key: value` segments elided when the value is absent):
-
-```
-WITH OPTIONS = {
-  'similarity_function': '{similarity_function}',
-  ?'source_model': '{source_model}',     // entry dropped if source_model is None
-}
-```
-
-The `?`-prefixed segment is a renderer-level construct: parse
-the surrounding YAML literal, identify the segment boundaries,
-and elide the segment if any bind-point inside resolves to
-None.
+`key: value` segments elided when the value is absent) is
+parked under Rule 2 below — the unmarked-bind-point-is-error
+default from Rule 3 makes the explicit-optionality syntax
+necessary for legitimate optional cases, but the syntax
+itself isn't wired up yet.
 
 ## Interaction with `set:` and the GK-grammar invariant
 
@@ -159,84 +143,127 @@ also `extern X`.
 The full "set: as conditional shadow" semantics need one more
 compiler-level change, described next.
 
-## Conditional-shadow semantics for `const`
+## Conditional-shadow semantics for `const` *(IMPLEMENTED)*
 
-**Design (not yet implemented):** when the GK compiler sees
-`const NAME := <expr>`, it implicitly auto-externs `NAME` so
-the surrounding scope's binding for `NAME` (if any) is wired
-into this scope's input slot at construction time. The
-existing two-tier read in `lookup` then provides the fall-
-through automatically:
+Status: **shipped**. `nbrs-variates/src/dsl/compile.rs` (both
+the main `compile()` and `compile_filtered()` paths) detects
+const declarations whose RHS references at least one name
+(via the existing `dsl::validate::collect_references` walker)
+and emits an implicit `extern NAME: Ext` input slot in
+addition to the const output. The two-tier read in `lookup`
+then provides the fall-through automatically:
 
-1. `get_constant(NAME)` — own scope's folded output. If the
-   const evaluated to a real value, return it. If it
-   evaluated to `Value::None`, **fall through** (existing
-   filter).
+1. `get_constant(NAME)` — own scope's folded output. Real
+   value → return it. `Value::None` → **fall through**
+   (existing filter, gkkernel.rs:458-462).
 2. `find_input(NAME)` — own scope's input slot, populated at
    `materialize_wiring_from_outer` time from the outer
    scope's `NAME` binding (if any). If wired, return that
    value.
 
 Net behavior: `const NAME := <expr>` becomes a *conditional
-shadow*. Real value → shadows outer. None value → outer's
-binding shows through. No explicit `extern NAME` declaration
-needed from the author.
+shadow* when its RHS could fold to None. Real value → shadows
+outer. None → outer's binding shows through. The `set:` sugar
+from SRD-73 is unchanged canonical GK; the new semantics
+emerge from the compiler's handling of every const, not from
+special-casing the sugar.
 
-This is the missing piece for the `set:` sugar to behave the
-way authors expect: an attempted shadow that didn't produce a
-value just leaves the upstream default in place, instead of
-forcing the author to either always-populate or write a
-dummy fall-back.
+**Pure-literal exception (SRD-13f Gate 2):** consts whose RHS
+has zero name references (e.g. `const x := 1` from per-
+iteration synthesis at `comprehension::synthesis::
+synthesize_for_each_iteration`) are NOT auto-externed. They
+always fold to a real value, never reach the fall-through
+path, and must not appear as input slots per the Gate 2
+invariant. The reference-presence check is the precise
+discriminator.
+
+**Wiring composition (`materialize_wiring_from_outer`):** the
+read invariant from SRD-13f §"The read invariant" requires
+`inner.read_input(X) ≡ outer.lookup(X)`. For const outputs
+where the buffer may hold `Value::None` (Rule 1) but
+`outer.lookup` falls through to outer's wired-from-grandparent
+slot, the wiring uses value-copy via `outer.lookup` instead
+of cell-attach (gkkernel.rs:711-727). Cell-attach would
+broadcast the raw `None` buffer and defeat the chain walk;
+value-copy of `lookup` result keeps inner aligned with the
+invariant. For non-const computed outputs (per-cycle dynamic
+values) cell-attach is still the right primitive — those
+truly need live broadcast.
 
 Note: when both outer and inner declare `const NAME := <lit>`
-with non-None values, inner's shadow wins via Rule 1 — Rule 1
-applies only when the inner evaluates to None.
+with non-None values, inner's shadow wins via the normal
+get_constant path — the fall-through only fires when the
+inner const evaluates to None.
 
 ## Test contract
 
-Three layers of test coverage, mirroring the rules:
+Four layers of test coverage, mirroring the rules:
 
 1. `nbrs-variates/src/nodes/format.rs::tests` — Printf eval
-   directly. `printf_none_input_yields_none` and
-   `printf_partial_none_taints_whole_result` are the
-   normative tests for Rule 1. Existing tests
-   (`printf_simple`, `printf_multiple`, etc.) act as
-   regression guards.
+   directly. `printf_none_input_yields_none`,
+   `printf_partial_none_taints_whole_result`, and
+   `printf_all_present_unchanged` are the normative tests
+   for Rule 1. Existing tests (`printf_simple`,
+   `printf_multiple`, etc.) act as regression guards.
 
 2. `nbrs-variates/tests/scope_composition.rs` — scope-
    composition integration tests proving the const →
-   get_constant → lookup chain. `const_with_unbound_interpolation_yields_none_locally`
-   pins Rule 1 at the scope level;
-   `const_with_unbound_interpolation_with_explicit_extern_falls_through`
-   demonstrates the two-tier fall-through, anticipating the
-   conditional-shadow-for-const change.
+   get_constant → lookup chain:
+   - `const_with_bound_interpolation_shadows_outer` — happy
+     path (real value shadows).
+   - `const_with_unbound_interpolation_falls_through_to_outer`
+     — conditional-shadow fall-through (None → outer wins).
+   - `three_scope_chain_transitive_fall_through` — None in
+     a middle scope is transparent across descendants
+     (covers Step 2's wiring fix).
+   - `pure_literal_const_does_not_auto_extern` — Gate 2
+     invariant preserved.
 
-3. *(future)* Op-template render-path tests once Rule 3 lands.
-   Should cover: required-bind-point None → render error;
-   optional-bind-point None → empty-substitution; optional-
-   structural-segment None → segment elided.
+3. `nbrs-variates/src/comprehension/synthesis.rs::tests::
+   iter_var_as_final_const` — Gate 2 regression guard that
+   protects pure-literal iter-var consts from getting
+   auto-externed.
+
+4. `nbrs-activity/src/wires.rs::tests` — Rule 3 strict
+   rendering:
+   - `to_display_strict_returns_none_for_value_none` — the
+     primitive's contract.
+   - `substitute_via_wires_errors_when_wire_resolves_to_none`
+     — render-time refusal of None substitution.
+   - `substitute_via_wires_errors_on_unresolved_name` —
+     unchanged behavior for the existing unresolved-name
+     diagnostic.
 
 ## Phased delivery
 
-**P1 — Rule 1** (shipped). Single-site change in
+**P1 — Rule 1** *(SHIPPED)*. Single-site change in
 `Printf::eval`. Existing kernel filter machinery handles the
 rest. No syntax additions.
 
-**P2 — Conditional-shadow `const`** (next). Compiler emits
-implicit auto-extern for every `const NAME := <expr>`
-declaration. Materialize-wiring runs against the outer scope
-at construction; lookup's existing two-tier read does the
-fall-through. Should be a small compiler change in
-`dsl/compile.rs`.
+**P2 — Conditional-shadow `const`** *(SHIPPED)*. Compiler
+emits implicit auto-extern for every `const NAME := <expr>`
+whose RHS references at least one name (the Gate 2 invariant
+is preserved by skipping pure-literal consts).
+Materialize-wiring updates: for const outputs, value-copy via
+`outer.lookup` replaces cell-attach, so the chain-walked
+fall-through value propagates through any number of scope
+layers.
 
-**P3 — Rule 3 strict rendering**. New `to_display_strict`
-primitive; `substitute_via_wires` and adapter renderers
-migrate. Adds an "unresolved bind-point" diagnostic class.
+**P3 — Rule 3 strict rendering** *(SHIPPED)*. `Value::
+to_display_strict` returns `Option<String>` (None for
+`Value::None`). `substitute_via_wires` migrated to use it
+and returns an explicit "wire resolved to None" error naming
+the bind-point. Adapter renderers that build wire-protocol
+bytes through `substitute_via_wires` inherit the strict
+behavior automatically.
 
-**P4 — Rule 2 syntax**. `{X ?? default}` and `{X?}` parser
-additions; optional-structural-segment `?'key': '...'`
-renderer support. Lands when real workloads demand the
-expressivity that P3's hard-error default forces.
+**P4 — Rule 2 syntax** *(DESIGN — not yet implemented)*.
+`{X ?? default}` and `{X?}` parser additions; optional-
+structural-segment `?'key': '...'` renderer support. Lands
+when real workloads demand the expressivity that P3's
+hard-error default forces. Until then, every bind-point must
+resolve to a real value somewhere in the scope chain — the
+P3 error names the field if any don't.
 
 ## Why this is safe
 

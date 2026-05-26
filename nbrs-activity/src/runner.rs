@@ -2012,6 +2012,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             resource_pool: resource_pool.clone(),
             scene_tree_parent_id: 0,
             scene_tree_path: initial_scene_tree_path.clone(),
+            current_scope_idx: 0,
         };
 
         // Install empty SceneTree global; the walker populates it.
@@ -2196,6 +2197,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         exec_ctx.diag = diag.clone();
         exec_ctx.scene_tree_parent_id = 0;
         exec_ctx.scene_tree_path = initial_scene_tree_path.clone();
+        exec_ctx.current_scope_idx = 0;
 
         let scheduler = crate::scheduler::build(&schedule_spec);
         let scheduler_result = scheduler.run(
