@@ -29,6 +29,7 @@
 
 pub mod config;
 pub mod nodes;
+pub mod op_modifier;
 pub mod opmode;
 pub mod resolver;
 pub mod status;

@@ -312,8 +312,21 @@ phases:
 
   # Anti-DDL: tear down in reverse order (indexes → table).
   # Keyspace left intact (shared across tests).
+  #
+  # Per-statement timeout floor (SRD-73): teardown ops on heavily-
+  # populated SAI indexes routinely take tens of seconds, and the
+  # extreme corners (large source models with full row counts)
+  # can exceed the session-level default. Bind `request_timeout_ms`
+  # in this phase's scope at 5 minutes so every DROP statement
+  # under this teardown phase gets the long timeout. The CQL
+  # adapter's dispenser-initializer reads this from the GK scope
+  # via the universal-field lookup (no reaching around GK) and
+  # builds a per-statement modifier captured into the dispenser
+  # at map_op time. Hot path is unchanged.
   teardown:
     concurrency: 1
+    bindings: |
+      const request_timeout_ms := 300000
     ops:
       drop_metadata_index:
         raw: "DROP INDEX IF EXISTS {keyspace}.{table}{meta_idx_suffix}"

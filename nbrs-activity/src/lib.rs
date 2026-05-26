@@ -62,6 +62,7 @@ pub mod cycle;
 pub mod wires;
 pub mod binder;
 pub mod adapter;
+pub mod op_modifier;
 pub mod opseq;
 pub mod activity;
 pub mod adapters;

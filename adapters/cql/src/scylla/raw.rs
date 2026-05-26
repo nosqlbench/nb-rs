@@ -13,6 +13,7 @@
 use std::sync::Arc;
 
 use nbrs_activity::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
+use nbrs_activity::op_modifier::ModifierChain;
 use scylla::client::session::Session;
 use scylla::statement::{Consistency, Statement};
 
@@ -25,11 +26,21 @@ pub(super) struct ScyllaRawDispenser {
     /// intact. Rendered at cycle time through the generic GK
     /// wires API (SRD-68 Push 5).
     stmt_template: String,
+    /// SRD 73 universal per-op field overrides, built once at
+    /// `map_op` time by walking the GK scope. The session-level
+    /// `consistency` is set first below; the chain then layers
+    /// per-op overrides on top.
+    modifiers: ModifierChain<Statement>,
 }
 
 impl ScyllaRawDispenser {
-    pub fn new(session: Arc<Session>, consistency: Consistency, stmt_template: String) -> Self {
-        Self { session, consistency, stmt_template }
+    pub fn new(
+        session: Arc<Session>,
+        consistency: Consistency,
+        stmt_template: String,
+        modifiers: ModifierChain<Statement>,
+    ) -> Self {
+        Self { session, consistency, stmt_template, modifiers }
     }
 }
 
@@ -46,6 +57,10 @@ impl OpDispenser for ScyllaRawDispenser {
 
             let mut stmt = Statement::new(text.clone());
             stmt.set_consistency(self.consistency);
+            // SRD 73: layer per-op universal-field overrides on top
+            // of the session-level consistency. Hot-path no-op when
+            // the user didn't bind any per-op field.
+            self.modifiers.apply(&mut stmt);
 
             let result = self.session.query_unpaged(stmt, ()).await
                 .map_err(|e| op_error(

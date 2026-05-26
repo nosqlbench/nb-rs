@@ -161,6 +161,67 @@ scenarios:
     # workload param with a literal default.
     - for: "profile in {fknn_profile}"
       phases:
+        # ── Pre-sweep exhaustive cleanup ─────────────────────────
+        #
+        # Before the variant loop starts, drop every possible
+        # variant's table + 2 SAI indexes. Makes the sweep
+        # IDEMPOTENT against any prior crashed run that may have
+        # left stale `fknn_oat_*` tables/indexes in the keyspace.
+        #
+        # Why this is necessary:
+        #
+        # The main sweep's LEADING teardown only sees the CURRENT
+        # variant's `{table}` name; it cannot drop the other 63
+        # variants the previous session may have left behind. The
+        # cluster has a global SAI-index cap of 100 (cndb's
+        # `Cannot have more than 100 StorageAttachedIndex
+        # secondary indexes`). A prior session that crashed after
+        # creating ~50 variants leaves ~100 stale indexes; the
+        # new run then blows the cap on its 1st or 2nd variant
+        # before its own trailing teardowns ever fire.
+        #
+        # The cleanup iterates the same 6-axis cross product as
+        # the main sweep below, in DEFAULT order (no
+        # `order: extrema/1` — every iter does the same trivial
+        # work, ordering buys nothing). The iter-vars here are
+        # SIMPLER than the main sweep's because:
+        #   - No `set:` scope shadow needed (teardown's ops
+        #     interpolate only `{table}` / `{*_idx_suffix}`, not
+        #     the index-build knobs).
+        #   - No `bindings:` case-fold needed — `sm_lc` binds
+        #     directly to lowercase literals matching the names
+        #     Cassandra actually stores (so `DROP TABLE IF EXISTS`
+        #     hits the right identifier).
+        #   - No parallel-iter zip — only LABELS are needed for
+        #     the table name; the numeric `nbo_v`/`alf_v` forms
+        #     that the main sweep uses for `set:` shadows are
+        #     irrelevant here.
+        # String-valued axes (`sm_lc`, `nbo_label`, `alf_label`)
+        # use `concat(...)` because the comprehension grammar
+        # only accepts bare comma-separated literals for numeric
+        # / bool types — string literal lists must be built via
+        # `concat`, same as the main sweep's parallel-iter form.
+        # Total: 64 iters × 3 DROP-IF-EXISTS statements each.
+        #
+        # Per-statement timeout for these DROP ops is set by the
+        # parent workload's `teardown` phase definition itself —
+        # a phase-level `bindings: const request_timeout_ms :=
+        # 300000` that the CQL adapter picks up via the SRD-73
+        # universal-field lookup. No per-call-site override
+        # needed here; every site that says `- teardown` inherits
+        # the 5-minute timeout the same way.
+        - for: "sm_lc in concat(\"other\", \"ada002\"),
+                mnc in 8, 128,
+                bw in 50, 800,
+                eh in false, true,
+                nbo_label in concat(\"1p0\", \"3p0\"),
+                alf_label in concat(\"1p0\", \"2p0\")"
+          phases:
+            - for: "table in fknn_oat_{sm_lc}_m{mnc}_bw{bw}_h{eh}_nbo{nbo_label}_a{alf_label}"
+              phases:
+                - teardown
+
+        # ── Main sweep ───────────────────────────────────────────
         # OUTER comprehension: index-affecting params.
         #
         # Short iter-var names (`sm`, `mnc`, `bw`, `eh`, `nbo_v`,

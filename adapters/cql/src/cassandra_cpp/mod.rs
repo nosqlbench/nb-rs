@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cassandra_cpp as cass;
 use cass::LendingIterator;
 
+mod op_modifier;
 mod tracing;
 use tracing::{TraceLog, TraceRecord};
 
@@ -760,6 +761,15 @@ impl DriverAdapter for CqlAdapter {
         // a follow-up will let CQL ops with their own `bindings:` /
         // `result:` block materialise a child subscope via
         // `parent.build_subscope(matter)`.
+        // SRD 73: build the per-op universal-field modifier chain
+        // BEFORE we move `parent` into `canonical_kernel`. The chain
+        // captures resolved values out of the GK scope once at
+        // initializer time; per-cycle execute() just calls
+        // `chain.apply`. Only one match arm below moves `modifiers`
+        // into its dispenser.
+        let modifiers = crate::common::op_modifier::build_cql_modifier_chain::<
+            op_modifier::CassModifierFactory,
+        >(&parent, template.name.clone())?;
         let canonical_kernel = parent;
 
         match mode {
@@ -770,6 +780,7 @@ impl DriverAdapter for CqlAdapter {
                     canonical_kernel,
                     trace_rate_bits: self.trace_rate_bits.clone(),
                     trace_log: self.trace_log.clone(),
+                    modifiers,
                 }))
             }
             "simple" => {
@@ -779,6 +790,7 @@ impl DriverAdapter for CqlAdapter {
                     canonical_kernel,
                     trace_rate_bits: self.trace_rate_bits.clone(),
                     trace_log: self.trace_log.clone(),
+                    modifiers,
                 }))
             }
             _ => {
@@ -800,6 +812,7 @@ impl DriverAdapter for CqlAdapter {
                         rows_total: std::sync::atomic::AtomicU64::new(0),
                         trace_rate_bits: self.trace_rate_bits.clone(),
                         trace_log: self.trace_log.clone(),
+                        modifiers,
                     }))
                 } else if bind_names.is_empty() {
                     // No bind points — execute as raw (DDL, simple queries)
@@ -809,6 +822,7 @@ impl DriverAdapter for CqlAdapter {
                         canonical_kernel,
                         trace_rate_bits: self.trace_rate_bits.clone(),
                         trace_log: self.trace_log.clone(),
+                        modifiers,
                     }))
                 } else {
                     Ok(Box::new(CqlPreparedDispenser {
@@ -821,10 +835,16 @@ impl DriverAdapter for CqlAdapter {
                         binders: std::sync::OnceLock::new(),
                         trace_rate_bits: self.trace_rate_bits.clone(),
                         trace_log: self.trace_log.clone(),
+                        modifiers,
                     }))
                 }
             }
         }
+    }
+
+    fn known_op_params(&self) -> &'static [&'static str] {
+        // SRD 73: universal per-op field surface.
+        crate::common::op_modifier::CQL_UNIVERSAL_FIELDS
     }
 
     /// SRD-35 Push D — graceful CQL session close.
@@ -923,6 +943,12 @@ struct CqlRawDispenser {
     /// (sets the tracing flag on the statement) but skips the
     /// post-execute submit.
     trace_log: Option<TraceLog>,
+    /// SRD 73 universal per-op field overrides applied per
+    /// execute. Empty chain → execute() takes the existing
+    /// string fast-path. Non-empty chain → execute() builds
+    /// a Statement, applies modifiers, then runs the explicit
+    /// statement-path execute.
+    modifiers: nbrs_activity::op_modifier::ModifierChain<cass::Statement>,
 }
 
 impl OpDispenser for CqlRawDispenser {
@@ -996,13 +1022,24 @@ impl OpDispenser for CqlRawDispenser {
             // build the Statement, set the tracing flag, and use
             // the vendored `execute_with_tracing` surface that
             // pairs result with `cass_future_tracing_id`.
-            let exec_outcome = if trace_this {
+            // SRD 73: if any per-op universal-field modifiers are
+            // bound for this op, the raw path takes the Statement
+            // route (so modifiers can apply); otherwise it stays
+            // on the string fast-path. The trace branch also takes
+            // the Statement route for set_tracing.
+            let need_statement = trace_this || !self.modifiers.is_empty();
+            let exec_outcome = if need_statement {
                 let mut stmt = self.session.get().statement(stmt_text);
-                let _ = stmt.set_tracing(true);
-                self.session.get()
-                    .execute_with_tracing(&stmt)
-                    .await
-                    .map(|(r, tid)| (r, tid))
+                self.modifiers.apply(&mut stmt);
+                if trace_this {
+                    let _ = stmt.set_tracing(true);
+                    self.session.get()
+                        .execute_with_tracing(&stmt)
+                        .await
+                        .map(|(r, tid)| (r, tid))
+                } else {
+                    stmt.execute().await.map(|r| (r, None))
+                }
             } else {
                 self.session.get().execute(stmt_text).await.map(|r| (r, None))
             };
@@ -1105,6 +1142,10 @@ struct CqlPreparedDispenser {
     /// (sets the tracing flag on the statement) but skips the
     /// post-execute submit.
     trace_log: Option<TraceLog>,
+    /// SRD 73 universal per-op field overrides applied per
+    /// execute after the session-level consistency is set.
+    /// Empty chain is a hot-path no-op.
+    modifiers: nbrs_activity::op_modifier::ModifierChain<cass::Statement>,
 }
 
 impl CqlPreparedDispenser {
@@ -1194,6 +1235,10 @@ impl OpDispenser for CqlPreparedDispenser {
                     message: format!("set consistency: {e}"),
                     retryable: false,
                 }))?;
+            // SRD 73: per-op universal-field overrides on top of
+            // the session-level consistency. No-op when the user
+            // didn't bind any field.
+            self.modifiers.apply(&mut stmt);
 
             // SRD-68 Push 5b: cycle-time `?`-parameter binding
             // through the dispenser's per-fiber GK kernel via the
@@ -1371,6 +1416,9 @@ struct CqlBatchDispenser {
     /// (sets the tracing flag on each statement) but skips
     /// the post-execute submit.
     trace_log: Option<TraceLog>,
+    /// SRD 73 universal per-op field overrides applied to each
+    /// bound statement before it's added to the batch.
+    modifiers: nbrs_activity::op_modifier::ModifierChain<cass::Statement>,
 }
 
 impl CqlBatchDispenser {
@@ -1521,6 +1569,10 @@ impl OpDispenser for CqlBatchDispenser {
                         message: format!("set consistency: {e}"),
                         retryable: false,
                     }))?;
+                // SRD 73: per-op universal-field overrides on top
+                // of the session-level consistency, applied to each
+                // row's bound statement before tracing is layered.
+                self.modifiers.apply(&mut stmt);
                 if trace_this {
                     let _ = stmt.set_tracing(true);
                 }

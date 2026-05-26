@@ -16,6 +16,7 @@
 
 mod batch;
 mod binders;
+mod op_modifier;
 mod prepared;
 mod raw;
 mod result;
@@ -103,7 +104,7 @@ impl DriverAdapter for ScyllaCqlAdapter {
     fn map_op(
         &self,
         template: &ParsedOp,
-        _parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+        parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
     ) -> Result<Box<dyn OpDispenser>, String> {
         let (stmt_text, stmt_field) = STMT_FIELD_NAMES.iter()
             .find_map(|key| -> Option<(String, &'static str)> {
@@ -127,17 +128,36 @@ impl DriverAdapter for ScyllaCqlAdapter {
         let has_batch = template.params.contains_key("batch");
         let mode = OpMode::from_stmt_field(stmt_field, has_batch);
 
+        // SRD 73 — build the per-op modifier chain at dispenser
+        // initializer time. The chain captures any universal CQL
+        // field the user bound in the GK scope (workload params,
+        // scenario-tree `set:` shadows, op-template fields); names
+        // the scope doesn't bind contribute nothing. Critical-path
+        // execute() just calls `chain.apply(&mut stmt)` — no
+        // re-evaluation.
+        let op_label = template.name.clone();
+        let modifiers_for_raw =
+            crate::common::op_modifier::build_cql_modifier_chain::<
+                op_modifier::ScyllaModifierFactory<scylla::statement::Statement>
+            >(&parent, op_label.clone())?;
+        let modifiers_for_prepared =
+            crate::common::op_modifier::build_cql_modifier_chain::<
+                op_modifier::ScyllaModifierFactory<scylla::statement::prepared::PreparedStatement>
+            >(&parent, op_label)?;
+
         match mode {
             OpMode::Raw => Ok(Box::new(raw::ScyllaRawDispenser::new(
                 self.session.clone(),
                 self.consistency,
                 stmt_text,
+                modifiers_for_raw,
             ))),
             OpMode::Prepared => Ok(Box::new(prepared::ScyllaPreparedDispenser::new(
                 self.session.clone(),
                 self.consistency,
                 prepared_text,
                 bind_names,
+                modifiers_for_prepared,
             ))),
             OpMode::Batch => {
                 let batch_type = template.params.get("batchtype")
@@ -161,9 +181,16 @@ impl DriverAdapter for ScyllaCqlAdapter {
                     bind_names,
                     batch_size,
                     batch_type,
+                    modifiers_for_prepared,
                 )))
             }
         }
+    }
+
+    fn known_op_params(&self) -> &'static [&'static str] {
+        // SRD 73: universal per-op field surface, in addition to
+        // existing CQL adapter params.
+        crate::common::op_modifier::CQL_UNIVERSAL_FIELDS
     }
 }
 

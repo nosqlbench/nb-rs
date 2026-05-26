@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use nbrs_activity::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
+use nbrs_activity::op_modifier::ModifierChain;
 use nbrs_variates::node::Value;
 use scylla::client::session::Session;
 use scylla::statement::{Consistency, batch::{Batch, BatchType}, prepared::PreparedStatement};
@@ -38,6 +39,12 @@ pub(super) struct ScyllaBatchDispenser {
     batch_size: usize,
     batch_type: BatchType,
     prepared: std::sync::OnceLock<Arc<PreparedStatement>>,
+    /// SRD 73 universal per-op field overrides applied to the
+    /// inner prepared statement at prepare time. Note: scylla's
+    /// `Batch` type itself lacks `set_page_size`, so the chain
+    /// targets `PreparedStatement` only; batch-level fields like
+    /// per-batch timeouts are a future follow-up.
+    modifiers: ModifierChain<PreparedStatement>,
 }
 
 impl ScyllaBatchDispenser {
@@ -48,6 +55,7 @@ impl ScyllaBatchDispenser {
         bind_names: Vec<String>,
         batch_size: usize,
         batch_type: BatchType,
+        modifiers: ModifierChain<PreparedStatement>,
     ) -> Self {
         Self {
             session,
@@ -57,6 +65,7 @@ impl ScyllaBatchDispenser {
             batch_size: if batch_size == 0 { 1 } else { batch_size },
             batch_type,
             prepared: std::sync::OnceLock::new(),
+            modifiers,
         }
     }
 
@@ -71,6 +80,8 @@ impl ScyllaBatchDispenser {
                 false,
             ))?;
         prep.set_consistency(self.consistency);
+        // SRD 73: layer per-op universal-field overrides.
+        self.modifiers.apply(&mut prep);
         let arc = Arc::new(prep);
         let _ = self.prepared.set(arc.clone());
         Ok(self.prepared.get().unwrap().clone())

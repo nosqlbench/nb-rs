@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use nbrs_activity::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
+use nbrs_activity::op_modifier::ModifierChain;
 use nbrs_variates::node::Value;
 use scylla::client::session::Session;
 use scylla::statement::{Consistency, prepared::PreparedStatement};
@@ -28,6 +29,11 @@ pub(super) struct ScyllaPreparedDispenser {
     /// bind position by name so non-bind fields stay off the wire.
     bind_names: Vec<String>,
     prepared: std::sync::OnceLock<Arc<PreparedStatement>>,
+    /// SRD 73 universal per-op field overrides. Built once at
+    /// `map_op` time from the GK scope and applied to the prepared
+    /// statement immediately after it's prepared. Hot-path no-op
+    /// when the user didn't bind any per-op field.
+    modifiers: ModifierChain<PreparedStatement>,
 }
 
 impl ScyllaPreparedDispenser {
@@ -36,6 +42,7 @@ impl ScyllaPreparedDispenser {
         consistency: Consistency,
         stmt_text: String,
         bind_names: Vec<String>,
+        modifiers: ModifierChain<PreparedStatement>,
     ) -> Self {
         Self {
             session,
@@ -43,6 +50,7 @@ impl ScyllaPreparedDispenser {
             stmt_text,
             bind_names,
             prepared: std::sync::OnceLock::new(),
+            modifiers,
         }
     }
 
@@ -57,6 +65,10 @@ impl ScyllaPreparedDispenser {
                 false,
             ))?;
         prep.set_consistency(self.consistency);
+        // SRD 73: layer per-op universal-field overrides on top of
+        // the session-level consistency. The chain is empty when the
+        // user didn't bind any per-op field.
+        self.modifiers.apply(&mut prep);
         let arc = Arc::new(prep);
         let _ = self.prepared.set(arc.clone());
         Ok(self.prepared.get().unwrap().clone())
