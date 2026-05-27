@@ -165,11 +165,16 @@ hash-derived.
 `control_str`, `control_bool`, `control_set`. The `control` family
 reads dynamic controls (SRD-23) declared on the active component.
 
-### `metrics` — read live metric values
+### Live-metric nodes (registered externally)
 `metric`, `metric_window`, `rate`, `mean`, `p50`, `p99`, `cycles`,
-`errors`. Used inside `relevancy:` and other expressions that need to
-react to current metric values — e.g., a stop condition that triggers
-when `errors > N`.
+`errors`. These read live values from a session's metrics store and
+are useful inside `relevancy:` / stop-condition expressions. They
+live in the **`nbrs-metrics`** crate (`polydat_nodes` module),
+registered into polydat's node catalog at link time via the
+`inventory` channel — polydat's published surface doesn't include
+them. Build a binary that links `nbrs-metrics` (or call
+`nbrs_metrics::polydat_nodes::set_global_query` from your runner) to
+get them.
 
 ### `log_levels` — pass-through logging at each level
 `log_debug`, `log_info`, `log_warn`, `log_error`. Each takes a value,
@@ -243,7 +248,7 @@ const-constraint contracts at wire boundaries.
 | [`context.rs`](../src/nodes/context.rs) | 9 |
 | [`partition.rs`](../src/nodes/partition.rs) | 8 |
 | [`string.rs`](../src/nodes/string.rs) | 8 |
-| [`metrics.rs`](../src/nodes/metrics.rs) | 8 |
+| `nbrs-metrics::polydat_nodes` (externally registered) | 8 |
 | [`param_helpers.rs`](../src/nodes/param_helpers.rs) | 6 |
 | [`datafile.rs`](../src/nodes/datafile.rs) | 6 |
 | [`noise.rs`](../src/nodes/noise.rs) | 5 |

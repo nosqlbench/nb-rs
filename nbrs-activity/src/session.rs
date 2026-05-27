@@ -1170,7 +1170,7 @@ impl Session {
         // GK runtime-context nodes (`control(...)`, `rate()`,
         // `concurrency()`, etc.). See SRD 12 §"Runtime context
         // nodes" and polydat/src/nodes/runtime_context.rs.
-        polydat::nodes::runtime_context::set_session_root(component.clone());
+        crate::polydat_nodes::runtime_context::set_session_root(component.clone());
 
         Self {
             id,
@@ -1257,7 +1257,7 @@ impl Session {
                 .with("workload", workload_stem),
             std::collections::HashMap::new(),
         );
-        polydat::nodes::runtime_context::set_session_root(component.clone());
+        crate::polydat_nodes::runtime_context::set_session_root(component.clone());
 
         Self {
             id,

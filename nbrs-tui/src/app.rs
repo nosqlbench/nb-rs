@@ -325,7 +325,7 @@ pub fn write_control_f64_from_tui(
     name: String,
     value: f64,
 ) -> Result<(), String> {
-    let root = polydat::nodes::runtime_context::session_root_handle()
+    let root = nbrs_activity::polydat_nodes::runtime_context::session_root_handle()
         .ok_or_else(|| "no session root installed — TUI cannot resolve controls".to_string())?;
     let erased = {
         let Ok(guard) = root.read() else {

@@ -22,7 +22,7 @@ use std::sync::Arc;
 use nbrs_metrics::component::Component;
 use nbrs_metrics::controls::{BranchScope, ControlBuilder};
 use nbrs_metrics::labels::Labels;
-use polydat::nodes::runtime_context::set_session_root;
+use nbrs_activity::polydat_nodes::runtime_context::set_session_root;
 
 /// Serialize tests that mutate the process-global session root —
 /// matches the pattern used in `control_edit_test.rs`.

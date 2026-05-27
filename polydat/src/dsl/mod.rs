@@ -14,14 +14,14 @@ pub mod const_constraints;
 pub mod pragmas;
 pub mod cursor_sugar;
 pub mod pprint;
-pub(crate) mod factory;
+/// External-facing factory module. Made `pub` (was `pub(crate)`) so
+/// crates that host polydat nodes outside the polydat crate
+/// (nbrs-activity, nbrs-metrics) can reach `ConstArg`, `compile_ctx`,
+/// and `build_node` from their `register_nodes!` invocations.
+pub mod factory;
 pub(crate) mod validate;
 
 /// Re-exported for external crates that register GK nodes via `register_nodes!`.
-///
-/// External node crates need to name `ConstArg` in their builder function
-/// signatures.  Exporting it here (via `pub use`) makes it reachable as
-/// `polydat::dsl::ConstArg` without exposing the full factory module.
 pub use factory::ConstArg;
 mod modules;
 mod binding;

@@ -22,8 +22,8 @@ use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use crate::node::{GkNode, NodeMeta, Port, PortType, Slot, SlotType, Value};
+use polydat::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use polydat::node::{GkNode, NodeMeta, Port, PortType, Slot, SlotType, Value};
 
 use nbrs_metrics::component::Component;
 
@@ -195,7 +195,7 @@ impl GkNode for ControlSet {
                 match guard.find_control_erased_up(&name) {
                     Some(e) => e,
                     None => {
-                        crate::audit::warn(&format!(
+                        polydat::audit::warn(&format!(
                             "control_set({name}, {value}): no control found via walk-up"));
                         return;
                     }
@@ -203,7 +203,7 @@ impl GkNode for ControlSet {
             };
             let origin = nbrs_metrics::controls::ControlOrigin::Gk { binding };
             if let Err(e) = erased.set_f64(value, origin).await {
-                crate::audit::warn(&format!("control_set({name}, {value}) failed: {e}"));
+                polydat::audit::warn(&format!("control_set({name}, {value}) failed: {e}"));
             }
         });
 
@@ -554,9 +554,9 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: crate::node::Commutativity::Positional,
+            commutativity: polydat::node::Commutativity::Positional,
             default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
+            output_type: polydat::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "control_u64", category: C::Context, outputs: 1,
@@ -567,9 +567,9 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"concurrency\"", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: crate::node::Commutativity::Positional,
+            commutativity: polydat::node::Commutativity::Positional,
             default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
+            output_type: polydat::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "control_bool", category: C::Context, outputs: 1,
@@ -580,9 +580,9 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"enabled\"", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: crate::node::Commutativity::Positional,
+            commutativity: polydat::node::Commutativity::Positional,
             default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
+            output_type: polydat::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "control_str", category: C::Context, outputs: 1,
@@ -593,9 +593,9 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"log_level\"", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: crate::node::Commutativity::Positional,
+            commutativity: polydat::node::Commutativity::Positional,
             default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
+            output_type: polydat::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "control_set", category: C::Context, outputs: 1,
@@ -607,9 +607,9 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "value", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: crate::node::Commutativity::Positional,
+            commutativity: polydat::node::Commutativity::Positional,
             default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
+            output_type: polydat::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "rate", category: C::Context, outputs: 1,
@@ -618,9 +618,9 @@ pub fn signatures() -> &'static [FuncSig] {
             identity: None, variadic_ctor: None,
             params: &[],
             arity: Arity::Fixed,
-            commutativity: crate::node::Commutativity::Positional,
+            commutativity: polydat::node::Commutativity::Positional,
             default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
+            output_type: polydat::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "concurrency", category: C::Context, outputs: 1,
@@ -629,9 +629,9 @@ pub fn signatures() -> &'static [FuncSig] {
             identity: None, variadic_ctor: None,
             params: &[],
             arity: Arity::Fixed,
-            commutativity: crate::node::Commutativity::Positional,
+            commutativity: polydat::node::Commutativity::Positional,
             default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
+            output_type: polydat::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "phase", category: C::Context, outputs: 1,
@@ -640,9 +640,9 @@ pub fn signatures() -> &'static [FuncSig] {
             identity: None, variadic_ctor: None,
             params: &[],
             arity: Arity::Fixed,
-            commutativity: crate::node::Commutativity::Positional,
+            commutativity: polydat::node::Commutativity::Positional,
             default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
+            output_type: polydat::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "cycle", category: C::Context, outputs: 1,
@@ -651,18 +651,18 @@ pub fn signatures() -> &'static [FuncSig] {
             identity: None, variadic_ctor: None,
             params: &[],
             arity: Arity::Fixed,
-            commutativity: crate::node::Commutativity::Positional,
+            commutativity: polydat::node::Commutativity::Positional,
             default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
+            output_type: polydat::dsl::registry::OutputType::Fixed,
         },
     ]
 }
 
 pub(crate) fn build_node(
     name: &str,
-    _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType],
-    consts: &[crate::dsl::factory::ConstArg],
-) -> Option<Result<Box<dyn crate::node::GkNode>, String>> {
+    _wires: &[polydat::assembly::WireRef], _wire_types: &[polydat::node::PortType],
+    consts: &[polydat::dsl::factory::ConstArg],
+) -> Option<Result<Box<dyn polydat::node::GkNode>, String>> {
     match name {
         "control" => {
             let n = consts.first().map(|c| c.as_str().to_string()).unwrap_or_default();
@@ -689,7 +689,7 @@ pub(crate) fn build_node(
             // for attribution. If no scope is active (library
             // tests that call build_node directly) we fall back
             // to the control name.
-            let binding = crate::dsl::factory::compile_ctx::current_binding()
+            let binding = polydat::dsl::factory::compile_ctx::current_binding()
                 .unwrap_or_else(|| n.clone());
             Some(Ok(Box::new(ControlSet::new(&n, &binding))))
         }
@@ -701,7 +701,7 @@ pub(crate) fn build_node(
     }
 }
 
-crate::register_nodes!(signatures, build_node);
+polydat::register_nodes!(signatures, build_node);
 
 #[cfg(test)]
 mod tests {
@@ -994,9 +994,9 @@ mod tests {
         // factory path directly, so reach into the nodes
         // registration helper via the same build-by-name route
         // the compiler uses.
-        let _scope = crate::dsl::factory::compile_ctx::scoped_binding("rate_adj");
-        let consts = [crate::dsl::factory::ConstArg::Str("rate".into())];
-        let node = crate::dsl::factory::build_node(
+        let _scope = polydat::dsl::factory::compile_ctx::scoped_binding("rate_adj");
+        let consts = [polydat::dsl::factory::ConstArg::Str("rate".into())];
+        let node = polydat::dsl::factory::build_node(
             "control_set", &[], &[], &consts,
         ).expect("control_set should build");
         let mut out = [Value::None];

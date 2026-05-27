@@ -2918,6 +2918,8 @@ dependencies = [
  "crossbeam-channel",
  "futures",
  "hdrhistogram",
+ "inventory",
+ "polydat",
  "regex",
  "reqwest 0.12.28",
  "rusqlite",
@@ -3495,7 +3497,7 @@ dependencies = [
 
 [[package]]
 name = "polydat"
-version = "0.1.2"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "cranelift-codegen",
@@ -3504,12 +3506,10 @@ dependencies = [
  "cranelift-module",
  "criterion",
  "data-encoding",
- "hdrhistogram",
  "indexmap",
  "inventory",
  "layout-rs",
  "md-5",
- "nbrs-metrics",
  "petgraph",
  "regex",
  "serde",

@@ -1400,7 +1400,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         session.component.clone(),
     ));
     session.set_metrics_query(metrics_query.clone());
-    polydat::nodes::metrics::set_global_query(metrics_query.clone());
+    nbrs_metrics::polydat_nodes::set_global_query(metrics_query.clone());
     observer.on_metrics_query(metrics_query.clone());
 
     let session_for_capture = session.component.clone();

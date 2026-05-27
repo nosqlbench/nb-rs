@@ -1,6 +1,10 @@
 [package]
 name = "polydat"
-version.workspace = true
+# Polydat is published independently of the nbrs workspace —
+# its release cadence isn't tied to the workspace's version bump.
+# Override `version.workspace = true` with a local pin so polydat
+# can rev (e.g., 0.1.1, 0.2.0) without dragging the workspace.
+version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 description = "Polydat — generation kernel for deterministic variate generation in nb-rs (formerly nbrs-variates)"
@@ -8,7 +12,21 @@ keywords = ["nosqlbench", "workload", "benchmark", "data-generation"]
 categories = ["command-line-utilities", "simulation"]
 repository.workspace = true
 homepage.workspace = true
-readme.workspace = true
+documentation = "https://docs.rs/polydat"
+# Local override — `readme.workspace = true` resolves to the
+# workspace-root README, not polydat's own. The README that ships
+# in the crates.io package needs to be the polydat-specific one.
+readme = "README.md"
+
+# Exclude bench-output artifacts and large perf-test fixtures from
+# the published package. The benches themselves (`benches/`) stay —
+# they're part of the public surface — but their generated graphs
+# under `tests/bench_graphs/` and the per-test perf fixtures under
+# `tests/perf_tests/` are noise for downstream consumers.
+exclude = [
+    "tests/bench_graphs/**",
+    "tests/perf_tests/**",
+]
 
 [dependencies]
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
@@ -28,8 +46,6 @@ cranelift-codegen = { version = "0.116", optional = true }
 cranelift-frontend = { version = "0.116", optional = true }
 target-lexicon = { version = "0.13", optional = true }
 inventory = "0.3.24"
-nbrs-metrics = { path = "../nbrs-metrics", version = "0.1.1", optional = true }
-hdrhistogram = { version = "7", optional = true }
 # Needed for runtime-context nodes' task-local FiberContext
 # (`task_local!` lives in `rt`) and for `block_in_place` at the
 # vectordata catalog bridge (`rt-multi-thread`).
@@ -42,9 +58,8 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 indexmap = "2"
 
 [features]
-default = ["jit", "vectordata", "metrics"]
+default = ["jit", "vectordata"]
 vectordata = ["dep:vectordata"]
-metrics = ["dep:nbrs-metrics", "dep:hdrhistogram"]
 jit = ["dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-codegen", "dep:cranelift-frontend", "dep:target-lexicon"]
 
 [dev-dependencies]

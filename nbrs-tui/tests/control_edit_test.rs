@@ -23,7 +23,7 @@ use nbrs_metrics::labels::Labels;
 use nbrs_tui::app::App;
 use nbrs_tui::run_state_actor::spawn_run_state_actor;
 use nbrs_tui::state::RunState;
-use polydat::nodes::runtime_context::set_session_root;
+use nbrs_activity::polydat_nodes::runtime_context::set_session_root;
 
 /// Serialize tests that mutate the process-global session root
 /// (the same pattern used in runtime_context's own tests).

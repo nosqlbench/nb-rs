@@ -1735,7 +1735,7 @@ impl Activity {
                     use futures::FutureExt as _;
                     let activity_for_panic = activity.clone();
                     let activity_name_for_log = activity.config.name.clone();
-                    let body = polydat::nodes::runtime_context::with_fiber_context(
+                    let body = crate::polydat_nodes::runtime_context::with_fiber_context(
                         phase_arc,
                         async move {
                             executor_task(
@@ -2490,7 +2490,7 @@ async fn executor_task(
             // scope so any GK node reading `cycle()` or implicitly
             // `cycle` inside the DAG sees the same ordinal as
             // adapter execution. No-op outside a fiber scope.
-            polydat::nodes::runtime_context::set_task_cycle(cycle);
+            crate::polydat_nodes::runtime_context::set_task_cycle(cycle);
 
             let wait_start = Instant::now();
             if let Some(ref rl) = rate_limiter {

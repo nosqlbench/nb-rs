@@ -1,6 +1,15 @@
 // Copyright 2024-2026 Jonathan Shook
 // SPDX-License-Identifier: Apache-2.0
 
+//! Polydat-side metric-reading node registration.
+//!
+//! Formerly lived at `polydat::nodes::metrics`. Moved here so polydat
+//! can publish to crates.io without a reverse dep on `nbrs-metrics`.
+//! `inventory` is the registration channel — polydat's
+//! `register_nodes!` macro emits an `inventory::submit!` block from
+//! this crate; polydat picks it up at link time without knowing
+//! who registered it.
+//!
 //! GK node functions for reading live metrics from the unified
 //! [`MetricsQuery`] (SRD-42 §"MetricsQuery").
 //!
@@ -24,10 +33,10 @@
 
 use std::sync::{Arc, LazyLock, Mutex};
 
-use crate::dsl::registry::{FuncSig, FuncCategory as C, ParamSpec, Arity};
-use crate::node::{GkNode, NodeMeta, Port, PortType, SlotType, Value};
-use nbrs_metrics::metrics_query::{MetricsQuery, Selection};
-use nbrs_metrics::snapshot::{MetricSet, MetricValue};
+use polydat::dsl::registry::{FuncSig, FuncCategory as C, ParamSpec, Arity};
+use polydat::node::{GkNode, NodeMeta, Port, PortType, SlotType, Value};
+use crate::metrics_query::{MetricsQuery, Selection};
+use crate::snapshot::{MetricSet, MetricValue};
 
 /// Global metrics query reference. Set by the runner once the
 /// cadence reporter is built. GK metric nodes capture this at
@@ -190,9 +199,9 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "stat", slot_type: SlotType::ConstStr, required: true, example: "\"p99\"", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: crate::node::Commutativity::Positional,
+            commutativity: polydat::node::Commutativity::Positional,
             default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
+            output_type: polydat::dsl::registry::OutputType::Fixed,
         },
         FuncSig {
             name: "metric_window", category: C::Context, outputs: 1,
@@ -208,18 +217,18 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "stat", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: crate::node::Commutativity::Positional,
+            commutativity: polydat::node::Commutativity::Positional,
             default_resolver: None,
-            output_type: crate::dsl::registry::OutputType::Fixed,
+            output_type: polydat::dsl::registry::OutputType::Fixed,
         },
     ]
 }
 
 /// Build a metric node from function name and const args.
-pub(crate) fn build_node(
+fn build_node(
     name: &str,
-    _wires: &[crate::assembly::WireRef], _wire_types: &[crate::node::PortType],
-    consts: &[crate::dsl::factory::ConstArg],
+    _wires: &[polydat::assembly::WireRef], _wire_types: &[polydat::node::PortType],
+    consts: &[polydat::dsl::ConstArg],
 ) -> Option<Result<Box<dyn GkNode>, String>> {
     match name {
         "metric" => {
@@ -236,4 +245,4 @@ pub(crate) fn build_node(
     }
 }
 
-crate::register_nodes!(signatures, build_node);
+polydat::register_nodes!(signatures, build_node);

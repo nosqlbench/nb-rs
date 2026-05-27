@@ -29,14 +29,11 @@ pub mod pcg;
 pub mod math;
 pub mod datafile;
 pub mod param_helpers;
-pub mod runtime_context;
 pub mod assertions;
 pub mod compare;
 pub mod pick;
 pub mod exactly_one;
 pub mod log_levels;
-#[cfg(feature = "metrics")]
-pub mod metrics;
 pub mod partition;
 #[cfg(feature = "vectordata")]
 pub mod vectors;

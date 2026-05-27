@@ -104,7 +104,7 @@ pub mod compile_ctx {
     }
 }
 
-pub(crate) fn build_node(
+pub fn build_node(
     func: &str,
     wires: &[WireRef],
     wire_types: &[crate::node::PortType],

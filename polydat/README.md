@@ -35,17 +35,15 @@ categorically avoids this problem, since all the values used in a workload simul
 * Dimensional configuration parameters and labels -> Polydat
 
 What this means in practice is that a single set of rules applies everywhere, and since everything is owned by the same
-subsystem, you can always ask it exactly where a value comes from or how it is computed.
-
-But this also means something unavoidable about how the many nosqlbench features are realized in nb-rs. In order to make
-configuration, parameterization, templating, and all layers of variates work together with no friction, they all have to
-be owned and managed by one system.
+subsystem, you can always ask it exactly where a value comes from or how it is computed. All variables used in a
+simulation are connected through the same substrate with a supporting grammar and a consistent set of rules.
 
 ## Documentation
 
 - [Illustrations](docs/illustrations.md) — runnable examples through the GK DSL and the programmatic Assembler API.
-- [Compilation](docs/compilation.md) — Phase 1 / 2 / 3 levels, Hybrid mode, throughput numbers, and the `jit` / `vectordata` Cargo features.
+- [Compilation](docs/compilation.md) — Phase 1 / 2 / 3 levels, Hybrid mode, throughput numbers, and the `jit` /
+  `vectordata` Cargo features.
 - [Nodes](docs/nodes.md) — the 250+ built-in function nodes.
-- [License](docs/license.md) — Apache-2.0; canonical text at the repo-root [LICENSE](../LICENSE).
+- [License](docs/license.md) — Apache-2.0; full text at [LICENSE](LICENSE).
 
 Part of the [nb-rs](https://github.com/nosqlbench/nb-rs) workspace.

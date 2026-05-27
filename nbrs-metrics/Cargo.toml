@@ -21,6 +21,15 @@ futures = "0.3"
 # readers (TUI, metrics queries) never block the consolidator.
 crossbeam-channel = "0.5"
 arc-swap = "1"
+# Polydat is published independently; nbrs-metrics owns the
+# polydat-side metric-reading node registration (formerly
+# `polydat::nodes::metrics`) so polydat itself doesn't take a
+# reverse dep on nbrs-metrics.
+polydat = { path = "../polydat", version = "0.1.0" }
+# `inventory` is needed for the polydat-node registration macro
+# (`polydat::register_nodes!`) to emit its `inventory::submit!`
+# block from this crate.
+inventory = "0.3.24"
 rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 regex = { version = "1", optional = true }
 reqwest = { version = "0.12", features = ["blocking"], optional = true }

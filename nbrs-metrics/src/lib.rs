@@ -87,3 +87,9 @@ pub mod validation;
 pub mod cadence;
 pub mod cadence_reporter;
 pub mod metrics_query;
+// Polydat metric-reading nodes — registered into polydat's
+// node catalog via the `inventory` channel. Lives here (not in
+// polydat) so polydat stays free of a reverse dep and can publish
+// standalone. See `polydat_nodes::set_global_query` for the runner
+// hookup.
+pub mod polydat_nodes;

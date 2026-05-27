@@ -20,7 +20,7 @@ nbrs-metrics = { path = "../nbrs-metrics", version = "0.1.1", features = ["victo
 nbrs-rate = { path = "../nbrs-rate", version = "0.1.1" }
 nbrs-errorhandler = { path = "../nbrs-errorhandler", version = "0.1.1" }
 nbrs-workload = { path = "../nbrs-workload", version = "0.1.1" }
-polydat = { path = "../polydat", version = "0.1.1" }
+polydat = { path = "../polydat", version = "0.1.0" }
 futures = "0.3"
 inventory = "0.3.24"
 serde = { version = "1", features = ["derive"] }

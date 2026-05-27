@@ -34,7 +34,7 @@ use polydat::node::{GkNode, Value};
 use polydat::nodes::param_helpers::{
     InRangeU64, IsPositiveU64, RequiredU64, ThisOrU64,
 };
-use polydat::nodes::runtime_context::{
+use nbrs_activity::polydat_nodes::runtime_context::{
     set_session_root, set_task_cycle, with_fiber_context,
     ControlSet, ControlStr, ControlU64, ControlValue,
     CycleNow, PhaseName,

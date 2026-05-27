@@ -59,6 +59,11 @@
 //!   trait surface.
 
 pub mod cycle;
+// Polydat node registrations that need nbrs-activity's runtime
+// services (component tree + controls + fiber context). Moved out
+// of polydat itself so polydat can publish standalone — see
+// `polydat_nodes/mod.rs` for the rationale.
+pub mod polydat_nodes;
 pub mod wires;
 pub mod binder;
 pub mod adapter;

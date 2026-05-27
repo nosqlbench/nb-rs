@@ -232,7 +232,7 @@ pub async fn list_controls() -> axum::Json<Vec<ControlView>> {
     use nbrs_metrics::selector::Selector;
 
     let mut views = Vec::new();
-    let Some(root) = polydat::nodes::runtime_context::session_root_handle() else {
+    let Some(root) = nbrs_activity::polydat_nodes::runtime_context::session_root_handle() else {
         return axum::Json(views);
     };
     for comp in find(&root, &Selector::new()) {
@@ -311,7 +311,7 @@ pub async fn set_control(
     axum::extract::Path(name): axum::extract::Path<String>,
     axum::Json(body): axum::Json<SetControlBody>,
 ) -> Result<axum::Json<SetControlResponse>, (StatusCode, axum::Json<SetControlError>)> {
-    let Some(root) = polydat::nodes::runtime_context::session_root_handle() else {
+    let Some(root) = nbrs_activity::polydat_nodes::runtime_context::session_root_handle() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             axum::Json(SetControlError {
