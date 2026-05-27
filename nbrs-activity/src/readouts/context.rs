@@ -117,7 +117,7 @@ pub trait ReadoutContext {
 
     /// Root-first display form of the subject's scope
     /// coords, already produced by
-    /// `nbrs_variates::kernel::format_scope_coordinate_path`
+    /// `polydat::kernel::format_scope_coordinate_path`
     /// applied to the reversed
     /// `parent_kernel.scope_coordinates()`. Empty for root-
     /// scope subjects.
@@ -276,10 +276,39 @@ pub trait ReadoutContext {
 
     /// Lifecycle state of the subject. Default
     /// [`LifecycleState::Running`] — the most common case at
-    /// `on_update` fire. Lifecycle readouts (`phase_done`,
+    /// `on_update` fire. Lifecycle readouts (`phase_outcome`,
     /// `phase_summary`) branch on this to pick markers /
     /// glyphs / coloration.
     fn subject_state(&self) -> LifecycleState { LifecycleState::Running }
+
+    // ── SRD-76 structured outcome ─────────────────────────
+
+    /// SRD-76 — the terminal disposition of the phase. Drives
+    /// the [`phase_outcome`](crate::readouts::builtins::phase_outcome)
+    /// readout's status glyph and rendering branch. Defaults
+    /// to [`crate::phase_outcome::PhaseStatus::Completed`]
+    /// for `on_update` fires (which never terminate the
+    /// phase) and for any context that doesn't carry a
+    /// distinct outcome.
+    fn outcome_status(&self) -> crate::phase_outcome::PhaseStatus {
+        crate::phase_outcome::PhaseStatus::Completed
+    }
+
+    /// SRD-76 — the error list collected during the phase.
+    /// Empty for `Completed`/`Skipped`; non-empty for
+    /// `Failed`. Ordered chronologically by `at_nanos`.
+    /// Defaults to an empty slice; only fire-time contexts
+    /// that own the outcome populate this.
+    fn outcome_errors(&self) -> &[crate::phase_outcome::PhaseErrorDetail] {
+        &[]
+    }
+
+    /// SRD-76 — resume-state for the next session, if the
+    /// phase supports cursor-resume. `None` for
+    /// non-resumable phases or contexts without an outcome.
+    fn outcome_resume_cursor(&self) -> Option<&crate::phase_outcome::ResumeCursor> {
+        None
+    }
 
     // ── Session-scope identity ────────────────────────────
 

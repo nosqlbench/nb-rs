@@ -1,0 +1,924 @@
+// Copyright 2024-2026 Jonathan Shook
+// SPDX-License-Identifier: Apache-2.0
+
+//! Integration tests for GK scope composition (sysref 16).
+//!
+//! Tests the GK API primitives that enable scope composition:
+//! materialize_wiring_from_outer, scope_values, shared/final modifiers,
+//! and extern input wiring.
+
+use polydat::dsl::compile::compile_gk;
+use polydat::dsl::ast::BindingModifier;
+use polydat::node::Value;
+use polydat::kernel::Construction;
+use polydat::subcontext::GkMatter;
+
+// =========================================================================
+// materialize_wiring_from_outer: basic wiring
+// =========================================================================
+
+#[test]
+fn materialize_wiring_from_outer_wires_constants() {
+    let outer = compile_gk(r#"
+        input cycle: u64
+        dim := 128
+        count := 1000
+    "#).unwrap();
+
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        extern dim: u64
+        extern count: u64
+    "#).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
+
+    let dim_idx = inner.program().find_input("dim").unwrap();
+    let count_idx = inner.program().find_input("count").unwrap();
+    assert_eq!(inner.state().get_input(dim_idx).as_u64(), 128);
+    assert_eq!(inner.state().get_input(count_idx).as_u64(), 1000);
+}
+
+#[test]
+fn materialize_wiring_from_outer_only_matches_by_name() {
+    let outer = compile_gk(r#"
+        input cycle: u64
+        dim := 128
+    "#).unwrap();
+
+    // Inner has an extern named 'offset' — not in outer scope
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        extern offset: u64
+    "#).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
+
+    // 'offset' should still be at its default (None for extern)
+    let idx = inner.program().find_input("offset").unwrap();
+    assert!(matches!(inner.state().get_input(idx), Value::None));
+}
+
+#[test]
+fn materialize_wiring_from_outer_does_not_affect_coordinates() {
+    let outer = compile_gk(r#"
+        input cycle: u64
+        dim := 128
+    "#).unwrap();
+
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        extern dim: u64
+        h := hash(cycle)
+    "#).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
+
+    // Coordinate input should still work normally
+    inner.set_inputs(&[42]);
+    let v1 = inner.pull("h").as_u64();
+    inner.set_inputs(&[43]);
+    let v2 = inner.pull("h").as_u64();
+    assert_ne!(v1, v2, "different cycles should produce different hashes");
+}
+
+// =========================================================================
+// scope_values: extraction for fiber replication
+// =========================================================================
+
+#[test]
+fn scope_values_extracts_bound_inputs() {
+    let outer = compile_gk(r#"
+        input cycle: u64
+        dim := 128
+        count := 500
+    "#).unwrap();
+
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        extern dim: u64
+        extern count: u64
+    "#).unwrap().program().clone();
+    let inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
+
+    let values = inner.scope_values();
+    // Should have entries for dim and count (and possibly cycle default)
+    let dim_val = values.iter().find(|(name, _)| name == "dim");
+    assert!(dim_val.is_some(), "scope_values should include dim");
+    assert_eq!(dim_val.unwrap().1.as_u64(), 128);
+}
+
+#[test]
+fn scope_values_empty_when_no_externs() {
+    let outer = compile_gk(r#"
+        input cycle: u64
+        dim := 128
+    "#).unwrap();
+
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        h := hash(cycle)
+    "#).unwrap().program().clone();
+    let inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
+
+    // Inner has no externs, so scope_values only has coordinate defaults
+    let values = inner.scope_values();
+    // All values should be the coordinate default (U64(0))
+    for (_, val) in &values {
+        assert!(matches!(val, Value::U64(0)),
+            "only coordinate defaults expected, got {:?}", val);
+    }
+}
+
+// =========================================================================
+// Shadowing: inner scope redefines outer names
+// =========================================================================
+
+#[test]
+fn inner_scope_shadows_outer_binding() {
+    let outer = compile_gk(r#"
+        input cycle: u64
+        dim := 128
+    "#).unwrap();
+    assert_eq!(outer.get_constant("dim").unwrap().as_u64(), 128);
+
+    // Inner scope redefines dim — should use its own value
+    let inner = compile_gk(r#"
+        input cycle: u64
+        dim := 256
+    "#).unwrap();
+    assert_eq!(inner.get_constant("dim").unwrap().as_u64(), 256);
+
+    // Inner scope has no extern for dim — materialize_wiring_from_outer won't wire it
+    let inner2_program = compile_gk(r#"
+        input cycle: u64
+        dim := 256
+    "#).unwrap().program().clone();
+    let inner2 = outer.subscope(GkMatter::builder().program(inner2_program).build().unwrap()).unwrap();
+    // dim is still 256 (inner definition), not 128 (outer)
+    assert_eq!(inner2.get_constant("dim").unwrap().as_u64(), 256);
+}
+
+// =========================================================================
+// shared modifier: metadata queries
+// =========================================================================
+
+#[test]
+fn shared_modifier_survives_compilation_pipeline() {
+    // Literal-init shared bindings — the only currently-supported
+    // shape; non-literal RHS is rejected at compile time.
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        shared running_total := 0
+        shared error_count := 0
+        normal_val := hash(cycle)
+    "#).unwrap();
+
+    let prog = kernel.program();
+    assert_eq!(prog.output_modifier("running_total"), BindingModifier::SHARED);
+    assert_eq!(prog.output_modifier("error_count"), BindingModifier::SHARED);
+    assert_eq!(prog.output_modifier("normal_val"), BindingModifier::NONE);
+
+    let mut shared = prog.shared_outputs();
+    shared.sort();
+    assert_eq!(shared, vec!["error_count", "running_total"]);
+}
+
+#[test]
+fn shared_literal_constant_folds() {
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        shared budget := 100
+    "#).unwrap();
+
+    assert_eq!(kernel.program().output_modifier("budget"), BindingModifier::SHARED);
+    assert_eq!(kernel.lookup("budget").unwrap().as_u64(), 100);
+}
+
+// =========================================================================
+// final modifier: metadata queries
+// =========================================================================
+
+#[test]
+fn final_modifier_survives_compilation_pipeline() {
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        const dataset := "example"
+        const dim := 128
+        mutable_val := hash(cycle)
+    "#).unwrap();
+
+    let prog = kernel.program();
+    assert_eq!(prog.output_modifier("dataset"), BindingModifier::CONST);
+    assert_eq!(prog.output_modifier("dim"), BindingModifier::CONST);
+    assert_eq!(prog.output_modifier("mutable_val"), BindingModifier::NONE);
+
+    let mut finals = prog.const_outputs();
+    finals.sort();
+    assert_eq!(finals, vec!["dataset", "dim"]);
+}
+
+#[test]
+fn const_literal_constant_folds() {
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        const max_dim := 512
+    "#).unwrap();
+
+    assert_eq!(kernel.program().output_modifier("max_dim"), BindingModifier::CONST);
+    assert_eq!(kernel.get_constant("max_dim").unwrap().as_u64(), 512);
+}
+
+// =========================================================================
+// Extern inputs used as wire arguments (compiler fix)
+// =========================================================================
+
+#[test]
+fn extern_wired_into_hash() {
+    let src = r#"
+        input cycle: u64
+        extern seed: u64
+        result := hash(seed)
+    "#;
+    let mut kernel = compile_gk(src).unwrap();
+    let idx = kernel.program().find_input("seed").unwrap();
+
+    kernel.state().set_input(idx, Value::U64(42));
+    kernel.set_inputs(&[0]);
+    let v1 = kernel.pull("result").as_u64();
+
+    kernel.state().set_input(idx, Value::U64(99));
+    kernel.set_inputs(&[0]);
+    let v2 = kernel.pull("result").as_u64();
+
+    assert_ne!(v1, v2, "different seeds should produce different hashes");
+}
+
+#[test]
+fn extern_in_binary_expression() {
+    let src = r#"
+        input cycle: u64
+        extern multiplier: u64
+        result := cycle * multiplier
+    "#;
+    let mut kernel = compile_gk(src).unwrap();
+    let idx = kernel.program().find_input("multiplier").unwrap();
+
+    kernel.state().set_input(idx, Value::U64(7));
+    kernel.set_inputs(&[6]);
+    assert_eq!(kernel.pull("result").as_u64(), 42);
+}
+
+#[test]
+fn extern_in_function_chain() {
+    let src = r#"
+        input cycle: u64
+        extern base: u64
+        h := hash(base)
+        result := mod(h, 100)
+    "#;
+    let mut kernel = compile_gk(src).unwrap();
+    let idx = kernel.program().find_input("base").unwrap();
+
+    kernel.state().set_input(idx, Value::U64(42));
+    kernel.set_inputs(&[0]);
+    let v = kernel.pull("result").as_u64();
+    assert!(v < 100);
+}
+
+#[test]
+fn extern_and_coordinate_mixed() {
+    let src = r#"
+        input cycle: u64
+        extern offset: u64
+        result := hash(cycle) + offset
+    "#;
+    let mut kernel = compile_gk(src).unwrap();
+    let idx = kernel.program().find_input("offset").unwrap();
+
+    kernel.state().set_input(idx, Value::U64(1000));
+    kernel.set_inputs(&[42]);
+    let v1 = kernel.pull("result").as_u64();
+
+    kernel.state().set_input(idx, Value::U64(2000));
+    kernel.set_inputs(&[42]);
+    let v2 = kernel.pull("result").as_u64();
+
+    assert_eq!(v2 - v1, 1000, "offset difference should be reflected");
+}
+
+// =========================================================================
+// Scope composition: full outer → inner pipeline
+// =========================================================================
+
+#[test]
+fn full_scope_pipeline_outer_to_inner() {
+    // Simulate workload scope → phase scope composition
+    let outer = compile_gk(r#"
+        input cycle: u64
+        dim := 128
+        base_count := 10000
+    "#).unwrap();
+
+    // Inner scope uses outer constants via extern + GK wire
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        extern dim: u64
+        extern base_count: u64
+        id := hash(cycle) + base_count
+    "#).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
+
+    // Verify both externs were bound correctly
+    inner.set_inputs(&[0]);
+    let dim_val = inner.pull("dim").as_u64();
+    assert_eq!(dim_val, 128);
+
+    inner.set_inputs(&[42]);
+    let id = inner.pull("id").as_u64();
+    // id = hash(42) + 10000, should be > 10000
+    assert!(id >= 10000, "id should include base_count offset, got {id}");
+}
+
+#[test]
+fn scope_pipeline_with_shared_and_final() {
+    let outer = compile_gk(r#"
+        input cycle: u64
+        shared error_budget := 100
+        const max_dim := 256
+        normal := hash(cycle)
+    "#).unwrap();
+
+    let prog = outer.program();
+    assert_eq!(prog.output_modifier("error_budget"), BindingModifier::SHARED);
+    assert_eq!(prog.output_modifier("max_dim"), BindingModifier::CONST);
+    assert_eq!(prog.output_modifier("normal"), BindingModifier::NONE);
+
+    // Inner scope sees the outer's constants via bind
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        extern error_budget: u64
+        extern max_dim: u64
+    "#).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
+
+    let eb_idx = inner.program().find_input("error_budget").unwrap();
+    let md_idx = inner.program().find_input("max_dim").unwrap();
+    assert_eq!(inner.state().get_input(eb_idx).as_u64(), 100);
+    assert_eq!(inner.state().get_input(md_idx).as_u64(), 256);
+}
+
+// =========================================================================
+// Multiple sequential scopes (simulates phases)
+// =========================================================================
+
+#[test]
+fn sequential_inner_scopes_are_independent() {
+    let outer = compile_gk(r#"
+        input cycle: u64
+        seed := 42
+    "#).unwrap();
+
+    // First inner scope
+    let inner1_program = compile_gk(r#"
+        input cycle: u64
+        extern seed: u64
+        h := hash(seed)
+    "#).unwrap().program().clone();
+    let mut inner1 = outer.subscope(GkMatter::builder().program(inner1_program).build().unwrap()).unwrap();
+    inner1.set_inputs(&[0]);
+    let v1 = inner1.pull("h").as_u64();
+
+    // Second inner scope — should produce identical result
+    let inner2_program = compile_gk(r#"
+        input cycle: u64
+        extern seed: u64
+        h := hash(seed)
+    "#).unwrap().program().clone();
+    let mut inner2 = outer.subscope(GkMatter::builder().program(inner2_program).build().unwrap()).unwrap();
+    inner2.set_inputs(&[0]);
+    let v2 = inner2.pull("h").as_u64();
+
+    assert_eq!(v1, v2, "identical inner scopes with same outer should be deterministic");
+}
+
+// =========================================================================
+// Diagnostic contract: source and context
+// =========================================================================
+
+#[test]
+fn all_kernels_have_diagnostic_context() {
+    let src = r#"
+        input cycle: u64
+        h := hash(cycle)
+    "#;
+    let kernel = compile_gk(src).unwrap();
+    let source = kernel.program().source();
+    assert!(source.contains("hash(cycle)"), "source should be preserved");
+}
+
+#[test]
+fn extern_kernel_has_source() {
+    let src = r#"
+        input cycle: u64
+        extern dim: u64
+        h := hash(dim)
+    "#;
+    let kernel = compile_gk(src).unwrap();
+    assert!(kernel.program().source().contains("extern dim"));
+}
+
+// (Earlier tests of `propagate_shared_to` retired alongside the
+// API itself — `SharedCell`-backed input slots replace the
+// explicit-propagate mechanism. Cell-based behavior is covered
+// by the `shared_*` tests at the end of this file.)
+
+// =========================================================================
+// Extern default expressions (`extern name: type = default`)
+// =========================================================================
+//
+// `evaluate_default_expr` accepts literal forms only — IntLit,
+// FloatLit, StringLit, plus the `true`/`false` identifiers for
+// bool ports. Non-literal expressions surface a clear error at
+// compile time. These tests pin down both the accepted shapes
+// and the rejected ones.
+
+// All read-side checks go through `lookup()`, the canonical
+// two-tier read on `GkKernel`. That exercises the same path
+// that `interpolate_via_kernel`, `materialize_wiring_from_outer`, and
+// `propagate_shared_to` use, so a regression in any of them
+// would surface here too.
+
+#[test]
+fn extern_default_u64_literal() {
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        extern counter: u64 = 42
+    "#).unwrap();
+    assert_eq!(kernel.lookup("counter").unwrap().as_u64(), 42);
+}
+
+#[test]
+fn extern_default_u64_zero() {
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        extern counter: u64 = 0
+    "#).unwrap();
+    assert_eq!(kernel.lookup("counter").unwrap().as_u64(), 0);
+}
+
+#[test]
+fn extern_default_f64_float_literal() {
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        extern temperature: f64 = 3.14
+    "#).unwrap();
+    assert_eq!(kernel.lookup("temperature").unwrap().as_f64(), 3.14);
+}
+
+#[test]
+fn extern_default_f64_int_literal_widens() {
+    // Integer literal in an f64 slot widens to f64 — common YAML
+    // convention (`5` rather than `5.0`).
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        extern threshold: f64 = 5
+    "#).unwrap();
+    assert_eq!(kernel.lookup("threshold").unwrap().as_f64(), 5.0);
+}
+
+#[test]
+fn extern_default_string_literal() {
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        extern name: String = "guest"
+    "#).unwrap();
+    match kernel.lookup("name").unwrap() {
+        Value::Str(s) => assert_eq!(&*s, "guest"),
+        other => panic!("expected Str, got {other:?}"),
+    }
+}
+
+#[test]
+fn extern_default_no_default_starts_unset() {
+    // No default → input slot is `Value::None` (unset). `lookup`
+    // filters None internally, so it returns `None` for unset
+    // names — distinguishing them from set-but-zero values.
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        extern unset: u64
+    "#).unwrap();
+    assert!(kernel.lookup("unset").is_none(),
+        "unset extern should not resolve via lookup");
+}
+
+#[test]
+fn extern_default_visible_through_passthrough_output() {
+    // The auto-passthrough output named after the extern should
+    // surface the default value through `lookup` (the canonical
+    // two-tier read). Any caller using `interpolate_via_kernel`
+    // or `materialize_wiring_from_outer` against this kernel sees the default.
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        extern budget: u64 = 100
+    "#).unwrap();
+
+    let v = kernel.lookup("budget").expect("budget should resolve");
+    assert_eq!(v.as_u64(), 100);
+}
+
+#[test]
+fn extern_default_function_call_rejected() {
+    // Function calls aren't const literals — the compiler must
+    // reject them with a clear error.
+    let err = compile_gk(r#"
+        input cycle: u64
+        extern x: u64 = hash(0)
+    "#).expect_err("function call default must error");
+    assert!(err.contains("extern 'x' default"),
+        "error should name the extern: {err}");
+    assert!(err.contains("literal"),
+        "error should explain that literals are required: {err}");
+}
+
+#[test]
+fn extern_default_identifier_rejected() {
+    // Bare identifiers (referencing other bindings) are not
+    // const literals.
+    let err = compile_gk(r#"
+        input cycle: u64
+        extern x: u64 = somewhere
+    "#).expect_err("identifier default must error");
+    assert!(err.contains("extern 'x' default"), "error: {err}");
+}
+
+#[test]
+fn extern_default_type_mismatch_string_for_u64_rejected() {
+    let err = compile_gk(r#"
+        input cycle: u64
+        extern n: u64 = "not a number"
+    "#).expect_err("string default for u64 port must error");
+    assert!(err.contains("extern 'n' default"), "error: {err}");
+}
+
+#[test]
+fn extern_default_type_mismatch_float_for_u64_rejected() {
+    let err = compile_gk(r#"
+        input cycle: u64
+        extern n: u64 = 1.5
+    "#).expect_err("float default for u64 port must error");
+    assert!(err.contains("extern 'n' default"), "error: {err}");
+}
+
+#[test]
+fn extern_default_negative_for_u64_rejected_with_clear_message() {
+    // u64 can't represent negative numbers. Negative-literal
+    // defaults parse as `UnaryNeg(IntLit)` — not a recognized
+    // literal shape — so the compiler should reject with the
+    // same "literal required" message as other non-literal
+    // expressions.
+    let err = compile_gk(r#"
+        input cycle: u64
+        extern n: u64 = -5
+    "#).expect_err("negative literal default for u64 must error");
+    assert!(err.contains("extern 'n' default"), "error: {err}");
+}
+
+#[test]
+fn extern_default_bool_true_works() {
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        extern enabled: bool = true
+    "#).unwrap();
+    match kernel.lookup("enabled").unwrap() {
+        Value::Bool(true) => {}
+        other => panic!("expected Bool(true), got {other:?}"),
+    }
+}
+
+#[test]
+fn extern_default_bool_false_works() {
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        extern enabled: bool = false
+    "#).unwrap();
+    match kernel.lookup("enabled").unwrap() {
+        Value::Bool(false) => {}
+        other => panic!("expected Bool(false), got {other:?}"),
+    }
+}
+
+// =========================================================================
+// `shared X := <literal>` compiles to a SharedCell-backed slot
+// =========================================================================
+//
+// Per SRD-16 §"Mutability Rules: Shared Mutable", a literal-init
+// `shared` binding gives outer scope a real input slot AND a
+// passthrough output. Outer's construction auto-creates a
+// SharedCell on the slot; inner `materialize_wiring_from_outer` shares the
+// cell so writes from any kernel propagate to the others.
+
+#[test]
+fn shared_init_compiles_to_slot_with_initial_value() {
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        shared counter := 0
+    "#).unwrap();
+
+    // Output exists with Shared modifier.
+    assert_eq!(kernel.program().output_modifier("counter"),
+        BindingModifier::SHARED);
+    // And it's also a real input slot — the compiler created
+    // the slot+passthrough pair.
+    assert!(kernel.program().find_input("counter").is_some(),
+        "shared literal-init must create an input slot");
+    // Initial value visible via the canonical lookup path.
+    assert_eq!(kernel.lookup("counter").unwrap().as_u64(), 0);
+}
+
+#[test]
+fn shared_inner_write_propagates_to_outer_via_cell() {
+    let outer = compile_gk(r#"
+        input cycle: u64
+        shared counter := 5
+    "#).unwrap();
+
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        extern counter: u64
+    "#).unwrap().program().clone();
+    let mut inner = outer.subscope(GkMatter::builder().program(inner_program).build().unwrap()).unwrap();
+
+    // Inner's lookup goes through the cell — sees initial 5.
+    assert_eq!(inner.lookup("counter").unwrap().as_u64(), 5);
+
+    // Inner writes through the shared cell.
+    let inner_idx = inner.program().find_input("counter").unwrap();
+    inner.state().set_input(inner_idx, Value::U64(42));
+
+    // Outer's `lookup` is cell-aware — sees inner's write
+    // intrinsically, no refresh step needed.
+    assert_eq!(outer.lookup("counter").unwrap().as_u64(), 42,
+        "outer's cell-aware lookup must reflect inner's write");
+}
+
+#[test]
+fn shared_two_inners_see_each_others_writes_via_cell() {
+    let outer = compile_gk(r#"
+        input cycle: u64
+        shared budget := 100
+    "#).unwrap();
+
+    let a_program = compile_gk(r#"
+        input cycle: u64
+        extern budget: u64
+    "#).unwrap().program().clone();
+    let b_program = compile_gk(r#"
+        input cycle: u64
+        extern budget: u64
+    "#).unwrap().program().clone();
+    let mut a = outer.subscope(GkMatter::builder().program(a_program).build().unwrap()).unwrap();
+    let b = outer.subscope(GkMatter::builder().program(b_program).build().unwrap()).unwrap();
+
+    // Both start at 100 — `lookup` reads the cell.
+    assert_eq!(a.lookup("budget").unwrap().as_u64(), 100);
+    assert_eq!(b.lookup("budget").unwrap().as_u64(), 100);
+
+    // A decrements through the shared cell.
+    let a_idx = a.program().find_input("budget").unwrap();
+    a.state().set_input(a_idx, Value::U64(99));
+
+    // B's `lookup` sees A's write intrinsically — no refresh
+    // step. The cell is shared between all kernels bound from
+    // the same outer.
+    assert_eq!(b.lookup("budget").unwrap().as_u64(), 99,
+        "second inner kernel must see the first's write through the shared cell");
+}
+
+#[test]
+fn shared_last_write_wins_under_concurrent_writers() {
+    // Even without concurrent threads in the test, the
+    // last-write-wins ordering is a property of the cell's
+    // serialization. Demonstrate by interleaving writes from
+    // two inner kernels and verifying the cell reflects the
+    // most recent one.
+    // Cycle bindings infer their type from the RHS literal —
+    // no `: String` annotation. The compiler's
+    // `try_fold_shared_init` matches `Expr::StringLit` and
+    // creates a Str-typed input slot.
+    let outer = compile_gk(r#"
+        input cycle: u64
+        shared status := "init"
+    "#).unwrap();
+
+    let a_program = compile_gk(r#"
+        input cycle: u64
+        extern status: String
+    "#).unwrap().program().clone();
+    let b_program = compile_gk(r#"
+        input cycle: u64
+        extern status: String
+    "#).unwrap().program().clone();
+    let mut a = outer.subscope(GkMatter::builder().program(a_program).build().unwrap()).unwrap();
+    let mut b = outer.subscope(GkMatter::builder().program(b_program).build().unwrap()).unwrap();
+
+    let a_idx = a.program().find_input("status").unwrap();
+    let b_idx = b.program().find_input("status").unwrap();
+
+    a.state().set_input(a_idx, Value::Str("from-a".into()));
+    b.state().set_input(b_idx, Value::Str("from-b".into()));
+    a.state().set_input(a_idx, Value::Str("from-a-again".into()));
+
+    // Both kernels see the most recent write through cell-aware
+    // `lookup` — no refresh step.
+    let expected = Value::Str("from-a-again".into());
+    assert_eq!(a.lookup("status").unwrap(), expected);
+    assert_eq!(b.lookup("status").unwrap(), expected);
+}
+
+#[test]
+fn shared_non_literal_init_rejected() {
+    // `shared X := <non-literal>` is rejected at compile time —
+    // a shared cell needs a single well-defined initial value
+    // and a computed RHS doesn't have one. See SRD-16
+    // §"Non-literal `shared` initializers".
+    let err = compile_gk(r#"
+        input cycle: u64
+        shared rolling := hash(cycle)
+    "#).expect_err("non-literal shared const must error");
+    assert!(err.contains("shared binding 'rolling'"), "error: {err}");
+    assert!(err.contains("literal initial value"), "error: {err}");
+}
+
+// =========================================================================
+// None propagation through string interpolation (SRD-73 follow-up)
+// =========================================================================
+//
+// `set: { X: "{Y}" }` desugars to `const X := "{Y}"`. With None-
+// propagating string interpolation, when `Y` resolves to None
+// (because it wasn't bound by the outer scope), the printf-backed
+// interpolation yields Value::None for X, and `get_constant`'s
+// existing None filter (gkkernel.rs:458-462) elides X from the
+// scope's outputs. Inner `lookup("X")` then falls through to the
+// outer scope's binding for X — exactly the shadow-semantics
+// behavior the set: sugar promises.
+//
+// Before the fix: printf rendered Value::None as the literal
+// "None" via the catch-all `_ => format!("{val:?}")` arm. That
+// shadowed any outer binding with `Str("None")` and corrupted
+// wire-protocol bytes downstream (e.g. CQL CREATE INDEX seeing
+// `'source_model': 'None'` instead of the workload-param default).
+
+#[test]
+fn const_with_unbound_interpolation_falls_through_to_outer() {
+    // Full SRD-74 conditional-shadow chain in one test:
+    //
+    // 1. Rule 1 (Printf::eval None-propagation): the
+    //    interpolation `"{Y}"` with Y unbound yields
+    //    `Value::None` instead of `Str("None")`.
+    // 2. `get_constant("X")` filter (gkkernel.rs:458-462):
+    //    None-valued output is elided from the scope.
+    // 3. SRD-74 P2 (auto-extern for `const X := <expr>` with
+    //    name references in RHS): the compiler adds an
+    //    implicit input slot for X.
+    // 4. `materialize_wiring_from_outer` wires that slot from
+    //    outer's `const X := "DEFAULT"`.
+    // 5. `lookup("X")` two-tier read: get_constant returns
+    //    None (filtered), find_input returns the wired slot
+    //    holding "DEFAULT".
+    //
+    // Net behavior: inner's `const X := "{Y}"` is a CONDITIONAL
+    // shadow. Real value → shadow wins. None → outer's
+    // "DEFAULT" passes through. The `set:` desugar from SRD-73
+    // works correctly without any change to the desugar itself.
+    let outer = compile_gk(r#"
+        input cycle: u64
+        const X := "DEFAULT"
+    "#).unwrap();
+
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        extern Y: str
+        const X := "{Y}"
+    "#).unwrap().program().clone();
+    let inner = outer.subscope(
+        GkMatter::builder().program(inner_program).build().unwrap()
+    ).unwrap();
+
+    // No literal "None" text. No empty string. The conditional
+    // shadow falls through transparently to the outer DEFAULT.
+    assert_eq!(
+        inner.lookup("X").map(|v| v.as_str().to_string()),
+        Some("DEFAULT".to_string()),
+        "inner X should fall through to outer DEFAULT; got: {:?}",
+        inner.lookup("X"),
+    );
+}
+
+#[test]
+fn three_scope_chain_transitive_fall_through() {
+    // SRD-74 P2 + wiring fix: a None-valued conditional shadow
+    // in a MIDDLE scope must be transparent — descendants see
+    // the workload-scope default, not the middle's None.
+    //
+    // Scope chain:
+    //   workload:  const X := "WORKLOAD_DEFAULT"
+    //     middle:  const X := "{undef_in_middle}"
+    //              (RHS interpolation yields Value::None →
+    //               Rule 1 propagation → const folds to None
+    //               → get_constant filter elides → middle's
+    //               two-tier lookup falls through to its own
+    //               wired-from-workload input slot → returns
+    //               "WORKLOAD_DEFAULT")
+    //       inner: extern X: str
+    //              (wired from middle via materialize_wiring_from_outer.
+    //               With Step 2's preference for outer.lookup over
+    //               output_cell for const outputs, the wiring value-
+    //               copies middle.lookup("X") which is
+    //               "WORKLOAD_DEFAULT", NOT the None buffer.)
+    let workload = compile_gk(r#"
+        input cycle: u64
+        const X := "WORKLOAD_DEFAULT"
+    "#).unwrap();
+
+    let middle_program = compile_gk(r#"
+        input cycle: u64
+        extern undef_in_middle: str
+        const X := "{undef_in_middle}"
+    "#).unwrap().program().clone();
+    let middle = workload.subscope(
+        GkMatter::builder().program(middle_program).build().unwrap()
+    ).unwrap();
+
+    // Middle's own lookup demonstrates the inner-to-middle
+    // fall-through:
+    assert_eq!(
+        middle.lookup("X").map(|v| v.as_str().to_string()),
+        Some("WORKLOAD_DEFAULT".to_string()),
+        "middle.lookup(X) should fall through to workload default",
+    );
+
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        extern X: str
+    "#).unwrap().program().clone();
+    let inner = middle.subscope(
+        GkMatter::builder().program(inner_program).build().unwrap()
+    ).unwrap();
+
+    // Inner's lookup demonstrates the transitive fall-through:
+    // the None in middle's const buffer DOES NOT propagate to
+    // inner. The wiring uses middle.lookup which already walked
+    // up to workload's value.
+    assert_eq!(
+        inner.lookup("X").map(|v| v.as_str().to_string()),
+        Some("WORKLOAD_DEFAULT".to_string()),
+        "inner.lookup(X) should reach workload default through middle's transparent shadow",
+    );
+}
+
+#[test]
+fn pure_literal_const_does_not_auto_extern() {
+    // SRD-74 P2 only auto-externs consts whose RHS references
+    // at least one name. Pure-literal consts (e.g. the
+    // SRD-13f Gate 2 iter-var emission, `const x := 1`) MUST
+    // NOT get an input slot — they always fold to a real value
+    // and there's nothing for the chain to fall through to.
+    // The Gate 2 invariant in
+    // comprehension::synthesis::tests::iter_var_as_final_const
+    // is the canonical assertion for this case.
+    let kernel = compile_gk(r#"
+        input cycle: u64
+        const x := 42
+    "#).unwrap();
+
+    assert!(kernel.program().find_input("x").is_none(),
+        "pure-literal const must not get an auto-extern input slot");
+    assert_eq!(kernel.get_constant("x").unwrap().as_u64(), 42);
+}
+
+#[test]
+fn const_with_bound_interpolation_shadows_outer() {
+    // Regression guard for the happy path: when the interpolation
+    // input IS bound, the const shadows the outer binding as
+    // expected. None propagation must not break the normal case.
+    let outer = compile_gk(r#"
+        input cycle: u64
+        const X := "DEFAULT"
+        const Y := "OVERRIDE"
+    "#).unwrap();
+
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        extern Y: str
+        const X := "{Y}"
+    "#).unwrap().program().clone();
+    let inner = outer.subscope(
+        GkMatter::builder().program(inner_program).build().unwrap()
+    ).unwrap();
+
+    // Y is bound by outer ("OVERRIDE"), so the interpolation
+    // produces Str("OVERRIDE"), get_constant returns it, and
+    // the inner X shadows the outer "DEFAULT".
+    assert_eq!(
+        inner.lookup("X").map(|v| v.as_str().to_string()),
+        Some("OVERRIDE".to_string()),
+    );
+}

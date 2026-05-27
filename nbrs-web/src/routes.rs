@@ -15,8 +15,8 @@ use axum::response::Html;
 use axum::Form;
 
 use nbrs_metrics::reporters::openmetrics_parse;
-use nbrs_variates::dsl::registry;
-use nbrs_variates::viz;
+use polydat::dsl::registry;
+use polydat::viz;
 
 use crate::models::*;
 use crate::ws::MetricsBroadcast;
@@ -92,7 +92,7 @@ pub async fn stdlib_page(headers: HeaderMap) -> Html<String> {
 pub async fn stdlib_source(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Html<String> {
-    let sources = nbrs_variates::dsl::stdlib_sources();
+    let sources = polydat::dsl::stdlib_sources();
     for (_filename, source) in sources {
         if source.contains(&format!("{name}(")) {
             return Html(format!(
@@ -232,7 +232,7 @@ pub async fn list_controls() -> axum::Json<Vec<ControlView>> {
     use nbrs_metrics::selector::Selector;
 
     let mut views = Vec::new();
-    let Some(root) = nbrs_variates::nodes::runtime_context::session_root_handle() else {
+    let Some(root) = polydat::nodes::runtime_context::session_root_handle() else {
         return axum::Json(views);
     };
     for comp in find(&root, &Selector::new()) {
@@ -311,7 +311,7 @@ pub async fn set_control(
     axum::extract::Path(name): axum::extract::Path<String>,
     axum::Json(body): axum::Json<SetControlBody>,
 ) -> Result<axum::Json<SetControlResponse>, (StatusCode, axum::Json<SetControlError>)> {
-    let Some(root) = nbrs_variates::nodes::runtime_context::session_root_handle() else {
+    let Some(root) = polydat::nodes::runtime_context::session_root_handle() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             axum::Json(SetControlError {
@@ -460,10 +460,10 @@ fn build_function_groups(filter: Option<&str>) -> Vec<(String, Vec<FunctionView>
 }
 
 fn build_stdlib_groups() -> Vec<(String, Vec<StdlibModuleView>)> {
-    use nbrs_variates::dsl::ast::Statement;
-    use nbrs_variates::dsl::{lexer, parser};
+    use polydat::dsl::ast::Statement;
+    use polydat::dsl::{lexer, parser};
 
-    let sources = nbrs_variates::dsl::stdlib_sources();
+    let sources = polydat::dsl::stdlib_sources();
     let mut result: Vec<(String, Vec<StdlibModuleView>)> = Vec::new();
 
     for (filename, source) in sources {

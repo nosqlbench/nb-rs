@@ -315,6 +315,7 @@ mod tests {
             loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![],
             bindings: BindingsDef::GkSource("k := 5".into()),
+            poll: None,
         };
         assert_eq!(phase.gk_matter(), GkMatter::Definitions);
     }
@@ -329,6 +330,7 @@ mod tests {
             loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![],
             bindings: BindingsDef::default(),
+            poll: None,
         };
         assert_eq!(phase.gk_matter(), GkMatter::Definitions);
     }
@@ -342,6 +344,7 @@ mod tests {
             loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![],
             bindings: BindingsDef::default(),
+            poll: None,
         };
         assert_eq!(phase.gk_matter(), GkMatter::None);
     }
@@ -356,6 +359,7 @@ mod tests {
             loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![],
             bindings: BindingsDef::default(),
+            poll: None,
         };
         assert_eq!(phase.gk_matter(), GkMatter::Readonly);
     }

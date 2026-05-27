@@ -5,7 +5,7 @@ that turns a clause-based iteration spec into a typed tuple
 stream. Companion to SRD-18b §"The Comprehension model" (which
 covers the AST + execution plumbing). This SRD covers
 **syntax** — what users write — and how each form lowers to
-the same canonical [`nbrs_variates::comprehension::Comprehension`]
+the same canonical [`polydat::comprehension::Comprehension`]
 AST.
 
 > **Status:** Layer 1 (literal lists), Layer 4 (`where`
@@ -466,7 +466,7 @@ positions is the workaround.
 ## Canonical text form vs YAML sugar
 
 The text form passed to
-[`parse_comprehension_text`](../../nbrs-variates/src/comprehension/parse.rs)
+[`parse_comprehension_text`](../../polydat/src/comprehension/parse.rs)
 is the canonical surface. YAML accepts two interchangeable
 shapes; both lower to the same `Comprehension` AST.
 

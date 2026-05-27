@@ -56,7 +56,7 @@ pub mod colors {
 
 /// Reverse a leaf-first scope-coordinate label string into its
 /// root-first form for display. The canonical
-/// [`format_scope_coordinate_path`](nbrs_variates::kernel::scope_coords::format_scope_coordinate_path)
+/// [`format_scope_coordinate_path`](polydat::kernel::scope_coords::format_scope_coordinate_path)
 /// emits `(inner_a=…, inner_b=…), (outer=…)` (leaf-first) so it
 /// stays stable as the canonical structural identity used for
 /// pre-map ↔ runtime matching. Display surfaces (the terminal

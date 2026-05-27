@@ -49,8 +49,8 @@
 
 use std::collections::HashMap;
 
-use nbrs_variates::dsl::compile::compile_gk;
-use nbrs_variates::kernel::GkKernel;
+use polydat::dsl::compile::compile_gk;
+use polydat::kernel::GkKernel;
 
 /// Build the workload-params kernel from a params map. The
 /// resulting kernel exposes one `final <name> := <literal>`

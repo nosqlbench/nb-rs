@@ -27,7 +27,7 @@ use crate::state::{ActivePhase, PhaseEntry, PhaseStatus};
 
 /// `ReadoutContext` adapter for the TUI's phase rows.
 /// Carries the union of state needed by `phase_status` (live
-/// counters), `phase_done` (final summary), and
+/// counters), `phase_outcome` (final summary), and
 /// `phase_summary` (lifecycle marker). Built on demand each
 /// frame from the run-state snapshot.
 pub struct PhaseRowContext {
@@ -82,7 +82,7 @@ impl PhaseRowContext {
 
     /// Build a context for a phase that has reached a
     /// terminal state (completed / failed / pending).
-    /// Fires under `Event::PhaseEnd` so `phase_done` /
+    /// Fires under `Event::PhaseEnd` so `phase_outcome` /
     /// `phase_summary` produce their final-state forms.
     pub fn terminal(phase: &PhaseEntry) -> Self {
         let state = match &phase.status {
@@ -162,7 +162,7 @@ pub fn render_phase_readouts(
     // Pick the right context shape and event:
     //  - Live phase → Event::Update with phase_status's
     //    full progress / rate / counters / ETA chip.
-    //  - Terminal phase → Event::PhaseEnd with phase_done's
+    //  - Terminal phase → Event::PhaseEnd with phase_outcome's
     //    ✓ DONE summary (or phase_summary's [!!] failure).
     let (event, ctx_box): (ro::Event, Box<dyn ro::ReadoutContext>) = if let Some(a) = live {
         let ctx = PhaseRowContext::live(phase, a, refresh_tick);
@@ -176,7 +176,7 @@ pub fn render_phase_readouts(
     if binder.slot_len(event) == 0 {
         let default = match event {
             ro::Event::Update => ro::Registry::lookup("phase_status"),
-            ro::Event::PhaseEnd => ro::Registry::lookup("phase_done"),
+            ro::Event::PhaseEnd => ro::Registry::lookup("phase_outcome"),
             _ => None,
         };
         if let Some(handle) = default {

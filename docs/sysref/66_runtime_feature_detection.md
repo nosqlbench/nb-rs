@@ -24,10 +24,10 @@ and the workload won't actually detect the dialect at
 runtime until the path lands. See §"Push 2 follow-up:
 kernel-driven path" below for the design constraints
 discovered during the partial implementation.
-**Owner:** runtime / nbrs-variates / nbrs-activity / workload
+**Owner:** runtime / polydat / nbrs-activity / workload
 authors
 **Implementation target:**
-  `nbrs-variates/src/nodes/pick.rs` (new),
+  `polydat/src/nodes/pick.rs` (new),
   `nbrs-activity/src/wrappers.rs` (result-wire gk-call dispatch
   — replaces today's deferred-Warn stub at line ~751),
   `nbrs-activity/src/fixture.rs` / op-template scope wiring
@@ -73,7 +73,7 @@ new ad-hoc machinery:
    shape**, which is dropped (no shipped consumer to migrate).
 2. **`shared` extern bridge to upward writes** — the existing
    SRD-16 `shared`-modifier wire mechanism (already implemented
-   per `nbrs-variates/src/kernel/engines.rs::SharedCell`) already
+   per `polydat/src/kernel/engines.rs::SharedCell`) already
    lets an inner scope's write propagate to an outer scope's
    cell. SRD-66's contribution here is to **document and codify
    the contract for using it from a `result:` wire**, so workload
@@ -205,7 +205,7 @@ preserved verbatim, no escaping of inner double-quotes
 needed (mirrors `bindings: |`).
 
 `regex_match` is the existing GK stdlib node
-(`nbrs-variates/src/nodes/regex.rs`).
+(`polydat/src/nodes/regex.rs`).
 
 ### Built-in wires available in the result-bindings scope
 
@@ -369,8 +369,8 @@ Always-error, strict-independent:
 ### What's already shipped
 
 The `shared` modifier on outputs (SRD-16) is implemented end-
-to-end in `nbrs-variates`. The cell-backing primitive lives at
-`nbrs-variates/src/kernel/engines.rs::SharedCell` (an
+to-end in `polydat`. The cell-backing primitive lives at
+`polydat/src/kernel/engines.rs::SharedCell` (an
 `Arc<Mutex<Value>>`); `bind_outer_scope` plumbs the outer's
 `shared` output through to the inner's matching `extern` slot
 via the same cell, so inner-side writes propagate to outer
@@ -942,16 +942,16 @@ Three pushes with gates:
 
 ### Push 1 — Stdlib node functions: `pick`, `exactly_one_value`, `log_*`
 
-- `nbrs-variates/src/nodes/pick.rs` implements §"Surface 3".
+- `polydat/src/nodes/pick.rs` implements §"Surface 3".
   Variadic registration; `Arity::VariadicWires { min_wires:
   2 }`; compile-time validators (even arg count, all-bool
   first half, uniform value-half type); eval-time enriched
   panics (no-selector / multi-selector).
-- `nbrs-variates/src/nodes/exactly_one.rs` implements
+- `polydat/src/nodes/exactly_one.rs` implements
   §"Surface 4". One-arg signature; eval-time assertion that
   the structural input has unary shape; enriched panic on
   shape mismatch.
-- `nbrs-variates/src/nodes/log_levels.rs` implements
+- `polydat/src/nodes/log_levels.rs` implements
   §"Surface 5". Four pass-through node functions
   (`log_debug` / `log_info` / `log_warn` / `log_error`); each
   emits one diag line at its level via SRD-41 and returns
@@ -1119,7 +1119,7 @@ wiring the kernel-driven path next needs to address these:
 
 ### Design constraint 1 — the extern-vs-result-wire collision
 
-`bind_outer_scope` (`nbrs-variates/src/kernel/gkkernel.rs:369`)
+`bind_outer_scope` (`polydat/src/kernel/gkkernel.rs:369`)
 attaches an outer-scope `shared X := init` cell to an inner
 kernel's input slot ONLY when the inner kernel already
 declares `extern X: T`. There's no auto-creation of input

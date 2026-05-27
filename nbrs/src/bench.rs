@@ -5,8 +5,8 @@
 //! compilation levels, provenance modes, and thread counts.
 
 use std::sync::Arc;
-use nbrs_variates::dsl::compile::compile_gk_to_assembler;
-use nbrs_variates::kernel::GkProgram;
+use polydat::dsl::compile::compile_gk_to_assembler;
+use polydat::kernel::GkProgram;
 
 /// How a compiled kernel evaluates per cycle.
 ///
@@ -138,7 +138,7 @@ fn parse_bench_annotations(source: &str) -> BenchScenario {
 
     let (driver_source, driver_outputs) = if !driver_lines.is_empty() {
         let src = format!("input meta: u64\n{}", driver_lines.join("\n"));
-        let outputs = match nbrs_variates::dsl::compile::compile_gk(&src) {
+        let outputs = match polydat::dsl::compile::compile_gk(&src) {
             Ok(kernel) => {
                 kernel.program().output_names().iter()
                     .filter(|n| !n.starts_with("__"))
@@ -161,14 +161,14 @@ fn parse_bench_annotations(source: &str) -> BenchScenario {
 /// Per-thread driver state: compiled driver kernel + state.
 struct DriverState {
     program: Arc<GkProgram>,
-    state: nbrs_variates::kernel::GkState,
+    state: polydat::kernel::GkState,
     output_names: Vec<String>,
 }
 
 impl DriverState {
     fn new(scenario: &BenchScenario) -> Option<Self> {
         let source = scenario.driver_source.as_ref()?;
-        let kernel = nbrs_variates::dsl::compile::compile_gk(source).ok()?;
+        let kernel = polydat::dsl::compile::compile_gk(source).ok()?;
         let program = kernel.into_program();
         let state = program.create_state();
         Some(Self {
@@ -453,7 +453,7 @@ fn parse_bench_args(args: &[String]) -> BenchArgs {
 // ── Explain mode ───────────────────────────────────────────────
 
 fn explain_source(source: &str) {
-    use nbrs_variates::dsl::events::{CompileEvent, CompileEventLog};
+    use polydat::dsl::events::{CompileEvent, CompileEventLog};
     let mut log = CompileEventLog::new();
 
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
@@ -475,11 +475,11 @@ fn explain_source(source: &str) {
     }
     println!();
 
-    let tokens = match nbrs_variates::dsl::lexer::lex(source) {
+    let tokens = match polydat::dsl::lexer::lex(source) {
         Ok(t) => t,
         Err(e) => { eprintln!("error: lex failed: {e}"); return; }
     };
-    let ast = match nbrs_variates::dsl::parser::parse(tokens) {
+    let ast = match polydat::dsl::parser::parse(tokens) {
         Ok(a) => a,
         Err(e) => { eprintln!("error: parse failed: {e}"); return; }
     };
@@ -919,21 +919,21 @@ trait P1Engine {
     fn pull_discard(&mut self, program: &GkProgram, name: &str);
 }
 
-impl P1Engine for nbrs_variates::kernel::GkState {
+impl P1Engine for polydat::kernel::GkState {
     fn set_inputs(&mut self, coords: &[u64]) { self.set_inputs(coords); }
     fn pull_discard(&mut self, program: &GkProgram, name: &str) {
         let _ = self.pull(program, name);
     }
 }
 
-impl P1Engine for nbrs_variates::kernel::RawState {
+impl P1Engine for polydat::kernel::RawState {
     fn set_inputs(&mut self, coords: &[u64]) { self.set_inputs(coords); }
     fn pull_discard(&mut self, program: &GkProgram, name: &str) {
         let _ = self.pull(program, name);
     }
 }
 
-impl P1Engine for nbrs_variates::kernel::ProvScanState {
+impl P1Engine for polydat::kernel::ProvScanState {
     fn set_inputs(&mut self, coords: &[u64]) { self.set_inputs(coords); }
     fn pull_discard(&mut self, program: &GkProgram, name: &str) {
         let _ = self.pull(program, name);
@@ -948,7 +948,7 @@ impl P1Engine for nbrs_variates::kernel::ProvScanState {
 /// weighted-slot state. The returned `FnMut(u64)` evaluates one
 /// cycle including input generation and output selection.
 fn build_compiled_kernel(
-    asm: nbrs_variates::assembly::GkAssembler,
+    asm: polydat::assembly::GkAssembler,
     level: &str,
     _use_prov: bool,
     eval_mode: EvalMode,
@@ -1014,7 +1014,7 @@ fn build_compiled_kernel(
             }
         }
         "Hybrid" => {
-            asm.compile_hybrid().ok().and_then(|mut k: nbrs_variates::hybrid::HybridKernel| {
+            asm.compile_hybrid().ok().and_then(|mut k: polydat::hybrid::HybridKernel| {
                 let default_out = k.resolve_output(last_binding)?;
                 let n = k.coord_count();
                 let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));

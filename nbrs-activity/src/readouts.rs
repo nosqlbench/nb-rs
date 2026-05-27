@@ -8,9 +8,9 @@
 //!
 //! - The [`Readout`] trait + [`Lod`] / [`ContentMode`] enums.
 //! - The minimum [`ReadoutContext`] surface needed by the
-//!   `phase_done` built-in. Methods that future built-ins
+//!   `phase_outcome` built-in. Methods that future built-ins
 //!   will need are added in later pushes as needed.
-//! - One built-in: [`builtins::phase_done`] at
+//! - One built-in: [`builtins::phase_outcome`] at
 //!   `Lod::Labeled` / `ContentMode::Value`. Other LODs and
 //!   the explanation-overlay mode render zero bytes until
 //!   later pushes fill them in.

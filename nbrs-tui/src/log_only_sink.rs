@@ -228,7 +228,7 @@ fn run_render_loop(
                 let painted = nbrs_activity::observer::colorize_log_line(
                     entry_level, &entry.message);
                 // Split on embedded `\n` so multi-line log
-                // messages (e.g. the two-line phase_done
+                // messages (e.g. the two-line phase_outcome
                 // render) get `\r\n` after every row. Raw mode
                 // needs explicit `\r` to return to col 0; a
                 // bare `\n` leaves the cursor under the

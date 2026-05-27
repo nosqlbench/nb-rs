@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "nbrs",
-    "nbrs-variates",
+    "polydat",
     "nbrs-metrics",
     "nbrs-metricsql",
     "nbrs-workload",
@@ -35,7 +35,7 @@ resolver = "3"
 # explicitly via `cargo test -p cassandra-cpp` when desired.
 default-members = [
     "nbrs",
-    "nbrs-variates",
+    "polydat",
     "nbrs-metrics",
     "nbrs-metricsql",
     "nbrs-workload",

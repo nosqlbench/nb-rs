@@ -178,6 +178,22 @@ pub struct SceneNode {
     /// phase. See SRD-44 §"Phase identity".
     #[serde(default)]
     pub yaml_path: Vec<crate::checkpoint::PathSegment>,
+    /// SRD-76 — structured terminal-state record. `None`
+    /// while the phase is pending or running; populated
+    /// exactly once at phase end by the executor's
+    /// `set_phase_outcome` call. Carries the per-phase
+    /// `PhaseStatus`, wall-clock duration, and the
+    /// chronological error list.
+    ///
+    /// Co-existence with the legacy `status` /
+    /// `duration_secs` fields: the legacy fields stay as
+    /// the load-bearing renderer surface (TUI / stderr
+    /// observer / scene-tree-prints) until Push 4 lands
+    /// the new readouts that read this slot directly.
+    /// `set_phase_outcome` keeps the two in sync; new
+    /// consumers should read from here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<crate::phase_outcome::PhaseOutcome>,
 }
 
 /// The scene tree itself. `nodes[0]` is always the synthetic root.
@@ -209,6 +225,7 @@ impl SceneTree {
             own_names: Vec::new(),
             seq: None,
             yaml_path: Vec::new(),
+            outcome: None,
         });
         t
     }
@@ -278,6 +295,7 @@ impl SceneTree {
             own_names: Vec::new(),
             seq,
             yaml_path: Vec::new(),
+            outcome: None,
         });
         self.nodes[parent].children.push(id);
         id
@@ -403,6 +421,99 @@ impl SceneTree {
         if let Some(id) = self.find_phase(name, labels, None) {
             self.nodes[id].status = PhaseStatus::Failed(error.to_string());
         }
+    }
+
+    /// SRD-76 — install the structured terminal outcome on
+    /// a phase node. Mirrors the legacy `status` /
+    /// `duration_secs` fields so existing renderers see
+    /// consistent state (the legacy fields stay
+    /// load-bearing until SRD-76 Push 4 lands the new
+    /// readouts that read `outcome` directly).
+    ///
+    /// Matches the first phase with the given
+    /// `(name, labels)` regardless of current status — the
+    /// outcome can arrive on a Pending phase if pre-flight
+    /// failed before the running transition, on a Running
+    /// phase at normal completion, and idempotency in the
+    /// rare double-install case (debug-asserted off in
+    /// release builds).
+    pub fn set_phase_outcome(
+        &mut self,
+        name: &str,
+        labels: &str,
+        outcome: crate::phase_outcome::PhaseOutcome,
+    ) {
+        let Some(id) = self.find_phase(name, labels, None) else { return };
+        let n = &mut self.nodes[id];
+        // Overwrite-on-re-run matches the legacy `status` /
+        // `duration_secs` fields: comprehension iterations
+        // re-use the same SceneNode for each tuple of the
+        // for_each, so the LATEST outcome wins for the
+        // realtime display. Sqlite persistence (SRD-76
+        // Push 3) writes per-iteration rows keyed by
+        // (phase_name, phase_labels, ended_at_nanos) so the
+        // full history is preserved in the structured
+        // store; the in-memory carrier is the most-recent
+        // snapshot only.
+        // Keep the legacy status field in sync so renderers
+        // that haven't migrated to read `outcome` still see
+        // consistent state. The mapping is:
+        //   PhaseStatus::Completed       → status=Completed
+        //   PhaseStatus::Skipped         → status=Completed (operator-visible "this phase ran cleanly")
+        //   PhaseStatus::CursorSuspended → status=Completed (partial progress preserved)
+        //   PhaseStatus::Failed          → status=Failed(first error message)
+        let legacy_status = match outcome.status {
+            crate::phase_outcome::PhaseStatus::Completed
+            | crate::phase_outcome::PhaseStatus::Skipped
+            | crate::phase_outcome::PhaseStatus::CursorSuspended =>
+                PhaseStatus::Completed,
+            crate::phase_outcome::PhaseStatus::Failed => {
+                let msg = outcome.first_error_message()
+                    .unwrap_or("unknown error")
+                    .to_string();
+                PhaseStatus::Failed(msg)
+            }
+        };
+        n.status = legacy_status;
+        if outcome.duration_secs > 0.0 {
+            n.duration_secs = Some(outcome.duration_secs);
+        }
+        n.outcome = Some(outcome);
+    }
+
+    /// SRD-76 — project every phase's outcome onto the
+    /// session-wide pass/fail axis. Walks every phase node
+    /// that has been populated with a `PhaseOutcome`;
+    /// returns [`SessionDisposition::Failure`] when any
+    /// phase has [`crate::phase_outcome::PhaseStatus::Failed`],
+    /// [`SessionDisposition::Success`] otherwise. Phases
+    /// that never ran (still Pending at session end)
+    /// contribute nothing — interrupted-mid-run is not a
+    /// failure per SRD-76 §"SessionDisposition".
+    pub fn session_disposition(&self)
+        -> crate::phase_outcome::SessionDisposition
+    {
+        let any_failed = self.nodes.iter()
+            .filter(|n| matches!(n.kind, NodeKind::Phase))
+            .filter_map(|n| n.outcome.as_ref())
+            .any(|o| o.status.is_failure());
+        if any_failed {
+            crate::phase_outcome::SessionDisposition::Failure
+        } else {
+            crate::phase_outcome::SessionDisposition::Success
+        }
+    }
+
+    /// SRD-76 — iterate every phase node's structured
+    /// outcome in DFS order. Used by the (Push 3) sqlite
+    /// persister and the (Push 5) replay rehydrator. Skips
+    /// phases that never reached terminal state.
+    pub fn iter_phase_outcomes(&self)
+        -> impl Iterator<Item = &crate::phase_outcome::PhaseOutcome>
+    {
+        self.nodes.iter()
+            .filter(|n| matches!(n.kind, NodeKind::Phase))
+            .filter_map(|n| n.outcome.as_ref())
     }
 
     /// Effective status for a `Scope` (or `Root`) node, computed
@@ -578,5 +689,134 @@ mod tests {
         let mut t = build_simple();
         t.set_phase_running("p", "x=1", 1);
         assert_eq!(t.aggregate_status(t.root()), PhaseStatus::Running);
+    }
+
+    /// SRD-76 — `set_phase_outcome` installs the
+    /// structured outcome AND mirrors the terminal state
+    /// onto the legacy `status` field so existing
+    /// renderers stay consistent. `iter_phase_outcomes`
+    /// surfaces every populated outcome in DFS order.
+    #[test]
+    fn set_phase_outcome_installs_structured_and_mirrors_legacy() {
+        use crate::phase_outcome::{PhaseIdentity, PhaseOutcome, PhaseErrorDetail};
+        let mut t = build_simple();
+        t.set_phase_running("p", "x=1", 1);
+        let outcome = PhaseOutcome::completed(
+            PhaseIdentity::new("p", "x=1"),
+            2.5,
+        );
+        t.set_phase_outcome("p", "x=1", outcome.clone());
+        let phase_id = t.find_phase("p", "x=1", None).expect("phase found");
+        let n = &t.nodes[phase_id];
+        assert_eq!(n.outcome.as_ref(), Some(&outcome));
+        assert_eq!(n.status, PhaseStatus::Completed);
+        assert_eq!(n.duration_secs, Some(2.5));
+        // iter_phase_outcomes returns exactly the installed one
+        let outcomes: Vec<_> = t.iter_phase_outcomes().collect();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0], &outcome);
+    }
+
+    /// SRD-76 — installing a `Failed` outcome maps the
+    /// first error's message onto the legacy
+    /// `PhaseStatus::Failed(String)` so the existing
+    /// status-line renderer continues to print the
+    /// reason without code changes.
+    #[test]
+    fn failed_outcome_legacy_status_carries_first_error_message() {
+        use crate::phase_outcome::{PhaseIdentity, PhaseOutcome, PhaseErrorDetail};
+        let mut t = build_simple();
+        t.set_phase_running("p", "x=1", 1);
+        let outcome = PhaseOutcome::failed(
+            PhaseIdentity::new("p", "x=1"),
+            142.7,
+            vec![PhaseErrorDetail {
+                class: "poll_timeout".into(),
+                message: "deadline reached after 14400s".into(),
+                op_name: None,
+                cycle: None,
+                op_template: None,
+                op_resolved: None,
+                at_nanos: 1_000,
+                retryable: false,
+            }],
+        );
+        t.set_phase_outcome("p", "x=1", outcome);
+        let phase_id = t.find_phase("p", "x=1", None).expect("phase found");
+        match &t.nodes[phase_id].status {
+            PhaseStatus::Failed(msg) =>
+                assert_eq!(msg, "deadline reached after 14400s"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    /// SRD-76 — `session_disposition` is `Failure` iff
+    /// any populated outcome is `PhaseStatus::Failed`.
+    /// Phases that never reached terminal state
+    /// contribute nothing (interrupted ≠ failed).
+    #[test]
+    fn session_disposition_failure_when_any_phase_failed() {
+        use crate::phase_outcome::{PhaseIdentity, PhaseOutcome,
+            PhaseErrorDetail, SessionDisposition};
+        let mut t = build_simple();
+        t.set_phase_outcome("p", "x=1",
+            PhaseOutcome::completed(
+                PhaseIdentity::new("p", "x=1"), 1.0,
+            ),
+        );
+        // Still all-success — only one outcome installed, and it's Completed.
+        assert_eq!(t.session_disposition(), SessionDisposition::Success);
+
+        // Install a Failed outcome — disposition flips.
+        t.set_phase_outcome("q", "x=1",
+            PhaseOutcome::failed(
+                PhaseIdentity::new("q", "x=1"), 0.5,
+                vec![PhaseErrorDetail {
+                    class: "BindError".into(),
+                    message: "bad".into(),
+                    op_name: None, cycle: None,
+                    op_template: None, op_resolved: None,
+                    at_nanos: 0, retryable: false,
+                }],
+            ),
+        );
+        assert_eq!(t.session_disposition(), SessionDisposition::Failure);
+    }
+
+    /// SRD-76 — a session where no phase ran (all
+    /// Pending) is `Success`. Interrupted-before-anything
+    /// shouldn't masquerade as a failure.
+    #[test]
+    fn session_disposition_success_when_no_phase_ran() {
+        use crate::phase_outcome::SessionDisposition;
+        let t = build_simple();
+        assert_eq!(t.session_disposition(), SessionDisposition::Success);
+    }
+
+    /// SRD-76 — Skipped and CursorSuspended are
+    /// non-failures at the session level. Both
+    /// contribute `Success` even without any
+    /// `Completed` siblings.
+    #[test]
+    fn session_disposition_skipped_and_cursor_suspended_are_success() {
+        use crate::phase_outcome::{PhaseIdentity, PhaseOutcome,
+            PhaseStatus as POStatus, SessionDisposition};
+        let mut t = build_simple();
+        t.set_phase_outcome("p", "x=1",
+            PhaseOutcome::skipped(PhaseIdentity::new("p", "x=1")),
+        );
+        // CursorSuspended built ad-hoc (no constructor
+        // helper for it yet — Push 1 intentionally
+        // narrow).
+        t.set_phase_outcome("q", "x=1",
+            PhaseOutcome {
+                phase_id: PhaseIdentity::new("q", "x=1"),
+                status: POStatus::CursorSuspended,
+                duration_secs: 0.5,
+                errors: Vec::new(),
+                resume_cursor: None,
+            },
+        );
+        assert_eq!(t.session_disposition(), SessionDisposition::Success);
     }
 }

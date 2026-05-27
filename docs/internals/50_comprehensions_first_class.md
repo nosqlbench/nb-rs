@@ -1,7 +1,7 @@
 # Comprehensions as a first-class GK concept
 
 Migration plan to lift the comprehension model out of
-`nbrs-activity` / `nbrs-workload` and into `nbrs-variates`,
+`nbrs-activity` / `nbrs-workload` and into `polydat`,
 making `Comprehension` a peer of `GkProgram` / `GkKernel` /
 `ScopeCoord` in the GK API surface.
 
@@ -36,7 +36,7 @@ nbrs-activity
 └── interpolate.rs        interpolate_via_kernel — reads GK kernel
                           for `{name}` substitution inside specs
 
-nbrs-variates             carries InputKind::IterationExtern, ScopeCoord,
+polydat             carries InputKind::IterationExtern, ScopeCoord,
                           GkKernel::scope_coordinates() — but doesn't
                           know about comprehensions as a structural concept.
 ```
@@ -55,7 +55,7 @@ against what values) is invisible to GK.
 ## Proposed boundaries
 
 ```
-nbrs-variates                                   ← becomes the home of the model
+polydat                                   ← becomes the home of the model
 ├── kernel/
 │   ├── scope_coords.rs   ScopeCoord (already there)
 │   └── gkkernel.rs       scope_coordinates() invariant (already there)
@@ -95,7 +95,7 @@ nbrs-workload                                   ← parser only
 
 ---
 
-## API surface (new in `nbrs-variates`)
+## API surface (new in `polydat`)
 
 ```rust
 pub mod comprehension {
@@ -173,10 +173,10 @@ Each phase lands cleanly, keeping the workspace green.
 
 ### Status (as of 2026-05-01)
 
-- **Phase A — Lift the AST.** ✅ Shipped. `nbrs-variates::comprehension::ast` carries `Clause`, `Comprehension`, `ComprehensionMode`.
+- **Phase A — Lift the AST.** ✅ Shipped. `polydat::comprehension::ast` carries `Clause`, `Comprehension`, `ComprehensionMode`.
 - **Phase B — Parser.** ✅ Shipped. `parse_clause`, `parse_clause_list`, `comprehension_from_subspaces`, `split_respecting_parens` live in `comprehension::parse`. Workload parser delegates.
 - **Phase C — Evaluation.** ✅ Shipped. `evaluate_spec`, `pre_evaluate_clause`, `parse_list_with_types`, `value_to_gk_type_name`, `collect_string_interp_refs`, `interpolate_via_kernel`, `interpolate_with_lookup`, `enumerate_tuples` all in `comprehension::eval`. `nbrs-activity::interpolate` deleted.
-- **Phase D — Synthesis.** ✅ Shipped. `synthesize_for_each_scope`, `propagate_parent_inputs`, `collect_leaf_placeholders`, `scan_one`, `workload_param_type_name`, `format_workload_param_as_gk_literal` in `comprehension::synthesis`. `ManifestEntry`/`extract_manifest` moved to `nbrs-variates::kernel::manifest`. `iterate(comprehension, parent, …) → ComprehensionIter` is the headline ergonomic.
+- **Phase D — Synthesis.** ✅ Shipped. `synthesize_for_each_scope`, `propagate_parent_inputs`, `collect_leaf_placeholders`, `scan_one`, `workload_param_type_name`, `format_workload_param_as_gk_literal` in `comprehension::synthesis`. `ManifestEntry`/`extract_manifest` moved to `polydat::kernel::manifest`. `iterate(comprehension, parent, …) → ComprehensionIter` is the headline ergonomic.
 - **Phase E — Drop duplicated representations.** ✅ Shipped. `ScenarioNode::ForEach` / `ForCombinations` / `ForEachUnion` collapsed into one `ScenarioNode::Comprehension { comprehension, children }`; same on `ScopeKind`. `find_comprehension_scope` replaces the trio of find methods. Bespoke `spec` / `specs` / `sets` fields gone.
 - **Phase F — SRD pass.** ✅ Shipped (this commit). SRD-18b §"The Comprehension model" plus the canonical-traversal table now describe the unified shape.
 
@@ -184,7 +184,7 @@ Each phase lands cleanly, keeping the workspace green.
 
 ### Phase A — Lift the AST
 
-1. Create `nbrs-variates/src/comprehension/{mod.rs, ast.rs}`.
+1. Create `polydat/src/comprehension/{mod.rs, ast.rs}`.
    Define `Clause`, `ComprehensionMode`, `Comprehension`.
    No behavior moved yet — pure type addition.
 2. Update `ScenarioNode` and `ScopeKind` to embed
@@ -199,12 +199,12 @@ Each phase lands cleanly, keeping the workspace green.
 3. Move `parse_one_clause`, `split_respecting_parens`,
    `parse_combination_specs` from
    `nbrs-workload/src/parse.rs` to
-   `nbrs-variates/comprehension::parse`. Add
+   `polydat/comprehension::parse`. Add
    `parse_comprehension_spec` as the one entry point. Keep
    the YAML-shape detection (string vs list vs object) in
    nbrs-workload — it's YAML-shaped, not GK-shaped.
 4. nbrs-workload's parser populates the new `comprehension:`
-   field by calling into nbrs-variates.
+   field by calling into polydat.
 
 **Risk: low.** Mechanical moves.
 

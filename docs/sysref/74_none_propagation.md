@@ -37,7 +37,7 @@ relies on.
 ### Rule 1 — String-interpolation propagates None *(IMPLEMENTED)*
 
 Status: **shipped** as of this SRD's land commit. See
-`nbrs-variates/src/nodes/format.rs::Printf::eval`.
+`polydat/src/nodes/format.rs::Printf::eval`.
 
 A source-level string literal containing one or more `{X_i}`
 placeholders desugars (via `parse_interpolated_string` in
@@ -90,14 +90,14 @@ that produces `""` from an absent value, and it does so by
 author opt-in. `{X ?? "default"}` is the explicit-default form.
 
 Parser landing site: extension of `parse_placeholder_body` in
-`nbrs-variates/src/dsl/parser.rs`. Each variant lowers to a
+`polydat/src/dsl/parser.rs`. Each variant lowers to a
 GK call that the kernel can JIT (e.g.
 `coalesce(X, "default")` for `{X ?? "default"}`).
 
 ### Rule 3 — Op-template render refuses silent None *(IMPLEMENTED)*
 
 Status: **shipped**. `Value::to_display_strict` lives in
-`nbrs-variates/src/node.rs` and returns `Option<String>` (None for
+`polydat/src/node.rs` and returns `Option<String>` (None for
 `Value::None`, Some(string) otherwise). `substitute_via_wires` in
 `nbrs-activity/src/wires.rs` uses the strict primitive and returns
 an explicit "wire resolved to `Value::None`" error naming the
@@ -145,7 +145,7 @@ compiler-level change, described next.
 
 ## Conditional-shadow semantics for `const` *(IMPLEMENTED)*
 
-Status: **shipped**. `nbrs-variates/src/dsl/compile.rs` (both
+Status: **shipped**. `polydat/src/dsl/compile.rs` (both
 the main `compile()` and `compile_filtered()` paths) detects
 const declarations whose RHS references at least one name
 (via the existing `dsl::validate::collect_references` walker)
@@ -199,14 +199,14 @@ inner const evaluates to None.
 
 Four layers of test coverage, mirroring the rules:
 
-1. `nbrs-variates/src/nodes/format.rs::tests` — Printf eval
+1. `polydat/src/nodes/format.rs::tests` — Printf eval
    directly. `printf_none_input_yields_none`,
    `printf_partial_none_taints_whole_result`, and
    `printf_all_present_unchanged` are the normative tests
    for Rule 1. Existing tests (`printf_simple`,
    `printf_multiple`, etc.) act as regression guards.
 
-2. `nbrs-variates/tests/scope_composition.rs` — scope-
+2. `polydat/tests/scope_composition.rs` — scope-
    composition integration tests proving the const →
    get_constant → lookup chain:
    - `const_with_bound_interpolation_shadows_outer` — happy
@@ -219,7 +219,7 @@ Four layers of test coverage, mirroring the rules:
    - `pure_literal_const_does_not_auto_extern` — Gate 2
      invariant preserved.
 
-3. `nbrs-variates/src/comprehension/synthesis.rs::tests::
+3. `polydat/src/comprehension/synthesis.rs::tests::
    iter_var_as_final_const` — Gate 2 regression guard that
    protects pure-literal iter-var consts from getting
    auto-externed.

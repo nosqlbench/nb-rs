@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use nbrs_variates::kernel::GkKernel;
+use polydat::kernel::GkKernel;
 
 use nbrs_workload::model::ParsedOp;
 use nbrs_workload::bindpoints;
@@ -114,10 +114,10 @@ fn split_args(s: &str) -> Vec<String> {
 /// Constructs a representative GK program containing the function
 /// and inspects the resulting kernel's node for its compile level.
 /// Uses the unified GK compiler — no separate dispatch table.
-pub fn probe_compile_level(func_name: &str) -> nbrs_variates::node::CompileLevel {
-    let sig = match nbrs_variates::dsl::registry::lookup(func_name) {
+pub fn probe_compile_level(func_name: &str) -> polydat::node::CompileLevel {
+    let sig = match polydat::dsl::registry::lookup(func_name) {
         Some(s) => s,
-        None => return nbrs_variates::node::CompileLevel::Phase1,
+        None => return polydat::node::CompileLevel::Phase1,
     };
 
     // Build args from per-parameter example values declared in FuncSig.
@@ -139,12 +139,12 @@ pub fn probe_compile_level(func_name: &str) -> nbrs_variates::node::CompileLevel
     // Probe compile level via catch_unwind — fallback is Phase1.
     // Does not replace the global panic hook (not thread-safe).
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-        || nbrs_variates::dsl::compile_gk(&source)
+        || polydat::dsl::compile_gk(&source)
     ));
 
     match result {
         Ok(Ok(kernel)) => kernel.program().last_node_compile_level(),
-        _ => nbrs_variates::node::CompileLevel::Phase1,
+        _ => polydat::node::CompileLevel::Phase1,
     }
 }
 
@@ -224,12 +224,12 @@ pub fn compile_from_scope(
     strict: bool,
     context: &str,
     cursor_limit: Option<u64>,
-    pragmas: &nbrs_variates::dsl::pragmas::PragmaSet,
+    pragmas: &polydat::dsl::pragmas::PragmaSet,
 ) -> Result<GkKernel, String> {
     let body = scope.emit();
     let required = scope.required_outputs();
     let source = prepend_effective_pragmas(pragmas, &body);
-    nbrs_variates::dsl::compile_gk_with_libs_and_limit(
+    polydat::dsl::compile_gk_with_libs_and_limit(
         &source, source_dir, gk_lib_paths, &required, strict, context, cursor_limit,
     )
 }
@@ -245,7 +245,7 @@ pub fn compile_from_scope(
 /// runtime-effect path; diagnostic uses query the scope tree
 /// directly via `ScopeTree::ancestors` for path labels.
 pub(crate) fn prepend_effective_pragmas(
-    pragmas: &nbrs_variates::dsl::pragmas::PragmaSet,
+    pragmas: &polydat::dsl::pragmas::PragmaSet,
     body: &str,
 ) -> String {
     let mut out = String::new();
@@ -362,7 +362,7 @@ pub fn build_workload_root_kernel(
     if !source.lines().any(|l| l.trim_start().starts_with("input ")) {
         source = format!("input cycle: u64\n{source}");
     }
-    let opts = nbrs_variates::subcontext::CompileOptions {
+    let opts = polydat::subcontext::CompileOptions {
         workload_dir: source_dir.map(|p| p.to_path_buf()),
         gk_lib_paths,
         strict,
@@ -389,7 +389,7 @@ pub fn build_workload_root_kernel(
     let mut inherited_param_names: Vec<String> = workload_params.keys()
         .cloned().collect();
     inherited_param_names.sort();
-    let matter = nbrs_variates::subcontext::GkMatter::builder()
+    let matter = polydat::subcontext::GkMatter::builder()
         .label(context)
         .source(source)
         .inherited_outputs(inherited_param_names)
@@ -435,7 +435,7 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
                 }
             }
         }
-        return nbrs_variates::dsl::compile_gk_with_outputs(&source, source_dir, &required, strict);
+        return polydat::dsl::compile_gk_with_outputs(&source, source_dir, &required, strict);
     }
 
     // Legacy mode: translate semicolon-chain bindings into GK source
@@ -521,7 +521,7 @@ pub fn compile_bindings_with_opts(ops: &[ParsedOp], source_dir: Option<&std::pat
     }
 
     let gk_source = gk_lines.join("\n");
-    nbrs_variates::dsl::compile_gk_with_outputs(&gk_source, source_dir, &required, strict)
+    polydat::dsl::compile_gk_with_outputs(&gk_source, source_dir, &required, strict)
 }
 
 // ---------------------------------------------------------------------------
@@ -644,7 +644,7 @@ pub fn legacy_chain_map_to_gk_lines(
 mod tests {
     use super::*;
 
-    use nbrs_variates::dsl::pragmas::{Pragma, PragmaSet};
+    use polydat::dsl::pragmas::{Pragma, PragmaSet};
 
     #[test]
     fn prepend_pragmas_strict_alias() {

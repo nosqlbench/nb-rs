@@ -10,8 +10,8 @@
 
 use std::collections::HashMap;
 
-use nbrs_variates::dsl::registry;
-use nbrs_variates::viz;
+use polydat::dsl::registry;
+use polydat::viz;
 use serde::{Deserialize, Serialize};
 
 // ─── Palette API ────────────────────────────────────────────
@@ -159,7 +159,7 @@ pub fn compile_graph(graph_json: &str) -> CompileResult {
     let svg = viz::gk_to_svg(&gk_source).unwrap_or_default();
 
     // Compile and sample a few cycles.
-    let samples = match nbrs_variates::dsl::compile_gk(&gk_source) {
+    let samples = match polydat::dsl::compile_gk(&gk_source) {
         Ok(mut kernel) => {
             let output_names: Vec<String> = kernel.output_names().iter().map(|s| s.to_string()).collect();
             (0..5u64)
@@ -442,7 +442,7 @@ pub fn plot_graph(req: PlotRequest) -> PlotResult {
         };
     }
 
-    match nbrs_variates::dsl::compile_gk(&translation.source) {
+    match polydat::dsl::compile_gk(&translation.source) {
         Ok(mut kernel) => {
             let output_names: Vec<String> = kernel.output_names()
                 .iter().map(|s| s.to_string()).collect();
@@ -461,9 +461,9 @@ pub fn plot_graph(req: PlotRequest) -> PlotResult {
                 for name in &output_names {
                     let v = kernel.pull(name);
                     let f = match v {
-                        nbrs_variates::node::Value::U64(n) => *n as f64,
-                        nbrs_variates::node::Value::F64(n) => *n,
-                        nbrs_variates::node::Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+                        polydat::node::Value::U64(n) => *n as f64,
+                        polydat::node::Value::F64(n) => *n,
+                        polydat::node::Value::Bool(b) => if *b { 1.0 } else { 0.0 },
                         _ => f64::NAN,
                     };
                     series.get_mut(name).unwrap().push(f);
@@ -508,7 +508,7 @@ pub fn eval_graph(req: EvalRequest) -> EvalResult {
 
     let svg = viz::gk_to_svg(&translation.source).unwrap_or_default();
 
-    match nbrs_variates::dsl::compile_gk(&translation.source) {
+    match polydat::dsl::compile_gk(&translation.source) {
         Ok(mut kernel) => {
             kernel.set_inputs(&[req.cycle]);
 

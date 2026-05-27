@@ -559,7 +559,7 @@ mod tests {
     fn test_fields(fields: &[(&str, &str)]) -> ResolvedFields {
         ResolvedFields::new(
             fields.iter().map(|(k, _)| k.to_string()).collect(),
-            fields.iter().map(|(_, v)| nbrs_variates::node::Value::Str((*v).into())).collect(),
+            fields.iter().map(|(_, v)| polydat::node::Value::Str((*v).into())).collect(),
         )
     }
 
@@ -568,9 +568,9 @@ mod tests {
     /// the `parent` parameter is plumbed through every `map_op`
     /// signature as `Arc<GkKernel>`; tests pass this fixture so
     /// they don't need to stand up the full activity-init pipeline.
-    fn test_kernel() -> std::sync::Arc<nbrs_variates::kernel::GkKernel> {
+    fn test_kernel() -> std::sync::Arc<polydat::kernel::GkKernel> {
         std::sync::Arc::new(
-            nbrs_variates::dsl::compile::compile_gk("input cycle: u64\n").unwrap()
+            polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap()
         )
     }
 
@@ -578,9 +578,9 @@ mod tests {
         ResolvedFields::new(
             vec!["name".into(), "age".into(), "score".into()],
             vec![
-                nbrs_variates::node::Value::Str("alice".into()),
-                nbrs_variates::node::Value::U64(30),
-                nbrs_variates::node::Value::F64(3.14),
+                polydat::node::Value::Str("alice".into()),
+                polydat::node::Value::U64(30),
+                polydat::node::Value::F64(3.14),
             ],
         )
     }
@@ -687,7 +687,7 @@ mod tests {
         let template = ParsedOp::simple("test", "key=value42");
         let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
 
-        let mut k = nbrs_variates::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
+        let mut k = polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
         let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let empty = ResolvedFields::new(Vec::new(), Vec::new());
@@ -719,12 +719,12 @@ mod tests {
         let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
 
         // Two compiled kernels — one per row's wire values.
-        let mut k1 = nbrs_variates::dsl::compile::compile_gk(
+        let mut k1 = polydat::dsl::compile::compile_gk(
             "input cycle: u64\n\
              name := \"alice\"\n\
              age := \"30\"\n",
         ).unwrap();
-        let mut k2 = nbrs_variates::dsl::compile::compile_gk(
+        let mut k2 = polydat::dsl::compile::compile_gk(
             "input cycle: u64\n\
              name := \"bob\"\n\
              age := \"25\"\n",
@@ -832,7 +832,7 @@ mod tests {
         template.op.insert("stmt".into(),
             serde_json::Value::String("default_terminal_marker_abc".into()));
         let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
-        let mut k = nbrs_variates::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
+        let mut k = polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
         let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let empty = ResolvedFields::new(Vec::new(), Vec::new());
@@ -882,7 +882,7 @@ mod tests {
         );
 
         let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
-        let mut k = nbrs_variates::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
+        let mut k = polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
         let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let empty = ResolvedFields::new(Vec::new(), Vec::new());
@@ -935,7 +935,7 @@ mod tests {
         );
 
         let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
-        let mut k = nbrs_variates::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
+        let mut k = polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
         let cw = nbrs_activity::wires::CycleWires::new(&mut k);
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let empty = ResolvedFields::new(Vec::new(), Vec::new());

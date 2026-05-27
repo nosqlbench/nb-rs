@@ -53,7 +53,7 @@ fn render_compact(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
 }
 
 fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
-    // Same prefix shape as `phase_done` so the START / DONE
+    // Same prefix shape as `phase_outcome` so the START / DONE
     // pair line up vertically:
     //   {indent}▶ [idx/total] [name] (coords) starting
     //   {indent}✓ [idx/total] [name] (coords) 100%
@@ -62,7 +62,6 @@ fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     let bold  = if color { "\x1b[1m"  } else { "" };
     let dim   = if color { "\x1b[2m"  } else { "" };
     let blue  = if color { "\x1b[34m" } else { "" };
-    let yellow= if color { "\x1b[33m" } else { "" };
     let reset = if color { "\x1b[0m"  } else { "" };
     let name = ctx.subject_name();
     let labels = ctx.subject_labels();
@@ -71,11 +70,28 @@ fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
         Some((s, t)) => format!("{dim}[{s}/{t}]{reset} "),
         None => String::new(),
     };
-    let coords_part: String = if labels.is_empty() {
-        String::new()
-    } else {
-        format!(" {bold}{yellow}{labels}{reset}")
+    let seq_visible: usize = match ctx.subject_seq() {
+        Some((s, t)) => format!("[{s}/{t}] ").chars().count(),
+        None => 0,
     };
+    // SRD-? — phase_starting is the entry into the
+    // ACTIVE phase. Use the full-stack lens
+    // (`summarize_changed_only: false`) so the operator
+    // sees the complete coord context as the phase begins;
+    // changed values relative to the prior completed
+    // phase remain highlighted. This call only READS the
+    // tracker; the corresponding `phase_outcome` at end
+    // advances it.
+    let head_consumed: usize = depth_indent.chars().count()
+        + 2  // ▶ + space
+        + seq_visible
+        + 2  // [ and ]
+        + name.chars().count();
+    let coords_part = super::phase_outcome::format_coords_block(
+        labels, color, head_consumed,
+        &format!("{depth_indent}  "),
+        /* summarize_changed_only */ false,
+    );
     let mut tmp = String::with_capacity(160);
     let _ = write!(
         &mut tmp,
@@ -88,13 +104,12 @@ fn render_labeled(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
 
 fn render_expanded(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize {
     // Same prefix as Labeled; iter-tuple coords on their own
-    // line below (matching phase_done's Expanded shape).
+    // line below (matching phase_outcome's Expanded shape).
     let color = ctx.use_color();
     let green = if color { "\x1b[32m" } else { "" };
     let bold  = if color { "\x1b[1m"  } else { "" };
     let dim   = if color { "\x1b[2m"  } else { "" };
     let blue  = if color { "\x1b[34m" } else { "" };
-    let yellow= if color { "\x1b[33m" } else { "" };
     let reset = if color { "\x1b[0m"  } else { "" };
     let name = ctx.subject_name();
     let labels = ctx.subject_labels();
@@ -109,7 +124,24 @@ fn render_expanded(ctx: &dyn ReadoutContext, out: &mut dyn ReadoutBuf) -> usize 
         "{depth_indent}{green}▶{reset} {seq_part}{bold}{blue}[{name}]{reset} starting",
     );
     if !labels.is_empty() {
-        let _ = write!(&mut tmp, "\n{depth_indent}  {bold}{yellow}{labels}{reset}");
+        // SRD-? — full coord stack on its own line for the
+        // expanded form, with change-highlight against the
+        // prior completed phase. Read-only against the
+        // tracker (phase_outcome is the advancement event).
+        let coords_continuation_indent = format!("{depth_indent}  ");
+        let coords_head_consumed = depth_indent.chars().count() + 2;
+        let coords_payload = super::phase_outcome::format_coords_block(
+            labels, color, coords_head_consumed,
+            &coords_continuation_indent,
+            /* summarize_changed_only */ false,
+        );
+        // The helper returns a leading-space payload;
+        // strip it because we already have the continuation
+        // indent providing the visual offset.
+        let payload = coords_payload.strip_prefix(' ').unwrap_or(&coords_payload);
+        if !payload.is_empty() {
+            let _ = write!(&mut tmp, "\n{depth_indent}  {payload}");
+        }
     }
     let len = tmp.len();
     let _ = out.write_str(&tmp);
@@ -166,7 +198,7 @@ mod tests {
             seq: Some((3, 8)),
             ..Default::default()
         };
-        // Prefix shape matches phase_done so the start/done
+        // Prefix shape matches phase_outcome so the start/done
         // pair line up: ▶ [seq] [name] [(coords)] starting.
         assert_eq!(render(&ctx, Lod::Labeled), "▶ [3/8] [run] starting");
     }

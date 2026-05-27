@@ -54,7 +54,7 @@ indistinguishable from the host's once compiled.
 Module files are resolved in order:
 1. Workload directory (same directory as the `.yaml`)
 2. `--gk-lib` paths (CLI argument)
-3. Bundled stdlib (compiled into `nbrs-variates`)
+3. Bundled stdlib (compiled into `polydat`)
 4. Error if not found
 
 ### Strict Mode

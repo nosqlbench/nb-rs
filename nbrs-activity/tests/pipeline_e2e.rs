@@ -18,8 +18,8 @@ use nbrs_activity::adapter::{
 };
 use nbrs_activity::opseq::{OpSequence, SequencerType};
 use nbrs_metrics::labels::Labels;
-use nbrs_variates::assembly::{GkAssembler, WireRef};
-use nbrs_variates::nodes::identity::Identity;
+use polydat::assembly::{GkAssembler, WireRef};
+use polydat::nodes::identity::Identity;
 
 // =========================================================================
 // Test adapters
@@ -49,7 +49,7 @@ impl DriverAdapter for RecordingAdapter {
     fn map_op(
         &self,
         template: &nbrs_workload::model::ParsedOp,
-        _parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+        _parent: std::sync::Arc<polydat::kernel::GkKernel>,
     ) -> Result<Box<dyn OpDispenser>, String>
     {
         let stmt_template = template.op.get("stmt")
@@ -149,7 +149,7 @@ impl OpDispenser for RecordingDispenser {
 // Helper: minimal GK program
 // =========================================================================
 
-fn test_kernel() -> nbrs_variates::kernel::GkKernel {
+fn test_kernel() -> polydat::kernel::GkKernel {
     let mut asm = GkAssembler::new(vec!["cycle".into()]);
     asm.add_node("id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
     asm.add_output("id", WireRef::node("id"));

@@ -1,7 +1,7 @@
 # 13d: Op-template GK scope layer
 
 **Status:** normative (sketch — not yet implemented)
-**Owner:** nbrs-variates (kernel/program API), nbrs-activity
+**Owner:** polydat (kernel/program API), nbrs-activity
   (scope-tree pre-walk, op-dispenser construction, dryrun
   diagnostics)
 **Cross-refs:** SRD-13 (GK modules), SRD-13b (combination modes),
@@ -569,7 +569,7 @@ changing observable behaviour. That delta has to be tested
 explicitly — without proofs, "flattened == materialised in every
 observable way" is a hope, not an invariant.
 
-The test suite lives in `nbrs-variates/tests/scope_flattening.rs`
+The test suite lives in `polydat/tests/scope_flattening.rs`
 and / or `nbrs-activity/tests/scope_flattening.rs` and proves:
 
 ### 6.1 Equivalence under flattening
@@ -742,7 +742,7 @@ SRD freezes them as decisions, not pending.
 | Phase | What                                                                          | Where                                      |
 |-------|-------------------------------------------------------------------------------|--------------------------------------------|
 | 1     | `HasGkMatter` trait + impls on `WorkloadPhase`, `ParsedOp`, `ScenarioNode`    | `nbrs-workload/src/model.rs`               |
-| 2     | `GkProgram::is_equivalent_to` / `is_subset_of`; redefinition-forbidden check  | `nbrs-variates/src/kernel.rs` (or sibling) |
+| 2     | `GkProgram::is_equivalent_to` / `is_subset_of`; redefinition-forbidden check  | `polydat/src/kernel.rs` (or sibling) |
 | 3     | Workload-init validation walk over op templates (Stage A–D, §4)               | `nbrs-activity/src/runner.rs`              |
 | 4     | Scope-tree node carries `materialised: bool` + `logical_name`; pre-walk sets  | `nbrs-activity/src/scope_tree.rs`          |
 | 5     | `nearest_materialised()` walking accessor (§5.1)                              | `nbrs-activity/src/scope_tree.rs`          |

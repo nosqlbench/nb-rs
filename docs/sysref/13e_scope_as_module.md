@@ -1,7 +1,7 @@
 # 13e: Scope-as-Module — Sub-contexts as First-Class GK Modules
 
 **Status:** normative (design — not yet implemented)
-**Owner:** nbrs-variates (kernel/program API, ScopeModule type),
+**Owner:** polydat (kernel/program API, ScopeModule type),
   nbrs-activity (scope-tree walk, OpBuilder/FiberBuilder rewrite,
   retirement of ad-hoc string-concat synthesisers)
 **Cross-refs:** SRD-11 (GK evaluation lifecycles), SRD-13 (GK
@@ -509,7 +509,7 @@ step and the test suite remains the contract for correctness.
 
 - Define `ScopeModule`, `ImportSpec`, `ExportSpec`,
   `ScopeContract`, `ScopeKernel<M>`, `ImportHandle<M>`,
-  `ExportHandle<M>`, `ContractViolation` in `nbrs-variates`.
+  `ExportHandle<M>`, `ContractViolation` in `polydat`.
 - `ScopeModule::compile_under` validates the import contract
   against a parent's exports + compiles the body.
 - `ScopeModule::instance_under` produces a `ScopeKernel<M>`
@@ -653,7 +653,7 @@ prove the legacy phase-merge unmerge preserves behaviour
 
 - `ScopeModule` / `ScopeKernel<M>` / `ImportHandle<M>` /
   `ExportHandle<M>` / `ContractViolation` shipped in
-  `nbrs-variates`.
+  `polydat`.
 - All four scope synthesisers (`build_scope`,
   `build_op_template_scope_kernel`,
   `synthesize_for_each_scope`, `build_do_loop_scope_kernel`)

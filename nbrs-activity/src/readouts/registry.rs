@@ -29,7 +29,7 @@ impl Registry {
         match name {
             "each_close"      => Some(Arc::new(builtins::each_close::EachClose) as Arc<dyn Readout>),
             "metric"          => Some(Arc::new(builtins::metric::Metric) as Arc<dyn Readout>),
-            "phase_done"      => Some(Arc::new(builtins::phase_done::PhaseDone) as Arc<dyn Readout>),
+            "phase_outcome"   => Some(Arc::new(builtins::phase_outcome::PhaseOutcomeReadout) as Arc<dyn Readout>),
             "phase_starting"  => Some(Arc::new(builtins::phase_starting::PhaseStarting) as Arc<dyn Readout>),
             "phase_status"    => Some(Arc::new(builtins::phase_status::PhaseStatus) as Arc<dyn Readout>),
             "phase_summary"   => Some(Arc::new(builtins::phase_summary::PhaseSummary) as Arc<dyn Readout>),
@@ -51,7 +51,7 @@ impl Registry {
         &[
             "each_close",
             "metric",
-            "phase_done",
+            "phase_outcome",
             "phase_starting",
             "phase_status",
             "phase_summary",

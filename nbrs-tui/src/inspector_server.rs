@@ -430,7 +430,7 @@ fn render_snapshot(state: &RunState) -> String {
 /// One row in the `controls` listing. Matches the structure of
 /// `nbrs-web::routes::list_controls` but rendered as text.
 fn render_controls() -> String {
-    let Some(root) = nbrs_variates::nodes::runtime_context::session_root_handle() else {
+    let Some(root) = polydat::nodes::runtime_context::session_root_handle() else {
         return "(no session)".into();
     };
     let mut rows: Vec<String> = Vec::new();
@@ -503,7 +503,7 @@ fn render_set(
         return "ERR no_runtime: inspector server has no tokio runtime handle; \
                 control writes are unavailable".into();
     };
-    let Some(root) = nbrs_variates::nodes::runtime_context::session_root_handle() else {
+    let Some(root) = polydat::nodes::runtime_context::session_root_handle() else {
         return format!("ERR no_session: no active session; cannot resolve control '{name}'");
     };
 
@@ -585,7 +585,7 @@ fn walk_live_metrics(
 }
 
 fn render_metrics() -> String {
-    let Some(root) = nbrs_variates::nodes::runtime_context::session_root_handle() else {
+    let Some(root) = polydat::nodes::runtime_context::session_root_handle() else {
         return "(no session)".into();
     };
     let instances = walk_live_metrics(&root);
@@ -666,7 +666,7 @@ fn render_metric(tail: &str) -> String {
         Ok(s) => s,
         Err(e) => return format!("ERR parse: {e}"),
     };
-    let Some(root) = nbrs_variates::nodes::runtime_context::session_root_handle() else {
+    let Some(root) = polydat::nodes::runtime_context::session_root_handle() else {
         return "(no session)".into();
     };
     let mut hits: Vec<&MetricInstance> = Vec::new();
@@ -913,7 +913,7 @@ mod tests {
     #[test]
     fn readout_with_no_phase_returns_placeholder() {
         let state = RunState::new("test.yaml", "fake", "stdout");
-        let out = render_readout(&state, "phase_done");
+        let out = render_readout(&state, "phase_outcome");
         assert!(out.contains("no phase"),
             "expected placeholder, got: {out}");
     }

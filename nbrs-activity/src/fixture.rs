@@ -23,8 +23,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nbrs_variates::kernel::{GkKernel, GkProgram, GkState};
-use nbrs_variates::node::Value;
+use polydat::kernel::{GkKernel, GkProgram, GkState};
+use polydat::node::Value;
 
 /// What the kernel reports a registered name resolves to.
 ///
@@ -318,7 +318,7 @@ impl<'a> ExecCtx<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nbrs_variates::dsl::compile::compile_gk;
+    use polydat::dsl::compile::compile_gk;
 
     fn k() -> GkKernel {
         compile_gk(

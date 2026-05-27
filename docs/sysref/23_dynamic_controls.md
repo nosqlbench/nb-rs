@@ -12,7 +12,7 @@
 >   `ConcurrencyApplier`; wired into
 >   `Activity::run_with_adapters`, declared on the activity's
 >   component at `attach_component` time.
-> - `nbrs-variates/src/nodes/runtime_context.rs` — `control`,
+> - `polydat/src/nodes/runtime_context.rs` — `control`,
 >   `control_u64`, `control_bool`, `control_str`, `control_set`,
 >   `rate`, `concurrency`, `phase`, `cycle`. The GK compiler
 >   threads the enclosing DSL binding name into `ControlSet`

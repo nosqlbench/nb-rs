@@ -1710,7 +1710,7 @@ mod tests {
         fn map_op(
             &self,
             _template: &nbrs_workload::model::ParsedOp,
-            _parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+            _parent: std::sync::Arc<polydat::kernel::GkKernel>,
         ) -> Result<Box<dyn crate::adapter::OpDispenser>, String>
         { Err("dummy".into()) }
     }

@@ -104,7 +104,7 @@ impl DriverAdapter for ScyllaCqlAdapter {
     fn map_op(
         &self,
         template: &ParsedOp,
-        parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+        parent: std::sync::Arc<polydat::kernel::GkKernel>,
     ) -> Result<Box<dyn OpDispenser>, String> {
         let (stmt_text, stmt_field) = STMT_FIELD_NAMES.iter()
             .find_map(|key| -> Option<(String, &'static str)> {

@@ -776,7 +776,7 @@ declaration removes the ambiguity.
   the layered grammar; `order` is a peer of `where`.
 - [SRD 18b: Scenario Tree and Scheduler](18b_scenario_tree_and_scheduler.md):
   the executor pipeline that consumes ordered tuples.
-- `nbrs-variates::comprehension::iterate`: the public
+- `polydat::comprehension::iterate`: the public
   ergonomic API that ordering plugs into.
 - DOE references for the geometric orderings: any standard
   text on factorial designs, fractional factorials, and

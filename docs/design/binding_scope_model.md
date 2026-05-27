@@ -226,7 +226,7 @@ string hacking that happens after.
 
 - `nbrs-workload/src/parse.rs` — `merge_bindings()` stays as-is
 - `nbrs-workload/src/model.rs` — `BindingsDef`, `ParsedOp` stay as-is
-- `nbrs-variates/src/dsl/*` — GK compiler stays as-is (it receives a string)
+- `polydat/src/dsl/*` — GK compiler stays as-is (it receives a string)
 
 ### Backward Compatibility
 

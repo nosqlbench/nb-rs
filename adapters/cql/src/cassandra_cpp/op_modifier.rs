@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use cassandra_cpp as cass;
 use nbrs_activity::op_modifier::OpFieldModifier;
-use nbrs_variates::node::Value;
+use polydat::node::Value;
 
 use crate::common::op_modifier::{CqlModifierFactory, parse_consistency};
 use crate::common::CqlConsistency;

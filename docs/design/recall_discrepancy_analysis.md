@@ -317,7 +317,7 @@ Confirm the right items get written to each table.
 
 - [x] **Ruled out**, 2026-05-06.
   - Both `neighbor_indices_at` and `filtered_neighbor_indices_at` in
-    `nbrs-variates/src/nodes/vectors.rs:635-654` are macro-generated facet
+    `polydat/src/nodes/vectors.rs:635-654` are macro-generated facet
     lookups: pure index reads into pre-computed dataset facets
     (`neighbor_indices` and `filtered_neighbor_indices` respectively). No
     filter logic in nbrs.
@@ -354,7 +354,7 @@ pvs_query:
 ```
 
 - [x] **Ruled out**, 2026-05-06. Both functions route through
-      `slice_arc_from_uniform` (`nbrs-variates/src/nodes/vectors.rs:567`),
+      `slice_arc_from_uniform` (`polydat/src/nodes/vectors.rs:567`),
       which does `let idx = index % d.count;` internally before any read.
       The bare-`q` vs `q % query_counts` workload-binding discrepancy is
       benign: the same modulo is applied either way. Cursor mismatch is not

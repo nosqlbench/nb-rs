@@ -9,10 +9,10 @@
 //! CQL engine registers the same node set and workloads using
 //! `cql_timeuuid(...)` are portable across engines.
 
-use nbrs_variates::node::{
+use polydat::node::{
     Commutativity, GkNode, NodeMeta, Port, PortType, Slot, SlotType, Value,
 };
-use nbrs_variates::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
+use polydat::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
 
 /// A deterministic CQL `timeuuid` from a `u64` seed.
 ///
@@ -94,16 +94,16 @@ pub fn cql_signatures() -> &'static [FuncSig] {
             arity: Arity::Fixed,
             commutativity: Commutativity::Positional,
     default_resolver: None,
-    output_type: nbrs_variates::dsl::registry::OutputType::Fixed,
+    output_type: polydat::dsl::registry::OutputType::Fixed,
         }]
     })
 }
 
 pub(crate) fn cql_build_node(
     name: &str,
-    _wires: &[nbrs_variates::assembly::WireRef],
-    _wire_types: &[nbrs_variates::node::PortType],
-    _consts: &[nbrs_variates::dsl::ConstArg],
+    _wires: &[polydat::assembly::WireRef],
+    _wire_types: &[polydat::node::PortType],
+    _consts: &[polydat::dsl::ConstArg],
 ) -> Option<Result<Box<dyn GkNode>, String>> {
     match name {
         "cql_timeuuid" => Some(Ok(Box::new(CqlTimeuuid::new()))),
@@ -111,7 +111,7 @@ pub(crate) fn cql_build_node(
     }
 }
 
-nbrs_variates::register_nodes!(cql_signatures, cql_build_node);
+polydat::register_nodes!(cql_signatures, cql_build_node);
 
 #[cfg(test)]
 mod tests {

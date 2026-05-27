@@ -37,7 +37,7 @@ The runtime already has the ingredients:
 - **Metrics database** (`logs/<session>/metrics.db`): SQLite,
   WAL mode, written every 30s. Phase-level totals + cadence
   reports already persist.
-- **Cursor sources** (`nbrs-variates::source::DataSourceFactory`)
+- **Cursor sources** (`polydat::source::DataSourceFactory`)
   with `global_extent()` known up-front. The runtime tracks
   `ops_started` / `ops_finished` per phase.
 - **Workload param + scenario hashes** are derivable — both come

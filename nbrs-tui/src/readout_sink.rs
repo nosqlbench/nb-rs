@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn end_to_end_phase_done_through_binder() {
+    fn end_to_end_phase_outcome_through_binder() {
         // Sanity: route a real builtin readout through the
         // sink, confirm the output parses to non-empty
         // styled lines.
@@ -406,12 +406,12 @@ mod tests {
             fn event(&self) -> ro::Event { ro::Event::PhaseEnd }
         }
         let mut sink = TuiReadoutSink::new();
-        let phase_done = ro::Registry::lookup("phase_done").unwrap();
-        let body = ro::BakedBody::from_single(phase_done, ro::Lod::Labeled);
+        let phase_outcome = ro::Registry::lookup("phase_outcome").unwrap();
+        let body = ro::BakedBody::from_single(phase_outcome, ro::Lod::Labeled);
         body.fire(&Ctx, ro::ContentMode::Value, &mut sink);
         let lines = sink.take();
         assert!(!lines.is_empty(), "expected at least one line");
-        // The phase_done renderer emits a green ✓ — confirm
+        // The phase_outcome renderer emits a green ✓ — confirm
         // some span on the first line carries Color::Green
         // (or LightGreen depending on the bright/dim variant).
         let has_green = lines[0].spans.iter().any(|s| {

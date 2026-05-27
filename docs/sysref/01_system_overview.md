@@ -23,7 +23,7 @@ service targets using composable data generation kernels.
 │  Activity engine: executor, op synthesis, sequencing,     │
 │  validation, dispenser wrappers                           │
 ├───────────────┬─────────────────────┬─────────────────────┤
-│  nbrs-workload  │  nbrs-variates        │  nbrs-metrics         │
+│  nbrs-workload  │  polydat        │  nbrs-metrics         │
 │  YAML parsing │  GK kernel, nodes,  │  Timers, counters,  │
 │  ParsedOp     │  DSL compiler,      │  HDR histograms,    │
 │  tag filters  │  constant folding   │  frame capture      │
@@ -37,12 +37,12 @@ service targets using composable data generation kernels.
 ### Dependency Rules
 
 1. Dependencies flow downward only — no reverse dependencies
-2. `nbrs-variates` is fully standalone (no workload, adapter, or
+2. `polydat` is fully standalone (no workload, adapter, or
    activity dependency). It can be extracted and used in other
    projects for deterministic data generation.
 3. `nbrs-workload` is standalone (parses YAML to `ParsedOp`)
 4. `nbrs-activity` depends on all three foundation crates
-   (nbrs-workload, nbrs-variates, nbrs-metrics) and defines the
+   (nbrs-workload, polydat, nbrs-metrics) and defines the
    adapter trait contract
 5. Adapter crates implement `DriverAdapter` / `OpDispenser`
    from nbrs-activity
@@ -55,7 +55,7 @@ service targets using composable data generation kernels.
 ```
 nb-rs/
 ├── nbrs/                    single user-facing binary
-├── nbrs-variates/           GK kernel and node library
+├── polydat/           GK kernel and node library
 ├── nbrs-workload/           YAML workload parser
 ├── nbrs-activity/           execution engine
 ├── nbrs-metrics/            metrics instruments and reporters
@@ -92,7 +92,7 @@ engine-cassandra-cpp`.
 ```
 Workload YAML ──▶ nbrs-workload ──▶ ParsedOp[]
                                       │
-                                      ├──▶ nbrs-variates (compile GK bindings)
+                                      ├──▶ polydat (compile GK bindings)
                                       │        │
                                       │        ▼
                                       │    GkProgram (immutable, shared Arc)

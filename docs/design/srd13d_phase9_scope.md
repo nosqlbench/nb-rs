@@ -65,7 +65,7 @@ What's NOT in place:
 - **No kernel handle reaches `MetricsDispenser::wrap`.** The
   op-template scope's kernel lives in the scope tree;
   `wrap` only sees the metrics decl + the component.
-- **No expression-string GK eval API.** `nbrs-variates`
+- **No expression-string GK eval API.** `polydat`
   exposes `GkAssembler` + `GkKernel`, but compiling and
   evaluating a free-form expression like `mul(latency_curve, 2)`
   in the context of an existing kernel's outputs is not a
@@ -88,10 +88,10 @@ What's NOT in place:
 | 1 | `nbrs-activity::scope_tree` | Expose a `find_op_template(name) -> Option<&ScopeNode>` accessor. Currently the tree knows about op-templates internally; the runtime needs a way to look one up by name + parent-phase context. |
 | 2 | `nbrs-activity::activity` | At op-dispenser construction (line ~1014), look up the scope-tree node for the template, walk to `nearest_materialised()`, get its `cached_kernel.get_or_init(...)` handle. Thread an `Option<Arc<GkKernel>>` into `MetricsDispenser::wrap`. |
 | 3 | `nbrs-activity::wrappers` | `MetricsDispenser::wrap` signature gets the kernel arg. Slot stores it (or shares one across slots if uniform). |
-| 4 | `nbrs-variates` | New API: `GkKernel::eval_expr(expr_str, inputs) -> Result<Value, EvalError>`. Compiles the expression string against the kernel's wire vocabulary, instances on demand (or reuses cached compiled fragments), runs, returns the scalar. |
+| 4 | `polydat` | New API: `GkKernel::eval_expr(expr_str, inputs) -> Result<Value, EvalError>`. Compiles the expression string against the kernel's wire vocabulary, instances on demand (or reuses cached compiled fragments), runs, returns the scalar. |
 | 5 | `nbrs-activity::wrappers` | Per-cycle path in `MetricsDispenser::execute`: if `value_expr` parses as a bare name → captures-lookup (existing). Else → `kernel.eval_expr(value_expr, fiber_inputs)`. |
 
-Estimated LOC: ~150 in `nbrs-variates` (the `eval_expr` API
+Estimated LOC: ~150 in `polydat` (the `eval_expr` API
 is the load-bearing piece — needs to handle expression
 parsing, type inference against the parent kernel's wire
 types, single-output extraction, and error reporting), ~80 in
@@ -104,7 +104,7 @@ types, single-output extraction, and error reporting), ~80 in
   GK consumer model is "compile a program from declared bindings,
   instance, run." Free-form expression eval at runtime is
   conceptually different — it's a REPL-style operation. The
-  existing `nbrs-variates::dsl` parser can probably be reused,
+  existing `polydat::dsl` parser can probably be reused,
   but binding the expression's free wires to the parent
   kernel's outputs is novel work.
 - **Caching strategy.** Naive: re-parse + re-compile `value_expr`

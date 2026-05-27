@@ -31,8 +31,8 @@
 //! `dryrun=phase`) can already start consuming it.
 
 use nbrs_workload::model::ScenarioNode;
-use nbrs_variates::comprehension::Comprehension;
-use nbrs_variates::dsl::pragmas::PragmaSet;
+use polydat::comprehension::Comprehension;
+use polydat::dsl::pragmas::PragmaSet;
 
 /// Index into the `ScopeTree.nodes` vector. Stable for the
 /// lifetime of the tree.
@@ -117,7 +117,7 @@ impl ScopeKind {
 
     /// Short label for diagnostic output (`dryrun=phase`, TUI).
     pub fn label(&self) -> String {
-        use nbrs_variates::comprehension::ComprehensionMode;
+        use polydat::comprehension::ComprehensionMode;
         match self {
             ScopeKind::Workload => "workload".into(),
             ScopeKind::Scenario { name } => format!("scenario '{name}'"),
@@ -216,7 +216,7 @@ pub struct ScopeNode {
     /// readers walk the parent chain via
     /// [`ScopeTree::lookup_name`] and never touch this slot
     /// directly.
-    pub cached_kernel: std::sync::OnceLock<std::sync::Arc<nbrs_variates::kernel::GkKernel>>,
+    pub cached_kernel: std::sync::OnceLock<std::sync::Arc<polydat::kernel::GkKernel>>,
     /// SRD-13d §3 scope-flattening mark — set once at
     /// pre-walk by [`ScopeTree::mark_scope_flattening`] and
     /// read by every consumer (premap, runtime, diagnostics).
@@ -656,7 +656,7 @@ impl ScopeTree {
     pub fn op_template_programs_for_phase(
         &self,
         phase_idx: ScopeNodeIdx,
-    ) -> std::collections::HashMap<String, std::sync::Arc<nbrs_variates::kernel::GkProgram>> {
+    ) -> std::collections::HashMap<String, std::sync::Arc<polydat::kernel::GkProgram>> {
         let mut out = std::collections::HashMap::new();
         for &child_idx in &self.nodes[phase_idx].children {
             let child = &self.nodes[child_idx];
@@ -688,7 +688,7 @@ impl ScopeTree {
     pub fn nearest_installed_ancestor_kernel(
         &self,
         idx: ScopeNodeIdx,
-    ) -> Option<std::sync::Arc<nbrs_variates::kernel::GkKernel>> {
+    ) -> Option<std::sync::Arc<polydat::kernel::GkKernel>> {
         let mut cursor = self.nodes.get(idx)?.parent;
         while let Some(p) = cursor {
             if let Some(k) = self.nodes[p].cached_kernel.get() {
@@ -704,13 +704,13 @@ impl ScopeTree {
     /// Skips ancestor levels whose `cached_kernel` is empty
     /// (intermediate nodes that don't own their own kernel).
     /// Used by the checkpoint identity path to feed
-    /// [`nbrs_variates::kernel::GkProgram::instance_hash`]
+    /// [`polydat::kernel::GkProgram::instance_hash`]
     /// (SRD-44 §"Identity matching at resume" + project
     /// memory `program_vs_instance_hash`).
     pub fn ancestor_kernels(
         &self,
         idx: ScopeNodeIdx,
-    ) -> Vec<std::sync::Arc<nbrs_variates::kernel::GkKernel>> {
+    ) -> Vec<std::sync::Arc<polydat::kernel::GkKernel>> {
         let mut out = Vec::new();
         let mut cursor = self.nodes.get(idx).and_then(|n| n.parent);
         while let Some(p) = cursor {
@@ -915,7 +915,7 @@ impl ScopeTree {
     pub fn install_kernel(
         &self,
         scope_idx: ScopeNodeIdx,
-        kernel: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+        kernel: std::sync::Arc<polydat::kernel::GkKernel>,
     ) -> bool {
         match self.nodes.get(scope_idx) {
             Some(node) => node.cached_kernel.set(kernel).is_ok(),
@@ -1011,15 +1011,15 @@ fn extract_phase_pragmas(phase: &nbrs_workload::model::WorkloadPhase) -> PragmaS
         // Lex/parse to AST to surface `Statement::Pragma`s. If
         // the source is malformed, skip — the real phase compile
         // will report a clean parse error later.
-        let tokens = match nbrs_variates::dsl::lexer::lex(src) {
+        let tokens = match polydat::dsl::lexer::lex(src) {
             Ok(t) => t,
             Err(_) => continue,
         };
-        let ast = match nbrs_variates::dsl::parser::parse(tokens) {
+        let ast = match polydat::dsl::parser::parse(tokens) {
             Ok(a) => a,
             Err(_) => continue,
         };
-        let local = nbrs_variates::dsl::pragmas::collect_from_ast(&ast);
+        let local = polydat::dsl::pragmas::collect_from_ast(&ast);
         entries.extend(local.entries);
     }
     PragmaSet { entries, parent: None }
@@ -1070,8 +1070,8 @@ mod tests {
         ScenarioNode::Phase(name.into())
     }
     fn for_each(spec: &str, children: Vec<ScenarioNode>) -> ScenarioNode {
-        let clauses = nbrs_variates::comprehension::parse_clause_list(spec).unwrap();
-        let comprehension = nbrs_variates::comprehension::Comprehension::cartesian(clauses);
+        let clauses = polydat::comprehension::parse_clause_list(spec).unwrap();
+        let comprehension = polydat::comprehension::Comprehension::cartesian(clauses);
         ScenarioNode::Comprehension { comprehension, children }
     }
 
@@ -1242,8 +1242,8 @@ mod tests {
     /// scope's canonical instance. A one-line `name := <const>`
     /// suffices to populate `output_map` so `get_constant`
     /// returns the folded value.
-    fn compile_kernel(source: &str) -> std::sync::Arc<nbrs_variates::kernel::GkKernel> {
-        let kernel = nbrs_variates::dsl::compile::compile_gk(source)
+    fn compile_kernel(source: &str) -> std::sync::Arc<polydat::kernel::GkKernel> {
+        let kernel = polydat::dsl::compile::compile_gk(source)
             .expect("test source should compile");
         std::sync::Arc::new(kernel)
     }
@@ -1264,7 +1264,7 @@ mod tests {
         let cached = tree.nodes[0].cached_kernel.get()
             .expect("install populated the slot");
         match cached.get_constant("dataset") {
-            Some(nbrs_variates::node::Value::Str(s)) => assert_eq!(&**s, "example"),
+            Some(polydat::node::Value::Str(s)) => assert_eq!(&**s, "example"),
             other => panic!("expected Str(\"example\"), got {other:?}"),
         }
     }
@@ -1278,18 +1278,18 @@ mod tests {
         // values are reachable on the synthesized kernel via
         // standard GK API. Validates the chain inheritance
         // path without any caller-side scope walking.
-        use nbrs_variates::kernel::GkKernel;
+        use polydat::kernel::GkKernel;
         use std::sync::Arc;
 
         // Parent: a workload-shaped kernel exposing `k_values`.
         let parent_src = "const k_values := \"1, 10\"\n";
         let parent: Arc<GkKernel> = Arc::new(
-            nbrs_variates::dsl::compile::compile_gk(parent_src).unwrap(),
+            polydat::dsl::compile::compile_gk(parent_src).unwrap(),
         );
 
         // Build the for_each scope kernel as the runner would.
         let parent_manifest = crate::runner::extract_manifest(parent.program());
-        let kernel = nbrs_variates::comprehension::synthesize_for_each_scope(
+        let kernel = polydat::comprehension::synthesize_for_each_scope(
             &[("k".to_string(), "{k_values}".to_string())],
             &parent_manifest,
             &parent,
@@ -1305,7 +1305,7 @@ mod tests {
         // the inherited extern is populated with the parent's
         // value.
         match kernel.get_input("k_values") {
-            Some(nbrs_variates::node::Value::Str(s)) => assert_eq!(&*s, "1, 10"),
+            Some(polydat::node::Value::Str(s)) => assert_eq!(&*s, "1, 10"),
             other => panic!("expected Str(\"1, 10\"), got {other:?}"),
         }
 
@@ -1339,16 +1339,16 @@ mod tests {
         // Pre-eval at synthesis detects U64 from "1, 10" and
         // declares `extern k: u64` instead of `extern k: String`.
         // Per SRD-18b "native types as the general rule".
-        use nbrs_variates::kernel::GkKernel;
+        use polydat::kernel::GkKernel;
         use std::sync::Arc;
 
         let parent_src = "const k_values := \"1, 10\"\n";
         let parent: Arc<GkKernel> = Arc::new(
-            nbrs_variates::dsl::compile::compile_gk(parent_src).unwrap(),
+            polydat::dsl::compile::compile_gk(parent_src).unwrap(),
         );
         let parent_manifest = crate::runner::extract_manifest(parent.program());
 
-        let kernel = nbrs_variates::comprehension::synthesize_for_each_scope(
+        let kernel = polydat::comprehension::synthesize_for_each_scope(
             &[("k".to_string(), "{k_values}".to_string())],
             &parent_manifest,
             &parent,
@@ -1364,7 +1364,7 @@ mod tests {
         let manifest = crate::runner::extract_manifest(kernel.program());
         let k_entry = manifest.iter().find(|e| e.name == "k")
             .expect("k must appear in manifest");
-        assert_eq!(k_entry.port_type, nbrs_variates::node::PortType::U64,
+        assert_eq!(k_entry.port_type, polydat::node::PortType::U64,
             "iter var over numeric values should be typed u64, not String");
     }
 
@@ -1377,7 +1377,7 @@ mod tests {
         // substitutes {k}→1, leaving `{k_1_limits}`, which
         // resolves to "1, 2, 4, 8" via parent's manifest. First
         // value is 1, type U64.
-        use nbrs_variates::kernel::GkKernel;
+        use polydat::kernel::GkKernel;
         use std::sync::Arc;
 
         let parent_src = concat!(
@@ -1386,11 +1386,11 @@ mod tests {
             "const k_10_limits := \"10, 20, 30\"\n",
         );
         let parent: Arc<GkKernel> = Arc::new(
-            nbrs_variates::dsl::compile::compile_gk(parent_src).unwrap(),
+            polydat::dsl::compile::compile_gk(parent_src).unwrap(),
         );
         let parent_manifest = crate::runner::extract_manifest(parent.program());
 
-        let kernel = nbrs_variates::comprehension::synthesize_for_each_scope(
+        let kernel = polydat::comprehension::synthesize_for_each_scope(
             &[
                 ("k".to_string(),     "{k_values}".to_string()),
                 ("limit".to_string(), "{k_{k}_limits}".to_string()),
@@ -1408,9 +1408,9 @@ mod tests {
         let manifest = crate::runner::extract_manifest(kernel.program());
         let k_entry = manifest.iter().find(|e| e.name == "k").unwrap();
         let limit_entry = manifest.iter().find(|e| e.name == "limit").unwrap();
-        assert_eq!(k_entry.port_type, nbrs_variates::node::PortType::U64,
+        assert_eq!(k_entry.port_type, polydat::node::PortType::U64,
             "k typed u64 from k_values pre-eval");
-        assert_eq!(limit_entry.port_type, nbrs_variates::node::PortType::U64,
+        assert_eq!(limit_entry.port_type, polydat::node::PortType::U64,
             "limit typed u64 via recursive probe k=1 → k_1_limits → \"1, 2, 4, 8\"");
     }
 
@@ -1505,8 +1505,9 @@ mod tests {
             ],
             for_each: None, loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![],
+            poll: None,
             bindings: BindingsDef::default(),
-        });
+                    });
         tree.extend_with_op_templates(&phases);
         let scenario_idx = tree.nodes[0].children[0];
         let phase_idx = tree.nodes[scenario_idx].children[0];
@@ -1534,8 +1535,9 @@ mod tests {
             ops: vec![ParsedOp::simple("only", "noop")],
             for_each: None, loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![],
+            poll: None,
             bindings: BindingsDef::default(),
-        });
+                    });
         tree.extend_with_op_templates(&phases);
         let n_after_first = tree.nodes.len();
         tree.extend_with_op_templates(&phases); // Second call.
@@ -1555,8 +1557,9 @@ mod tests {
             ops: vec![ParsedOp::simple("foo", "noop")],
             for_each: None, loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![],
+            poll: None,
             bindings: BindingsDef::default(),
-        });
+                    });
         tree.extend_with_op_templates(&phases);
         tree.mark_scope_flattening(|_kind, _idx| true);
         // Find the op node and check its logical name.
@@ -1582,7 +1585,7 @@ mod tests {
 
         let cached = tree.nodes[0].cached_kernel.get().unwrap();
         match cached.get_constant("x") {
-            Some(nbrs_variates::node::Value::U64(n)) => assert_eq!(*n, 1),
+            Some(polydat::node::Value::U64(n)) => assert_eq!(*n, 1),
             other => panic!("expected U64(1), got {other:?}"),
         }
     }
@@ -1647,8 +1650,8 @@ mod tests {
         // Build the x-comprehension AST that both inner scopes
         // share, then verify the path-aware lookup picks the
         // right one from each side.
-        let x_clauses = nbrs_variates::comprehension::parse_clause_list("x in xs").unwrap();
-        let x_comp = nbrs_variates::comprehension::Comprehension::cartesian(x_clauses);
+        let x_clauses = polydat::comprehension::parse_clause_list("x in xs").unwrap();
+        let x_comp = polydat::comprehension::Comprehension::cartesian(x_clauses);
 
         // Sanity: the legacy global lookup picks #1 (first DFS
         // match) for both — this is the buggy behavior.

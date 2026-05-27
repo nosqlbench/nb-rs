@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn parses_single_readout_name() {
-        let (baked, _) = bake("phase_done").expect("parse");
+        let (baked, _) = bake("phase_outcome").expect("parse");
         // One step: a single render call.
         assert_eq!(baked.steps.len(), 1);
         assert!(matches!(baked.steps[0], RenderStep::Render { .. }));
@@ -523,8 +523,8 @@ mod tests {
 
     #[test]
     fn parses_multiple_readouts_with_joining_space() {
-        // phase_done phase_status → render, " ", render
-        let (baked, _) = bake("phase_done phase_status").expect("parse");
+        // phase_outcome phase_status → render, " ", render
+        let (baked, _) = bake("phase_outcome phase_status").expect("parse");
         assert_eq!(baked.steps.len(), 3);
         match &baked.steps[1] {
             RenderStep::Literal(s) => assert_eq!(s, " "),
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn parses_quoted_literal() {
-        let (baked, _) = bake(r#"phase_done "ok:" phase_status"#).expect("parse");
+        let (baked, _) = bake(r#"phase_outcome "ok:" phase_status"#).expect("parse");
         // render, " ", literal "ok:", " ", render
         assert_eq!(baked.steps.len(), 5);
         match &baked.steps[2] {
@@ -631,7 +631,7 @@ mod tests {
 
     #[test]
     fn parses_color_colon_shorthand() {
-        let (baked, _) = bake("phase_done color:RED").expect("parse");
+        let (baked, _) = bake("phase_outcome color:RED").expect("parse");
         match &baked.steps[0] {
             RenderStep::Render { color: Some(c), .. } => {
                 assert_eq!(*c, ColorSpec::Direct("RED"));
@@ -671,7 +671,7 @@ mod tests {
 
     #[test]
     fn parses_at_color_directive() {
-        let (baked, _) = bake("@RED phase_done").expect("parse");
+        let (baked, _) = bake("@RED phase_outcome").expect("parse");
         // ColorDirective + Render (no leading joining
         // space because directives are zero-width).
         assert_eq!(baked.steps.len(), 2);
@@ -686,7 +686,7 @@ mod tests {
 
     #[test]
     fn parses_at_hex_color() {
-        let (baked, _) = bake("@#7AC166 phase_done").expect("parse");
+        let (baked, _) = bake("@#7AC166 phase_outcome").expect("parse");
         match &baked.steps[0] {
             RenderStep::ColorDirective(c) => {
                 assert_eq!(*c, ColorSpec::Rgb(0x7A, 0xC1, 0x66));
@@ -697,7 +697,7 @@ mod tests {
 
     #[test]
     fn parses_bracketed_hex_color() {
-        let (baked, _) = bake("[#FFF] phase_done").expect("parse");
+        let (baked, _) = bake("[#FFF] phase_outcome").expect("parse");
         match &baked.steps[0] {
             RenderStep::ColorDirective(c) => {
                 assert_eq!(*c, ColorSpec::Rgb(0xFF, 0xFF, 0xFF));
@@ -708,7 +708,7 @@ mod tests {
 
     #[test]
     fn parses_at_style_name() {
-        let (baked, _) = bake("@ERROR phase_done").expect("parse");
+        let (baked, _) = bake("@ERROR phase_outcome").expect("parse");
         match &baked.steps[0] {
             RenderStep::ColorDirective(c) => {
                 assert_eq!(*c, ColorSpec::Style(super::super::color::StyleName::Error));
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn parses_color_option() {
-        let (baked, _) = bake("phase_done color=BLUE").expect("parse");
+        let (baked, _) = bake("phase_outcome color=BLUE").expect("parse");
         match &baked.steps[0] {
             RenderStep::Render { color, .. } => {
                 assert_eq!(*color, Some(ColorSpec::Direct("BLUE")));
@@ -730,7 +730,7 @@ mod tests {
 
     #[test]
     fn parses_style_option() {
-        let (baked, _) = bake("phase_done style=ERROR").expect("parse");
+        let (baked, _) = bake("phase_outcome style=ERROR").expect("parse");
         match &baked.steps[0] {
             RenderStep::Render { color, .. } => {
                 assert_eq!(*color, Some(ColorSpec::Style(super::super::color::StyleName::Error)));
@@ -741,14 +741,14 @@ mod tests {
 
     #[test]
     fn unknown_color_token_is_error() {
-        let err = bake("@notacolor phase_done").unwrap_err();
+        let err = bake("@notacolor phase_outcome").unwrap_err();
         assert!(err.contains("unknown colour / style '@notacolor'"),
             "wrong message: {err}");
     }
 
     #[test]
     fn unknown_style_option_is_error() {
-        let err = bake("phase_done style=notastyle").unwrap_err();
+        let err = bake("phase_outcome style=notastyle").unwrap_err();
         assert!(err.contains("unknown colour / style"),
             "wrong message: {err}");
     }

@@ -321,7 +321,7 @@ flows on a wire, downcast, read at index, no string lookup.
 
 ## GK Node Functions
 
-All feature-gated behind `vectordata` in nbrs-variates.
+All feature-gated behind `vectordata` in polydat.
 
 ### Resolvers
 

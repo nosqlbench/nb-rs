@@ -6,8 +6,8 @@
 //! output as a horizontal-bar histogram.
 
 use std::collections::HashMap;
-use nbrs_variates::dsl::compile::compile_gk;
-use nbrs_variates::node::Value;
+use polydat::dsl::compile::compile_gk;
+use polydat::node::Value;
 
 // ── Terminal helpers ────────────────────────────────────────────
 

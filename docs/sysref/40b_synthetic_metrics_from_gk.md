@@ -421,7 +421,7 @@ two clarifications:
   Cross-op visibility within the cycle remains as SRD-34
   defines it.
 - **Type homogeneity.** A wire named `rows_returned` set by
-  the result adapter has the same `nbrs_variates::node::Value`
+  the result adapter has the same `polydat::node::Value`
   shape as any GK-computed wire. Metric expressions can mix
   result-derived and formula-derived wires freely.
 
@@ -490,7 +490,7 @@ Each `MetricKind` variant maps to a concrete instrument from
 
 Type conversion at the wrapper:
 
-- The GK expression returns a `nbrs_variates::node::Value`. The
+- The GK expression returns a `polydat::node::Value`. The
   wrapper expects a numeric variant (`U64`, `F64`, or any
   bool/int that converts cleanly). Non-numeric variants
   (`Str`, vectors) are a per-cycle warning + skip-record.

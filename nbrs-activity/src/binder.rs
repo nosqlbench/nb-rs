@@ -64,7 +64,7 @@
 //! dispenser, callable per cycle.
 
 use crate::wires::WireSource;
-use nbrs_variates::node::Value;
+use polydat::node::Value;
 use std::fmt;
 
 /// Result of a binder operation. Surfaces unresolved bind point
@@ -258,7 +258,7 @@ impl CurriedBinder {
 mod tests {
     use super::*;
     use crate::wires::CycleWires;
-    use nbrs_variates::dsl::compile::compile_gk;
+    use polydat::dsl::compile::compile_gk;
 
     #[test]
     fn bindnames_parse_extracts_in_declaration_order() {

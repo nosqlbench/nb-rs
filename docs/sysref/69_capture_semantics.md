@@ -228,7 +228,7 @@ pub trait ResultBody: Send + Sync + fmt::Debug {
     /// override behave as they do today.
     ///
     /// `None` when the field doesn't exist in the body.
-    fn capture(&self, name: &str) -> Option<nbrs_variates::node::Value> {
+    fn capture(&self, name: &str) -> Option<polydat::node::Value> {
         capture_from_json(&self.to_json(), name)
     }
 }
@@ -405,9 +405,9 @@ multi-column or typed captures.
 - `nbrs-activity/src/wrappers.rs:131` — `TraversingDispenser` (bind-point captures).
 - `nbrs-activity/src/wrappers.rs:~970` — `ResultDispenser` (result-bindings + magic externs).
 - `nbrs-activity/src/wires.rs:41` — `WireSource` trait (sink contract).
-- `nbrs-variates/src/subcontext/builder.rs:~220` — `add_result_bindings`
+- `polydat/src/subcontext/builder.rs:~220` — `add_result_bindings`
   (slot allocation walker).
-- `nbrs-variates/src/nodes/json.rs::BodyColumnI32` — first column-projection node.
+- `polydat/src/nodes/json.rs::BodyColumnI32` — first column-projection node.
 
 ## See also
 

@@ -20,7 +20,7 @@ explains the design intent behind it.
 | 02 | [Concurrency Model](02_concurrency_model.md) | Async fibers, tokio runtime, cycle source, rate limiting |
 | 03 | [Error Handling](03_error_handling.md) | Error scoping, routing, retry semantics, silent failure policy |
 
-### 2. GK Kernel (nbrs-variates)
+### 2. GK Kernel (polydat)
 
 | # | Document | Scope |
 |---|----------|-------|

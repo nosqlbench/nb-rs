@@ -189,6 +189,7 @@ mod tests {
             loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![],
             bindings: BindingsDef::default(),
+            poll: None,
         }
     }
 
@@ -279,7 +280,7 @@ mod tests {
         // Use the cartesian helper so this test stays
         // resilient to changes in the Comprehension struct's
         // private fields.
-        let comp = nbrs_variates::comprehension::Comprehension::cartesian(vec![]);
+        let comp = polydat::comprehension::Comprehension::cartesian(vec![]);
         let mut tree = ScopeTree::build("default", &[
             ScenarioNode::Comprehension {
                 comprehension: comp,

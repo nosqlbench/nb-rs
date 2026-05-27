@@ -41,7 +41,7 @@
 //!
 //! ## Out of scope
 //!
-//! - GK DSL parsing and compilation: see [`nbrs_variates`].
+//! - GK DSL parsing and compilation: see [`polydat`].
 //! - Workload YAML parsing: see [`nbrs_workload`].
 //! - Component tree, instruments, cadence reporter: see
 //!   [`nbrs_metrics`].
@@ -73,6 +73,9 @@ pub mod scope;
 pub mod scope_tree;
 pub mod scope_flattening;
 pub mod scene_tree;
+/// SRD-76 phase outcome disposition (structured
+/// per-phase status + error list).
+pub mod phase_outcome;
 pub mod checkpoint;
 pub mod scheduler;
 pub mod profiler;

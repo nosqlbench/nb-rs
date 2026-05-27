@@ -285,9 +285,257 @@ mod inner {
                     body_ansi BLOB,
                     body_plain TEXT NOT NULL,
                     PRIMARY KEY (slot, subject_kind, subject_id, readout_name, lod)
-                );"
+                );
+                -- SRD-76: per-phase terminal outcome. The
+                -- identity is (session, exec_id, phase_name,
+                -- phase_labels): a sweep cell runs once per
+                -- (session, exec_id) pair under its
+                -- (name, labels), so re-running the same phase
+                -- under a later `refine` execution (SRD-77)
+                -- lands in a distinct row. Insert-or-replace
+                -- keeps the row idempotent under rare re-install
+                -- scenarios (late error promotion, resume-on-
+                -- restart). `session` + `exec_id` ride on the
+                -- root component as dimensional labels (see
+                -- nbrs-activity::session::Session::new_with_args)
+                -- so every per-component metric carries them
+                -- alongside the existing phase / workload axes.
+                --
+                -- `status` is the short label form
+                -- (`completed` / `failed` / `skipped` /
+                -- `cursor_suspended`) the in-memory enum's
+                -- `label()` method emits — stable so an
+                -- `errors:` policy or a CI grep can match on it.
+                CREATE TABLE IF NOT EXISTS phase_outcomes (
+                    session       TEXT    NOT NULL,
+                    exec_id       INTEGER NOT NULL,
+                    phase_name    TEXT    NOT NULL,
+                    phase_labels  TEXT    NOT NULL,
+                    status        TEXT    NOT NULL,
+                    duration_secs REAL    NOT NULL,
+                    started_at_nanos INTEGER NOT NULL,
+                    ended_at_nanos   INTEGER NOT NULL,
+                    PRIMARY KEY (session, exec_id, phase_name, phase_labels)
+                );
+                -- SRD-76: per-error detail rows, 0..N per phase
+                -- within a (session, exec_id) pair. The pair-not-
+                -- FK link to `phase_outcomes` matches the
+                -- `exemplar`/`sample_value` shape elsewhere in
+                -- this schema. `seq` is the chronological
+                -- position within the phase so replay can sort
+                -- the errors in the order they were recorded
+                -- without an extra timestamp sort.
+                CREATE TABLE IF NOT EXISTS phase_errors (
+                    session      TEXT    NOT NULL,
+                    exec_id      INTEGER NOT NULL,
+                    phase_name   TEXT    NOT NULL,
+                    phase_labels TEXT    NOT NULL,
+                    seq          INTEGER NOT NULL,
+                    class        TEXT    NOT NULL,
+                    message      TEXT    NOT NULL,
+                    op_name      TEXT,
+                    cycle        INTEGER,
+                    op_template  TEXT,
+                    op_resolved  TEXT,
+                    at_nanos     INTEGER NOT NULL,
+                    retryable    INTEGER NOT NULL,
+                    PRIMARY KEY (session, exec_id, phase_name, phase_labels, seq)
+                );
+                CREATE INDEX IF NOT EXISTS idx_phase_errors_phase
+                    ON phase_errors(session, exec_id, phase_name, phase_labels);
+                CREATE INDEX IF NOT EXISTS idx_phase_outcomes_ended
+                    ON phase_outcomes(ended_at_nanos);"
             ).map_err(|e| format!("schema creation failed: {e}"))?;
             Ok(())
+        }
+
+        /// SRD-76 — persist a phase's terminal outcome. The
+        /// write is a single transaction: the `phase_outcomes`
+        /// row is upserted (most-recent install wins), and the
+        /// `phase_errors` rows for that phase identity are
+        /// replaced wholesale (delete-then-insert) so the on-
+        /// disk error list always matches the in-memory
+        /// `PhaseOutcome.errors`.
+        ///
+        /// Best-effort: a sqlite failure logs at Warn and does
+        /// not propagate. The scene tree's in-memory outcome
+        /// remains the canonical state; the database surface
+        /// degrades gracefully when persistence is partial.
+        pub fn write_phase_outcome(&mut self, row: &PhaseOutcomeRow) {
+            let tx = match self.conn.transaction() {
+                Ok(t) => t,
+                Err(e) => {
+                    crate::diag::warn(&format!(
+                        "sqlite phase_outcome tx open failed: {e}"));
+                    return;
+                }
+            };
+            let res = (|| -> rusqlite::Result<()> {
+                tx.execute(
+                    "INSERT OR REPLACE INTO phase_outcomes \
+                     (session, exec_id, phase_name, phase_labels, status, \
+                      duration_secs, started_at_nanos, ended_at_nanos) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        row.session, row.exec_id as i64,
+                        row.phase_name, row.phase_labels, row.status,
+                        row.duration_secs, row.started_at_nanos, row.ended_at_nanos,
+                    ],
+                )?;
+                tx.execute(
+                    "DELETE FROM phase_errors \
+                     WHERE session = ?1 AND exec_id = ?2 \
+                       AND phase_name = ?3 AND phase_labels = ?4",
+                    params![
+                        row.session, row.exec_id as i64,
+                        row.phase_name, row.phase_labels,
+                    ],
+                )?;
+                for (seq, e) in row.errors.iter().enumerate() {
+                    tx.execute(
+                        "INSERT INTO phase_errors \
+                         (session, exec_id, phase_name, phase_labels, seq, \
+                          class, message, op_name, cycle, op_template, \
+                          op_resolved, at_nanos, retryable) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \
+                                 ?11, ?12, ?13)",
+                        params![
+                            row.session, row.exec_id as i64,
+                            row.phase_name, row.phase_labels, seq as i64,
+                            e.class, e.message,
+                            e.op_name, e.cycle.map(|c| c as i64),
+                            e.op_template, e.op_resolved,
+                            e.at_nanos, e.retryable as i64,
+                        ],
+                    )?;
+                }
+                Ok(())
+            })();
+            match res {
+                Ok(()) => {
+                    if let Err(e) = tx.commit() {
+                        crate::diag::warn(&format!(
+                            "sqlite phase_outcome commit failed: {e}"));
+                    }
+                }
+                Err(e) => {
+                    crate::diag::warn(&format!(
+                        "sqlite phase_outcome write failed: {e}"));
+                }
+            }
+        }
+
+        /// SRD-76 — read every persisted phase outcome from
+        /// this session, ordered by chronological phase-end
+        /// time. Each outcome carries its full error list.
+        pub fn read_phase_outcomes(&self) -> Vec<PhaseOutcomeRow> {
+            let mut outcomes: Vec<PhaseOutcomeRow> = Vec::new();
+            {
+                let mut out_stmt = match self.conn.prepare(
+                    "SELECT session, exec_id, phase_name, phase_labels, \
+                            status, duration_secs, \
+                            started_at_nanos, ended_at_nanos \
+                     FROM phase_outcomes \
+                     ORDER BY ended_at_nanos, session, exec_id, \
+                              phase_name, phase_labels"
+                ) {
+                    Ok(s) => s,
+                    Err(_) => return Vec::new(),
+                };
+                let rows = out_stmt.query_map([], |row| {
+                    Ok(PhaseOutcomeRow {
+                        session:           row.get(0)?,
+                        exec_id:           row.get::<_, i64>(1)? as u64,
+                        phase_name:        row.get(2)?,
+                        phase_labels:      row.get(3)?,
+                        status:            row.get(4)?,
+                        duration_secs:     row.get(5)?,
+                        started_at_nanos:  row.get(6)?,
+                        ended_at_nanos:    row.get(7)?,
+                        errors:            Vec::new(),
+                    })
+                });
+                if let Ok(iter) = rows {
+                    outcomes.extend(iter.filter_map(Result::ok));
+                }
+            }
+            for outcome in outcomes.iter_mut() {
+                outcome.errors = self.load_phase_errors(
+                    &outcome.session, outcome.exec_id,
+                    &outcome.phase_name, &outcome.phase_labels);
+            }
+            outcomes
+        }
+
+        /// SRD-76 — read a single phase identity's outcome
+        /// scoped to a (session, exec_id) pair. `None` when no
+        /// persistence row exists for that identity. The error
+        /// list is populated when the outcome row is present.
+        pub fn read_phase_outcome(
+            &self,
+            session: &str,
+            exec_id: u64,
+            phase_name: &str,
+            phase_labels: &str,
+        ) -> Option<PhaseOutcomeRow> {
+            let mut row = self.conn.query_row(
+                "SELECT status, duration_secs, started_at_nanos, ended_at_nanos \
+                 FROM phase_outcomes \
+                 WHERE session = ?1 AND exec_id = ?2 \
+                   AND phase_name = ?3 AND phase_labels = ?4",
+                params![session, exec_id as i64, phase_name, phase_labels],
+                |r| Ok(PhaseOutcomeRow {
+                    session:           session.to_string(),
+                    exec_id,
+                    phase_name:        phase_name.to_string(),
+                    phase_labels:      phase_labels.to_string(),
+                    status:            r.get(0)?,
+                    duration_secs:     r.get(1)?,
+                    started_at_nanos:  r.get(2)?,
+                    ended_at_nanos:    r.get(3)?,
+                    errors:            Vec::new(),
+                }),
+            ).ok()?;
+            row.errors = self.load_phase_errors(
+                session, exec_id, phase_name, phase_labels);
+            Some(row)
+        }
+
+        fn load_phase_errors(
+            &self,
+            session: &str,
+            exec_id: u64,
+            phase_name: &str,
+            phase_labels: &str,
+        ) -> Vec<PhaseErrorRow> {
+            let mut stmt = match self.conn.prepare(
+                "SELECT class, message, op_name, cycle, op_template, \
+                        op_resolved, at_nanos, retryable \
+                 FROM phase_errors \
+                 WHERE session = ?1 AND exec_id = ?2 \
+                   AND phase_name = ?3 AND phase_labels = ?4 \
+                 ORDER BY seq"
+            ) {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+            let rows = stmt.query_map(
+                params![session, exec_id as i64, phase_name, phase_labels],
+                |r| Ok(PhaseErrorRow {
+                    class:       r.get(0)?,
+                    message:     r.get(1)?,
+                    op_name:     r.get(2)?,
+                    cycle:       r.get::<_, Option<i64>>(3)?.map(|v| v as u64),
+                    op_template: r.get(4)?,
+                    op_resolved: r.get(5)?,
+                    at_nanos:    r.get(6)?,
+                    retryable:   r.get::<_, i64>(7)? != 0,
+                }),
+            );
+            match rows {
+                Ok(iter) => iter.filter_map(Result::ok).collect(),
+                Err(_) => Vec::new(),
+            }
         }
 
         /// Upsert a readout snapshot. Latest render per
@@ -844,6 +1092,58 @@ mod inner {
         pub rendered_at: i64,
         pub body_ansi: Option<Vec<u8>>,
         pub body_plain: String,
+    }
+
+    /// SRD-76 — storage-layer mirror of
+    /// `nbrs-activity::phase_outcome::PhaseOutcome`.
+    /// `nbrs-metrics` deliberately doesn't depend on
+    /// `nbrs-activity`, so this POD shape exists at the
+    /// storage boundary; the executor converts in the write
+    /// direction, and `nbrs replay` converts back in the read
+    /// direction. The two shapes evolve together.
+    ///
+    /// `status` is the canonical short label
+    /// (`completed` / `failed` / `skipped` /
+    /// `cursor_suspended`) — same vocabulary the in-memory
+    /// `PhaseStatus::label()` emits.
+    #[derive(Debug, Clone)]
+    pub struct PhaseOutcomeRow {
+        /// SRD-77 — session identifier (the session-directory
+        /// basename). Persisted alongside the per-phase row so
+        /// future read paths that aggregate across sessions
+        /// (e.g. cross-session report builders) carry a stable
+        /// foreign reference.
+        pub session: String,
+        /// SRD-77 — per-session execution sequence. `1` for
+        /// every row until the SRD-77 `refine` verb lands the
+        /// monotonic counter; the column is present from day
+        /// one so the SRD-77 migration only flips writer
+        /// behaviour, not schema shape.
+        pub exec_id: u64,
+        pub phase_name: String,
+        pub phase_labels: String,
+        pub status: String,
+        pub duration_secs: f64,
+        pub started_at_nanos: i64,
+        pub ended_at_nanos: i64,
+        pub errors: Vec<PhaseErrorRow>,
+    }
+
+    /// SRD-76 — storage-layer mirror of
+    /// `nbrs-activity::phase_outcome::PhaseErrorDetail`.
+    /// `cycle` is `Option<u64>` because phase-level errors
+    /// (poll_timeout, validation failures) have no cycle
+    /// number.
+    #[derive(Debug, Clone)]
+    pub struct PhaseErrorRow {
+        pub class: String,
+        pub message: String,
+        pub op_name: Option<String>,
+        pub cycle: Option<u64>,
+        pub op_template: Option<String>,
+        pub op_resolved: Option<String>,
+        pub at_nanos: i64,
+        pub retryable: bool,
     }
 
     pub struct ReportConfig {
@@ -1734,6 +2034,124 @@ mod inner {
                 ));
             });
         }
+
+        /// Run the session-end WAL consolidation and emit
+        /// operator-visible "shutting down" notices to stderr.
+        /// Separated from [`Self::consolidate_wal`] so callers
+        /// who don't want the stderr chrome (tests, replay
+        /// teardown, panic unwind paths where stderr is gone)
+        /// can still call the raw checkpoint.
+        ///
+        /// This is the canonical session-end shutdown sink for
+        /// the WAL — wired by the RAII guard
+        /// [`SqliteShutdownGuard`] so it runs reliably on every
+        /// session-exit path (normal completion, error unwind,
+        /// first-Ctrl-C cooperative shutdown). The only exit
+        /// path that skips it is `process::exit` (second
+        /// Ctrl-C force-exit) — which is the operator's
+        /// declared "I don't want to wait" escape hatch.
+        pub fn shutdown_consolidate(&self) {
+            // Print BEFORE consolidating so the operator
+            // sees the "shutting down" notice and knows what
+            // a second Ctrl-C would interrupt. Stderr is the
+            // right channel — session.log is being closed,
+            // and the readout sinks have already
+            // shutdown by the time the drop guard fires.
+            eprintln!(
+                "nbrs: shutting down — consolidating metrics.db WAL \
+                 (press Ctrl-C again to force-exit, leaving the \
+                 -wal / -shm sidecars behind)"
+            );
+            self.consolidate_wal();
+            eprintln!("nbrs: shutdown complete");
+        }
+    }
+
+    /// RAII guard that runs the session-end WAL consolidation
+    /// when dropped. Holds the same
+    /// `Arc<Mutex<Option<SqliteReporter>>>` shape the runner
+    /// uses, so dropping the guard doesn't drop the reporter
+    /// itself — the consolidation runs against the LIVE
+    /// reporter while everything else is still wired up,
+    /// THEN the reporter drops on its own when its last
+    /// strong reference goes out of scope.
+    ///
+    /// Drop-based design: the consolidation fires reliably on
+    /// every session-end path Rust unwinds through (normal
+    /// return, `?` error propagation, first-Ctrl-C → flag →
+    /// runner unwind). The only skip path is
+    /// `std::process::exit`, which is the canonical
+    /// force-exit semantic the operator gets on a SECOND
+    /// Ctrl-C — declared in `nbrs-activity::session_signals`.
+    pub struct SqliteShutdownGuard {
+        reporter: std::sync::Arc<std::sync::Mutex<Option<SqliteReporter>>>,
+        consumed: std::sync::atomic::AtomicBool,
+    }
+
+    impl SqliteShutdownGuard {
+        /// Construct a guard wrapping the shared reporter
+        /// handle. Cheap — no work happens until the guard
+        /// drops.
+        pub fn new(
+            reporter: std::sync::Arc<std::sync::Mutex<Option<SqliteReporter>>>,
+        ) -> Self {
+            Self {
+                reporter,
+                consumed: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl Drop for SqliteShutdownGuard {
+        fn drop(&mut self) {
+            // Idempotent: if some explicit call already
+            // consolidated (and called `mark_consumed`), the
+            // drop is a no-op. Today no caller marks; the
+            // hook is reserved for future code that wants
+            // to consolidate at a known point and disable
+            // the drop-time work.
+            if self.consumed.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            if let Ok(guard) = self.reporter.lock() {
+                if let Some(ref r) = *guard {
+                    r.shutdown_consolidate();
+                }
+            }
+        }
+    }
+
+    impl SqliteReporter {
+        /// Mid-session WAL flush. Merges currently-committed WAL
+        /// frames into the main `.db` so concurrent read-only
+        /// callers (live `nbrs report`, `nbrs replay`, ad-hoc
+        /// `sqlite3 metrics.db` inspection) see the latest data
+        /// without waiting for session end. Uses `PASSIVE` mode:
+        /// non-blocking on writers (current write transactions
+        /// continue without interruption) and doesn't truncate
+        /// the WAL file — the next write reuses its buffer
+        /// rather than re-extending it. Cheap to call often.
+        ///
+        /// Distinct from [`Self::consolidate_wal`] which uses
+        /// `TRUNCATE` mode for session-end finalisation: that
+        /// flavour pauses writers and zeroes the WAL file, and
+        /// is appropriate only when no more writes are expected.
+        pub fn passive_checkpoint(&self) {
+            let _ = self.conn.query_row(
+                "PRAGMA wal_checkpoint(PASSIVE)",
+                rusqlite::params![],
+                |_row| Ok(()),
+            ).map_err(|e| {
+                // Failure here is a soft event — the next
+                // checkpoint attempt will retry. Log at debug
+                // so we don't pollute the operator's stderr
+                // with periodic noise if (say) the disk is
+                // briefly full.
+                crate::diag::warn(&format!(
+                    "sqlite passive checkpoint failed: {e}"
+                ));
+            });
+        }
     }
 
     #[cfg(test)]
@@ -1747,7 +2165,7 @@ mod inner {
             let ansi: &[u8] = "\x1b[34m[setup]\x1b[0m 100% \x1b[32m✓\x1b[0m".as_bytes();
             let plain = "[setup] 100% ✓";
             r.upsert_readout_snapshot(
-                "on_phase_end", "phase", "setup#1", "phase_done", "labeled",
+                "on_phase_end", "phase", "setup#1", "phase_outcome", "labeled",
                 1_000_000_000, Some(ansi), plain,
             );
             let rows = r.read_readout_snapshots();
@@ -1756,7 +2174,7 @@ mod inner {
             assert_eq!(row.slot,         "on_phase_end");
             assert_eq!(row.subject_kind, "phase");
             assert_eq!(row.subject_id,   "setup#1");
-            assert_eq!(row.readout_name, "phase_done");
+            assert_eq!(row.readout_name, "phase_outcome");
             assert_eq!(row.lod,          "labeled");
             assert_eq!(row.rendered_at,  1_000_000_000);
             assert_eq!(row.body_ansi.as_deref(), Some(ansi));
@@ -1769,11 +2187,11 @@ mod inner {
             // Two upserts with the same primary key — second
             // wins (latest body, latest timestamp).
             r.upsert_readout_snapshot(
-                "on_phase_end", "phase", "setup", "phase_done", "labeled",
+                "on_phase_end", "phase", "setup", "phase_outcome", "labeled",
                 1_000, None, "first",
             );
             r.upsert_readout_snapshot(
-                "on_phase_end", "phase", "setup", "phase_done", "labeled",
+                "on_phase_end", "phase", "setup", "phase_outcome", "labeled",
                 2_000, None, "second",
             );
             let rows = r.read_readout_snapshots();
@@ -1782,21 +2200,159 @@ mod inner {
             assert_eq!(rows[0].rendered_at, 2_000);
         }
 
+        // ── SRD-76 phase_outcomes / phase_errors ──────────────
+
+        #[test]
+        fn phase_outcome_round_trips_completed_with_no_errors() {
+            let mut r = super::SqliteReporter::in_memory().unwrap();
+            let row = super::PhaseOutcomeRow {
+                session: "test-sess".into(),
+                exec_id: 1,
+                phase_name: "rampup".into(),
+                phase_labels: "(profile=alpha)".into(),
+                status: "completed".into(),
+                duration_secs: 1.234,
+                started_at_nanos: 1_000_000,
+                ended_at_nanos:   1_001_234_000,
+                errors: Vec::new(),
+            };
+            r.write_phase_outcome(&row);
+            let read = r.read_phase_outcomes();
+            assert_eq!(read.len(), 1);
+            assert_eq!(read[0].session,       "test-sess");
+            assert_eq!(read[0].exec_id,       1);
+            assert_eq!(read[0].phase_name,    "rampup");
+            assert_eq!(read[0].status,        "completed");
+            assert_eq!(read[0].duration_secs, 1.234);
+            assert!(read[0].errors.is_empty());
+        }
+
+        #[test]
+        fn phase_outcome_failed_round_trips_errors_in_order() {
+            let mut r = super::SqliteReporter::in_memory().unwrap();
+            let row = super::PhaseOutcomeRow {
+                session: "test-sess".into(),
+                exec_id: 1,
+                phase_name: "ensure_compacted".into(),
+                phase_labels: "(k=10)".into(),
+                status: "failed".into(),
+                duration_secs: 14400.0,
+                started_at_nanos: 0,
+                ended_at_nanos:   14400 * 1_000_000_000,
+                errors: vec![
+                    super::PhaseErrorRow {
+                        class: "poll_timeout".into(),
+                        message: "deadline reached".into(),
+                        op_name: None,
+                        cycle: None,
+                        op_template: Some("SELECT ...".into()),
+                        op_resolved: Some("SELECT * FROM ks.t".into()),
+                        at_nanos: 100,
+                        retryable: false,
+                    },
+                    super::PhaseErrorRow {
+                        class: "BindError".into(),
+                        message: "cycle 42 missing wire".into(),
+                        op_name: Some("write".into()),
+                        cycle: Some(42),
+                        op_template: None,
+                        op_resolved: None,
+                        at_nanos: 200,
+                        retryable: true,
+                    },
+                ],
+            };
+            r.write_phase_outcome(&row);
+            let read = r.read_phase_outcome(
+                "test-sess", 1, "ensure_compacted", "(k=10)",
+            ).expect("outcome present");
+            assert_eq!(read.status, "failed");
+            assert_eq!(read.errors.len(), 2);
+            assert_eq!(read.errors[0].class, "poll_timeout");
+            assert_eq!(read.errors[1].class, "BindError");
+            assert_eq!(read.errors[1].cycle, Some(42));
+            assert_eq!(read.errors[1].retryable, true);
+        }
+
+        #[test]
+        fn phase_outcome_rewrite_replaces_error_list() {
+            let mut r = super::SqliteReporter::in_memory().unwrap();
+            let mut row = super::PhaseOutcomeRow {
+                session: "s".into(),
+                exec_id: 1,
+                phase_name: "p".into(),
+                phase_labels: String::new(),
+                status: "failed".into(),
+                duration_secs: 1.0,
+                started_at_nanos: 0,
+                ended_at_nanos: 1,
+                errors: vec![super::PhaseErrorRow {
+                    class: "A".into(),
+                    message: "m".into(),
+                    op_name: None,
+                    cycle: None,
+                    op_template: None,
+                    op_resolved: None,
+                    at_nanos: 0,
+                    retryable: false,
+                }],
+            };
+            r.write_phase_outcome(&row);
+            row.status = "completed".into();
+            row.errors.clear();
+            r.write_phase_outcome(&row);
+            let read = r.read_phase_outcome("s", 1, "p", "").unwrap();
+            assert_eq!(read.status, "completed");
+            assert!(read.errors.is_empty(),
+                "rewrite must wipe the prior error list");
+        }
+
+        #[test]
+        fn phase_outcome_distinct_exec_ids_keep_separate_rows() {
+            // SRD-77 forward-looking: two executions of the same
+            // phase identity (a `refine` re-run) must each get
+            // their own row so the cardinal history survives.
+            let mut r = super::SqliteReporter::in_memory().unwrap();
+            for exec_id in [1, 2] {
+                r.write_phase_outcome(&super::PhaseOutcomeRow {
+                    session: "s".into(), exec_id,
+                    phase_name: "p".into(), phase_labels: String::new(),
+                    status: "completed".into(),
+                    duration_secs: 1.0,
+                    started_at_nanos: exec_id as i64 * 1_000,
+                    ended_at_nanos:   exec_id as i64 * 1_000 + 1,
+                    errors: Vec::new(),
+                });
+            }
+            let all = r.read_phase_outcomes();
+            assert_eq!(all.len(), 2,
+                "distinct exec_ids must produce distinct rows");
+            assert_eq!(all.iter().map(|o| o.exec_id).collect::<Vec<_>>(),
+                vec![1, 2]);
+        }
+
+        #[test]
+        fn phase_outcome_read_missing_returns_none() {
+            let r = super::SqliteReporter::in_memory().unwrap();
+            assert!(r.read_phase_outcome("s", 1, "nope", "").is_none());
+            assert!(r.read_phase_outcomes().is_empty());
+        }
+
         #[test]
         fn readout_snapshot_distinct_pk_components_keep_separate_rows() {
             let mut r = super::SqliteReporter::in_memory().unwrap();
             // Same readout, different LOD → separate rows.
             r.upsert_readout_snapshot(
-                "on_phase_end", "phase", "setup", "phase_done", "compact",
+                "on_phase_end", "phase", "setup", "phase_outcome", "compact",
                 1_000, None, "compact form",
             );
             r.upsert_readout_snapshot(
-                "on_phase_end", "phase", "setup", "phase_done", "labeled",
+                "on_phase_end", "phase", "setup", "phase_outcome", "labeled",
                 1_000, None, "labeled form",
             );
             // Same readout, same LOD, different subject → separate.
             r.upsert_readout_snapshot(
-                "on_phase_end", "phase", "load", "phase_done", "labeled",
+                "on_phase_end", "phase", "load", "phase_outcome", "labeled",
                 1_000, None, "load form",
             );
             assert_eq!(r.read_readout_snapshots().len(), 3);
@@ -2398,8 +2954,12 @@ mod inner {
 
 #[cfg(feature = "sqlite")]
 pub use inner::SqliteReporter;
+pub use inner::SqliteShutdownGuard;
 #[cfg(feature = "sqlite")]
-pub use inner::{ReportConfig, ReportAggregate, NativeSample, ExemplarRow};
+pub use inner::{
+    ReportConfig, ReportAggregate, NativeSample, ExemplarRow,
+    PhaseOutcomeRow, PhaseErrorRow,
+};
 
 /// Split a summary name into `(basename, format)`.
 ///

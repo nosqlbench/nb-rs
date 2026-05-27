@@ -23,8 +23,8 @@ use nbrs_activity::fixture::ScopeFixture;
 use nbrs_activity::validation::ValidatingDispenser;
 use nbrs_activity::wrappers::{ConditionalDispenser, ThrottleDispenser};
 use nbrs_metrics::labels::Labels;
-use nbrs_variates::dsl::compile::compile_gk;
-use nbrs_variates::kernel::GkProgram;
+use polydat::dsl::compile::compile_gk;
+use polydat::kernel::GkProgram;
 
 /// Minimal program with `cycle` + `ground_truth: Str` extern.
 fn program_with_gt() -> Arc<GkProgram> {

@@ -26,7 +26,7 @@ syntax / order SRDs are user-facing. This one is the contract
 the implementer reads.
 
 > **Status:** AST + Cartesian + Union + filter + 6 of 10
-> orderings shipped (`nbrs-variates::comprehension::*`).
+> orderings shipped (`polydat::comprehension::*`).
 > Halton / Sobol / Lhs / Custom strategies parse-and-error
 > until implemented. Layer-7 parallel + Layer-7 destructure
 > are AST-extension work; this SRD specifies the migration
@@ -508,7 +508,7 @@ behavior today.
 
 ## Implementation status
 
-### Shipped (in `nbrs-variates/src/comprehension/`)
+### Shipped (in `polydat/src/comprehension/`)
 
 | Surface | Module | Notes |
 |---|---|---|
@@ -547,7 +547,7 @@ behavior today.
 ### Implementation order (per SRD-18c §"Implementation order", refined)
 
 1. **Layer 7a — parallel-iter** (AST migration). One
-   refactor sweep across `nbrs-variates`. Lowest grammar
+   refactor sweep across `polydat`. Lowest grammar
    addition; highest user-visible win.
 2. **Layer 2 — range operator**. Lexer + AST + desugar to
    stdlib `range(...)`. No comprehension changes.
@@ -643,7 +643,7 @@ What happens at scope-init (per outer iteration):
 - [SRD 22 — Op Sequencing](22_op_sequencing.md): the
   bucket / concat / interval algorithms that the
   sequencer-style expansions reuse.
-- `nbrs-variates/src/comprehension/{ast,parse,eval,order}.rs`:
+- `polydat/src/comprehension/{ast,parse,eval,order}.rs`:
   the implementation modules.
 - `docs/design/comprehensions_grammar_plan.md`: push-by-
   push implementation plan.

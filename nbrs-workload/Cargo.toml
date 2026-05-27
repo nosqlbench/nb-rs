@@ -15,13 +15,13 @@ serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = { version = "1", features = ["preserve_order"] }
 regex = "1"
-# `nbrs-variates::comprehension` owns the formal `Comprehension`
+# `polydat::comprehension` owns the formal `Comprehension`
 # AST + parser. `nbrs-workload`'s YAML parser delegates clause
 # parsing here so the comprehension shape has a single source
 # of truth across the workspace. (Crosses the historical
 # "nbrs-workload is standalone" boundary from SRD-01 — see
 # `docs/internals/50_comprehensions_first_class.md`.)
-nbrs-variates = { path = "../nbrs-variates", version = "0.1.1" }
+polydat = { path = "../polydat", version = "0.1.1" }
 
 # SRD-64 §6.4–§6.5: AST-preserving workload edit primitive.
 #

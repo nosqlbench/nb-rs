@@ -14,10 +14,10 @@ use nbrs_adapter_stdout::{StdoutAdapter, StdoutConfig, StdoutFormat};
 use nbrs_activity::opseq::{OpSequence, SequencerType};
 use nbrs_activity::synthesis::OpBuilder;
 use nbrs_metrics::labels::Labels;
-use nbrs_variates::assembly::{GkAssembler, WireRef};
-use nbrs_variates::nodes::hash::Hash64;
-use nbrs_variates::nodes::arithmetic::ModU64;
-use nbrs_variates::nodes::identity::Identity;
+use polydat::assembly::{GkAssembler, WireRef};
+use polydat::nodes::hash::Hash64;
+use polydat::nodes::arithmetic::ModU64;
+use polydat::nodes::identity::Identity;
 use nbrs_workload::parse::parse_ops;
 
 /// Parse a workload YAML, build a GK kernel from bindings that

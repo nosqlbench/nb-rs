@@ -5,7 +5,7 @@ update shipped; §"Wire-reference classification (synthesizer
 rule)" added 2026-05-11 as the canonical synthesizer contract.
 Implementation plan for true-up to the synthesizer rule lives
 in `docs/design/srd13f_wire_classification_plan.md`.
-**Owner:** nbrs-variates (kernel construction, cell mechanism,
+**Owner:** polydat (kernel construction, cell mechanism,
   matter interpretation), nbrs-activity (scope synthesizers,
   dispenser wires layer)
 **Cross-refs:** SRD-13 (GK modules), SRD-13c (GK scope model —
@@ -448,7 +448,7 @@ case 3 walks the lineage until each name terminates in case
 
 ### `bind_outer_scope`'s current behavior
 
-In `nbrs-variates/src/kernel/gkkernel.rs::GkKernel::bind_outer_scope`,
+In `polydat/src/kernel/gkkernel.rs::GkKernel::bind_outer_scope`,
 the operation runs in three steps:
 
 1. **Cell cascade.** Walks outer's "shared cells in scope" (its
@@ -538,7 +538,7 @@ The cascade stays; the emission *kind* changes to `const`.
 The codebase changes break into three pushes, ordered by
 dependency. **Pushes A, B.1, and C have landed** (commits in
 nbrs-activity); B.2 — the full cell-on-outputs mechanism in
-nbrs-variates — remains for a follow-up SRD-67 / SRD-13e
+polydat — remains for a follow-up SRD-67 / SRD-13e
 intersection.
 
 ### Push A — Workload-param cascade as `const` *(shipped)*
@@ -613,7 +613,7 @@ Change:
   flattened fallback path. One kernel handle either way; no
   chain composition outside the GK API.
 
-### Push B.2 — Cell-on-outputs in nbrs-variates *(shipped)*
+### Push B.2 — Cell-on-outputs in polydat *(shipped)*
 
 **Status as of this writing:** the output-cell storage
 primitive is in place (`EngineCore::output_cells: Vec<Option<SharedCell>>`,
@@ -667,8 +667,8 @@ re-introducing the storage.
 
 
 
-Scope: `nbrs-variates/src/kernel/gkkernel.rs`,
-`nbrs-variates/src/kernel/engines.rs`.
+Scope: `polydat/src/kernel/gkkernel.rs`,
+`polydat/src/kernel/engines.rs`.
 
 The Push B.1 per-cycle refresh in the dispatch layer is the
 functional placeholder; B.2 moves the live-link mechanism into
@@ -837,7 +837,7 @@ actually carries phase bindings); D.2 is independent of B.2.
 ### Push E — Combined `for_each:` + `bindings:` phase support *(shipped)*
 
 Scope: `nbrs-activity/src/runner.rs` install-spec loop,
-`nbrs-variates/src/comprehension.rs::synthesize_for_each_scope`.
+`polydat/src/comprehension.rs::synthesize_for_each_scope`.
 
 Today's install loop at `runner.rs::Phase` matches on
 `for_each.is_some()` first and returns `InstallSpec::ForComprehension`;
@@ -868,9 +868,9 @@ combined-case workloads on legacy behavior until E lands.
 
 ### Push F — `bind_outer_scope` rename *(shipped — chose `materialize_wiring_from_outer`)*
 
-Scope: `nbrs-variates/src/kernel/gkkernel.rs::bind_outer_scope`
+Scope: `polydat/src/kernel/gkkernel.rs::bind_outer_scope`
 and every caller in `nbrs-activity/src/scope.rs` and
-`nbrs-variates/src/subcontext/`.
+`polydat/src/subcontext/`.
 
 The operation is matter-AST interpretation, not "bind to outer
 scope." After B.2 lands, rename for clarity. Candidates:

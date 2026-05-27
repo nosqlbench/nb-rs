@@ -132,7 +132,7 @@ what was originally Stage 2 (B.2). All three gates pass.
    surface; the dispatch layer does not reach into
    descendant kernel state.
 7. `synthesize_for_each_iteration` (new in
-   `nbrs-variates/src/comprehension/synthesis.rs`):
+   `polydat/src/comprehension/synthesis.rs`):
    emits `final <var> := <literal>` for each iter-var
    and compiles a fresh per-iteration program. Wired
    through `ScopeIterations::with_iteration_kernel_fn`
@@ -163,7 +163,7 @@ coordinates as final values within their scopes." Per
 that, the comprehension synthesizer's emitted source must
 classify iter-vars as `final <var> := <literal>` matter.
 
-Today's `nbrs_variates::comprehension::synthesis::synthesize_for_each_scope`
+Today's `polydat::comprehension::synthesis::synthesize_for_each_scope`
 emits `extern <var>: <type>` (line 148), with values
 injected per iteration via `set_input`. Functionally
 equivalent for reads, but the matter AST classifies them
@@ -244,14 +244,14 @@ Stage 1*, not a separate stage.
 
 ## Stage 2 — B.2 bind-time cell attachment   ✅ *(absorbed into Stage 1)*
 
-**Deliverable:** bind step in `nbrs-variates` attaches outer's
+**Deliverable:** bind step in `polydat` attaches outer's
 output cells to inner's matching input slots, completing the
 cell-on-outputs mechanism SRD-13f specifies. No per-cycle
 refresh outside the GK eval engine.
 
 **Specific changes:**
 
-- `nbrs-variates/src/kernel/gkkernel.rs::bind_outer_scope`
+- `polydat/src/kernel/gkkernel.rs::bind_outer_scope`
   Step 2: cell-attach using
   `outer.state.core.output_cell(name)`. Passthrough exclusion
   driven by matter classification, not name-overlap heuristics.
@@ -280,7 +280,7 @@ refresh outside the GK eval engine.
    }
    ```
 2. **Workload integration tests pass with no per-cycle refresh
-   code anywhere outside `nbrs-variates/src/kernel/`.** Grep
+   code anywhere outside `polydat/src/kernel/`.** Grep
    confirms.
 
 ---
@@ -393,19 +393,19 @@ workload layer):
 
    **Fix (proper architectural — `volatile` is the marker,
    not name-prefix):**
-   - `nbrs-variates/src/kernel/gkkernel.rs`: thread
+   - `polydat/src/kernel/gkkernel.rs`: thread
      `output_modifiers` through `GkKernel::new_with_inputs`
      / `new_strict_with_inputs` / `new_impl` and install
      them on the program BEFORE `fold_init_constants`
      runs (the old out-of-band `set_output_modifiers`
      accessor ran *after* fold, which was too late).
-   - `nbrs-variates/src/kernel/program.rs::fold_init_constants_impl`:
+   - `polydat/src/kernel/program.rs::fold_init_constants_impl`:
      in the lifecycle pre-classification, mark any node
      whose `output_map` entry has a `volatile` modifier
      as `EvalLifecycle::Dynamic`. The propagation walk
      then carries that downstream so consumers also stay
      unfolded.
-   - `nbrs-variates/src/dsl/compile.rs::compile_filtered`:
+   - `polydat/src/dsl/compile.rs::compile_filtered`:
      preserve volatile bindings as outputs from DCE
      even when the caller's `required_outputs` list
      doesn't reference them — the author's `volatile`
@@ -436,7 +436,7 @@ incidentally — Push D retired that fallback.
 
 **Shipped:**
 
-1. `synthesize_for_each_scope` (nbrs-variates) accepts an
+1. `synthesize_for_each_scope` (polydat) accepts an
    optional `phase_bindings: Option<&str>` parameter and
    appends the source after the extern cascade. Phase
    bindings can reference iter vars (now externs) and
@@ -481,7 +481,7 @@ Function and all references updated; tests pass.
 
 **Completion gate:**
 
-- `grep -rn "bind_outer_scope" nbrs-variates/src nbrs-activity/src`
+- `grep -rn "bind_outer_scope" polydat/src nbrs-activity/src`
   zero hits in source ✅.
 - `cargo test --workspace --tests` green ✅ (modulo the
   pre-existing stdout observer-log singleton flake, which

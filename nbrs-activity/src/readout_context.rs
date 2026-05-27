@@ -6,7 +6,7 @@
 //! ✓ DONE block already gathers.
 //!
 //! Push 1 surface only. Built up by `nbrs-activity::activity`
-//! at end-of-activity right before invoking the `phase_done`
+//! at end-of-activity right before invoking the `phase_outcome`
 //! readout. Each later push grows this struct as new
 //! built-ins (and new `ReadoutContext` methods) arrive.
 //!
@@ -21,7 +21,7 @@ use std::sync::atomic::Ordering;
 
 use crate::readouts::{Event, LifecycleState, ReadoutContext};
 
-/// Snapshot of everything `phase_done` needs to render at
+/// Snapshot of everything `phase_outcome` needs to render at
 /// `Lod::Labeled / ContentMode::Value`. Constructed at
 /// end-of-activity in `nbrs-activity::activity`; thrown
 /// away after the render returns.
@@ -43,6 +43,20 @@ pub struct ActivityReadoutContext {
     /// Snapshot of the activity's memo at context-build time.
     /// Empty when no `memo:` wrapper is active on any op.
     pub memo: String,
+    /// SRD-76 — terminal phase status. The executor sets this
+    /// when it installs the [`crate::phase_outcome::PhaseOutcome`]
+    /// on the scene tree, before firing the on_phase_end
+    /// binder. Defaults to `Completed` so legacy call sites
+    /// that haven't migrated still render the success branch.
+    pub outcome_status: crate::phase_outcome::PhaseStatus,
+    /// SRD-76 — chronologically ordered error list. Empty
+    /// for `Completed`/`Skipped`; non-empty for `Failed`.
+    /// Drives the failure-flavoured rendering of the
+    /// [`crate::readouts::builtins::phase_outcome`] readout.
+    pub outcome_errors: Vec<crate::phase_outcome::PhaseErrorDetail>,
+    /// SRD-76 — cursor-resume payload, when the phase
+    /// supports it. `None` for the common case.
+    pub outcome_resume_cursor: Option<crate::phase_outcome::ResumeCursor>,
 }
 
 impl ReadoutContext for ActivityReadoutContext {
@@ -61,8 +75,36 @@ impl ReadoutContext for ActivityReadoutContext {
     fn depth_indent(&self) -> &str { &self.depth_indent }
     fn use_color(&self) -> bool { self.use_color }
     fn event(&self) -> Event { Event::PhaseEnd }
-    fn subject_state(&self) -> LifecycleState { LifecycleState::Completed }
+    fn subject_state(&self) -> LifecycleState {
+        // Mirror the outcome status onto the lifecycle axis
+        // so existing consumers that branch on `subject_state`
+        // see Failed when the phase failed (today they'd see
+        // Completed because the binder fired before the
+        // executor recorded the failure). SRD-76 unifies
+        // the two surfaces.
+        match self.outcome_status {
+            crate::phase_outcome::PhaseStatus::Completed
+            | crate::phase_outcome::PhaseStatus::Skipped
+            | crate::phase_outcome::PhaseStatus::CursorSuspended
+                => LifecycleState::Completed,
+            crate::phase_outcome::PhaseStatus::Failed
+                => LifecycleState::Failed(
+                    self.outcome_errors.first()
+                        .map(|e| e.message.clone())
+                        .unwrap_or_else(|| "phase failed".into())
+                ),
+        }
+    }
     fn phase_memo(&self) -> &str { &self.memo }
+    fn outcome_status(&self) -> crate::phase_outcome::PhaseStatus {
+        self.outcome_status
+    }
+    fn outcome_errors(&self) -> &[crate::phase_outcome::PhaseErrorDetail] {
+        &self.outcome_errors
+    }
+    fn outcome_resume_cursor(&self) -> Option<&crate::phase_outcome::ResumeCursor> {
+        self.outcome_resume_cursor.as_ref()
+    }
 }
 
 /// Per-event context for lifecycle fires (Push 9a):

@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use nbrs_activity::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
 use nbrs_activity::op_modifier::ModifierChain;
-use nbrs_variates::node::Value;
+use polydat::node::Value;
 use scylla::client::session::Session;
 use scylla::statement::{Consistency, batch::{Batch, BatchType}, prepared::PreparedStatement};
 
@@ -149,7 +149,7 @@ impl OpDispenser for ScyllaBatchDispenser {
             // the per-fiber kernel via ctx.wires.write.
             let _ = ctx.wires.write(
                 "rows_inserted",
-                nbrs_variates::node::Value::U64(row_count as u64),
+                polydat::node::Value::U64(row_count as u64),
             );
             Ok(OpResult {
                 body: body_box,

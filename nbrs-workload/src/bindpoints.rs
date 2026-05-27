@@ -266,6 +266,30 @@ pub struct CapturePoint {
     /// row's value as a scalar.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub slurp: bool,
+    /// Optional JSON-Pointer path (RFC 6901, e.g. `/0/value`,
+    /// `/value/inner/0`). When `Some`, the extractor uses
+    /// `serde_json::Value::pointer(path)` against the body's
+    /// `to_json()` projection rather than the first-row /
+    /// top-level field lookup keyed by `source_name`. Lets a
+    /// declarative `capture:` map address Jolokia bulk-POST
+    /// responses (`[{value:N}, {value:[...]}, ...]`) by
+    /// position + nested field.
+    ///
+    /// The bracket-syntax in op text (e.g. `[name]`) leaves
+    /// this `None` and continues to use the original first-row
+    /// extraction path; only the declarative `capture:` block
+    /// populates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Reduce the extracted sub-tree to a u64 count instead of
+    /// capturing it as-is. Array → length; object → key count;
+    /// scalar (number / bool / non-empty string) → 1; null /
+    /// missing → 0. Useful for "is the compactions list empty"
+    /// style predicates without binding the array into the
+    /// kernel as a `Value::Json`. Only honoured when `path` is
+    /// also set (declarative capture form).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub count: bool,
 }
 
 /// Result of parsing capture points from a string.
@@ -394,6 +418,8 @@ pub fn parse_capture_points(template: &str) -> CaptureParseResult {
                     as_name,
                     cast_type,
                     slurp,
+                    path: None,
+                    count: false,
                 });
                 // Emit source name without brackets into raw template
                 raw.push_str(&source_name);

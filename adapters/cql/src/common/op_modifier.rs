@@ -13,8 +13,8 @@
 //! §"CQL universal field superset" for naming rationale.
 
 use nbrs_activity::op_modifier::{ModifierChain, OpFieldModifier};
-use nbrs_variates::kernel::GkKernel;
-use nbrs_variates::node::Value;
+use polydat::kernel::GkKernel;
+use polydat::node::Value;
 
 /// Universal per-op field names supported by every CQL engine.
 ///

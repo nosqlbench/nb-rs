@@ -325,7 +325,7 @@ pub fn write_control_f64_from_tui(
     name: String,
     value: f64,
 ) -> Result<(), String> {
-    let root = nbrs_variates::nodes::runtime_context::session_root_handle()
+    let root = polydat::nodes::runtime_context::session_root_handle()
         .ok_or_else(|| "no session root installed — TUI cannot resolve controls".to_string())?;
     let erased = {
         let Ok(guard) = root.read() else {
@@ -1735,7 +1735,7 @@ impl App {
         // the readout engine. `phase_status` for live phases
         // (binder.fire under Event::Update; ContentMode flips
         // to Explanation when the `\` overlay-toggle is active);
-        // `phase_done` / `phase_summary` for terminal states.
+        // `phase_outcome` / `phase_summary` for terminal states.
         // Tab / Shift-Tab cycle focus through bound bodies; +
         // / - cycle the focused body's LOD. The binder's per-
         // (slot, body) state persists across frames so the

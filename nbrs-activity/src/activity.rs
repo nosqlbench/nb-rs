@@ -40,7 +40,7 @@ pub struct ActivityConfig {
     /// Source factory for data-driven phases. When present, fibers pull
     /// from this source instead of the cycle counter. Each fiber creates
     /// its own reader via `create_reader()`.
-    pub source_factory: Option<Arc<dyn nbrs_variates::source::DataSourceFactory>>,
+    pub source_factory: Option<Arc<dyn polydat::source::DataSourceFactory>>,
     /// Suppress the inline stderr progress line (TUI handles
     /// display). Wrapped in `Arc<AtomicBool>` so the runner can
     /// flip it at runtime — when the user dismisses the TUI
@@ -72,7 +72,7 @@ pub struct ActivityConfig {
     pub phase_seq: Option<(usize, usize)>,
     /// Resolved `readouts:` slot bindings from the workload
     /// (SRD-63 §5). Empty → all slots fall through to the
-    /// hard-coded built-in defaults (`phase_done` at
+    /// hard-coded built-in defaults (`phase_outcome` at
     /// `on_phase_end`, `phase_status` at `on_update`).
     pub readouts: nbrs_workload::model::ReadoutsBindings,
     /// CLI `--readout=<body>` override (SRD-63 §8).
@@ -558,7 +558,7 @@ pub struct Activity {
     pub error_router: ErrorRouter,
     /// Source factory — creates per-fiber readers. All phases go through
     /// sources. `cycles: N` desugars to `range(0, N)`.
-    source_factory: Arc<dyn nbrs_variates::source::DataSourceFactory>,
+    source_factory: Arc<dyn polydat::source::DataSourceFactory>,
     /// Resolved workload parameters (constant per run).
     pub workload_params: Arc<std::collections::HashMap<String, String>>,
     /// Shared flag: set to true when a `stop` error handler fires.
@@ -570,6 +570,17 @@ pub struct Activity {
     /// error so the user doesn't have to grep the per-cycle
     /// log to learn what actually stopped the run.
     pub stop_reason: Arc<std::sync::Mutex<Option<String>>>,
+    /// SRD-76 — chronologically ordered per-cycle error
+    /// records. Populated by the per-cycle dispatch path
+    /// (alongside the existing `stop_reason` formatted
+    /// string) so the executor can drain a structured
+    /// list into `PhaseOutcome.errors` at phase end. The
+    /// `stop_reason` string stays — it's the single
+    /// load-bearing format the executor reads to compose
+    /// the `phase 'X' stopped by error handler:` log
+    /// line. This buffer is the orthogonal structured
+    /// projection.
+    pub phase_errors: Arc<std::sync::Mutex<Vec<crate::phase_outcome::PhaseErrorDetail>>>,
     /// Final validation metrics frame, populated after all cycles complete.
     /// Read by the metrics capture thread after the activity finishes.
     pub validation_frame: Arc<std::sync::Mutex<Option<MetricSet>>>,
@@ -605,6 +616,81 @@ pub struct Activity {
     /// load it every tick without blocking the executor.
     /// Default empty.
     pub memo: Arc<arc_swap::ArcSwap<String>>,
+    /// SRD-75 phase-poll context. When present, the fiber
+    /// loop checks the predicate after each source-exhaustion
+    /// event; if false and the timeout hasn't elapsed, the
+    /// source factory rewinds and the loop continues.
+    /// `None` ⇒ no phase-poll (standard activity semantics).
+    /// Set by the executor at run-phase entry; not part of
+    /// the YAML-derived `ActivityConfig`.
+    pub phase_poll: Option<PhasePollContext>,
+}
+
+/// Runtime context for SRD-75 phase-level poll. Carried on
+/// `Activity` when the phase declares a `poll:` block;
+/// consumed by the fiber loop after each source-exhaustion
+/// event to decide whether to terminate (predicate satisfied
+/// or timeout) or rewind and run another iteration.
+#[derive(Clone)]
+pub struct PhasePollContext {
+    /// Handle to the phase scope kernel. The fiber loop
+    /// calls `kernel.lookup("__poll_until")` after each
+    /// iteration; a `Value::Bool(true)` ends the loop. Any
+    /// other result (false, None, missing) keeps iterating
+    /// until the wall-clock deadline.
+    pub kernel: Arc<polydat::kernel::GkKernel>,
+    /// Sleep between iterations (after a predicate check
+    /// returns "not done").
+    pub interval: std::time::Duration,
+    /// Wall-clock cap on the whole poll loop. Computed at
+    /// run-phase entry as `Instant::now() + timeout_ms`.
+    pub deadline: std::time::Instant,
+    /// `Instant` the loop started — used to compute the
+    /// elapsed-time value emitted under `metric_name`
+    /// (if set) on successful completion.
+    pub started_at: std::time::Instant,
+    /// Optional named metric to emit on successful loop
+    /// completion (predicate fired). Value is the elapsed
+    /// wall-clock decoded per the existing `_ns` / `_us` /
+    /// `_ms` / `_s` / `_m` / `_h` suffix convention. `None`
+    /// ⇒ no metric written.
+    pub metric_name: Option<String>,
+    /// Tolerated consecutive retryable inner-op errors
+    /// before the loop propagates the error. Mirrors the
+    /// per-op `PollingDispenser` `max_error_retries`
+    /// semantics. Default `0` (strict).
+    pub max_error_retries: u32,
+    /// What to do when the `deadline` fires without
+    /// satisfying the predicate. SRD-75 §"on_timeout":
+    /// - `Error` (default) — set the activity's
+    ///   stop_flag + stop_reason. The phase returns an
+    ///   error; the scenario walker's error-routing
+    ///   policy decides whether sibling phases continue.
+    /// - `Abort` — additionally call
+    ///   `session_signals::request_stop()` so the whole
+    ///   scenario terminates. The workload-author
+    ///   declares the predicate's satisfaction as a
+    ///   precondition for any downstream phase being
+    ///   meaningful; a stuck synchronizer invalidates
+    ///   the rest of the run.
+    pub on_timeout: PhasePollTimeoutPolicy,
+}
+
+/// SRD-75 `on_timeout` policy — see [`PhasePollContext::on_timeout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhasePollTimeoutPolicy {
+    /// Phase fails; scenario walker's error-routing policy
+    /// decides downstream behaviour.
+    Error,
+    /// Phase fails AND `session_signals::request_stop()`
+    /// is called — the scenario walker observes the
+    /// global stop on its next iteration check and
+    /// terminates the whole run.
+    Abort,
+}
+
+impl Default for PhasePollTimeoutPolicy {
+    fn default() -> Self { Self::Error }
 }
 
 /// Invoke [`DriverAdapter::declare_controls`] for each unique adapter
@@ -682,10 +768,10 @@ impl Activity {
             });
         // All phases go through sources. cycles: N desugars to range(0, N).
         // Named cursors in GK provide their own factory via config.source_factory.
-        let source_factory: Arc<dyn nbrs_variates::source::DataSourceFactory> = config.source_factory
+        let source_factory: Arc<dyn polydat::source::DataSourceFactory> = config.source_factory
             .clone()
             .unwrap_or_else(|| Arc::new(
-                nbrs_variates::source::RangeSourceFactory::named("cycles", 0, config.cycles)
+                polydat::source::RangeSourceFactory::named("cycles", 0, config.cycles)
             ));
 
         Self {
@@ -698,11 +784,13 @@ impl Activity {
             workload_params: Arc::new(params),
             stop_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             stop_reason: Arc::new(std::sync::Mutex::new(None)),
+            phase_errors: Arc::new(std::sync::Mutex::new(Vec::new())),
             validation_frame: Arc::new(std::sync::Mutex::new(None)),
             component: None,
             wrappers_override: None,
             wrap_default_order: None,
             memo: Arc::new(arc_swap::ArcSwap::from_pointee(String::new())),
+            phase_poll: None,
         }
     }
 
@@ -1647,7 +1735,7 @@ impl Activity {
                     use futures::FutureExt as _;
                     let activity_for_panic = activity.clone();
                     let activity_name_for_log = activity.config.name.clone();
-                    let body = nbrs_variates::nodes::runtime_context::with_fiber_context(
+                    let body = polydat::nodes::runtime_context::with_fiber_context(
                         phase_arc,
                         async move {
                             executor_task(
@@ -1839,7 +1927,7 @@ impl Activity {
             }
             // Render the ✓ DONE line via the readout engine.
             // SRD-63 / Push 1: the previous inline `format!()`
-            // is now `phase_done.render()` driven by an
+            // is now `phase_outcome.render()` driven by an
             // `ActivityReadoutContext` snapshot of the values
             // gathered above. Output is byte-equivalent.
             let phase_name_bare = activity.config.name.split_once(" (")
@@ -1852,6 +1940,24 @@ impl Activity {
             // further extension.
             let final_extent = source_for_progress.global_extent()
                 .unwrap_or(activity.config.cycles);
+            // SRD-76 — the activity-level binder fire happens
+            // BEFORE the executor records its formal Failed /
+            // Skipped decision. The activity knows only what it
+            // measured: a clean completion if it ran to extent,
+            // a stop-flag trip if the error router fired. Mirror
+            // the stop_flag into PhaseStatus so the readout
+            // doesn't render ✓ on a stopped phase. The executor
+            // records the canonical outcome on the scene tree;
+            // this surface is the realtime display projection.
+            let outcome_status = if activity.stop_flag.load(Ordering::Relaxed) {
+                crate::phase_outcome::PhaseStatus::Failed
+            } else {
+                crate::phase_outcome::PhaseStatus::Completed
+            };
+            let outcome_errors: Vec<crate::phase_outcome::PhaseErrorDetail> =
+                activity.phase_errors.lock().ok()
+                    .map(|g| g.clone())
+                    .unwrap_or_default();
             let ctx = crate::readout_context::ActivityReadoutContext {
                 phase_name: phase_name_bare,
                 phase_seq: activity.config.phase_seq,
@@ -1868,6 +1974,9 @@ impl Activity {
                 depth_indent: crate::scene_tree::running_phase_indent(),
                 use_color: crate::observer::use_color(),
                 memo: activity.memo.load().as_str().to_string(),
+                outcome_status,
+                outcome_errors,
+                outcome_resume_cursor: None,
             };
             // SRD-63 §6.2 / Push 9c: synthesise one final
             // `on_update` tick before the DONE summary. The
@@ -1928,12 +2037,12 @@ impl Activity {
 
             // Build a one-shot binder for `on_phase_end`:
             // workload's `on_phase_end:` overrides if any,
-            // else the default `phase_done` body. Same
+            // else the default `phase_outcome` body. Same
             // SRD-63 §7 binding-layer pattern as the inline
             // status thread above.
-            let phase_done_default = {
-                let readout = crate::readouts::Registry::lookup("phase_done")
-                    .expect("phase_done registered");
+            let phase_outcome_default = {
+                let readout = crate::readouts::Registry::lookup("phase_outcome")
+                    .expect("phase_outcome registered");
                 crate::readouts::BakedBody::from_single(
                     readout, crate::readouts::Lod::Labeled,
                 )
@@ -1941,7 +2050,7 @@ impl Activity {
             let rendered = match crate::readouts::build_event_binder(
                 &activity.config.readouts,
                 crate::readouts::Event::PhaseEnd,
-                phase_done_default,
+                phase_outcome_default,
             ) {
                 Ok(mut binder) => {
                     use crate::readouts::ReadoutBinder;
@@ -2185,7 +2294,178 @@ async fn executor_task(
         // shared-state interaction per stanza.
         let range = match source.reserve(stanza_len as usize) {
             Some(r) => r,
-            None => break, // source exhausted
+            None => {
+                // SRD-75 phase-poll: source exhausted ends a poll
+                // iteration. Check the predicate; if false and
+                // the deadline hasn't elapsed, sleep, rewind the
+                // factory's shared cursor, and re-create the
+                // reader for another iteration. Phase-poll
+                // mandates concurrency=1 (workload-load
+                // validation) so this is the only fiber and the
+                // rewind isn't racing siblings.
+                if let Some(pp) = activity.phase_poll.clone() {
+                    // Check predicate first — handles the case
+                    // where the very first iteration's captures
+                    // already satisfy the condition.
+                    //
+                    // GK comparison operators (`==`, `!=`, `<`,
+                    // …) return u64 (0/1) per SRD-10 §"BinOpKind"
+                    // — there's no Bool result type for these.
+                    // Accept either Value::Bool(true) (in case
+                    // a future GK release adds a Bool result
+                    // path) OR a non-zero numeric value as
+                    // "satisfied". This mirrors the workload
+                    // author's expectation that `(a == 1) & (b == 0)`
+                    // evaluates to "true" when both clauses hold.
+                    //
+                    // `__poll_until` is a DYNAMIC binding
+                    // (SRD-11 §"Two Evaluation Lifecycles") —
+                    // its value depends on per-iteration capture
+                    // writes through the phase scope's
+                    // SharedCells, so a buffer read via
+                    // `lookup()` returns the LAST-EVALUATED
+                    // value (None on first iteration, never
+                    // updated). We MUST trigger re-evaluation
+                    // via `pull()`. The phase scope kernel is
+                    // held as `Arc<GkKernel>` (immutable
+                    // handle), so we evaluate via the per-fiber
+                    // `main_kernel` instead — main_kernel is
+                    // built from the phase scope program (so
+                    // it has `__poll_until` as an output) and
+                    // is wired to the SAME SharedCells the
+                    // captures wrote to (so its pull returns
+                    // the live value).
+                    let satisfied = {
+                        let predicate_value = fiber.main_kernel_mut()
+                            .pull("__poll_until")
+                            .clone();
+                        match predicate_value {
+                            polydat::node::Value::Bool(b) => b,
+                            polydat::node::Value::U64(n) => n != 0,
+                            polydat::node::Value::F64(n) => n != 0.0,
+                            _ => false,
+                        }
+                    };
+                    if satisfied {
+                        // SRD-75 metric_name emission is wired
+                        // when the per-fiber mutable kernel handle
+                        // path settles (the phase scope kernel is
+                        // currently held as `Arc<GkKernel>` for
+                        // the predicate's read-only path; an
+                        // interior-mutability shim or a write-via-
+                        // wires path lands in a follow-up). For
+                        // now log the elapsed time at Info so
+                        // operators can pin down loop duration in
+                        // session.log without depending on the
+                        // metric write.
+                        if let Some(name) = &pp.metric_name {
+                            let elapsed = pp.started_at.elapsed().as_secs_f64();
+                            crate::diag!(
+                                crate::observer::LogLevel::Info,
+                                "phase-poll: predicate satisfied; {name}={elapsed:.3}s",
+                            );
+                        }
+                        break;
+                    }
+                    if std::time::Instant::now() >= pp.deadline {
+                        let elapsed = pp.started_at.elapsed().as_secs_f64();
+                        // Compose the diagnostic once; the `abort`
+                        // path appends a workload-invalidation
+                        // note so the operator immediately knows
+                        // that the whole run is terminating, not
+                        // just this phase.
+                        let invalidation_note = match pp.on_timeout {
+                            PhasePollTimeoutPolicy::Abort =>
+                                " — `on_timeout: abort` declared by the workload; \
+                                 requesting session stop (the whole run terminates)",
+                            PhasePollTimeoutPolicy::Error => "",
+                        };
+                        let formatted_reason = format!(
+                            "[poll_timeout] phase-poll deadline reached after {elapsed:.1}s \
+                             with predicate '__poll_until' still not Bool(true) \
+                             (SRD-75 §\"Workload-load validation\" — adjust `timeout_ms` \
+                             or the `until:` predicate){invalidation_note}"
+                        );
+                        if let Ok(mut slot) = activity.stop_reason.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(formatted_reason.clone());
+                        }
+                        // SRD-76 — push a structured
+                        // `PhaseErrorDetail` into the
+                        // activity's phase_errors buffer so
+                        // the executor's phase-end build of
+                        // `PhaseOutcome` captures the
+                        // poll_timeout with its class and
+                        // message. No op_template /
+                        // op_resolved because the failure is
+                        // at the phase level (no specific op
+                        // dispenser fired the error).
+                        if let Ok(mut errs) = activity.phase_errors.lock() {
+                            errs.push(crate::phase_outcome::PhaseErrorDetail {
+                                class: "poll_timeout".into(),
+                                message: formatted_reason,
+                                op_name: None,
+                                cycle: None,
+                                op_template: None,
+                                op_resolved: None,
+                                at_nanos: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_nanos() as u64)
+                                    .unwrap_or(0),
+                                retryable: false,
+                            });
+                        }
+                        activity.stop_flag.store(true,
+                            std::sync::atomic::Ordering::Relaxed);
+                        // SRD-75 `on_timeout: abort` —
+                        // workload-author declares that an
+                        // unsatisfied predicate makes the whole
+                        // run meaningless. Set the session-wide
+                        // stop signal; the scenario walker
+                        // observes it on its next iteration check
+                        // (`session_signals::stop_requested()`)
+                        // and unwinds without entering the next
+                        // sweep cell. The phase itself still
+                        // returns Err for the normal stop-flag
+                        // path; the session signal is the
+                        // CROSS-PHASE escalation.
+                        if matches!(pp.on_timeout,
+                            PhasePollTimeoutPolicy::Abort)
+                        {
+                            crate::diag!(
+                                crate::observer::LogLevel::Error,
+                                "phase-poll: `on_timeout: abort` triggered after \
+                                 {elapsed:.1}s; requesting session-wide stop \
+                                 (SRD-75 §\"on_timeout\")",
+                            );
+                            crate::session_signals::request_stop();
+                        }
+                        break;
+                    }
+                    // Wait, rewind, re-create the reader.
+                    tokio::time::sleep(pp.interval).await;
+                    if !activity.source_factory.rewind_for_poll() {
+                        if let Ok(mut slot) = activity.stop_reason.lock()
+                            && slot.is_none()
+                        {
+                            *slot = Some(
+                                "[phase_poll] source factory doesn't support \
+                                 rewind_for_poll(); phase-poll requires a \
+                                 rewindable source (RangeSourceFactory or \
+                                 ExtendingRangeSourceFactory). SRD-75."
+                                .to_string(),
+                            );
+                        }
+                        activity.stop_flag.store(true,
+                            std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
+                    source = activity.source_factory.create_reader();
+                    continue;
+                }
+                break; // source exhausted (standard path)
+            }
         };
 
         activity.metrics.stanzas_total.inc();
@@ -2210,7 +2490,7 @@ async fn executor_task(
             // scope so any GK node reading `cycle()` or implicitly
             // `cycle` inside the DAG sees the same ordinal as
             // adapter execution. No-op outside a fiber scope.
-            nbrs_variates::nodes::runtime_context::set_task_cycle(cycle);
+            polydat::nodes::runtime_context::set_task_cycle(cycle);
 
             let wait_start = Instant::now();
             if let Some(ref rl) = rate_limiter {
@@ -2500,7 +2780,7 @@ mod tests {
         fn map_op(
             &self,
             _template: &nbrs_workload::model::ParsedOp,
-            _parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+            _parent: std::sync::Arc<polydat::kernel::GkKernel>,
         ) -> Result<Box<dyn OpDispenser>, String> {
             Ok(Box::new(CountingDispenser { count: self.count.clone() }))
         }
@@ -2539,7 +2819,7 @@ mod tests {
         fn map_op(
             &self,
             _template: &nbrs_workload::model::ParsedOp,
-            _parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+            _parent: std::sync::Arc<polydat::kernel::GkKernel>,
         ) -> Result<Box<dyn OpDispenser>, String> {
             Ok(Box::new(FailThenSucceedDispenser {
                 fails_remaining: self.fails_remaining.clone(),
@@ -2573,9 +2853,9 @@ mod tests {
     }
 
     /// Build a minimal GK root kernel (single identity node) for tests.
-    fn test_kernel() -> nbrs_variates::kernel::GkKernel {
-        use nbrs_variates::assembly::{GkAssembler, WireRef};
-        use nbrs_variates::nodes::identity::Identity;
+    fn test_kernel() -> polydat::kernel::GkKernel {
+        use polydat::assembly::{GkAssembler, WireRef};
+        use polydat::nodes::identity::Identity;
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
         asm.add_node("id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
         asm.add_output("id", WireRef::node("id"));

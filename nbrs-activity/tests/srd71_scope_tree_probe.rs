@@ -86,7 +86,7 @@ phases:
 #[test]
 fn install_chain_preserves_partition_iter_var_type_through_phase() {
     use std::sync::Arc;
-    use nbrs_variates::node::PortType;
+    use polydat::node::PortType;
     use nbrs_workload::model::BindingsDef;
     use nbrs_activity::scope::build_phase_scope_kernel;
 
@@ -96,10 +96,10 @@ fn install_chain_preserves_partition_iter_var_type_through_phase() {
     // pre-eval correctly classifies `partitions(...)` as a
     // PartitionList; this test exercises the post-pre-eval
     // synthesis chain.
-    let workload_root = nbrs_variates::dsl::compile_gk("\n").unwrap();
+    let workload_root = polydat::dsl::compile_gk("\n").unwrap();
 
     // Comprehension scope: install as the runner does.
-    let comp_kernel = nbrs_variates::comprehension::synthesize_for_each_scope(
+    let comp_kernel = polydat::comprehension::synthesize_for_each_scope(
         &[("p".to_string(), "partitions(\"linear:3\")".to_string())],
         &[], // empty parent_manifest
         &workload_root,
@@ -152,7 +152,7 @@ fn install_chain_preserves_partition_iter_var_type_through_phase() {
 fn end_to_end_install_through_runner_pipeline_yields_ext_p() {
     use std::sync::Arc;
     use nbrs_activity::scope_tree::{ScopeKind, ScopeTree};
-    use nbrs_variates::node::PortType;
+    use polydat::node::PortType;
     use nbrs_workload::parse::parse_workload;
 
     let yaml = r#"
@@ -186,7 +186,7 @@ phases:
 
     // Workload-root install: minimal kernel (empty params).
     let workload_root = Arc::new(
-        nbrs_variates::dsl::compile_gk("\n").expect("workload root compile"),
+        polydat::dsl::compile_gk("\n").expect("workload root compile"),
     );
     scope_tree.install_kernel(scope_tree.root, workload_root.clone());
 
@@ -218,7 +218,7 @@ phases:
                     cursor = scope_tree.nodes[p].parent;
                 };
 
-                let comp_kernel = nbrs_variates::comprehension::synthesize_for_each_scope(
+                let comp_kernel = polydat::comprehension::synthesize_for_each_scope(
                     &bindings, &[], &parent_kernel,
                     &HashMap::new(), Vec::new(), None, false,
                     &format!("scope idx {idx}"), None,

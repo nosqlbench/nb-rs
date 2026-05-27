@@ -293,7 +293,7 @@ different source kind (CSV, streaming, etc.).
 ## Registration
 
 Nodes are registered in the DSL compiler's function registry
-(`nbrs-variates/src/dsl/registry.rs`). Each entry maps a function
+(`polydat/src/dsl/registry.rs`). Each entry maps a function
 name to a factory that produces a `Box<dyn GkNode>` from parsed
 arguments.
 

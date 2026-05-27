@@ -22,22 +22,82 @@ use nbrs_metrics::component::Component;
 use nbrs_metrics::labels::Labels;
 use nbrs_metrics::metrics_query::MetricsQuery;
 
+/// SRD-77 — one invocation of `nbrs <verb>` within a
+/// [`Session`]. The session is the persistent container;
+/// each execution is the unit of "what was attempted at
+/// this point in time, with what workload version, and how
+/// did it dispose?" Every per-phase / per-metric row carries
+/// the owning execution's [`Self::exec_id`] as a dimensional
+/// label so cross-execution queries can scope cleanly.
+///
+/// Until the SRD-77 `refine` verb lands the per-session
+/// monotonic registry, every session has exactly one
+/// execution with `exec_id = 1`. The shape exists now so the
+/// SRD-76 storage layer (`phase_outcomes` / `phase_errors`)
+/// and the component tree's root labels (`session`,
+/// `exec_id`) honour the eventual SRD-77 contract from day
+/// one — no later schema migration is required.
+#[derive(Debug, Clone)]
+pub struct Execution {
+    /// Monotonic per-session sequence (`1, 2, 3, ...`).
+    /// Today always `1`; SRD-77's `refine` verb introduces
+    /// the registry that bumps it.
+    pub exec_id: u64,
+    /// Which verb launched this execution: `"run"` /
+    /// `"resume"` / future `"refine"`. Operator-visible via
+    /// the SRD-77 `executions` table and replay header.
+    pub verb: &'static str,
+    /// Wall-clock nanos-since-epoch at execution start.
+    pub started_at_nanos: i64,
+}
+
+impl Execution {
+    /// Construct the implicit first execution of a session.
+    /// `verb` is `"run"` for fresh sessions and `"resume"`
+    /// for `nbrs resume`. Future SRD-77 callers building
+    /// follow-up executions read the prior count and bump.
+    pub fn first(verb: &'static str) -> Self {
+        Self {
+            exec_id: 1,
+            verb,
+            started_at_nanos: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as i64)
+                .unwrap_or(0),
+        }
+    }
+}
+
 /// A workload run session.
 ///
 /// The session is the root of the component tree and — once the
 /// runner has installed one — holds the shared [`MetricsQuery`] that
 /// every in-process reader (TUI, summary, GK metric nodes) reads
 /// through. See SRD-42 §"MetricsQuery — the unified read interface".
+///
+/// Per SRD-77, the session is a persistent container; the
+/// [`Execution`] carried in [`Self::execution`] is the unit
+/// of in-flight work. Both ride on the component tree as the
+/// `session` + `exec_id` dimensional labels so every metric
+/// the descendant components emit inherits them.
 pub struct Session {
-    /// Human-readable session identifier.
+    /// Session identifier (the session-directory basename).
+    /// Surfaces as the `session` dimensional label on every
+    /// per-component metric via [`Self::component`].
     pub id: String,
     /// Output directory for diagnostic artifacts (metrics, logs, flamegraphs).
-    /// Located at `logs/{session_id}/`. Not the working directory.
+    /// Located at `logs/{id}/`. Not the working directory.
     pub output_dir: PathBuf,
     /// Workload file path (for metadata).
     pub workload: String,
     /// Scenario name.
     pub scenario: String,
+    /// SRD-77 — the active execution. Every per-phase /
+    /// per-metric row this session produces is tagged with
+    /// `execution.exec_id` so SRD-77's `refine` verb can
+    /// layer follow-up executions onto the same session
+    /// without collision.
+    pub execution: Execution,
     /// Session root component (owns the component tree for metrics labeling).
     pub component: Arc<RwLock<Component>>,
     /// Shared `MetricsQuery` handle — installed by the runner once the
@@ -1089,33 +1149,35 @@ impl Session {
             }
         }
 
-        // Root labels carry both the session id (already
-        // unique per run) and the workload's bare stem
-        // (filename without path or extension, falling
-        // back to `"workload"` for inline / op= runs that
-        // have no file). Every metric and component
-        // descendant inherits these via the component
-        // tree, so cross-session queries can group by
-        // `workload="full_cql_vector"` regardless of
-        // whether the operator ran it from
-        // `./full_cql_vector.yaml`,
-        // `adapters/cql/workloads/full_cql_vector.yaml`,
-        // or any other path.
+        // Root labels carry the session identity (`session`),
+        // the active-execution identity (`exec_id`), and the
+        // workload's bare stem. Every metric and component
+        // descendant inherits these via the component tree, so
+        // cross-session queries can group by
+        // `workload="full_cql_vector"` regardless of where the
+        // operator launched the workload from, and SRD-77's
+        // multi-execution shape is honoured from day one (every
+        // metric row already carries its owning `exec_id` even
+        // while the executions registry is single-entry).
+        let execution = Execution::first("run");
         let component = Component::root(
-            Labels::of("session", &id).with("workload", workload_stem),
+            Labels::of("session", &id)
+                .with("exec_id", &execution.exec_id.to_string())
+                .with("workload", workload_stem),
             std::collections::HashMap::new(),
         );
         // Install the session root as the resolver backing for
         // GK runtime-context nodes (`control(...)`, `rate()`,
         // `concurrency()`, etc.). See SRD 12 §"Runtime context
-        // nodes" and nbrs-variates/src/nodes/runtime_context.rs.
-        nbrs_variates::nodes::runtime_context::set_session_root(component.clone());
+        // nodes" and polydat/src/nodes/runtime_context.rs.
+        polydat::nodes::runtime_context::set_session_root(component.clone());
 
         Self {
             id,
             output_dir,
             workload: workload_stem.to_string(),
             scenario: scenario.to_string(),
+            execution,
             component,
             metrics_query: Mutex::new(None),
         }
@@ -1179,23 +1241,30 @@ impl Session {
             }
         }
 
-        // Root labels carry session + workload stem (see
-        // `Session::new_with_args` for rationale). Resume
-        // reuses the same workload stem so the resumed
+        // Root labels carry session + exec_id + workload stem
+        // (see `Session::new_with_args` for rationale). Resume
+        // re-uses the same workload stem so the resumed
         // metrics keep the same `workload=...` label and
-        // continue to match cross-session queries that
-        // grouped on it.
+        // continue to match cross-session queries that grouped
+        // on it. `verb="resume"` distinguishes this execution
+        // from the original `run`; SRD-77's `executions` table
+        // will eventually link the two as separate `exec_id`s
+        // within the same session.
+        let execution = Execution::first("resume");
         let component = Component::root(
-            Labels::of("session", &id).with("workload", workload_stem),
+            Labels::of("session", &id)
+                .with("exec_id", &execution.exec_id.to_string())
+                .with("workload", workload_stem),
             std::collections::HashMap::new(),
         );
-        nbrs_variates::nodes::runtime_context::set_session_root(component.clone());
+        polydat::nodes::runtime_context::set_session_root(component.clone());
 
         Self {
             id,
             output_dir: prior_session_dir,
             workload: workload_stem.to_string(),
             scenario: scenario.to_string(),
+            execution,
             component,
             metrics_query: Mutex::new(None),
         }

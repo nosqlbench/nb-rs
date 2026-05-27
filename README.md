@@ -121,7 +121,7 @@ See [`examples/`](examples/) for categorized workload examples:
 ## Architecture
 
 ```
-nbrs-variates     GK engine: DAG compilation, node functions, JIT, provenance
+polydat     GK engine: DAG compilation, node functions, JIT, provenance
 nbrs-workload     YAML parsing, bind points, inline expressions, phasing
 nbrs-activity     Async execution engine, dispenser wrappers, capture flow
 nbrs-metrics      HDR histograms, frame capture, OpenMetrics export

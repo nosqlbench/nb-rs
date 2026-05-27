@@ -868,7 +868,7 @@ reference it via `<cursor>.<field>` field-access syntax.
 
 The full surface — `CursorSugar`, `AuxBinding`,
 `CursorSugarRegistration`, and the `dispatch` walker — lives in
-`nbrs-variates::dsl::cursor_sugar`.
+`polydat::dsl::cursor_sugar`.
 
 **Cursor-to-accessor wiring**: the compiler resolves `base`
 in accessor function arguments to the cursor node's output.

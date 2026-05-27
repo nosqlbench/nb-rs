@@ -17,7 +17,7 @@ per-cycle write through `FiberBuilder::commit_op_template_write_throughs`
 green; CQL workload `full_cql_vector.yaml` compiles cleanly
 through the new kernel-driven path with the dialect-detection
 booleans materialising as workload-root shared cells.
-**Owner:** nbrs-variates (kernel/program API), nbrs-activity
+**Owner:** polydat (kernel/program API), nbrs-activity
 (scope synthesis call sites)
 **Cross-refs:** SRD-13c (scope model — `bind_outer_scope`,
 manifest extraction), SRD-13d (op-template scope layer),
@@ -240,7 +240,7 @@ pub enum BodyFragment {
 
 Notes:
 
-- `Statement` is reused from `nbrs-variates/src/dsl/ast.rs`
+- `Statement` is reused from `polydat/src/dsl/ast.rs`
   — no parallel enum. Synthesisers that already produce
   `Statement`s can submit them directly without round-
   tripping through GK source strings.
@@ -607,7 +607,7 @@ linkages" rule from SRD-66 §"Compilation lifecycle."
 
 ## Walled-off invariant
 
-The `nbrs-variates` crate's public API exposes ONLY:
+The `polydat` crate's public API exposes ONLY:
 
 - `ScopeKernel<M>` (the typed kernel handle).
 - `Arc<ScopeKernel<P>>::subcontext_builder() -> SubcontextBuilder<P>`.
@@ -802,7 +802,7 @@ can flow between them via the parent's exports.
   `Child<P>` phantom marker, `ChildName`, `PullConsumer`,
   the parent's named-child registry, `ScopeKernel<P>
   ::subcontext_builder`, `ScopeKernel<P>::spawn`,
-  `ScopeKernel<P>::release_child` in `nbrs-variates`.
+  `ScopeKernel<P>::release_child` in `polydat`.
 - The implementation reuses the existing `compile_gk`,
   `bind_outer_scope`, `from_program` machinery internally.
   No semantic change; the builder is a typed shim.
@@ -920,7 +920,7 @@ Always-error, strict-independent:
    `Statements(Vec<Statement>)` for synthesisers that
    produce GK programmatically (the existing comprehension
    / do-loop / op-template walkers). Reuses
-   `nbrs-variates/src/dsl/ast.rs::Statement` directly — no
+   `polydat/src/dsl/ast.rs::Statement` directly — no
    parallel enum.
 
 5. **Parent ref: `Arc<ScopeKernel<P>>` only.** Single API

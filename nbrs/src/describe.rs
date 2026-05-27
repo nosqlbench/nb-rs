@@ -3,7 +3,7 @@
 
 //! The `describe` subcommand: introspect GK functions, stdlib, modules, and DAGs.
 
-use nbrs_variates::dsl::registry;
+use polydat::dsl::registry;
 
 pub fn describe_command(args: &[String]) {
     let first = args.first().map(|s| s.as_str()).unwrap_or("");
@@ -339,34 +339,34 @@ fn describe_gk_functions_md(path: &str) {
             let mut all_params: Vec<String> = Vec::new();
             for p in sig.params {
                 match p.slot_type {
-                    nbrs_variates::node::SlotType::Wire => {
+                    polydat::node::SlotType::Wire => {
                         all_params.push(format!("{}: wire", p.name));
                     }
-                    nbrs_variates::node::SlotType::ConstStr => {
+                    polydat::node::SlotType::ConstStr => {
                         if p.required {
                             all_params.push(format!("{}: str", p.name));
                         } else {
                             all_params.push(format!("[{}]: str", p.name));
                         }
                     }
-                    nbrs_variates::node::SlotType::ConstU64 => {
+                    polydat::node::SlotType::ConstU64 => {
                         if p.required {
                             all_params.push(format!("{}: u64", p.name));
                         } else {
                             all_params.push(format!("[{}]: u64", p.name));
                         }
                     }
-                    nbrs_variates::node::SlotType::ConstF64 => {
+                    polydat::node::SlotType::ConstF64 => {
                         if p.required {
                             all_params.push(format!("{}: f64", p.name));
                         } else {
                             all_params.push(format!("[{}]: f64", p.name));
                         }
                     }
-                    nbrs_variates::node::SlotType::ConstVecU64 => {
+                    polydat::node::SlotType::ConstVecU64 => {
                         all_params.push(format!("{}: vec<u64>", p.name));
                     }
-                    nbrs_variates::node::SlotType::ConstVecF64 => {
+                    polydat::node::SlotType::ConstVecF64 => {
                         all_params.push(format!("{}: vec<f64>", p.name));
                     }
                 }
@@ -417,11 +417,11 @@ fn describe_gk_functions_md(path: &str) {
 /// extracts `ModuleDef` statements, and prints them grouped by
 /// category (source filename) with ANSI coloring.
 fn describe_gk_stdlib() {
-    use nbrs_variates::dsl::lexer::lex;
-    use nbrs_variates::dsl::parser::parse;
-    use nbrs_variates::dsl::ast::Statement;
+    use polydat::dsl::lexer::lex;
+    use polydat::dsl::parser::parse;
+    use polydat::dsl::ast::Statement;
 
-    let sources = nbrs_variates::dsl::stdlib_sources();
+    let sources = polydat::dsl::stdlib_sources();
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
 
     let (bold, dim, reset, green, cyan, magenta) = if is_tty {
@@ -515,9 +515,9 @@ fn describe_gk_stdlib() {
 /// Usage:
 ///   nbrs describe gk modules [--dir=path]
 fn describe_gk_modules(args: &[String]) {
-    use nbrs_variates::dsl::lexer::lex;
-    use nbrs_variates::dsl::parser::parse;
-    use nbrs_variates::dsl::ast::Statement;
+    use polydat::dsl::lexer::lex;
+    use polydat::dsl::parser::parse;
+    use polydat::dsl::ast::Statement;
 
     let dir = args.iter()
         .find_map(|a| a.strip_prefix("--dir="))
@@ -681,7 +681,7 @@ fn extract_first_comment(source: &str, name: &str) -> Option<String> {
 ///   nbrs describe gk dag <file.gk> [--format=dot|mermaid|svg] [--output=file]
 ///   nbrs describe gk dag --with-flattening <workload.yaml>
 fn describe_gk_dag(args: &[String]) {
-    use nbrs_variates::viz;
+    use polydat::viz;
 
     let file = args.iter().find(|a| !a.starts_with("--"));
     let format = args.iter()

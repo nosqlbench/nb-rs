@@ -17,9 +17,9 @@ pub use crate::fixture::ExecCtx;
 
 // Re-export GkKernel so adapter `map_op` impls can name the
 // `parent: &GkKernel` parameter type without each adapter crate
-// taking a direct nbrs-variates dependency. SRD-68 §"Adapter API
+// taking a direct polydat dependency. SRD-68 §"Adapter API
 // surface" pins this as the canonical import path for adapters.
-pub use nbrs_variates::kernel::GkKernel;
+pub use polydat::kernel::GkKernel;
 
 /// Trait for adapter-specific result bodies.
 ///
@@ -551,7 +551,7 @@ pub struct ResolvedFields {
     /// Field names in op template declaration order.
     pub names: Vec<String>,
     /// Typed values, parallel to `names`.
-    pub values: Vec<nbrs_variates::node::Value>,
+    pub values: Vec<polydat::node::Value>,
     /// Lazily rendered string representations, parallel to `names`.
     strings: OnceLock<Vec<String>>,
 }
@@ -577,7 +577,7 @@ impl Clone for ResolvedFields {
 
 impl ResolvedFields {
     /// Create with names and typed values. Strings are lazily rendered.
-    pub fn new(names: Vec<String>, values: Vec<nbrs_variates::node::Value>) -> Self {
+    pub fn new(names: Vec<String>, values: Vec<polydat::node::Value>) -> Self {
         Self { names, values, strings: OnceLock::new() }
     }
 
@@ -596,7 +596,7 @@ impl ResolvedFields {
     }
 
     /// Get a field value by name as a typed Value.
-    pub fn get_value(&self, name: &str) -> Option<&nbrs_variates::node::Value> {
+    pub fn get_value(&self, name: &str) -> Option<&polydat::node::Value> {
         self.names.iter().position(|n| n == name)
             .map(|i| &self.values[i])
     }
@@ -627,13 +627,13 @@ impl ResolvedFields {
             .zip(self.values.iter())
             .map(|(name, value)| {
                 let json_val = match value {
-                    nbrs_variates::node::Value::U64(v) => serde_json::Value::Number((*v).into()),
-                    nbrs_variates::node::Value::F64(v) => {
+                    polydat::node::Value::U64(v) => serde_json::Value::Number((*v).into()),
+                    polydat::node::Value::F64(v) => {
                         serde_json::Number::from_f64(*v)
                             .map(serde_json::Value::Number)
                             .unwrap_or(serde_json::Value::Null)
                     }
-                    nbrs_variates::node::Value::Bool(v) => serde_json::Value::Bool(*v),
+                    polydat::node::Value::Bool(v) => serde_json::Value::Bool(*v),
                     _ => serde_json::Value::String(value.to_display_string()),
                 };
                 (name.clone(), json_val)
@@ -664,7 +664,7 @@ mod tests {
     fn resolved_fields_lazy_strings() {
         let fields = ResolvedFields::new(
             vec!["a".into(), "b".into()],
-            vec![nbrs_variates::node::Value::U64(42), nbrs_variates::node::Value::F64(3.14)],
+            vec![polydat::node::Value::U64(42), polydat::node::Value::F64(3.14)],
         );
         // Strings not computed yet
         assert!(fields.strings.get().is_none());
@@ -678,10 +678,10 @@ mod tests {
     fn resolved_fields_get_value() {
         let fields = ResolvedFields::new(
             vec!["x".into()],
-            vec![nbrs_variates::node::Value::F64(3.14)],
+            vec![polydat::node::Value::F64(3.14)],
         );
         match fields.get_value("x") {
-            Some(nbrs_variates::node::Value::F64(v)) => assert!((v - 3.14).abs() < 1e-10),
+            Some(polydat::node::Value::F64(v)) => assert!((v - 3.14).abs() < 1e-10),
             other => panic!("expected F64(3.14), got {other:?}"),
         }
         // get_value doesn't trigger string rendering

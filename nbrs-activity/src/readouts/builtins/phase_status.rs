@@ -142,7 +142,7 @@ fn render_labeled(
     // dispatched its sole op — for long synchronous calls
     // (jolokia_compact, schema migrations) the bar pinned at
     // 100% for the whole wait. `cycles_completed` matches
-    // what `phase_done` reports and what rate / ETA derive
+    // what `phase_outcome` reports and what rate / ETA derive
     // from, so the running bar and the final DONE line agree.
     let pct: f64 = if total_extent > 0 {
         ops_completed as f64 * 100.0 / total_extent as f64
@@ -199,7 +199,7 @@ fn render_labeled(
     let adapter_status = ctx.adapter_counters_text();
     let batch_info = ctx.batch_info_text();
 
-    // Counters tone follows the rule from phase_done: yellow
+    // Counters tone follows the rule from phase_outcome: yellow
     // when something abnormal (errors/retries > 0), dim when
     // clean. ok% gets the same treatment so a 100% / 99%
     // distinction reads at a glance.
@@ -236,11 +236,48 @@ fn render_labeled(
     } else {
         String::new()
     };
+    // SRD-? — full coord stack on the ACTIVE phase line
+    // (`summarize_changed_only=false`). The same helper
+    // `phase_outcome` uses for completed phases, called with
+    // the inverse flag. Wrap-aware: when the head + coord
+    // chain exceeds terminal width, strata fold onto
+    // continuation lines indented to match the second-row
+    // counters line (`depth_indent + "    "`).
+    //
+    // Head-consumed accounting for wrap budget:
+    //   depth_indent (variable) + spinner (1) + " " (1)
+    //   + bar (variable visible width)
+    //   + " " (1) + seq_prefix (visible chars when set)
+    //   + activity_name length
+    let labels = ctx.subject_labels();
+    let bar_visible: usize = if total_extent > 0 {
+        // The braille bar is ` ` + 10 braille glyphs (each
+        // 1 cell wide when no truecolor wrapping is in play
+        // — the bg/fg escapes are zero-width).
+        11
+    } else {
+        0
+    };
+    let seq_visible: usize = match ctx.subject_seq() {
+        Some((s, t)) => format!("[{s}/{t}] ").chars().count(),
+        None => 0,
+    };
+    let head_consumed: usize = depth_indent.chars().count()
+        + 1  // spinner glyph
+        + bar_visible
+        + 1  // space between bar and seq/name
+        + seq_visible
+        + activity_name.chars().count();
+    let continuation_indent = format!("{depth_indent}    ");
+    let coords_part = super::phase_outcome::format_coords_block(
+        labels, color, head_consumed, &continuation_indent,
+        /* summarize_changed_only */ false,
+    );
     let mut tmp = String::with_capacity(320);
     let _ = write!(
         &mut tmp,
         "{memo_header}\
-{depth_indent}{cyan}{spinner}{reset}{bar} {seq_prefix}{bold}{blue}{activity_name}{reset} {pct:.0}%\n\
+{depth_indent}{cyan}{spinner}{reset}{bar} {seq_prefix}{bold}{blue}{activity_name}{reset}{coords_part} {pct:.0}%\n\
 {depth_indent}    {dim}{rate_str}{reset} {ok_tone}ok:{ok_pct:.0}%{reset} \
 {err_tone}e:{errors} r:{retries}{reset} {dim}c:{concurrency}{reset}{cycles_chip}\
 {adapter_status}{batch_info}{chips}{eta}",

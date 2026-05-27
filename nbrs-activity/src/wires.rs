@@ -4,7 +4,7 @@
 //! `WireSource` — narrow read trait for op-template name resolution.
 //!
 //! SRD-68 §"The narrow trait" specifies the wall between adapter
-//! code and `nbrs_variates::kernel::GkKernel` internals: a dispenser
+//! code and `polydat::kernel::GkKernel` internals: a dispenser
 //! at cycle time accesses its bound GK context only through this
 //! trait's `get` (value lookup by name) and `names` (declared-name
 //! iteration for diagnostics). No `program()`, no `state()`, no
@@ -24,8 +24,8 @@
 //!
 //! See `docs/sysref/68_dispenser_owned_gk_context.md`.
 
-use nbrs_variates::kernel::GkKernel;
-use nbrs_variates::node::Value;
+use polydat::kernel::GkKernel;
+use polydat::node::Value;
 
 /// Result of a [`WireSource::write`] call.
 ///
@@ -47,8 +47,8 @@ use nbrs_variates::node::Value;
 /// reference this value." Diagnostics (`debug_nodes_enabled()`,
 /// audit log) can log the outcome to make DCE visible.
 ///
-/// [`KernelOptLevel::Release`]: nbrs_variates::kernel::KernelOptLevel::Release
-/// [`KernelOptLevel::Diagnostic`]: nbrs_variates::kernel::KernelOptLevel::Diagnostic
+/// [`KernelOptLevel::Release`]: polydat::kernel::KernelOptLevel::Release
+/// [`KernelOptLevel::Diagnostic`]: polydat::kernel::KernelOptLevel::Diagnostic
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteOutcome {
     /// Value written to a real input slot.
@@ -491,7 +491,7 @@ pub fn resolve_op_fields_via_wires(
     op_fields: &[(String, serde_json::Value)],
     wires: &dyn WireSource,
 ) -> Result<crate::adapter::ResolvedFields, String> {
-    use nbrs_variates::node::Value;
+    use polydat::node::Value;
     let mut names = Vec::with_capacity(op_fields.len());
     let mut values = Vec::with_capacity(op_fields.len());
     for (key, json_value) in op_fields {
@@ -550,7 +550,7 @@ fn is_bare_ident(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nbrs_variates::dsl::compile::compile_gk;
+    use polydat::dsl::compile::compile_gk;
 
     #[test]
     fn gkkernel_get_resolves_inputs_and_constants() {
@@ -746,7 +746,7 @@ mod tests {
     #[test]
     fn to_display_strict_returns_none_for_value_none() {
         // The strict primitive itself; render sites consume it.
-        use nbrs_variates::node::Value;
+        use polydat::node::Value;
         assert_eq!(Value::None.to_display_strict(), None);
         assert_eq!(Value::Str("hello".into()).to_display_strict(),
                    Some("hello".to_string()));
@@ -823,9 +823,9 @@ mod tests {
         // populated value; child kernel declares the same name;
         // verify the value propagates through `build_subscope`
         // and is visible via `CycleWires::get`.
-        use nbrs_variates::dsl::compile::compile_gk;
-        use nbrs_variates::node::Value;
-        use nbrs_variates::subcontext::GkMatter;
+        use polydat::dsl::compile::compile_gk;
+        use polydat::node::Value;
+        use polydat::subcontext::GkMatter;
 
         // Parent: declares `optimize_for` as extern + auto-passthrough
         // output via `final` — same pattern the phase synthesizer
@@ -882,7 +882,7 @@ mod tests {
         // body) gives materialize_wiring_from_outer something to walk. With ONLY
         // an extern decl, there's no body reference, no auto-passthrough,
         // and the chain breaks.
-        use nbrs_variates::dsl::compile::compile_gk;
+        use polydat::dsl::compile::compile_gk;
         let k = compile_gk(
             "input cycle: u64\n\
              extern optimize_for: String\n",
@@ -1023,7 +1023,7 @@ mod tests {
         // Case 1: stringified — exact form is implementation-defined,
         // verify the value contains the digits.
         assert!(matches!(resolved.get_value("limit_num"),
-            Some(nbrs_variates::node::Value::Str(s)) if s.contains("100")),
+            Some(polydat::node::Value::Str(s)) if s.contains("100")),
             "case 1: got {:?}", resolved.get_value("limit_num"));
         // Case 2: typed U64.
         assert_eq!(resolved.get_value("typed_ref").map(|v| v.as_u64()),

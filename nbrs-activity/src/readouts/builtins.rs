@@ -5,7 +5,7 @@
 
 pub mod each_close;
 pub mod metric;
-pub mod phase_done;
+pub mod phase_outcome;
 pub mod phase_starting;
 pub mod phase_status;
 pub mod phase_summary;

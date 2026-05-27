@@ -56,7 +56,7 @@ domain-specific binding macros, and most `.gk` files are inlined.
 per-module pragma scopes that the host can't see — inline is by
 definition flattening.
 
-See SRD 13 §"Module Inlining" and `nbrs-variates/src/dsl/modules.rs`.
+See SRD 13 §"Module Inlining" and `polydat/src/dsl/modules.rs`.
 
 ---
 

@@ -78,17 +78,35 @@ impl TraversingDispenser {
 fn extract_captures_from_json(
     body: &dyn crate::adapter::ResultBody,
     specs: &[bindpoints::CapturePoint],
-) -> HashMap<String, nbrs_variates::node::Value> {
+) -> HashMap<String, polydat::node::Value> {
     if specs.is_empty() {
         return HashMap::new();
     }
     let json = body.to_json();
     let mut captures = HashMap::new();
     for spec in specs {
+        // Declarative `capture:` block form: JSON-Pointer path
+        // takes precedence over the bracket-source-name path.
+        // Lets a workload address Jolokia bulk-POST responses
+        // (`[{value:N}, {value:[...]}, {value:K}]`) by index +
+        // nested field without re-shaping the response.
+        if let Some(path) = spec.path.as_deref() {
+            let sub = json.pointer(path);
+            let value = if spec.count {
+                polydat::node::Value::U64(count_of_subtree(sub))
+            } else {
+                match sub {
+                    Some(v) => json_subtree_to_value(v),
+                    None => polydat::node::Value::None,
+                }
+            };
+            captures.insert(spec.as_name.clone(), value);
+            continue;
+        }
         if spec.slurp {
             // Slurp form: collect across all rows.
             let collected = slurp_column(&json, &spec.source_name);
-            captures.insert(spec.as_name.clone(), nbrs_variates::node::Value::Json(
+            captures.insert(spec.as_name.clone(), polydat::node::Value::Json(
                 std::sync::Arc::new(serde_json::Value::Array(collected)),
             ));
             continue;
@@ -116,6 +134,45 @@ fn extract_captures_from_json(
     captures
 }
 
+/// Reduce an addressed JSON sub-tree to a u64 count, mirroring
+/// the polling wrapper's [`count_from_json_pointer`] semantics:
+/// array → length, object → key count, scalar → 1 (non-empty)
+/// or 0 (false / empty string / zero number), null / missing →
+/// 0. Use cases: `capture: { active_count: "/value:count" }`
+/// reduces a list-of-running-jobs to a numeric gauge in one
+/// step.
+fn count_of_subtree(v: Option<&serde_json::Value>) -> u64 {
+    let Some(v) = v else { return 0 };
+    match v {
+        serde_json::Value::Array(a) => a.len() as u64,
+        serde_json::Value::Object(m) => m.len() as u64,
+        serde_json::Value::Number(n) => {
+            n.as_u64()
+                .or_else(|| n.as_i64().map(|i| i.max(0) as u64))
+                .or_else(|| n.as_f64().map(|f| f.max(0.0) as u64))
+                .unwrap_or(0)
+        }
+        serde_json::Value::Bool(b) => if *b { 1 } else { 0 },
+        serde_json::Value::String(s) if s.is_empty() => 0,
+        serde_json::Value::String(_) => 1,
+        serde_json::Value::Null => 0,
+    }
+}
+
+/// Project a JSON sub-tree into a GK [`Value`]. Scalars go
+/// through [`json_to_value`]'s typed coercion; structural
+/// shapes (array / object) are kept as `Value::Json` so the
+/// kernel can carry the original shape without lossy
+/// stringification.
+fn json_subtree_to_value(v: &serde_json::Value) -> polydat::node::Value {
+    match v {
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            polydat::node::Value::Json(std::sync::Arc::new(v.clone()))
+        }
+        scalar => json_to_value(scalar),
+    }
+}
+
 /// First-row lookup: for an array body, read `rows[0].name`; for
 /// an object body, read `obj.name`. Returns `None` when the field
 /// isn't present.
@@ -141,21 +198,28 @@ fn slurp_column(json: &serde_json::Value, name: &str) -> Vec<serde_json::Value> 
     }
 }
 
-/// Convert a serde_json::Value to a GK Value.
-fn json_to_value(v: &serde_json::Value) -> nbrs_variates::node::Value {
+/// Convert a serde_json::Value to a GK Value. JSON `null`
+/// maps to [`Value::None`] (per SRD-74 — None propagates
+/// rather than coercing to the string `"null"`); arrays and
+/// objects stringify only when reached via the row-shape
+/// extraction path (the JSON-Pointer extraction route uses
+/// [`json_subtree_to_value`] which preserves them as
+/// `Value::Json`).
+fn json_to_value(v: &serde_json::Value) -> polydat::node::Value {
     match v {
+        serde_json::Value::Null => polydat::node::Value::None,
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_u64() {
-                nbrs_variates::node::Value::U64(i)
+                polydat::node::Value::U64(i)
             } else if let Some(f) = n.as_f64() {
-                nbrs_variates::node::Value::F64(f)
+                polydat::node::Value::F64(f)
             } else {
-                nbrs_variates::node::Value::Str(n.to_string().into())
+                polydat::node::Value::Str(n.to_string().into())
             }
         }
-        serde_json::Value::Bool(b) => nbrs_variates::node::Value::Bool(*b),
-        serde_json::Value::String(s) => nbrs_variates::node::Value::Str(s.as_str().into()),
-        other => nbrs_variates::node::Value::Str(other.to_string().into()),
+        serde_json::Value::Bool(b) => polydat::node::Value::Bool(*b),
+        serde_json::Value::String(s) => polydat::node::Value::Str(s.as_str().into()),
+        other => polydat::node::Value::Str(other.to_string().into()),
     }
 }
 
@@ -237,13 +301,13 @@ impl ConditionalDispenser {
 }
 
 /// Test whether a resolved field value is truthy.
-fn is_truthy(value: &nbrs_variates::node::Value) -> bool {
+fn is_truthy(value: &polydat::node::Value) -> bool {
     match value {
-        nbrs_variates::node::Value::None => false,
-        nbrs_variates::node::Value::U64(v) => *v != 0,
-        nbrs_variates::node::Value::F64(v) => *v != 0.0,
-        nbrs_variates::node::Value::Bool(v) => *v,
-        nbrs_variates::node::Value::Str(s) => !s.is_empty(),
+        polydat::node::Value::None => false,
+        polydat::node::Value::U64(v) => *v != 0,
+        polydat::node::Value::F64(v) => *v != 0.0,
+        polydat::node::Value::Bool(v) => *v,
+        polydat::node::Value::Str(s) => !s.is_empty(),
         _ => true,
     }
 }
@@ -315,8 +379,8 @@ impl OpDispenser for ThrottleDispenser {
         Box::pin(async move {
             let value = ctx.pulls.get(self.delay_handle);
             let nanos = match value {
-                nbrs_variates::node::Value::U64(ns) => *ns,
-                nbrs_variates::node::Value::F64(ms) => (*ms * 1_000_000.0) as u64,
+                polydat::node::Value::U64(ns) => *ns,
+                polydat::node::Value::F64(ms) => (*ms * 1_000_000.0) as u64,
                 _ => 0,
             };
             if nanos > 0 {
@@ -572,11 +636,11 @@ impl OpDispenser for PollingDispenser {
                     // (closure-binding economy).
                     let _ = ctx.wires.write(
                         "poll_count",
-                        nbrs_variates::node::Value::U64(polls),
+                        polydat::node::Value::U64(polls),
                     );
                     let _ = ctx.wires.write(
                         "poll_elapsed_ms",
-                        nbrs_variates::node::Value::U64(elapsed.as_millis() as u64),
+                        polydat::node::Value::U64(elapsed.as_millis() as u64),
                     );
                     // Emit named metric. The recorded value is the
                     // elapsed wait duration; if `metric_name` carries
@@ -590,7 +654,7 @@ impl OpDispenser for PollingDispenser {
                         let value = duration_value_for_metric_name(name, elapsed_secs);
                         let _ = ctx.wires.write(
                             name,
-                            nbrs_variates::node::Value::F64(value),
+                            polydat::node::Value::F64(value),
                         );
                     }
                     return Ok(OpResult {
@@ -744,7 +808,7 @@ struct ResultSlot {
     source: ResultSource,
     /// Optional default rendered as a GK Value (string fallback)
     /// when the source resolves to nothing.
-    default: Option<nbrs_variates::node::Value>,
+    default: Option<polydat::node::Value>,
 }
 
 /// Decoded SRD-40b §5.1 source grammar.
@@ -968,18 +1032,18 @@ impl ResultDispenser {
     fn evaluate(
         slot: &ResultSlot,
         result: &OpResult,
-    ) -> Option<nbrs_variates::node::Value> {
+    ) -> Option<polydat::node::Value> {
         match &slot.source {
             ResultSource::Count => {
                 let n = result.body.as_ref().map(|b| b.element_count()).unwrap_or(0);
-                Some(nbrs_variates::node::Value::U64(n))
+                Some(polydat::node::Value::U64(n))
             }
             ResultSource::Ok => {
                 // Reached only on Ok(_) from the inner adapter; a
                 // skipped op also counts as "not a failure" — we
                 // treat skip as ok=true, matching the SRD-40b §5
                 // intent that this is a binary success signal.
-                Some(nbrs_variates::node::Value::Bool(true))
+                Some(polydat::node::Value::Bool(true))
             }
             ResultSource::Path(segs) => {
                 let body = result.body.as_ref()?;
@@ -1044,7 +1108,7 @@ impl OpDispenser for ResultDispenser {
                 // to `Value::Json` — body rides the kernel as a
                 // structural value so `exactly_one_value(body)`
                 // can walk row × column shape (per
-                // `nbrs-variates::nodes::exactly_one`). For ops
+                // `polydat::nodes::exactly_one`). For ops
                 // whose body has no structural projection the
                 // adapter's `to_json()` returns a JSON String,
                 // which `exactly_one_value` collapses to
@@ -1054,9 +1118,9 @@ impl OpDispenser for ResultDispenser {
                     .as_ref()
                     .map(|b| b.to_json())
                     .unwrap_or(serde_json::Value::Null);
-                let _ = ctx.wires.write("body", nbrs_variates::node::Value::Json(std::sync::Arc::new(body_json)));
-                let _ = ctx.wires.write("count", nbrs_variates::node::Value::U64(count));
-                let _ = ctx.wires.write("ok", nbrs_variates::node::Value::Bool(true));
+                let _ = ctx.wires.write("body", polydat::node::Value::Json(std::sync::Arc::new(body_json)));
+                let _ = ctx.wires.write("count", polydat::node::Value::U64(count));
+                let _ = ctx.wires.write("ok", polydat::node::Value::Bool(true));
             }
 
             let _ = cycle;
@@ -1166,11 +1230,11 @@ impl MetricInstrument {
 /// for non-numeric variants (string, vector, none) so the
 /// MetricsDispenser slot path logs + skips rather than panicking
 /// through `Value::as_f64`'s strict matcher.
-fn value_to_f64(v: &nbrs_variates::node::Value) -> Option<f64> {
+fn value_to_f64(v: &polydat::node::Value) -> Option<f64> {
     match v {
-        nbrs_variates::node::Value::F64(f) => Some(*f),
-        nbrs_variates::node::Value::U64(u) => Some(*u as f64),
-        nbrs_variates::node::Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        polydat::node::Value::F64(f) => Some(*f),
+        polydat::node::Value::U64(u) => Some(*u as f64),
+        polydat::node::Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
         _ => None,
     }
 }
@@ -1540,6 +1604,8 @@ mod tests {
             as_name: alias.into(),
             cast_type: None,
             slurp,
+            path: None,
+            count: false,
         }
     }
 
@@ -1593,7 +1659,7 @@ mod tests {
         assert_eq!(captures.len(), 2);
         assert_eq!(captures["uid"].as_u64(), 42);
         match &captures["name"] {
-            nbrs_variates::node::Value::Str(s) => assert_eq!(&**s, "alice"),
+            polydat::node::Value::Str(s) => assert_eq!(&**s, "alice"),
             other => panic!("expected Str, got {other:?}"),
         }
     }
@@ -1633,7 +1699,7 @@ mod tests {
         let captures = extract_captures_from_json(&body, &specs);
         assert_eq!(captures.len(), 1);
         match &captures["key"] {
-            nbrs_variates::node::Value::Json(arc) => {
+            polydat::node::Value::Json(arc) => {
                 let serde_json::Value::Array(items) = arc.as_ref() else {
                     panic!("expected Value::Json(array), got {arc:?}");
                 };
@@ -1662,6 +1728,206 @@ mod tests {
         let captures = extract_captures_from_json(&body, &specs);
         assert_eq!(captures.len(), 1);
         assert_eq!(captures["first_key"].as_u64(), 4);
+    }
+
+    /// Build a CapturePoint that uses the declarative
+    /// JSON-Pointer form (the `capture:` map block in the
+    /// workload), pinning the new code path that lives in
+    /// [`extract_captures_from_json`]'s `spec.path.as_deref()`
+    /// branch.
+    fn cap_path(name: &str, path: &str, count: bool) -> bindpoints::CapturePoint {
+        bindpoints::CapturePoint {
+            source_name: name.into(),
+            as_name: name.into(),
+            cast_type: None,
+            slurp: false,
+            path: Some(path.into()),
+            count,
+        }
+    }
+
+    #[test]
+    fn extract_json_pointer_scalar_from_bulk_response() {
+        // Jolokia bulk-POST response shape: array of result
+        // envelopes, each `{request, value, status, ...}`. The
+        // `capture:` map block addresses them by position +
+        // nested field.
+        #[derive(Debug)]
+        struct JsonBody(serde_json::Value);
+        impl ResultBody for JsonBody {
+            fn to_json(&self) -> serde_json::Value { self.0.clone() }
+            fn as_any(&self) -> &dyn std::any::Any { self }
+        }
+        let body = JsonBody(serde_json::json!([
+            {"value": 7,       "status": 200},
+            {"value": [],      "status": 200},
+            {"value": 0,       "status": 200},
+        ]));
+        let specs = vec![
+            cap_path("sstables",       "/0/value", false),
+            cap_path("pending_for_cf", "/2/value", false),
+        ];
+        let captures = extract_captures_from_json(&body, &specs);
+        assert_eq!(captures["sstables"].as_u64(), 7);
+        assert_eq!(captures["pending_for_cf"].as_u64(), 0);
+    }
+
+    /// JSON `null` resolved by a JSON-Pointer path captures as
+    /// `Value::None` (per SRD-74), NOT as the string `"null"`.
+    /// Critical for the SRD-75 synchronizer pattern: when
+    /// Jolokia's `path:` drill resolves but the leaf entry is
+    /// missing (e.g. `PendingTasksByTableName` has no entry
+    /// for an idle table), the response carries
+    /// `{"value": null, "status": 200}`. The capture must
+    /// land as `Value::None` so downstream `:count` paths (or
+    /// None-propagation in predicates) behave correctly —
+    /// the stringification fallback `Value::Str("null")`
+    /// triggers metric-coercion failures and / or breaks the
+    /// predicate semantically.
+    #[test]
+    fn extract_json_pointer_resolved_null_yields_none_not_string() {
+        #[derive(Debug)]
+        struct JsonBody(serde_json::Value);
+        impl ResultBody for JsonBody {
+            fn to_json(&self) -> serde_json::Value { self.0.clone() }
+            fn as_any(&self) -> &dyn std::any::Any { self }
+        }
+        let body = JsonBody(serde_json::json!([
+            {"value": null, "status": 200},
+        ]));
+        let specs = vec![cap_path("pending_for_cf", "/0/value", false)];
+        let captures = extract_captures_from_json(&body, &specs);
+        assert!(matches!(captures["pending_for_cf"],
+            polydat::node::Value::None),
+            "JSON null at path should yield Value::None, got {:?}",
+            captures["pending_for_cf"],
+        );
+    }
+
+    /// `:count` on a resolved-null sub-tree returns 0 (per
+    /// the [`count_from_json_pointer`] / [`count_of_subtree`]
+    /// contract: null / missing → 0). This is the
+    /// load-bearing semantic for the SRD-75 synchronizer's
+    /// `pending_for_cf` capture: when Jolokia's
+    /// PendingTasksByTableName drill misses the table entry,
+    /// the response is `{"value": null}` AND the workload
+    /// author needs a u64 zero, not `Value::None`, so the
+    /// predicate clause `pending_for_cf == 0` is satisfied
+    /// and the loop exits cleanly.
+    #[test]
+    fn extract_json_pointer_count_on_resolved_null_returns_zero() {
+        #[derive(Debug)]
+        struct JsonBody(serde_json::Value);
+        impl ResultBody for JsonBody {
+            fn to_json(&self) -> serde_json::Value { self.0.clone() }
+            fn as_any(&self) -> &dyn std::any::Any { self }
+        }
+        let body = JsonBody(serde_json::json!([
+            {"value": null, "status": 200},
+        ]));
+        let specs = vec![cap_path("pending_for_cf", "/0/value", true)];
+        let captures = extract_captures_from_json(&body, &specs);
+        assert_eq!(captures["pending_for_cf"].as_u64(), 0,
+            "`:count` on resolved-null should return 0, got {:?}",
+            captures["pending_for_cf"],
+        );
+    }
+
+    #[test]
+    fn extract_json_pointer_count_collapses_array_to_length() {
+        // `:count` suffix on the path reduces the addressed
+        // sub-tree to a u64. For Jolokia's
+        // `CompactionManager/Compactions` (a list of active
+        // compactions), the synchronizer wants the length —
+        // not the array itself — bound to a kernel input so
+        // GK predicates can compare it to zero.
+        #[derive(Debug)]
+        struct JsonBody(serde_json::Value);
+        impl ResultBody for JsonBody {
+            fn to_json(&self) -> serde_json::Value { self.0.clone() }
+            fn as_any(&self) -> &dyn std::any::Any { self }
+        }
+        let body = JsonBody(serde_json::json!([
+            {"value": 7},
+            {"value": [
+                {"compactionId":"a", "keyspace":"ks", "columnfamily":"cf"},
+                {"compactionId":"b", "keyspace":"ks", "columnfamily":"cf"},
+            ]},
+        ]));
+        let specs = vec![cap_path("active_count", "/1/value", true)];
+        let captures = extract_captures_from_json(&body, &specs);
+        assert_eq!(captures["active_count"].as_u64(), 2);
+    }
+
+    #[test]
+    fn extract_json_pointer_missing_path_yields_none() {
+        // An unresolvable JSON-Pointer path is captured as
+        // `Value::None` — downstream GK eval propagates None
+        // through expressions, and the workload-author can
+        // express "if state read missed, don't trigger" via
+        // standard None handling rather than special-cased
+        // empty-string sentinels.
+        #[derive(Debug)]
+        struct JsonBody(serde_json::Value);
+        impl ResultBody for JsonBody {
+            fn to_json(&self) -> serde_json::Value { self.0.clone() }
+            fn as_any(&self) -> &dyn std::any::Any { self }
+        }
+        let body = JsonBody(serde_json::json!({"value": 7}));
+        let specs = vec![cap_path("not_there", "/missing/path", false)];
+        let captures = extract_captures_from_json(&body, &specs);
+        assert!(matches!(captures["not_there"], polydat::node::Value::None),
+            "expected Value::None for unresolvable JSON-Pointer, got {:?}",
+            captures["not_there"],
+        );
+    }
+
+    #[test]
+    fn extract_json_pointer_count_of_missing_path_is_zero() {
+        // `:count` on a missing sub-tree returns 0 (mirrors
+        // the polling wrapper's [`count_from_json_pointer`]
+        // contract — null / missing → 0). Makes a workload
+        // that polls until "active_count == 0" land naturally
+        // even if the MBean attribute hasn't been published yet.
+        #[derive(Debug)]
+        struct JsonBody(serde_json::Value);
+        impl ResultBody for JsonBody {
+            fn to_json(&self) -> serde_json::Value { self.0.clone() }
+            fn as_any(&self) -> &dyn std::any::Any { self }
+        }
+        let body = JsonBody(serde_json::json!({"value": 7}));
+        let specs = vec![cap_path("active_count", "/missing/value", true)];
+        let captures = extract_captures_from_json(&body, &specs);
+        assert_eq!(captures["active_count"].as_u64(), 0);
+    }
+
+    #[test]
+    fn extract_json_pointer_structural_sub_tree_captured_as_json() {
+        // Addressing an array/object without `:count` binds
+        // the structural value as `Value::Json(Arc<...>)` so
+        // the kernel can carry the shape losslessly — useful
+        // when a follow-on step (or a metric formatter) wants
+        // to inspect the response shape rather than reduce it.
+        #[derive(Debug)]
+        struct JsonBody(serde_json::Value);
+        impl ResultBody for JsonBody {
+            fn to_json(&self) -> serde_json::Value { self.0.clone() }
+            fn as_any(&self) -> &dyn std::any::Any { self }
+        }
+        let body = JsonBody(serde_json::json!([
+            {"value": {"keyspace": "ks", "table": "cf", "ssTables": 3}},
+        ]));
+        let specs = vec![cap_path("state", "/0/value", false)];
+        let captures = extract_captures_from_json(&body, &specs);
+        match &captures["state"] {
+            polydat::node::Value::Json(arc) => {
+                assert_eq!(arc.get("keyspace").and_then(|v| v.as_str()),
+                    Some("ks"));
+                assert_eq!(arc.get("ssTables").and_then(|v| v.as_u64()),
+                    Some(3));
+            }
+            other => panic!("expected Value::Json, got {other:?}"),
+        }
     }
 
     // ---------------- ResultDispenser tests (SRD-40b §5) ----------------
@@ -1727,8 +1993,8 @@ mod tests {
     /// requested name. Used by ResultDispenser tests so writes via
     /// `ctx.wires.write(name, …)` have a real slot to land on; the
     /// test then reads back via `wires.get(name)` to assert.
-    fn kernel_with_extern_inputs(names: &[(&str, &str)]) -> nbrs_variates::kernel::GkKernel {
-        use nbrs_variates::dsl::compile::compile_gk;
+    fn kernel_with_extern_inputs(names: &[(&str, &str)]) -> polydat::kernel::GkKernel {
+        use polydat::dsl::compile::compile_gk;
         let mut src = String::from("input cycle: u64\n");
         for (n, ty) in names {
             src.push_str(&format!("extern {n}: {ty}\n"));
@@ -1743,7 +2009,7 @@ mod tests {
     /// post-execute `wires.get` reads.
     fn run_with_wires(
         dispenser: Arc<dyn OpDispenser>,
-        kernel: &mut nbrs_variates::kernel::GkKernel,
+        kernel: &mut polydat::kernel::GkKernel,
     ) -> Result<OpResult, ExecutionError> {
         let fields = crate::adapter::ResolvedFields::new(vec![], vec![]);
         let pulls = ResolvedPulls::empty();
@@ -1887,7 +2153,7 @@ mod tests {
         let cw = crate::wires::CycleWires::new(&mut kernel);
         let w: &dyn crate::wires::WireSource = &cw;
         match w.get("succeeded") {
-            Some(nbrs_variates::node::Value::Bool(b)) => assert!(b),
+            Some(polydat::node::Value::Bool(b)) => assert!(b),
             other => panic!("expected Bool(true), got {other:?}"),
         }
     }
@@ -1937,7 +2203,7 @@ mod tests {
         // slot retains its default `None`.
         let cw = crate::wires::CycleWires::new(&mut kernel);
         let w: &dyn crate::wires::WireSource = &cw;
-        assert!(matches!(w.get("missing"), Some(nbrs_variates::node::Value::None) | None));
+        assert!(matches!(w.get("missing"), Some(polydat::node::Value::None) | None));
     }
 
     #[test]
@@ -1981,7 +2247,7 @@ mod tests {
         // No writes happened — slot retains its default.
         let cw = crate::wires::CycleWires::new(&mut kernel);
         let w: &dyn crate::wires::WireSource = &cw;
-        assert!(matches!(w.get("c"), Some(nbrs_variates::node::Value::None) | None));
+        assert!(matches!(w.get("c"), Some(polydat::node::Value::None) | None));
     }
 
     // ---------------- MetricsDispenser tests (SRD-40b §6) ----------------
@@ -2019,8 +2285,8 @@ mod tests {
     /// in this minimal program — tests exercise the captures-lookup
     /// fallback path instead.
     fn fresh_fixture() -> crate::fixture::ScopeFixture {
-        use nbrs_variates::assembly::{GkAssembler, WireRef};
-        use nbrs_variates::nodes::identity::Identity;
+        use polydat::assembly::{GkAssembler, WireRef};
+        use polydat::nodes::identity::Identity;
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
         asm.add_node("cycle_id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
         asm.add_output("cycle_id", WireRef::node("cycle_id"));
@@ -2090,11 +2356,11 @@ mod tests {
     fn kernel_with_const_outputs(
         consts: &[(&str, f64)],
     ) -> (
-        nbrs_variates::kernel::GkKernel,
+        polydat::kernel::GkKernel,
         crate::fixture::ScopeFixture,
     ) {
-        use nbrs_variates::assembly::{GkAssembler, WireRef};
-        use nbrs_variates::nodes::fixed::ConstF64;
+        use polydat::assembly::{GkAssembler, WireRef};
+        use polydat::nodes::fixed::ConstF64;
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
         // Stand in for the op-template synthesiser: production builds
         // `__metric_<name> := <value_expr>` outputs on the op-template
@@ -2124,7 +2390,7 @@ mod tests {
         (
             Arc<MetricsDispenser>,
             crate::fixture::ResolvedPulls,
-            nbrs_variates::kernel::GkKernel,
+            polydat::kernel::GkKernel,
         ),
         String,
     > {
@@ -2197,7 +2463,7 @@ mod tests {
     fn run_dispenser(
         dispenser: Arc<dyn OpDispenser>,
         pulls: &crate::fixture::ResolvedPulls,
-        kernel: &mut nbrs_variates::kernel::GkKernel,
+        kernel: &mut polydat::kernel::GkKernel,
     ) -> Result<OpResult, ExecutionError> {
         let fields = crate::adapter::ResolvedFields::new(vec![], vec![]);
         let cw = crate::wires::CycleWires::new(kernel);

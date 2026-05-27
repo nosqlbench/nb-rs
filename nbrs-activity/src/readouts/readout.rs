@@ -250,7 +250,7 @@ pub trait Readout: Send + Sync {
     /// Subject kinds this readout is willing to render
     /// against. The binder validates at bake-time that
     /// every event slot's subject kind is in this list,
-    /// so a workload binding `phase_done` to
+    /// so a workload binding `phase_outcome` to
     /// `on_session_end` fails loudly rather than rendering
     /// silent zeros. Required: every readout declares
     /// what kinds it works against. No default — silent

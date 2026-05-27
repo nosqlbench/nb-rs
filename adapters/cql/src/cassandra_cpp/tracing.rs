@@ -121,8 +121,8 @@ const BIND_INLINE_CAP: usize = 96;
 /// record. Short values inline as text; long ones summarise.
 /// The shape is intentionally human-readable — this is a debug
 /// log, not a re-execution transcript.
-pub(super) fn format_bind_value(name: &str, value: &nbrs_variates::node::Value) -> String {
-    use nbrs_variates::node::Value;
+pub(super) fn format_bind_value(name: &str, value: &polydat::node::Value) -> String {
+    use polydat::node::Value;
     let summary = |kind: &str, len: usize| {
         format!("{name}=<{kind}, len={len}>")
     };

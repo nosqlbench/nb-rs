@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use serde_json::Value as JVal;
-use nbrs_variates::comprehension::{parse_clause, parse_clause_list, parse_order_spec};
+use polydat::comprehension::{parse_clause, parse_clause_list, parse_order_spec};
 use crate::model::{
     BindingsDef, MetricSpec, ParsedOp, ScenarioNode, Workload, WorkloadPhase,
 };
@@ -526,7 +526,7 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                 //                                  → union (two
                 //                                    multi-clause
                 //                                    sub-spaces)
-                let sub_spaces: Vec<Vec<nbrs_variates::comprehension::Clause>> = match for_each_val {
+                let sub_spaces: Vec<Vec<polydat::comprehension::Clause>> = match for_each_val {
                     JVal::String(spec) => {
                         // One sub-space per top-level clause —
                         // structural unit for the union case is
@@ -565,7 +565,7 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                         // parallel-iter LHS tuples, so every entry
                         // becomes a single-var clause.
                         vec![map.iter().map(|(k, v)|
-                            nbrs_variates::comprehension::Clause::new(
+                            polydat::comprehension::Clause::new(
                                 k.clone(),
                                 v.as_str().unwrap_or("").to_string(),
                             )
@@ -581,7 +581,7 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                     // `comprehension_from_subspaces` — single
                     // source of truth. Parallel-iter Clauses
                     // pass through unchanged.
-                    let mut comprehension = nbrs_variates::comprehension::comprehension_from_subspaces(
+                    let mut comprehension = polydat::comprehension::comprehension_from_subspaces(
                         sub_spaces,
                     );
                     // Optional `where:` key carries a filter
@@ -659,10 +659,10 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                 // Explicit for_combinations keyword (alias for
                 // multi-clause for_each).
                 let specs = parse_combination_specs(combo_val);
-                let canonical: Vec<nbrs_variates::comprehension::Clause> = specs.into_iter()
-                    .map(|(v, e)| nbrs_variates::comprehension::Clause::new(v, e))
+                let canonical: Vec<polydat::comprehension::Clause> = specs.into_iter()
+                    .map(|(v, e)| polydat::comprehension::Clause::new(v, e))
                     .collect();
-                let mut comprehension = nbrs_variates::comprehension::Comprehension::cartesian(canonical);
+                let mut comprehension = polydat::comprehension::Comprehension::cartesian(canonical);
                 if let Some(filter) = obj.get("where").and_then(|v| v.as_str()) {
                     comprehension = comprehension.with_filter(filter);
                 }
@@ -1147,6 +1147,120 @@ fn parse_phases(
             .transpose()
             .map_err(|e| format!("phase '{phase_name}' checkpoint: {e}"))?;
 
+        // Phase-level `poll:` block (SRD-75). When present,
+        // the phase's cycle execution runs in a wall-clock
+        // loop until a GK predicate over captures returns
+        // `true` or `timeout_ms` elapses. Distinct from the
+        // OP-level `poll:` field (which lives on a single op
+        // and wraps a `PollingDispenser` — SRD-32). The two
+        // forms coexist; phase-poll is the synchronizer
+        // pattern (SRD-75 driver use case), per-op poll is
+        // the await-emptiness pattern.
+        let phase_poll = match phase_obj.get("poll") {
+            None => None,
+            Some(v) => {
+                let map = v.as_object().ok_or_else(|| format!(
+                    "phase '{phase_name}': phase-level `poll:` must be a \
+                     mapping with at least `until: <expr>`. Got a non-object \
+                     value; if you intended an OP-level `poll:` flag, attach \
+                     it to a specific op under `ops:` instead. SRD-75."
+                ))?;
+                let until = map.get("until")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| format!(
+                        "phase '{phase_name}': phase-level `poll:` requires \
+                         `until: <gk-boolean-expression>`. SRD-75."
+                    ))?
+                    .to_string();
+                let interval_ms = map.get("interval_ms")
+                    .and_then(|v| v.as_u64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())));
+                let timeout_ms = map.get("timeout_ms")
+                    .and_then(|v| v.as_u64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())));
+                let max_error_retries = map.get("max_error_retries")
+                    .and_then(|v| v.as_u64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())))
+                    .map(|n| n.min(u32::MAX as u64) as u32);
+                let metric_name = map.get("metric_name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                // SRD-75 §"Open questions" → §"on_timeout" — what
+                // to do when the deadline fires. Closed vocabulary:
+                // `error` (default; phase fails, scenario continues
+                // by default error-routing policy) or `abort`
+                // (request session stop; the whole run terminates).
+                let on_timeout = match map.get("on_timeout") {
+                    None => None,
+                    Some(v) => {
+                        let s = v.as_str().ok_or_else(|| format!(
+                            "phase '{phase_name}' poll: `on_timeout` must be \
+                             a string (`error` or `abort`). SRD-75."
+                        ))?;
+                        let normalized = s.trim().to_ascii_lowercase();
+                        if !matches!(normalized.as_str(), "error" | "abort") {
+                            return Err(format!(
+                                "phase '{phase_name}' poll: `on_timeout` must \
+                                 be `error` or `abort`, got '{s}'. SRD-75."
+                            ));
+                        }
+                        Some(normalized)
+                    }
+                };
+                // Reject keys outside the documented surface — a
+                // typo like `tinerval_ms:` should fail loudly, not
+                // silently default. SRD-30 unknown-field hygiene.
+                let allowed: [&str; 6] = ["until", "interval_ms",
+                    "timeout_ms", "max_error_retries", "metric_name",
+                    "on_timeout"];
+                for k in map.keys() {
+                    if !allowed.contains(&k.as_str()) {
+                        return Err(format!(
+                            "phase '{phase_name}' poll: unknown key '{k}'. \
+                             Allowed: [{}]. SRD-75.",
+                            allowed.join(", "),
+                        ));
+                    }
+                }
+                Some(crate::model::PhasePollSpec {
+                    until,
+                    interval_ms,
+                    timeout_ms,
+                    max_error_retries,
+                    metric_name,
+                    on_timeout,
+                })
+            }
+        };
+        // SRD-75 §"Concurrency": phase-poll is sequential
+        // within one phase activation — the predicate's
+        // evaluation depends on a serial sequence of capture
+        // writes. `concurrency > 1` against this shape doesn't
+        // have a meaningful semantic; reject at parse time
+        // rather than producing surprising runtime behavior.
+        if phase_poll.is_some() {
+            if let Some(ref c) = concurrency {
+                let trimmed = c.trim();
+                if trimmed != "1" && !trimmed.is_empty() {
+                    return Err(format!(
+                        "phase '{phase_name}': `poll:` (SRD-75) is \
+                         incompatible with `concurrency: {c}` — phase-poll \
+                         is sequential within one activation (the predicate \
+                         depends on a serial sequence of capture writes). \
+                         Drop `concurrency` or set it to 1."
+                    ));
+                }
+            }
+            if inline_ops.is_empty() {
+                return Err(format!(
+                    "phase '{phase_name}': `poll:` requires at least one op \
+                     under `ops:` — captures are written by op execution; \
+                     a phase with `poll:` and no ops has nothing to do. \
+                     SRD-75."
+                ));
+            }
+        }
+
         // `status_metrics:` — names of relevancy aggregates to
         // surface on the inline progress line and the per-phase
         // ✓ DONE summary. Accepts a YAML list (`[name, name]`),
@@ -1183,6 +1297,7 @@ fn parse_phases(
             checkpoint,
             status_metrics,
             bindings: phase_bindings_only,
+            poll: phase_poll,
         });
         phase_order.push(phase_name.clone());
     }
@@ -1462,8 +1577,15 @@ fn normalize_op_object(
     // (`crate::validation::parse_relevancy` etc.) find them at
     // the same address whether the workload writes the
     // canonical wrapped form or the legacy top-level shorthand.
+    // `metrics` and `result` are CORE op-template fields (SRD-40b
+    // and SRD-66 respectively) extracted into ParsedOp.metrics /
+    // ParsedOp.result; they must be kept out of `op_fields` so
+    // adapters with a closed-vocabulary `known_op_fields()` (HTTP,
+    // testkit) don't reject them as unknown. The CQL adapter
+    // returns `None` from `known_op_fields()` (open vocabulary)
+    // which masked this for the existing workloads.
     let reserved = ["name", "description", "desc", "bindings", "params", "tags", "if", "delay",
-        "evaluations"];
+        "evaluations", "capture", "metrics", "result"];
     let op_field_names = ["op", "ops", "operations", "stmt", "statement", "statements"];
     // Activity-level params excised from op fields before the
     // adapter sees them. `relevancy` / `verify` stay listed here
@@ -1605,6 +1727,51 @@ fn normalize_op_object(
     // same wire name appearing in two fields means the same
     // capture, not two separate writes.
     let mut captures: Vec<crate::bindpoints::CapturePoint> = Vec::new();
+    // Declarative `capture:` map block — pulls JSON-Pointer-keyed
+    // values out of structured response bodies (e.g. Jolokia
+    // bulk-POST arrays). Each entry is a path string addressed
+    // by [`serde_json::Value::pointer`]; a trailing `:count`
+    // collapses the addressed sub-tree to a u64 count instead
+    // of capturing it as-is. This complements the legacy
+    // bracket form `[name]` embedded in op text — that form
+    // still works for adapters whose statements have column
+    // references; the declarative form is for adapters whose
+    // responses are JSON and need positional / nested access.
+    if let Some(cap_val) = map.get("capture") {
+        let cap_obj = cap_val.as_object().ok_or_else(|| format!(
+            "op '{name}' (block '{block_name}'): `capture:` must be a \
+             mapping of <wire-name> → <json-pointer-path>. Got {kind}.",
+            kind = eval_value_kind(cap_val),
+        ))?;
+        for (wire_name, spec_val) in cap_obj.iter() {
+            let raw = spec_val.as_str().ok_or_else(|| format!(
+                "op '{name}' (block '{block_name}'): `capture.{wire_name}` \
+                 must be a string (JSON-Pointer path, optionally with a \
+                 `:count` suffix). Got {kind}.",
+                kind = eval_value_kind(spec_val),
+            ))?;
+            let (path, count) = match raw.strip_suffix(":count") {
+                Some(p) => (p.to_string(), true),
+                None => (raw.to_string(), false),
+            };
+            if !path.is_empty() && !path.starts_with('/') {
+                return Err(format!(
+                    "op '{name}' (block '{block_name}'): \
+                     `capture.{wire_name}` path '{path}' must start with \
+                     '/' (RFC 6901 JSON-Pointer). An empty path \
+                     addresses the root document."
+                ));
+            }
+            captures.push(crate::bindpoints::CapturePoint {
+                source_name: wire_name.clone(),
+                as_name: wire_name.clone(),
+                cast_type: None,
+                slurp: false,
+                path: Some(path),
+                count,
+            });
+        }
+    }
     for value in op_fields.values_mut() {
         if let serde_json::Value::String(s) = value {
             let parsed = crate::bindpoints::parse_capture_points(s);
@@ -2074,12 +2241,12 @@ mod tests {
         let yaml = serde_yaml::from_str::<serde_yaml::Value>(
             r#"
 readouts:
-  on_phase_end: phase_done
+  on_phase_end: phase_outcome
   on_update: "phase_status lod=compact"
 "#).unwrap();
         let json = serde_json::to_value(&yaml).unwrap();
         let r = parse_readouts_block(json.get("readouts")).unwrap();
-        assert_eq!(r.on_phase_end, vec!["phase_done".to_string()]);
+        assert_eq!(r.on_phase_end, vec!["phase_outcome".to_string()]);
         assert_eq!(r.on_update, vec!["phase_status lod=compact".to_string()]);
     }
 
@@ -2089,13 +2256,13 @@ readouts:
             r#"
 readouts:
   on_phase_end:
-    - phase_done
+    - phase_outcome
     - phase_failure_hint
 "#).unwrap();
         let json = serde_json::to_value(&yaml).unwrap();
         let r = parse_readouts_block(json.get("readouts")).unwrap();
         assert_eq!(r.on_phase_end, vec![
-            "phase_done".to_string(),
+            "phase_outcome".to_string(),
             "phase_failure_hint".to_string(),
         ]);
     }
@@ -2155,7 +2322,7 @@ readouts:
         let yaml = serde_yaml::from_str::<serde_yaml::Value>(
             r#"
 readouts:
-  on_unknown: phase_done
+  on_unknown: phase_outcome
 "#).unwrap();
         let json = serde_json::to_value(&yaml).unwrap();
         let err = parse_readouts_block(json.get("readouts")).unwrap_err();
@@ -3144,5 +3311,269 @@ phases:
 "#;
         super::parse_workload(yaml, &HashMap::new())
             .expect("idempotent phase outside loop should parse");
+    }
+
+    /// Declarative `capture:` map block on an op produces
+    /// CapturePoint entries with [`CapturePoint::path`] set.
+    /// JSON-Pointer paths are not validated against the
+    /// response shape (it's a runtime read), so the parser's
+    /// only job is to forbid obviously-malformed inputs
+    /// (non-string values, paths missing the leading `/`).
+    #[test]
+    fn parses_declarative_capture_block_with_json_pointer_paths() {
+        let yaml = r#"
+scenarios:
+  default:
+    - probe
+phases:
+  probe:
+    cycles: 1
+    ops:
+      read_state:
+        adapter: http
+        method: POST
+        uri: "http://h:8778/jolokia/"
+        body: "[]"
+        capture:
+          sstables: "/0/value"
+          active_count: "/1/value:count"
+          pending_for_cf: "/2/value"
+"#;
+        let wl = super::parse_workload(yaml, &HashMap::new())
+            .expect("workload with declarative captures should parse");
+        let phase = wl.phases.get("probe").expect("probe phase");
+        let op = phase.ops.iter().find(|o| o.name == "read_state")
+            .expect("read_state op");
+        assert_eq!(op.captures.len(), 3,
+            "expected 3 declarative captures, got {:?}", op.captures);
+        let by_name = |n: &str| op.captures.iter()
+            .find(|c| c.as_name == n)
+            .unwrap_or_else(|| panic!("capture {n} missing"));
+        let sstables = by_name("sstables");
+        assert_eq!(sstables.path.as_deref(), Some("/0/value"));
+        assert!(!sstables.count);
+        let active = by_name("active_count");
+        assert_eq!(active.path.as_deref(), Some("/1/value"),
+            ":count suffix should be stripped from stored path");
+        assert!(active.count, ":count suffix should set CapturePoint.count");
+        let pending = by_name("pending_for_cf");
+        assert_eq!(pending.path.as_deref(), Some("/2/value"));
+        assert!(!pending.count);
+    }
+
+    /// SRD-75: phase-level `poll:` block parses into
+    /// `WorkloadPhase.poll`. Distinct from the op-level
+    /// `poll:` field which lives on a single op and routes
+    /// through the `PollingDispenser` wrapper.
+    #[test]
+    fn parses_phase_level_poll_block() {
+        let yaml = r#"
+scenarios:
+  default:
+    - ensure
+phases:
+  ensure:
+    cycles: 1
+    poll:
+      until: "sstables == 1 && active_for_cf == 0"
+      interval_ms: 5000
+      timeout_ms: 14400000
+      max_error_retries: 3
+      metric_name: ensure_wait_s
+    ops:
+      read_state:
+        stmt: "noop"
+"#;
+        let wl = super::parse_workload(yaml, &HashMap::new())
+            .expect("phase-poll block should parse");
+        let phase = wl.phases.get("ensure").expect("ensure phase");
+        let poll = phase.poll.as_ref().expect("phase.poll Some");
+        assert_eq!(poll.until, "sstables == 1 && active_for_cf == 0");
+        assert_eq!(poll.interval_ms, Some(5000));
+        assert_eq!(poll.timeout_ms, Some(14_400_000));
+        assert_eq!(poll.max_error_retries, Some(3));
+        assert_eq!(poll.metric_name.as_deref(), Some("ensure_wait_s"));
+    }
+
+    /// SRD-75 §"Workload-load validation": phase-poll +
+    /// concurrency > 1 is rejected at parse time. The
+    /// predicate's evaluation depends on a serial sequence
+    /// of capture writes; concurrent cycle execution has no
+    /// well-defined semantic here.
+    #[test]
+    fn rejects_phase_poll_with_concurrency_gt_one() {
+        let yaml = r#"
+scenarios:
+  default:
+    - ensure
+phases:
+  ensure:
+    cycles: 1
+    concurrency: 4
+    poll:
+      until: "done == 1"
+    ops:
+      op1:
+        stmt: "noop"
+"#;
+        let err = super::parse_workload(yaml, &HashMap::new())
+            .expect_err("poll: + concurrency > 1 must error");
+        assert!(err.contains("poll:") && err.contains("concurrency"),
+            "expected error to name both poll: and concurrency; got: {err}");
+    }
+
+    /// SRD-75 §"Workload-load validation": phase-poll with
+    /// no ops is rejected — captures are produced by op
+    /// execution; a poll-phase with no ops has nothing to
+    /// drive the predicate.
+    #[test]
+    fn rejects_phase_poll_with_no_ops() {
+        let yaml = r#"
+scenarios:
+  default:
+    - ensure
+phases:
+  ensure:
+    cycles: 1
+    poll:
+      until: "done == 1"
+"#;
+        let err = super::parse_workload(yaml, &HashMap::new())
+            .expect_err("poll: without ops must error");
+        assert!(err.contains("poll:") && err.contains("ops"),
+            "expected error to name poll: and ops:; got: {err}");
+    }
+
+    /// Unknown keys under `poll:` are typos waiting to
+    /// silently default. Surface them at parse time.
+    #[test]
+    fn rejects_unknown_keys_under_phase_poll() {
+        let yaml = r#"
+scenarios:
+  default:
+    - ensure
+phases:
+  ensure:
+    cycles: 1
+    poll:
+      until: "done == 1"
+      tinerval_ms: 5000
+    ops:
+      op1:
+        stmt: "noop"
+"#;
+        let err = super::parse_workload(yaml, &HashMap::new())
+            .expect_err("typo under poll: must error");
+        assert!(err.contains("tinerval_ms"),
+            "expected error to name the offending key; got: {err}");
+    }
+
+    /// SRD-75 §"on_timeout" — accepts the documented
+    /// closed-vocabulary values and persists them on the
+    /// parsed phase model. Both `error` and `abort` parse
+    /// cleanly; case is normalised at parse time.
+    #[test]
+    fn parses_phase_poll_on_timeout_accepts_error_and_abort() {
+        for (input, expected) in [("error", "error"), ("abort", "abort"),
+                                  ("ABORT", "abort"), ("Error", "error")] {
+            let yaml = format!(r#"
+scenarios:
+  default:
+    - ensure
+phases:
+  ensure:
+    cycles: 1
+    poll:
+      until: "done == 1"
+      on_timeout: {input}
+    ops:
+      op1:
+        stmt: "noop"
+"#);
+            let wl = super::parse_workload(&yaml, &HashMap::new())
+                .expect("on_timeout value should parse");
+            let phase = wl.phases.get("ensure").expect("ensure phase");
+            let poll = phase.poll.as_ref().expect("phase.poll Some");
+            assert_eq!(poll.on_timeout.as_deref(), Some(expected),
+                "on_timeout '{input}' should normalise to '{expected}'");
+        }
+    }
+
+    /// SRD-75 §"on_timeout" — anything outside the
+    /// closed vocabulary is rejected at parse time.
+    /// Typos like `aborts:` or `fail:` should fail loudly,
+    /// not silently default to `error` and obscure the
+    /// workload-author's actual intent.
+    #[test]
+    fn rejects_phase_poll_unknown_on_timeout_value() {
+        let yaml = r#"
+scenarios:
+  default:
+    - ensure
+phases:
+  ensure:
+    cycles: 1
+    poll:
+      until: "done == 1"
+      on_timeout: fail
+    ops:
+      op1:
+        stmt: "noop"
+"#;
+        let err = super::parse_workload(yaml, &HashMap::new())
+            .expect_err("unknown on_timeout value must error");
+        assert!(err.contains("on_timeout") && err.contains("'fail'"),
+            "expected error to name the offending value; got: {err}");
+    }
+
+    /// `poll:` requires `until:` — the predicate is the
+    /// loop's whole purpose.
+    #[test]
+    fn rejects_phase_poll_without_until() {
+        let yaml = r#"
+scenarios:
+  default:
+    - ensure
+phases:
+  ensure:
+    cycles: 1
+    poll:
+      interval_ms: 5000
+    ops:
+      op1:
+        stmt: "noop"
+"#;
+        let err = super::parse_workload(yaml, &HashMap::new())
+            .expect_err("poll: without until: must error");
+        assert!(err.contains("until"),
+            "expected error to require until:; got: {err}");
+    }
+
+    /// A JSON-Pointer path that doesn't begin with `/` is a
+    /// classic transcription bug (e.g. writing `0/value`
+    /// instead of `/0/value`). Surface it at parse time, not
+    /// as silent capture-misses at runtime.
+    #[test]
+    fn rejects_capture_path_without_leading_slash() {
+        let yaml = r#"
+scenarios:
+  default:
+    - probe
+phases:
+  probe:
+    cycles: 1
+    ops:
+      read_state:
+        adapter: http
+        method: POST
+        uri: "http://h:8778/"
+        body: "[]"
+        capture:
+          bad: "0/value"
+"#;
+        let err = super::parse_workload(yaml, &HashMap::new())
+            .expect_err("path without leading / must error");
+        assert!(err.contains("`capture.bad`") && err.contains("'/'"),
+            "expected parse error to name the offending capture and require '/'; got: {err}");
     }
 }

@@ -1,0 +1,51 @@
+# SRD-75 phase-poll smoke test.
+#
+# A minimal workload exercising the phase-poll surface end-
+# to-end without external dependencies (no dataset, no HTTP).
+# The stdout adapter prints each op's resolved fields; the
+# poll predicate references a synthesized shared capture
+# that's never written, so the loop runs until `timeout_ms`
+# expires. This verifies the parse + synthesis + runtime
+# loop are wired correctly; the predicate-satisfied path is
+# covered by separate integration tests.
+
+scenarios:
+  default:
+    - ensure
+
+phases:
+  ensure:
+    adapter: stdout
+    cycles: 1
+    concurrency: 1
+    poll:
+      # GK comparison operators return u64 (0/1) and there is
+      # no `&&` — boolean clauses are combined via bitwise `&`
+      # with explicit parens (operator precedence puts `&`
+      # above `==`). SRD-75 documents this in the workload-
+      # author guide.
+      until: "(sstables == 1) & (active_for_cf == 0) & (pending_for_cf == 0)"
+      interval_ms: 200
+      # Short timeout so the smoke test completes quickly even
+      # when the predicate never fires (the captures here are
+      # never written; the loop ends via timeout).
+      timeout_ms: 1000
+      max_error_retries: 0
+      metric_name: ensure_smoke_wait_s
+    ops:
+      read_state:
+        format: assignments
+        # No real capture writes happen here — the stdout
+        # adapter just renders the op's fields each cycle.
+        # The phase-poll loop's purpose in this smoke test
+        # is to exercise the predicate-driven wall-clock loop
+        # mechanic; predicate-satisfaction is covered in
+        # integration tests with a fake-state-injection
+        # adapter.
+        capture:
+          sstables:       "/0/value"
+          active_for_cf:  "/1/value:count"
+          pending_for_cf: "/2/value"
+        memo:
+          before: "polling state"
+          after:  "compacted"

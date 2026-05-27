@@ -44,7 +44,7 @@ All iteration shapes — single-variable `for_each`, multi-clause
 `for_combinations`, and `for_each_union` — collapse into one
 `ScenarioNode::Comprehension { comprehension, children }`
 variant. The discriminator is the embedded
-[`nbrs_variates::comprehension::Comprehension`] AST:
+[`polydat::comprehension::Comprehension`] AST:
 
 - `ComprehensionMode::Cartesian(clauses)` with one clause is
   the simple `for_each var in expr` form.
@@ -59,14 +59,14 @@ lookup replaces the prior `find_for_each_scope` /
 `find_for_combinations_scope` / `find_for_each_union_scope`
 trio.
 
-The canonical owner is `nbrs-variates::comprehension` —
+The canonical owner is `polydat::comprehension` —
 parsing, evaluation (`evaluate_spec`,
 `enumerate_tuples`, etc.), and synthesis
 (`synthesize_for_each_scope`) all live there. The ergonomic
 one-call API:
 
 ```rust
-let iter = nbrs_variates::comprehension::iterate(
+let iter = polydat::comprehension::iterate(
     &comprehension, &parent_kernel,
     &workload_params, gk_lib_paths, workload_dir, strict, "context",
 )?;
@@ -232,7 +232,7 @@ which the previous flat-comma form couldn't show, because two
 levels with the same coord name (`k` from one scope, `k` from
 a co-named coord deeper) would collapse together.
 
-Lives in [`nbrs_variates::kernel::scope_coords`]; presentation-
+Lives in [`polydat::kernel::scope_coords`]; presentation-
 layer formatter is `format_scope_coordinate_path` in
 `nbrs_activity::executor`.
 

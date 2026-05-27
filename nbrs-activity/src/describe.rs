@@ -8,7 +8,7 @@
 //! GkProgram's introspection APIs.
 
 use std::sync::Arc;
-use nbrs_variates::kernel::GkProgram;
+use polydat::kernel::GkProgram;
 
 /// Print kernel analysis for a phase/iteration scope.
 ///
@@ -77,14 +77,14 @@ pub fn print_kernel_analysis(
         let wiring = program.node_wiring(node_idx);
         if !wiring.is_empty() {
             let descs: Vec<String> = wiring.iter().map(|w| match w {
-                nbrs_variates::kernel::WireSource::Input(idx) => {
+                polydat::kernel::WireSource::Input(idx) => {
                     if *idx < input_names.len() {
                         format!("input:{}", input_names[*idx])
                     } else {
                         format!("input:{idx}")
                     }
                 }
-                nbrs_variates::kernel::WireSource::NodeOutput(ni, pi) => {
+                polydat::kernel::WireSource::NodeOutput(ni, pi) => {
                     let u = program.node_meta(*ni);
                     if *pi == 0 { u.name.clone() } else { format!("{}[{pi}]", u.name) }
                 }

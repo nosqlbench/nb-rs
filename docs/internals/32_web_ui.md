@@ -69,7 +69,7 @@ Interactive version of `nbrs describe gk dag`:
 - **Live preview**: as you type (debounced), the DAG re-renders
 - **Example loader**: dropdown of example `.gk` files
 
-Uses `nbrs_variates::viz::gk_to_svg()` for pure-Rust SVG rendering.
+Uses `polydat::viz::gk_to_svg()` for pure-Rust SVG rendering.
 No graphviz installation needed.
 
 ### 5. Workload Inspector
@@ -225,7 +225,7 @@ that feeds the TUI. The web server subscribes to the same
   TUI renders to terminal; web renders to HTML.
 - **nbrs-metrics (SRD 16)**: `MetricsFrame` is the shared data model.
   Both TUI and web consume frames from the capture thread.
-- **nbrs-variates (SRD 24/27/30)**: Registry, stdlib, and viz module
+- **polydat (SRD 24/27/30)**: Registry, stdlib, and viz module
   power the function browser, stdlib browser, and DAG viewer.
 - **nbrs-activity (SRD 21)**: Live activity state for the dashboard.
   Shared via `Arc`.

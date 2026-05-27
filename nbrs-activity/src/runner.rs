@@ -14,10 +14,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::activity::{Activity, ActivityConfig};
+use crate::activity::Activity;
 use crate::adapter::{find_adapter_registration, registered_adapter_params, registered_driver_names};
 use crate::bindings::build_workload_root_kernel;
-use crate::opseq::{OpSequence, SequencerType};
+use crate::opseq::SequencerType;
 use crate::synthesis::OpBuilder;
 use nbrs_metrics::labels::Labels;
 use nbrs_metrics::scheduler::Reporter;
@@ -176,6 +176,15 @@ impl DiagnosticConfig {
                     config.depth = ExecDepth::Phase;
                     depth_set = true;
                 }
+                // `emit` / `silent` / `json` are adapter-substitution
+                // dryrun modes (see `create_adapter` and
+                // `DryRunAdapter`); the runner reads them via a
+                // separate `params.get("dryrun")` lookup below and
+                // bumps depth to Cycle so ops actually fire. The
+                // depth-config parser tolerates these tokens
+                // silently so an operator passing `dryrun=emit`
+                // doesn't see a misleading "unknown flag" warning.
+                "emit" | "silent" | "json" => {}
                 _ => crate::diag!(crate::observer::LogLevel::Warn, "warning: unknown dryrun flag '{flag}'"),
             }
         }
@@ -415,7 +424,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // Load workload — from inline op= or YAML file.
     let mut workload_file: Option<String> = None;
     let mut workload_source_text: Option<String> = None;
-    let workload = if let Some(op_str) = params.get("op") {
+    let mut workload = if let Some(op_str) = params.get("op") {
         if params.contains_key("workload") {
             crate::diag!(crate::observer::LogLevel::Warn, "warning: op= overrides workload=");
         }
@@ -454,11 +463,26 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         workload
     };
 
-    // Merge CLI params over workload params. CLI takes priority.
-    let mut merged_params = workload.params.clone();
+    // Merge CLI params over workload params FIRST so synthesis
+    // (next) can read the operator's `cycles=N` / `concurrency=N`
+    // overrides and promote them onto the synthetic phase. The
+    // parse path already merges CLI params at parse time for
+    // file-loaded workloads; this also covers the inline
+    // (`op=`) path that loaded a Workload with empty params.
     for (k, v) in &params {
-        merged_params.insert(k.clone(), v.clone());
+        workload.params.insert(k.clone(), v.clone());
     }
+
+    // Unification: the scenario-tree executor is the sole
+    // execution path. Workloads that arrive without an
+    // explicit `phases:` block (the `op=` inline form, the
+    // `blocks:` shorthand, top-level `ops:` lists) get an
+    // implicit `main` phase + `default` scenario synthesized
+    // here. Idempotent on workloads that already declare
+    // phases. See [`nbrs_workload::model::Workload::synthesize_default_phase`].
+    workload.synthesize_default_phase();
+
+    let merged_params = workload.params.clone();
 
     // Extract core config
     let driver = merged_params.get("adapter")
@@ -788,14 +812,14 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // magic-extern slots; Diagnostic force-allocates body/count/ok and
     // every result-binding LHS slot so step-debug / cycle-replay can
     // inspect writes the workload doesn't otherwise consume.
-    let kernel_opt: nbrs_variates::kernel::KernelOptLevel = {
+    let kernel_opt: polydat::kernel::KernelOptLevel = {
         let raw = args.iter()
             .find_map(|a| a.strip_prefix("--kernel-opt="))
             .map(|s| s.to_string())
             .or_else(|| params.get("kernel_opt").cloned());
         match raw {
-            None => nbrs_variates::kernel::KernelOptLevel::default(),
-            Some(s) => nbrs_variates::kernel::KernelOptLevel::parse(s.trim())
+            None => polydat::kernel::KernelOptLevel::default(),
+            Some(s) => polydat::kernel::KernelOptLevel::parse(s.trim())
                 .map_err(|bad| format!(
                     "unknown --kernel-opt value '{bad}' — use 'release' or 'diagnostic'"
                 ))?,
@@ -833,6 +857,22 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             _ => None,
         })
     };
+
+    // Unification: the dryrun adapters (`emit` / `silent`)
+    // need ops to actually fire — they substitute for the
+    // real driver and print or drop each rendered op. The
+    // phased walker gates `run_phase` on `diag.depth >= Op`
+    // AND short-circuits inside `run_phase` when depth <
+    // Cycle (executor.rs's "fire phase_completed early"
+    // block). So `dryrun=emit` needs depth=Cycle to dispatch
+    // ops without producing real driver-side I/O.
+    // Pre-unification the single-activity branch bypassed
+    // both gates; this preserves the legacy contract.
+    if matches!(dry_run, Some("emit") | Some("silent"))
+        && diag.depth < ExecDepth::Cycle
+    {
+        diag.depth = ExecDepth::Cycle;
+    }
 
     // OpenMetrics push URL
     let openmetrics_url: Option<String> = args.iter()
@@ -899,6 +939,11 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         ),
     };
     let session_id = session.id.clone();
+    // SRD-77 — exec_id is the active execution's identity
+    // within the session. Today every session has exactly one
+    // execution (`exec_id = 1`); the `refine` verb will
+    // eventually bump this per follow-up invocation.
+    let exec_id = session.execution.exec_id;
 
     // dryrun=controls: defer the tree walk until after phase
     // construction. `list_controls` implies depth=Phase, which
@@ -944,14 +989,14 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     {
         Ok(file) => {
             let handle = std::sync::Arc::new(std::sync::Mutex::new(file));
-            nbrs_variates::audit::set_log_fn(move |level, msg| {
+            polydat::audit::set_log_fn(move |level, msg| {
                 use std::io::Write;
                 let tag = match level {
-                    nbrs_variates::audit::LogLevel::Trace => "TRC",
-                    nbrs_variates::audit::LogLevel::Debug => "DBG",
-                    nbrs_variates::audit::LogLevel::Info  => "INF",
-                    nbrs_variates::audit::LogLevel::Warn  => "WRN",
-                    nbrs_variates::audit::LogLevel::Error => "ERR",
+                    polydat::audit::LogLevel::Trace => "TRC",
+                    polydat::audit::LogLevel::Debug => "DBG",
+                    polydat::audit::LogLevel::Info  => "INF",
+                    polydat::audit::LogLevel::Warn  => "WRN",
+                    polydat::audit::LogLevel::Error => "ERR",
                 };
                 if let Ok(mut f) = handle.lock() {
                     let _ = writeln!(f, "{tag} {msg}");
@@ -964,7 +1009,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             crate::diag!(crate::observer::LogLevel::Warn,
                 "audit log: failed to open '{}': {e} (audit messages dropped)",
                 audit_log_path.display());
-            nbrs_variates::audit::set_log_fn(|_level, _msg| {});
+            polydat::audit::set_log_fn(|_level, _msg| {});
         }
     }
 
@@ -1011,6 +1056,70 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             "warning: SQLite metrics disabled: {e}"))
         .ok();
     let sqlite_reporter = std::sync::Arc::new(std::sync::Mutex::new(sqlite_reporter));
+
+    // RAII shutdown guard — runs `consolidate_wal` at session
+    // end via Drop. Reliable across every Rust unwind path:
+    // normal completion, error `?` propagation, first-Ctrl-C
+    // → stop flag → runner unwind. The only path that skips
+    // it is `std::process::exit` (second Ctrl-C force-exit),
+    // which is the operator's declared "I don't want to
+    // wait" escape hatch. The guard MUST live until after
+    // every reporter has finished writing — bind it here at
+    // the top of the run-impl block so it drops in
+    // last-created / first-dropped order relative to local
+    // variables; the explicit `_` binding pins its lifetime
+    // to the function scope (otherwise the temporary would
+    // drop immediately).
+    let _sqlite_shutdown_guard =
+        nbrs_metrics::reporters::sqlite::SqliteShutdownGuard::new(
+            sqlite_reporter.clone(),
+        );
+
+    // Periodic WAL checkpoint so concurrent read-only
+    // tooling (`nbrs report` against a live session,
+    // ad-hoc `sqlite3 metrics.db` inspection, the realtime
+    // metricsql preview) sees committed writes without
+    // waiting for session end. SQLite's WAL holds frames
+    // until either:
+    //   1. `wal_autocheckpoint` (page-count threshold,
+    //      default 1000 pages) fires on a writer, OR
+    //   2. an explicit `PRAGMA wal_checkpoint(...)` runs.
+    //
+    // Under bursty workloads (a tight rampup followed by a
+    // long synchronous wait — exactly the SRD-75
+    // ensure_compacted shape) writers can stall under the
+    // autocheckpoint threshold for many minutes, during
+    // which readers see stale data. A 60-second background
+    // task running `PRAGMA wal_checkpoint(PASSIVE)` bounds
+    // the staleness without blocking writers.
+    //
+    // PASSIVE mode is the cheap variant: it merges all
+    // currently-committed WAL frames into the main `.db`
+    // without truncating the WAL file or pausing writers.
+    // The tokio task runs for the runtime's lifetime and is
+    // cancelled on shutdown; the final `consolidate_wal`
+    // (TRUNCATE flavour) at session end produces the
+    // archival "no -wal sidecar" form.
+    {
+        let reporter = sqlite_reporter.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                std::time::Duration::from_secs(60),
+            );
+            // First tick is immediate; skip it so the
+            // post-session-start state has a chance to
+            // settle before the first checkpoint fires.
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                if let Ok(g) = reporter.lock() {
+                    if let Some(r) = g.as_ref() {
+                        r.passive_checkpoint();
+                    }
+                }
+            }
+        });
+    }
 
     // SRD-63 Push 9a: fire `Event::SessionStart` once at the
     // workload root. Workloads bind structural rows to
@@ -1173,7 +1282,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     // (a) fire side-effecting nodes like `throw_at` outside the
     // phase cascade context, and (b) cache stale values for
     // cycle-dependent bindings.
-    let workload_canonical_kernel: std::sync::Arc<nbrs_variates::kernel::GkKernel> =
+    let workload_canonical_kernel: std::sync::Arc<polydat::kernel::GkKernel> =
         std::sync::Arc::new(
             build_workload_root_kernel(
                 &params_kernel,
@@ -1193,12 +1302,10 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
 
     // Extract output manifest and folded constant values from outer kernel
     // === GK Config Resolution (all done before kernel is consumed) ===
-
-    let resolved_cli_cycles: Option<u64> = explicit_cycles.or_else(||
-        params.get("cycles").and_then(|s| resolve_gk_config(s, &kernel))
-    );
-    let resolved_cli_concurrency: Option<u64> = params.get("concurrency")
-        .and_then(|s| resolve_gk_config(s, &kernel));
+    // (The `cycles=` / `concurrency=` resolution that used to
+    // happen here fed the now-deleted single-activity branch.
+    // The phased path resolves these per-phase inside
+    // `run_phase` via the phase-scope GK kernel.)
 
     // Collect phases that are inside scenario for_each groups — these have
     // iteration variables resolved at runtime, not pre-resolution time.
@@ -1293,7 +1400,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         session.component.clone(),
     ));
     session.set_metrics_query(metrics_query.clone());
-    nbrs_variates::nodes::metrics::set_global_query(metrics_query.clone());
+    polydat::nodes::metrics::set_global_query(metrics_query.clone());
     observer.on_metrics_query(metrics_query.clone());
 
     let session_for_capture = session.component.clone();
@@ -1476,7 +1583,13 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     let mut _profiler = crate::profiler::ProfileGuard::maybe_start(
         &merged_params, Some(&session.output_dir));
 
-    if !phases.is_empty() {
+    // Unification — the scenario-tree executor is the sole
+    // execution path. `Workload::synthesize_default_phase` (called
+    // at load time) guarantees `phases` is non-empty for any
+    // workload that has work to do; the empty-ops error fired
+    // earlier in this fn covers the "literally nothing to run"
+    // case. The legacy single-activity branch is gone.
+    {
         // --- Phased execution ---
         let scenario_name = params.get("scenario").map(|s| s.as_str()).unwrap_or("default");
         let scenario_nodes = resolve_scenario(&scenarios, &phase_order, scenario_name)?;
@@ -1688,6 +1801,25 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                     //      pass-through).
                     let phase = phases.get(name.as_str())?;
                     if let Some(spec) = phase.for_each.as_ref() {
+                        if phase.poll.is_some() {
+                            // SRD-75: phase-poll + phase-level
+                            // for_each isn't supported in the
+                            // initial ship. The for_each scope
+                            // synthesizer doesn't yet thread the
+                            // poll augmentation through, and the
+                            // combination's semantics
+                            // (iterate-and-synchronize-each-cell?
+                            // iterate-while-synchronizing?) wants
+                            // its own design pass. Reject loudly.
+                            crate::diag!(
+                                crate::observer::LogLevel::Error,
+                                "phase '{name}': `poll:` + phase-level `for_each:` is not \
+                                 supported in the initial ship of SRD-75. Move the for_each \
+                                 to scenario-tree level (so each iter is its own phase \
+                                 activation), or drop one of the two. Phase will be skipped.",
+                            );
+                            return None;
+                        }
                         let (var, expr) = if let Some(pos) = spec.find(" in ") {
                             let (lhs, rhs) = spec.split_at(pos);
                             (lhs.trim().to_string(), rhs[" in ".len()..].trim().to_string())
@@ -1707,13 +1839,36 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                             spec_exprs: vec![expr],
                             phase_bindings: phase.bindings.clone(),
                         })
-                    } else if !phase.bindings.is_empty() {
-                        Some(InstallSpec::Bindings {
-                            idx,
-                            bindings: phase.bindings.clone(),
-                        })
                     } else {
-                        None
+                        // SRD-75: when the phase declares `poll:`,
+                        // synthesise capture-as-shared-cell
+                        // declarations + the `__poll_until`
+                        // predicate binding into the phase scope's
+                        // bindings, even when the phase has no
+                        // author-declared `bindings:` of its own.
+                        // The synthesised bindings flow through the
+                        // same `build_phase_scope_kernel` path as
+                        // any other phase-level bindings; phase-
+                        // poll has no synthesizer-specific code
+                        // path.
+                        let synth = match crate::scope::synthesize_phase_bindings_with_poll(phase) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                crate::diag!(
+                                    crate::observer::LogLevel::Error,
+                                    "phase '{name}': SRD-75 phase-poll synthesis: {e}",
+                                );
+                                return None;
+                            }
+                        };
+                        if !synth.is_empty() {
+                            Some(InstallSpec::Bindings {
+                                idx,
+                                bindings: synth,
+                            })
+                        } else {
+                            None
+                        }
                     }
                 }
                 crate::scope_tree::ScopeKind::OpTemplate { name } => {
@@ -1790,7 +1945,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             // (those are pass-through structural).
             let parent_kernel = {
                 let mut cursor = scope_tree.nodes[idx].parent;
-                let mut found: Option<std::sync::Arc<nbrs_variates::kernel::GkKernel>> = None;
+                let mut found: Option<std::sync::Arc<polydat::kernel::GkKernel>> = None;
                 while let Some(p) = cursor {
                     if let Some(k) = scope_tree.nodes[p].cached_kernel.get() {
                         found = Some(k.clone());
@@ -1827,7 +1982,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         }
                         _ => None,
                     };
-                    nbrs_variates::comprehension::synthesize_for_each_scope(
+                    polydat::comprehension::synthesize_for_each_scope(
                         &bindings,
                         &parent_manifest,
                         &parent_kernel,
@@ -1984,6 +2139,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             rate,
             error_spec: error_spec.clone(),
             session_id: session_id.clone(),
+            exec_id,
             workload_name: session.workload.clone(),
             label_stack: Vec::new(),
             session_component: session.component.clone(),
@@ -2239,145 +2395,6 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             }
         }
 
-    } else {
-        // --- Single-activity execution ---
-        let ops = all_ops_for_compile;
-        let op_sequence = OpSequence::from_ops(ops, seq_type);
-
-        let cycles = if let Some(c) = resolved_cli_cycles {
-            if explicit_cycles.is_none() && params.contains_key("cycles") {
-                crate::diag!(crate::observer::LogLevel::Debug, "cycles={c} (from GK constant)");
-            }
-            c
-        } else {
-            op_sequence.stanza_length() as u64
-        };
-
-        let resolved_concurrency = if let Some(c) = resolved_cli_concurrency {
-            c as usize
-        } else {
-            concurrency
-        };
-
-        let stanza_concurrency: usize = match params.get("stanza_concurrency").or_else(|| params.get("sc")) {
-            Some(s) => s.parse().map_err(|_| format!("stanza_concurrency value '{s}' is not a valid integer"))?,
-            None => 1,
-        };
-
-        let config = ActivityConfig {
-            name: "main".into(),
-            cycles,
-            concurrency: resolved_concurrency,
-            rate,
-            sequencer: seq_type,
-            error_spec,
-            max_retries: 3,
-            stanza_concurrency,
-            source_factory: None,
-            // Live shared flag — the TuiObserver hands its
-            // `tui_active` AtomicBool here so a `q` keypress
-            // mid-run drops the flag and the activity's inline
-            // status thread resumes emission. tui=off
-            // observers return None and we synthesize a
-            // never-suppressed flag, matching pre-change
-            // semantics.
-            suppress_status_line: observer.live_suppress_flag()
-                .unwrap_or_else(|| {
-                    Arc::new(std::sync::atomic::AtomicBool::new(
-                        observer.suppresses_stderr()))
-                }),
-            // Inline single-op CLI form has no `phases:` block to
-            // declare status metrics — leave empty. Workloads that
-            // want emphasized metrics declare them per-phase.
-            status_metrics: Vec::new(),
-            // Inline form has no scope coords / pre-map seq.
-            phase_labels: String::new(),
-            phase_seq: None,
-            // Inline form has no `readouts:` block; built-ins
-            // run with no overrides.
-            readouts: nbrs_workload::model::ReadoutsBindings::default(),
-            // The inline form may still pick up a CLI
-            // `--readout` override even though there's no
-            // workload-side binding to layer with.
-            cli_readout_override: crate::session::resolve_flag(&args[..], "--readout"),
-            // Inline form: snapshot capture only when the
-            // session has a sqlite writer; the runner's
-            // single-activity path holds it under the same
-            // Arc.
-            snapshot_writer: Some(sqlite_reporter.clone()),
-        };
-
-        let adapter = create_adapter(&driver, &merged_params, dry_run).await?;
-        let labels = Labels::of("session", &session.id).with("activity", "main");
-        // SRD 40: resolve hdr.sigdigs from the session root
-        // (walk-up) so this activity's timers/histograms use the
-        // configured precision. Falls back to the project default
-        // if no ancestor declares the property.
-        let sigdigs = nbrs_metrics::instruments::histogram::resolve_hdr_sigdigs(
-            &session.component.read().unwrap_or_else(|e| e.into_inner()),
-        );
-        let mut activity = Activity::with_params_and_sigdigs(
-            config, &labels, op_sequence, workload_params, sigdigs,
-        );
-        // SRD-32a Push 3 — propagate the workload-root
-        // wrapper-order override before run_with_driver
-        // walks the cascade.
-        activity.set_wrappers_override(workload_wrappers_override.clone());
-        // CLI `--wrap-default-order` — replaces the resolver's
-        // built-in DEFAULT_ORDER tiebreaker for this run.
-        activity.set_wrap_default_order(cli_wrap_default_order.clone());
-
-        // Attach the single activity as a component of the session
-        // tree so the session-level scheduler captures its metrics
-        // via the same `CadenceReporter` → `MetricsQuery` path used
-        // by the phased execution. No separate per-activity capture
-        // thread needed; no direct Reporter calls.
-        let activity_component = Arc::new(std::sync::RwLock::new(
-            nbrs_metrics::component::Component::new(labels.clone(), HashMap::new()),
-        ));
-        nbrs_metrics::component::attach(&session.component, &activity_component);
-
-        // Wire the activity component back onto the Activity so
-        // `run_with_adapters` can declare the `concurrency` control
-        // on it (SRD 23 §"Fiber executor"). `attach_component` also
-        // registers ActivityMetrics' static instruments on this
-        // component via `ActivityMetrics::register_on`.
-        activity.attach_component(activity_component.clone());
-
-        // Mark the activity component Running so the cadence
-        // reporter's tree walk picks it up.
-        {
-            let mut ac = activity_component.write().unwrap_or_else(|e| e.into_inner());
-            ac.set_state(nbrs_metrics::component::ComponentState::Running);
-        }
-
-        let stopped = activity.run_with_driver(
-            adapter,
-            builder.clone(),
-        ).await;
-
-        // Workload-end lifecycle boundary for the single-activity
-        // path. Capture the final delta from the activity's
-        // component (which holds every registered instrument from
-        // ActivityMetrics::register_on), ingest, then close the
-        // activity's path so the trailing partial is published
-        // immediately rather than idling until session shutdown.
-        {
-            let final_delta = activity_component
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .capture_delta(std::time::Duration::from_secs(1));
-            cadence_reporter.ingest(&labels, final_delta);
-            cadence_reporter.close_path(&labels);
-        }
-        {
-            let mut ac = activity_component.write().unwrap_or_else(|e| e.into_inner());
-            ac.set_state(nbrs_metrics::component::ComponentState::Stopped);
-        }
-
-        if stopped {
-            return Err("activity stopped by error handler".into());
-        }
     }
 
     // Session-end lifecycle boundary. Close the session root path
@@ -2562,17 +2579,14 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
         }
     }
 
-    // WAL consolidation: merge any pending `metrics.db-wal` /
-    // `metrics.db-shm` content into the main `.db` file so the
-    // db is self-contained on disk. Without this, archiving or
-    // moving the session directory without the sidecars yields
-    // a db missing the trailing writes. Runs last, after every
-    // reporter has finished writing.
-    if let Ok(guard) = sqlite_reporter.lock() {
-        if let Some(ref reporter) = *guard {
-            reporter.consolidate_wal();
-        }
-    }
+    // WAL consolidation runs from the RAII shutdown guard
+    // bound at the top of this function (`_sqlite_shutdown_guard`).
+    // The guard's Drop fires reliably across normal return,
+    // `?` error propagation, and first-Ctrl-C cooperative
+    // shutdown — every path Rust unwinds through. Second
+    // Ctrl-C → `process::exit` is the only skip path,
+    // matching the documented force-exit semantic in
+    // `session_signals`.
 
     Ok(())
 }
@@ -2691,7 +2705,7 @@ impl crate::adapter::DriverAdapter for DryRunAdapter {
     fn map_op(
         &self,
         template: &nbrs_workload::model::ParsedOp,
-        parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+        parent: std::sync::Arc<polydat::kernel::GkKernel>,
     ) -> Result<Box<dyn crate::adapter::OpDispenser>, String>
     {
         let mode = self.mode.clone();
@@ -2708,11 +2722,11 @@ struct DryRunDispenser {
     /// cycle through the generic GK wires API.
     op_fields: Vec<(String, serde_json::Value)>,
     /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
-    canonical_kernel: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+    canonical_kernel: std::sync::Arc<polydat::kernel::GkKernel>,
 }
 
 impl crate::adapter::OpDispenser for DryRunDispenser {
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_variates::kernel::GkKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<polydat::kernel::GkKernel>> {
         Some(&self.canonical_kernel)
     }
 
@@ -3170,7 +3184,7 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
             match node {
                 nbrs_workload::model::ScenarioNode::Phase(_) => {}
                 nbrs_workload::model::ScenarioNode::Comprehension { comprehension, children } => {
-                    use nbrs_variates::comprehension::ClauseSource;
+                    use polydat::comprehension::ClauseSource;
                     let mut deferred = ParamRefs::default();
                     for clause in comprehension.flat_clauses() {
                         match &clause.source {
@@ -3259,7 +3273,7 @@ fn collect_iter_var_names(
     for phase in workload.phases.values() {
         if let Some(text) = phase.for_each.as_deref()
             && let Ok(comp) =
-                nbrs_variates::comprehension::parse::parse_comprehension_text(text)
+                polydat::comprehension::parse::parse_comprehension_text(text)
         {
             for name in comp.coordinate_names() {
                 out.insert(name.to_string());
@@ -3640,7 +3654,7 @@ fn scan_input_decl_names(out: &mut std::collections::HashSet<String>, body: &str
 }
 
 /// Resolve a config value to u64 via GK scope lookup or numeric parsing.
-pub fn resolve_gk_config(value: &str, kernel: &nbrs_variates::kernel::GkKernel) -> Option<u64> {
+pub fn resolve_gk_config(value: &str, kernel: &polydat::kernel::GkKernel) -> Option<u64> {
     if value.starts_with('{') && value.ends_with('}') {
         let inner = &value[1..value.len() - 1];
         // SRD-16 §"Visibility Rules: Shadowing": `lookup`
@@ -3654,7 +3668,7 @@ pub fn resolve_gk_config(value: &str, kernel: &nbrs_variates::kernel::GkKernel) 
         if let Some(v) = kernel.lookup(inner) {
             return Some(value_to_u64(&v));
         }
-        match nbrs_variates::dsl::compile::eval_const_expr(inner) {
+        match polydat::dsl::compile::eval_const_expr(inner) {
             Ok(v) => Some(value_to_u64(&v)),
             Err(e) => {
                 crate::diag!(crate::observer::LogLevel::Error, "error: const expression failed: '{{{inner}}}'");
@@ -3668,11 +3682,11 @@ pub fn resolve_gk_config(value: &str, kernel: &nbrs_variates::kernel::GkKernel) 
 }
 
 /// Convert a GK Value to u64, handling f64→u64 truncation.
-fn value_to_u64(v: &nbrs_variates::node::Value) -> u64 {
+fn value_to_u64(v: &polydat::node::Value) -> u64 {
     match v {
-        nbrs_variates::node::Value::U64(n) => *n,
-        nbrs_variates::node::Value::F64(f) => *f as u64,
-        nbrs_variates::node::Value::Bool(b) => if *b { 1 } else { 0 },
+        polydat::node::Value::U64(n) => *n,
+        polydat::node::Value::F64(f) => *f as u64,
+        polydat::node::Value::Bool(b) => if *b { 1 } else { 0 },
         _ => 0,
     }
 }
@@ -3739,7 +3753,7 @@ fn format_scenario_nodes(
     depth: usize,
     out: &mut String,
 ) {
-    use nbrs_variates::comprehension::ComprehensionMode;
+    use polydat::comprehension::ComprehensionMode;
     use nbrs_workload::model::ScenarioNode::*;
     let indent = "  ".repeat(depth);
     for node in nodes {
@@ -4111,10 +4125,10 @@ fn levenshtein(a: &str, b: &str) -> usize {
 // =========================================================================
 
 // `ManifestEntry` and `extract_manifest` now live in
-// `nbrs_variates::kernel`. Re-exported here so existing
+// `polydat::kernel`. Re-exported here so existing
 // `crate::runner::extract_manifest` / `ManifestEntry` callers
 // keep working — pure compatibility shim.
-pub use nbrs_variates::kernel::{extract_manifest, ManifestEntry};
+pub use polydat::kernel::{extract_manifest, ManifestEntry};
 
 
 
@@ -4441,6 +4455,7 @@ mod tests {
             loop_scope: None, iter_scope: None,
             checkpoint: None, status_metrics: vec![],
             bindings: BindingsDef::default(),
+            poll: None,
         };
         let mut phases = HashMap::new();
         phases.insert("predict".to_string(), phase);

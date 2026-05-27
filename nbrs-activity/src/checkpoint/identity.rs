@@ -74,7 +74,7 @@ pub enum PathSegment {
 ///
 /// `coords` is the canonical scope-coordinate-path string
 /// (the leaf-first striated form produced by
-/// [`nbrs_variates::kernel::format_scope_coordinate_path`]).
+/// [`polydat::kernel::format_scope_coordinate_path`]).
 /// Stored as a string rather than typed `Vec<ScopeCoord>`
 /// because:
 /// - the runtime already produces it for every phase via

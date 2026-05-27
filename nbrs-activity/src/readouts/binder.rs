@@ -170,7 +170,7 @@ impl BakedBody {
 
     /// Build from a single registered readout name. Used by
     /// the workload parser's Form-B path (`on_phase_end:
-    /// phase_done`) where no body grammar is involved.
+    /// phase_outcome`) where no body grammar is involved.
     pub fn from_single(
         readout: ReadoutHandle,
         lod: Lod,
@@ -1056,11 +1056,11 @@ mod tests {
         }
     }
 
-    /// Sink a Default-bound `phase_done` against a tiny
+    /// Sink a Default-bound `phase_outcome` against a tiny
     /// hand-rolled context, assert the rendered string is
     /// non-empty and contains the expected ✓.
     #[test]
-    fn default_binder_fires_phase_done_at_phase_end() {
+    fn default_binder_fires_phase_outcome_at_phase_end() {
         struct Ctx;
         impl ReadoutContext for Ctx {
             fn subject_name(&self) -> &str { "setup" }
@@ -1080,14 +1080,14 @@ mod tests {
             fn event(&self) -> Event { Event::PhaseEnd }
         }
         let mut binder = DefaultBinder::new();
-        let phase_done = Registry::lookup("phase_done").unwrap();
-        binder.set(Event::PhaseEnd, BakedBody::from_single(phase_done, Lod::Labeled));
+        let phase_outcome = Registry::lookup("phase_outcome").unwrap();
+        binder.set(Event::PhaseEnd, BakedBody::from_single(phase_outcome, Lod::Labeled));
 
         let mut sink = StringSink::new();
         binder.fire(Event::PhaseEnd, &Ctx, &mut sink);
 
         let out = sink.take();
-        assert!(out.contains("✓"), "phase_done's ✓ missing: {out}");
+        assert!(out.contains("✓"), "phase_outcome's ✓ missing: {out}");
         assert!(out.contains("[setup]"), "phase name missing: {out}");
         assert!(out.contains("[1/2]"), "seq prefix missing: {out}");
     }
@@ -1113,8 +1113,8 @@ mod tests {
             fn event(&self) -> Event { Event::PhaseEnd }
         }
         let mut binder = DefaultBinder::new();
-        let phase_done = Registry::lookup("phase_done").unwrap();
-        binder.set(Event::PhaseEnd, BakedBody::from_single(phase_done, Lod::Labeled));
+        let phase_outcome = Registry::lookup("phase_outcome").unwrap();
+        binder.set(Event::PhaseEnd, BakedBody::from_single(phase_outcome, Lod::Labeled));
 
         // Fire the wrong event — sink should stay empty.
         let mut sink = StringSink::new();
@@ -1180,9 +1180,9 @@ mod tests {
         nbrs_workload::model::ReadoutsBindings::default()
     }
 
-    fn default_phase_done() -> BakedBody {
+    fn default_phase_outcome() -> BakedBody {
         BakedBody::from_single(
-            Registry::lookup("phase_done").unwrap(), Lod::Labeled,
+            Registry::lookup("phase_outcome").unwrap(), Lod::Labeled,
         )
     }
 
@@ -1191,7 +1191,7 @@ mod tests {
         // Slot is empty → builder uses the supplied default.
         let bindings = empty_bindings();
         let binder = build_event_binder(
-            &bindings, Event::PhaseEnd, default_phase_done(),
+            &bindings, Event::PhaseEnd, default_phase_outcome(),
         ).unwrap();
         assert_eq!(binder.slot_len(Event::PhaseEnd), 1);
     }
@@ -1203,7 +1203,7 @@ mod tests {
         let mut bindings = empty_bindings();
         bindings.on_phase_end = vec!["trace".to_string()];
         let binder = build_event_binder(
-            &bindings, Event::PhaseEnd, default_phase_done(),
+            &bindings, Event::PhaseEnd, default_phase_outcome(),
         ).unwrap();
         // One body bound — the workload's, default dropped.
         assert_eq!(binder.slot_len(Event::PhaseEnd), 1);
@@ -1216,7 +1216,7 @@ mod tests {
         let mut bindings = empty_bindings();
         bindings.on_phase_end = vec!["+trace".to_string()];
         let binder = build_event_binder(
-            &bindings, Event::PhaseEnd, default_phase_done(),
+            &bindings, Event::PhaseEnd, default_phase_outcome(),
         ).unwrap();
         // Two bodies: the default + the appended trace.
         assert_eq!(binder.slot_len(Event::PhaseEnd), 2);
@@ -1230,7 +1230,7 @@ mod tests {
             "+trace".to_string(),
         ];
         let binder = build_event_binder(
-            &bindings, Event::PhaseEnd, default_phase_done(),
+            &bindings, Event::PhaseEnd, default_phase_outcome(),
         ).unwrap();
         // default + 2 appended.
         assert_eq!(binder.slot_len(Event::PhaseEnd), 3);
@@ -1241,7 +1241,7 @@ mod tests {
         let mut bindings = empty_bindings();
         bindings.on_update = vec!["phase_status".to_string()];
         let binder = build_event_binder_with_cli(
-            &bindings, Event::Update, default_phase_done(), Some("trace"),
+            &bindings, Event::Update, default_phase_outcome(), Some("trace"),
         ).unwrap();
         // CLI override → exactly one body (the override),
         // workload's binding dropped.
@@ -1253,7 +1253,7 @@ mod tests {
         let mut bindings = empty_bindings();
         bindings.on_update = vec!["phase_status".to_string()];
         let binder = build_event_binder_with_cli(
-            &bindings, Event::Update, default_phase_done(), Some("+trace"),
+            &bindings, Event::Update, default_phase_outcome(), Some("+trace"),
         ).unwrap();
         // workload phase_status + appended trace = 2 bodies.
         assert_eq!(binder.slot_len(Event::Update), 2);
@@ -1263,11 +1263,11 @@ mod tests {
     fn cli_override_only_applies_to_update_slot() {
         let bindings = empty_bindings();
         let binder = build_event_binder_with_cli(
-            &bindings, Event::PhaseEnd, default_phase_done(), Some("trace"),
+            &bindings, Event::PhaseEnd, default_phase_outcome(), Some("trace"),
         ).unwrap();
         // PhaseEnd ignores --readout — falls back to default.
         assert_eq!(binder.slot_len(Event::PhaseEnd), 1);
-        // The default body is phase_done, not trace; verify
+        // The default body is phase_outcome, not trace; verify
         // by re-firing and checking output starts with ✓.
         struct Ctx;
         impl ReadoutContext for Ctx {
@@ -1291,7 +1291,7 @@ mod tests {
         let mut sink = StringSink::new();
         binder_local.fire(Event::PhaseEnd, &Ctx, &mut sink);
         let out = sink.take();
-        assert!(out.contains("✓"), "default phase_done body should fire: {out}");
+        assert!(out.contains("✓"), "default phase_outcome body should fire: {out}");
     }
 
     #[test]
@@ -1305,7 +1305,7 @@ mod tests {
             "+trace".to_string(),
         ];
         let binder = build_event_binder(
-            &bindings, Event::PhaseEnd, default_phase_done(),
+            &bindings, Event::PhaseEnd, default_phase_outcome(),
         ).unwrap();
         // Two bodies (the workload's two), no default.
         assert_eq!(binder.slot_len(Event::PhaseEnd), 2);
@@ -1315,9 +1315,9 @@ mod tests {
 
     fn make_tui_binder_with_two_bodies() -> TuiReadoutBinder {
         let mut binder = TuiReadoutBinder::new();
-        let phase_done = Registry::lookup("phase_done").unwrap();
+        let phase_outcome = Registry::lookup("phase_outcome").unwrap();
         let trace = Registry::lookup("trace").unwrap();
-        binder.bind(Event::PhaseEnd, BakedBody::from_single(phase_done, Lod::Labeled));
+        binder.bind(Event::PhaseEnd, BakedBody::from_single(phase_outcome, Lod::Labeled));
         binder.bind(Event::PhaseEnd, BakedBody::from_single(trace, Lod::Labeled));
         binder
     }

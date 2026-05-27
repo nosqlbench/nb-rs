@@ -26,9 +26,9 @@ use nbrs_activity::fixture::{PullPlan, ResolvedPulls, ScopeFixture};
 use nbrs_activity::validation::ValidatingDispenser;
 use nbrs_activity::wires::CycleWires;
 use nbrs_metrics::labels::Labels;
-use nbrs_variates::dsl::compile::compile_gk;
-use nbrs_variates::kernel::GkProgram;
-use nbrs_variates::node::Value;
+use polydat::dsl::compile::compile_gk;
+use polydat::kernel::GkProgram;
+use polydat::node::Value;
 
 /// Result body shaped like `CqlResultBody.to_json()` — a JSON array of
 /// row objects, each with a `"key"` column holding the decimal-text
@@ -162,7 +162,7 @@ fn pulls_with_gt_string(
 /// validation wrapper's `ctx.wires.get("ground_truth")` read
 /// resolves to the test fixture value. Returns the kernel by value;
 /// the caller wraps `CycleWires` around it for the cycle's duration.
-fn kernel_with_gt_string(gt_csv: &str) -> nbrs_variates::kernel::GkKernel {
+fn kernel_with_gt_string(gt_csv: &str) -> polydat::kernel::GkKernel {
     let mut k = compile_gk(
         "input cycle: u64\n\
          extern ground_truth: Str = \"\"\n",

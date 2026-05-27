@@ -5,13 +5,13 @@
 //! detection rule that picks between Cartesian (single or
 //! multi-clause) and Union comprehension modes.
 //!
-//! See [`nbrs_variates::comprehension::Comprehension`] and
+//! See [`polydat::comprehension::Comprehension`] and
 //! `comprehension_from_subspaces` for the detection rule:
 //! any repeated var name across sub-spaces ⇒ Union; otherwise
 //! Cartesian over the flattened clause list.
 
 use std::collections::HashMap;
-use nbrs_variates::comprehension::ComprehensionMode;
+use polydat::comprehension::ComprehensionMode;
 use nbrs_workload::model::ScenarioNode;
 use nbrs_workload::parse::parse_workload;
 
@@ -272,7 +272,7 @@ fn parallel_iter_string_form_round_trips_through_yaml() {
     // generator form (`pow2(6)`) avoids the comma-splitting
     // ambiguity that bare `1,2,3` literal lists hit at the
     // RHS-paren-group level.
-    use nbrs_variates::comprehension::{ClauseSource, ZipMode};
+    use polydat::comprehension::{ClauseSource, ZipMode};
     let yaml = format!(r#"
 scenarios:
   s:
@@ -301,7 +301,7 @@ scenarios:
 
 #[test]
 fn parallel_iter_zip_truncate_round_trips_through_yaml() {
-    use nbrs_variates::comprehension::{ClauseSource, ZipMode};
+    use polydat::comprehension::{ClauseSource, ZipMode};
     let yaml = format!(r#"
 scenarios:
   s:

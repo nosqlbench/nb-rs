@@ -144,7 +144,7 @@ async fn workload_readouts_block_drives_terminal_output() {
     // The trace readout's first emitted line for an
     // on_phase_end fire is `event=on_phase_end ...`. If the
     // binder didn't pick up the yaml binding, the default
-    // `phase_done` ✓ line would fire instead and this
+    // `phase_outcome` ✓ line would fire instead and this
     // string never appears.
     assert_screen_contains(
         &mut stepper, "event=on_phase_end",

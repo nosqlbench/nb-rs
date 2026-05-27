@@ -369,7 +369,7 @@ impl ValidatingDispenser {
         inner: Arc<dyn OpDispenser>,
         template: &nbrs_workload::model::ParsedOp,
         labels: &Labels,
-        program: Option<&nbrs_variates::kernel::GkProgram>,
+        program: Option<&polydat::kernel::GkProgram>,
         fx: &mut crate::fixture::ScopeFixture,
     ) -> Result<(Arc<dyn OpDispenser>, Option<Arc<ValidationMetrics>>), String> {
         // SRD-68 Push 5c-cleanup: validation wrapper does its own
@@ -846,7 +846,7 @@ const RELEVANCY_VOCAB: &[&str] = &[
 /// ```
 fn parse_relevancy(
     template: &nbrs_workload::model::ParsedOp,
-    _program: Option<&nbrs_variates::kernel::GkProgram>,
+    _program: Option<&polydat::kernel::GkProgram>,
     wires: Option<&dyn WireSource>,
 ) -> Result<Option<RelevancyConfig>, String> {
     let Some(rel) = template.params.get("relevancy") else { return Ok(None); };
@@ -1035,8 +1035,8 @@ fn is_bare_ident(s: &str) -> bool {
 /// Coerce a kernel `Value` to a non-negative integer suitable for
 /// `k:` / `r:` count fields. U64 / F64 (non-negative) accepted;
 /// other variants signal a type mismatch the caller surfaces.
-fn value_to_u64_for_count(value: nbrs_variates::node::Value) -> Option<u64> {
-    use nbrs_variates::node::Value;
+fn value_to_u64_for_count(value: polydat::node::Value) -> Option<u64> {
+    use polydat::node::Value;
     match value {
         Value::U64(n) => Some(n),
         Value::F64(f) if f.is_finite() && f >= 0.0 => Some(f as u64),
@@ -1101,21 +1101,21 @@ fn json_field_as_i64(v: &serde_json::Value) -> Option<i64> {
 /// directly with no string round-trip. String fallback covers
 /// legacy bindings that emit `Value::Str("[1, 5, 12, ...]")` or
 /// `Value::Str("1,5,12,...")`.
-fn resolve_expected_from_value(value: &nbrs_variates::node::Value) -> Vec<i64> {
+fn resolve_expected_from_value(value: &polydat::node::Value) -> Vec<i64> {
     match value {
         // Typed-slice fast paths — zero-copy read, no parse.
-        nbrs_variates::node::Value::VecI32(slice) => {
+        polydat::node::Value::VecI32(slice) => {
             slice.as_slice().iter().map(|&x| x as i64).collect()
         }
-        nbrs_variates::node::Value::VecF32(slice) => {
+        polydat::node::Value::VecF32(slice) => {
             // Vector ground-truth indices are integer-valued
             // by domain. Truncating fractional parts is the
             // correct semantic; anything else would mean the
             // dataset's index column is mis-typed at the source.
             slice.as_slice().iter().map(|&x| x as i64).collect()
         }
-        nbrs_variates::node::Value::Str(s) => parse_int_array(s),
-        nbrs_variates::node::Value::U64(v) => vec![*v as i64],
+        polydat::node::Value::Str(s) => parse_int_array(s),
+        polydat::node::Value::U64(v) => vec![*v as i64],
         _ => {
             // Display-string fallback for anything else.
             let s = value.to_display_string();
@@ -1478,13 +1478,13 @@ mod tests {
 
     #[test]
     fn resolve_expected_string_array_form() {
-        let v = nbrs_variates::node::Value::Str("[1, 5, 12, 23]".into());
+        let v = polydat::node::Value::Str("[1, 5, 12, 23]".into());
         assert_eq!(resolve_expected_from_value(&v), vec![1, 5, 12, 23]);
     }
 
     #[test]
     fn resolve_expected_string_csv_form() {
-        let v = nbrs_variates::node::Value::Str("1,5,12".into());
+        let v = polydat::node::Value::Str("1,5,12".into());
         assert_eq!(resolve_expected_from_value(&v), vec![1, 5, 12]);
     }
 
@@ -1493,7 +1493,7 @@ mod tests {
         // The fast path the dataset accessors emit
         // (`neighbor_indices_at` etc. → Value::VecI32). No
         // string round-trip happens; the slice is read directly.
-        use nbrs_variates::node::{SliceArc, Value};
+        use polydat::node::{SliceArc, Value};
         let slice = SliceArc::<i32>::from_vec(vec![1, 5, 12, 23, 100]);
         let v = Value::VecI32(slice);
         assert_eq!(resolve_expected_from_value(&v), vec![1, 5, 12, 23, 100]);
@@ -1503,7 +1503,7 @@ mod tests {
     fn resolve_expected_native_vecf32_fast_path() {
         // VecF32 ground truth (rare but legal — some datasets
         // store ranks as floats). Truncates to i64.
-        use nbrs_variates::node::{SliceArc, Value};
+        use polydat::node::{SliceArc, Value};
         let slice = SliceArc::<f32>::from_vec(vec![1.0, 2.0, 3.0]);
         let v = Value::VecF32(slice);
         assert_eq!(resolve_expected_from_value(&v), vec![1, 2, 3]);
@@ -1573,7 +1573,7 @@ mod tests {
         // against the canonical kernel at wrap time. Same one-shot
         // evaluation as the `{k}` text-template form but without
         // the placeholder braces.
-        use nbrs_variates::dsl::compile::compile_gk;
+        use polydat::dsl::compile::compile_gk;
         let kernel = compile_gk(
             "input cycle: u64\n\
              const k := 10\n\

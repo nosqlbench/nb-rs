@@ -21,7 +21,7 @@ use crate::synthesis::OpBuilder;
 use nbrs_metrics::cadence_reporter::CadenceReporter;
 use nbrs_metrics::component::{self, Component, ComponentState};
 use nbrs_metrics::labels::Labels;
-use nbrs_variates::kernel::{format_scope_coordinate_path, ScopeCoord};
+use polydat::kernel::{format_scope_coordinate_path, ScopeCoord};
 use nbrs_workload::model::{ScenarioNode, WorkloadPhase};
 
 /// Shared context for the recursive executor.
@@ -65,7 +65,7 @@ pub struct ExecCtx {
     /// wrappers); this only changes the tiebreaker the
     /// resolver uses when constraints leave order ambiguous.
     pub wrap_default_order: Option<Vec<String>>,
-    pub program: Arc<nbrs_variates::kernel::GkProgram>,
+    pub program: Arc<polydat::kernel::GkProgram>,
     pub gk_lib_paths: Vec<PathBuf>,
     pub workload_dir: Option<PathBuf>,
     pub strict: bool,
@@ -78,8 +78,15 @@ pub struct ExecCtx {
     pub concurrency: usize,
     pub rate: Option<f64>,
     pub error_spec: String,
-    /// Session identifier for metric labeling.
+    /// Session identifier for metric labeling. Surfaces as
+    /// the `session` dimensional label on every per-component
+    /// metric via [`Self::labels`].
     pub session_id: String,
+    /// SRD-77 — active execution id within the session.
+    /// Defaults to `1` until SRD-77's `refine` verb lands the
+    /// per-session registry that bumps it. Surfaces as the
+    /// `exec_id` dimensional label.
+    pub exec_id: u64,
     /// Workload's bare stem (filename without path or
     /// extension; `"workload"` fallback for inline /
     /// op-only runs). Surfaces as the `workload=…` label
@@ -126,7 +133,7 @@ pub struct ExecCtx {
     /// `outer_manifest` / `outer_scope_values` (the legacy flat
     /// data flow that M3.4 retires for kernel-routed scopes).
     pub current_parent_kernel:
-        Option<Arc<nbrs_variates::kernel::GkKernel>>,
+        Option<Arc<polydat::kernel::GkKernel>>,
     /// Workload source text + path, kept for error diagnostics.
     /// Errors at the dispatch layer (for_each / do_while spec
     /// evaluation, interpolation failures) include the YAML
@@ -254,6 +261,7 @@ impl ExecCtx {
     /// cross-session queries should group on.
     pub fn labels(&self) -> Labels {
         let mut labels = Labels::of("session", &self.session_id)
+            .with("exec_id", &self.exec_id.to_string())
             .with("workload", &self.workload_name);
         for (k, v) in &self.label_stack {
             labels = labels.with(k, v);
@@ -517,7 +525,7 @@ fn push_scope_scene_node(
 
 /// Format a per-iter binding tuple as `k=v, k=v`. Same shape
 /// pre-map used; surface visible in TUI / post-run summary.
-fn format_iter_label(bindings: &[(String, nbrs_variates::node::Value)]) -> String {
+fn format_iter_label(bindings: &[(String, polydat::node::Value)]) -> String {
     bindings.iter()
         .map(|(k, v)| format!("{k}={}", v.to_display_string()))
         .collect::<Vec<_>>()
@@ -577,7 +585,7 @@ fn do_loop_own_names(
 fn effective_parent_kernel(
     ctx: &ExecCtx,
     scope_idx: usize,
-) -> Option<std::sync::Arc<nbrs_variates::kernel::GkKernel>> {
+) -> Option<std::sync::Arc<polydat::kernel::GkKernel>> {
     ctx.current_parent_kernel.clone()
         .or_else(|| ctx.scope_tree.nearest_installed_ancestor_kernel(scope_idx))
 }
@@ -625,7 +633,7 @@ fn execute_node<'a>(
                         .ok_or_else(|| format!(
                             "phase '{name}' for_each '{spec}': no installed ancestor kernel."
                         ))?;
-                    let clauses = vec![nbrs_variates::comprehension::Clause::new(var_parsed.clone(), expr_parsed)];
+                    let clauses = vec![polydat::comprehension::Clause::new(var_parsed.clone(), expr_parsed)];
                     let needle = spec.clone();
                     let parent_coords = ctx.current_parent_kernel.as_ref()
                         .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
@@ -694,7 +702,7 @@ fn execute_node<'a>(
                 }
             }
             ScenarioNode::Comprehension { comprehension, children } => {
-                use nbrs_variates::comprehension::ComprehensionMode;
+                use polydat::comprehension::ComprehensionMode;
                 let label = crate::scope_tree::ScopeKind::Comprehension {
                     comprehension: comprehension.clone(),
                 }.label();
@@ -999,7 +1007,7 @@ fn execute_node<'a>(
                 // first iter's value.
                 let chained = match ctx.current_parent_kernel.as_ref() {
                     Some(parent) => {
-                        let matter = nbrs_variates::subcontext::GkMatter::builder()
+                        let matter = polydat::subcontext::GkMatter::builder()
                             .program(installed.program().clone())
                             .build()
                             .map_err(|e| format!(
@@ -1070,7 +1078,7 @@ fn execute_node<'a>(
 /// halt; `Err(_)` = propagate up.
 ///
 /// Activity-side adapter over the GK
-/// [`nbrs_variates::comprehension::iterate_scope`] driver:
+/// [`polydat::comprehension::iterate_scope`] driver:
 /// applies strict-vs-warn empty-clause policy with diag emission
 /// honoring `ExecCtx::quiet()`. The runtime executor and the
 /// pre-map walker both go through `iterate_scope`; `runtime_iterate`
@@ -1083,17 +1091,17 @@ fn execute_node<'a>(
 #[allow(clippy::too_many_arguments)]
 fn runtime_iterate(
     ctx: &ExecCtx,
-    canonical: &std::sync::Arc<nbrs_variates::kernel::GkKernel>,
-    parent: &std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+    canonical: &std::sync::Arc<polydat::kernel::GkKernel>,
+    parent: &std::sync::Arc<polydat::kernel::GkKernel>,
     parent_coords: &[ScopeCoord],
-    clauses: &[nbrs_variates::comprehension::Clause],
+    clauses: &[polydat::comprehension::Clause],
     filter: Option<&str>,
-    order: Option<&nbrs_variates::comprehension::TraversalOrder>,
+    order: Option<&polydat::comprehension::TraversalOrder>,
     union_context: Option<(usize, usize)>,
-) -> Result<Vec<nbrs_variates::comprehension::IterationStep>, String> {
+) -> Result<Vec<polydat::comprehension::IterationStep>, String> {
     let strict = ctx.strict;
     let quiet = ctx.quiet();
-    let on_empty = |clause: &nbrs_variates::comprehension::Clause| -> Result<(), String> {
+    let on_empty = |clause: &polydat::comprehension::Clause| -> Result<(), String> {
         let context_label = match union_context {
             Some((i, n)) => format!(
                 "for_each_union sub-space {}/{} clause '{clause}'", i + 1, n,
@@ -1107,7 +1115,7 @@ fn runtime_iterate(
         }
         Ok(())
     };
-    let iter = nbrs_variates::comprehension::iterate_scope(
+    let iter = polydat::comprehension::iterate_scope(
         canonical, parent, parent_coords, clauses, filter, order, &[], on_empty,
     )?;
     Ok(iter.collect())
@@ -1115,7 +1123,7 @@ fn runtime_iterate(
 
 // `Comprehension` trait + `TupleComprehension` retired: the
 // dependent-tuple walk + per-iteration kernel binding is now
-// owned by `nbrs_variates::comprehension::iterate_scope` and the
+// owned by `polydat::comprehension::iterate_scope` and the
 // types it returns. Both runtime (`runtime_iterate`) and pre-map
 // (`premap_iterate`) call into the same GK primitive.
 //
@@ -1181,7 +1189,7 @@ impl OwnedTerminal {
 /// value differs.
 fn dispatch_comprehension<'a>(
     ctx: &'a mut ExecCtx,
-    steps: Vec<nbrs_variates::comprehension::IterationStep>,
+    steps: Vec<polydat::comprehension::IterationStep>,
     terminal: TerminalAction<'a>,
     depth: usize,
     sequential_only: bool,
@@ -1367,7 +1375,7 @@ fn fire_scope_lifecycle(
         let parent_coords: Vec<_> = ctx.current_parent_kernel.as_ref()
             .map(|k| k.scope_coordinates().iter().rev().cloned().collect())
             .unwrap_or_default();
-        nbrs_variates::kernel::format_scope_coordinate_path(&parent_coords)
+        polydat::kernel::format_scope_coordinate_path(&parent_coords)
     };
     let scope_ctx = crate::readout_context::LifecycleContext {
         event,
@@ -1430,7 +1438,7 @@ async fn run_do_loop(
     // typed bridge so the rebind primitive sits behind a single
     // entry point.
     let mut loop_kernel = parent.build_subscope(
-        nbrs_variates::subcontext::GkMatter::builder().program(canonical.program().clone()).build().unwrap(),
+        polydat::subcontext::GkMatter::builder().program(canonical.program().clone()).build().unwrap(),
     ).expect("subscope from program is infallible");
 
     let mut counter_value: u64 = 0;
@@ -1441,20 +1449,20 @@ async fn run_do_loop(
         {
             loop_kernel.state().set_input(
                 idx,
-                nbrs_variates::node::Value::U64(counter_value),
+                polydat::node::Value::U64(counter_value),
             );
         }
 
         // Evaluate the condition against the persistent kernel.
-        let interpolated = nbrs_variates::comprehension::interpolate_via_kernel(
+        let interpolated = polydat::comprehension::interpolate_via_kernel(
             condition, &loop_kernel,
         ).map_err(|e| format!("do-loop condition '{condition}': {e}"))?;
-        let cond_value = nbrs_variates::dsl::compile::eval_const_expr(&interpolated)
+        let cond_value = polydat::dsl::compile::eval_const_expr(&interpolated)
             .map_err(|e| format!("do-loop condition '{condition}': {e}"))?;
         let cond_true = match cond_value {
-            nbrs_variates::node::Value::Bool(b) => b,
-            nbrs_variates::node::Value::U64(n) => n != 0,
-            nbrs_variates::node::Value::F64(n) => n != 0.0,
+            polydat::node::Value::Bool(b) => b,
+            polydat::node::Value::U64(n) => n != 0,
+            polydat::node::Value::F64(n) => n != 0.0,
             other => return Err(format!(
                 "do-loop condition '{condition}': expected bool/u64/f64, got {other:?}",
             )),
@@ -1476,7 +1484,7 @@ async fn run_do_loop(
             // via the typed subscope path against the canonical;
             // shares cells but is otherwise throwaway.
             canonical.build_subscope(
-                nbrs_variates::subcontext::GkMatter::builder().program(canonical.program().clone()).build().unwrap(),
+                polydat::subcontext::GkMatter::builder().program(canonical.program().clone()).build().unwrap(),
             ).expect("program-form subscope is infallible"),
         ));
         ctx.current_parent_kernel = Some(arc_loop.clone());
@@ -1540,14 +1548,14 @@ async fn run_do_loop(
 /// action.
 ///
 /// The bound kernel comes from the GK-side
-/// [`nbrs_variates::comprehension::IterationStep`] — same
+/// [`polydat::comprehension::IterationStep`] — same
 /// kernel both pre-map and runtime see for the same iteration
 /// position. No `from_program`/`materialize_wiring_from_outer`/`set_input`
 /// dance here; that recipe is owned by `GkKernel::for_iteration`
 /// and reached via `iterate_scope`.
 async fn run_one_iteration(
     ctx: &mut ExecCtx,
-    step: &nbrs_variates::comprehension::IterationStep,
+    step: &polydat::comprehension::IterationStep,
     terminal: &TerminalAction<'_>,
     depth: usize,
     kind: &'static str,
@@ -1582,7 +1590,7 @@ async fn run_one_iteration(
         let parent_coords: Vec<_> = ctx.current_parent_kernel.as_ref()
             .map(|k| k.scope_coordinates().iter().rev().cloned().collect())
             .unwrap_or_default();
-        nbrs_variates::kernel::format_scope_coordinate_path(&parent_coords)
+        polydat::kernel::format_scope_coordinate_path(&parent_coords)
     };
     let depth_indent = "  ".repeat(depth.saturating_sub(1));
     let each_ctx = crate::readout_context::LifecycleContext {
@@ -1669,7 +1677,7 @@ async fn run_one_iteration(
 /// `{}` on disk — same convention
 /// [`format_scope_coordinate_path`] uses for human display.
 fn scope_event_coords(
-    coord_path: &[nbrs_variates::kernel::ScopeCoord],
+    coord_path: &[polydat::kernel::ScopeCoord],
 ) -> (
     std::collections::BTreeMap<String, serde_json::Value>,
     Vec<std::collections::BTreeMap<String, serde_json::Value>>,
@@ -1691,7 +1699,7 @@ fn scope_event_coords(
 }
 
 fn coord_to_btree(
-    coord: &nbrs_variates::kernel::ScopeCoord,
+    coord: &polydat::kernel::ScopeCoord,
 ) -> std::collections::BTreeMap<String, serde_json::Value> {
     coord.vars.iter()
         .map(|(k, v)| (k.clone(), v.to_json_value()))
@@ -1716,6 +1724,14 @@ async fn run_phase(
     phase_name: &str,
 ) -> Result<(), String> {
     let phase_start = std::time::Instant::now();
+    // SRD-76 — wall-clock start nanos for the `phase_outcomes`
+    // row. Instant gives monotonic duration; SystemTime gives
+    // the chronological anchor downstream consumers (replay,
+    // metricsql correlation) need.
+    let phase_start_nanos: i64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0);
     let phase = ctx.phases.get(phase_name)
         .ok_or_else(|| format!("phase '{phase_name}' not found"))?
         .clone();
@@ -1934,7 +1950,7 @@ async fn run_phase(
         // was installed; otherwise the immediate runtime parent
         // (current_parent_kernel) is the right resolver. Same
         // lookup pattern as the placeholder validator above.
-        let classifier_kernel: &nbrs_variates::kernel::GkKernel = ctx.scope_tree
+        let classifier_kernel: &polydat::kernel::GkKernel = ctx.scope_tree
             .phase_node_by_name(phase_name)
             .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get())
             .map(|k| k.as_ref())
@@ -2043,7 +2059,7 @@ async fn run_phase(
         // chain composition. Single call, single source of
         // values — SRD-16 §"Visibility Rules".
         let mut kernel = parent_kernel.build_subscope(
-            nbrs_variates::subcontext::GkMatter::builder().program(phase_program).build().unwrap(),
+            polydat::subcontext::GkMatter::builder().program(phase_program).build().unwrap(),
         ).expect("program-form subscope is infallible");
 
         // ─── Plan B: Init-Binding Contract (scope-activation) ─────
@@ -2067,13 +2083,13 @@ async fn run_phase(
             // catch_unwind so a panicking eval becomes a clean error,
             // not a fiber-pool poisoning panic. Nodes that do blocking
             // I/O are responsible for parking the worker themselves
-            // (see `nbrs-variates`'s `run_blocking_io`); the activation
+            // (see `polydat`'s `run_blocking_io`); the activation
             // boundary stays a plain eval.
             let pull_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 kernel.pull(init_name).clone()
             }));
             match pull_result {
-                Ok(v) if !matches!(v, nbrs_variates::node::Value::None) => {}
+                Ok(v) if !matches!(v, polydat::node::Value::None) => {}
                 Ok(_) => {
                     return Err(format!(
                         "{gk_context}: init binding '{init_name}' violates the init contract: \
@@ -2131,7 +2147,7 @@ async fn run_phase(
                 kernel.pull(final_name).clone()
             }));
             match pull_result {
-                Ok(v) if !matches!(v, nbrs_variates::node::Value::None) => {}
+                Ok(v) if !matches!(v, polydat::node::Value::None) => {}
                 Ok(_) => {
                     return Err(format!(
                         "{gk_context}: final binding '{final_name}' could not be \
@@ -2173,7 +2189,7 @@ async fn run_phase(
         // `over` clause's resolved partition. Empty when the cursor
         // wasn't declared with an `over` clause.
         let mut runtime_partition: HashMap<String, (u64, u64)> = HashMap::new();
-        let cursor_specs: Vec<(String, Option<(String, String)>, Option<u64>, nbrs_variates::source::CursorKind, Option<String>)>
+        let cursor_specs: Vec<(String, Option<(String, String)>, Option<u64>, polydat::source::CursorKind, Option<String>)>
             = kernel.program()
             .cursor_schemas()
             .iter()
@@ -2223,7 +2239,7 @@ async fn run_phase(
                         if let Some(idx) = kernel.program().find_input(&cursor_slot_name) {
                             kernel.state().set_input(
                                 idx,
-                                nbrs_variates::node::Value::from_partition(partition),
+                                polydat::node::Value::from_partition(partition),
                             );
                         }
                     }
@@ -2238,7 +2254,7 @@ async fn run_phase(
                     }
                 }
             }
-            use nbrs_variates::source::CursorKind::*;
+            use polydat::source::CursorKind::*;
             // Each branch pulls only the outputs its policy needs.
             // `delta_output` is optional — when absent, the source
             // factory uses `base` (the initial extent) as the
@@ -2313,7 +2329,7 @@ async fn run_phase(
         let parent = ctx.current_parent_kernel.as_ref()
             .expect("workload-kernel fallback requires an installed parent kernel");
         let workload_subscope = parent.build_subscope(
-            nbrs_variates::subcontext::GkMatter::builder().program(ctx.program.clone()).build().unwrap(),
+            polydat::subcontext::GkMatter::builder().program(ctx.program.clone()).build().unwrap(),
         ).expect("program-form subscope is infallible");
         let mut b = OpBuilder::new(workload_subscope);
         if let Some(phase_idx) = ctx.scope_tree.phase_node_by_name(phase_name) {
@@ -2340,6 +2356,29 @@ async fn run_phase(
         stanza_len
     } else if spec == "===auto" || spec.is_empty() {
         stanza_len
+    } else if let Some(rest) = spec.strip_prefix("==ops:") {
+        // Unification — the implicit `main` phase synthesized
+        // for inline / blocks-shorthand workloads sets cycles
+        // via the `==ops:` token so the legacy
+        // `nbrs run op=... cycles=20` contract (= 20 op
+        // iterations total) survives without re-interpreting
+        // every phased workload's `cycles:` field. The
+        // payload is the resolved op count, parsed as either
+        // a plain integer or a `{gk_expr}` const expression.
+        let mut expanded = rest.to_string();
+        for (v, val) in &iter_var_values { expanded = expanded.replace(&format!("{{{v}}}"), val); }
+        expanded = crate::runner::expand_workload_params(&expanded, &ctx.workload_params);
+        crate::runner::parse_count(&expanded)
+            .or_else(|| {
+                if expanded.starts_with('{') && expanded.ends_with('}') {
+                    let inner = &expanded[1..expanded.len()-1];
+                    polydat::dsl::compile::eval_const_expr(inner).ok()
+                        .map(|v| v.as_u64())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(stanza_len)
     } else {
         // Try resolving from kernel
         let mut expanded = spec.to_string();
@@ -2349,7 +2388,7 @@ async fn run_phase(
             .or_else(|| {
                 if expanded.starts_with('{') && expanded.ends_with('}') {
                     let inner = &expanded[1..expanded.len()-1];
-                    nbrs_variates::dsl::compile::eval_const_expr(inner).ok()
+                    polydat::dsl::compile::eval_const_expr(inner).ok()
                         .map(|v| v.as_u64())
                 } else {
                     None
@@ -2391,7 +2430,7 @@ async fn run_phase(
 
     // Phase labels read straight off the parent kernel's
     // formal scope-coordinate path (SRD 18b §"Scope
-    // coordinates" / `nbrs_variates::kernel::scope_coords`).
+    // coordinates" / `polydat::kernel::scope_coords`).
     // The path is leaf-first: each entry is one scope's own
     // coordinates (the LHS of its `var in expr` clauses).
     // We render as striated parens so the operator can read
@@ -2443,7 +2482,7 @@ async fn run_phase(
     // If the compiled kernel declares cursors, create a source factory
     // from the first cursor's schema (name + extent). Otherwise the
     // Activity falls back to a range source named "cycles".
-    let source_factory: Option<Arc<dyn nbrs_variates::source::DataSourceFactory>> = {
+    let source_factory: Option<Arc<dyn polydat::source::DataSourceFactory>> = {
         let program = iter_op_builder.program();
         let schemas = program.cursor_schemas();
         if let Some(schema) = schemas.first() {
@@ -2463,7 +2502,7 @@ async fn run_phase(
                 .copied()
                 .unwrap_or((0, extent));
             let effective_extent = range_end.saturating_sub(range_start);
-            use nbrs_variates::source as src;
+            use polydat::source as src;
             // Effective extension delta — `runtime_cursor_delta`
             // when the workload supplied an explicit `delta` arg,
             // else the cursor's narrowed extent.
@@ -2599,7 +2638,7 @@ async fn run_phase(
         stanza_len, progress_extent, phase_concurrency);
 
     // Fire `Event::PhaseStart` once per phase. No built-in
-    // default body — `phase_done` already renders the
+    // default body — `phase_outcome` already renders the
     // lifecycle bound for the phase's existence, and a
     // separate `▶ starting` line just duplicates the
     // name/coords/seq. Workloads that want a pre-phase
@@ -2610,7 +2649,7 @@ async fn run_phase(
             let parent_coords: Vec<_> = ctx.current_parent_kernel.as_ref()
                 .map(|k| k.scope_coordinates().iter().rev().cloned().collect())
                 .unwrap_or_default();
-            nbrs_variates::kernel::format_scope_coordinate_path(&parent_coords)
+            polydat::kernel::format_scope_coordinate_path(&parent_coords)
         };
         let depth_indent = crate::scene_tree::running_phase_indent();
         let phase_ctx = crate::readout_context::LifecycleContext {
@@ -2663,7 +2702,7 @@ async fn run_phase(
                 let ancestors = ctx.scope_tree.ancestor_kernels(idx);
                 if ancestors.is_empty() { return None; }
                 let head = ancestors[0].program();
-                let tail: Vec<&nbrs_variates::kernel::GkProgram> = ancestors[1..]
+                let tail: Vec<&polydat::kernel::GkProgram> = ancestors[1..]
                     .iter().map(|k| k.program().as_ref()).collect();
                 Some(head.instance_hash(&tail))
             })
@@ -2727,7 +2766,7 @@ async fn run_phase(
             let parent_coords: Vec<_> = ctx.current_parent_kernel.as_ref()
                 .map(|k| k.scope_coordinates().iter().rev().cloned().collect())
                 .unwrap_or_default();
-            nbrs_variates::kernel::format_scope_coordinate_path(&parent_coords)
+            polydat::kernel::format_scope_coordinate_path(&parent_coords)
         },
         phase_seq: crate::scene_tree::current()
             .and_then(|t| t.find_phase(phase_name, &phase_labels,
@@ -2833,7 +2872,16 @@ async fn run_phase(
                 },
             ).await?
         };
-        adapters.insert(adapter.name().to_string(), adapter);
+        // Insert under the REQUESTED adapter name (what the
+        // op asked for via `adapter:` or workload default),
+        // not the adapter's self-reported name. They normally
+        // match, but a DryRunAdapter intercepts every driver
+        // and reports its own name ("dry-run") regardless of
+        // what was requested — without this aliasing the
+        // dryrun adapter would land in the map as "dry-run"
+        // while ops still look up "stdout" / "cql" / etc. and
+        // fail the dispatch.
+        adapters.insert(aname_owned.clone(), adapter);
         attach_guards.push(guard);
     }
 
@@ -3008,6 +3056,54 @@ async fn run_phase(
         None
     };
 
+    // SRD-75: phase-level poll. When the phase declares
+    // `poll:`, attach a `PhasePollContext` to the activity so
+    // the fiber loop re-runs the source (predicate-driven
+    // wall-clock loop) instead of exiting on first
+    // exhaustion. The predicate kernel handle is the phase
+    // scope's cached kernel — captures land there via the
+    // SharedCell mechanism (SRD-13c §"Implementation:
+    // SharedCell-backed input slots" §4 "Write through")
+    // through the op-template kernel's `extern` import slots
+    // (SRD-67 Rule 1 "shared import → share cell").
+    if let Some(poll_spec) = phase.poll.as_ref() {
+        let interval = std::time::Duration::from_millis(
+            poll_spec.interval_ms.unwrap_or(1000),
+        );
+        let timeout = std::time::Duration::from_millis(
+            poll_spec.timeout_ms.unwrap_or(300_000),
+        );
+        let phase_kernel = ctx.scope_tree.phase_node_by_name(phase_name)
+            .and_then(|idx| ctx.scope_tree.nodes[idx].cached_kernel.get().cloned())
+            .ok_or_else(|| format!(
+                "phase '{phase_name}': SRD-75 phase-poll requires the phase \
+                 scope kernel to be installed, but no cached kernel was found. \
+                 This is a synthesis bug — every phase with `poll:` should \
+                 land via the `Bindings` install spec.",
+            ))?;
+        let started_at = std::time::Instant::now();
+        // SRD-75 `on_timeout` — `Error` (default) when
+        // unset OR the workload-declared string is the
+        // literal `"error"`; `Abort` only when the
+        // workload-author opted in. The parser already
+        // validated the string is one of the closed
+        // vocabulary, so a mismatch here is impossible
+        // and we map confidently.
+        let on_timeout_policy = match poll_spec.on_timeout.as_deref() {
+            Some("abort") => crate::activity::PhasePollTimeoutPolicy::Abort,
+            _ => crate::activity::PhasePollTimeoutPolicy::Error,
+        };
+        activity.phase_poll = Some(crate::activity::PhasePollContext {
+            kernel: phase_kernel,
+            interval,
+            deadline: started_at + timeout,
+            started_at,
+            metric_name: poll_spec.metric_name.clone(),
+            max_error_retries: poll_spec.max_error_retries.unwrap_or(0),
+            on_timeout: on_timeout_policy,
+        });
+    }
+
     crate::diag!(crate::observer::LogLevel::Debug,
         "phase '{phase_name}': activity starting (concurrency={phase_concurrency})");
     // Clone the stop-reason handle BEFORE consuming the activity;
@@ -3016,6 +3112,11 @@ async fn run_phase(
     // the actual triggering error (instead of a bare "stopped by
     // error handler") in the phase-level error.
     let stop_reason = activity.stop_reason.clone();
+    // SRD-76 — clone the structured-errors handle BEFORE
+    // consuming the activity, mirroring the stop_reason
+    // pattern above. Drained at phase end into
+    // `PhaseOutcome.errors`.
+    let activity_phase_errors = activity.phase_errors.clone();
     let stopped = crate::runner::run_activity_simple(
         activity, adapters, phase_driver, iter_op_builder,
     ).await;
@@ -3154,9 +3255,7 @@ async fn run_phase(
             .and_then(|g| g.clone())
             .unwrap_or_else(|| "stopped by error handler".to_string());
         let detail_msg = format!("stopped by error handler: {reason}");
-        // `phase_labels` already carries its own striated
-        // Failure line. Drops the striated coord suffix and
-        // indents to phase scope depth — same hierarchic
+        // Indents to phase scope depth — same hierarchic
         // pattern as the completion line below. Red on the
         // phase name + the failure-reason summary so a failure
         // is visually distinct from a normal completion in
@@ -3167,11 +3266,83 @@ async fn run_phase(
         let red = color.then(|| "\x1b[31m").unwrap_or("");
         let dim = color.then(|| "\x1b[2m").unwrap_or("");
         let reset = color.then(|| "\x1b[0m").unwrap_or("");
+        // SRD-? — include the phase's striated scope-coord
+        // chain on the error line so a sweep-cell failure
+        // points at the specific cell. Same change-only
+        // summary lens as `phase_outcome::render_labeled_value`
+        // — completed-phase event whether it succeeded or
+        // failed; the scope-open lines above the error already
+        // establish the unchanged context, so only the axes
+        // that took a new value here should appear.
+        let error_head_consumed: usize = depth_indent.chars().count()
+            + "phase '".chars().count()
+            + phase_name.chars().count()
+            + "' ".chars().count();
+        let coords_part = crate::readouts::builtins::phase_outcome::format_coords_block(
+            &phase_labels, color, error_head_consumed,
+            &format!("{depth_indent}    "),
+            /* summarize_changed_only */ true,
+        );
         crate::diag!(crate::observer::LogLevel::Error,
-            "{depth_indent}phase '{bold}{phase_name}{reset}' {red}{detail_msg}{reset} {dim}({phase_duration:.2}s){reset}");
+            "{depth_indent}phase '{bold}{phase_name}{reset}'{coords_part} {red}{detail_msg}{reset} {dim}({phase_duration:.2}s){reset}");
         ctx.observer.phase_failed(phase_name, &phase_labels, &detail_msg);
+        // SRD-76 — build the structured PhaseOutcome and
+        // install it on the scene tree alongside the
+        // legacy `set_phase_failed` mirror. The
+        // `phase_errors` buffer carries any per-cycle or
+        // phase-level errors captured during execution
+        // (today: the SRD-75 poll_timeout path; future
+        // pushes extend to per-cycle dispatch failures).
+        // If the buffer is empty (rare race), synthesize a
+        // single entry from `detail_msg` so the
+        // structural invariant "Failed ⇒ at least one
+        // error" holds without a debug-assert blowup.
+        let errors = activity_phase_errors
+            .lock()
+            .ok()
+            .map(|mut g| std::mem::take(&mut *g))
+            .unwrap_or_default();
+        let errors = if errors.is_empty() {
+            vec![crate::phase_outcome::PhaseErrorDetail {
+                class: "phase_failed".into(),
+                message: reason.clone(),
+                op_name: None,
+                cycle: None,
+                op_template: None,
+                op_resolved: None,
+                at_nanos: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0),
+                retryable: false,
+            }]
+        } else {
+            errors
+        };
+        let outcome = crate::phase_outcome::PhaseOutcome::failed(
+            crate::phase_outcome::PhaseIdentity::new(
+                phase_name, phase_labels.as_str(),
+            ),
+            phase_duration,
+            errors,
+        );
+        // SRD-76 Push 3 — persist before installing on the
+        // scene tree so a panic during scene-tree
+        // mutation still leaves a durable row on disk. The
+        // write itself is best-effort: a sqlite failure
+        // logs at Warn and doesn't propagate (the in-memory
+        // scene tree remains the canonical state).
+        if let Ok(mut guard) = ctx.sqlite_reporter.lock() {
+            if let Some(reporter) = guard.as_mut() {
+                let row = outcome.to_sqlite_row(
+                    &ctx.session_id, ctx.exec_id, phase_start_nanos,
+                );
+                reporter.write_phase_outcome(&row);
+            }
+        }
         crate::scene_tree::with_global_mut(|t| {
             t.set_phase_failed(phase_name, &phase_labels, &detail_msg);
+            t.set_phase_outcome(phase_name, &phase_labels, outcome);
         });
         if let Some(writer) = ctx.checkpoint_writer.as_ref() {
             let identity = phase_identity_for(phase_name, &phase_labels);
@@ -3193,8 +3364,39 @@ async fn run_phase(
     // while the phase identity and coords are already on the
     // phase-starting row directly above.
     ctx.observer.phase_completed(phase_name, &phase_labels, phase_duration);
+    // SRD-76 — install the structured success outcome.
+    // Drain any residual entries from the phase_errors
+    // buffer just in case (a non-stopping retryable
+    // failure may have been logged but not promoted to a
+    // stop_flag); they ride along as non-fatal context.
+    let success_errors = activity_phase_errors
+        .lock()
+        .ok()
+        .map(|mut g| std::mem::take(&mut *g))
+        .unwrap_or_default();
+    let success_outcome = crate::phase_outcome::PhaseOutcome {
+        phase_id: crate::phase_outcome::PhaseIdentity::new(
+            phase_name, phase_labels.as_str(),
+        ),
+        status: crate::phase_outcome::PhaseStatus::Completed,
+        duration_secs: phase_duration,
+        errors: success_errors,
+        resume_cursor: None,
+    };
+    // SRD-76 Push 3 — persist the success outcome. Same
+    // best-effort policy as the failure path above; the
+    // scene tree is the canonical in-memory state.
+    if let Ok(mut guard) = ctx.sqlite_reporter.lock() {
+        if let Some(reporter) = guard.as_mut() {
+            let row = success_outcome.to_sqlite_row(
+                &ctx.session_id, ctx.exec_id, phase_start_nanos,
+            );
+            reporter.write_phase_outcome(&row);
+        }
+    }
     crate::scene_tree::with_global_mut(|t| {
         t.set_phase_completed(phase_name, &phase_labels, phase_duration);
+        t.set_phase_outcome(phase_name, &phase_labels, success_outcome);
     });
     if let Some(writer) = ctx.checkpoint_writer.as_ref() {
         let identity = phase_identity_for(phase_name, &phase_labels);
@@ -3248,9 +3450,9 @@ fn phase_identity_for(phase_name: &str, phase_labels: &str) -> crate::checkpoint
 /// Format bindings as a sorted labels string for stable matching.
 ///
 // `format_scope_coordinate_path` lives on the GK side — see
-// `nbrs_variates::kernel::format_scope_coordinate_path`. Re-exporting
+// `polydat::kernel::format_scope_coordinate_path`. Re-exporting
 // the path here would just be alias chrome; consumers in this crate
-// import it directly from `nbrs_variates::kernel`.
+// import it directly from `polydat::kernel`.
 
 /// Resolve a for_each expression.
 /// Split a `for_each` spec string of the form `"<var> in <expr>"`
@@ -3285,11 +3487,11 @@ fn parse_var_in_expr(spec: &str) -> (String, String) {
 /// keeps the cursor's full extent. Returns `Err` on a malformed
 /// spec, empty partition list, or unsupported value type.
 fn resolve_over(
-    value: &nbrs_variates::node::Value,
+    value: &polydat::node::Value,
     extent: u64,
-) -> Result<Option<nbrs_variates::cursor_partition::Partition>, String> {
-    use nbrs_variates::cursor_partition::{parse, resolve, Partition};
-    use nbrs_variates::node::Value;
+) -> Result<Option<polydat::cursor_partition::Partition>, String> {
+    use polydat::cursor_partition::{parse, resolve, Partition};
+    use polydat::node::Value;
 
     let first_of = |parts: Vec<Partition>| -> Result<Partition, String> {
         parts.into_iter().next().ok_or_else(|| {

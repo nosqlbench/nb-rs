@@ -94,6 +94,103 @@ pub struct Workload {
     pub wrappers: Option<WrappersConfig>,
 }
 
+impl Workload {
+    /// Unification (2026-05-27): the scenario-tree executor is
+    /// the sole execution path. Workloads that pre-date the
+    /// `phases:`/`scenarios:` shape — `op=...` inline CLI,
+    /// `blocks:` YAML, top-level `ops:` lists — would
+    /// historically run via a separate single-activity branch
+    /// in the runner that bypassed `run_phase`. After
+    /// unification that branch is gone; this method
+    /// synthesizes an implicit `main` phase + `default`
+    /// scenario so the runner has the phased shape to walk.
+    ///
+    /// **Idempotent**: when `phases` is already populated the
+    /// method returns without changes. The synthesized phase
+    /// owns the ops; `Workload::ops` stays populated because
+    /// downstream compile-time inspectors (the workload-root
+    /// kernel, wrapper-cascade resolver, bind-point
+    /// validator) still walk the top-level list.
+    ///
+    /// **Synthesized shape**: phase name `main`, scenario name
+    /// `default` containing `[Phase("main")]`. No `cycles` /
+    /// `concurrency` / `rate` / `errors` overrides — those
+    /// inherit from CLI / workload defaults via the existing
+    /// phased resolution.
+    pub fn synthesize_default_phase(&mut self) {
+        if !self.phases.is_empty() {
+            return;
+        }
+        if self.ops.is_empty() {
+            return;
+        }
+        const SYNTHETIC: &str = "main";
+        // Promote CLI-style `cycles=N` / `concurrency=N` /
+        // `rate=N` from `self.params` onto the synthetic
+        // phase. Pre-unification, the now-deleted single-
+        // activity branch read these directly off CLI params
+        // and set them on `ActivityConfig`; the phased branch
+        // reads them off `WorkloadPhase`. Forwarding here
+        // preserves the legacy contract — `nbrs run op=...
+        // cycles=20` still runs 20 cycles after unification.
+        //
+        // The `==ops:N` wrap on cycles tells the per-phase
+        // resolver (executor.rs's `phase_cycles` block) to
+        // treat the number as a raw op-iteration count
+        // instead of the standard "N stanzas" multiplication.
+        // The legacy single-activity branch always used the
+        // op-count interpretation; without this, a 2-op
+        // stanza with `cycles=4` would run 8 ops instead of
+        // the historical 4.
+        let cycles = self.params.get("cycles")
+            .map(|c| format!("==ops:{c}"));
+        let concurrency = self.params.get("concurrency").cloned();
+        let rate = self.params.get("rate")
+            .and_then(|s| s.parse::<f64>().ok());
+        // Move GK-syntax workload-root bindings DOWN onto the
+        // synthetic phase. The legacy single-activity branch
+        // compiled workload-root bindings into the SAME kernel
+        // as the op templates, so destructure-target names
+        // (`(device, reading) := ...`) were locally visible.
+        // The phased path puts workload-root bindings on a
+        // separate kernel and exposes only the manifest names
+        // to child kernels — but the manifest lists the
+        // destructure tuple as a single entry, not the
+        // individual targets. Putting the bindings on the
+        // phase kernel preserves the legacy locality.
+        //
+        // The legacy `Map` form (`user_id: Hash(); Mod(...)`)
+        // gets a translation pass at workload-root that the
+        // phase-level parser doesn't apply — so we leave that
+        // form alone. Only `GkSource` (native GK string form)
+        // moves down. This split matches the two-form parser
+        // contract and avoids re-implementing translation.
+        let bindings = match &self.bindings {
+            BindingsDef::GkSource(_) => std::mem::take(&mut self.bindings),
+            BindingsDef::Map(_) => BindingsDef::default(),
+        };
+        let phase = WorkloadPhase {
+            ops: self.ops.clone(),
+            bindings,
+            cycles,
+            concurrency,
+            rate,
+            ..Default::default()
+        };
+        self.phases.insert(SYNTHETIC.to_string(), phase);
+        self.phase_order.push(SYNTHETIC.to_string());
+        // Only seed the default scenario when none was
+        // declared — an operator-authored `scenarios:` block
+        // (even with no phases yet) is honoured as-is.
+        if self.scenarios.is_empty() {
+            self.scenarios.insert(
+                "default".to_string(),
+                vec![ScenarioStep::Phase(SYNTHETIC.to_string())],
+            );
+        }
+    }
+}
+
 /// SRD-32a Push 3 — wrapper-composition override block.
 /// Carries an explicit innermost-to-outermost order list
 /// that the resolver uses in place of its built-in
@@ -643,6 +740,92 @@ pub struct WorkloadPhase {
     /// phase bindings via the GK scope chain.
     #[serde(default, skip_serializing_if = "BindingsDef::is_empty")]
     pub bindings: BindingsDef,
+    /// Phase-level poll spec — when present, the phase's
+    /// cycle execution runs in a wall-clock loop until a GK
+    /// predicate over captures returns `true`. SRD-75.
+    ///
+    /// The presence of this field carries semantics beyond
+    /// the data: it forbids `concurrency > 1` (serial-cycle
+    /// loop is the unit of work), and it triggers
+    /// scope-synthesis to allocate `shared` cells on the
+    /// phase scope for capture names referenced by the
+    /// predicate / `if:` conditions / metric values so
+    /// cross-op visibility happens through the canonical
+    /// GK chain (no sidecar HashMap; see SRD-75
+    /// §"Architectural shape").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll: Option<PhasePollSpec>,
+}
+
+/// Phase-level `poll:` block (SRD-75). When set on a
+/// `WorkloadPhase`, the runner wraps the phase's cycle
+/// execution in a wall-clock loop that re-runs all ops
+/// per iteration until `until` (a GK boolean expression
+/// over captures) returns `true` or `timeout_ms` elapses.
+///
+/// Differs from the per-op `PollingDispenser` (SRD-32):
+/// per-op poll wraps a SINGLE op with row-count /
+/// json-path emptiness termination; phase-poll wraps
+/// MULTIPLE ops with predicate-over-captures termination.
+/// They coexist; per-op poll is the right tool when a
+/// single op's response is sufficient to signal
+/// completion.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PhasePollSpec {
+    /// GK boolean expression evaluated against the phase
+    /// scope kernel after each iteration. Compiles into
+    /// the phase scope as `__poll_until := <until>`;
+    /// dynamic (re-evaluates per pull) per SRD-11's "two
+    /// evaluation lifecycles" rule. Required.
+    pub until: String,
+    /// Sleep between iterations, milliseconds. Default
+    /// `1000` (one second).
+    #[serde(default)]
+    pub interval_ms: Option<u64>,
+    /// Overall wall-clock cap. The loop returns a
+    /// `poll_timeout` error if exceeded. Default
+    /// `300000` (5 minutes).
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// Consecutive retryable inner-op errors tolerated
+    /// before propagation. `0` (default) = strict: any
+    /// retryable error fails the phase immediately.
+    /// Mirrors per-op `PollingDispenser` semantics.
+    #[serde(default)]
+    pub max_error_retries: Option<u32>,
+    /// Named metric (gauge) written via `ctx.wires.write`
+    /// when the loop terminates successfully. Value =
+    /// elapsed wall-clock; unit decoded from the
+    /// trailing suffix (`_s` / `_ms` / `_ns` / …) per
+    /// the existing `duration_value_for_metric_name`
+    /// convention. Same contract as per-op poll's
+    /// `metric_name`. Default `None` (no metric).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_name: Option<String>,
+    /// What to do when the wall-clock `timeout_ms`
+    /// expires without satisfying `until`. SRD-75
+    /// §"Workload-load validation" — the workload-author
+    /// declares whether a stuck synchronizer is a
+    /// recoverable phase-error or a workload-invalidating
+    /// event.
+    ///
+    /// - `error` (default) — phase fails; the outer
+    ///   scenario's error-routing policy decides whether
+    ///   to continue to sibling phases. Suitable when a
+    ///   single cell's failed synchronization doesn't
+    ///   invalidate the rest of the sweep (rare).
+    /// - `abort` — calls `session_signals::request_stop()`
+    ///   in addition to setting the phase's stop_flag.
+    ///   The scenario walker observes the global stop and
+    ///   terminates the whole run. Use when the
+    ///   predicate's satisfaction is a precondition for
+    ///   any downstream phase being meaningful — e.g.
+    ///   ensure_compacted in the CQL sweep: if the table
+    ///   never reaches `sstables == 1`, every subsequent
+    ///   query phase runs against an un-compacted table
+    ///   and produces meaningless results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_timeout: Option<String>,
 }
 
 /// Per-phase checkpoint declaration. Three legal forms in YAML:
@@ -792,7 +975,7 @@ impl<'de> serde::Deserialize<'de> for Checkpoint {
 /// All iteration shapes (`for_each` single-clause,
 /// `for_combinations`, `for_each_union`) collapse into one
 /// `Comprehension` variant carrying the canonical
-/// `nbrs_variates::comprehension::Comprehension` AST. The
+/// `polydat::comprehension::Comprehension` AST. The
 /// AST's mode (Cartesian vs Union) is the discriminator;
 /// clause count distinguishes single-var iteration from
 /// cross-product iteration. See SRD-18b §"Iteration as a
@@ -827,7 +1010,7 @@ pub enum ScenarioNode {
     ///   - "k in 100, limit in 100,200,300"
     /// ```
     Comprehension {
-        comprehension: nbrs_variates::comprehension::Comprehension,
+        comprehension: polydat::comprehension::Comprehension,
         children: Vec<ScenarioNode>,
     },
     /// Execute children while condition is true (test after).

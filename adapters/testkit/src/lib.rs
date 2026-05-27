@@ -193,7 +193,7 @@ impl DriverAdapter for ModelAdapter {
     fn map_op(
         &self,
         template: &ParsedOp,
-        parent: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+        parent: std::sync::Arc<polydat::kernel::GkKernel>,
     ) -> Result<Box<dyn OpDispenser>, String> {
         // The yaml parser routes unknown top-level op keys into
         // `template.op`, while a nested `params:` block lands in
@@ -245,7 +245,7 @@ struct ModelDispenser {
     /// and diagnostic output.
     in_flight: Arc<AtomicUsize>,
     /// SRD-68 invariant I-3: dispenser-owned canonical GK kernel.
-    canonical_kernel: std::sync::Arc<nbrs_variates::kernel::GkKernel>,
+    canonical_kernel: std::sync::Arc<polydat::kernel::GkKernel>,
     /// Op-field templates snapshotted at `map_op`. Resolved per
     /// cycle via the generic `wires` API; the rendered text feeds
     /// the trace writer and the OpResult body.
@@ -264,7 +264,7 @@ impl Drop for InFlightGuard {
 }
 
 impl OpDispenser for ModelDispenser {
-    fn canonical_kernel(&self) -> Option<&std::sync::Arc<nbrs_variates::kernel::GkKernel>> {
+    fn canonical_kernel(&self) -> Option<&std::sync::Arc<polydat::kernel::GkKernel>> {
         Some(&self.canonical_kernel)
     }
 
@@ -508,9 +508,9 @@ mod tests {
 
     /// Minimal kernel used as the `parent` argument to `map_op`
     /// in tests that don't need a richer GK context (SRD-68 Push 2).
-    fn test_kernel() -> std::sync::Arc<nbrs_variates::kernel::GkKernel> {
+    fn test_kernel() -> std::sync::Arc<polydat::kernel::GkKernel> {
         std::sync::Arc::new(
-            nbrs_variates::dsl::compile::compile_gk("input cycle: u64\n").unwrap()
+            polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap()
         )
     }
 
@@ -594,7 +594,7 @@ mod tests {
         let dispenser: Arc<dyn OpDispenser> = Arc::from(adapter.map_op(&op, test_kernel()).unwrap());
         let fields = Arc::new(ResolvedFields::new(
             vec!["stmt".into()],
-            vec![nbrs_variates::node::Value::Str("SELECT 1;".into())],
+            vec![polydat::node::Value::Str("SELECT 1;".into())],
         ));
 
         let mut handles = Vec::new();
@@ -626,7 +626,7 @@ mod tests {
         let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
         let fields = ResolvedFields::new(
             vec!["stmt".into()],
-            vec![nbrs_variates::node::Value::Str("SELECT 1;".into())],
+            vec![polydat::node::Value::Str("SELECT 1;".into())],
         );
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let ctx = nbrs_activity::adapter::ExecCtx::new(&fields, &pulls);
@@ -669,7 +669,7 @@ mod tests {
 
         let fields = ResolvedFields::new(
             vec!["stmt".into()],
-            vec![nbrs_variates::node::Value::Str("SELECT 1;".into())],
+            vec![polydat::node::Value::Str("SELECT 1;".into())],
         );
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let ctx = nbrs_activity::adapter::ExecCtx::new(&fields, &pulls);

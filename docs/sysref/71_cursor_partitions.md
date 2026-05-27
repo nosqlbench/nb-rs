@@ -741,7 +741,7 @@ For each of the three iterations, `q` reserves up to one
 `vector_count`-fraction of ordinals from `prebuffered`,
 terminating when either 10 seconds elapses or the partition is
 fully consumed. The rate-projection math from
-[`UntilElapsedPolicy`](../../nbrs-variates/src/source.rs) gets
+[`UntilElapsedPolicy`](../../polydat/src/source.rs) gets
 the partition's cardinality as a natural ceiling — it converges
 geometrically on the time target but doesn't overshoot the
 partition.

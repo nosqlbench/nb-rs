@@ -64,6 +64,45 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         }
     };
 
+    // Operator-visible summary of what's about to happen.
+    // The prior silent zero-items behaviour was the
+    // load-bearing UX bug — `nbrs report all` against a
+    // live session (whose sqlite has yet to flush its
+    // report-items rows) produced no output AND no
+    // diagnostic. Surface every relevant input now so the
+    // operator can correct course without guessing.
+    let source_kind = if workload_path.is_some() {
+        "workload yaml"
+    } else {
+        "session db (report.* metadata rows)"
+    };
+    let source_path: String = workload_path.as_deref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| session_db.as_deref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "logs/latest/metrics.db".into()));
+    eprintln!("nbrs report: {} item(s) resolved from {} ({})",
+        items.len(), source_kind, source_path);
+    eprintln!("nbrs report: output → {}", output_root.display());
+    if items.is_empty() {
+        // The two paths that yield zero items are
+        // distinguishable; flag the most common one so the
+        // operator can act.
+        if workload_path.is_none() {
+            eprintln!("nbrs report: hint — no report.* rows in \
+                the session db yet. For a LIVE session (sqlite \
+                flushes on its own cadence — see SRD-40b), pass \
+                `workload=<file>` to resolve items from the \
+                YAML source instead. Example: \
+                `nbrs report all workload={}`",
+                "adapters/<adapter>/workloads/<workload>.yaml");
+        } else {
+            eprintln!("nbrs report: hint — the workload yaml \
+                has no `report:` items declared. Add a \
+                `report:` block to surface plots / tables.");
+        }
+    }
+
     // `--rebuild` (or `NBRS_REPORT_REBUILD=1`) wipes the
     // declared target markdown files before any renderer
     // touches them. The set comes from the resolved item
@@ -164,6 +203,19 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         }
     };
 
+    // Refresh the session directory's `index.md` after every
+    // `nbrs report` invocation — even on partial-failure runs.
+    // The index is a flat catalog of every artifact in the
+    // directory (markdown reports, CSV data, plot images,
+    // tables, JSON, logs, etc.), so operators can navigate the
+    // session contents without `ls`. Best-effort: a write
+    // failure logs at stderr but does not affect the
+    // report-command exit code.
+    if let Err(e) = refresh_session_index(&output_root) {
+        eprintln!("nbrs report: failed to update {}: {e}",
+            output_root.join("index.md").display());
+    }
+
     // SRD: figure-render failures are not skip-overable. The
     // workload defined a figure; the operator asked for it; the
     // run produced no output. That is a defect worth a nonzero
@@ -179,6 +231,169 @@ pub fn report_command(args: &[String], kind_filter: KindFilter) {
         }
         std::process::exit(2);
     }
+}
+
+/// Walk the session directory once and write a categorised
+/// `index.md` that links to every artifact in it. Idempotent
+/// (overwrites the prior index), top-level only (no recursion
+/// into subdirectories), and best-effort (returns
+/// [`std::io::Error`] on failure so the caller can warn).
+///
+/// Categorisation by extension:
+/// - **Reports** (`.md` excluding `index.md` itself, `.txt`)
+/// - **Tables / data** (`.csv`, `.tsv`, `.json`, `.jsonl`,
+///   `.parquet`)
+/// - **Figures** (`.png`, `.svg`, `.jpg`, `.jpeg`, `.gif`,
+///   `.webp`, `.pdf`)
+/// - **Logs** (`.log`)
+/// - **Database** (`.db`, `.sqlite`, `.sqlite3`)
+/// - **Other** — anything that didn't match. Always last; a
+///   future artifact type lands here without breaking the
+///   index.
+///
+/// Within each category, entries sort by filename for stable
+/// diffs across invocations. Each entry renders as a markdown
+/// link `[filename.ext](filename.ext)` so clicking from a
+/// markdown preview opens the file relative to the index.
+fn refresh_session_index(output_root: &Path) -> std::io::Result<()> {
+    use std::fmt::Write as _;
+    use std::io::Write as _;
+
+    // Resolve through any symlinks once at the top. If
+    // `output_root` is a broken / self-looping symlink (which
+    // happens when an external process mismanages
+    // `logs/latest`), `canonicalize` returns an error AND the
+    // `read_dir` below would loop with `Too many levels of
+    // symbolic links (os error 40)`. Treat the resolution
+    // failure as a best-effort no-op — refusing to crash the
+    // report-command path that's about to run against the
+    // user's actual plot data. The error message identifies
+    // the path so the operator can fix the symlink.
+    let resolved = match std::fs::canonicalize(output_root) {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(std::io::Error::new(
+                e.kind(),
+                format!("cannot resolve session directory '{}': {e} \
+                    (a broken or self-looping symlink? — index skipped)",
+                    output_root.display()),
+            ));
+        }
+    };
+
+    // Top-level scan only — subdirectories aren't part of the
+    // report-artifact contract; their indexing is a future
+    // concern if one ever lands.
+    let mut entries: Vec<(String, String)> = Vec::new();
+    let dir = std::fs::read_dir(&resolved)?;
+    for entry in dir {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if !file_type.is_file() && !file_type.is_symlink() { continue; }
+        let name = entry.file_name();
+        let name = match name.to_str() {
+            Some(s) => s.to_string(),
+            None => continue, // skip non-UTF8 filenames
+        };
+        // Skip the index itself so a future re-run doesn't
+        // self-list with a relative loop. Also skip dotfiles
+        // and lockfiles — operator clutter.
+        if name == "index.md" { continue; }
+        if name.starts_with('.') { continue; }
+        if name.ends_with(".lock") { continue; }
+        let ext = name.rsplit_once('.')
+            .map(|(_, e)| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        let category = match ext.as_str() {
+            "md" | "txt" => "reports",
+            "csv" | "tsv" | "json" | "jsonl" | "parquet" => "data",
+            "png" | "svg" | "jpg" | "jpeg" | "gif" | "webp" | "pdf" => "figures",
+            "log" => "logs",
+            "db" | "sqlite" | "sqlite3" | "shm" | "wal" => "database",
+            _ => "other",
+        };
+        entries.push((category.to_string(), name));
+    }
+    // Stable order within each category for diff-friendly output.
+    entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    let mut by_category: std::collections::BTreeMap<&str, Vec<&str>> =
+        std::collections::BTreeMap::new();
+    // Preserve a fixed display order via this explicit list;
+    // BTreeMap above guarantees stable iteration but in
+    // alphabetical key order, which doesn't match the
+    // doc-section narrative ("read the reports first, then
+    // figures, then data, then logs, then everything else").
+    let display_order = ["reports", "figures", "data", "logs",
+        "database", "other"];
+    for (cat, name) in &entries {
+        by_category.entry(cat.as_str()).or_default().push(name.as_str());
+    }
+
+    // Build the markdown body once, then write atomically via
+    // a tmp file + rename so a concurrent reader never sees a
+    // half-written index. (Same pattern the cadence sqlite
+    // writer uses.)
+    let mut body = String::new();
+    let dir_name = output_root.file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("session");
+    writeln!(body, "# Index — `{dir_name}`").unwrap();
+    writeln!(body).unwrap();
+    writeln!(body, "Auto-generated by `nbrs report`. Re-runs of \
+        any `nbrs report` subcommand refresh this index.").unwrap();
+    writeln!(body).unwrap();
+
+    let mut wrote_anything = false;
+    for cat in display_order {
+        let Some(names) = by_category.get(cat) else { continue };
+        if names.is_empty() { continue }
+        let heading = match cat {
+            "reports"  => "Reports",
+            "figures"  => "Figures",
+            "data"     => "Tables / data",
+            "logs"     => "Logs",
+            "database" => "Database",
+            "other"    => "Other",
+            _ => cat,
+        };
+        writeln!(body, "## {heading}").unwrap();
+        writeln!(body).unwrap();
+        for name in names {
+            // Inline figures (images) get an embedded preview
+            // so the markdown renderer shows them in place; the
+            // bracket form (without the leading `!`) is a plain
+            // link used for everything else.
+            let ext = name.rsplit_once('.')
+                .map(|(_, e)| e.to_ascii_lowercase())
+                .unwrap_or_default();
+            let is_image = matches!(ext.as_str(),
+                "png" | "svg" | "jpg" | "jpeg" | "gif" | "webp");
+            if is_image {
+                writeln!(body, "- [`{name}`]({name})  ").unwrap();
+                writeln!(body, "  ![{name}]({name})").unwrap();
+            } else {
+                writeln!(body, "- [`{name}`]({name})").unwrap();
+            }
+        }
+        writeln!(body).unwrap();
+        wrote_anything = true;
+    }
+    if !wrote_anything {
+        writeln!(body, "_(no artifacts in this session directory)_").unwrap();
+    }
+
+    // Write through the RESOLVED path so a symlink loop or
+    // a moving `logs/latest` target can't redirect us
+    // mid-write.
+    let index_path = resolved.join("index.md");
+    let tmp_path = resolved.join(".index.md.tmp");
+    {
+        let mut f = std::fs::File::create(&tmp_path)?;
+        f.write_all(body.as_bytes())?;
+    }
+    std::fs::rename(&tmp_path, &index_path)?;
+    Ok(())
 }
 
 /// True if `args` contains at least one `--<flag>` token that
@@ -967,13 +1182,43 @@ fn render_all(
     // the operator renders.
     let mut fig_num: usize = 0;
     let mut failures: Vec<String> = Vec::new();
+    let to_render: usize = items.iter()
+        .filter(|i| filter.matches(i.kind))
+        .count();
+    if to_render == 0 {
+        // Items resolved but the kind filter excluded all of
+        // them — distinguishable from the "no items at all"
+        // case the caller already warned about.
+        eprintln!(
+            "nbrs report: 0 of {} item(s) match the kind filter \
+             (rendering nothing)", items.len(),
+        );
+        return failures;
+    }
+    eprintln!("nbrs report: rendering {} item(s)…", to_render);
+    let mut idx = 0;
     for item in items.iter() {
         if item.kind.is_figure() { fig_num += 1; }
         if !filter.matches(item.kind) { continue; }
+        idx += 1;
+        // Per-item heading so the operator can map the
+        // downstream renderer output (plot points, table
+        // rows, error lines) back to the item it came from.
+        // The figure-number prefix matches `nbrs report list`
+        // / `nbrs report figure N` so cross-referencing
+        // works.
+        let fig_label = if item.kind.is_figure() {
+            format!("[fig {}] ", fig_num)
+        } else { String::new() };
+        eprintln!("  ({}/{}) {}{} {}",
+            idx, to_render, fig_label,
+            item.kind.as_str(), item.name);
         if let Err(e) = render_one(fig_num, item, passthrough, workload_arg, output_root, session_db) {
             classify_render_error(e, strict, &mut failures);
         }
     }
+    eprintln!("nbrs report: rendered {} item(s); {} failure(s)",
+        to_render, failures.len());
     failures
 }
 
@@ -1966,6 +2211,77 @@ fn glob_matches(glob: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `refresh_session_index` writes `index.md` listing every
+    /// non-skipped file in the directory, organised by category,
+    /// with image entries embedded as previews.
+    #[test]
+    fn refresh_session_index_writes_categorised_links() {
+        let tmp = tempfile::tempdir().expect("tmp dir");
+        let dir = tmp.path();
+        std::fs::write(dir.join("report_a.md"), "# A").unwrap();
+        std::fs::write(dir.join("results.csv"), "k,v\n1,2\n").unwrap();
+        std::fs::write(dir.join("plot.png"), &[0u8; 8]).unwrap();
+        std::fs::write(dir.join("session.log"), "log").unwrap();
+        std::fs::write(dir.join("metrics.db"), &[0u8; 8]).unwrap();
+        std::fs::write(dir.join("README"), "no ext").unwrap();
+        // Skipped: index.md, dotfile, lockfile
+        std::fs::write(dir.join("index.md"), "stale").unwrap();
+        std::fs::write(dir.join(".hidden"), "x").unwrap();
+        std::fs::write(dir.join("metrics.db.lock"), "x").unwrap();
+
+        refresh_session_index(dir).expect("refresh");
+        let body = std::fs::read_to_string(dir.join("index.md"))
+            .expect("read index");
+        assert!(body.contains("## Reports"),     "reports section missing");
+        assert!(body.contains("[`report_a.md`](report_a.md)"));
+        assert!(body.contains("## Figures"),     "figures section missing");
+        assert!(body.contains("[`plot.png`](plot.png)"));
+        assert!(body.contains("![plot.png](plot.png)"),
+            "image preview missing");
+        assert!(body.contains("## Tables / data"));
+        assert!(body.contains("[`results.csv`](results.csv)"));
+        assert!(body.contains("## Logs"));
+        assert!(body.contains("[`session.log`](session.log)"));
+        assert!(body.contains("## Database"));
+        assert!(body.contains("[`metrics.db`](metrics.db)"));
+        assert!(body.contains("## Other"));
+        assert!(body.contains("[`README`](README)"));
+        assert!(!body.contains("`.hidden`"));
+        assert!(!body.contains(".lock`]"));
+        let index_links = body.matches("[`index.md`]").count();
+        assert_eq!(index_links, 0, "index.md should not list itself");
+    }
+
+    /// Empty directory still produces a valid index.
+    #[test]
+    fn refresh_session_index_empty_directory_writes_placeholder() {
+        let tmp = tempfile::tempdir().expect("tmp dir");
+        refresh_session_index(tmp.path()).expect("refresh");
+        let body = std::fs::read_to_string(tmp.path().join("index.md"))
+            .expect("read index");
+        assert!(body.contains("no artifacts"),
+            "empty-directory placeholder missing: {body}");
+    }
+
+    /// Re-running on a populated directory overwrites cleanly —
+    /// stale entries from a prior run don't linger.
+    #[test]
+    fn refresh_session_index_overwrites_stale_entries() {
+        let tmp = tempfile::tempdir().expect("tmp dir");
+        let dir = tmp.path();
+        std::fs::write(dir.join("first.md"), "1").unwrap();
+        refresh_session_index(dir).expect("first refresh");
+        let body1 = std::fs::read_to_string(dir.join("index.md")).unwrap();
+        assert!(body1.contains("first.md"));
+
+        std::fs::remove_file(dir.join("first.md")).unwrap();
+        std::fs::write(dir.join("second.md"), "2").unwrap();
+        refresh_session_index(dir).expect("second refresh");
+        let body2 = std::fs::read_to_string(dir.join("index.md")).unwrap();
+        assert!(body2.contains("second.md"), "new entry missing");
+        assert!(!body2.contains("first.md"), "stale entry persisted");
+    }
 
     #[test]
     fn clean_wipe_removes_png_and_md_leaves_other_files() {

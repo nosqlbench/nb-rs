@@ -184,12 +184,12 @@ eval per scope activation, full stop, regardless of fiber
 count.
 
 Reference points in the code:
-- `nbrs_variates::kernel::engines::GkState::seed_node_buffer` —
+- `polydat::kernel::engines::GkState::seed_node_buffer` —
   primitive that writes a value into a node's buffer slot and
   marks it clean.
 - `nbrs_activity::synthesis::OpBuilder::init_overrides` — the
   per-activation snapshot that fiber state inherits.
-- `nbrs_variates::kernel::gkkernel::GkKernel::materialize_wiring_from_outer`
+- `polydat::kernel::gkkernel::GkKernel::materialize_wiring_from_outer`
   Step 3 — the per-const-output pull + non-None verification,
   immediately after the extern-slot bind step.
 
@@ -494,5 +494,5 @@ DataSource (per-cursor, stateful)
 
 All source API surface (`DataSource`, `SourceItem`,
 `SourceSchema`, `DataSourceFactory`, `Cursors`) lives in
-`nbrs-variates::source`. The runtime crates consume these types
+`polydat::source`. The runtime crates consume these types
 but do not define them.

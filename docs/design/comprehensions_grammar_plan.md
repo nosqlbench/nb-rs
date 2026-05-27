@@ -76,7 +76,7 @@ the implementation work is the rest of this plan.
 ## Push 1 — completed
 
 The current shipping baseline (visible in
-`nbrs-variates/src/comprehension/`):
+`polydat/src/comprehension/`):
 
 - [x] Full `Comprehension` AST (mode + filter + order)
 - [x] `ComprehensionMode::{Cartesian, Union}` with name-
@@ -107,7 +107,7 @@ zip iteration. Pure parser + AST extension.
       `Clause::new(v, e)` (now constructs
       `Clause { vars: vec![v], source: ClauseSource::Single(e) }`).
 - [x] Add `ClauseSource::{Single(String), Parallel(Vec<String>)}`
-      (exported from `nbrs_variates::comprehension`).
+      (exported from `polydat::comprehension`).
 - [x] Extend `parse_clause` to recognise `(var₁, var₂,
       ...) in (expr₁, expr₂, ...)`. Required: parens on
       both sides — single-side paren produces a
@@ -142,7 +142,7 @@ zip iteration. Pure parser + AST extension.
       parallel-vs-single distinction.
 
 **Migration cost (actual)**: ~25 field-access sites across
-`nbrs-variates`, `nbrs-workload`, `nbrs-activity`. The
+`polydat`, `nbrs-workload`, `nbrs-activity`. The
 `var()` / `expr()` accessor methods on `Clause` enabled a
 mechanical `c.var` → `c.var()` rewrite for all single-var
 call sites, with `enumerate_tuples` /
@@ -392,5 +392,5 @@ sequencer → 5 → 7b. This plan tightens it:
 - [SRD 18e](../sysref/18e_comprehension_canonical_reference.md)
   — canonical AST + contracts (this plan's spec
   companion)
-- `nbrs-variates/src/comprehension/{ast,parse,eval,order,
+- `polydat/src/comprehension/{ast,parse,eval,order,
   iteration,synthesis}.rs` — implementation modules

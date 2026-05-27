@@ -31,7 +31,7 @@ pub enum Event {
     /// `phase_starting` readout is bound.
     PhaseStart,
     /// `on_phase_end` — a phase is closing. The ✓ DONE line
-    /// (`phase_done` readout) is bound here today.
+    /// (`phase_outcome` readout) is bound here today.
     PhaseEnd,
 
     /// `on_each_start` — a `for_each` / `for_combinations`

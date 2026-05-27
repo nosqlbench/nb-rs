@@ -135,7 +135,7 @@ fn ancestor_chain_hash(
     // back to structural equality when one side has the longer
     // chain — see `scene_tree_resume_candidates` doc.
     let head = ancestors[0].program();
-    let tail: Vec<&nbrs_variates::kernel::GkProgram> = ancestors[1..]
+    let tail: Vec<&polydat::kernel::GkProgram> = ancestors[1..]
         .iter().map(|k| k.program().as_ref()).collect();
     Some(head.instance_hash(&tail))
 }

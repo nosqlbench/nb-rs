@@ -140,7 +140,7 @@ references them textually. Belt-and-suspenders alongside the
 ### `dataset_open` / `dataset_group_open` panic conversion
 
 Removed the `panic!()` on `Err` from
-`nbrs-variates/src/nodes/vectors.rs`. The Err arm now writes a
+`polydat/src/nodes/vectors.rs`. The Err arm now writes a
 clear `error: dataset_open: …` to stderr and returns
 `Value::None`. Consumers downstream still panic on
 `Value::None` (separate, scoped issue), but the original

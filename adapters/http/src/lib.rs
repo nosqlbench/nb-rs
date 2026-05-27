@@ -123,7 +123,17 @@ impl DriverAdapter for HttpAdapter {
         // colliding with the polling wrapper's `timeout_ms`,
         // which is the loop-level deadline. The HTTP adapter's
         // value is a single-request budget.
-        Some(&["method", "content_type", "uri", "url", "body", "headers", "request_timeout_ms"])
+        //
+        // `on_timeout` is the SRD-74-style modifier that turns
+        // an HTTP-client-side timeout into a non-error empty
+        // result. Pairs with a short `request_timeout_ms` to
+        // express "fire and yield" — the server keeps doing
+        // its work whether or not the client is still
+        // listening (the canonical use case is Cassandra's
+        // synchronous `forceKeyspaceCompaction`, where the
+        // poll layer is the actual waiter / observer).
+        Some(&["method", "content_type", "uri", "url", "body", "headers",
+               "request_timeout_ms", "on_timeout"])
     }
 
     fn map_op(
@@ -171,6 +181,24 @@ impl DriverAdapter for HttpAdapter {
             .and_then(|v| v.as_u64()
                 .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())));
 
+        // `on_timeout: accept` is the fire-and-yield modifier
+        // (SRD-74-style). When a request_timeout_ms is set and
+        // the HTTP client trips it, the adapter would normally
+        // return a `Timeout` ExecutionError that fails the
+        // op. With `accept`, that specific outcome converts to
+        // a successful `OpResult` with no body — the server
+        // is presumed to still be doing the work; the polling
+        // layer is what observes its completion.
+        //
+        // Errors that are NOT `is_timeout()` (connection
+        // refused, body read errors, non-2xx responses) still
+        // surface normally. The modifier only translates
+        // client-side request-timeout firings.
+        let on_timeout_accept = template.op.get("on_timeout")
+            .and_then(|v| v.as_str())
+            .map(|s| s.eq_ignore_ascii_case("accept"))
+            .unwrap_or(false);
+
         Ok(Box::new(HttpDispenser {
             client: self.client.clone(),
             base_url: self.base_url.clone(),
@@ -181,6 +209,7 @@ impl DriverAdapter for HttpAdapter {
             body_template,
             headers_template,
             per_op_timeout_ms,
+            on_timeout_accept,
         }))
     }
 }
@@ -206,6 +235,15 @@ struct HttpDispenser {
     /// `forceKeyspaceCompaction`) that legitimately take many
     /// minutes.
     per_op_timeout_ms: Option<u64>,
+    /// When `true`, a request-timeout firing translates to a
+    /// successful empty-body `OpResult` instead of a
+    /// `Timeout` op error. Pair with a short
+    /// `per_op_timeout_ms` to express "fire and yield":
+    /// submit the request, give the server a brief window to
+    /// respond, but don't fail the phase if it doesn't —
+    /// the server keeps working server-side regardless of
+    /// whether the client is still listening.
+    on_timeout_accept: bool,
 }
 
 
@@ -311,19 +349,36 @@ impl OpDispenser for HttpDispenser {
                 builder = builder.body(body_str);
             }
 
-            let response = builder.send().await.map_err(|e| {
-                let retryable = e.is_timeout() || e.is_connect();
-                let scope = if e.is_connect() {
-                    ExecutionError::Adapter
-                } else {
-                    ExecutionError::Op
-                };
-                scope(AdapterError {
-                    error_name: classify_reqwest_error(&e),
-                    message: e.to_string(),
-                    retryable,
-                })
-            })?;
+            let response = match builder.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    // `on_timeout: accept` converts ONLY the
+                    // client-side request-timeout firing into a
+                    // benign empty-body success. Every other error
+                    // path (connection refused, request build
+                    // failure, body read failure) still surfaces
+                    // — the modifier is narrowly scoped to the
+                    // "fire and yield" pattern where the
+                    // expectation is that the request reached the
+                    // server but the server is doing long work
+                    // synchronously, and the polling layer is the
+                    // canonical waiter / observer.
+                    if e.is_timeout() && self.on_timeout_accept {
+                        return Ok(OpResult { body: None, skipped: false });
+                    }
+                    let retryable = e.is_timeout() || e.is_connect();
+                    let scope = if e.is_connect() {
+                        ExecutionError::Adapter
+                    } else {
+                        ExecutionError::Op
+                    };
+                    return Err(scope(AdapterError {
+                        error_name: classify_reqwest_error(&e),
+                        message: e.to_string(),
+                        retryable,
+                    }));
+                }
+            };
 
             let status = response.status().as_u16() as i32;
             let success = response.status().is_success();
@@ -392,6 +447,7 @@ impl OpDispenser for HttpDispenser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nbrs_workload::model::ParsedOp;
 
     #[test]
     fn default_config() {
@@ -404,6 +460,137 @@ mod tests {
     #[test]
     fn adapter_creates() {
         let _adapter = HttpAdapter::new();
+    }
+
+    /// Spin up a TCP listener that accepts a single connection
+    /// and then sleeps forever — the canonical "server is busy
+    /// doing the long thing, won't answer" shape that
+    /// `on_timeout: accept` exists to handle. Returns the
+    /// listener's bound port; the caller addresses
+    /// `http://127.0.0.1:<port>/`.
+    async fn spawn_stalling_listener() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
+            .expect("bind 127.0.0.1:0");
+        let port = listener.local_addr().expect("local_addr").port();
+        tokio::spawn(async move {
+            // Accept connections in a loop so a test that
+            // retries doesn't deadlock on the second attempt.
+            // Each accepted socket is just held — never read,
+            // never written — until the test process tears it
+            // down.
+            loop {
+                match listener.accept().await {
+                    Ok((sock, _)) => {
+                        // Stash the socket on the task heap so
+                        // the OS doesn't drop the connection
+                        // and let the client see EOF instead
+                        // of a timeout.
+                        tokio::spawn(async move {
+                            let _hold = sock;
+                            std::future::pending::<()>().await;
+                        });
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        port
+    }
+
+    fn test_kernel() -> std::sync::Arc<polydat::kernel::GkKernel> {
+        std::sync::Arc::new(
+            polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap()
+        )
+    }
+
+    /// Build an HTTP op-template programmatically. Bypasses
+    /// the full workload parser to keep the test focused on
+    /// the adapter's per-op behaviour.
+    fn http_op(method: &str, uri: &str,
+               request_timeout_ms: Option<&str>,
+               on_timeout: Option<&str>) -> ParsedOp {
+        let mut template = ParsedOp::simple("test", "");
+        template.op.remove("stmt");
+        template.op.insert("method".into(),
+            serde_json::Value::String(method.into()));
+        template.op.insert("uri".into(),
+            serde_json::Value::String(uri.into()));
+        if let Some(ms) = request_timeout_ms {
+            template.op.insert("request_timeout_ms".into(),
+                serde_json::Value::String(ms.into()));
+        }
+        if let Some(v) = on_timeout {
+            template.op.insert("on_timeout".into(),
+                serde_json::Value::String(v.into()));
+        }
+        template
+    }
+
+    /// With `on_timeout: accept`, a request-timeout firing
+    /// converts to a successful empty-body `OpResult`. The
+    /// canonical use case is Cassandra's synchronous
+    /// `forceKeyspaceCompaction` (server keeps working
+    /// regardless of whether the client is still listening);
+    /// here we stand up a TcpListener that accepts the
+    /// connection but never answers, which produces the same
+    /// client-side reqwest error.
+    #[tokio::test]
+    async fn on_timeout_accept_swallows_request_timeout() {
+        let port = spawn_stalling_listener().await;
+        let adapter = HttpAdapter::new();
+        let template = http_op(
+            "GET",
+            &format!("http://127.0.0.1:{port}/"),
+            Some("100"),       // 100ms request timeout
+            Some("accept"),    // swallow client-side timeout
+        );
+        let dispenser = adapter.map_op(&template, test_kernel())
+            .expect("map_op");
+
+        let mut k = polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
+        let cw = nbrs_activity::wires::CycleWires::new(&mut k);
+        let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
+        let empty = nbrs_activity::adapter::ResolvedFields::new(Vec::new(), Vec::new());
+        let ctx = nbrs_activity::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
+
+        let result = dispenser.execute(0, &ctx).await
+            .expect("on_timeout: accept should map Timeout → Ok(empty)");
+        assert!(result.body.is_none(),
+            "expected empty-body OpResult after accepted timeout");
+        assert!(!result.skipped,
+            "accepted-timeout is a real (not skipped) op result");
+    }
+
+    /// Without `on_timeout: accept`, the same stalling-listener
+    /// scenario produces a `Timeout` op error. Pins the
+    /// negative case so the accept-branch can't accidentally
+    /// regress to swallowing every error category.
+    #[tokio::test]
+    async fn timeout_without_accept_still_errors() {
+        let port = spawn_stalling_listener().await;
+        let adapter = HttpAdapter::new();
+        let template = http_op(
+            "GET",
+            &format!("http://127.0.0.1:{port}/"),
+            Some("100"),
+            None,
+        );
+        let dispenser = adapter.map_op(&template, test_kernel())
+            .expect("map_op");
+
+        let mut k = polydat::dsl::compile::compile_gk("input cycle: u64\n").unwrap();
+        let cw = nbrs_activity::wires::CycleWires::new(&mut k);
+        let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
+        let empty = nbrs_activity::adapter::ResolvedFields::new(Vec::new(), Vec::new());
+        let ctx = nbrs_activity::adapter::ExecCtx::with_wires(&empty, &pulls, &cw);
+
+        let err = dispenser.execute(0, &ctx).await
+            .expect_err("default behaviour: client-side timeout → op error");
+        match err {
+            ExecutionError::Op(ad) => assert_eq!(ad.error_name, "Timeout",
+                "expected error_name='Timeout', got: {ad:?}"),
+            other => panic!("expected ExecutionError::Op(Timeout), got {other:?}"),
+        }
     }
 }
 

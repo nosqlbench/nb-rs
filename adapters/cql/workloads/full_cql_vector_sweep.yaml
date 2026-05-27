@@ -34,31 +34,155 @@
 
 extends: ./full_cql_vector.yaml
 
+# ── Reified sweep dimensions ─────────────────────────────────
+#
+# Each axis of the cross-product is declared here as a string
+# param so it's directly overridable from the CLI for
+# diagnostic runs:
+#
+#     # Pin one variant to test a fix:
+#     nbrs run workload=full_cql_vector_sweep scenario=idx_sweep \
+#          sm_values=OTHER mnc_values=8 bw_values=50 eh_values=false \
+#          nbo_v_values=1.0 nbo_label_values='"1p0"' \
+#          alf_v_values=1.0 alf_label_values='"1p0"'
+#
+#     # Halve the sweep:
+#     nbrs run workload=... sm_values=OTHER
+#
+# Params are interpolated verbatim into the iter clause text
+# via `{name}` substitution. The grammar of the comprehension
+# clauses dictates each axis's expected form:
+#   - Numeric / bool axes (mnc, bw, eh, nbo_v, alf_v, k, limit)
+#     are bare comma-separated literals: `8, 128` / `1.0, 3.0`
+#     / `false, true`.
+#   - String-enum axes (sm) are bare comma-separated identifiers:
+#     `OTHER, ADA002` — the comprehension grammar treats them
+#     as opaque string literals when they don't parse as a
+#     number / bool.
+#   - String LABEL axes (nbo_label, alf_label) are passed
+#     pre-quoted because the parallel-iter zip embeds them
+#     inside a `concat(...)` call: the user writes
+#     `'"1p0", "3p0"'` (single-quoted YAML string containing
+#     double-quoted CQL strings).
+#
 # Strategy params (`rerank_k_strategy`, `pruning_strategy`) are
-# NOT declared as workload params because both sweep scenarios
-# bind them as iter-vars at every cell — workload-param name
+# bound as iter-vars at every cell — workload-param name
 # collision with iter-var is rejected at scenario-tree compile
 # time. The new `pvs_query_sweep` phase reads them through the
 # scope chain that `set:` populates inside each inner-level
-# comprehension.
+# comprehension. The corresponding `*_values` params here
+# control the iter-var value LISTS.
+
+params:
+  # ── idx_sweep dimensions (6 axes × 2 = 64 cells) ──────────
+  # The iter-var name is the short form (`sm`, `mnc`, ...);
+  # the param name binds the value LIST for that axis. Each
+  # comment names the CQL OPTIONS key the workload's `set:`
+  # shadow then maps the iter-var onto.
+
+  # `sm` → `source_model` — the cndb `VectorSourceModel`
+  # enum tag burned into the CREATE INDEX OPTIONS. Distinct
+  # tags select distinct SAI build-path defaults; OTHER /
+  # ADA002 are the two corners we sweep.
+#  sm_values:        "OTHER, ADA002"
+  sm_values:        "OTHER"
+
+  # `mnc` → `maximum_node_connections` — the M parameter
+  # of the hierarchical graph build (number of neighbors
+  # each node retains in the proximity graph).
+#  mnc_values:       "8, 128"
+  mnc_values:       "8"
+
+  # `bw` → `construction_beam_width` — the
+  # efConstruction parameter (beam width used while
+  # building the graph; larger → more accurate graph, more
+  # build time).
+#  bw_values:        "50"
+  bw_values:        "50, 800"
+
+  # `eh` → `enable_hierarchy` — whether to build the
+  # multi-layer HNSW structure (true) or the flat in-memory
+  # variant (false).
+  eh_values:        "false, true"
+#  eh_values:        "false"
+
+  # `nbo_v` (numeric value) + `nbo_label` (table-name-safe
+  # string) → `neighborhood_overflow` — the alpha-overflow
+  # tolerance used during neighbor selection. The numeric
+  # form flows into CREATE INDEX OPTIONS; the label form
+  # (`1.0 → "1p0"`) goes into the table name (CQL
+  # identifiers can't contain `.`). Parallel-iter pair —
+  # both lists must stay in lockstep length-wise.
+  nbo_v_values:     "1.0"
+  nbo_label_values: '"1p0"'
+#  nbo_v_values:     "1.0, 3.0"
+#  nbo_label_values: '"1p0", "3p0"'
+
+  # `alf_v` (numeric) + `alf_label` (string) → `alpha` —
+  # the alpha pruning factor (RNG-pruning threshold used
+  # during graph construction). Same parallel-iter
+  # value/label split as neighborhood_overflow.
+  alf_v_values:     "1.0"
+#  alf_v_values:     "1.0, 2.0"
+  alf_label_values: '"1p0"'
+#  alf_label_values: '"1p0", "2p0"'
+
+  # ── query_sweep dimensions (4 axes × {2, 2, 1, 1} = 4 cells) ──
+  # Bound at the inner level of `idx_sweep` AND as the only
+  # axes of the standalone `query_sweep` scenario.
+
+  # `rerank_k_strategy` — taxonomy at the top of this
+  # workload file. Detent names use the `rerank_<descriptor>`
+  # prefix so chart facet labels read cleanly:
+  #   `rerank_def` — emit no `rerank_k` key (cndb's
+  #                  tapered-multiplier default applies).
+  #   `rerank_lim` — `rerank_k` = LIMIT (1×).
+  #   `rerank_2x`  — `rerank_k` = 2 × LIMIT.
+  #   `rerank_4x`  — `rerank_k` = 4 × LIMIT.
+  #   `rerank_1k`  — `rerank_k` = 1000 (SAI cap;
+  #                  `sai_ann_rerank_k_max_value` guardrail).
+  # Drives the `rerank_k` entry of the query's
+  # `WITH ann_options = {...}` clause.
+  rerank_k_strategy_values: "rerank_def, rerank_lim"
+
+  # `pruning_strategy` → `use_pruning` — three detents with
+  # the `pruning_<state>` prefix:
+  #   `pruning_def` — omit the key; cndb's
+  #                   JVECTOR_USE_PRUNING_DEFAULT applies.
+  #   `pruning_off` — `use_pruning = false` (forces denser
+  #                   traversal).
+  #   `pruning_on`  — `use_pruning = true`.
+  pruning_strategy_values:  "pruning_def, pruning_off, pruning_on"
+
+  # `k` — the top-K count requested by the ANN query
+  # (`SELECT … ORDER BY ANN OF ? LIMIT k`). Single-element
+  # default; multi-value lists span the K axis when
+  # benchmarking recall@K curves.
+  k_values:                 "10"
+
+  # `limit` — the `LIMIT` clause value passed to Cassandra.
+  # Together with `k` controls how many candidates the
+  # ANN traversal returns before the top-K cut.
+  limit_values:             "25,50,75,100"
 #
 # Value taxonomy (for reference, used in the iter clauses):
 #
-#   rerank_k_strategy ∈ { default, pin1, pin2, pin4, pin_max }
-#     default — emit no `rerank_k` key; cndb picks rerank_k from
-#               the source_model's tapered multiplier and may
-#               flip to brute force.
-#     pin1    — rerank_k = LIMIT
-#     pin2    — rerank_k = 2 * LIMIT
-#     pin4    — rerank_k = 4 * LIMIT
-#     pin_max — rerank_k = 1000 (effectively the SAI cap;
-#               `sai_ann_rerank_k_max_value` guardrail).
+#   rerank_k_strategy ∈ { rerank_def, rerank_lim, rerank_2x, rerank_4x, rerank_1k }
+#     rerank_def — emit no `rerank_k` key; cndb picks
+#                  rerank_k from the source_model's tapered
+#                  multiplier and may flip to brute force.
+#     rerank_lim — rerank_k = LIMIT (1×).
+#     rerank_2x  — rerank_k = 2 × LIMIT.
+#     rerank_4x  — rerank_k = 4 × LIMIT.
+#     rerank_1k  — rerank_k = 1000 (effectively the SAI cap;
+#                  `sai_ann_rerank_k_max_value` guardrail).
 #
-#   pruning_strategy ∈ { default, off, on }
-#     default — emit no `use_pruning` key; cndb's
-#               JVECTOR_USE_PRUNING_DEFAULT applies.
-#     off     — use_pruning = false (forces denser traversal).
-#     on      — use_pruning = true.
+#   pruning_strategy ∈ { pruning_def, pruning_off, pruning_on }
+#     pruning_def — emit no `use_pruning` key; cndb's
+#                   JVECTOR_USE_PRUNING_DEFAULT applies.
+#     pruning_off — use_pruning = false (forces denser
+#                   traversal).
+#     pruning_on  — use_pruning = true.
 
 # No workload-level bindings — the sweep computes per-iter
 # label values via parallel-iter (concat-based) zipped clauses
@@ -110,9 +234,10 @@ report:
      maximum_node_connections × construction_beam_width ×
      enable_hierarchy × neighborhood_overflow × alpha). Each
      variant runs a fixed 4-cell query slice (rerank_k_strategy
-     ∈ {default, pin1} × pruning_strategy ∈ {default, off}) at
-     k=10, limit=50. Tuples are emitted in extrema-first order
-     so early-stopping the run still covers the corners.
+     ∈ {rerank_def, rerank_lim} × pruning_strategy
+     ∈ {pruning_def, pruning_off}) at k=10, limit=50. Tuples
+     are emitted in extrema-first order so early-stopping the
+     run still covers the corners.
 
     table recall_idx_sweep:
       group_by: source_model,maximum_node_connections,construction_beam_width
@@ -135,8 +260,8 @@ scenarios:
         # (rerank_k_strategy / pruning_strategy aren't declared in
         # the parent), so the phase below reads them directly via
         # the scope chain — no `set:` needed.
-        - for: "rerank_k_strategy in default, pin1, pin2, pin4, pin_max,
-                pruning_strategy in default, off,
+        - for: "rerank_k_strategy in rerank_def, rerank_lim, rerank_2x, rerank_4x, rerank_1k,
+                pruning_strategy in pruning_def, pruning_off,
                 k in {k_values},
                 limit in {k_{k}_limits}"
           phases:
@@ -161,67 +286,29 @@ scenarios:
     # workload param with a literal default.
     - for: "profile in {fknn_profile}"
       phases:
-        # ── Pre-sweep exhaustive cleanup ─────────────────────────
+        # ── Hard reset ───────────────────────────────────────────
         #
-        # Before the variant loop starts, drop every possible
-        # variant's table + 2 SAI indexes. Makes the sweep
-        # IDEMPOTENT against any prior crashed run that may have
-        # left stale `fknn_oat_*` tables/indexes in the keyspace.
-        #
-        # Why this is necessary:
-        #
-        # The main sweep's LEADING teardown only sees the CURRENT
-        # variant's `{table}` name; it cannot drop the other 63
-        # variants the previous session may have left behind. The
-        # cluster has a global SAI-index cap of 100 (cndb's
-        # `Cannot have more than 100 StorageAttachedIndex
-        # secondary indexes`). A prior session that crashed after
-        # creating ~50 variants leaves ~100 stale indexes; the
-        # new run then blows the cap on its 1st or 2nd variant
-        # before its own trailing teardowns ever fire.
-        #
-        # The cleanup iterates the same 6-axis cross product as
-        # the main sweep below, in DEFAULT order (no
-        # `order: extrema/1` — every iter does the same trivial
-        # work, ordering buys nothing). The iter-vars here are
-        # SIMPLER than the main sweep's because:
-        #   - No `set:` scope shadow needed (teardown's ops
-        #     interpolate only `{table}` / `{*_idx_suffix}`, not
-        #     the index-build knobs).
-        #   - No `bindings:` case-fold needed — `sm_lc` binds
-        #     directly to lowercase literals matching the names
-        #     Cassandra actually stores (so `DROP TABLE IF EXISTS`
-        #     hits the right identifier).
-        #   - No parallel-iter zip — only LABELS are needed for
-        #     the table name; the numeric `nbo_v`/`alf_v` forms
-        #     that the main sweep uses for `set:` shadows are
-        #     irrelevant here.
-        # String-valued axes (`sm_lc`, `nbo_label`, `alf_label`)
-        # use `concat(...)` because the comprehension grammar
-        # only accepts bare comma-separated literals for numeric
-        # / bool types — string literal lists must be built via
-        # `concat`, same as the main sweep's parallel-iter form.
-        # Total: 64 iters × 3 DROP-IF-EXISTS statements each.
-        #
-        # Per-statement timeout for these DROP ops is set by the
-        # parent workload's `teardown` phase definition itself —
-        # a phase-level `bindings: const request_timeout_ms :=
-        # 300000` that the CQL adapter picks up via the SRD-73
-        # universal-field lookup. No per-call-site override
-        # needed here; every site that says `- teardown` inherits
-        # the 5-minute timeout the same way.
-        - for: "sm_lc in concat(\"other\", \"ada002\"),
-                mnc in 8, 128,
-                bw in 50, 800,
-                eh in false, true,
-                nbo_label in concat(\"1p0\", \"3p0\"),
-                alf_label in concat(\"1p0\", \"2p0\")"
-          phases:
-            - for: "table in fknn_oat_{sm_lc}_m{mnc}_bw{bw}_h{eh}_nbo{nbo_label}_a{alf_label}"
-              phases:
-                - teardown
+        # Drop the whole keyspace BEFORE anything else. Wipes out
+        # every table + every SAI index + every materialized view
+        # in one statement, regardless of whether the names match
+        # the current sweep's `fknn_oat_*` naming scheme. The
+        # per-variant `teardown` loop below (and the per-cell
+        # leading teardown inside the main sweep) only sees
+        # CURRENT-scheme names; tables left from a prior sweep
+        # with a different naming convention (`vec_label_*`,
+        # `fknn_default_*`, old axis combinations) accumulate
+        # otherwise and breach the cluster's 100-SAI-index cap.
+        # `keyspace_reset` is O(1) statements and side-steps that
+        # cap because DROP KEYSPACE evicts everything at once.
+        - keyspace_reset
 
         # ── Main sweep ───────────────────────────────────────────
+        #
+        # `keyspace_reset` above wipes the entire keyspace, so
+        # per-variant teardown is unnecessary — there's no
+        # detritus from prior cells, prior axis combinations, or
+        # crashed sessions to clean up. Each iter starts fresh
+        # with `schema` against an empty keyspace.
         # OUTER comprehension: index-affecting params.
         #
         # Short iter-var names (`sm`, `mnc`, `bw`, `eh`, `nbo_v`,
@@ -244,12 +331,12 @@ scenarios:
         # lowercase wire (`sm_lc`) that matches the stored
         # identifier; the canonical uppercase `{sm}` still flows
         # into the CQL OPTIONS clause via the `set:` shadow.
-        - for: "sm in OTHER, ADA002,
-                mnc in 8, 128,
-                bw in 50, 800,
-                eh in false, true,
-                (nbo_v, nbo_label) in (concat(1.0, 3.0), concat(\"1p0\", \"3p0\")),
-                (alf_v, alf_label) in (concat(1.0, 2.0), concat(\"1p0\", \"2p0\"))"
+        - for: "sm in {sm_values},
+                mnc in {mnc_values},
+                bw in {bw_values},
+                eh in {eh_values},
+                (nbo_v, nbo_label) in (concat({nbo_v_values}), concat({nbo_label_values})),
+                (alf_v, alf_label) in (concat({alf_v_values}), concat({alf_label_values}))"
           order: extrema/1
           phases:
             # Per-iter case-fold of the source_model value so the
@@ -293,40 +380,51 @@ scenarios:
                              alpha: "{alf_v}" }
                       phases:
                         # Table + index lifecycle — runs once per
-                        # outer tuple. The LEADING teardown handles
-                        # the re-run case: if a prior session crashed
-                        # mid-iter, its table/indexes still exist and
-                        # need to go before schema's CREATE.
-                        - teardown
+                        # outer tuple. `keyspace_reset` at the top of
+                        # the scenario already cleaned every prior
+                        # variant's residue; per-cell leading
+                        # teardown is redundant.
                         - schema
                         - fknn_rampup_data
-                        - jolokia_flush
-                        - jolokia_compact
-                        - jolokia_await_compaction
-                        # INNER comprehension: query-only params. Iter-
-                        # var names don't collide with any workload
-                        # param, so the phase reads them directly via
-                        # the scope chain — no `set:` needed.
-                        - for: "rerank_k_strategy in default, pin1,
-                                pruning_strategy in default, off,
-                                k in 10,
-                                limit in 50"
+                        # SRD-75 synchronizer pair: `ensure_flushed`
+                        # turns the memtable into SSTables, then
+                        # `ensure_compacted` polls observable state
+                        # (LiveSSTableCount + the Compactions array +
+                        # per-table pending task count) and
+                        # conditionally fires `forceKeyspaceCompaction`
+                        # only when the state shows drift + no work
+                        # in flight. Terminates when the table is
+                        # `sstables == 1` AND no active / pending
+                        # compactions remain.
+                        - ensure_flushed
+                        - ensure_compacted
+                        # INNER comprehension: query-only params.
+                        # Reified value lists are workload params so
+                        # operators can pin individual axes for
+                        # diagnostic runs (`nbrs run ...
+                        # rerank_k_strategy_values=default
+                        # pruning_strategy_values=default`). Iter-var
+                        # names don't collide with any workload param,
+                        # so the phase reads them directly via the
+                        # scope chain — no `set:` needed.
+                        - for: "rerank_k_strategy in {rerank_k_strategy_values},
+                                pruning_strategy in {pruning_strategy_values},
+                                k in {k_values},
+                                limit in {limit_values}"
                           phases:
                             - pvs_query_sweep
                         # TRAILING teardown — drop the variant's
-                        # table + 2 SAI indexes now that all query
-                        # cells have completed. Without this, every
-                        # variant's indexes stay live; the cluster
-                        # has a global SAI index cap (cndb's
-                        # `Cannot have more than 100 StorageAttachedIndex
-                        # secondary indexes`) and a 64-variant sweep
-                        # with 2 indexes/table would breach it
-                        # around iter 50. The leading teardown above
-                        # can't free prior variants because each iter
-                        # binds its own `{table}` name — the LEADING
-                        # teardown only ever sees the CURRENT
-                        # variant's name.
-                        - teardown
+                        # No trailing teardown: `keyspace_reset`
+                        # at scenario top is the only cleanup
+                        # boundary the sweep needs. Per-cell drops
+                        # would re-trigger the 100-SAI-index cap
+                        # symptom they used to be a workaround for
+                        # — but the cap was caused by ACCUMULATED
+                        # residue from prior runs, which
+                        # `keyspace_reset` now wipes once at the
+                        # top. The cluster never sees more than 2
+                        # indexes live at a time (the current
+                        # cell's vector_idx + meta_idx).
 
 phases:
 
@@ -336,8 +434,9 @@ phases:
   # const reads two orthogonal strategy axes
   # (rerank_k_strategy × pruning_strategy) instead of the parent's
   # single `rerank_mode` flat enum. Composes a `WITH ann_options
-  # = {...}` clause from two pieces or emits the empty string when
-  # both axes are at "default".
+  # = {...}` clause from two pieces or emits the empty string
+  # when both axes are at their `_def` detent (`rerank_def` /
+  # `pruning_def`).
   pvs_query_sweep:
     concurrency: "{query_concurrency}"
     errors: count
@@ -352,21 +451,25 @@ phases:
       # ── Per-query ann_options clause assembly ───────────────
       # `select_str` is binary (cond, then, else); nesting picks
       # the rerank_k value for the current rerank_k_strategy.
-      # "default" produces an empty string (no rerank_k key);
+      # `rerank_def` produces an empty string (no rerank_k key);
       # any other value produces a `'rerank_k': '<N>'` fragment.
-      const rerank_k_part := select_str(str_eq(rerank_k_strategy, "default"), "",
-                             select_str(str_eq(rerank_k_strategy, "pin1"),
+      # Detent names use the `rerank_<descriptor>` prefix so
+      # they read cleanly as facet labels in the plots and tables.
+      const rerank_k_part := select_str(str_eq(rerank_k_strategy, "rerank_def"), "",
+                             select_str(str_eq(rerank_k_strategy, "rerank_lim"),
                                         str_concat("'rerank_k': '", format_u64(limit, 10), "'"),
-                             select_str(str_eq(rerank_k_strategy, "pin2"),
+                             select_str(str_eq(rerank_k_strategy, "rerank_2x"),
                                         str_concat("'rerank_k': '", format_u64(2 * limit, 10), "'"),
-                             select_str(str_eq(rerank_k_strategy, "pin4"),
+                             select_str(str_eq(rerank_k_strategy, "rerank_4x"),
                                         str_concat("'rerank_k': '", format_u64(4 * limit, 10), "'"),
                                         "'rerank_k': '1000'"))))
-      # pruning fragment. "default" → no key; "off"/"on" set the
-      # JVECTOR_USE_PRUNING toggle explicitly.
-      const pruning_part := select_str(str_eq(pruning_strategy, "off"), "'use_pruning': 'false'",
-                            select_str(str_eq(pruning_strategy, "on"),  "'use_pruning': 'true'",
-                                                                         ""))
+      # pruning fragment. `pruning_def` → no key; `pruning_off`
+      # / `pruning_on` set the JVECTOR_USE_PRUNING toggle
+      # explicitly. Detent names share the `pruning_<state>`
+      # prefix so they sort and read cleanly in charts.
+      const pruning_part := select_str(str_eq(pruning_strategy, "pruning_off"), "'use_pruning': 'false'",
+                            select_str(str_eq(pruning_strategy, "pruning_on"),  "'use_pruning': 'true'",
+                                                                                 ""))
       # Stitch. Comma-join when both fragments are non-empty,
       # otherwise emit whichever is present, otherwise an empty
       # opts body.

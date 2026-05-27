@@ -183,7 +183,7 @@ phases:
 # =====================================================================
 #
 # Beyond the 5 canned forms, the underlying `ExtensionPolicy` trait
-# in `nbrs-variates::source` accepts arbitrary policy compositions:
+# in `polydat::source` accepts arbitrary policy compositions:
 # `AndPolicy { policies: vec![...] }` / `OrPolicy { ... }` over any
 # `Arc<dyn ExtensionPolicy>`. Workloads currently expose only the
 # two-condition AND/OR forms above (elapsed × passes). For broader

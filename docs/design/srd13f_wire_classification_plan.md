@@ -26,7 +26,7 @@ the canonical four-case synthesizer.
 ## Stage 1 — Synthesizer rewrite
 
 **Deliverable:** `nbrs-activity/src/scope.rs::build_scope`,
-`nbrs-variates/src/comprehension/synthesis.rs::synthesize_for_each_scope`,
+`polydat/src/comprehension/synthesis.rs::synthesize_for_each_scope`,
 `build_phase_scope_kernel`, and `build_op_template_scope_kernel`
 apply the four-case rule to every wire reference they encounter.
 
@@ -40,7 +40,7 @@ graph-structural neighbourhood. Therefore the AST itself
 (`Arc<GkFile>`) is retained on every compiled `GkProgram` as
 live metadata.
 
-- `nbrs-variates/src/kernel/program.rs` — add `ast: Arc<GkFile>`
+- `polydat/src/kernel/program.rs` — add `ast: Arc<GkFile>`
   field to `GkProgram`. Populated by every compile entry point
   in `compile.rs` (`compile_gk_*`, `compile_ast*`, `Compiler::compile`).
 - Accessors:
@@ -101,19 +101,19 @@ synthesizers — no compiler surgery.
 
 **Files touched:**
 
-- `nbrs-variates/src/kernel/program.rs` — add `ast` field +
+- `polydat/src/kernel/program.rs` — add `ast` field +
   accessors.
-- `nbrs-variates/src/dsl/compile.rs` — every compile entry
+- `polydat/src/dsl/compile.rs` — every compile entry
   point passes the parsed `GkFile` Arc through to the
   assembler, which forwards it to `GkProgram` at construction.
-- `nbrs-variates/src/dsl/assembler.rs` — accept and forward
+- `polydat/src/dsl/assembler.rs` — accept and forward
   the `Arc<GkFile>`.
 - `nbrs-activity/src/scope.rs` — `build_scope`,
   `build_phase_scope_kernel`, `build_op_template_scope_kernel`
   switch to AST assembly. Auto-extern emission for op-field
   references **retires** (replaced by recursive local-inclusion
   walk and validation error).
-- `nbrs-variates/src/comprehension/synthesis.rs::synthesize_for_each_scope`
+- `polydat/src/comprehension/synthesis.rs::synthesize_for_each_scope`
   — same AST assembly migration.
 - `nbrs-workload/src/parse.rs` — no change.
 
@@ -150,10 +150,10 @@ Shared-cell attachment stays unchanged.
 
 **Specific changes:**
 
-- `nbrs-variates/src/kernel/gkkernel.rs::GkKernel` gains
+- `polydat/src/kernel/gkkernel.rs::GkKernel` gains
   `parent: Option<Arc<GkKernel>>`. Set by
   `materialize_subscope` / `adopt_subscope` at construction.
-- `nbrs-variates/src/kernel/engines.rs::EngineCore::read_input`
+- `polydat/src/kernel/engines.rs::EngineCore::read_input`
   gains a cascade-route slot per input. When the slot's route
   is `CascadeFromParent(name)`, `read_input` calls
   `parent.pull(name)` instead of reading the local buffer.
@@ -201,12 +201,12 @@ together cover the cases those patches were patching.
 - `nbrs-activity/src/executor.rs::ExecCtx` — drop the
   `workload_level_gk: Option<String>` field. Drop the
   threading at the `ExecCtx` construction site.
-- `nbrs-variates/src/comprehension/synthesis.rs::synthesize_for_each_scope`
+- `polydat/src/comprehension/synthesis.rs::synthesize_for_each_scope`
   — drop the `phase_bindings: Option<&str>` parameter and
   the source-append block (Push E append-mechanism). Phase
   bindings now arrive via the synthesizer's local-inclusion
   walk over the for_each scope's body.
-- `nbrs-variates/src/dsl/compile.rs::compile_filtered` — drop
+- `polydat/src/dsl/compile.rs::compile_filtered` — drop
   the special-case "always preserve volatile outputs" block
   added during staircase debugging (the synthesizer's
   local-inclusion handles the `trip` wire being needed; the
@@ -216,7 +216,7 @@ together cover the cases those patches were patching.
 
 **Gate (Stage 3 test surface):**
 
-- `grep -rn "workload_level_gk" nbrs-activity nbrs-variates`
+- `grep -rn "workload_level_gk" nbrs-activity polydat`
   zero hits in src/ trees (test fixtures may retain literal
   uses where they verify the synthesizer's output).
 - `cargo build --workspace --tests` zero warnings.
