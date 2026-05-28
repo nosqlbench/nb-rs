@@ -615,9 +615,10 @@ iteration variables. Examples (specifics live in workload-domain
 design memos):
 
 - A measured phase iterates over `comprehension_var in
-  source_collection` to produce its label cell. The synthetic
-  phase iterates over the same expression, naming the variable
-  the same way.
+  source_collection` (polydat clause syntax per
+  `polydat/docs/design/comprehension_forms.md` §3.1 + §8.1)
+  to produce its label cell. The synthetic phase iterates over
+  the same expression, naming the variable the same way.
 - Both phases descend from the same set of workload-level GK
   bindings. Phase-level overrides on either side break alignment;
   the SRD-13c bind-outer-scope rule keeps the binding cascade

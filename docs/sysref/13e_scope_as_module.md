@@ -351,8 +351,10 @@ order.
 ### 2.3 Premap: instance once per scope-iteration
 
 For comprehension scopes, instancing happens per iteration tuple
-(SRD-18b §"M3 — per-scope kernel composition"). The recipe is
-unchanged in shape:
+(SRD-18b §"M3 — per-scope kernel composition"; comprehension
+semantics owned by
+`polydat/docs/design/comprehension_forms.md` §3 + §9.5). The
+recipe is unchanged in shape:
 
 ```text
 inner_kernel = inner_module.instance_under(outer_kernel)?

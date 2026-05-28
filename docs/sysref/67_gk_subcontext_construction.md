@@ -103,11 +103,12 @@ motivated 13e:
 3. **Multiple paths to inner-kernel creation.** The
    activity layer calls `compile_gk_*` directly; the SRD-13d
    Phase 9 op-template synthesisers build their own
-   strings; the comprehension synthesiser does another
-   variant; the do-loop synthesiser does yet another.
-   Each path knows its own tribal rules for what to extern
-   and what to inline; none of them go through a parent
-   that could enforce the contract.
+   strings; polydat's comprehension synthesis path (the
+   surface backing polydat spec §9.5's `scope_once`) does
+   another variant; the do-loop synthesiser does yet
+   another. Each path knows its own tribal rules for what
+   to extern and what to inline; none of them go through a
+   parent that could enforce the contract.
 
 The construction protocol below collapses all three into
 "the parent's builder is the only way in."
@@ -232,8 +233,8 @@ pub enum BodyFragment {
 
     /// Pre-parsed statements, for synthesisers that
     /// construct GK programmatically (the activity-layer
-    /// scope synthesisers under SRD-13d, the comprehension
-    /// walker, etc.).
+    /// scope synthesisers under SRD-13d, polydat's
+    /// comprehension synthesis path, etc.).
     Statements(Vec<crate::dsl::ast::Statement>),
 }
 ```
@@ -919,8 +920,8 @@ Always-error, strict-independent:
    `result:` content (parsed at finalize), and
    `Statements(Vec<Statement>)` for synthesisers that
    produce GK programmatically (the existing comprehension
-   / do-loop / op-template walkers). Reuses
-   `polydat/src/dsl/ast.rs::Statement` directly — no
+   synthesis path, do-loop walker, op-template walker).
+   Reuses polydat's public `Statement` type directly — no
    parallel enum.
 
 5. **Parent ref: `Arc<ScopeKernel<P>>` only.** Single API

@@ -1,13 +1,39 @@
-# 18d: Comprehension Traversal Order
+# 18d: Comprehension Traversal Order (Per-Strategy Algorithmic Detail)
 
-How tuples produced by a [`Comprehension`](18c_comprehension_syntax.md)
-are *ordered* on emission. Filter (SRD-18c §"Layer 4") decides
-**which** tuples enter the iteration; this SRD covers the
-orthogonal question of **what sequence** they leave in.
+> **Ownership note:** Comprehension semantics (constructors,
+> validity axioms, optimizer rewrites, IR) are owned by the
+> polydat comprehension spec at
+> `polydat/docs/design/comprehension_forms.md`. This SRD owns
+> **per-strategy algorithmic detail** — the actual
+> mathematical construction of each named strategy (Halton
+> recurrence, Sobol direction numbers, Lhs stratification,
+> etc.). Polydat spec §3.6 owns the *compositional* behavior
+> (per-strategy input-`IndexFn` requirements, discrete vs.
+> continuous handling, push-down via §10.2 R2). Where this SRD
+> describes how to *use* a strategy in a comprehension, the
+> usage rules are polydat's; this SRD covers only the math.
+
+How tuples produced by a polydat comprehension (per polydat
+spec §3, §8) are *ordered* on emission. Filter (per polydat
+spec §3.5) decides **which** tuples enter the stream; this SRD
+covers the math behind the named strategies that the polydat
+`order(c, strategy, truncation?)` constructor (per polydat spec
+§3.6) selects between.
 
 > **Status:** Designed, not yet implemented. The default
 > behavior today is lexicographic with rightmost-varies-fastest
 > — this SRD is the spec for the planned ordering layer.
+>
+> **Audit note (2026-05-28):** The polydat ownership extrication
+> audit (`polydat/docs/design/comprehension_ownership_audit.md`
+> Phase B4) removed this SRD's prior `custom` ordering coverage
+> — polydat spec §3.6 explicitly excludes user-callback orderings
+> from the algebra. This SRD now omits `custom` from the
+> taxonomy; the §"`custom` — User-supplied ordering function"
+> section below is retained as a historical reference but should
+> not be implemented as currently written. `Shuffle` was added
+> to the polydat taxonomy in F1/F4 and needs corresponding
+> algorithmic detail in this SRD as a follow-up push.
 
 ---
 
@@ -306,7 +332,24 @@ picks 64 tuples that cover the parameter space densely and
 deterministically — much better coverage than `lex`'s first
 64, which all share `clause₁ = first_value`.
 
-### `custom` — User-supplied ordering function
+### `custom` — User-supplied ordering function (REMOVED)
+
+> **REMOVED 2026-05-28** per polydat spec §3.6. The
+> user-callback escape hatch is deliberately excluded from the
+> polydat algebra: callbacks cannot be analyzed for push-down
+> (polydat spec §10.2 R2) and would force the input to
+> materialize in full at every use site, breaking the
+> stream-first model that polydat's resource bounds depend on.
+>
+> Workloads that previously needed `custom` should either
+> (a) use one of the named strategies (the post-F1 taxonomy
+> adds `Shuffle` alongside Halton/Sobol/Lhs/Extrema/Shells/
+> Diagonal/Antidiagonal/ReverseLex/Lex — see polydat spec
+> §3.6's strategy table), or (b) upstream a new named strategy
+> per polydat spec §14.4's strategy-extensibility deferral.
+>
+> The section below is preserved as a historical reference
+> only and should not be implemented as written.
 
 For ordering policies that aren't worth enshrining as named
 strategies. The custom function takes the tuple list and
@@ -322,8 +365,8 @@ The function signature in GK terms:
 my_ordering_fn(tuples: List<Tuple>) -> List<Tuple>
 ```
 
-This is the escape hatch. Use named orderings when one fits;
-reach for `custom` when it doesn't.
+This was the escape hatch. Use named orderings; `custom` is
+no longer a valid form.
 
 ---
 
@@ -577,7 +620,16 @@ axis". Implementation: project the surviving tuples per axis,
 identify per-axis min/max indices that survived, then
 stratify the survivors against those.
 
-### Custom ordering for domain-specific knowledge
+### Custom ordering for domain-specific knowledge (REMOVED)
+
+> **REMOVED 2026-05-28** — `custom` is no longer a valid
+> ordering strategy per polydat spec §3.6. The example below
+> is preserved as a historical reference only. Workloads with
+> domain-specific ordering needs should either map onto one
+> of the named strategies (Shuffle for permutations, Lhs/
+> Halton/Sobol for space-filling, Extrema/Shells for boundary-
+> first) or upstream a new named strategy per polydat spec
+> §14.4.
 
 ```yaml
 - for: "config in configs()"
@@ -585,10 +637,10 @@ stratify the survivors against those.
   phases: [bench]
 ```
 
-`prioritize_by_recall_floor` is a GK stdlib (or workload-local)
-function that takes the tuple list and reorders by a domain
+`prioritize_by_recall_floor` was a GK stdlib (or workload-local)
+function that took the tuple list and reordered by a domain
 metric — e.g., expected recall floor at each config — pushing
-the riskiest configs first.
+the riskiest configs first. **No longer supported.**
 
 ---
 
@@ -772,8 +824,15 @@ declaration removes the ambiguity.
 
 ## Cross-references
 
+- **`polydat/docs/design/comprehension_forms.md`** —
+  authoritative comprehension semantics. Specifically §3.6
+  (strategy taxonomy with per-strategy input requirements and
+  continuous behavior), §10.2 R2 (per-strategy push-down rules),
+  and §10.7 (`IndexFn` metadata) own how strategies compose
+  with comprehensions. This SRD owns only the strategies'
+  internal mathematical construction.
 - [SRD 18c: Comprehension Syntax](18c_comprehension_syntax.md):
-  the layered grammar; `order` is a peer of `where`.
+  the parser-layer surface; `order` parsing is covered there.
 - [SRD 18b: Scenario Tree and Scheduler](18b_scenario_tree_and_scheduler.md):
   the executor pipeline that consumes ordered tuples.
 - `polydat::comprehension::iterate`: the public

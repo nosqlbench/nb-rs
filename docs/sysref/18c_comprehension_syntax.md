@@ -1,17 +1,31 @@
-# 18c: Comprehension Syntax
+# 18c: Comprehension Syntax (Parser-Layer Surface)
+
+> **Ownership note:** Comprehension semantics (constructors,
+> validity axioms, optimization, IR, consumption surfaces) are
+> owned by the polydat comprehension spec at
+> `polydat/docs/design/comprehension_forms.md`. This SRD owns
+> the **parser-layer surface grammar** — the text-to-AST
+> conversion that produces polydat comprehension values.
+> Specifically, this SRD defines the syntactic shapes a user
+> can write and how each lowers to the polydat AST defined in
+> polydat spec §3 (constructors) and §8 (syntactic surface).
+> What those AST shapes *mean* (their tuple sequences,
+> cardinality, footprint, optimization behavior) is polydat's.
 
 The full surface of the comprehension grammar — the language
-that turns a clause-based iteration spec into a typed tuple
-stream. Companion to SRD-18b §"The Comprehension model" (which
-covers the AST + execution plumbing). This SRD covers
-**syntax** — what users write — and how each form lowers to
-the same canonical [`polydat::comprehension::Comprehension`]
-AST.
+that turns a clause-based iteration spec into a polydat
+comprehension AST. This SRD covers **syntax** (what users
+write); polydat spec §3 + §8 cover the AST shapes the syntax
+desugars to; polydat spec §9 covers what those shapes compile
+to at runtime.
 
 > **Status:** Layer 1 (literal lists), Layer 4 (`where`
 > predicate), Layer 7 (tuple LHS — parallel form), and the
 > `for` alias key are shipped. Other layers are designed but
 > not yet implemented; this SRD is the spec they land against.
+> **Continuous-source grammar** (real intervals, distribution
+> objects) is a planned extension — see §"Continuous-source
+> grammar extension" at the bottom of this SRD.
 
 ---
 
@@ -29,15 +43,21 @@ actually want when expressing parameter sweeps:
 - Tuple-paired iteration (zip)
 - Predicate filters
 
-The design choice here: keep the **comprehension AST**
+The design choice here: keep the **polydat comprehension AST**
 unchanged in shape, and grow expressiveness in the **clause
-expression language**. Every clause's `<expr>` evaluates to
-`Vec<Value>` via `evaluate_spec`; whether it came from a
-literal, a range, a generator function, or a set composition
-is invisible to the executor. New syntactic shapes lower to
-new GK expression-language constructs (range operators,
+source language**. Every clause's `<source>` produces a polydat
+clause-source value per polydat spec §3.1; whether it came from
+a literal, a range, a generator function, or a set composition
+is invisible to the polydat algebra. New syntactic shapes lower
+to new GK expression-language constructs (range operators,
 literal suffixes, stdlib functions) — not to new comprehension
 machinery.
+
+Streaming is the load-bearing model property here: polydat spec
+§3.1 declares that clause sources are stream producers, not
+materialized `Vec<Value>` collections. The parser's job is to
+produce source values that polydat can stream from; it doesn't
+get to choose materialization policy.
 
 The same machinery doubles as a **LUT facility**: a clause
 expression that emits `[A, A, A, B]` is equally usable for
@@ -645,16 +665,67 @@ first, larger surgery last.
 
 ---
 
+## Continuous-source grammar extension (planned)
+
+The polydat spec (§3.1, §6.1, §3.6, §10.2 R2) defines
+first-class continuous sources — real intervals with measures
+that polydat samples via Halton / Sobol / Lhs / Extrema /
+Shuffle. The polydat semantics and metadata propagation are
+fully specified. The parser-layer surface is **not yet
+specified** in this SRD; this section is the placeholder for
+that extension push.
+
+Required parser additions:
+
+1. **Real-interval literals.** Forms like `0.0..1.0`,
+   `0.0..=2*pi`, `-π..π`, `0.0..` (unbounded). Distinct from
+   integer ranges (Layer 2) — the literal type (float vs int)
+   discriminates. Lower to polydat's `Continuous { intervals,
+   measure }` source (polydat spec §6.1).
+2. **Distribution-object sources.** Forms like
+   `uniform(0.0..1.0)`, `normal(mean=0, std=1)`,
+   `exponential(rate=2)`. Distribution objects carry their
+   measure parameter; lower to polydat `Continuous { intervals:
+   distribution.support(), measure: distribution.measure() }`.
+3. **Integrability validation at parse.** Polydat spec §5 V8
+   rejects continuous sources whose measure isn't integrable
+   (unbounded interval + Uniform with no distribution wrapper).
+   The parser validates the integrability constraint per V8's
+   table; rejection produces a clear "cannot uniformly sample
+   an unbounded interval — wrap in a named distribution"
+   message.
+4. **Mixed discrete + continuous syntax.** Forms like
+   `for k in [1, 2, 4, 8], theta in 0.0..2*pi order lhs/50`
+   parse to a polydat hybrid cartesian (polydat spec §6.1's
+   `Hybrid` cardinality class). No new syntactic form needed —
+   the existing comma-separated clause-list grammar (Layer 1
+   + Layer 7) carries through.
+
+The extension is **parser-only** — polydat semantics already
+exist. The only work is wiring the new source-text forms
+through the parser into the polydat `Source` types that already
+have the continuous variants. Reference: polydat spec §3.1
+"source" parameter discussion, §6.1 cardinality classes table,
+§3.6 strategy table (Continuous behavior column).
+
+---
+
 ## Cross-references
 
+- **`polydat/docs/design/comprehension_forms.md`** —
+  authoritative comprehension semantics. This SRD's syntactic
+  forms desugar to the AST shapes defined there. Specifically
+  §3 (constructors), §8 (syntactic surface — desugaring rules),
+  and §3.6 (strategy taxonomy) are the primary cross-references
+  for this SRD's content.
 - [SRD-18 — Control Flow](18_control_flow.md): the larger
   control-flow grammar (`if`, `do_while`, `do_until`, phases).
 - [SRD-18b — Scenario Tree and Scheduler](18b_scenario_tree_and_scheduler.md):
-  the AST + execution model the syntax lowers into.
+  the scenario-tree integration of polydat comprehensions.
 - [SRD-18d — Comprehension Traversal Order](18d_comprehension_traversal_order.md):
-  emission order — peer of `where`, applied after filter, to
-  control which tuples come out first (extrema, shells,
-  space-filling) and how many.
+  per-strategy algorithmic detail (Halton recurrence, Sobol
+  direction numbers, etc.). Polydat spec §3.6 owns the
+  compositional behavior and per-strategy input requirements.
 - [SRD-10 — GK Language](10_gk_language.md): the expression
   grammar that clause expressions and the `where` predicate
   both use.
@@ -662,6 +733,6 @@ first, larger surgery last.
   concat / interval algorithms that the sequencer-style
   expansions reuse.
 - `docs/internals/50_comprehensions_first_class.md`: the
-  migration plan that built the canonical `Comprehension` model.
+  migration plan that built the polydat `Comprehension` model.
 - `examples/workloads/for_each_forms.yaml`: every shipped form
   with side-by-side YAML + GK text + iteration shape.

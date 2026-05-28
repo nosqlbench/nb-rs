@@ -169,13 +169,12 @@ emerge from the compiler's handling of every const, not from
 special-casing the sugar.
 
 **Pure-literal exception (SRD-13f Gate 2):** consts whose RHS
-has zero name references (e.g. `const x := 1` from per-
-iteration synthesis at `comprehension::synthesis::
-synthesize_for_each_iteration`) are NOT auto-externed. They
-always fold to a real value, never reach the fall-through
-path, and must not appear as input slots per the Gate 2
-invariant. The reference-presence check is the precise
-discriminator.
+has zero name references (e.g. `const x := 1` from polydat's
+per-iteration comprehension synthesis path — see polydat spec
+§9.5's `scope_once`) are NOT auto-externed. They always fold
+to a real value, never reach the fall-through path, and must
+not appear as input slots per the Gate 2 invariant. The
+reference-presence check is the precise discriminator.
 
 **Wiring composition (`materialize_wiring_from_outer`):** the
 read invariant from SRD-13f §"The read invariant" requires
@@ -219,8 +218,8 @@ Four layers of test coverage, mirroring the rules:
    - `pure_literal_const_does_not_auto_extern` — Gate 2
      invariant preserved.
 
-3. `polydat/src/comprehension/synthesis.rs::tests::
-   iter_var_as_final_const` — Gate 2 regression guard that
+3. Polydat's comprehension synthesis test suite includes a
+   Gate 2 regression guard (`iter_var_as_final_const`) that
    protects pure-literal iter-var consts from getting
    auto-externed.
 

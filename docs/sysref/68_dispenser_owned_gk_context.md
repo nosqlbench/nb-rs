@@ -429,7 +429,9 @@ originally call out.
 inherit from the *phase scope kernel* (with iter vars from for_each
 scopes already populated), not from the workload-root source kernel.
 Iter vars like `optimize_for`, `table`, `profile` are scope outputs
-of for_each comprehensions that sit between workload root and phase.
+of for_each comprehensions that sit between workload root and phase
+(polydat comprehension scope outputs per
+`polydat/docs/design/comprehension_forms.md` §3 + §9.5).
 The legacy synthesis pipeline carries them via `scope_values` into
 its per-fiber op_template_kernels; the dispenser-owned model needs
 the same value flow into its canonical.

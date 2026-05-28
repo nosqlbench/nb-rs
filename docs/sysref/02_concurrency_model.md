@@ -312,11 +312,13 @@ The cleanest defence is to never have the second branch.
 ### The contract
 
 1. **Iteration dispatch** at every level — scenario-tree siblings,
-   comprehension iter-steps, do-loop iterations — flows through
-   one always-concurrent harness. The harness drives a `JoinSet`
-   gated by a `Semaphore` of size `concurrency_limit`. With
-   `concurrency_limit = 1`, the semaphore admits one task at a
-   time; the `JoinSet` joins them in completion order (which for
+   comprehension iter-steps (polydat comprehension consumption per
+   `polydat/docs/design/comprehension_forms.md` §9.5), do-loop
+   iterations — flows through one always-concurrent harness. The
+   harness drives a `JoinSet` gated by a `Semaphore` of size
+   `concurrency_limit`. With `concurrency_limit = 1`, the
+   semaphore admits one task at a time; the `JoinSet` joins them
+   in completion order (which for
    one-at-a-time equals spawn order). Sequential ordering is a
    *property of the configured limit*, not a separate code path.
 

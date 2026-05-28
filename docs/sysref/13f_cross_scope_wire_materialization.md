@@ -210,7 +210,8 @@ This is the materialization for:
 
 - `shared X := <literal>` declarations.
 - For_each iteration variables (treated as shared internally
-  today by the comprehension synthesizer).
+  today by polydat's comprehension synthesis path — the same
+  surface that backs polydat spec §9.5's `scope_once`).
 - Any other matter that explicitly opts into cross-scope
   write-back.
 
@@ -836,8 +837,10 @@ actually carries phase bindings); D.2 is independent of B.2.
 
 ### Push E — Combined `for_each:` + `bindings:` phase support *(shipped)*
 
-Scope: `nbrs-activity/src/runner.rs` install-spec loop,
-`polydat/src/comprehension.rs::synthesize_for_each_scope`.
+Scope: `nbrs-activity/src/runner.rs` install-spec loop, plus
+the polydat-side comprehension synthesis path (the public API
+that materializes a comprehension's scope; see polydat spec
+§9.5 consumption surfaces).
 
 Today's install loop at `runner.rs::Phase` matches on
 `for_each.is_some()` first and returns `InstallSpec::ForComprehension`;
@@ -848,8 +851,8 @@ bindings, ops compile correctly), but it's structurally
 unsound — after Push D removes the parser merge, this case
 breaks.
 
-Change: `synthesize_for_each_scope` accepts the phase's own
-`bindings:` source as additional matter folded into the
+Change: the polydat comprehension synthesis accepts the phase's
+own `bindings:` source as additional matter folded into the
 for_each scope kernel. The single install at the phase node
 materializes one kernel carrying both the iter-var declarations
 AND the phase-level bindings; descendants chain from there.

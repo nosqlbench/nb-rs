@@ -51,10 +51,12 @@ Contract" for the load-bearing version of this commitment.
 
 - **`phase`**: compiles all kernels, resolves all scope
   composition, materialises every comprehension iteration's
-  bound kernel, validates all bind points, populates the
-  SceneTree. Stops before creating adapters or running cycles.
-  This is the depth pre-map runs at. Use for compile-time
-  validation, GK explanation, and TUI plan-preview.
+  bound kernel (polydat comprehension consumption per
+  `polydat/docs/design/comprehension_forms.md` §9.5),
+  validates all bind points, populates the SceneTree. Stops
+  before creating adapters or running cycles. This is the
+  depth pre-map runs at. Use for compile-time validation, GK
+  explanation, and TUI plan-preview.
 
 - **`cycle`**: enters `run_phase`, builds the wrapper stack with
   the **dryrun wrapper** at the leaf instead of the real adapter

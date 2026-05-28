@@ -230,6 +230,19 @@ are scalars reflecting the current iteration step.
 
 ### Comprehension syntax for partition iteration
 
+> **Ownership note:** The `for: "p in cursor.partitions"`
+> pattern below is **standard polydat clause-over-list
+> semantics** per polydat spec §3.1 (clause) + §8.1 (single-
+> for desugaring). SRD-71 owns only the cursor-side surface —
+> the `cursor.partitions` projection wire, the cursor-
+> declaration `over <iter-var>` clause, the partition-spec
+> language (`2%,10%,*%`, `fib:7`, etc.), and the CLI workload-
+> param surface. The comprehension semantics that drive the
+> iteration are owned by the polydat spec
+> (`polydat/docs/design/comprehension_forms.md`). SRD-71 does
+> NOT extend polydat's comprehension algebra; it composes with
+> it.
+
 Iteration is **explicit and named**. The workload author opts in
 at two sites that must agree on a name:
 

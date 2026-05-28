@@ -507,7 +507,8 @@ atomic-rename pattern:
 5. **`scope_enter` granularity.** The SRD lists scope kinds
    as `for_each` / `for_combinations` / `do_while` /
    `do_until`. The actual scenario tree may have other
-   compositional shapes (e.g. `union` from SRD-18e) that
+   compositional shapes (e.g. polydat `union` per
+   `polydat/docs/design/comprehension_forms.md` §3.4) that
    warrant their own kind. Pick during the prototype walk;
    the discriminator surface is future-additive.
 

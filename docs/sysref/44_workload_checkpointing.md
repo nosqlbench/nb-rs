@@ -222,7 +222,9 @@ identity.
 
 Two checkpoint entries with identical `(yaml_path, coords)`
 within a single resume plan cannot legitimately exist —
-comprehensions enumerate distinct tuples and DFS pre-map order
+polydat comprehensions enumerate distinct tuples (per
+`polydat/docs/design/comprehension_forms.md` §3 + §9.2's
+dispense-sequence-preserving contract) and DFS pre-map order
 is deterministic. Any duplicate is a GK / pre-map bug, not a
 recoverable condition. Hard error at checkpoint load.
 

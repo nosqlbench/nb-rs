@@ -35,55 +35,84 @@ scheduler that decides when those scopes run.
 
 | Tree | What it is | Source of truth |
 |------|-----------|-----------------|
-| **Scenario tree** | The static structure of the workload as authored: scenarios, `Comprehension` nodes (single-clause `for_each`, multi-clause `for_combinations`, `for_each_union`), `do_while`, `do_until`, phases. Each node is a kind. | `nbrs-workload` parses YAML / `.gk` into this. |
+| **Scenario tree** | The static structure of the workload as authored: scenarios, `Comprehension` nodes (each wrapping a polydat-defined comprehension AST per polydat spec §3; surface forms include `for_each`, `for_combinations`, `for_each_union`), `do_while`, `do_until`, phases. Each node is a kind. | `nbrs-workload` parses YAML / `.gk` into this. |
 | **Scope tree** | The runtime hierarchy of GK scopes (one `GkProgram` per non-trivial node) plus their pragma chains and extern wiring. Mirrors the scenario tree 1:1 for control-flow and phase nodes. | `nbrs-activity` builds this from the scenario tree at compile time. |
 
 ### The Comprehension model
 
+> **Ownership note:** Comprehension semantics (constructors,
+> validity, optimization, IR, consumption surfaces) are owned
+> by the polydat comprehension spec at
+> `polydat/docs/design/comprehension_forms.md`. This SRD owns
+> only the scenario-tree integration of polydat-defined
+> comprehensions. Where this section names a comprehension
+> form, the form's semantics are defined in the polydat spec;
+> this SRD describes how scenario-tree wraps and dispatches
+> those forms.
+
 All iteration shapes — single-variable `for_each`, multi-clause
 `for_combinations`, and `for_each_union` — collapse into one
 `ScenarioNode::Comprehension { comprehension, children }`
-variant. The discriminator is the embedded
-[`polydat::comprehension::Comprehension`] AST:
+variant. The `comprehension` field is a
+[`polydat::comprehension::Comprehension`] value; its semantics
+(per the polydat spec §3 constructors and §8 syntactic surface)
+discriminate the iteration shape:
 
-- `ComprehensionMode::Cartesian(clauses)` with one clause is
-  the simple `for_each var in expr` form.
-- `ComprehensionMode::Cartesian(clauses)` with multiple clauses
-  is the cross-product (`for_combinations`).
-- `ComprehensionMode::Union(subspaces)` is the union of
-  per-subspace cross products (`for_each_union`).
+- `for_each var in expr` parses to a polydat `clause` (or a
+  single-axis `cartesian` containing one clause). See polydat
+  spec §3.1 and §8.1.
+- `for_combinations` parses to a polydat multi-axis `cartesian`.
+  See polydat spec §3.2 and §8.1.
+- `for_each_union` parses to a polydat `union` of cartesians.
+  See polydat spec §3.4 and §8.1 (plus §8.4 for the inferred-
+  union parser convenience).
 
 The scope-tree mirror (`ScopeKind::Comprehension { comprehension }`)
-uses the same AST. A single `find_comprehension_scope(comp)`
+holds the same polydat AST. A single `find_comprehension_scope(comp)`
 lookup replaces the prior `find_for_each_scope` /
 `find_for_combinations_scope` / `find_for_each_union_scope`
-trio.
+trio — the polydat spec's six-constructor closure means a single
+match arm suffices.
 
-The canonical owner is `polydat::comprehension` —
-parsing, evaluation (`evaluate_spec`,
-`enumerate_tuples`, etc.), and synthesis
-(`synthesize_for_each_scope`) all live there. The ergonomic
-one-call API:
+The polydat crate owns parsing, validation (per polydat spec
+§5 V1–V9), optimization (per polydat spec §10), compilation to
+IR (per polydat spec §9.1), and consumption-surface
+construction (per polydat spec §9.5 —
+`CoordinateStream`, `ScopedKernelStream<K>`, `scope_once`).
+This SRD's integration concern is *how the scenario-tree
+walker uses those surfaces* to construct per-iteration scoped
+kernels, not what those surfaces mean.
+
+The ergonomic one-call API used by the scenario-tree walker
+materializes the iteration as a stream of scoped GK kernels:
 
 ```rust
+// Equivalent to polydat::Comprehension::scoped_kernel_stream(&parent)
+// per polydat spec §9.5; the local helper just wires in the
+// nb-rs-specific kernel-construction context.
 let iter = polydat::comprehension::iterate(
     &comprehension, &parent_kernel,
     &workload_params, gk_lib_paths, workload_dir, strict, "context",
 )?;
 for child_kernel in iter {
-    // Each yielded GkKernel has the iteration's coordinate
-    // values bound on input slots and parent-scope wiring
-    // already done.
+    // Each yielded GkKernel is a polydat ScopedKernelInstance<GkKernel>:
+    // the iteration's coordinate values bound on input slots and
+    // parent-scope wiring already done. The streamer's cursor and
+    // working-set are scoped to this `iter` — multiple `iter` handles
+    // from the same comprehension advance independently per polydat
+    // spec §9.5.2's independence contract.
 }
 ```
 
-`ComprehensionIter` is an `ExactSizeIterator<Item = GkKernel>`
-that synthesizes the canonical kernel once, shares its
+`ComprehensionIter` (today) is an `ExactSizeIterator<Item = GkKernel>`
+backed by a polydat `ScopedKernelStream<GkKernel>` (after
+SRD-78's audit Phase B5 lands the §9.5 surfaces) that
+synthesizes the canonical kernel once, shares its
 `Arc<GkProgram>` across iterations, and materializes a fresh
 per-iteration child via `from_program` + `bind_outer_scope` +
-`propagate_parent_inputs` + per-tuple `set_input`. Union mode
-concatenates per-sub-space tuple streams over the same
-canonical kernel.
+`propagate_parent_inputs` + per-tuple `set_input`. The polydat
+optimizer rewrites the AST before compilation per polydat spec
+§10; nb-rs sees the optimized IR, not the user-authored AST.
 
 The migration plan is in
 `docs/internals/50_comprehensions_first_class.md` — Phases A
@@ -104,9 +133,9 @@ Each scenario node maps to a scope as follows:
 |-----------|-----------------|
 | Scenario root | The outermost scope under the workload scope. Carries scenario-name and any scenario-level pragmas. |
 | Phase | A leaf scope. Compiles its own `GkProgram` if it has its own bindings or extern needs; otherwise reuses the parent. |
-| `Comprehension` (single-clause `for_each`) | Its own scope. The list elements are *iteration values*; the clause's `var` is a binding *output* of this scope (one value per iteration). Children see `var` as an extern. |
-| `Comprehension` (multi-clause `for_combinations`) | One scope carrying every clause. Each clause's variable is a binding output visible to its child scopes and the leaf. The cross product enumerates over all clause value lists. |
-| `Comprehension` (Union mode `for_each_union`) | Its own scope. Each sub-space contributes a sub-stream of tuples; children see the deduped coordinate set as externs regardless of which sub-space the current tuple came from. |
+| `Comprehension` (polydat `clause` / single-axis `cartesian`, surface `for_each`) | Its own scope. The dispensed values are *iteration values*; the clause's `var` is a binding *output* of this scope (one value per iteration). Children see `var` as an extern. Polydat spec §3.1 owns the clause semantics. |
+| `Comprehension` (polydat multi-axis `cartesian`, surface `for_combinations`) | One scope carrying every axis. Each clause's variable is a binding output visible to its child scopes and the leaf. The cross product enumerates per polydat spec §3.2. |
+| `Comprehension` (polydat `union`, surface `for_each_union`) | Its own scope. Each child contributes a sub-stream of tuples; children see the (V2-required identical) coordinate set as externs regardless of which sub-space the current tuple came from. Polydat spec §3.4 + §5 V2 own the semantics. |
 | `do_while` / `do_until` | Its own scope. Carries the optional counter as a binding output. The condition is evaluated against this scope's outputs after each child execution. |
 
 Scope nesting follows the scenario tree exactly. Three nested

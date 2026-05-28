@@ -68,12 +68,28 @@ This preserves determinism: same cycle + same attempt = same result.
 
 ### for_each (scenario level)
 
+> **Ownership note:** `for_each` is a YAML-level surface that
+> desugars to polydat comprehension constructors per polydat
+> spec §3 + §8. The runtime variants below (`ForEach`,
+> `ForCombinations`, `ForEachUnion`) are this SRD's terms for
+> what shape the resulting polydat AST has — they are not
+> three distinct types but three patterns in the polydat
+> algebra:
+>
+> - `ForEach` → polydat `clause(var, source)` (polydat spec §3.1)
+> - `ForCombinations` → polydat multi-axis `cartesian` (polydat spec §3.2)
+> - `ForEachUnion` → polydat `union` of cartesians (polydat spec §3.4 + §8.4)
+>
+> What each shape *means* (its tuple sequence, cardinality,
+> footprint) is owned by the polydat spec; this SRD describes
+> only the YAML-to-shape detection rules.
+
 `for_each` accepts six syntactic shapes that collapse to three
-runtime variants — `ForEach` (one var, single value list),
-`ForCombinations` (Cartesian product of distinct dims), and
-`ForEachUnion` (concatenation of multiple Cartesian sub-spaces).
-The shape is auto-detected from the YAML structure plus the
-variable-name reuse pattern; see §"Detection rule" below.
+polydat AST patterns — `ForEach` (one var, single value list),
+`ForCombinations` (cartesian over distinct vars), and
+`ForEachUnion` (union of cartesians). The shape is auto-
+detected from the YAML structure plus the variable-name reuse
+pattern; see §"Detection rule" below.
 
 #### Form 1 — single var (string)
 
@@ -176,13 +192,17 @@ instead of the 12 tuples a Cartesian k×limit would generate.
 
 The parser collects every `(var, expr)` pair across the spec
 (string clauses or array entries become structural sub-spaces).
+The detection produces a polydat AST per polydat spec §3 + §8;
+the rules below say which polydat constructor the parser emits.
 
-- **No variable name appears more than once** ⇒ `ForCombinations`
-  (Cartesian) — or `ForEach` if there is exactly one pair.
-- **Any variable name appears more than once** ⇒ `ForEachUnion`,
-  with structural sub-spaces preserved (one sub-space per
-  top-level clause for string form; one per array entry for
-  array form).
+- **No variable name appears more than once** ⇒ polydat
+  `cartesian` (multiple clauses) or `clause` (single pair);
+  see polydat spec §3.1, §3.2, §8.1.
+- **Any variable name appears more than once** ⇒ polydat
+  `union` of cartesians, with structural sub-spaces preserved
+  (one sub-space per top-level clause for string form; one
+  per array entry for array form); see polydat spec §3.4 +
+  §8.4 (inferred union as a parser convenience).
 
 The clause splitter respects parens, brackets, braces, and
 recognizes a clause boundary only when a top-level comma is
