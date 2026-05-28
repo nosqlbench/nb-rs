@@ -24,16 +24,16 @@ covers the math behind the named strategies that the polydat
 > behavior today is lexicographic with rightmost-varies-fastest
 > — this SRD is the spec for the planned ordering layer.
 >
-> **Audit note (2026-05-28):** The polydat ownership extrication
-> audit (`polydat/docs/design/comprehension_ownership_audit.md`
-> Phase B4) removed this SRD's prior `custom` ordering coverage
-> — polydat spec §3.6 explicitly excludes user-callback orderings
-> from the algebra. This SRD now omits `custom` from the
-> taxonomy; the §"`custom` — User-supplied ordering function"
-> section below is retained as a historical reference but should
-> not be implemented as currently written. `Shuffle` was added
-> to the polydat taxonomy in F1/F4 and needs corresponding
-> algorithmic detail in this SRD as a follow-up push.
+> **Scope note:** This SRD has been narrowed to per-strategy
+> algorithmic detail; compositional behavior and per-strategy
+> input requirements are owned by the polydat spec §3.6.
+> `custom` ordering is excluded from the polydat algebra
+> entirely — the §"`custom` — User-supplied ordering function"
+> section below is retained as a historical reference but
+> should not be implemented as currently written. `Shuffle` is
+> a polydat-taxonomy strategy that this SRD doesn't yet cover
+> algorithmically; a follow-up push will add its mathematical
+> detail.
 
 ---
 

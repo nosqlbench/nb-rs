@@ -14,13 +14,8 @@ comprehensions does so **strictly to describe how that SRD's
 subject integrates with polydat-owned comprehensions**; non-
 polydat SRDs do not redefine, extend, or shadow polydat-owned
 material. Apparent contradictions between a non-polydat SRD and
-this document resolve in favor of this document.
-
-The ownership extrication audit at
-`polydat/docs/design/comprehension_ownership_audit.md` describes
-the per-SRD migration plan that makes this declaration consistent
-across the SRD corpus. §15 below carries the post-audit role of
-each SRD that touches comprehension material.
+this document resolve in favor of this document. §15 below
+names each touching SRD's role under this declaration.
 
 ## Companion documents
 
@@ -33,10 +28,6 @@ each SRD that touches comprehension material.
   direction numbers, Lhs construction). Owns mathematical
   implementation detail; §3.6 below owns compositional behavior
   and per-strategy input requirements.
-- [SRD-18e](../../../docs/sysref/18e_comprehension_canonical_reference.md)
-  — predecessor canonical reference. **Superseded by this
-  document**; SRD-18e is being retired to a redirect stub per
-  the audit's Phase B.
 - [SRD-78](../../../docs/sysref/78_polystreamer.md) —
   PolyStreamer runtime that hosts the §9.5 consumption surfaces
   (`CoordinateStream`, `ScopedKernelStream<K>`, `scope_once`).
@@ -2737,7 +2728,7 @@ AST: `cartesian(clause(k, 1..10), clause(replicas, 1..(2 * {k})))`
 
 - Cardinality: depends on `k`. For each `k` value the second axis has `2*k - 1` elements (range 1 to 2*k exclusive). Total: Σ(i=1..9) (2i-1) = 81 tuples. The compiler reports `Bounded(81)` if it can statically evaluate the dependent expression; otherwise `BoundedAtMost(...)` with a conservative upper bound, or `Unbounded` if even the bound isn't computable.
 - Validity: V1 (disjoint names) passes; the dependent source is permitted by §3.2.
-- Metadata: `index_addressable = None` because the axis sizes are runtime-dependent on prior axes' values (F27 in §16). No closed-form bijection from `0..81` to the dispensed tuples exists — computing the i-th tuple requires walking the dependent enumeration.
+- Metadata: `index_addressable = None` because the axis sizes are runtime-dependent on prior axes' values (per the dependent-source rule in §10.7.2). No closed-form bijection from `0..81` to the dispensed tuples exists — computing the i-th tuple requires walking the dependent enumeration.
 - Footprint: O(1) per cursor (each clause streams); the cartesian holds two cursors and one in-flight tuple. Same shape as a non-dependent cartesian.
 - Optimizer: R2 push-down does NOT fire over a dependent cartesian. `order(this, Halton, Some(20))` would materialize all 81 tuples and then apply Halton selection — no closed-form index lookup possible. If the workload needs Halton-spread sampling over this space, the user should either restate as a non-dependent shape (e.g. `cartesian(clause(k, 1..10), clause(rep, 1..18)) where {rep} <= 2 * {k}` — which is a wider cartesian + filter, and IS index-addressable) or accept the materialization cost.
 - IR: `PUSH_CLAUSE k (1..10)` + `PUSH_CLAUSE replicas (1..(2*{k}))` (with `{k}` resolved per-pull from the cursor) + `CARTESIAN(2)` + `DISPENSE`. The cartesian opcode handles the dependent enumeration by resolving the second clause's source against the current k-cursor's value each time the k-cursor advances.
@@ -3068,35 +3059,12 @@ a per-axis conjunction).
 **Revisit when:** A specific predicate pattern shows up in
 ≥3 workloads and the per-tuple cost is measurable.
 
-### 14.6 Other items folded into the body
-
-For reference, earlier "open questions" that have since been
-folded into the spec body rather than deferred:
-
-- **Custom ordering strategies.** Folded into §3.6 — excluded
-  by design (no user-callback escape hatch).
-- **Lazy source evaluation.** Folded into §3.1 + §6.2 —
-  stream-first is the load-bearing model.
-- **IR exposure.** Folded into §9.1 — exposed via
-  `polydat::comprehension::ir::Program`, immutable.
-- **Optimizer placement.** Folded into §10 — required pass
-  upstream of §9.1's compilation.
-- **Continuous sources first-class.** Folded into §3.1, §3.6,
-  §5, §6.1, §10.7, §10.2 R2 (F9 in §16's resolved list).
-- **Consumption surfaces (CoordinateStream / ScopedKernelStream).**
-  Folded into §9.5 (F26 in §16's resolved list).
-
 ---
 
 ## 15. Relationship to the SRDs
 
-Per the audit at
-`polydat/docs/design/comprehension_ownership_audit.md`, the
-following SRDs touch comprehension material. This section
-declares each SRD's **post-audit role** relative to this
-document. Where the audit recommends a Phase B/C/D rewrite, the
-entry notes the target state; until that rewrite lands, this
-document is authoritative on any disputed material.
+The following SRDs touch comprehension material. This section
+names each SRD's role relative to this document.
 
 ### 15.1 Sibling specifications (polydat-adjacent)
 
@@ -3115,19 +3083,14 @@ document is authoritative on any disputed material.
 - **SRD-18d (Traversal Order)** — **owns per-strategy
   algorithmic detail** (Halton recurrence, Sobol direction
   numbers, Lhs stratification construction, etc.). SRD-18d
-  does **not** own the compositional behavior or per-strategy
-  input requirements; §3.6 is authoritative on those. Post-
-  audit, SRD-18d drops any general "what is a traversal order"
-  framing, drops the `Custom(fn)` escape-hatch language (this
-  document removed it), and adds Shuffle (this document added
-  it).
+  does **not** own compositional behavior or per-strategy input
+  requirements; §3.6 is authoritative on those. SRD-18d carries
+  no `Custom(fn)` escape hatch and includes `Shuffle` alongside
+  the other named strategies.
 
 - **SRD-18e (Canonical Reference)** — **superseded by this
-  document.** SRD-18e's flat `Comprehension { mode, filter,
-  order }` struct and its associated semantics are replaced by
-  this document's operator-tree algebra. SRD-18e is being
-  retired to a redirect stub per the audit's Phase B; cross-
-  references to SRD-18e should target this document.
+  document.** Retired to a redirect stub; cross-references to
+  SRD-18e should target this document.
 
 - **SRD-78 (PolyStreamer)** — **owns the runtime that hosts
   this document's consumption surfaces.** SRD-78 implements
@@ -3145,9 +3108,9 @@ document is authoritative on any disputed material.
 - **SRD-18 (Control Flow)** — defines the user-facing
   control-flow shapes (`ForCombinations`, `ForEachUnion`, the
   `for_each` family) that desugar to polydat constructors per
-  §8. Post-audit, SRD-18 frames each shape as "this control-
-  flow construct desugars to [polydat constructor]" and drops
-  inline semantics descriptions.
+  §8. SRD-18 frames each shape as "this control-flow construct
+  desugars to [polydat constructor]" and carries no inline
+  semantics.
 
 - **SRD-18b (Scenario Tree and Scheduler)** — defines the
   scenario tree's `ScenarioNode::Comprehension { comprehension,
@@ -3177,32 +3140,26 @@ document is authoritative on any disputed material.
 
 - **SRD-13f (Cross-Scope Wire Materialization)** — describes
   cross-scope wire flow that crosses comprehension scope
-  boundaries. Post-audit, internals references like
-  `polydat/src/comprehension.rs::synthesize_for_each_scope`
-  are replaced with references to the polydat public API
-  (or this spec); any API gaps surfaced become polydat-
-  internal findings.
+  boundaries. References polydat's public synthesis surface
+  (this document §9.5) rather than internals paths.
 
 - **SRD-67 (GK Subcontext Construction)** — describes
   comprehension scope synthesis as one of the subcontext-
-  construction paths. Post-audit, internals references to
-  "the comprehension synthesiser" become references to
-  the polydat public surface.
+  construction paths, via polydat's public synthesis surface.
 
 - **SRD-68 (Dispenser-Owned GK Context)** — mentions
   `for_each` comprehensions positionally in the scope-tree
-  ownership model. Integration-level; passes through to this
-  document for what `for_each` means.
+  ownership model; integration-level only.
 
-- **SRD-74 (None Propagation)** — has internals-path
-  references to polydat test files. Post-audit, these are
-  removed or replaced with intent-level descriptions.
+- **SRD-74 (None Propagation)** — references polydat's
+  comprehension synthesis test suite for the Gate 2
+  regression guard; no semantic claims.
 
 ### 15.4 Passing-mention SRDs
 
 These SRDs name "comprehension" as a background concept without
-making semantic claims. Post-audit, each adds a one-line
-cross-reference to this document on first mention:
+making semantic claims; each carries a one-line cross-reference
+to this document on first mention:
 
 - **SRD-00 (Index)** — table-of-contents entries.
 - **SRD-02 (Concurrency Model)** — comprehension iter-steps in
@@ -3218,8 +3175,7 @@ cross-reference to this document on first mention:
 
 ### 15.5 Ownership invariant
 
-After the audit's full execution, the following invariant
-holds across the SRD corpus:
+The following invariant holds across the SRD corpus:
 
 > Every comprehension-semantic claim in the SRD corpus either
 > appears in this document, or is a one-line reference to a
@@ -3230,333 +3186,3 @@ Verification is a `grep` sweep: every passage in any non-polydat
 SRD mentioning a comprehension constructor, axiom, strategy, or
 optimizer rule must either (a) be an integration description, or
 (b) be a cross-reference to this document.
-
----
-
-## 16. Review findings (open work items)
-
-Pinned by a 2026-05-28 fresh-eyes pass over the spec. Each item
-is a concrete inconsistency, contradiction, or stale-after-
-reframe issue. Resolved items move out of this section into the
-body of the spec; the bottom of this list is the live punch
-list.
-
-### Resolved
-
-**F1 — §10.3 worked example contradicts V4. ✓ RESOLVED 2026-05-28.**
-Root cause: a single strategy name ("Halton", "Lhs", etc.)
-covered both a multi-dimensional spatial form and a 1-D index-
-permutation form without the spec saying which. V4 implicitly
-assumed the multi-D form; §10.3 implicitly assumed the 1-D form.
-Resolution: each named strategy in §3.6 now declares its accepted
-input `IndexFn` shape; V4 became a per-strategy input-shape
-check; V5 carried forward with explicit "look through one filter
-layer" wording. Degenerate-but-defined compositions (e.g. 1-D
-Extrema = {first, last}) compile with a warning, not a rejection,
-per §5.8's permissive/strict validation modes. §10.3 now stands
-as written; §11.5 converted from a rejection example to "Halton
-over union (combined index space)" valid example.
-
-**F4 — "Shuffle" strategy missing from §3.6 taxonomy. ✓ RESOLVED
-2026-05-28** as part of F1. Shuffle is now in §3.6 with input
-requirement "any non-`None` `IndexFn`"; R2 in §10.2 handles
-Shuffle via the same indexed-order push-down as Halton/Sobol.
-
-### Stale-after-reframe
-
-**F2 — Examples gallery footprint claims pre-date stream-
-first. ✓ RESOLVED 2026-05-28.** §11.1, §11.2, §11.3, §11.4,
-§11.7 rewritten under the stream-first + push-down model:
-sources never materialize (O(1) per cursor); naïve barriers
-shown alongside post-R2 working sets where they differ (§11.2:
-~8 lattice corners not 10,000 candidates; §11.3: 20 Halton
-draws not 500 candidates); metadata bundle surfaced for the
-examples that exercise interesting `IndexFn` variants. §11.4
-also picks up R1 (Lex with truncation → `ORDER_STREAMING`).
-
-**F3 — §11.9 stale "Push-7" jargon + base-materializes claim.
-✓ RESOLVED 2026-05-28.** §11.9 rewritten under stream-first:
-sources don't materialize; `<base>` itself streams; the runtime
-may cache or recompute per-streamer; cross-streamer sharing is
-referenced as §14's open question.
-
-### Internal inconsistencies
-
-**F5 — Identity elimination + associativity flattening missing
-from the R-rules. ✓ RESOLVED 2026-05-28.** §10.2 opens with two
-canonicalization rules — R0a (identity elimination over I1–I5)
-and R0b (associativity flattening over A1, A2). They run to a
-fixed point before R1 fires, producing the AST's *canonical
-form*. §10.10.3 reducibility catalog table lists their
-improvement vectors (Less compute / Equal memory — the gain is
-structural). §10.7.4 metadata-guard table adds entries with
-explicit "structural; safety from §4.2 / §7" annotations.
-§10.10.5 priority order is now R0a → R0b → R1 → ... → R7.
-§10.2's intro explains that canonical form is what lets
-downstream rule guards stay simple. Cross-reference to §5.8's
-degenerate-form catalog added (warnings teach the author, R0a
-keeps the IR clean — two layers, one concern).
-
-**F6 — §10.7.4 R5 guard description is imprecise. ✓ RESOLVED
-2026-05-28.** §10.7.4 table entry and the trailing summary
-paragraph both now state R5 is "structural for AST shape +
-predicate analyzer for the factorization decision; no metadata
-field is read."
-
-### Structural awkwardness
-
-**F7 — Reducibility analyzer awkwardly nested. ✓ RESOLVED
-2026-05-28** via option (b): §10.9.9 became §10.10 with
-subsections §10.10.1 – §10.10.6. §10.9 is now strictly the
-predicate analyzer; §10.10 stands alone as the whole-AST
-reducibility analyzer. Cross-references throughout the body
-updated. §10.9 intro reworked to describe the two analyzers as
-distinct components that share information rather than as one
-analyzer with two responsibilities.
-
-**F8 — §9.5 stub. ✓ RESOLVED 2026-05-28.** Folded into §9.4 as
-a trailing paragraph noting that the five compile-time
-guarantees assume an optimized AST per §10.
-
-### Gaps
-
-**F9 — First-class scalar / continuous value ranges. ✓ RESOLVED
-2026-05-28.** Landed as a multi-section spec extension:
-
-- §3.1 — clause now accepts continuous sources alongside
-  discrete; sources are measures or stream producers.
-- §3.6 — strategy table extended with a Continuous column;
-  Halton/Sobol/Lhs marked as native continuous-domain
-  strategies; Lex/ReverseLex/Shells/Diagonal/Antidiagonal
-  rejected over continuous (no canonical enumeration);
-  Shuffle/Extrema work over continuous with documented
-  semantics.
-- §5 — V7 extended to require same-class children in zip;
-  V8 added: Continuous comprehensions must be wrapped in an
-  `order(_, sampling-strategy, Some(n))` before reaching a
-  `PolyStreamer`.
-- §6.1 — five cardinality classes now: Bounded, BoundedAtMost,
-  Unbounded, Continuous, ContinuousAtMost. Per-constructor
-  propagation table updated; three upgrade/downgrade rules
-  documented.
-- §10.7 — `IndexFn` enum gains `Continuous` and `Hybrid`
-  variants; clause and cartesian propagation rules extended
-  for continuous and hybrid cases; order(non-Lex) materialization
-  documented for Continuous → Bounded(n) discharge.
-- §10.2 R2 — Halton, Sobol, Lhs, Extrema push-down rules
-  extended with explicit Continuous, Hybrid, and discrete-
-  Lattice cases.
-- §11.10 — new worked example showing both a pure-continuous
-  zip-with-Halton sweep and a hybrid discrete × continuous
-  cartesian-with-Lhs sweep.
-
-Predicate analyzer (§10.9) treatment of continuous-coord
-predicates is deliberately deferred — the analyzer returns
-`Opaque` for any predicate whose coords include a continuous
-axis (interval arithmetic and measure-preserving factorization
-are a separate analysis problem). R5 simply doesn't fire on
-continuous-axis filters; the filter still runs per-tuple at the
-sampled output.
-
----
-
-### Pass-2 findings (2026-05-28) — Resolved
-
-**F15 — Six "V1-V7" references stale. ✓ RESOLVED 2026-05-28.**
-All six (§5 intro "seven of them", §5.8 ×2, §9.4, §10.6
-property 5, §12 claim 2) updated to "V1-V8" / "V1 – V8" / "eight
-of them" as appropriate.
-
-**F16 — §9.4 guarantee 3 missing continuous classes. ✓ RESOLVED
-2026-05-28.** Cardinality-class enumeration extended to include
-`Continuous` and `ContinuousAtMost`.
-
-**F17 — §9.4 guarantee 5 missing V8 ref. ✓ RESOLVED 2026-05-28.**
-Guarantee 5 now mentions both V6 (Unbounded discrete rejection)
-and V8 (Continuous-at-outermost rejection) as co-equal paths.
-
-**F18 — §9.1 ORDER_MATERIALIZE strategy list incomplete. ✓
-RESOLVED 2026-05-28.** Replaced "Halton, Extrema, Shuffle" with
-the full §3.6 taxonomy (minus Lex, which compiles to
-`ORDER_STREAMING`).
-
-**F19 — §10.7.2 filter propagation dropped Continuous case. ✓
-RESOLVED 2026-05-28.** Rule now enumerates all five input
-cardinality classes and shows the Continuous → ContinuousAtMost
-mapping with measure preservation.
-
-**F20 — `PredicateInfo` lacked continuous-coord handling. ✓
-RESOLVED 2026-05-28.** §10.9.1 "Out of scope" now explicitly
-lists continuous-coord predicates; `Factorization::Opaque` was
-extended to `Opaque(OpaqueReason)` with five enumerated reasons
-including `Continuous`.
-
-**F21 — §10.2 R2 bullets for Diagonal/Antidiagonal/Shells didn't
-note continuous rejection. ✓ RESOLVED 2026-05-28.** Each bullet
-now leads with "discrete only" and cross-references §3.6's
-rejection rationale.
-
-**F22 — V6 / V8 overlap unclear. ✓ RESOLVED 2026-05-28.** V6
-renamed-in-prose to "discrete-bounded-required operations on
-unbounded discrete inputs" with a trailing paragraph stating the
-clean partition: V6 catches unbounded *discrete*; V8 catches
-*continuous*.
-
-**F23 — §15 SRD-18c relationship didn't note continuous-source
-extension. ✓ RESOLVED 2026-05-28.** SRD-18c entry now states the
-extension is pending and this document is the reference for
-continuous-source semantics in the meantime.
-
-**F24 — §10.5 missed explicit sub-cartesian cardinality math.
-✓ RESOLVED 2026-05-28.** Added a sentence stating each
-filtered sub-cartesian is 500 × 1000 = 500_000 tuples, so the
-union's combined index space is 1_000_000.
-
-### Pass-2 findings (coupled correctness) — Resolved
-
-The four findings F10/F11/F12/F14 were aspects of a single
-design question — "how do continuous sources interact with
-combinators that weren't redesigned around them in the F9
-push?" — and were resolved as one coordinated push on 2026-05-28
-with the following decisions:
-
-- **Decision A:** Continuous in zip = reject (V7 tightened).
-- **Decision B:** Continuous in union = reject (new V9 added).
-- **Decision C:** Hybrid stays as a distinct cardinality class
-  in §6.1 and a distinct `IndexFn` variant in §10.7.
-
-**F10 — V7 allows continuous-continuous zip. ✓ RESOLVED
-2026-05-28.** V7 tightened: "all children of a `zip` (under any
-mode) must be discrete." Continuous or mixed-class children
-rejected at parse time. Authors who want paired continuous
-coordinates use either sample-then-zip
-(`zip(order(c1, halton/n), order(c2, halton/n))`) or cartesian
-+ joint sampling (`order(cartesian(c1, c2), halton, Some(n))`).
-Form (b) is usually the intent.
-
-**F11 — §11.10 first example uses zip incorrectly. ✓ RESOLVED
-2026-05-28.** Rewritten as `order(cartesian(clause(alpha, ...),
-clause(beta, ...)), Halton, Some(100))` — V7 would have rejected
-the original zip form after F10, and "Halton over a 2-D box" is
-the cartesian semantic. Trailing note in the example documents
-the sample-then-zip pattern as the alternative when lockstep
-pairing (not joint sampling) is intended.
-
-**F12 — Union-of-continuous semantics are dubious. ✓ RESOLVED
-2026-05-28** via Decision B. §6.1 union row now states union
-children must all be discrete; continuous or mixed-class rejected
-by V9. §10.7.2 union propagation marked "children must all be
-discrete per V9." Authors sample each continuous sub-space
-first and union the discrete outputs explicitly.
-
-**F13 — §6.1 vs §10.7 Hybrid alignment. ✓ RESOLVED 2026-05-28**
-via Decision C. §6.1 now has six cardinality classes (added
-`Hybrid { discrete_axes, continuous_axes, measure }`). Cartesian
-propagation explicitly produces `Hybrid` for mixed children.
-Filter propagation for Hybrid input documented. Four
-upgrade/downgrade rules cover all transitions including
-`Hybrid → Bounded` via V8 sampling.
-
-**F14 — V2 doesn't enforce union same-class. ✓ RESOLVED
-2026-05-28** via new V9 axiom. V9 says "all children of a
-`union` must be discrete." This is stronger than the original
-F14 sketch (which would have allowed all-continuous unions); the
-coupled F12 decision made all-continuous union semantically
-undefined, so V9 collapses to "all discrete." Mixed-class union
-rejected at parse time.
-
-Validity axiom count is now nine: V1 – V9. Six places updated to
-reference the new count. §16 punch list is now empty of open
-items; future findings will be appended below.
-
-### Pass-3 findings — Resolved
-
-**F26 — Consumption model lacked first-order / second-order
-distinction. ✓ RESOLVED 2026-05-28.** New §9.5 "Consumption
-surfaces" added (the slot freed when F8 folded the old §9.5 stub
-into §9.4). Specifies two independent consumption orders —
-`CoordinateStream` (first-order, dispenses coordinate tuples)
-and `ScopedKernelStream<K>` (second-order, dispenses scoped
-polydat kernel instances) — plus a `scope_once(parent, coords)`
-one-shot function for non-streamed use cases. The three surfaces
-are independent first-class types that share the compiled IR but
-maintain separate dispense state; pulling from one does not
-advance any other. SRD-78's "one streamer per Arc" semantic
-applies per streamer instance, not across streamers from one
-comprehension. Documented why two orders rather than collapsing
-to one: coordinate enumeration is a polydat concern; kernel
-instantiation is a polydat kernel concern; separating the
-surfaces keeps tooling (logging, inspection, replay) from
-paying the kernel-instantiation cost when they don't need it.
-
-### Pass-4 findings (silent gaps) — Resolved
-
-**F27 — Dependent sources in cartesian had undocumented metadata
-behavior. ✓ RESOLVED 2026-05-28.** §3.2 allows clause N's source
-to reference clause M's variable (M < N), but §10.7.2's
-cartesian propagation rule treated all cartesians as
-non-dependent. Now explicit: dependent-source cartesians have
-`index_addressable = None` because the axis sizes are runtime-
-dependent on prior axes' values. R2 push-down can't fire over
-dependent cartesians, so non-Lex orderings materialize naïvely.
-Dependency detection runs at parse (walk each child's source
-expression for references to earlier clause names); this is the
-single place where metadata propagation consults child-internal
-information beyond the published bundles.
-
-**F28 — Unbounded continuous + sampling was silently broken. ✓
-RESOLVED 2026-05-28.** V8 now also requires every `Continuous`
-source to declare an **integrable measure** (one with finite
-total mass, normalizable to a probability distribution).
-Unbounded interval + Uniform is rejected at parse (no
-normalizable density); unbounded interval + named distribution
-(Normal, Exponential, Pareto, ...) is accepted (these are proper
-probability measures). Bounded interval + Uniform stays valid.
-The check happens at parse on the source, independent of where
-it sits in the AST. §6.1's Continuous-class description
-explicitly notes the integrability constraint.
-
-**F29 — V5 look-through across cardinality classes was implicit.
-✓ RESOLVED 2026-05-28.** V5's one-filter look-through rule for
-V4's input-shape check now explicitly applies to Continuous and
-Hybrid cardinalities, not just discrete. A filter wrapping a
-`Continuous` input has its underlying `IndexFn::Continuous`
-surfaced to V4's per-strategy check even though the filter
-produces `ContinuousAtMost` with `index_addressable = None`.
-Consequence: `order(filter(continuous_box, p), Halton, Some(n))`
-fires R2 push-down (Halton draws over the original box) with
-the predicate applied per drawn sample.
-
-### Pass-5 findings (worked examples + deferral plan) — Resolved
-
-**F30 — Missing sample-then-zip worked example. ✓ RESOLVED
-2026-05-28.** New §11.11 demonstrates the lockstep continuous
-pairing pattern that F10/F11's resolution mentioned: sample
-each continuous coordinate first via `order(_, Halton, Some(n))`,
-then zip the discrete outputs. Documents the semantic contrast
-with joint sampling (§11.10): paired form ≠ joint Halton over
-the 2-D space.
-
-**F31 — Missing dependent-source worked example. ✓ RESOLVED
-2026-05-28.** New §11.12 shows `cartesian(clause(k, 1..10),
-clause(replicas, 1..(2 * {k})))` and demonstrates F27's metadata
-behavior: `index_addressable = None`, no R2 push-down. Shows the
-restate-as-wide-cartesian-with-filter alternative when the
-author needs push-down on the same coordinate set.
-
-**F32 — Missing ScopedKernelStream worked example. ✓ RESOLVED
-2026-05-28.** New §11.13 illustrates F26's §9.5 surfaces:
-`coordinate_stream()`, `scoped_kernel_stream(parent)`, and
-`scope_once(parent, coords)` on a single comprehension. Shows
-independent dispense state across the three surfaces.
-
-**F33 — §14 "Open questions" was unstructured. ✓ RESOLVED
-2026-05-28.** §14 renamed and restructured as "Planned
-deferrals." Each entry now has a four-part shape: status,
-rationale (why deferring is correct now), workaround (what
-users do until it lands), and revisit condition. Five
-explicitly-planned deferrals documented (R8–R10 batch,
-continuous-coord predicate analysis, cross-streamer sharing,
-strategy extensibility, R5 catalog depth) plus a back-reference
-list of items previously deferred that have since folded into
-the body of the spec.

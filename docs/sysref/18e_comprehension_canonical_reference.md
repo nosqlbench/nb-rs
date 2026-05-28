@@ -3,15 +3,12 @@
 **Status:** SUPERSEDED 2026-05-28 by the polydat comprehension
 spec at `polydat/docs/design/comprehension_forms.md`.
 
-This SRD's original content has been retired as part of the
-comprehension ownership extrication audit
-(`polydat/docs/design/comprehension_ownership_audit.md`,
-Phase B1). The polydat spec is now the single authoritative
-reference for the comprehension algebra — its constructors,
-validity axioms, metadata propagation rules, optimizer
-rewrites, IR opcodes, and consumption surfaces. Apparent
-contradictions between this SRD and the polydat spec resolve
-in favor of the polydat spec.
+This SRD's original content has been retired. The polydat spec
+is now the single authoritative reference for the comprehension
+algebra — its constructors, validity axioms, metadata
+propagation rules, optimizer rewrites, IR opcodes, and
+consumption surfaces. Apparent contradictions between this SRD
+and the polydat spec resolve in favor of the polydat spec.
 
 This stub remains as a redirect target for existing
 cross-references. The section map below points each former
@@ -60,19 +57,14 @@ The polydat crate is the canonical owner of comprehension
 semantics. Having two authoritative references (SRD-18e + the
 polydat spec) created drift potential — every comprehension
 change had to be applied twice and any divergence would create
-a "which one is authoritative?" question. The audit's
-ownership invariant requires every comprehension-semantic claim
-to either appear in the polydat spec or be a one-line reference
-to it; SRD-18e as a 691-line parallel canonical reference
-violated that invariant.
+a "which one is authoritative?" question. SRD-18e as a 691-line
+parallel canonical reference violated the polydat spec's §15.5
+ownership invariant.
 
 ## Cross-references
 
 - **`polydat/docs/design/comprehension_forms.md`** — the
   authoritative comprehension reference. Start here.
-- **`polydat/docs/design/comprehension_ownership_audit.md`** —
-  the audit doc describing why this SRD was retired and the
-  per-SRD migration plan.
 - [SRD-18b](18b_scenario_tree_and_scheduler.md) — scenario-tree
   integration of polydat comprehensions.
 - [SRD-18c](18c_comprehension_syntax.md) — parser-layer surface
