@@ -261,6 +261,16 @@ impl GkKernel {
     /// the same way the standard new-kernel path does, so callers
     /// can immediately `set_input(...)` for externs and execute.
     ///
+    /// # Cache-and-rehydrate role
+    ///
+    /// This is the **rehydrate** primitive of the cache-and-
+    /// rehydrate pattern documented on [`Self::for_iteration`].
+    /// External callers use `for_iteration` (which composes
+    /// this with parent-chain wiring); this method itself is
+    /// `pub(crate)` because hydrating a kernel without
+    /// installing parent-chain wiring would skip the load-
+    /// bearing materialization step.
+    ///
     /// Used by the cache-and-rebind path in nbrs-activity (SRD 18b
     /// §"Cache-and-rebind contract"): a phase scope compiles once,
     /// caches its program, and instantiates a fresh kernel per
@@ -435,6 +445,36 @@ impl GkKernel {
     /// Convenience: pull from the owned state.
     pub fn pull(&mut self, output_name: &str) -> &Value {
         self.state.pull(&self.program, output_name)
+    }
+
+    /// Copy `self`'s currently-set input-slot values into `child`'s
+    /// input slots by name.
+    ///
+    /// Companion to the internal `materialize_wiring_from_outer`
+    /// pass that runs as part of `build_subscope`. That pass
+    /// walks the parent's outputs; this method walks the parent's
+    /// **inputs** — so cascade-extern'd names that the parent
+    /// inherited from *its* parent reach `child` too, rather than
+    /// stopping at the parent and silently leaving `child`'s
+    /// matching slot at its default.
+    ///
+    /// `Value::None` inputs are skipped (no point overwriting a
+    /// child's possibly-set default with absence). Inputs whose
+    /// name has no matching slot on `child` are skipped silently
+    /// — they're not the child's concern.
+    ///
+    /// This is the kernel-chain operation that lets cascade-extern
+    /// propagate transitively across multi-level scope chains. Each
+    /// scope builder calls it after `build_subscope` finishes.
+    pub fn propagate_inputs_into(&self, child: &mut GkKernel) {
+        let names = self.program.input_names();
+        for name in names {
+            let Some(outer_value) = self.get_input(&name) else { continue };
+            if matches!(outer_value, Value::None) { continue; }
+            let cloned = outer_value.clone();
+            let Some(inner_idx) = child.program.find_input(&name) else { continue };
+            child.state.set_input(inner_idx, cloned);
+        }
     }
 
     /// Return the names of the inputs.
@@ -888,19 +928,70 @@ impl GkKernel {
     /// program, bind it to `parent`'s scope, and pre-load every
     /// `(var, value)` binding into the corresponding input slot.
     ///
-    /// This is the canonical recipe for materialising the scope
-    /// kernel at one specific iteration position — the runtime
-    /// dispatcher uses it before descending into a comprehension
-    /// iteration's children, and the pre-map walker uses it for
-    /// the same purpose so nested for_each clauses with
-    /// outer-iter-var interpolation (`vec_{profile}`) resolve
-    /// at pre-map time.
+    /// # Cache-and-rehydrate pattern
     ///
-    /// Owning the recipe here ensures both consumers produce
-    /// identical kernels for identical inputs; previously each
-    /// site reimplemented the three-step `from_program` →
-    /// `materialize_wiring_from_outer` → `set_input` dance and could (and
-    /// did) drift.
+    /// `for_iteration` is the public entry point for the
+    /// **cache-and-rehydrate pattern** that nbrs builds on:
+    /// compile a scope's program **once**, then hydrate many
+    /// per-instance kernels from it — one per iteration tuple,
+    /// per fiber, per scenario-tree visit. The program is
+    /// immutable substance (the `Arc<GkProgram>`); each
+    /// hydrated kernel carries its own state (the input slot
+    /// values for this iteration).
+    ///
+    /// The pattern's three load-bearing properties:
+    ///
+    /// 1. **Compile cost amortizes.** GK source → typed program
+    ///    is paid once per canonical scope, not per iteration
+    ///    or per fiber. The compiled `Arc<GkProgram>` is shared
+    ///    via clone (cheap — refcount bump).
+    /// 2. **Each hydrated kernel is independent.** Per-fiber
+    ///    state means no synchronization between fibers running
+    ///    the same iteration in parallel. Each `for_iteration`
+    ///    call produces a fresh kernel with its own input
+    ///    slots, output cells, and write-through bindings.
+    /// 3. **Parent-chain wiring is uniform.** Every hydrated
+    ///    kernel runs through the parent's
+    ///    `materialize_subscope` (and downstream
+    ///    `materialize_wiring_from_outer`) so cell propagation,
+    ///    shared-cell attach, and the SRD-13f read-invariant
+    ///    are byte-identical to any other parent → child path.
+    ///
+    /// # When to use this
+    ///
+    /// - **Per-iteration kernel construction** in scope
+    ///   walkers and pre-map walkers. The runtime dispatcher
+    ///   uses it before descending into a comprehension
+    ///   iteration's children; the pre-map walker uses it so
+    ///   nested `for_each` clauses with outer-iter-var
+    ///   interpolation (`vec_{profile}`) resolve at pre-map
+    ///   time.
+    /// - **Cross-cutover migration paths.** The walker rewrite
+    ///   in PR 9c-1b (see
+    ///   `polydat/docs/design/comprehension_cutover_contact_surfaces.md`)
+    ///   uses this method to hydrate per-iteration kernels
+    ///   from the canonical scope kernel that
+    ///   `build_for_each_scope_kernel` produced.
+    ///
+    /// # Why one entry point
+    ///
+    /// Owning the recipe here ensures both consumers (runtime
+    /// dispatcher + pre-map walker) produce identical kernels
+    /// for identical inputs. Pre-`for_iteration`, each site
+    /// reimplemented the three-step
+    /// `from_program` → `materialize_wiring_from_outer` →
+    /// `set_input` dance and could — and did — drift.
+    ///
+    /// # See also
+    ///
+    /// - [`Self::from_program`] (internal) — the
+    ///   build-fresh-state primitive `for_iteration` composes
+    ///   with parent-chain wiring.
+    /// - [`Self::propagate_inputs_into`] — the kernel-chain
+    ///   operation that extends cascade-extern values into a
+    ///   subkernel (called once after `for_iteration` from each
+    ///   scope walker so multi-level cascades reach the
+    ///   grandchild).
     pub fn for_iteration(
         canonical: &Arc<GkKernel>,
         parent: &Arc<GkKernel>,

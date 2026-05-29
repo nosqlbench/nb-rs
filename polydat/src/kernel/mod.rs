@@ -60,6 +60,7 @@ mod manifest;
 mod api;
 mod api_impl;
 mod opt;
+pub mod interp;
 
 pub use program::*;
 pub use engines::*;

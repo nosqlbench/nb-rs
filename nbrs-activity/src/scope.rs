@@ -13,10 +13,8 @@
 use std::collections::{HashMap, HashSet};
 
 use nbrs_workload::model::{BindingsDef, ParsedOp};
-use polydat::comprehension::{
-    collect_leaf_placeholders, collect_string_interp_refs,
-    propagate_parent_inputs, workload_param_type_name,
-};
+use crate::scope_synth::{collect_leaf_placeholders, value_to_param_string, workload_param_type_name};
+use polydat::kernel::interp::collect_string_interp_refs;
 
 /// Where a binding was declared — its provenance in the scope chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -636,34 +634,6 @@ fn logical_lines(source: &str) -> Vec<String> {
 /// `None`). The synthesizer falls back to extern cascade in
 /// those cases, since promoted-final inlining only works when
 /// the value can round-trip through source.
-fn value_to_param_string(v: &polydat::node::Value) -> Option<String> {
-    use polydat::node::Value;
-    match v {
-        Value::U64(n) => Some(n.to_string()),
-        Value::F64(n) => Some(n.to_string()),
-        Value::Bool(b) => Some(b.to_string()),
-        Value::Str(s) => Some(s.to_string()),
-        _ => None,
-    }
-}
-
-/// Format a single `const name := <literal>` line for raw-source
-/// emission paths (build_phase_scope_kernel, synthesize_for_each_scope).
-/// Mirrors [`BindingScope::add_param_binding`]'s value-formatting
-/// rules but produces a string instead of mutating a scope. Numeric
-/// and boolean values pass through bare; everything else is quoted
-/// with `"`/`\` escaped.
-fn format_param_binding_line(name: &str, value: &str) -> String {
-    if value.parse::<u64>().is_ok() || value.parse::<f64>().is_ok() {
-        format!("const {name} := {value}")
-    } else if value == "true" || value == "false" {
-        format!("const {name} := {value}")
-    } else {
-        let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-        format!("const {name} := \"{escaped}\"")
-    }
-}
-
 /// Parse an `input` declaration line and insert each declared
 /// slot name into `out`. Accepts both surface forms:
 ///
@@ -957,6 +927,12 @@ pub fn synthesize_phase_bindings_with_poll(
     Ok(BindingsDef::GkSource(source))
 }
 
+/// Synthesize a phase-scope kernel.
+///
+/// Pushes the phase's own `bindings:` body verbatim, then drives
+/// the shared cascade walker to declare every parent-visible
+/// name the body references plus the standard workload-param +
+/// parent-output + parent-input cascade.
 pub fn build_phase_scope_kernel(
     bindings: &nbrs_workload::model::BindingsDef,
     parent_manifest: &[crate::runner::ManifestEntry],
@@ -984,221 +960,44 @@ pub fn build_phase_scope_kernel(
     let mut emitted: HashSet<String> = HashSet::new();
     let mut inherited_names: Vec<String> = Vec::new();
 
-    // SRD-13f §"Wire-reference classification" — case 3 (local
-    // matter inclusion). Scan the phase body for references that
-    // resolve to non-final cycle bindings in the parent's AST;
-    // pretty-print their inclusion chains and inline as local
-    // matter rather than cascading via extern. Names included
-    // this way are added to `emitted` so the cascade loop below
-    // doesn't re-emit them as externs.
-    {
-        let parent_program = parent_kernel.program();
-        let body_locally_declared = scan_locally_declared_idents(&body_text);
-        let coord_names: HashSet<String> = {
-            let coord_count = parent_program.coord_count();
-            parent_program.input_names().into_iter().take(coord_count).collect()
-        };
-        let mut already_satisfied: HashSet<String> = HashSet::new();
-        already_satisfied.extend(body_locally_declared.iter().cloned());
-        already_satisfied.extend(coord_names.iter().cloned());
-
-        let mut referenced: HashSet<String> = HashSet::new();
-        collect_string_interp_refs(&body_text, &mut referenced);
-        for ident in scan_idents_in_gk_source(&body_text) {
-            if !body_locally_declared.contains(&ident) {
-                referenced.insert(ident);
-            }
-        }
-
-        let mut refs_sorted: Vec<String> = referenced.into_iter().collect();
-        refs_sorted.sort();
-        for name in &refs_sorted {
-            let name = name.as_str();
-            if already_satisfied.contains(name) { continue; }
-            // FINAL/SHARED go through the existing cascade
-            // (case 1 emission lives in that loop below).
-            let modifier = parent_program.output_modifier(name);
-            if modifier == polydat::dsl::ast::BindingModifier::CONST
-                || modifier == polydat::dsl::ast::BindingModifier::SHARED
-            {
-                continue;
-            }
-            let chain = parent_program.local_inclusion_chain(name, &already_satisfied);
-            if chain.is_empty() { continue; }
-            for stmt in chain {
-                let line = polydat::dsl::pprint::pp_statement(stmt);
-                source.push_str(&line);
-                source.push('\n');
-                match stmt {
-                    polydat::dsl::ast::Statement::Binding(b) => {
-                        for t in &b.targets {
-                            emitted.insert(t.clone());
-                            already_satisfied.insert(t.clone());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    // Cascade every workload param through this phase scope so
-    // descendants see them via materialize_wiring_from_outer. Same shape as
-    // build_do_loop_scope_kernel — and same shadow-aware skip the
-    // parent-output cascade applies: if the body locally
-    // declares `const NAME := …` (or any other body-level
-    // assignment for `NAME`), the local declaration is the
-    // authoritative binding for this scope and emitting
-    // `extern NAME: T` alongside it would collide. The
-    // workload-param value still propagates because the
-    // local-final transit-suppression rule in
-    // `materialize_wiring_from_outer` keeps the chain consistent
-    // across this scope; descendants pick up `NAME` from this
-    // scope's local final via the standard extern-cascade.
+    // Discover the names the phase body references and the
+    // names it locally declares (which shadow parent-output
+    // cascade per SRD-13f).
     let body_locally_declared = scan_locally_declared_idents(&body_text);
-    for (name, value) in workload_params {
-        if body_locally_declared.contains(name) { continue; }
-        let type_name = workload_param_type_name(value);
-        source.push_str(&format!("extern {name}: {type_name}\n"));
-        emitted.insert(name.clone());
-        inherited_names.push(name.clone());
+    let mut referenced: HashSet<String> = HashSet::new();
+    collect_string_interp_refs(&body_text, &mut referenced);
+    for ident in scan_idents_in_gk_source(&body_text) {
+        if !body_locally_declared.contains(&ident) {
+            referenced.insert(ident);
+        }
     }
 
-    // Cascade every name visible at the parent — outputs first,
-    // then inputs not already covered. Same chain-extension story
-    // as `build_do_loop_scope_kernel`.
-    let parent_program = parent_kernel.program();
-    // Compute the parent's coordinate-input name set generically.
-    // These names are coordinates at the parent level; they
-    // propagate to descendants via the kernel chain's coord
-    // mechanism, not via `extern` declarations. Coord names are
-    // just wire names — no specific name is privileged.
-    let coord_names: HashSet<String> = {
-        let coord_count = parent_program.coord_count();
-        parent_program.input_names().into_iter().take(coord_count).collect()
-    };
-    let skip_cascade = |emitted: &HashSet<String>, name: &str| -> bool {
-        emitted.contains(name)
-            || coord_names.contains(name)
-            || name.starts_with("__")
-    };
-    for name in parent_program.output_names() {
-        let owned = name.to_string();
-        if skip_cascade(&emitted, &owned) { continue; }
-        // Locally-declared phase bindings shadow ancestor names —
-        // skip the cascade for any name the phase body assigns.
-        if scan_locally_declared_idents(&body_text).contains(&owned) { continue; }
-        // SRD-13f §"Materialization gradient" — choose between
-        // **inlined constant** and **extern cascade** for each
-        // upstream output based on whether the upstream's value
-        // is statically known.
-        //
-        // Per SRD-13f, "inlined constant" applies only when "the
-        // outer wire's value is statically known (literal RHS,
-        // folded const bindings)". Per SRD-11 §"Two Evaluation
-        // Lifecycles", the `const` modifier has two
-        // implementation paths:
-        //
-        //   1. compile-fold — upstream's `fold_init_constants`
-        //      replaces the producing node with a *leaf const
-        //      node* (ConstU64/ConstStr/ConstF64/…). The value is
-        //      part of the upstream's compiled artifact, identical
-        //      across every activation.
-        //   2. scope-init pull — when the binding's wire chain
-        //      touches iteration externs, the producing node
-        //      stays as the original computation node (with
-        //      wiring to those externs). The value is computed
-        //      per scope activation in
-        //      `materialize_wiring_from_outer` Step 3, and only
-        //      lives for that activation (SRD-13c §"const":
-        //      "frozen for the activation").
-        //
-        // The cascaded source we emit here gets compiled and
-        // cached on the downstream's scope-tree node, so its
-        // lifetime is the workload run — longer than any
-        // single activation. Inlining a scope-init-pulled value
-        // as a literal in that source would freeze the first
-        // activation's value into the cached program forever,
-        // violating the per-activation lifecycle (the symptom
-        // is `mode=alpha` for every iteration of a for_each
-        // whose inner Bindings declared `const mode := sm`).
-        //
-        // The structural distinction is observable in
-        // `parent_program` via provenance: SRD-11 §"Provenance-
-        // Based Invalidation" tags every node with a bitmask of
-        // the graph inputs it transitively depends on. A
-        // compile-fold leaf const has provenance == 0 (no input
-        // dependence — its value is part of the compiled
-        // artifact). An auto-passthrough `__port_<name>` node
-        // has a single bit set for the input slot it reads — its
-        // value tracks that slot, which can be rebound on each
-        // scope activation (per SRD-13f §"Value-only shared
-        // cell"). A computation node depending on iter-externs
-        // has bits set for those externs — same per-activation
-        // re-eval story.
-        //
-        // We use provenance == 0 as the discriminator: only
-        // truly-input-independent values are safe to inline as
-        // literals into the cached downstream program. Everything
-        // else cascades as `extern`, and SRD-13f's per-activation
-        // materialization (matter interpreter's cell wiring +
-        // `materialize_wiring_from_outer` Step 3 const pull)
-        // delivers the correct value on each fresh subscope
-        // build.
-        //
-        // Workload params naturally fall into the leaf-const
-        // branch: each scope's cascade emits
-        // `const NAME := <literal>` for them, which the next
-        // scope's compile-fold pass collapses to a literal leaf
-        // node (provenance == 0). By the time a phase cascade
-        // examines its parent's workload-param outputs, they're
-        // leaf consts and get inlined automatically — no
-        // `is_workload_param` special case needed.
-        let (node_idx, port_idx) = parent_program.resolve_output_by_index(
-            parent_program.output_index(&owned).unwrap()
-        );
-        let upstream_is_statically_known =
-            parent_program.input_provenance_for(node_idx) == 0;
-        if upstream_is_statically_known
-            && let Some(value) = parent_kernel.lookup(&owned)
-            && let Some(natural) = value_to_param_string(&value)
-        {
-            let line = format_param_binding_line(&owned, &natural);
-            source.push_str(&line);
-            source.push('\n');
-            emitted.insert(owned);
-            continue;
-        }
-        let port_type = parent_program.node_meta(node_idx).outs[port_idx].typ;
-        let type_name = match port_type {
-            polydat::node::PortType::U64 => "u64",
-            polydat::node::PortType::F64 => "f64",
-            polydat::node::PortType::Str => "String",
-            polydat::node::PortType::Bool => "bool",
-            polydat::node::PortType::Ext => "Ext",
-            _ => "String",
-        };
-        source.push_str(&format!("extern {owned}: {type_name}\n"));
-        emitted.insert(owned.clone());
-        inherited_names.push(owned);
-    }
-    for name in parent_program.input_names() {
-        if skip_cascade(&emitted, &name) { continue; }
-        if scan_locally_declared_idents(&body_text).contains(&name) { continue; }
-        let port_type = parent_program.input_port_type(&name)
-            .unwrap_or(polydat::node::PortType::Str);
-        let type_name = match port_type {
-            polydat::node::PortType::U64 => "u64",
-            polydat::node::PortType::F64 => "f64",
-            polydat::node::PortType::Str => "String",
-            polydat::node::PortType::Bool => "bool",
-            polydat::node::PortType::Ext => "Ext",
-            _ => "String",
-        };
-        source.push_str(&format!("extern {name}: {type_name}\n"));
-        emitted.insert(name.clone());
-        inherited_names.push(name);
-    }
+    // Drive the shared cascade walker. The phase body's
+    // locally-declared idents go into both pre_emitted (so the
+    // walker doesn't re-cascade them) and shadow_names (so the
+    // workload-param + parent-output passes also skip them).
+    crate::scope_synth::cascade_parent_into_source(
+        crate::scope_synth::CascadeInputs {
+            parent_kernel,
+            workload_params,
+            parent_manifest,
+            referenced: &referenced,
+            pre_emitted: &body_locally_declared,
+            shadow_names: &body_locally_declared,
+            // Phase opts out: the body may already declare
+            // referenced names as `input` / `extern` and a
+            // step-3 emission would collide. Phase relies on
+            // step 5 (parent-output cascade) and step 6
+            // (parent-input cascade) to bring in what the body
+            // doesn't declare locally.
+            include_referenced_cascade: false,
+        },
+        crate::scope_synth::CascadeOutputs {
+            source: &mut source,
+            emitted: &mut emitted,
+            inherited_names: &mut inherited_names,
+        },
+    );
 
     // Append the phase's own bindings body verbatim. The GK
     // compiler classifies each statement (init / shared / final)
@@ -1231,7 +1030,7 @@ pub fn build_phase_scope_kernel(
     let mut kernel = parent_kernel
         .build_subscope(matter)
         .map_err(|e| format!("{context}: phase scope synthesis: {e}"))?;
-    propagate_parent_inputs(&mut kernel, parent_kernel);
+    parent_kernel.propagate_inputs_into(&mut kernel);
     Ok(kernel)
 }
 
@@ -1246,143 +1045,57 @@ pub fn build_do_loop_scope_kernel(
     strict: bool,
     context: &str,
 ) -> Result<polydat::kernel::GkKernel, String> {
-    let referenced = collect_leaf_placeholders(&[condition.to_string()]);
-    let manifest_by_name: HashMap<&str, &crate::runner::ManifestEntry> =
-        parent_manifest.iter().map(|e| (e.name.as_str(), e)).collect();
-
+    // Scope-specific contribution: declare the counter extern
+    // (if a counter is in play). The counter is the do-loop's
+    // only own-iter wire; pre-emit it so the shared cascade
+    // walker doesn't try to type-cascade it from the parent
+    // (which doesn't know about it).
     let mut source = String::new();
     let mut emitted: HashSet<String> = HashSet::new();
     let mut inherited_names: Vec<String> = Vec::new();
 
-    for name in &referenced {
-        if let Some(c) = counter
-            && c == name
-        {
-            // Counter handled below.
-            continue;
-        }
-        if let Some(entry) = manifest_by_name.get(name.as_str()) {
-            let type_name = match entry.port_type {
-                polydat::node::PortType::U64 => "u64",
-                polydat::node::PortType::F64 => "f64",
-                polydat::node::PortType::Str => "String",
-                polydat::node::PortType::Bool => "bool",
-                _ => "String",
-            };
-            source.push_str(&format!("extern {name}: {type_name}\n"));
-            emitted.insert(name.clone());
-            // Manifest-sourced names cascade in from the
-            // parent scope; mark as inherited so this
-            // do-loop scope's `compute_own_coordinates`
-            // doesn't double up the parent's iter coord.
-            // Same fix shape as `synthesize_for_each_scope`.
-            inherited_names.push(name.clone());
-        } else if let Some(value) = workload_params.get(name) {
-            // Chain-aware: a `set:` / `bindings:` scope above
-            // us may have shadowed the workload-param default.
-            polydat::comprehension::emit_workload_param_chain_aware(
-                name, value, parent_kernel, &mut source, &mut emitted, None,
-            );
-        }
-    }
-
     if let Some(c) = counter {
-        if !emitted.contains(c) {
-            source.push_str(&format!("extern {c}: u64\n"));
-            emitted.insert(c.to_string());
-        }
+        source.push_str(&format!("extern {c}: u64\n"));
+        emitted.insert(c.to_string());
     }
 
-    // Cascade every workload param through this do-loop scope
-    // so descendants see them via materialize_wiring_from_outer. Declared as
-    // `extern` (not `final`) so the value flows in from the
-    // workload root via the standard GK scope chain — the
-    // intermediate kernel doesn't re-declare the value at every
-    // layer, it just provides a wire for it to pass through.
-    for (name, value) in workload_params {
-        if emitted.contains(name) { continue; }
-        let type_name = workload_param_type_name(value);
-        source.push_str(&format!("extern {name}: {type_name}\n"));
-        emitted.insert(name.clone());
-        inherited_names.push(name.clone());
-    }
-
-    // Cascade every name visible at the parent scope (outer iter
-    // vars and any other ancestor-declared inputs *and* outputs)
-    // — same chain-break story as `build_for_each_scope_kernel`.
-    // See that function's comment for the motivating example.
-    let parent_program = parent_kernel.program();
-    // Generic coord-set detection — propagation via kernel chain,
-    // not extern cascade. No specific wire name is privileged.
-    let coord_names: HashSet<String> = {
-        let coord_count = parent_program.coord_count();
-        parent_program.input_names().into_iter().take(coord_count).collect()
-    };
-    let skip_cascade = |emitted: &HashSet<String>, name: &str| -> bool {
-        emitted.contains(name)
-            || coord_names.contains(name)
-            || name.starts_with("__")
-    };
-    for name in parent_program.output_names() {
-        let owned = name.to_string();
-        if skip_cascade(&emitted, &owned) { continue; }
-        if let Some(c) = counter && c == owned { continue; }
-        let (node_idx, port_idx) = parent_program.resolve_output_by_index(
-            parent_program.output_index(&owned).unwrap()
-        );
-        let port_type = parent_program.node_meta(node_idx).outs[port_idx].typ;
-        let type_name = match port_type {
-            polydat::node::PortType::U64 => "u64",
-            polydat::node::PortType::F64 => "f64",
-            polydat::node::PortType::Str => "String",
-            polydat::node::PortType::Bool => "bool",
-            _ => "String",
-        };
-        source.push_str(&format!("extern {owned}: {type_name}\n"));
-        emitted.insert(owned.clone());
-        inherited_names.push(owned);
-    }
-    for name in parent_program.input_names() {
-        if skip_cascade(&emitted, &name) { continue; }
-        if let Some(c) = counter && c == name { continue; }
-        let port_type = parent_program.input_port_type(&name)
-            .unwrap_or(polydat::node::PortType::Str);
-        let type_name = match port_type {
-            polydat::node::PortType::U64 => "u64",
-            polydat::node::PortType::F64 => "f64",
-            polydat::node::PortType::Str => "String",
-            polydat::node::PortType::Bool => "bool",
-            _ => "String",
-        };
-        source.push_str(&format!("extern {name}: {type_name}\n"));
-        emitted.insert(name.clone());
-        inherited_names.push(name);
-    }
+    // Drive the shared cascade walker. `referenced` is the set
+    // of `{name}` placeholders the condition expression
+    // mentions; pre_emitted is the counter (if any).
+    let referenced = collect_leaf_placeholders(&[condition.to_string()]);
+    let pre_emitted: HashSet<String> = counter.iter().map(|c| c.to_string()).collect();
+    let shadow_names: HashSet<String> = pre_emitted.clone();
+    crate::scope_synth::cascade_parent_into_source(
+        crate::scope_synth::CascadeInputs {
+            parent_kernel,
+            workload_params,
+            parent_manifest,
+            referenced: &referenced,
+            pre_emitted: &pre_emitted,
+            shadow_names: &shadow_names,
+            // do-loop opts in: the condition expression is
+            // narrowly-scoped GK source that references
+            // names which need extern declarations to be
+            // resolvable. Step 3 emits those externs against
+            // parent_manifest's types.
+            include_referenced_cascade: true,
+        },
+        crate::scope_synth::CascadeOutputs {
+            source: &mut source,
+            emitted: &mut emitted,
+            inherited_names: &mut inherited_names,
+        },
+    );
 
     if source.is_empty() {
         source.push_str("const __empty := 0\n");
     }
 
-    // SRD-67 Phase 2 — migrate the do-loop synthesiser to the
-    // SubcontextBuilder protocol. The bridge
-    // (`build_kernel_under_parent`) wraps a transient
-    // `ScopeKernel<RootMarker>` around the borrowed parent so
-    // builder-side validation (Rule 1 import resolution, Rule 2
-    // shared-export collision rewrite, FinalShadow) runs against
-    // the parent's program shape, then re-applies
-    // `materialize_wiring_from_outer` against the live parent so the child's
-    // input slots pick up real outer-scope values. Any compile-
-    // time failure surfaces as `ContractViolation`; we map it to
-    // the legacy synthesiser's String-error contract.
-    //
+    // SRD-67 — finalize through the SubcontextBuilder bridge.
     // `gk_lib_paths` / `workload_dir` / `strict` aren't yet
-    // threaded through the builder bridge (the bridge uses the
-    // default `compile_ast` path inside finalize); this is fine
-    // for the do-loop's current source shape — it emits only
-    // simple `extern <name>: <type>` and `final <name> := <lit>`
-    // lines, no module imports / lib references / strict-mode
-    // hints. If the synthesiser ever emits richer source, the
-    // bridge will need extending. Recorded as a Phase 3 follow-up.
+    // threaded through (the bridge uses the default `compile_ast`
+    // path); the do-loop's emitted source shape doesn't need
+    // them. Recorded as a Phase 3 follow-up.
     let _ = (gk_lib_paths, workload_dir, strict);
     let matter = polydat::subcontext::GkMatter::builder()
         .label(context)
@@ -1393,7 +1106,7 @@ pub fn build_do_loop_scope_kernel(
     let mut kernel = parent_kernel
         .build_subscope(matter)
         .map_err(|e| format!("{context}: do-loop scope synthesis: {e}"))?;
-    propagate_parent_inputs(&mut kernel, parent_kernel);
+    parent_kernel.propagate_inputs_into(&mut kernel);
     Ok(kernel)
 }
 
@@ -1800,7 +1513,7 @@ pub fn build_op_template_scope_kernel(
             // `const ann_opts := select_str(str_eq(
             // rerank_mode, "pinned"), …)` folded against the
             // wrong rerank_mode value.
-            polydat::comprehension::emit_workload_param_chain_aware(
+            crate::scope_synth::emit_workload_param_chain_aware(
                 name, value, parent_kernel, &mut source, &mut emitted, None,
             );
         } else if let Some(entry) = manifest_by_name.get(name.as_str()) {
@@ -1861,7 +1574,7 @@ pub fn build_op_template_scope_kernel(
         // local `const NAME := <hashmap-default>` would mask
         // the shadow and break SRD-21's single-resolution-
         // surface invariant.
-        polydat::comprehension::emit_workload_param_chain_aware(
+        crate::scope_synth::emit_workload_param_chain_aware(
             name, value, parent_kernel, &mut source, &mut emitted, None,
         );
     }
@@ -1890,7 +1603,7 @@ pub fn build_op_template_scope_kernel(
     // bridge applies `mark_inherited_outputs` and
     // `materialize_wiring_from_outer` against the live parent so per-cycle
     // values reach the inner kernel's input slots; the trailing
-    // `propagate_parent_inputs` keeps cascade-extern'd inputs
+    // `GkKernel::propagate_inputs_into` keeps cascade-extern'd inputs
     // flowing through (until Rule 4 / Rule 5 absorb them).
     let compile_options = polydat::subcontext::CompileOptions {
         workload_dir: workload_dir.map(|p| p.to_path_buf()),
@@ -1959,7 +1672,7 @@ pub fn build_op_template_scope_kernel(
     let mut kernel = parent_kernel
         .build_subscope(matter)
         .map_err(|e| format!("{context}: op-template scope synthesis: {e}"))?;
-    propagate_parent_inputs(&mut kernel, parent_kernel);
+    parent_kernel.propagate_inputs_into(&mut kernel);
     Ok(kernel)
 }
 
@@ -4130,7 +3843,7 @@ extern keyspace: String
         // The phase compile must see `p` as Ext so mod_in's
         // second arg (Partition input) type-checks. Reproduces
         // the integration error "u64 ─▶ ext expects ext".
-        let parent_kernel = polydat::comprehension::synthesize_for_each_scope(
+        let parent_kernel = crate::scope_synth::build_for_each_scope_kernel(
             &[("p".to_string(), "partitions(\"linear:3\")".to_string())],
             &[],
             &polydat::dsl::compile_gk("\n").unwrap(),
@@ -4172,7 +3885,7 @@ extern keyspace: String
         // build_phase_scope_kernel cascade was emitting
         // `extern p: u64` (or Str fallback) because the
         // type-name lookup didn't handle PortType::Ext.
-        let parent_kernel = polydat::comprehension::synthesize_for_each_scope(
+        let parent_kernel = crate::scope_synth::build_for_each_scope_kernel(
             &[("p".to_string(), "partitions(\"linear:3\")".to_string())],
             &[], // empty parent_manifest is fine; for_each scope only
                  // cascades names it actually references.
@@ -4302,7 +4015,7 @@ extern keyspace: String
         ).expect("workload root compile");
 
         // ── for_each scope ──
-        let for_each = polydat::comprehension::synthesize_for_each_scope(
+        let for_each = crate::scope_synth::build_for_each_scope_kernel(
             &[("outer".to_string(), "p1,p2".to_string())],
             &extract_manifest(root.program()),
             &root,
@@ -4465,7 +4178,7 @@ extern keyspace: String
             "root should have has_a as SHARED output; got {shared:?}");
 
         // Step 3: outer for_each scope.
-        let outer_fe = polydat::comprehension::synthesize_for_each_scope(
+        let outer_fe = crate::scope_synth::build_for_each_scope_kernel(
             &[("outer".to_string(), "p1,p2".to_string())],
             &extract_manifest(root.program()),
             &root,
@@ -4478,7 +4191,7 @@ extern keyspace: String
         ).expect("outer for_each synth");
 
         // Step 4: inner for_each scope (dependent multi-iter).
-        let inner_fe = polydat::comprehension::synthesize_for_each_scope(
+        let inner_fe = crate::scope_synth::build_for_each_scope_kernel(
             &[
                 ("inner".to_string(), "lo,hi".to_string()),
                 ("label".to_string(), "tag_p1_lo,tag_p1_hi".to_string()),
@@ -4727,7 +4440,7 @@ extern keyspace: String
             "workload root has_a must NOT be Coordinate; got {root_has_a_kind:?}");
 
         // Step 2: for_each scope.
-        let for_each = polydat::comprehension::synthesize_for_each_scope(
+        let for_each = crate::scope_synth::build_for_each_scope_kernel(
             &[("outer".to_string(), "p1,p2".to_string())],
             &extract_manifest(root.program()),
             &root,
@@ -4800,7 +4513,7 @@ extern keyspace: String
         // synthesizer (the path runner.rs uses for ForComprehension
         // install specs). Iter vars are a placeholder so the
         // builder runs.
-        let for_each_kernel = polydat::comprehension::synthesize_for_each_scope(
+        let for_each_kernel = crate::scope_synth::build_for_each_scope_kernel(
             &[("dummy_var".to_string(), "1,2".to_string())],
             &extract_manifest(root.program()),
             &root,

@@ -30,7 +30,7 @@ const MULT: u64 = 6364136223846793005;
 /// This is the bit-mixing function that turns correlated LCG state
 /// into high-quality pseudo-random output.
 #[inline]
-fn pcg_output(state: u64) -> u64 {
+pub(crate) fn pcg_output(state: u64) -> u64 {
     let word = ((state >> ((state >> 59) + 5)) ^ state)
         .wrapping_mul(12605985483714917081);
     (word >> 43) ^ word
@@ -46,7 +46,7 @@ fn pcg_output(state: u64) -> u64 {
 /// - `inc`: LCG increment (must be odd; typically `2 * stream + 1`)
 /// - `position`: the sequence index to seek to
 #[inline]
-fn pcg_seek(seed: u64, inc: u64, position: u64) -> u64 {
+pub(crate) fn pcg_seek(seed: u64, inc: u64, position: u64) -> u64 {
     let mut cur_mult = MULT;
     let mut cur_plus = inc;
     let mut acc_mult: u64 = 1;

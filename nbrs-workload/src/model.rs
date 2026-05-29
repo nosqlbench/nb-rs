@@ -975,11 +975,13 @@ impl<'de> serde::Deserialize<'de> for Checkpoint {
 /// All iteration shapes (`for_each` single-clause,
 /// `for_combinations`, `for_each_union`) collapse into one
 /// `Comprehension` variant carrying the canonical
-/// `polydat::comprehension::Comprehension` AST. The
-/// AST's mode (Cartesian vs Union) is the discriminator;
-/// clause count distinguishes single-var iteration from
-/// cross-product iteration. See SRD-18b §"Iteration as a
-/// First-Class Concept".
+/// [`polydat::comprehension::Comprehension`] AST —
+/// the operator-tree form of the algebra layer. The
+/// structural variant (`Cartesian` / `Union` / `Clause` /
+/// `Zip`) is the discriminator; `Filter` and `Order` wrap
+/// the body when the workload declares `where` / `order`.
+/// See SRD-18b §"Iteration as a First-Class Concept" and
+/// `polydat/docs/design/comprehension_cutover_contact_surfaces.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ScenarioNode {
     /// A single phase to execute.

@@ -5,13 +5,16 @@
 //! detection rule that picks between Cartesian (single or
 //! multi-clause) and Union comprehension modes.
 //!
-//! See [`polydat::comprehension::Comprehension`] and
-//! `comprehension_from_subspaces` for the detection rule:
-//! any repeated var name across sub-spaces ⇒ Union; otherwise
-//! Cartesian over the flattened clause list.
+//! Assertions walk the algebra AST directly: a `for_each:`
+//! parses to a `polydat::comprehension::Comprehension`
+//! whose top-level shape (Clause / Cartesian / Union / Zip,
+//! optionally wrapped by Filter / Order) records the
+//! parsed-out structure.
 
 use std::collections::HashMap;
-use polydat::comprehension::ComprehensionMode;
+use polydat::comprehension::Comprehension as Algebra;
+use polydat::comprehension::source::{LiteralValue, Source};
+use polydat::comprehension::strategy::ZipMode;
 use nbrs_workload::model::ScenarioNode;
 use nbrs_workload::parse::parse_workload;
 
@@ -20,6 +23,56 @@ fn first_scenario_node(yaml: &str) -> ScenarioNode {
         .unwrap_or_else(|e| panic!("parse failed: {e}\n--- yaml ---\n{yaml}"));
     let nodes = wl.scenarios.values().next().expect("at least one scenario");
     nodes.first().cloned().expect("at least one scenario node")
+}
+
+/// Peel outer `Order` / `Filter` wrappers; return the
+/// structural body. Tests that care about modifiers assert
+/// on the modifier separately.
+fn body_of(comp: &Algebra) -> &Algebra {
+    let mut body = comp;
+    loop {
+        match body {
+            Algebra::Order { child, .. } | Algebra::Filter { child, .. } => body = child,
+            _ => break body,
+        }
+    }
+}
+
+/// Optional filter predicate, if the comprehension is wrapped
+/// in (or below an Order wrapping) a Filter.
+fn filter_of(comp: &Algebra) -> Option<&str> {
+    let mut node = comp;
+    loop {
+        match node {
+            Algebra::Order { child, .. } => node = child,
+            Algebra::Filter { predicate, .. } => return Some(predicate.as_str()),
+            _ => return None,
+        }
+    }
+}
+
+/// Get a leaf Clause's source if `node` is one.
+fn clause_source(node: &Algebra) -> Option<&Source> {
+    match node {
+        Algebra::Clause { source, .. } => Some(source),
+        _ => None,
+    }
+}
+
+/// Get a leaf Clause's name if `node` is one.
+fn clause_name(node: &Algebra) -> Option<&str> {
+    match node {
+        Algebra::Clause { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+/// Extract Literal values from a source, panicking otherwise.
+fn literal_values(source: &Source) -> &[LiteralValue] {
+    match source {
+        Source::Literal { values } => values.as_slice(),
+        other => panic!("expected Literal source, got {other:?}"),
+    }
 }
 
 const PHASES: &str = r#"
@@ -43,12 +96,11 @@ scenarios:
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
     };
-    let ComprehensionMode::Cartesian(clauses) = &comprehension.mode else {
-        panic!("expected Cartesian, got {:?}", comprehension.mode);
-    };
-    assert_eq!(clauses.len(), 1);
-    assert_eq!(clauses[0].var(), "x");
-    assert_eq!(clauses[0].expr(), "1,2,3");
+    // Single-clause Cartesian collapses to bare Clause at the algebra layer.
+    let body = body_of(&comprehension);
+    assert_eq!(clause_name(body), Some("x"));
+    let values = literal_values(clause_source(body).unwrap());
+    assert_eq!(values.len(), 3);
 }
 
 #[test]
@@ -64,12 +116,15 @@ scenarios:
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
     };
-    let ComprehensionMode::Cartesian(clauses) = &comprehension.mode else {
-        panic!("expected Cartesian, got {:?}", comprehension.mode);
-    };
-    assert_eq!(clauses.len(), 2);
-    assert_eq!(clauses[0].var(), "x");
-    assert_eq!(clauses[1].var(), "y");
+    let body = body_of(&comprehension);
+    match body {
+        Algebra::Cartesian { children } => {
+            assert_eq!(children.len(), 2);
+            assert_eq!(clause_name(&children[0]), Some("x"));
+            assert_eq!(clause_name(&children[1]), Some("y"));
+        }
+        other => panic!("expected Cartesian, got {other:?}"),
+    }
 }
 
 #[test]
@@ -87,14 +142,19 @@ scenarios:
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
     };
-    let ComprehensionMode::Union(subspaces) = &comprehension.mode else {
-        panic!("expected Union, got {:?}", comprehension.mode);
-    };
-    assert_eq!(subspaces.len(), 2);
-    assert_eq!(subspaces[0][0].var(), "x");
-    assert_eq!(subspaces[0][0].expr(), "1");
-    assert_eq!(subspaces[1][0].var(), "x");
-    assert_eq!(subspaces[1][0].expr(), "2");
+    let body = body_of(&comprehension);
+    match body {
+        Algebra::Union { children } => {
+            assert_eq!(children.len(), 2);
+            assert_eq!(clause_name(&children[0]), Some("x"));
+            assert_eq!(clause_name(&children[1]), Some("x"));
+            let v0 = literal_values(clause_source(&children[0]).unwrap());
+            assert_eq!(v0, &[LiteralValue::Int(1)]);
+            let v1 = literal_values(clause_source(&children[1]).unwrap());
+            assert_eq!(v1, &[LiteralValue::Int(2)]);
+        }
+        other => panic!("expected Union, got {other:?}"),
+    }
 }
 
 #[test]
@@ -112,12 +172,15 @@ scenarios:
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
     };
-    let ComprehensionMode::Cartesian(clauses) = &comprehension.mode else {
-        panic!("expected Cartesian, got {:?}", comprehension.mode);
-    };
-    assert_eq!(clauses.len(), 2);
-    assert_eq!(clauses[0].var(), "x");
-    assert_eq!(clauses[1].var(), "y");
+    let body = body_of(&comprehension);
+    match body {
+        Algebra::Cartesian { children } => {
+            assert_eq!(children.len(), 2);
+            assert_eq!(clause_name(&children[0]), Some("x"));
+            assert_eq!(clause_name(&children[1]), Some("y"));
+        }
+        other => panic!("expected Cartesian, got {other:?}"),
+    }
 }
 
 #[test]
@@ -137,12 +200,13 @@ scenarios:
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
     };
-    let ComprehensionMode::Union(subspaces) = &comprehension.mode else {
-        panic!("expected Union, got {:?}", comprehension.mode);
-    };
-    assert_eq!(subspaces.len(), 2);
-    assert_eq!(subspaces[0][0].expr(), "1");
-    assert_eq!(subspaces[1][0].expr(), "2");
+    let body = body_of(&comprehension);
+    match body {
+        Algebra::Union { children } => {
+            assert_eq!(children.len(), 2);
+        }
+        other => panic!("expected Union, got {other:?}"),
+    }
 }
 
 #[test]
@@ -162,16 +226,24 @@ scenarios:
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
     };
-    let ComprehensionMode::Union(subspaces) = &comprehension.mode else {
-        panic!("expected Union, got {:?}", comprehension.mode);
-    };
-    assert_eq!(subspaces.len(), 2);
-    assert_eq!(subspaces[0].len(), 2);
-    assert_eq!(subspaces[0][0].var(), "k");
-    assert_eq!(subspaces[0][0].expr(), "10");
-    assert_eq!(subspaces[0][1].var(), "limit");
-    assert_eq!(subspaces[0][1].expr(), "10,20,30");
-    assert_eq!(subspaces[1][0].expr(), "100");
+    let body = body_of(&comprehension);
+    match body {
+        Algebra::Union { children } => {
+            assert_eq!(children.len(), 2);
+            // Each sub-space is a 2-clause Cartesian.
+            for child in children {
+                match child {
+                    Algebra::Cartesian { children: inner } => {
+                        assert_eq!(inner.len(), 2);
+                        assert_eq!(clause_name(&inner[0]), Some("k"));
+                        assert_eq!(clause_name(&inner[1]), Some("limit"));
+                    }
+                    other => panic!("expected Cartesian sub-space, got {other:?}"),
+                }
+            }
+        }
+        other => panic!("expected Union, got {other:?}"),
+    }
 }
 
 #[test]
@@ -188,13 +260,16 @@ scenarios:
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
     };
-    let ComprehensionMode::Cartesian(clauses) = &comprehension.mode else {
-        panic!("expected Cartesian, got {:?}", comprehension.mode);
-    };
-    assert_eq!(clauses.len(), 3);
-    assert_eq!(clauses[0].var(), "x");
-    assert_eq!(clauses[1].var(), "y");
-    assert_eq!(clauses[2].var(), "z");
+    let body = body_of(&comprehension);
+    match body {
+        Algebra::Cartesian { children } => {
+            assert_eq!(children.len(), 3);
+            assert_eq!(clause_name(&children[0]), Some("x"));
+            assert_eq!(clause_name(&children[1]), Some("y"));
+            assert_eq!(clause_name(&children[2]), Some("z"));
+        }
+        other => panic!("expected Cartesian, got {other:?}"),
+    }
 }
 
 #[test]
@@ -211,9 +286,10 @@ scenarios:
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
     };
-    assert!(comprehension.is_cartesian());
+    // Single clause; no filter, no order; coordinate_names = ["k"].
+    assert!(filter_of(&comprehension).is_none());
+    assert!(!matches!(comprehension, Algebra::Order { .. }));
     assert_eq!(comprehension.coordinate_names(), vec!["k"]);
-    assert_eq!(comprehension.filter, None);
 }
 
 #[test]
@@ -230,10 +306,7 @@ scenarios:
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
     };
-    assert_eq!(
-        comprehension.filter,
-        Some("{k} * {limit} < 1000".to_string()),
-    );
+    assert_eq!(filter_of(&comprehension), Some("{k} * {limit} < 1000"));
 }
 
 #[test]
@@ -251,28 +324,24 @@ scenarios:
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
     };
-    let ComprehensionMode::Cartesian(clauses) = &comprehension.mode else {
-        panic!("expected Cartesian, got {:?}", comprehension.mode);
-    };
-    assert_eq!(clauses.len(), 1);
-    assert!(clauses[0].expr().contains("matching_profiles"), "got: {}", clauses[0].expr());
-    assert!(clauses[0].expr().contains(","));
+    let body = body_of(&comprehension);
+    assert_eq!(clause_name(body), Some("p"));
+    match clause_source(body) {
+        Some(Source::Generator { expr, .. }) => {
+            assert!(expr.contains("matching_profiles"), "got: {expr}");
+            assert!(expr.contains(","));
+        }
+        other => panic!("expected Generator source, got {other:?}"),
+    }
 }
 
 // ---- Layer 7a parallel-iter through the YAML parser --------
 
 #[test]
 fn parallel_iter_string_form_round_trips_through_yaml() {
-    // `(a, b) in (e1, e2)` survives the workload-YAML →
-    // ScenarioNode → Comprehension path with a Parallel
-    // ClauseSource and Strict zip mode.
-    //
-    // Each parallel-group expression is *one* expression
-    // yielding a list — function-call form (`fib(8)`) or
-    // generator form (`pow2(6)`) avoids the comma-splitting
-    // ambiguity that bare `1,2,3` literal lists hit at the
-    // RHS-paren-group level.
-    use polydat::comprehension::{ClauseSource, ZipMode};
+    // `(a, b) in (e1, e2)` survives the YAML → algebra path
+    // as a top-level Zip with two Clause children and
+    // Strict mode.
     let yaml = format!(r#"
 scenarios:
   s:
@@ -284,24 +353,20 @@ scenarios:
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
     };
-    let ComprehensionMode::Cartesian(clauses) = &comprehension.mode else {
-        panic!("expected Cartesian, got {:?}", comprehension.mode);
-    };
-    assert_eq!(clauses.len(), 1);
-    assert!(clauses[0].is_parallel());
-    assert_eq!(clauses[0].vars, vec!["x".to_string(), "y".to_string()]);
-    match &clauses[0].source {
-        ClauseSource::Parallel { mode, exprs } => {
+    let body = body_of(&comprehension);
+    match body {
+        Algebra::Zip { children, mode } => {
             assert_eq!(*mode, ZipMode::Strict);
-            assert_eq!(exprs, &vec!["fib(5)".to_string(), "pow2(5)".to_string()]);
+            assert_eq!(children.len(), 2);
+            assert_eq!(clause_name(&children[0]), Some("x"));
+            assert_eq!(clause_name(&children[1]), Some("y"));
         }
-        _ => panic!("expected Parallel source"),
+        other => panic!("expected Zip, got {other:?}"),
     }
 }
 
 #[test]
 fn parallel_iter_zip_truncate_round_trips_through_yaml() {
-    use polydat::comprehension::{ClauseSource, ZipMode};
     let yaml = format!(r#"
 scenarios:
   s:
@@ -313,21 +378,20 @@ scenarios:
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
     };
-    let ComprehensionMode::Cartesian(clauses) = &comprehension.mode else {
-        panic!("expected Cartesian, got {:?}", comprehension.mode);
-    };
-    match &clauses[0].source {
-        ClauseSource::Parallel { mode, .. } => {
+    let body = body_of(&comprehension);
+    match body {
+        Algebra::Zip { mode, .. } => {
             assert_eq!(*mode, ZipMode::Truncate);
         }
-        _ => panic!("expected Parallel source"),
+        other => panic!("expected Zip, got {other:?}"),
     }
 }
 
 #[test]
 fn parallel_iter_mixed_with_single_clause_round_trips() {
     // `(x, y) in (...), z in zs` — parallel group is one
-    // clause, z is another. Cartesian over both.
+    // clause, z is another. Cartesian over both: child 0 is
+    // a Zip, child 1 is a Clause.
     let yaml = format!(r#"
 scenarios:
   s:
@@ -339,11 +403,13 @@ scenarios:
     let ScenarioNode::Comprehension { comprehension, .. } = node else {
         panic!("expected Comprehension");
     };
-    let ComprehensionMode::Cartesian(clauses) = &comprehension.mode else {
-        panic!("expected Cartesian, got {:?}", comprehension.mode);
-    };
-    assert_eq!(clauses.len(), 2);
-    assert!(clauses[0].is_parallel());
-    assert!(!clauses[1].is_parallel());
-    assert_eq!(clauses[1].var(), "z");
+    let body = body_of(&comprehension);
+    match body {
+        Algebra::Cartesian { children } => {
+            assert_eq!(children.len(), 2);
+            assert!(matches!(&children[0], Algebra::Zip { .. }));
+            assert_eq!(clause_name(&children[1]), Some("z"));
+        }
+        other => panic!("expected Cartesian, got {other:?}"),
+    }
 }

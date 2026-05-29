@@ -29,7 +29,7 @@
 
 use std::collections::HashMap;
 
-use super::ast::{Clause, Comprehension, ShellOrigin, TraversalOrder, ZipMode};
+use super::ast_legacy::{Clause, Comprehension, ShellOrigin, TraversalOrder, ZipMode};
 
 /// Parse a single clause.
 ///
@@ -270,10 +270,10 @@ pub fn parse_comprehension_text(text: &str) -> Result<Comprehension, String> {
 /// need a same-day update; will be retired once those move.
 #[deprecated(note = "use Comprehension::validate() — single source of truth for AST invariants")]
 pub fn validate_order_for_mode(
-    mode: &super::ast::ComprehensionMode,
+    mode: &super::ast_legacy::ComprehensionMode,
     order: &Option<TraversalOrder>,
 ) -> Result<(), String> {
-    super::ast::check_order_for_mode(mode, order)
+    super::ast_legacy::check_order_for_mode(mode, order)
 }
 
 /// Parse an order spec string into a [`TraversalOrder`].
@@ -1034,7 +1034,7 @@ mod tests {
         assert!(c.is_parallel());
         assert_eq!(c.vars, vec!["x".to_string(), "y".to_string()]);
         match &c.source {
-            super::super::ast::ClauseSource::Parallel { exprs, .. } => {
+            super::super::ast_legacy::ClauseSource::Parallel { exprs, .. } => {
                 assert_eq!(exprs, &vec!["1..10".to_string(), "100..1000..100".to_string()]);
             }
             _ => panic!("expected Parallel source"),
@@ -1056,7 +1056,7 @@ mod tests {
         let c = parse_clause("(x, y) in (fib(8), pow2(8))").unwrap();
         assert!(c.is_parallel());
         match &c.source {
-            super::super::ast::ClauseSource::Parallel { exprs, .. } => {
+            super::super::ast_legacy::ClauseSource::Parallel { exprs, .. } => {
                 assert_eq!(exprs, &vec!["fib(8)".to_string(), "pow2(8)".to_string()]);
             }
             _ => panic!("expected Parallel source"),
@@ -1128,7 +1128,7 @@ mod tests {
 
     #[test]
     fn round_trip_parallel_strict() {
-        use super::super::ast::ZipMode;
+        use super::super::ast_legacy::ZipMode;
         roundtrip_clause(Clause::parallel(["x", "y"], ["fib(8)", "pow2(8)"]));
         roundtrip_clause(Clause::parallel_with_mode(
             ZipMode::Strict, ["a", "b", "c"], ["1..3", "10..30..10", "100..300..100"]
@@ -1137,7 +1137,7 @@ mod tests {
 
     #[test]
     fn round_trip_parallel_truncate_and_cycle() {
-        use super::super::ast::ZipMode;
+        use super::super::ast_legacy::ZipMode;
         roundtrip_clause(Clause::parallel_with_mode(
             ZipMode::Truncate, ["x", "y"], ["fib(8)", "pow2(4)"]
         ));
@@ -1176,7 +1176,7 @@ mod tests {
 
     #[test]
     fn parse_clause_parallel_zip_truncate_mode() {
-        use super::super::ast::{ClauseSource, ZipMode};
+        use super::super::ast_legacy::{ClauseSource, ZipMode};
         let c = parse_clause("(x, y) in zip_truncate(1..10, fib(8))").unwrap();
         match &c.source {
             ClauseSource::Parallel { mode, exprs } => {
@@ -1189,7 +1189,7 @@ mod tests {
 
     #[test]
     fn parse_clause_parallel_zip_cycle_mode() {
-        use super::super::ast::{ClauseSource, ZipMode};
+        use super::super::ast_legacy::{ClauseSource, ZipMode};
         let c = parse_clause("(x, y) in zip_cycle(1..10, 100..1000..100)").unwrap();
         match &c.source {
             ClauseSource::Parallel { mode, .. } => {
@@ -1201,7 +1201,7 @@ mod tests {
 
     #[test]
     fn parse_clause_parallel_default_mode_is_strict() {
-        use super::super::ast::{ClauseSource, ZipMode};
+        use super::super::ast_legacy::{ClauseSource, ZipMode};
         let c = parse_clause("(x, y) in (1..10, 100..1000..100)").unwrap();
         match &c.source {
             ClauseSource::Parallel { mode, .. } => {

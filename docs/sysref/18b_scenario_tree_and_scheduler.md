@@ -336,8 +336,9 @@ plan-preview and execution.
      scopes (Bindings, Comprehension, DoWhile/DoUntil), so the
      current parent kernel reflects every enclosing
      materialisation visible at this layer.
-   - Iteration-step computation (`iterate_scope`) for
-     Comprehension / phase-level `for_each`.
+   - Iteration-step computation
+     (`polydat::comprehension::runtime::evaluate_for_iteration`)
+     for Comprehension / phase-level `for_each`.
 3. **The depth discriminant gates the executional work** at each
    layer (see SRD 17 §"Execution Depth"):
    - `depth=Scenario` — walk shape only, don't materialise iters.

@@ -39,14 +39,12 @@
 //! how its spec strings resolve. Activity now consumes this
 //! API rather than implementing it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::kernel::GkKernel;
+use crate::kernel::interp::{interpolate_via_kernel, interpolate_with_lookup};
 use crate::node::Value;
-
-const ROUND_WARN: usize = 100;
-const ROUND_HARD: usize = 1000;
 
 /// Evaluate a comprehension clause's spec text against a kernel.
 ///
@@ -1174,47 +1172,6 @@ pub fn value_to_gk_type_name(v: &Value) -> &'static str {
     }
 }
 
-/// Scan a GK source string for `{name}` placeholders nested
-/// inside string-literal bodies (the GK string-interpolation
-/// surface — see SRD-10 §"String Interpolation"). A body that
-/// starts with a quote (CQL map / JSON literal) is treated as
-/// literal content and skipped — same disambiguation rule the
-/// binding compiler applies (see `string_lit_has_real_placeholder`
-/// in `polydat/src/dsl/binding.rs`).
-pub fn collect_string_interp_refs(src: &str, refs: &mut HashSet<String>) {
-    let chars: Vec<char> = src.chars().collect();
-    let mut i = 0;
-    let mut in_str: Option<char> = None;
-    while i < chars.len() {
-        let c = chars[i];
-        match in_str {
-            Some(quote) if c == quote => { in_str = None; i += 1; }
-            Some(_) if c == '\\' && i + 1 < chars.len() => { i += 2; }
-            Some(_) if c == '{' => {
-                let body_start = i + 1;
-                let mut body_end = body_start;
-                while body_end < chars.len() && chars[body_end] != '}' {
-                    body_end += 1;
-                }
-                let body: String = chars[body_start..body_end].iter().collect();
-                let trimmed = body.trim();
-                if !trimmed.is_empty()
-                    && !trimmed.starts_with('\'')
-                    && !trimmed.starts_with('"')
-                    && trimmed.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-                    && !trimmed.bytes().next().unwrap().is_ascii_digit()
-                {
-                    refs.insert(trimmed.to_string());
-                }
-                i = body_end + 1;
-            }
-            Some(_) => { i += 1; }
-            None if c == '"' || c == '\'' => { in_str = Some(c); i += 1; }
-            None => { i += 1; }
-        }
-    }
-}
-
 /// Enumerate the typed tuples a Cartesian comprehension produces.
 ///
 /// Walks the dependent-tuple tree depth-first using fresh
@@ -1231,7 +1188,7 @@ pub fn collect_string_interp_refs(src: &str, refs: &mut HashSet<String>) {
 /// it to a `Value::Bool`. Tuples where the predicate is `false`
 /// are skipped. Predicate evaluation errors (non-Bool result,
 /// unresolved name, etc.) abort enumeration. See
-/// [`Comprehension::filter`](super::ast::Comprehension::filter).
+/// [`Comprehension::filter`](super::ast_legacy::Comprehension::filter).
 ///
 /// Empty-clause handling is delegated to `on_empty_clause`: the
 /// caller decides whether to propagate as a hard error (strict
@@ -1243,12 +1200,12 @@ pub fn collect_string_interp_refs(src: &str, refs: &mut HashSet<String>) {
 pub fn enumerate_tuples<F>(
     canonical: &Arc<GkKernel>,
     parent: &Arc<GkKernel>,
-    clauses: &[super::ast::Clause],
+    clauses: &[super::ast_legacy::Clause],
     filter: Option<&str>,
     mut on_empty_clause: F,
 ) -> Result<Vec<Vec<(String, Value)>>, String>
 where
-    F: FnMut(&super::ast::Clause) -> Result<(), String>,
+    F: FnMut(&super::ast_legacy::Clause) -> Result<(), String>,
 {
     let mut out = Vec::new();
     enumerate_into(
@@ -1262,7 +1219,7 @@ where
 fn enumerate_into<F>(
     canonical: &Arc<GkKernel>,
     parent: &Arc<GkKernel>,
-    clauses: &[super::ast::Clause],
+    clauses: &[super::ast_legacy::Clause],
     filter: Option<&str>,
     idx: usize,
     prefix: &[(String, Value)],
@@ -1270,9 +1227,9 @@ fn enumerate_into<F>(
     on_empty_clause: &mut F,
 ) -> Result<(), String>
 where
-    F: FnMut(&super::ast::Clause) -> Result<(), String>,
+    F: FnMut(&super::ast_legacy::Clause) -> Result<(), String>,
 {
-    use super::ast::ClauseSource;
+    use super::ast_legacy::ClauseSource;
 
     if idx == clauses.len() {
         // Apply the filter, if any, against a fresh kernel with
@@ -1342,7 +1299,7 @@ where
             // them. The zip mode (Strict / Truncate / Cycle)
             // controls length-balancing; Strict is the default
             // for the bare `(e1, e2)` syntax.
-            use super::ast::ZipMode;
+            use super::ast_legacy::ZipMode;
             let group_label = format!(
                 "({}) in {}({})",
                 clause.vars.join(", "),
@@ -1410,197 +1367,12 @@ where
 /// Expand `{name}` placeholders in `text`, resolving each leaf
 /// placeholder against `kernel`'s in-scope name space.
 ///
-/// Lookup goes through `GkKernel::lookup`, which checks own
-/// outputs (folded constants) first then extern input slots
-/// populated by `materialize_wiring_from_outer` from a parent kernel, or by
-/// the dependent-tuple dispatcher's per-clause `set_input`
-/// writes. Inner shadows outer per SRD-16 §"Visibility Rules:
-/// Shadowing".
-///
-/// `Value::None` (an unset extern slot) doesn't match — so a
-/// slot that hasn't been populated falls through to the
-/// unresolved-name error path at the fixed point.
-///
-/// Iterative + escape-aware + round-cap algorithm; see
-/// [`interpolate_with_lookup`] for the engine.
-pub fn interpolate_via_kernel(
-    text: &str,
-    kernel: &GkKernel,
-) -> Result<String, String> {
-    interpolate_with_lookup(text, |name| {
-        kernel.lookup(name).map(|v| v.to_display_string())
-    })
-}
-
-/// Iterative leaf-placeholder substitution with escape handling,
-/// round cap, and final unresolved-name check. The `lookup`
-/// closure decides where each leaf's value comes from.
-///
-/// Public so callers like the synthesis-time clause probe can
-/// compose their own lookup (parent kernel + workload params +
-/// clause probes) without reimplementing the iterative loop.
-pub fn interpolate_with_lookup<F>(text: &str, lookup: F) -> Result<String, String>
-where
-    F: Fn(&str) -> Option<String>,
-{
-    let mut s = text.to_string();
-    let mut warned = false;
-    for round in 1..=ROUND_HARD {
-        if round == ROUND_WARN && !warned {
-            eprintln!(
-                "interpolation: '{text}' has run {ROUND_WARN} substitution rounds — likely cyclic"
-            );
-            warned = true;
-        }
-        let progress = one_pass(&mut s, &lookup)?;
-        if !progress { break; }
-        if round == ROUND_HARD {
-            return Err(format!(
-                "interpolation: '{text}' did not stabilize in {ROUND_HARD} rounds — \
-                 cyclic placeholders?"
-            ));
-        }
-    }
-    if let Some(unresolved) = first_unresolved(&s) {
-        return Err(format!(
-            "interpolation: unresolved placeholder '{{{unresolved}}}' in '{text}' — \
-             not bound by any outer for_each var or workload param. \
-             Use \\{{ \\}} to write literal braces."
-        ));
-    }
-    Ok(unescape(&s))
-}
-
-/// One sweep over `s`: replaces every **leaf** placeholder
-/// (`{NAME}` whose body contains no `{` or `}`) with its
-/// resolved value via the supplied `lookup` closure. Returns
-/// `Ok(true)` if any replacement happened, `Ok(false)` if the
-/// string is at a fixed point. Nested placeholders
-/// (`{a_{b}_c}`) are skipped this pass and revisited on the
-/// next round once the inner is resolved.
-fn one_pass<F>(s: &mut String, lookup: &F) -> Result<bool, String>
-where
-    F: Fn(&str) -> Option<String>,
-{
-    let bytes = s.as_bytes();
-    let n = bytes.len();
-    let mut out = String::with_capacity(n);
-    let mut i = 0;
-    let mut replaced_any = false;
-
-    while i < n {
-        let c = bytes[i];
-        if c == b'\\' && i + 1 < n && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}') {
-            out.push('\\');
-            out.push(bytes[i + 1] as char);
-            i += 2;
-            continue;
-        }
-        if c == b'{' {
-            let mut j = i + 1;
-            let mut has_inner_open = false;
-            let mut end: Option<usize> = None;
-            while j < n {
-                let cj = bytes[j];
-                if cj == b'\\' && j + 1 < n && (bytes[j + 1] == b'{' || bytes[j + 1] == b'}') {
-                    j += 2;
-                    continue;
-                }
-                if cj == b'{' { has_inner_open = true; break; }
-                if cj == b'}' { end = Some(j); break; }
-                j += 1;
-            }
-            if has_inner_open {
-                out.push('{');
-                i += 1;
-                continue;
-            }
-            let Some(end_idx) = end else {
-                return Err(format!(
-                    "interpolation: unmatched '{{' in '{s}' starting at byte {i} — \
-                     write \\{{ for a literal opening brace"
-                ));
-            };
-            let name = std::str::from_utf8(&bytes[i + 1..end_idx])
-                .map_err(|e| format!("interpolation: non-utf8 placeholder in '{s}': {e}"))?
-                .to_string();
-            if name.is_empty() {
-                return Err(format!(
-                    "interpolation: empty placeholder '{{}}' in '{s}' — \
-                     write \\{{\\}} for literal braces"
-                ));
-            }
-            let value = lookup(&name);
-            let Some(value) = value else {
-                out.push_str(&s[i..=end_idx]);
-                i = end_idx + 1;
-                continue;
-            };
-            out.push_str(&value);
-            i = end_idx + 1;
-            replaced_any = true;
-            continue;
-        }
-        out.push(c as char);
-        i += 1;
-    }
-    *s = out;
-    Ok(replaced_any)
-}
-
-/// Locate the first unresolved leaf placeholder name (after
-/// fixed-point iteration) for the diagnostic message. Returns
-/// `None` if every `{...}` is escaped or already resolved.
-fn first_unresolved(s: &str) -> Option<String> {
-    let bytes = s.as_bytes();
-    let n = bytes.len();
-    let mut i = 0;
-    while i < n {
-        if bytes[i] == b'\\' && i + 1 < n && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}') {
-            i += 2;
-            continue;
-        }
-        if bytes[i] == b'{' {
-            let mut j = i + 1;
-            while j < n {
-                if bytes[j] == b'\\' && j + 1 < n
-                    && (bytes[j + 1] == b'{' || bytes[j + 1] == b'}')
-                {
-                    j += 2;
-                    continue;
-                }
-                if bytes[j] == b'}' {
-                    return Some(s[i + 1..j].to_string());
-                }
-                if bytes[j] == b'{' { break; }
-                j += 1;
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Strip `\{` → `{` and `\}` → `}`. Other escapes pass through
-/// untouched so the substituted text doesn't gain newlines or
-/// other surprises the user didn't ask for.
-fn unescape(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = String::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 1 < bytes.len()
-            && (bytes[i + 1] == b'{' || bytes[i + 1] == b'}')
-        {
-            out.push(bytes[i + 1] as char);
-            i += 2;
-            continue;
-        }
-        out.push(bytes[i] as char);
-        i += 1;
-    }
-    out
-}
+// `interpolate_via_kernel`, `interpolate_with_lookup`, and the
+// internal `one_pass` / `first_unresolved` / `unescape` helpers
+// moved to `polydat::kernel::interp` in PR 9c-3 (Surface #5).
+// `interpolate_via_kernel` and `interpolate_with_lookup` are
+// imported above for internal use; external callers use the
+// `polydat::kernel::interp` module directly.
 
 #[cfg(test)]
 mod tests {

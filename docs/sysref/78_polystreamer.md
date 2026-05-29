@@ -22,9 +22,9 @@ reviewed against SRD-18b (scope tree + scheduler), SRD-13c
 **Owner:** polydat (grammar, type system, comprehension
 algebra, compiled IR, consumption-surface contracts — see
 polydat spec §3–§10), nbrs-activity (consumer migration —
-`dispatch_comprehension`, `iterate_scope`, the executor's
-per-iteration kernel construction), nbrs-workload (YAML→
-PolyStreamer-binding desugaring).
+`dispatch_comprehension`, `polydat::comprehension::runtime::evaluate_for_iteration`,
+the executor's per-iteration kernel construction),
+nbrs-workload (YAML→PolyStreamer-binding desugaring).
 
 **Cross-refs:**
 - **`polydat/docs/design/comprehension_forms.md`** — the
@@ -242,7 +242,9 @@ consumer pulls a sub-scope from `sweep`, the resulting child
 kernel has `k` and `profile` bound as scope coordinates (per
 SRD-13c). The comprehension's clause LHS names become the child's
 extern names — the exact same contract that today's
-`iterate_scope` provides via `IterationStep::bindings`.
+`polydat::comprehension::runtime::evaluate_for_iteration`
+provides via the typed `(name, Value)` bindings on each
+returned tuple.
 
 **Reference, not value**: `k_stream` doesn't materialise the
 1..10 list at definition time. The Cartesian-product size is

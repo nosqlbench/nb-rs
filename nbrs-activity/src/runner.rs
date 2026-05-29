@@ -1734,21 +1734,14 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             .filter_map(|(idx, node)| match &node.kind {
                 crate::scope_tree::ScopeKind::Comprehension { comprehension } => {
                     // Representative iter_vars + spec_exprs for
-                    // synthesis: dedup'd by var name (Union mode
-                    // can repeat names across sub-spaces; we
-                    // declare each extern once with the first
-                    // occurrence's spec for type detection).
-                    let mut vars = Vec::new();
-                    let mut specs = Vec::new();
-                    let mut seen = std::collections::HashSet::new();
-                    for clause in comprehension.flat_clauses() {
-                        for (v, e) in clause.scalar_bindings() {
-                            if seen.insert(v.to_string()) {
-                                vars.push(v.to_string());
-                                specs.push(e.to_string());
-                            }
-                        }
-                    }
+                    // synthesis: dedup'd by var name. Walks the
+                    // algebra AST directly via coordinate_specs
+                    // — same dedup semantics the legacy
+                    // scalar_bindings/Union-flatten path
+                    // produced.
+                    let pairs = comprehension.coordinate_specs();
+                    let vars: Vec<String> = pairs.iter().map(|(v, _)| v.clone()).collect();
+                    let specs: Vec<String> = pairs.iter().map(|(_, e)| e.clone()).collect();
                     Some(InstallSpec::ForComprehension {
                         idx,
                         iter_vars: vars,
@@ -1982,7 +1975,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
                         }
                         _ => None,
                     };
-                    polydat::comprehension::synthesize_for_each_scope(
+                    crate::scope_synth::build_for_each_scope_kernel(
                         &bindings,
                         &parent_manifest,
                         &parent_kernel,
@@ -3184,15 +3177,12 @@ fn collect_param_references(workload: &nbrs_workload::model::Workload) -> ParamR
             match node {
                 nbrs_workload::model::ScenarioNode::Phase(_) => {}
                 nbrs_workload::model::ScenarioNode::Comprehension { comprehension, children } => {
-                    use polydat::comprehension::ClauseSource;
                     let mut deferred = ParamRefs::default();
-                    for clause in comprehension.flat_clauses() {
-                        match &clause.source {
-                            ClauseSource::Single(s) => scan_param_refs(s, &mut deferred),
-                            ClauseSource::Parallel { exprs, .. } => {
-                                for e in exprs { scan_param_refs(e, &mut deferred); }
-                            }
-                        }
+                    // Walk the algebra AST's (var, spec_expr)
+                    // pairs and scan each spec_expr for
+                    // `{name}` references.
+                    for (_, spec_expr) in comprehension.coordinate_specs() {
+                        scan_param_refs(&spec_expr, &mut deferred);
                     }
                     // Comprehension `{name}` placeholders resolve at
                     // runtime, not at workload-validation time —
@@ -3273,7 +3263,7 @@ fn collect_iter_var_names(
     for phase in workload.phases.values() {
         if let Some(text) = phase.for_each.as_deref()
             && let Ok(comp) =
-                polydat::comprehension::parse::parse_comprehension_text(text)
+                polydat::comprehension::spec::parse_comprehension_text(text)
         {
             for name in comp.coordinate_names() {
                 out.insert(name.to_string());
@@ -3753,7 +3743,6 @@ fn format_scenario_nodes(
     depth: usize,
     out: &mut String,
 ) {
-    use polydat::comprehension::ComprehensionMode;
     use nbrs_workload::model::ScenarioNode::*;
     let indent = "  ".repeat(depth);
     for node in nodes {
@@ -3777,22 +3766,38 @@ fn format_scenario_nodes(
                 }
             }
             Comprehension { comprehension, children } => {
-                let header = match &comprehension.mode {
-                    ComprehensionMode::Cartesian(clauses) if clauses.len() == 1 => {
-                        let c = &clauses[0];
-                        format!("for_each {} in {}", c.var(), c.expr())
+                // Algebra-native display: walk the AST once to
+                // detect Union vs flat, then format. Matches
+                // the scope_tree::label_for_comprehension shape
+                // at one level of detail finer (includes the
+                // spec_expr for non-Union shapes).
+                use polydat::comprehension::Comprehension as Comp;
+                // Peel outer Order/Filter for structural detection.
+                let mut body = comprehension;
+                loop {
+                    match body {
+                        Comp::Order { child, .. } | Comp::Filter { child, .. } => {
+                            body = child;
+                        }
+                        _ => break,
                     }
-                    ComprehensionMode::Cartesian(clauses) => {
-                        let vars: Vec<&str> = clauses.iter().map(|c| c.var()).collect();
-                        let specs: Vec<String> = clauses.iter()
-                            .map(|c| c.expr().to_string()).collect();
-                        format!("for_combinations [{}] in [{}]",
-                            vars.join(", "), specs.join(", "))
-                    }
-                    ComprehensionMode::Union(subspaces) => {
+                }
+                let header = match body {
+                    Comp::Union { children } => {
                         let names = comprehension.coordinate_names().join(", ");
-                        format!("for_each_union [{}] ({} sub-spaces)",
-                            names, subspaces.len())
+                        format!("for_each_union [{}] ({} sub-spaces)", names, children.len())
+                    }
+                    _ => {
+                        let pairs = comprehension.coordinate_specs();
+                        if pairs.len() == 1 {
+                            let (var, spec) = &pairs[0];
+                            format!("for_each {var} in {spec}")
+                        } else {
+                            let vars: Vec<&str> = pairs.iter().map(|(v, _)| v.as_str()).collect();
+                            let specs: Vec<&str> = pairs.iter().map(|(_, s)| s.as_str()).collect();
+                            format!("for_combinations [{}] in [{}]",
+                                vars.join(", "), specs.join(", "))
+                        }
                     }
                 };
                 out.push_str(&format!("{indent}{header}\n"));

@@ -5,8 +5,35 @@ Migration plan to lift the comprehension model out of
 making `Comprehension` a peer of `GkProgram` / `GkKernel` /
 `ScopeCoord` in the GK API surface.
 
-Status: **planning → execution**. Phases land independently;
-each phase keeps the workspace green.
+Status: **complete** — phases A–D shipped per the plan; the
+follow-up algebra cutover (PRs 9a–9c-5) further reshaped the
+final layout. See
+[`polydat/docs/design/comprehension_cutover_contact_surfaces.md`](../../polydat/docs/design/comprehension_cutover_contact_surfaces.md)
+for the algebra-cutover outcome. Notable deltas from this
+doc's original Phase A–D plan:
+
+- `polydat::comprehension` is now the **algebra** layer
+  (operator-tree `Comprehension`, `Source`, `ZipMode`,
+  `runtime::evaluate_for_iteration`, etc.). The legacy
+  flat-struct types live as parse-pipeline implementation
+  details in `polydat::comprehension::ast_legacy` and
+  `polydat::comprehension::parse`.
+- `polydat::comprehension::synthesis` was dissolved; its
+  substance moved to `nbrs-activity::scope_synth` (the
+  walker that drives polydat's `SubcontextBuilder`) and to
+  `polydat::kernel::GkKernel` methods (kernel-chain
+  operations like `propagate_inputs_into`).
+- `polydat::comprehension::iteration` and `::order` were
+  deleted; `runtime::evaluate_for_iteration` replaced
+  `iterate_scope`, and algebra strategies replaced
+  `apply_order`.
+- `interpolate_via_kernel` and `collect_string_interp_refs`
+  relocated to `polydat::kernel::interp` (Surface #5 — they
+  are general kernel facilities, not comprehension-specific).
+
+The historical phase-by-phase walkthrough below is preserved
+for cutover-archaeology purposes; for current code use the
+cutover doc cross-link above.
 
 ---
 

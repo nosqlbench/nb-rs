@@ -168,7 +168,7 @@ be `Bounded(n)`, `BoundedAtMost(n)`, `Unbounded`, or
 **Per-tuple memory:** O(1) above the source's own per-tuple
 state. No buffering at the clause level.
 
-### 3.2 `cartesian(c1, c2, ..., cN)` — cross-product combinator
+### 3.2 `cartesian(c1, c2, ..., cN)` — dependent product combinator
 
 ```text
 cartesian(
@@ -177,22 +177,54 @@ cartesian(
 )
 ```
 
-Produces the cross product. Each emitted tuple has the merged
-name set from all children, with values drawn from the
-n-dimensional lattice.
+Sequential composition of N children, evaluated **left-to-right**
+with each child's source evaluated in a context that carries
+prior children's bindings. The classical independent cross-
+product is the **degenerate case** when no child's source
+references a prior child's variable.
 
 - Children must have **disjoint name sets**. (If `clause(k, ...)`
   and `clause(k, ...)` both appear under one `cartesian`, the
   parser rejects with a duplicate-name error — there's no
   meaningful interpretation.)
-- Dependent sources are allowed: clause N's source expression
-  may reference clause M's variable for M < N. Evaluation is
-  left-to-right dependent enumeration, not free cross-product.
+- **Dependent sources are allowed**: clause N's source
+  expression may reference clause M's variable for M < N
+  (e.g. `cartesian(clause(outer, [a,b,c]), clause(inner, pre_{outer}))`).
+  Evaluation is left-to-right dependent enumeration —
+  mathematically a dependent product (Σ in type theory), not
+  the free cross-product (Π). The classical Π semantics emerge
+  automatically when children's sources contain no
+  cross-references.
 
 **Tuple shape:** disjoint union of children's tuple shapes, in
 declaration order.
-**Cardinality:** product of children's cardinalities (bounded
-× bounded = bounded; bounded × unbounded = unbounded; etc.).
+
+**Cardinality:** depends on whether any child references prior
+children's variables:
+
+- **Independent** (no cross-references): cardinality is the
+  classical **product** of children's cardinalities
+  (`bounded × bounded = bounded`; `bounded × unbounded = unbounded`;
+  etc.). This is the special case the static IR interpreter can
+  optimize via cached per-child enumeration.
+- **Dependent** (any cross-reference): cardinality is a
+  **dependent sum** — for each outer-clause value, the inner-
+  clause cardinality may differ. The total cardinality is
+  `Σ_{outer ∈ C_outer} |C_inner(outer)|`. Reduces to the
+  product when `|C_inner(outer)|` is constant.
+
+**Independence detection** is a compile-time pass: examine each
+child's source for `{name}` references to any prior child's
+name. The pass produces an `is_dependent` flag the interpreter
+and the optimizer consult.
+
+**Why dependent semantics by default.** The classical
+independent cross-product is a useful but special case; the
+algebra's general operator is the dependent product. Treating
+dependency as the general case (with independence as an
+optimization) lets workload authors write the flat clause
+shape regardless of whether their clauses happen to reference
+each other — the algebra figures out the right enumeration.
 
 ### 3.3 `zip(c1, c2, ..., cN, mode)` — lockstep combinator
 
@@ -437,6 +469,23 @@ compositions (e.g. `Extrema` over a 1-D `Lattice` yielding
 `{first, last}`) pass V4 and are flagged by §5.8's warning
 mechanism, not rejected.
 
+**V4 + dependent Cartesian.** When a `cartesian`'s children
+have cross-references (dependent product per §3.2), the
+result is *not* a regular n-D lattice — the "shape" of the
+inner clause varies per outer-clause value. Named strategies
+other than `Lex` are mathematically undefined over a
+dependent product (extrema of what corners? Halton samples in
+what unit cube?). V4 rejects non-`Lex` strategies over a
+dependent Cartesian. `Lex` still works because it's a
+pass-through over whatever natural enumeration the dependent
+walk produces. *Reason:* the strategies' geometric
+interpretations require an independent product space; the
+dependent case has no such space to permute over. Workloads
+that need strategy-driven sampling over a parameterized space
+must structure the parameterization as an outer scope (nested
+for_each), with the inner `order(cartesian(...), strategy, n)`
+operating over an independent inner product.
+
 **Axiom V5 (filter is transparent to V4's input-shape check).**
 `order(filter(c, p), strategy, t)` is valid whenever
 `order(c, strategy, t)` is valid. The intermediate `filter`
@@ -658,7 +707,7 @@ Each constructor's cardinality is a function of its inputs:
 | Constructor | Cardinality |
 |---|---|
 | `clause(_, source)` | `source.cardinality()` (any of the five classes) |
-| `cartesian(c1, ..., cN)` | discrete × discrete = product (Unbounded if any Unbounded); all-Continuous = `Continuous { intervals: [...K-D...], measure: Product([...]) }`; mixed discrete + Continuous = `Hybrid { discrete_axes, continuous_axes, measure }` |
+| `cartesian(c1, ..., cN)` | When **independent** (no cross-references between clause sources): discrete × discrete = product (Unbounded if any Unbounded); all-Continuous = `Continuous { intervals: [...K-D...], measure: Product([...]) }`; mixed discrete + Continuous = `Hybrid { discrete_axes, continuous_axes, measure }`. When **dependent** (any clause source references a prior clause's variable): cardinality is a dependent sum `Σ_{outer} |C_inner(outer)|` rather than a product. The independence pass (§3.2) determines which rule applies. |
 | `zip(c1, ..., cN, Strict)` | common cardinality (load-error if mismatch). All children must be discrete; continuous or mixed-class children rejected by V7. |
 | `zip(c1, ..., cN, Truncate)` | `min` of children's cardinalities. All children must be discrete (V7). |
 | `zip(c1, ..., cN, Cycle)` | `max` of children's cardinalities (Unbounded if any are). All children must be discrete (V7). |

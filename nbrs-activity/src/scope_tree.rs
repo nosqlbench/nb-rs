@@ -117,38 +117,11 @@ impl ScopeKind {
 
     /// Short label for diagnostic output (`dryrun=phase`, TUI).
     pub fn label(&self) -> String {
-        use polydat::comprehension::ComprehensionMode;
         match self {
             ScopeKind::Workload => "workload".into(),
             ScopeKind::Scenario { name } => format!("scenario '{name}'"),
-            ScopeKind::Comprehension { comprehension } => match &comprehension.mode {
-                ComprehensionMode::Cartesian(clauses) if clauses.len() == 1 => {
-                    // Both single-clause and multi-clause
-                    // comprehensions render as `each …` in
-                    // user-facing displays — operators
-                    // shouldn't have to learn the
-                    // for_each / for_combinations
-                    // distinction to read a scenario tree.
-                    // Header carries variable names only;
-                    // bound values appear on per-iteration
-                    // child scopes below.
-                    format!("each {}", clauses[0].var())
-                }
-                ComprehensionMode::Cartesian(clauses) => {
-                    let vars: Vec<&str> = clauses.iter()
-                        .map(|c| c.var())
-                        .collect();
-                    format!("each {}", vars.join(", "))
-                }
-                ComprehensionMode::Union(subspaces) => {
-                    let parts: Vec<String> = subspaces.iter().map(|set| {
-                        let dims: Vec<String> = set.iter()
-                            .map(|c| format!("{} in {}", c.var(), c.expr()))
-                            .collect();
-                        format!("[{}]", dims.join(", "))
-                    }).collect();
-                    format!("for_each_union {{{}}}", parts.join(" | "))
-                }
+            ScopeKind::Comprehension { comprehension } => {
+                label_for_comprehension(comprehension)
             },
             ScopeKind::IncludedScenario { name } => format!("scenario '{name}'"),
             ScopeKind::DoWhile { condition, counter } => match counter {
@@ -176,6 +149,85 @@ impl ScopeKind {
                 }
             }
         }
+    }
+}
+
+/// Render a one-line label for an algebra-AST comprehension.
+///
+/// Strips off outer `Order` / `Filter` wrappers (which don't
+/// affect the structural display) to find the inner body
+/// shape: `Cartesian` renders as `each v1, v2, ...`, `Union`
+/// renders as `for_each_union {[...]; [...]}`, and a bare
+/// `Clause` renders as `each <var>`.
+fn label_for_comprehension(comp: &Comprehension) -> String {
+    use polydat::comprehension::source::Source;
+    // Peel outer Order/Filter — these are non-structural for
+    // the label.
+    let mut body = comp;
+    loop {
+        match body {
+            Comprehension::Order { child, .. } | Comprehension::Filter { child, .. } => {
+                body = child.as_ref();
+            }
+            _ => break,
+        }
+    }
+    fn var_of(node: &Comprehension) -> String {
+        match node {
+            Comprehension::Clause { name, .. } => name.clone(),
+            Comprehension::Zip { children, .. } => {
+                let vs: Vec<String> = children.iter().map(var_of).collect();
+                format!("({})", vs.join(", "))
+            }
+            _ => "?".to_string(),
+        }
+    }
+    fn expr_of(node: &Comprehension) -> String {
+        match node {
+            Comprehension::Clause { source, .. } => match source {
+                Source::IntRange { lo, hi, step } if *step == 1 => format!("{lo}..{hi}"),
+                Source::IntRange { lo, hi, step } => format!("{lo}..{hi} step {step}"),
+                Source::Literal { values } if values.len() == 1 => format!("{:?}", values[0]),
+                Source::Literal { values } => format!("[{} values]", values.len()),
+                Source::Generator { expr, .. } => expr.clone(),
+                Source::WorkloadParamList { name, .. } => format!("{{{name}}}"),
+                Source::ContinuousInterval { interval, .. } => {
+                    format!("{}..{}", interval.lo, interval.hi)
+                }
+                Source::Distribution { .. } => "<dist>".to_string(),
+            },
+            Comprehension::Zip { children, .. } => {
+                let es: Vec<String> = children.iter().map(expr_of).collect();
+                format!("({})", es.join(", "))
+            }
+            _ => "?".to_string(),
+        }
+    }
+    match body {
+        Comprehension::Clause { name, .. } => format!("each {name}"),
+        Comprehension::Cartesian { children } if children.len() == 1 => {
+            format!("each {}", var_of(&children[0]))
+        }
+        Comprehension::Cartesian { children } => {
+            let vars: Vec<String> = children.iter().map(var_of).collect();
+            format!("each {}", vars.join(", "))
+        }
+        Comprehension::Union { children } => {
+            let parts: Vec<String> = children.iter().map(|sub| {
+                // Each Union child is itself a Cartesian (or
+                // single Clause/Zip). Render its dims.
+                let dims: Vec<String> = match sub {
+                    Comprehension::Cartesian { children: c } => {
+                        c.iter().map(|n| format!("{} in {}", var_of(n), expr_of(n))).collect()
+                    }
+                    other => vec![format!("{} in {}", var_of(other), expr_of(other))],
+                };
+                format!("[{}]", dims.join(", "))
+            }).collect();
+            format!("for_each_union {{{}}}", parts.join(" | "))
+        }
+        Comprehension::Zip { .. } => format!("each {}", var_of(body)),
+        Comprehension::Filter { .. } | Comprehension::Order { .. } => unreachable!(),
     }
 }
 
@@ -857,16 +909,20 @@ impl ScopeTree {
         ) -> Result<(), String> {
             let node = &tree.nodes[idx];
             // Collect the iter vars declared at this node.
-            let own_iter_vars: Vec<&str> = match &node.kind {
+            // Algebra's `coordinate_names()` returns owned
+            // strings (operator-tree walks need fresh strings
+            // — there's no single backing slice to borrow
+            // from), so this block is owned-string throughout.
+            let own_iter_vars: Vec<String> = match &node.kind {
                 ScopeKind::Comprehension { comprehension } => {
                     comprehension.coordinate_names()
                 }
                 ScopeKind::DoWhile { counter: Some(c), .. }
-                | ScopeKind::DoUntil { counter: Some(c), .. } => vec![c.as_str()],
+                | ScopeKind::DoUntil { counter: Some(c), .. } => vec![c.clone()],
                 _ => Vec::new(),
             };
             for var in &own_iter_vars {
-                if workload_params.contains(*var) {
+                if workload_params.contains(var) {
                     return Err(format!(
                         "iter-var '{var}' aliases workload param '{var}'. \
                          A for_each / for_combinations / for_each_union iter \
@@ -875,7 +931,7 @@ impl ScopeTree {
                          the iter var and the param. Rename one of them."
                     ));
                 }
-                if ancestor_iter_vars.contains(*var) {
+                if ancestor_iter_vars.contains(var) {
                     return Err(format!(
                         "iter-var '{var}' aliases an iter var declared by an \
                          enclosing scope. Inner iter vars must use distinct \
@@ -886,7 +942,7 @@ impl ScopeTree {
             // Extend the ancestor set for descent.
             let mut next_ancestors = ancestor_iter_vars.clone();
             for v in &own_iter_vars {
-                next_ancestors.insert(v.to_string());
+                next_ancestors.insert(v.clone());
             }
             for &child in &node.children {
                 walk(tree, child, &next_ancestors, workload_params)?;
@@ -1070,8 +1126,12 @@ mod tests {
         ScenarioNode::Phase(name.into())
     }
     fn for_each(spec: &str, children: Vec<ScenarioNode>) -> ScenarioNode {
-        let clauses = polydat::comprehension::parse_clause_list(spec).unwrap();
-        let comprehension = polydat::comprehension::Comprehension::cartesian(clauses);
+        use polydat::comprehension::spec::{ComprehensionSpec, ForSpec};
+        let comprehension = ComprehensionSpec {
+            r#for: ForSpec::Inline(spec.to_string()),
+            r#where: None,
+            order: None,
+        }.into_algebra().unwrap();
         ScenarioNode::Comprehension { comprehension, children }
     }
 
@@ -1289,7 +1349,7 @@ mod tests {
 
         // Build the for_each scope kernel as the runner would.
         let parent_manifest = crate::runner::extract_manifest(parent.program());
-        let kernel = polydat::comprehension::synthesize_for_each_scope(
+        let kernel = crate::scope_synth::build_for_each_scope_kernel(
             &[("k".to_string(), "{k_values}".to_string())],
             &parent_manifest,
             &parent,
@@ -1348,7 +1408,7 @@ mod tests {
         );
         let parent_manifest = crate::runner::extract_manifest(parent.program());
 
-        let kernel = polydat::comprehension::synthesize_for_each_scope(
+        let kernel = crate::scope_synth::build_for_each_scope_kernel(
             &[("k".to_string(), "{k_values}".to_string())],
             &parent_manifest,
             &parent,
@@ -1390,7 +1450,7 @@ mod tests {
         );
         let parent_manifest = crate::runner::extract_manifest(parent.program());
 
-        let kernel = polydat::comprehension::synthesize_for_each_scope(
+        let kernel = crate::scope_synth::build_for_each_scope_kernel(
             &[
                 ("k".to_string(),     "{k_values}".to_string()),
                 ("limit".to_string(), "{k_{k}_limits}".to_string()),
@@ -1650,8 +1710,11 @@ mod tests {
         // Build the x-comprehension AST that both inner scopes
         // share, then verify the path-aware lookup picks the
         // right one from each side.
-        let x_clauses = polydat::comprehension::parse_clause_list("x in xs").unwrap();
-        let x_comp = polydat::comprehension::Comprehension::cartesian(x_clauses);
+        let x_comp = polydat::comprehension::spec::ComprehensionSpec {
+            r#for: polydat::comprehension::spec::ForSpec::Inline("x in xs".to_string()),
+            r#where: None,
+            order: None,
+        }.into_algebra().unwrap();
 
         // Sanity: the legacy global lookup picks #1 (first DFS
         // match) for both — this is the buggy behavior.

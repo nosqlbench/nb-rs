@@ -72,6 +72,7 @@ pub mod opseq;
 pub mod activity;
 pub mod adapters;
 pub mod synthesis;
+pub mod scope_synth;
 pub mod bindings;
 pub mod params;
 pub mod scope;

@@ -63,11 +63,9 @@ phases:
         .find(|(_, n)| matches!(n.kind, ScopeKind::Comprehension { .. }))
         .expect("comp scope present");
     if let ScopeKind::Comprehension { comprehension } = &comp_node.kind {
-        let clauses: Vec<_> = comprehension.flat_clauses().to_vec();
-        assert_eq!(clauses.len(), 1, "single-clause for-each");
-        let bindings = clauses[0].scalar_bindings();
-        assert_eq!(bindings.len(), 1, "single var");
-        let (var, spec) = bindings[0];
+        let pairs = comprehension.coordinate_specs();
+        assert_eq!(pairs.len(), 1, "single-clause for-each");
+        let (var, spec) = &pairs[0];
         assert_eq!(var, "p", "var name");
         assert_eq!(spec, "partitions(\"linear:3\")",
             "spec text must round-trip with quotes intact, got {spec:?}");
@@ -99,7 +97,7 @@ fn install_chain_preserves_partition_iter_var_type_through_phase() {
     let workload_root = polydat::dsl::compile_gk("\n").unwrap();
 
     // Comprehension scope: install as the runner does.
-    let comp_kernel = polydat::comprehension::synthesize_for_each_scope(
+    let comp_kernel = nbrs_activity::scope_synth::build_for_each_scope_kernel(
         &[("p".to_string(), "partitions(\"linear:3\")".to_string())],
         &[], // empty parent_manifest
         &workload_root,
@@ -195,16 +193,7 @@ phases:
     for (idx, node) in scope_tree.iter_dfs() {
         match &node.kind {
             ScopeKind::Comprehension { comprehension } => {
-                let mut iter_vars = Vec::new();
-                let mut spec_exprs = Vec::new();
-                for clause in comprehension.flat_clauses() {
-                    for (v, e) in clause.scalar_bindings() {
-                        iter_vars.push(v.to_string());
-                        spec_exprs.push(e.to_string());
-                    }
-                }
-                let bindings: Vec<(String, String)> = iter_vars.iter().cloned()
-                    .zip(spec_exprs.iter().cloned()).collect();
+                let bindings = comprehension.coordinate_specs();
 
                 // Nearest installed ancestor:
                 let mut cursor = node.parent;
@@ -218,7 +207,7 @@ phases:
                     cursor = scope_tree.nodes[p].parent;
                 };
 
-                let comp_kernel = polydat::comprehension::synthesize_for_each_scope(
+                let comp_kernel = nbrs_activity::scope_synth::build_for_each_scope_kernel(
                     &bindings, &[], &parent_kernel,
                     &HashMap::new(), Vec::new(), None, false,
                     &format!("scope idx {idx}"), None,

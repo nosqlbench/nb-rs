@@ -37,6 +37,7 @@ data-encoding = "2"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 petgraph = "0.8"
 layout-rs = "0.1"
 vectordata = { version = "1.1.4", optional = true }

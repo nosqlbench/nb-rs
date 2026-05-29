@@ -633,13 +633,22 @@ fn execute_node<'a>(
                         .ok_or_else(|| format!(
                             "phase '{name}' for_each '{spec}': no installed ancestor kernel."
                         ))?;
-                    let clauses = vec![polydat::comprehension::Clause::new(var_parsed.clone(), expr_parsed)];
+                    // Build the algebra::Comprehension for this
+                    // phase-level for_each: a single Clause whose
+                    // source is the parsed expr text (routed
+                    // through parse_source for typing).
+                    use polydat::comprehension::spec::parse_source;
+                    let source = parse_source(&expr_parsed)
+                        .map_err(|e| format!("phase '{name}' for_each '{spec}': {e}"))?;
+                    let comprehension = polydat::comprehension::Comprehension::clause(
+                        var_parsed.clone(), source,
+                    );
                     let needle = spec.clone();
                     let parent_coords = ctx.current_parent_kernel.as_ref()
                         .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
                         .unwrap_or_default();
                     let steps = runtime_iterate(
-                        ctx, &canonical, &parent, &parent_coords, &clauses, None, None, None,
+                        ctx, &canonical, &parent, &parent_coords, &comprehension,
                     ).map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?;
                     // Structural push: outer phase.for_each scope
                     // header. Per SRD 18b §"Single Walker Contract"
@@ -702,7 +711,6 @@ fn execute_node<'a>(
                 }
             }
             ScenarioNode::Comprehension { comprehension, children } => {
-                use polydat::comprehension::ComprehensionMode;
                 let label = crate::scope_tree::ScopeKind::Comprehension {
                     comprehension: comprehension.clone(),
                 }.label();
@@ -733,136 +741,52 @@ fn execute_node<'a>(
                     ))?;
                 let own_names: Vec<String> = canonical.program().own_output_names()
                     .into_iter().map(String::from).collect();
-                let filter = comprehension.filter.as_deref();
-                let order = comprehension.order.as_ref();
-                match &comprehension.mode {
-                    ComprehensionMode::Cartesian(clauses) => {
-                        let needle = clauses.first()
-                            .map(|c| format!("{} in {}", c.var(), c.expr()))
-                            .unwrap_or_default();
-                        let parent_coords = ctx.current_parent_kernel.as_ref()
-                            .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
-                            .unwrap_or_default();
-                        let steps = runtime_iterate(
-                            ctx, &canonical, &parent, &parent_coords, clauses, filter, order, None,
-                        ).map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?;
-                        // Single-clause Cartesian = `for_each`
-                        // (one iter var per step); multi-clause
-                        // Cartesian = `for_combinations` (full
-                        // dependent-tuple product). The SRD-44a
-                        // discriminator surface tracks that
-                        // distinction explicitly.
-                        let kind = if clauses.len() == 1 {
-                            "for_each"
-                        } else {
-                            "for_combinations"
-                        };
-                        // Structural push: outer "each <vars>" scope
-                        // header. dispatch_comprehension pushes per-
-                        // iter inner scopes under this.
-                        let mut scope_path = ctx.scene_tree_path.clone();
-                        let header = if clauses.len() == 1 {
-                            scope_path.push(PathSegment::ForEach { var: clauses[0].var().to_string() });
-                            format!("each {}", clauses[0].var())
-                        } else {
-                            scope_path.push(PathSegment::ForCombinations {
-                                vars: clauses.iter().map(|c| c.var().to_string()).collect(),
-                            });
-                            let summary = clauses.iter().map(|c| c.var())
-                                .collect::<Vec<_>>().join(", ");
-                            format!("each {summary}")
-                        };
-                        let scope_id = push_scope_scene_node(
-                            ctx.scene_tree_parent_id, scope_path.clone(),
-                            header, own_names.clone(),
-                        );
-                        let saved_parent = ctx.scene_tree_parent_id;
-                        let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
-                        let saved_scope_idx = ctx.current_scope_idx;
-                        ctx.scene_tree_parent_id = scope_id;
-                        ctx.current_scope_idx = scope_idx;
-                        let res = dispatch_comprehension(
-                            ctx, steps,
-                            TerminalAction::Children(children), depth + 1, false,
-                            kind, None,
-                        ).await;
-                        ctx.scene_tree_parent_id = saved_parent;
-                        ctx.scene_tree_path = saved_path;
-                        ctx.current_scope_idx = saved_scope_idx;
-                        return res.map_err(|e| enrich_with_yaml_location(ctx, &needle, e));
-                    }
-                    ComprehensionMode::Union(subspaces) => {
-                        if !ctx.quiet() {
-                            crate::diag!(crate::observer::LogLevel::Debug,
-                                "for_each_union ({} sub-spaces) × {} children",
-                                subspaces.len(), children.len());
-                        }
-                        // Structural push: outer union envelope.
-                        let union_names = comprehension.coordinate_names().join(", ");
-                        let mut scope_path = ctx.scene_tree_path.clone();
-                        scope_path.push(PathSegment::ForCombinations {
-                            vars: comprehension.coordinate_names()
-                                .into_iter().map(String::from).collect(),
-                        });
-                        let header = format!(
-                            "for_each_union [{union_names}] ({} sub-spaces)",
-                            subspaces.len(),
-                        );
-                        let scope_id = push_scope_scene_node(
-                            ctx.scene_tree_parent_id, scope_path.clone(),
-                            header, own_names.clone(),
-                        );
-                        let saved_parent = ctx.scene_tree_parent_id;
-                        let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
-                        let saved_scope_idx = ctx.current_scope_idx;
-                        ctx.scene_tree_parent_id = scope_id;
-                        ctx.current_scope_idx = scope_idx;
-                        let total = subspaces.len();
-                        let mut union_result: Result<(), String> = Ok(());
-                        for (i, sub) in subspaces.iter().enumerate() {
-                            if !ctx.quiet() {
-                                crate::diag!(crate::observer::LogLevel::Debug,
-                                    "  sub-space {}/{}: [{}]",
-                                    i + 1, total,
-                                    sub.iter().map(|c| format!("{} in {}", c.var(), c.expr()))
-                                        .collect::<Vec<_>>().join(", "));
-                            }
-                            let needle = sub.first()
-                                .map(|c| format!("{} in {}", c.var(), c.expr()))
-                                .unwrap_or_default();
-                            let parent_coords = ctx.current_parent_kernel.as_ref()
-                                .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
-                                .unwrap_or_default();
-                            let steps = match runtime_iterate(
-                                ctx, &canonical, &parent, &parent_coords, sub, filter, order,
-                                Some((i, total)),
-                            ) {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    union_result = Err(enrich_with_yaml_location(ctx, &needle, e));
-                                    break;
-                                }
-                            };
-                            let union_kind = if sub.len() == 1 {
-                                "for_each"
-                            } else {
-                                "for_combinations"
-                            };
-                            if let Err(e) = dispatch_comprehension(
-                                ctx, steps,
-                                TerminalAction::Children(children), depth + 1, false,
-                                union_kind, None,
-                            ).await {
-                                union_result = Err(enrich_with_yaml_location(ctx, &needle, e));
-                                break;
-                            }
-                        }
-                        ctx.scene_tree_parent_id = saved_parent;
-                        ctx.scene_tree_path = saved_path;
-                        ctx.current_scope_idx = saved_scope_idx;
-                        return union_result;
-                    }
-                }
+                let parent_coords = ctx.current_parent_kernel.as_ref()
+                    .map(|k| k.scope_coordinates().iter().rev().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                // Algebra-native dispatch: one path for every
+                // shape (Cartesian / Union / Zip / Filter /
+                // Order). The runtime evaluator handles the
+                // structure internally per spec §3.2. Order
+                // applied to a Union samples across the union
+                // as a whole (PR 9c-4 spec amendment).
+                let coord_names = comprehension.coordinate_names();
+                let needle = coord_names.first().cloned().unwrap_or_default();
+                let steps = runtime_iterate(
+                    ctx, &canonical, &parent, &parent_coords, comprehension,
+                ).map_err(|e| enrich_with_yaml_location(ctx, &needle, e))?;
+                // Scene-tree path segment: ForEach for single
+                // coord, ForCombinations for multi.
+                let mut scope_path = ctx.scene_tree_path.clone();
+                let (header, kind) = if coord_names.len() == 1 {
+                    let var = &coord_names[0];
+                    scope_path.push(PathSegment::ForEach { var: var.clone() });
+                    (format!("each {var}"), "for_each")
+                } else {
+                    scope_path.push(PathSegment::ForCombinations {
+                        vars: coord_names.clone(),
+                    });
+                    let summary = coord_names.join(", ");
+                    (format!("each {summary}"), "for_combinations")
+                };
+                let scope_id = push_scope_scene_node(
+                    ctx.scene_tree_parent_id, scope_path.clone(),
+                    header, own_names.clone(),
+                );
+                let saved_parent = ctx.scene_tree_parent_id;
+                let saved_path = std::mem::replace(&mut ctx.scene_tree_path, scope_path);
+                let saved_scope_idx = ctx.current_scope_idx;
+                ctx.scene_tree_parent_id = scope_id;
+                ctx.current_scope_idx = scope_idx;
+                let res = dispatch_comprehension(
+                    ctx, steps,
+                    TerminalAction::Children(children), depth + 1, false,
+                    kind, None,
+                ).await;
+                ctx.scene_tree_parent_id = saved_parent;
+                ctx.scene_tree_path = saved_path;
+                ctx.current_scope_idx = saved_scope_idx;
+                return res.map_err(|e| enrich_with_yaml_location(ctx, &needle, e));
             }
             ScenarioNode::IncludedScenario { name, children } => {
                 // Structural push: scenario-include node. The
@@ -1087,38 +1011,90 @@ fn execute_node<'a>(
 ///
 /// Returns the materialised step list — runtime needs to know the
 /// count up front to decide serial vs. concurrent dispatch
+/// One iteration position of a comprehension scope, ready for
+/// downstream consumption by the dispatch loop. Local to the
+/// executor since 9c-4b — was previously in
+/// `polydat::comprehension::iteration` but is purely an
+/// executor-side per-iteration record.
+#[derive(Clone, Debug)]
+pub struct IterationStep {
+    /// Typed `(var, value)` pairs for this iteration.
+    pub bindings: Vec<(String, polydat::node::Value)>,
+    /// Per-iteration kernel: clone of the comprehension's
+    /// canonical, bound to the parent scope, with every input
+    /// in [`Self::bindings`] populated. Descendants treat
+    /// this as their effective parent kernel — both for
+    /// nested comprehension interpolation (`vec_{profile}`)
+    /// and for runtime phase dispatch.
+    pub bound_kernel: std::sync::Arc<polydat::kernel::GkKernel>,
+    /// Root-first scope-coordinate chain ending at this
+    /// iteration. Pass through
+    /// `polydat::kernel::format_scope_coordinate_path` (after
+    /// reversing to leaf-first) to get the canonical
+    /// structural label string.
+    pub coord_path: Vec<polydat::kernel::ScopeCoord>,
+}
+
 /// (`schedule=` limits, single-iter fast path).
-#[allow(clippy::too_many_arguments)]
+/// Drive the algebra runtime evaluator and materialise the
+/// resulting tuples into [`IterationStep`]s the dispatcher
+/// consumes. Single entry point for every comprehension shape
+/// — Cartesian / Union / Zip / Filter / Order all funnel
+/// through the algebra-native evaluation per spec §3.2's
+/// dependent-product semantics.
+///
+/// Per spec amendment (PR 9c-4): Order applied to a Union
+/// samples across the union as a whole (not per sub-space) —
+/// matches the algebra's `Order(Union(...))` structural
+/// reading.
 fn runtime_iterate(
     ctx: &ExecCtx,
     canonical: &std::sync::Arc<polydat::kernel::GkKernel>,
     parent: &std::sync::Arc<polydat::kernel::GkKernel>,
     parent_coords: &[ScopeCoord],
-    clauses: &[polydat::comprehension::Clause],
-    filter: Option<&str>,
-    order: Option<&polydat::comprehension::TraversalOrder>,
-    union_context: Option<(usize, usize)>,
-) -> Result<Vec<polydat::comprehension::IterationStep>, String> {
+    comprehension: &polydat::comprehension::Comprehension,
+) -> Result<Vec<IterationStep>, String> {
+    use polydat::comprehension::runtime::{evaluate_for_iteration, EmptyClause};
+    use polydat::kernel::{GkKernel, ScopeCoord};
+
     let strict = ctx.strict;
     let quiet = ctx.quiet();
-    let on_empty = |clause: &polydat::comprehension::Clause| -> Result<(), String> {
-        let context_label = match union_context {
-            Some((i, n)) => format!(
-                "for_each_union sub-space {}/{} clause '{clause}'", i + 1, n,
-            ),
-            None => format!("for_each clause '{clause}'"),
+    let on_empty = |empty: EmptyClause<'_>| -> Result<(), String> {
+        let label = match empty.spec_expr {
+            Some(spec) => format!("for_each clause '{var} in {spec}'", var = empty.var),
+            None => format!("for_each clause '{var}'", var = empty.var),
         };
-        let msg = format!("{context_label}: produced no values");
+        let msg = format!("{label}: produced no values");
         if strict { return Err(format!("strict: {msg}")); }
         if !quiet {
             crate::diag!(crate::observer::LogLevel::Warn, "warning: {msg}");
         }
         Ok(())
     };
-    let iter = polydat::comprehension::iterate_scope(
-        canonical, parent, parent_coords, clauses, filter, order, &[], on_empty,
-    )?;
-    Ok(iter.collect())
+
+    let tuples = evaluate_for_iteration(
+        comprehension, parent, canonical, &ctx.workload_params, on_empty,
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Materialise each tuple into an IterationStep: per-iter
+    // kernel via GkKernel::for_iteration, coord path extended
+    // from parent_coords. The runtime evaluator already gives
+    // us polydat-Value tuples (RuntimeTuple), so no conversion
+    // is needed — Ext-typed Partition values pass through
+    // intact for the executor's Ext-slot binding.
+    let mut steps = Vec::with_capacity(tuples.len());
+    for tuple in tuples {
+        let bound_kernel = GkKernel::for_iteration(canonical, parent, &tuple);
+        let mut coord_path = parent_coords.to_vec();
+        coord_path.push(ScopeCoord::from(tuple.iter().cloned()));
+        steps.push(IterationStep {
+            bindings: tuple,
+            bound_kernel,
+            coord_path,
+        });
+    }
+    Ok(steps)
 }
 
 // `Comprehension` trait + `TupleComprehension` retired: the
@@ -1189,7 +1165,7 @@ impl OwnedTerminal {
 /// value differs.
 fn dispatch_comprehension<'a>(
     ctx: &'a mut ExecCtx,
-    steps: Vec<polydat::comprehension::IterationStep>,
+    steps: Vec<IterationStep>,
     terminal: TerminalAction<'a>,
     depth: usize,
     sequential_only: bool,
@@ -1454,7 +1430,7 @@ async fn run_do_loop(
         }
 
         // Evaluate the condition against the persistent kernel.
-        let interpolated = polydat::comprehension::interpolate_via_kernel(
+        let interpolated = polydat::kernel::interp::interpolate_via_kernel(
             condition, &loop_kernel,
         ).map_err(|e| format!("do-loop condition '{condition}': {e}"))?;
         let cond_value = polydat::dsl::compile::eval_const_expr(&interpolated)
@@ -1548,14 +1524,14 @@ async fn run_do_loop(
 /// action.
 ///
 /// The bound kernel comes from the GK-side
-/// [`polydat::comprehension::IterationStep`] — same
+/// [`IterationStep`] — same
 /// kernel both pre-map and runtime see for the same iteration
 /// position. No `from_program`/`materialize_wiring_from_outer`/`set_input`
 /// dance here; that recipe is owned by `GkKernel::for_iteration`
 /// and reached via `iterate_scope`.
 async fn run_one_iteration(
     ctx: &mut ExecCtx,
-    step: &polydat::comprehension::IterationStep,
+    step: &IterationStep,
     terminal: &TerminalAction<'_>,
     depth: usize,
     kind: &'static str,

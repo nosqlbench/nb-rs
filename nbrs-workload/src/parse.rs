@@ -8,7 +8,9 @@
 
 use std::collections::HashMap;
 use serde_json::Value as JVal;
-use polydat::comprehension::{parse_clause, parse_clause_list, parse_order_spec};
+use polydat::comprehension::spec::{
+    parse_clause, parse_clause_list, ComprehensionSpec, ForSpec,
+};
 use crate::model::{
     BindingsDef, MetricSpec, ParsedOp, ScenarioNode, Workload, WorkloadPhase,
 };
@@ -498,117 +500,88 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
             // appear, `for_each` wins so misconfigured workloads
             // don't silently change shape.
             if let Some(for_each_val) = obj.get("for_each").or_else(|| obj.get("for")) {
-                // for_each supports six syntactic shapes that
-                // collapse to three semantic variants
-                // (`ForEach`, `ForCombinations`, `ForEachUnion`).
-                // The detection rule is the same for every shape:
+                // for_each supports three YAML shapes (string,
+                // array, object) that collapse into one of three
+                // semantic variants (Cartesian / Union / single-
+                // clause). The detection rule lives in
+                // `ComprehensionSpec::into_legacy` (and ultimately
+                // in `comprehension_from_subspaces` underneath) —
+                // single source of truth.
                 //
-                //   1. Parse the spec into structural sub-spaces
-                //      (each top-level clause for string form;
-                //      each entry for array form).
-                //   2. Collect every (var, expr) pair across all
-                //      sub-spaces.
-                //   3. If any variable name repeats across pairs
-                //      → ForEachUnion (sub-spaces preserved).
-                //      Else if more than one pair (all distinct
-                //      var names) → ForCombinations (single
-                //      Cartesian sub-space).
-                //      Else (one pair) → ForEach.
-                //
-                // This unifies:
-                //   "x in 1, y in 2"               → cartesian
-                //   "x in 1, x in 2"               → union
-                //   ["x in 1", "y in 2"]           → cartesian
-                //   ["x in 1", "x in 2"]           → union (two
-                //                                    single-clause
-                //                                    sub-spaces)
-                //   ["x in 1, y in a", "x in 2, y in b"]
-                //                                  → union (two
-                //                                    multi-clause
-                //                                    sub-spaces)
-                let sub_spaces: Vec<Vec<polydat::comprehension::Clause>> = match for_each_val {
-                    JVal::String(spec) => {
-                        // One sub-space per top-level clause —
-                        // structural unit for the union case is
-                        // the single clause, since a string can't
-                        // express explicit grouping.
-                        match parse_clause_list(spec) {
-                            Ok(clauses) => clauses.into_iter()
-                                .map(|c| vec![c])
-                                .collect(),
-                            Err(e) => {
-                                eprintln!("warning: {e}");
-                                Vec::new()
-                            }
-                        }
-                    }
+                // YAML-shape → ForSpec mapping:
+                //   "x in 1, y in 2"               → Inline (string)
+                //   "x in 1, x in 2"               → Inline (string,
+                //                                    name repeat ⇒ Union)
+                //   ["x in 1", "y in 2"]           → UnionOfClauseLists
+                //                                    (one entry per
+                //                                    sub-space; name
+                //                                    repeat across
+                //                                    entries ⇒ Union;
+                //                                    no repeat ⇒
+                //                                    Cartesian after
+                //                                    flattening)
+                //   { x: "1", y: "2" }             → Inline (string,
+                //                                    assembled from
+                //                                    key=value pairs)
+                let for_spec: Option<ForSpec> = match for_each_val {
+                    JVal::String(spec) => Some(ForSpec::Inline(spec.clone())),
                     JVal::Array(arr) => {
                         // One sub-space per array entry. Each
-                        // entry's clauses are its dims; cartesian
-                        // within the entry, union across entries.
-                        arr.iter().filter_map(|item| {
-                            let s = item.as_str()?;
-                            let clauses = match parse_clause_list(s) {
-                                Ok(clauses) => clauses,
-                                Err(e) => {
-                                    eprintln!("warning: {e}");
-                                    return None;
-                                }
-                            };
-                            if clauses.is_empty() { None } else { Some(clauses) }
-                        }).collect()
+                        // entry can hold multiple comma-separated
+                        // clauses (cartesian within); cross-entry
+                        // is unioned. Wrap each entry in a
+                        // singleton inner-list so the
+                        // UnionOfClauseLists shape carries the
+                        // "one entry = one sub-space" semantic.
+                        let groups: Vec<Vec<String>> = arr.iter()
+                            .filter_map(|item| item.as_str().map(|s| vec![s.to_string()]))
+                            .collect();
+                        if groups.is_empty() { None } else { Some(ForSpec::UnionOfClauseLists(groups)) }
                     }
                     JVal::Object(map) => {
                         // Map form is always a single sub-space
-                        // (keys are unique, so no repetition is
-                        // expressible). Map keys can't represent
-                        // parallel-iter LHS tuples, so every entry
-                        // becomes a single-var clause.
-                        vec![map.iter().map(|(k, v)|
-                            polydat::comprehension::Clause::new(
-                                k.clone(),
-                                v.as_str().unwrap_or("").to_string(),
-                            )
-                        ).collect()]
+                        // (keys are unique). Assemble into an
+                        // inline string and route through
+                        // ForSpec::Inline.
+                        if map.is_empty() {
+                            None
+                        } else {
+                            let inline = map.iter()
+                                .map(|(k, v)| format!("{k} in {}", v.as_str().unwrap_or("")))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            Some(ForSpec::Inline(inline))
+                        }
                     }
-                    _ => Vec::new(),
+                    _ => None,
                 };
 
-                if sub_spaces.is_empty() {
-                    vec![]
-                } else {
-                    // Detection (Cartesian vs Union) lives in
-                    // `comprehension_from_subspaces` — single
-                    // source of truth. Parallel-iter Clauses
-                    // pass through unchanged.
-                    let mut comprehension = polydat::comprehension::comprehension_from_subspaces(
-                        sub_spaces,
-                    );
-                    // Optional `where:` key carries a filter
-                    // predicate evaluated per emitted tuple.
-                    if let Some(filter) = obj.get("where").and_then(|v| v.as_str()) {
-                        comprehension = comprehension.with_filter(filter);
-                    }
-                    // Optional `order:` key carries a traversal
-                    // order spec. Accepts either the GK text form
-                    // (e.g. "extrema/1") or — future — a YAML
-                    // object form (`order: { shells: { … } }`).
-                    if let Some(order_val) = obj.get("order") {
-                        if let Some(s) = order_val.as_str() {
-                            match parse_order_spec(s) {
-                                Ok(o) => comprehension = comprehension.with_order(o),
-                                Err(e) => eprintln!("warning: order: {e}"),
+                match for_spec {
+                    None => vec![],
+                    Some(r#for) => {
+                        let spec = ComprehensionSpec {
+                            r#for,
+                            // Optional `where:` key carries a
+                            // filter predicate evaluated per
+                            // emitted tuple.
+                            r#where: obj.get("where")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                            // Optional `order:` key carries a
+                            // traversal order spec (GK text form,
+                            // e.g. "extrema/1").
+                            order: obj.get("order")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                        };
+                        match spec.into_algebra() {
+                            Ok(comprehension) => vec![ScenarioNode::Comprehension { comprehension, children }],
+                            Err(e) => {
+                                eprintln!("warning: comprehension: {e}");
+                                vec![]
                             }
                         }
                     }
-                    // Single-source invariant check — same
-                    // entry point parse_comprehension_text uses.
-                    if let Err(errs) = comprehension.validate() {
-                        for e in errs {
-                            eprintln!("warning: comprehension: {e}");
-                        }
-                    }
-                    vec![ScenarioNode::Comprehension { comprehension, children }]
                 }
             } else if let Some(scenario_val) = obj.get("scenario").and_then(|v| v.as_str()) {
                 // `scenario: <name>` — logical inclusion of
@@ -657,27 +630,30 @@ fn parse_scenario_nodes(val: &JVal) -> Vec<ScenarioNode> {
                 }
             } else if let Some(combo_val) = obj.get("for_combinations") {
                 // Explicit for_combinations keyword (alias for
-                // multi-clause for_each).
+                // multi-clause for_each). Route through
+                // ComprehensionSpec so the for_combinations branch
+                // shares the for_each branch's single chokepoint.
+                // Distinct-var input (the typical case) parses as
+                // Cartesian via the name-repetition detection rule
+                // — same semantics as the legacy direct
+                // `Comprehension::cartesian(...)` path.
                 let specs = parse_combination_specs(combo_val);
-                let canonical: Vec<polydat::comprehension::Clause> = specs.into_iter()
-                    .map(|(v, e)| polydat::comprehension::Clause::new(v, e))
-                    .collect();
-                let mut comprehension = polydat::comprehension::Comprehension::cartesian(canonical);
-                if let Some(filter) = obj.get("where").and_then(|v| v.as_str()) {
-                    comprehension = comprehension.with_filter(filter);
-                }
-                if let Some(s) = obj.get("order").and_then(|v| v.as_str()) {
-                    match parse_order_spec(s) {
-                        Ok(o) => comprehension = comprehension.with_order(o),
-                        Err(e) => eprintln!("warning: order: {e}"),
+                let inline = specs.iter()
+                    .map(|(v, e)| format!("{v} in {e}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let spec = ComprehensionSpec {
+                    r#for: ForSpec::Inline(inline),
+                    r#where: obj.get("where").and_then(|v| v.as_str()).map(String::from),
+                    order: obj.get("order").and_then(|v| v.as_str()).map(String::from),
+                };
+                match spec.into_algebra() {
+                    Ok(comprehension) => vec![ScenarioNode::Comprehension { comprehension, children }],
+                    Err(e) => {
+                        eprintln!("warning: for_combinations: {e}");
+                        vec![]
                     }
                 }
-                if let Err(errs) = comprehension.validate() {
-                    for e in errs {
-                        eprintln!("warning: comprehension: {e}");
-                    }
-                }
-                vec![ScenarioNode::Comprehension { comprehension, children }]
             } else if let Some(cond) = obj.get("do_while").and_then(|v| v.as_str()) {
                 vec![ScenarioNode::DoWhile { condition: cond.to_string(), counter, children }]
             } else if let Some(cond) = obj.get("do_until").and_then(|v| v.as_str()) {
