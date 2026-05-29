@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use polydat::kernel::{GkKernel, GkProgram, GkState};
-use polydat::node::Value;
+use polydat::ast::Value;
 
 /// What the kernel reports a registered name resolves to.
 ///

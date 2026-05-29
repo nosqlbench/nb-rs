@@ -10,11 +10,11 @@
 //!   2. The reported working-set sizes match the post-R2
 //!      optimizer's metadata (when push-down applies).
 
-use polydat::comprehension::ast::Comprehension;
-use polydat::comprehension::ir::{check_bounds, compile};
-use polydat::comprehension::optimize::optimize;
-use polydat::comprehension::source::{LiteralValue, Source};
-use polydat::comprehension::strategy::{StrategyName, ZipMode};
+use polydat::iteration::comprehension::ast::Comprehension;
+use polydat::iteration::comprehension::ir::{check_bounds, compile};
+use polydat::iteration::comprehension::optimize::optimize;
+use polydat::iteration::comprehension::source::{LiteralValue, Source};
+use polydat::iteration::comprehension::strategy::{StrategyName, ZipMode};
 
 fn clause(name: &str, vs: &[i64]) -> Comprehension {
     Comprehension::clause(
@@ -25,7 +25,7 @@ fn clause(name: &str, vs: &[i64]) -> Comprehension {
     )
 }
 
-fn bounds_for(ast: Comprehension) -> polydat::comprehension::ir::ResourceBound {
+fn bounds_for(ast: Comprehension) -> polydat::iteration::comprehension::ir::ResourceBound {
     let opt = optimize(ast);
     let prog = compile(&opt);
     check_bounds(&prog)

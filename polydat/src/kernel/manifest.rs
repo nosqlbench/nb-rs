@@ -17,7 +17,7 @@
 
 use crate::dsl::ast::BindingModifier;
 use crate::kernel::GkProgram;
-use crate::node::PortType;
+use crate::ast::PortType;
 
 /// One entry in a program's output manifest: typed, modifier-
 /// aware view of a single output name.

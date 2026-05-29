@@ -43,7 +43,7 @@ use std::time::Duration;
 use nbrs_activity::adapter::{
     DriverAdapter, ExecutionError, OpDispenser, OpResult, ResolvedFields,
 };
-use polydat::node::Value;
+use polydat::ast::Value;
 use nbrs_workload::model::ParsedOp;
 
 const PALETTE: [(u8, u8, u8); 10] = [

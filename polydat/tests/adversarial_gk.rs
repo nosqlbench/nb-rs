@@ -10,7 +10,7 @@
 use polydat::dsl::compile::{compile_gk, compile_gk_strict};
 use polydat::dsl::ast::BindingModifier;
 use polydat::kernel::Construction;
-use polydat::subcontext::GkMatter;
+use polydat::kernel::subcontext::GkMatter;
 
 // =========================================================================
 // Lexer / Parser adversarial inputs
@@ -355,12 +355,12 @@ fn extern_usable_as_wire_argument() {
     "#;
     let mut kernel = compile_gk(src).unwrap();
     let idx = kernel.program().find_input("offset").unwrap();
-    kernel.state().set_input(idx, polydat::node::Value::U64(100));
+    kernel.state().set_input(idx, polydat::ast::Value::U64(100));
     kernel.set_inputs(&[42]);
     let v1 = kernel.pull("result").as_u64();
 
     // Different extern value should produce different hash
-    kernel.state().set_input(idx, polydat::node::Value::U64(200));
+    kernel.state().set_input(idx, polydat::ast::Value::U64(200));
     kernel.set_inputs(&[42]);
     let v2 = kernel.pull("result").as_u64();
     assert_ne!(v1, v2, "different extern values should hash differently");
@@ -375,7 +375,7 @@ fn extern_in_arithmetic_expression() {
     "#;
     let mut kernel = compile_gk(src).unwrap();
     let idx = kernel.program().find_input("scale").unwrap();
-    kernel.state().set_input(idx, polydat::node::Value::U64(10));
+    kernel.state().set_input(idx, polydat::ast::Value::U64(10));
     kernel.set_inputs(&[5]);
     let v = kernel.pull("result").as_u64();
     assert_eq!(v, 50);
@@ -390,7 +390,7 @@ fn extern_input_usable_as_output() {
     "#;
     let mut kernel = compile_gk(src).unwrap();
     let idx = kernel.program().find_input("dim").unwrap();
-    kernel.state().set_input(idx, polydat::node::Value::U64(128));
+    kernel.state().set_input(idx, polydat::ast::Value::U64(128));
     kernel.set_inputs(&[0]);
     // The passthrough output should reflect the input value
     let val = kernel.pull("dim").as_u64();

@@ -26,6 +26,9 @@ checkpoint column as PRs land; everything else is the contract.
 | PR 9c-4 | 10: Executor migration to algebra runtime evaluator | ✅ landed | — | — |
 | PR 9c-4b | 10: Delete iteration / order / bridge | ✅ landed | — | — |
 | PR 9c-5 | 10: algebra::* → comprehension::* atomic rename | ✅ landed | — | 1276 + ~500 int |
+| PR α | 11: EvaluatedSource contract — IndexFn is a runtime query | ✅ landed | +8 lib (eval_source + runtime regression) | 1277 |
+| PR β | 11: Built-in generator registry — static-evaluable set | ⏳ planned | — | — |
+| PR γ | 11: freeze_to_literal_ast — runtime → static AST snapshot | ⏳ planned (optional) | — | — |
 
 ## Constraints (from spec §13, §3.1, §10, §10.7.5, §9.1, §9.5.2, §14)
 
@@ -590,6 +593,167 @@ the old `Comprehension` shape with the new polydat surfaces.
 ### Estimated surgery
 
 ~1500 lines changes (mostly deletions + thin wrappers).
+
+---
+
+## PR α / β / γ — Phase 11: EvaluatedSource + registry + freeze ⏳
+
+**Origin.** Surfaced after running
+`full_cql_vector_sweep` (PR 9c-5 cutover, 2026-05-28). The
+`Generator` source variant is opaque post-evaluation —
+strategies receive `IndexFn::None` and any non-Lex strategy
+(Diagonal, Extrema, Shells, Halton, Sobol, Lhs) fails V4 at
+strategy-invocation time even when the generator's expansion
+is a perfectly valid `Lattice` / `Continuous`. The fix is the
+unified design recorded in spec §10.7.0 / §10.7.6 / §10.7.7
+/ §10.7.8: lift `IndexFn` from a static AST property to a
+contextual query that fires at evaluation time, layer a
+built-in generator registry that recognizes name+args as
+known shapes (so static evaluation works for the common
+cases), and provide a one-way `freeze_to_literal_ast`
+serialization helper for the cases that need a paper-trail
+of "what was actually expanded".
+
+The three pushes compose; α is foundational and must land
+first.
+
+### PR α — Phase 11a: EvaluatedSource contract (load-bearing) ✅
+
+**Goal.** Stop asking the AST "what is your IndexFn?" Ask
+the source at evaluation time, with context.
+
+- [x] New `polydat::comprehension::eval_source` module:
+  - [x] `pub struct EvaluatedSource { values: Vec<Value>,
+        cardinality: u64, index_fn: IndexFn }` (spec
+        §10.7.6).
+  - [x] `pub enum EvalError { NeedsContext, EvalFailed { ... } }`.
+  - [x] `pub enum EvalClass { Static, ContextRequired,
+        Distribution }` (spec §10.7.0).
+  - [x] `pub trait SourceEval { fn eval_class(&self) -> EvalClass;
+        fn evaluate(&self, ctx: Option<&EvalContext>)
+        -> Result<EvaluatedSource, EvalError>; }`.
+- [x] Implement `SourceEval` for every AST source variant
+  (`Literal`, `IntRange`, `ContinuousInterval`,
+  `WorkloadParamList`, `Generator`, `Distribution`).
+- [x] **`Generator::evaluate` naive path** (no registry yet):
+  expand-then-classify via `classify_observed_values`, emits
+  `Lattice { axis_sizes: [N] }` from observed length. Cheap
+  correctness floor; PR β replaces it for registry-recognized
+  cases with declared-without-expansion shapes.
+- [x] **Strategy invocation contract** (spec §10.7.8): rewired
+  the runtime evaluator (`runtime::evaluate_for_iteration`)
+  so each node threads `Option<IndexFn>` alongside the
+  materialized tuples; the Order node builds an
+  `EvaluatedInput` (spec §10.7.8 strategy-input carrier) and
+  calls `Strategy::apply`. V4 fires here, definitively, via
+  `RuntimeError::StrategyRejectsInput`.
+- [x] **Retired the `naive_apply` / `indexed_apply` split**.
+  Single `Strategy::apply(input: &EvaluatedInput,
+  truncation: Option<u64>)` method on the trait; internal
+  helpers (`*_multi_indices`, etc.) live as private functions
+  in each strategy module. Default-impl dispatch in `apply`
+  routes to indexed-form via `multi_index_to_flat` (lookup
+  against `input.tuples`) when `index_fn_supports_lookup`,
+  else per-strategy fallback over the materialized tuples.
+- [x] IR `OrderMaterialize` opcode enriched with
+  `input_index_fn: Option<IndexFn>`; the IR compiler grabs it
+  from the upstream child's metadata at compile time, so the
+  IR interpreter passes the actual combined index_fn into
+  `Strategy::apply` (not just a 1-D length stand-in).
+- [x] Compile-time V4 best-effort: existing `validate::visit_order`
+  flow already fires V4 against static AST metadata; the
+  module-level doc on `validate.rs` now documents the two-
+  tier contract (static best-effort + runtime definitive).
+  No new compile-time fire needed for PR α — static and
+  post-eval IndexFn agree for every supported case until
+  PR β's registry promotion changes that.
+
+**Test gates landed.**
+- [x] `eval_source::tests` — 7 cases: Literal / IntRange
+  evaluate without context, Generator + WorkloadParamList
+  error without context, Continuous / Distribution yield
+  Continuous IndexFn, Generator with context evaluates to
+  Lattice.
+- [x] `runtime::tests::extrema_over_cartesian_uses_indexed_form`
+  — bug regression: Extrema over a 3x3 cartesian product
+  yields the 4 corners (was: first/last/prefix-filler via the
+  old `naive_apply`). This is the load-bearing fix for the
+  `full_cql_vector_sweep` workload's `order: extrema/1` bug.
+- [x] Existing 5 runtime walker tests + every strategy
+  module's per-strategy test still passes.
+- [x] Workspace `cargo test --workspace`: 1849 tests across
+  60 test groups, 0 failures. Polydat lib: 1269 → 1277
+  (delta = 8 new tests in eval_source + runtime regression).
+
+### PR β — Phase 11b: Built-in generator registry
+
+**Goal.** Recognize the common `Generator` patterns as known
+shapes *without* running them. Promotes them from
+`ContextRequired` to `Static`.
+
+Depends on PR α (registry consumers go through `Source::evaluate`).
+
+- [ ] New `polydat::comprehension::generators::registry`
+  module (spec §10.7.7):
+  - [ ] `pub trait BuiltinGenerator { fn evaluate(&self,
+        args: &[Value]) -> Result<EvaluatedSource, EvalError>; }`.
+  - [ ] Inventory-registered impls for: `range`, `fib`,
+    `pow2`, `linear_steps`, `geometric`, `concat`,
+    `partitions`, `subdivide`.
+  - [ ] Each impl declares its produced `IndexFn` from
+    args without expanding (e.g., `range(0, 100, 5)` →
+    `Lattice { stride: 5, count: 20 }`).
+- [ ] `Generator::eval_class` returns `Static` iff registry
+  recognizes the generator name *and* args are themselves
+  static.
+- [ ] Wire IR planner's compile-time V4 fire to cover
+  registry-recognized generators.
+
+**Test gates.**
+- [ ] Per-generator table-driven test: known input args →
+  known `EvaluatedSource`.
+- [ ] Mixed AST: `Cartesian(range(0,100,5), my_workload_param)`
+  — the range half is `Static`, the param half is
+  `ContextRequired`; whole comprehension classifies as
+  `ContextRequired` (worst-class wins).
+- [ ] V4 compile-time fire surfaces strategy/source
+  mismatches at parse for fully-registry workloads.
+
+### PR γ — Phase 11c: freeze_to_literal_ast (optional)
+
+**Goal.** Serialization helper. Given an `EvaluatedSource`,
+produce a `Source::Literal { values }` AST node so the
+evaluated result can be persisted, diffed, or pasted back
+into a workload. Strictly one-way.
+
+- [ ] `pub fn freeze_to_literal_ast(eval: &EvaluatedSource)
+      -> Source` returning `Source::Literal`.
+- [ ] Idempotence test: `freeze(literal_source.evaluate(None))
+      == literal_source`.
+
+**Optionality.** γ is not load-bearing for any current
+workload; it exists for tooling / audit / "what did this
+runtime-generator actually expand to last night?" use cases.
+Defer if scope pressure.
+
+### Acceptance for Phase 11
+
+- [ ] `full_cql_vector_sweep` (and any other workload that
+  pairs a `Generator` source with a non-Lex `order:` strategy)
+  runs without V4 violation.
+- [ ] No `IndexFn` field is reachable from `Source` AST
+  (gone — it's a query, not a property).
+- [ ] No `naive_apply` / `indexed_apply` distinction remains
+  on `Strategy`.
+- [ ] Spec §10.7.0, §10.7.6, §10.7.7, §10.7.8 match the
+  implementation contracts.
+
+### Estimated surgery
+
+- α: ~600 lines (new module + `Source` impls + runtime
+  evaluator rewire + strategy method consolidation).
+- β: ~400 lines (registry + per-generator declarations).
+- γ: ~80 lines.
 
 ---
 

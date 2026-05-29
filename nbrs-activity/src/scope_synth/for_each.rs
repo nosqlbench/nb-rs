@@ -5,7 +5,7 @@
 //! a for-each scope.
 //!
 //! Activity-side replacement for
-//! `polydat::comprehension::synthesize_for_each_scope`. The
+//! `polydat::iteration::comprehension::synthesize_for_each_scope`. The
 //! comprehension-specific walking lives here; the broad
 //! parent-program cascade is delegated to the shared
 //! [`super::cascade::cascade_parent_into_source`] walker.
@@ -32,7 +32,7 @@
 
 use std::collections::HashSet;
 
-use polydat::comprehension::pre_evaluate_clause;
+use polydat::iteration::comprehension::pre_evaluate_clause;
 use polydat::kernel::{GkKernel, ManifestEntry};
 
 use super::cascade::{cascade_parent_into_source, CascadeInputs, CascadeOutputs};
@@ -101,7 +101,7 @@ pub fn build_for_each_scope_kernel(
             .unwrap_or_default();
         let detected_type = values
             .first()
-            .map(polydat::comprehension::value_to_gk_type_name)
+            .map(polydat::iteration::comprehension::value_to_gk_type_name)
             .unwrap_or("String");
         source.push_str(&format!("extern {var}: {detected_type}\n"));
         emitted.insert(var.clone());
@@ -171,7 +171,7 @@ pub fn build_for_each_scope_kernel(
     // bridge. The for_each synthesiser threads gk_lib_paths /
     // workload_dir / strict through CompileOptions so the
     // underlying compile invocation matches the legacy call.
-    let compile_options = polydat::subcontext::CompileOptions {
+    let compile_options = polydat::kernel::subcontext::CompileOptions {
         workload_dir: workload_dir.map(|p| p.to_path_buf()),
         gk_lib_paths,
         strict,
@@ -180,7 +180,7 @@ pub fn build_for_each_scope_kernel(
         cursor_limit: None,
         ..Default::default()
     };
-    let matter = polydat::subcontext::GkMatter::builder()
+    let matter = polydat::kernel::subcontext::GkMatter::builder()
         .label(context)
         .source(source)
         .inherited_outputs(inherited_names)

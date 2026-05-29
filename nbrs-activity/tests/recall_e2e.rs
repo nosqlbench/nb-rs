@@ -28,7 +28,7 @@ use nbrs_activity::wires::CycleWires;
 use nbrs_metrics::labels::Labels;
 use polydat::dsl::compile::compile_gk;
 use polydat::kernel::GkProgram;
-use polydat::node::Value;
+use polydat::ast::Value;
 
 /// Result body shaped like `CqlResultBody.to_json()` — a JSON array of
 /// row objects, each with a `"key"` column holding the decimal-text

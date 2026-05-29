@@ -7,11 +7,11 @@
 //! patterns compose in the GK — matching the literate examples in
 //! tests/examples/.
 
-use polydat::assembly::{GkAssembler, WireRef};
-use polydat::nodes::arithmetic::{AddU64, Interleave, MixedRadix, ModU64};
-use polydat::nodes::hash::Hash64;
-use polydat::sampling::alias::AliasSample;
-use polydat::sampling::icd::{ClampF64, IcdSample, UnitInterval};
+use polydat::compile::assembly::{GkAssembler, WireRef};
+use polydat::library::arithmetic::{AddU64, Interleave, MixedRadix, ModU64};
+use polydat::library::hash::Hash64;
+use polydat::library::sampling::alias::AliasSample;
+use polydat::library::sampling::icd::{ClampF64, IcdSample, UnitInterval};
 
 // =================================================================
 // distributions.gk — Decomposed ICD pipeline

@@ -22,7 +22,7 @@
 //! change required.
 
 use crate::dsl::ast::Expr;
-use crate::node::PortType;
+use crate::ast::PortType;
 
 /// A handler that recognizes one or more cursor-constructor
 /// shapes and produces a [`CursorSugar`] rewrite. Return:

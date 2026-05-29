@@ -114,10 +114,10 @@ fn split_args(s: &str) -> Vec<String> {
 /// Constructs a representative GK program containing the function
 /// and inspects the resulting kernel's node for its compile level.
 /// Uses the unified GK compiler — no separate dispatch table.
-pub fn probe_compile_level(func_name: &str) -> polydat::node::CompileLevel {
+pub fn probe_compile_level(func_name: &str) -> polydat::ast::CompileLevel {
     let sig = match polydat::dsl::registry::lookup(func_name) {
         Some(s) => s,
-        None => return polydat::node::CompileLevel::Phase1,
+        None => return polydat::ast::CompileLevel::Phase1,
     };
 
     // Build args from per-parameter example values declared in FuncSig.
@@ -144,7 +144,7 @@ pub fn probe_compile_level(func_name: &str) -> polydat::node::CompileLevel {
 
     match result {
         Ok(Ok(kernel)) => kernel.program().last_node_compile_level(),
-        _ => polydat::node::CompileLevel::Phase1,
+        _ => polydat::ast::CompileLevel::Phase1,
     }
 }
 
@@ -362,7 +362,7 @@ pub fn build_workload_root_kernel(
     if !source.lines().any(|l| l.trim_start().starts_with("input ")) {
         source = format!("input cycle: u64\n{source}");
     }
-    let opts = polydat::subcontext::CompileOptions {
+    let opts = polydat::kernel::subcontext::CompileOptions {
         workload_dir: source_dir.map(|p| p.to_path_buf()),
         gk_lib_paths,
         strict,
@@ -389,7 +389,7 @@ pub fn build_workload_root_kernel(
     let mut inherited_param_names: Vec<String> = workload_params.keys()
         .cloned().collect();
     inherited_param_names.sort();
-    let matter = polydat::subcontext::GkMatter::builder()
+    let matter = polydat::kernel::subcontext::GkMatter::builder()
         .label(context)
         .source(source)
         .inherited_outputs(inherited_param_names)

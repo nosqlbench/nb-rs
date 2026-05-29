@@ -84,7 +84,7 @@ phases:
 #[test]
 fn install_chain_preserves_partition_iter_var_type_through_phase() {
     use std::sync::Arc;
-    use polydat::node::PortType;
+    use polydat::ast::PortType;
     use nbrs_workload::model::BindingsDef;
     use nbrs_activity::scope::build_phase_scope_kernel;
 
@@ -150,7 +150,7 @@ fn install_chain_preserves_partition_iter_var_type_through_phase() {
 fn end_to_end_install_through_runner_pipeline_yields_ext_p() {
     use std::sync::Arc;
     use nbrs_activity::scope_tree::{ScopeKind, ScopeTree};
-    use polydat::node::PortType;
+    use polydat::ast::PortType;
     use nbrs_workload::parse::parse_workload;
 
     let yaml = r#"

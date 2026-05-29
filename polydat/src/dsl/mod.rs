@@ -19,6 +19,7 @@ pub mod pprint;
 /// (nbrs-activity, nbrs-metrics) can reach `ConstArg`, `compile_ctx`,
 /// and `build_node` from their `register_nodes!` invocations.
 pub mod factory;
+pub mod factories;
 pub(crate) mod validate;
 
 /// Re-exported for external crates that register GK nodes via `register_nodes!`.

@@ -559,7 +559,7 @@ mod tests {
     fn test_fields(fields: &[(&str, &str)]) -> ResolvedFields {
         ResolvedFields::new(
             fields.iter().map(|(k, _)| k.to_string()).collect(),
-            fields.iter().map(|(_, v)| polydat::node::Value::Str((*v).into())).collect(),
+            fields.iter().map(|(_, v)| polydat::ast::Value::Str((*v).into())).collect(),
         )
     }
 
@@ -578,9 +578,9 @@ mod tests {
         ResolvedFields::new(
             vec!["name".into(), "age".into(), "score".into()],
             vec![
-                polydat::node::Value::Str("alice".into()),
-                polydat::node::Value::U64(30),
-                polydat::node::Value::F64(3.14),
+                polydat::ast::Value::Str("alice".into()),
+                polydat::ast::Value::U64(30),
+                polydat::ast::Value::F64(3.14),
             ],
         )
     }

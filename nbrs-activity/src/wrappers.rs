@@ -78,7 +78,7 @@ impl TraversingDispenser {
 fn extract_captures_from_json(
     body: &dyn crate::adapter::ResultBody,
     specs: &[bindpoints::CapturePoint],
-) -> HashMap<String, polydat::node::Value> {
+) -> HashMap<String, polydat::ast::Value> {
     if specs.is_empty() {
         return HashMap::new();
     }
@@ -93,11 +93,11 @@ fn extract_captures_from_json(
         if let Some(path) = spec.path.as_deref() {
             let sub = json.pointer(path);
             let value = if spec.count {
-                polydat::node::Value::U64(count_of_subtree(sub))
+                polydat::ast::Value::U64(count_of_subtree(sub))
             } else {
                 match sub {
                     Some(v) => json_subtree_to_value(v),
-                    None => polydat::node::Value::None,
+                    None => polydat::ast::Value::None,
                 }
             };
             captures.insert(spec.as_name.clone(), value);
@@ -106,7 +106,7 @@ fn extract_captures_from_json(
         if spec.slurp {
             // Slurp form: collect across all rows.
             let collected = slurp_column(&json, &spec.source_name);
-            captures.insert(spec.as_name.clone(), polydat::node::Value::Json(
+            captures.insert(spec.as_name.clone(), polydat::ast::Value::Json(
                 std::sync::Arc::new(serde_json::Value::Array(collected)),
             ));
             continue;
@@ -164,10 +164,10 @@ fn count_of_subtree(v: Option<&serde_json::Value>) -> u64 {
 /// shapes (array / object) are kept as `Value::Json` so the
 /// kernel can carry the original shape without lossy
 /// stringification.
-fn json_subtree_to_value(v: &serde_json::Value) -> polydat::node::Value {
+fn json_subtree_to_value(v: &serde_json::Value) -> polydat::ast::Value {
     match v {
         serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
-            polydat::node::Value::Json(std::sync::Arc::new(v.clone()))
+            polydat::ast::Value::Json(std::sync::Arc::new(v.clone()))
         }
         scalar => json_to_value(scalar),
     }
@@ -205,21 +205,21 @@ fn slurp_column(json: &serde_json::Value, name: &str) -> Vec<serde_json::Value> 
 /// extraction path (the JSON-Pointer extraction route uses
 /// [`json_subtree_to_value`] which preserves them as
 /// `Value::Json`).
-fn json_to_value(v: &serde_json::Value) -> polydat::node::Value {
+fn json_to_value(v: &serde_json::Value) -> polydat::ast::Value {
     match v {
-        serde_json::Value::Null => polydat::node::Value::None,
+        serde_json::Value::Null => polydat::ast::Value::None,
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_u64() {
-                polydat::node::Value::U64(i)
+                polydat::ast::Value::U64(i)
             } else if let Some(f) = n.as_f64() {
-                polydat::node::Value::F64(f)
+                polydat::ast::Value::F64(f)
             } else {
-                polydat::node::Value::Str(n.to_string().into())
+                polydat::ast::Value::Str(n.to_string().into())
             }
         }
-        serde_json::Value::Bool(b) => polydat::node::Value::Bool(*b),
-        serde_json::Value::String(s) => polydat::node::Value::Str(s.as_str().into()),
-        other => polydat::node::Value::Str(other.to_string().into()),
+        serde_json::Value::Bool(b) => polydat::ast::Value::Bool(*b),
+        serde_json::Value::String(s) => polydat::ast::Value::Str(s.as_str().into()),
+        other => polydat::ast::Value::Str(other.to_string().into()),
     }
 }
 
@@ -301,13 +301,13 @@ impl ConditionalDispenser {
 }
 
 /// Test whether a resolved field value is truthy.
-fn is_truthy(value: &polydat::node::Value) -> bool {
+fn is_truthy(value: &polydat::ast::Value) -> bool {
     match value {
-        polydat::node::Value::None => false,
-        polydat::node::Value::U64(v) => *v != 0,
-        polydat::node::Value::F64(v) => *v != 0.0,
-        polydat::node::Value::Bool(v) => *v,
-        polydat::node::Value::Str(s) => !s.is_empty(),
+        polydat::ast::Value::None => false,
+        polydat::ast::Value::U64(v) => *v != 0,
+        polydat::ast::Value::F64(v) => *v != 0.0,
+        polydat::ast::Value::Bool(v) => *v,
+        polydat::ast::Value::Str(s) => !s.is_empty(),
         _ => true,
     }
 }
@@ -379,8 +379,8 @@ impl OpDispenser for ThrottleDispenser {
         Box::pin(async move {
             let value = ctx.pulls.get(self.delay_handle);
             let nanos = match value {
-                polydat::node::Value::U64(ns) => *ns,
-                polydat::node::Value::F64(ms) => (*ms * 1_000_000.0) as u64,
+                polydat::ast::Value::U64(ns) => *ns,
+                polydat::ast::Value::F64(ms) => (*ms * 1_000_000.0) as u64,
                 _ => 0,
             };
             if nanos > 0 {
@@ -636,11 +636,11 @@ impl OpDispenser for PollingDispenser {
                     // (closure-binding economy).
                     let _ = ctx.wires.write(
                         "poll_count",
-                        polydat::node::Value::U64(polls),
+                        polydat::ast::Value::U64(polls),
                     );
                     let _ = ctx.wires.write(
                         "poll_elapsed_ms",
-                        polydat::node::Value::U64(elapsed.as_millis() as u64),
+                        polydat::ast::Value::U64(elapsed.as_millis() as u64),
                     );
                     // Emit named metric. The recorded value is the
                     // elapsed wait duration; if `metric_name` carries
@@ -654,7 +654,7 @@ impl OpDispenser for PollingDispenser {
                         let value = duration_value_for_metric_name(name, elapsed_secs);
                         let _ = ctx.wires.write(
                             name,
-                            polydat::node::Value::F64(value),
+                            polydat::ast::Value::F64(value),
                         );
                     }
                     return Ok(OpResult {
@@ -808,7 +808,7 @@ struct ResultSlot {
     source: ResultSource,
     /// Optional default rendered as a GK Value (string fallback)
     /// when the source resolves to nothing.
-    default: Option<polydat::node::Value>,
+    default: Option<polydat::ast::Value>,
 }
 
 /// Decoded SRD-40b §5.1 source grammar.
@@ -1032,18 +1032,18 @@ impl ResultDispenser {
     fn evaluate(
         slot: &ResultSlot,
         result: &OpResult,
-    ) -> Option<polydat::node::Value> {
+    ) -> Option<polydat::ast::Value> {
         match &slot.source {
             ResultSource::Count => {
                 let n = result.body.as_ref().map(|b| b.element_count()).unwrap_or(0);
-                Some(polydat::node::Value::U64(n))
+                Some(polydat::ast::Value::U64(n))
             }
             ResultSource::Ok => {
                 // Reached only on Ok(_) from the inner adapter; a
                 // skipped op also counts as "not a failure" — we
                 // treat skip as ok=true, matching the SRD-40b §5
                 // intent that this is a binary success signal.
-                Some(polydat::node::Value::Bool(true))
+                Some(polydat::ast::Value::Bool(true))
             }
             ResultSource::Path(segs) => {
                 let body = result.body.as_ref()?;
@@ -1108,7 +1108,7 @@ impl OpDispenser for ResultDispenser {
                 // to `Value::Json` — body rides the kernel as a
                 // structural value so `exactly_one_value(body)`
                 // can walk row × column shape (per
-                // `polydat::nodes::exactly_one`). For ops
+                // `polydat::library::exactly_one`). For ops
                 // whose body has no structural projection the
                 // adapter's `to_json()` returns a JSON String,
                 // which `exactly_one_value` collapses to
@@ -1118,9 +1118,9 @@ impl OpDispenser for ResultDispenser {
                     .as_ref()
                     .map(|b| b.to_json())
                     .unwrap_or(serde_json::Value::Null);
-                let _ = ctx.wires.write("body", polydat::node::Value::Json(std::sync::Arc::new(body_json)));
-                let _ = ctx.wires.write("count", polydat::node::Value::U64(count));
-                let _ = ctx.wires.write("ok", polydat::node::Value::Bool(true));
+                let _ = ctx.wires.write("body", polydat::ast::Value::Json(std::sync::Arc::new(body_json)));
+                let _ = ctx.wires.write("count", polydat::ast::Value::U64(count));
+                let _ = ctx.wires.write("ok", polydat::ast::Value::Bool(true));
             }
 
             let _ = cycle;
@@ -1230,11 +1230,11 @@ impl MetricInstrument {
 /// for non-numeric variants (string, vector, none) so the
 /// MetricsDispenser slot path logs + skips rather than panicking
 /// through `Value::as_f64`'s strict matcher.
-fn value_to_f64(v: &polydat::node::Value) -> Option<f64> {
+fn value_to_f64(v: &polydat::ast::Value) -> Option<f64> {
     match v {
-        polydat::node::Value::F64(f) => Some(*f),
-        polydat::node::Value::U64(u) => Some(*u as f64),
-        polydat::node::Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        polydat::ast::Value::F64(f) => Some(*f),
+        polydat::ast::Value::U64(u) => Some(*u as f64),
+        polydat::ast::Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
         _ => None,
     }
 }
@@ -1659,7 +1659,7 @@ mod tests {
         assert_eq!(captures.len(), 2);
         assert_eq!(captures["uid"].as_u64(), 42);
         match &captures["name"] {
-            polydat::node::Value::Str(s) => assert_eq!(&**s, "alice"),
+            polydat::ast::Value::Str(s) => assert_eq!(&**s, "alice"),
             other => panic!("expected Str, got {other:?}"),
         }
     }
@@ -1699,7 +1699,7 @@ mod tests {
         let captures = extract_captures_from_json(&body, &specs);
         assert_eq!(captures.len(), 1);
         match &captures["key"] {
-            polydat::node::Value::Json(arc) => {
+            polydat::ast::Value::Json(arc) => {
                 let serde_json::Value::Array(items) = arc.as_ref() else {
                     panic!("expected Value::Json(array), got {arc:?}");
                 };
@@ -1798,7 +1798,7 @@ mod tests {
         let specs = vec![cap_path("pending_for_cf", "/0/value", false)];
         let captures = extract_captures_from_json(&body, &specs);
         assert!(matches!(captures["pending_for_cf"],
-            polydat::node::Value::None),
+            polydat::ast::Value::None),
             "JSON null at path should yield Value::None, got {:?}",
             captures["pending_for_cf"],
         );
@@ -1876,7 +1876,7 @@ mod tests {
         let body = JsonBody(serde_json::json!({"value": 7}));
         let specs = vec![cap_path("not_there", "/missing/path", false)];
         let captures = extract_captures_from_json(&body, &specs);
-        assert!(matches!(captures["not_there"], polydat::node::Value::None),
+        assert!(matches!(captures["not_there"], polydat::ast::Value::None),
             "expected Value::None for unresolvable JSON-Pointer, got {:?}",
             captures["not_there"],
         );
@@ -1920,7 +1920,7 @@ mod tests {
         let specs = vec![cap_path("state", "/0/value", false)];
         let captures = extract_captures_from_json(&body, &specs);
         match &captures["state"] {
-            polydat::node::Value::Json(arc) => {
+            polydat::ast::Value::Json(arc) => {
                 assert_eq!(arc.get("keyspace").and_then(|v| v.as_str()),
                     Some("ks"));
                 assert_eq!(arc.get("ssTables").and_then(|v| v.as_u64()),
@@ -2153,7 +2153,7 @@ mod tests {
         let cw = crate::wires::CycleWires::new(&mut kernel);
         let w: &dyn crate::wires::WireSource = &cw;
         match w.get("succeeded") {
-            Some(polydat::node::Value::Bool(b)) => assert!(b),
+            Some(polydat::ast::Value::Bool(b)) => assert!(b),
             other => panic!("expected Bool(true), got {other:?}"),
         }
     }
@@ -2203,7 +2203,7 @@ mod tests {
         // slot retains its default `None`.
         let cw = crate::wires::CycleWires::new(&mut kernel);
         let w: &dyn crate::wires::WireSource = &cw;
-        assert!(matches!(w.get("missing"), Some(polydat::node::Value::None) | None));
+        assert!(matches!(w.get("missing"), Some(polydat::ast::Value::None) | None));
     }
 
     #[test]
@@ -2247,7 +2247,7 @@ mod tests {
         // No writes happened — slot retains its default.
         let cw = crate::wires::CycleWires::new(&mut kernel);
         let w: &dyn crate::wires::WireSource = &cw;
-        assert!(matches!(w.get("c"), Some(polydat::node::Value::None) | None));
+        assert!(matches!(w.get("c"), Some(polydat::ast::Value::None) | None));
     }
 
     // ---------------- MetricsDispenser tests (SRD-40b §6) ----------------
@@ -2285,8 +2285,8 @@ mod tests {
     /// in this minimal program — tests exercise the captures-lookup
     /// fallback path instead.
     fn fresh_fixture() -> crate::fixture::ScopeFixture {
-        use polydat::assembly::{GkAssembler, WireRef};
-        use polydat::nodes::identity::Identity;
+        use polydat::compile::assembly::{GkAssembler, WireRef};
+        use polydat::library::identity::Identity;
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
         asm.add_node("cycle_id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
         asm.add_output("cycle_id", WireRef::node("cycle_id"));
@@ -2359,8 +2359,8 @@ mod tests {
         polydat::kernel::GkKernel,
         crate::fixture::ScopeFixture,
     ) {
-        use polydat::assembly::{GkAssembler, WireRef};
-        use polydat::nodes::fixed::ConstF64;
+        use polydat::compile::assembly::{GkAssembler, WireRef};
+        use polydat::library::fixed::ConstF64;
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
         // Stand in for the op-template synthesiser: production builds
         // `__metric_<name> := <value_expr>` outputs on the op-template

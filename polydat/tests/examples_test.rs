@@ -8,11 +8,11 @@
 //! When the DSL parser is implemented, these tests will be replaced
 //! by direct parsing of the .gk files.
 
-use polydat::assembly::{GkAssembler, WireRef};
-use polydat::nodes::arithmetic::{
+use polydat::compile::assembly::{GkAssembler, WireRef};
+use polydat::library::arithmetic::{
     AddU64, DivU64, Interleave, MixedRadix, ModU64,
 };
-use polydat::nodes::hash::{Hash64, HashRange};
+use polydat::library::hash::{Hash64, HashRange};
 
 // ---------------------------------------------------------------
 // hello_world.gk

@@ -11,7 +11,7 @@
 //! `state_ref()` / `program()` are kernel-internal hooks.
 
 use crate::kernel::{Dataflow, GkKernel, Metadata, Construction};
-use crate::node::{PortType, Value};
+use crate::ast::{PortType, Value};
 
 impl Metadata for GkKernel {
     #[inline]
@@ -53,10 +53,10 @@ impl Dataflow for GkKernel {
 }
 
 impl Construction for GkKernel {
-    type Error = crate::subcontext::ContractViolation;
+    type Error = crate::kernel::subcontext::ContractViolation;
 
-    fn root(matter: crate::subcontext::GkMatter<'_>) -> Result<Self, Self::Error> {
-        use crate::subcontext::GkMatterInner;
+    fn root(matter: crate::kernel::subcontext::GkMatter<'_>) -> Result<Self, Self::Error> {
+        use crate::kernel::subcontext::GkMatterInner;
         match matter.inner {
             GkMatterInner::Source(s) => {
                 crate::dsl::compile::compile_gk_with_libs_and_limit(
@@ -68,7 +68,7 @@ impl Construction for GkKernel {
                     s.options.context_label.as_deref().unwrap_or(&s.label),
                     s.options.cursor_limit,
                 )
-                .map_err(crate::subcontext::ContractViolation::Compile)
+                .map_err(crate::kernel::subcontext::ContractViolation::Compile)
             }
             GkMatterInner::Statements(s) => {
                 // Pre-parsed AST — go through the compile-from-AST
@@ -84,7 +84,7 @@ impl Construction for GkKernel {
                     s.options.strict,
                     s.options.context_label.as_deref().unwrap_or(&s.label),
                 )
-                .map_err(crate::subcontext::ContractViolation::Compile)
+                .map_err(crate::kernel::subcontext::ContractViolation::Compile)
             }
             GkMatterInner::Program(p) => {
                 let mut k = GkKernel::from_program(p.program);
@@ -100,7 +100,7 @@ impl Construction for GkKernel {
 
     fn subscope(
         &self,
-        matter: crate::subcontext::GkMatter<'_>,
+        matter: crate::kernel::subcontext::GkMatter<'_>,
     ) -> Result<Self, Self::Error> {
         // Delegate to GkKernel's existing typed subscope path.
         GkKernel::build_subscope(self, matter)
@@ -174,7 +174,7 @@ mod tests {
     /// subscope from source against the root.
     #[test]
     fn construction_symmetric_paths() {
-        let root_opts = crate::subcontext::CompileOptions {
+        let root_opts = crate::kernel::subcontext::CompileOptions {
             workload_dir: None,
             gk_lib_paths: Vec::new(),
             strict: false,
@@ -183,7 +183,7 @@ mod tests {
             cursor_limit: None,
             ..Default::default()
         };
-        let root_matter = crate::subcontext::GkMatter::builder()
+        let root_matter = crate::kernel::subcontext::GkMatter::builder()
             .label("root")
             .source("input cycle: u64\nshared flag := 0\n")
             .options(root_opts)
@@ -192,7 +192,7 @@ mod tests {
         let root = <GkKernel as Construction>::root(root_matter)
             .expect("root from source matter");
 
-        let sub_opts = crate::subcontext::CompileOptions {
+        let sub_opts = crate::kernel::subcontext::CompileOptions {
             workload_dir: None,
             gk_lib_paths: Vec::new(),
             strict: false,
@@ -201,7 +201,7 @@ mod tests {
             cursor_limit: None,
             ..Default::default()
         };
-        let sub_matter = crate::subcontext::GkMatter::builder()
+        let sub_matter = crate::kernel::subcontext::GkMatter::builder()
             .label("sub")
             .source("input cycle: u64\n")
             .options(sub_opts)
@@ -219,7 +219,7 @@ mod tests {
     fn construction_root_from_program() {
         let template = compile_gk("input cycle: u64\nextern n: u64\n").unwrap();
         let program = template.program().clone();
-        let matter = crate::subcontext::GkMatter::builder()
+        let matter = crate::kernel::subcontext::GkMatter::builder()
             .program(program)
             .build()
             .expect("matter build");
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn builder_rejects_multiple_forms() {
         let template = compile_gk("input cycle: u64\n").unwrap();
-        match crate::subcontext::GkMatter::builder()
+        match crate::kernel::subcontext::GkMatter::builder()
             .source("input cycle: u64\n")
             .program(template.program().clone())
             .build()
@@ -246,7 +246,7 @@ mod tests {
     /// Builder rejects empty matter.
     #[test]
     fn builder_rejects_empty() {
-        match crate::subcontext::GkMatter::builder().build() {
+        match crate::kernel::subcontext::GkMatter::builder().build() {
             Err(msg) => assert!(msg.contains("no input form"), "expected no-form error, got: {msg}"),
             Ok(_) => panic!("empty matter must error"),
         }

@@ -34,7 +34,7 @@
 //!
 //! [`GkKernel`]: super::GkKernel
 
-use crate::node::{PortType, Value};
+use crate::ast::{PortType, Value};
 
 /// A wire reference — either a pre-resolved index (fast path)
 /// or a name (resolved against the context's input map).
@@ -162,7 +162,7 @@ pub trait Dataflow: Metadata {
 ///    context.
 ///
 /// Both paths take the same typed gk matter
-/// ([`super::super::subcontext::GkMatter`]). The only
+/// ([`super::subcontext::GkMatter`]). The only
 /// difference is whether a parent context supervises
 /// construction. Nothing else is allowed.
 pub trait Construction: Sized {
@@ -174,12 +174,12 @@ pub trait Construction: Sized {
     /// rewrites, inherited-output cascade, finalize-time
     /// contract checks) are not applicable here and are
     /// ignored.
-    fn root(matter: super::super::subcontext::GkMatter<'_>) -> Result<Self, Self::Error>;
+    fn root(matter: super::subcontext::GkMatter<'_>) -> Result<Self, Self::Error>;
 
     /// Path 2: build a subscope context against `self` from
     /// gk matter. The parent supervises: cell cascade, Rule 2
     /// rewrites, scope-coordinate threading, init-binding
     /// contract checks all flow from `self` into the child.
-    fn subscope(&self, matter: super::super::subcontext::GkMatter<'_>)
+    fn subscope(&self, matter: super::subcontext::GkMatter<'_>)
         -> Result<Self, Self::Error>;
 }

@@ -1035,8 +1035,8 @@ fn is_bare_ident(s: &str) -> bool {
 /// Coerce a kernel `Value` to a non-negative integer suitable for
 /// `k:` / `r:` count fields. U64 / F64 (non-negative) accepted;
 /// other variants signal a type mismatch the caller surfaces.
-fn value_to_u64_for_count(value: polydat::node::Value) -> Option<u64> {
-    use polydat::node::Value;
+fn value_to_u64_for_count(value: polydat::ast::Value) -> Option<u64> {
+    use polydat::ast::Value;
     match value {
         Value::U64(n) => Some(n),
         Value::F64(f) if f.is_finite() && f >= 0.0 => Some(f as u64),
@@ -1101,21 +1101,21 @@ fn json_field_as_i64(v: &serde_json::Value) -> Option<i64> {
 /// directly with no string round-trip. String fallback covers
 /// legacy bindings that emit `Value::Str("[1, 5, 12, ...]")` or
 /// `Value::Str("1,5,12,...")`.
-fn resolve_expected_from_value(value: &polydat::node::Value) -> Vec<i64> {
+fn resolve_expected_from_value(value: &polydat::ast::Value) -> Vec<i64> {
     match value {
         // Typed-slice fast paths — zero-copy read, no parse.
-        polydat::node::Value::VecI32(slice) => {
+        polydat::ast::Value::VecI32(slice) => {
             slice.as_slice().iter().map(|&x| x as i64).collect()
         }
-        polydat::node::Value::VecF32(slice) => {
+        polydat::ast::Value::VecF32(slice) => {
             // Vector ground-truth indices are integer-valued
             // by domain. Truncating fractional parts is the
             // correct semantic; anything else would mean the
             // dataset's index column is mis-typed at the source.
             slice.as_slice().iter().map(|&x| x as i64).collect()
         }
-        polydat::node::Value::Str(s) => parse_int_array(s),
-        polydat::node::Value::U64(v) => vec![*v as i64],
+        polydat::ast::Value::Str(s) => parse_int_array(s),
+        polydat::ast::Value::U64(v) => vec![*v as i64],
         _ => {
             // Display-string fallback for anything else.
             let s = value.to_display_string();
@@ -1478,13 +1478,13 @@ mod tests {
 
     #[test]
     fn resolve_expected_string_array_form() {
-        let v = polydat::node::Value::Str("[1, 5, 12, 23]".into());
+        let v = polydat::ast::Value::Str("[1, 5, 12, 23]".into());
         assert_eq!(resolve_expected_from_value(&v), vec![1, 5, 12, 23]);
     }
 
     #[test]
     fn resolve_expected_string_csv_form() {
-        let v = polydat::node::Value::Str("1,5,12".into());
+        let v = polydat::ast::Value::Str("1,5,12".into());
         assert_eq!(resolve_expected_from_value(&v), vec![1, 5, 12]);
     }
 
@@ -1493,7 +1493,7 @@ mod tests {
         // The fast path the dataset accessors emit
         // (`neighbor_indices_at` etc. → Value::VecI32). No
         // string round-trip happens; the slice is read directly.
-        use polydat::node::{SliceArc, Value};
+        use polydat::ast::{SliceArc, Value};
         let slice = SliceArc::<i32>::from_vec(vec![1, 5, 12, 23, 100]);
         let v = Value::VecI32(slice);
         assert_eq!(resolve_expected_from_value(&v), vec![1, 5, 12, 23, 100]);
@@ -1503,7 +1503,7 @@ mod tests {
     fn resolve_expected_native_vecf32_fast_path() {
         // VecF32 ground truth (rare but legal — some datasets
         // store ranks as floats). Truncates to i64.
-        use polydat::node::{SliceArc, Value};
+        use polydat::ast::{SliceArc, Value};
         let slice = SliceArc::<f32>::from_vec(vec![1.0, 2.0, 3.0]);
         let v = Value::VecF32(slice);
         assert_eq!(resolve_expected_from_value(&v), vec![1, 2, 3]);

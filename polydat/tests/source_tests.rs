@@ -12,8 +12,8 @@
 //! - Edge cases and error handling
 
 use polydat::dsl::compile::compile_gk;
-use polydat::source::{DataSourceFactory, RangeSourceFactory, SourceItem};
-use polydat::node::Value;
+use polydat::iteration::source::{DataSourceFactory, RangeSourceFactory, SourceItem};
+use polydat::ast::Value;
 use std::sync::Arc;
 use std::thread;
 
@@ -538,7 +538,7 @@ fn cursor_projection_feeds_function_call() {
 
 #[test]
 fn advancer_targets_correct_cursors() {
-    use polydat::source::Cursors;
+    use polydat::iteration::source::Cursors;
     use std::collections::HashMap;
 
     let src = r#"
@@ -550,7 +550,7 @@ fn advancer_targets_correct_cursors() {
     let kernel = compile_gk(src).unwrap();
     let program = kernel.program();
 
-    let mut factories: HashMap<String, Arc<dyn polydat::source::DataSourceFactory>> = HashMap::new();
+    let mut factories: HashMap<String, Arc<dyn polydat::iteration::source::DataSourceFactory>> = HashMap::new();
     factories.insert("base".into(), Arc::new(RangeSourceFactory::new(0, 100)));
 
     // Cursors for "id" should target the base cursor
@@ -561,7 +561,7 @@ fn advancer_targets_correct_cursors() {
 
 #[test]
 fn advancer_does_not_target_unused_sources() {
-    use polydat::source::Cursors;
+    use polydat::iteration::source::Cursors;
     use std::collections::HashMap;
 
     let src = r#"
@@ -573,7 +573,7 @@ fn advancer_does_not_target_unused_sources() {
     let kernel = compile_gk(src).unwrap();
     let program = kernel.program();
 
-    let mut factories: HashMap<String, Arc<dyn polydat::source::DataSourceFactory>> = HashMap::new();
+    let mut factories: HashMap<String, Arc<dyn polydat::iteration::source::DataSourceFactory>> = HashMap::new();
     factories.insert("base".into(), Arc::new(RangeSourceFactory::new(0, 100)));
     factories.insert("queries".into(), Arc::new(RangeSourceFactory::new(0, 50)));
 
@@ -585,7 +585,7 @@ fn advancer_does_not_target_unused_sources() {
 
 #[test]
 fn advancer_advance_and_exhaust() {
-    use polydat::source::Cursors;
+    use polydat::iteration::source::Cursors;
     use std::collections::HashMap;
 
     let src = r#"
@@ -596,7 +596,7 @@ fn advancer_advance_and_exhaust() {
     let kernel = compile_gk(src).unwrap();
     let program = kernel.program();
 
-    let mut factories: HashMap<String, Arc<dyn polydat::source::DataSourceFactory>> = HashMap::new();
+    let mut factories: HashMap<String, Arc<dyn polydat::iteration::source::DataSourceFactory>> = HashMap::new();
     factories.insert("r".into(), Arc::new(RangeSourceFactory::new(0, 3)));
 
     let mut advancer = Cursors::for_fields(program, &["id"], &factories);
@@ -611,7 +611,7 @@ fn advancer_advance_and_exhaust() {
 
 #[test]
 fn advancer_last_items_reflect_position() {
-    use polydat::source::Cursors;
+    use polydat::iteration::source::Cursors;
     use std::collections::HashMap;
 
     let src = r#"
@@ -622,7 +622,7 @@ fn advancer_last_items_reflect_position() {
     let kernel = compile_gk(src).unwrap();
     let program = kernel.program();
 
-    let mut factories: HashMap<String, Arc<dyn polydat::source::DataSourceFactory>> = HashMap::new();
+    let mut factories: HashMap<String, Arc<dyn polydat::iteration::source::DataSourceFactory>> = HashMap::new();
     factories.insert("r".into(), Arc::new(RangeSourceFactory::new(10, 13)));
 
     let mut advancer = Cursors::for_fields(program, &["id"], &factories);
@@ -637,7 +637,7 @@ fn advancer_last_items_reflect_position() {
 
 #[test]
 fn advancer_empty_when_no_sources_referenced() {
-    use polydat::source::Cursors;
+    use polydat::iteration::source::Cursors;
     use std::collections::HashMap;
 
     let src = r#"
@@ -647,7 +647,7 @@ fn advancer_empty_when_no_sources_referenced() {
     let kernel = compile_gk(src).unwrap();
     let program = kernel.program();
 
-    let factories: HashMap<String, Arc<dyn polydat::source::DataSourceFactory>> = HashMap::new();
+    let factories: HashMap<String, Arc<dyn polydat::iteration::source::DataSourceFactory>> = HashMap::new();
     let advancer = Cursors::for_fields(program, &["id"], &factories);
     assert!(advancer.is_empty());
 }

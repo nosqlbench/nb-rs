@@ -4,10 +4,10 @@
 //! End-to-end tests: programmatically assemble GK kernels and verify
 //! pull-through evaluation produces correct values.
 
-use polydat::assembly::{GkAssembler, WireRef};
-use polydat::nodes::arithmetic::{AddU64, DivU64, Interleave, MixedRadix, ModU64};
-use polydat::nodes::convert::U64ToString;
-use polydat::nodes::hash::{Hash64, HashRange};
+use polydat::compile::assembly::{GkAssembler, WireRef};
+use polydat::library::arithmetic::{AddU64, DivU64, Interleave, MixedRadix, ModU64};
+use polydat::library::convert::U64ToString;
+use polydat::library::hash::{Hash64, HashRange};
 
 /// Simple linear chain: cycle → hash → mod → output
 #[test]

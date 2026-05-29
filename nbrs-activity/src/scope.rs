@@ -741,7 +741,7 @@ fn parse_modifier_and_name(lhs: &str) -> (ScopeModifier, &str) {
 // =========================================================================
 //
 // The for_each / for_combinations / for_each_union synthesizer
-// lives in `polydat::comprehension::synthesis::synthesize_for_each_scope`.
+// lives in `polydat::iteration::comprehension::synthesis::synthesize_for_each_scope`.
 // Callers in this crate go directly to that entry point; this
 // module retains only the do-loop synthesizer below, since
 // do_while / do_until aren't comprehensions.
@@ -1011,7 +1011,7 @@ pub fn build_phase_scope_kernel(
     }
 
     let _ = parent_manifest; // reserved for future strict cross-scope checks
-    let compile_options = polydat::subcontext::CompileOptions {
+    let compile_options = polydat::kernel::subcontext::CompileOptions {
         workload_dir: workload_dir.map(|p| p.to_path_buf()),
         gk_lib_paths,
         strict,
@@ -1020,7 +1020,7 @@ pub fn build_phase_scope_kernel(
         cursor_limit: None,
         ..Default::default()
     };
-    let matter = polydat::subcontext::GkMatter::builder()
+    let matter = polydat::kernel::subcontext::GkMatter::builder()
         .label(context)
         .source(source)
         .inherited_outputs(inherited_names)
@@ -1097,7 +1097,7 @@ pub fn build_do_loop_scope_kernel(
     // path); the do-loop's emitted source shape doesn't need
     // them. Recorded as a Phase 3 follow-up.
     let _ = (gk_lib_paths, workload_dir, strict);
-    let matter = polydat::subcontext::GkMatter::builder()
+    let matter = polydat::kernel::subcontext::GkMatter::builder()
         .label(context)
         .source(source)
         .inherited_outputs(inherited_names)
@@ -1518,10 +1518,10 @@ pub fn build_op_template_scope_kernel(
             );
         } else if let Some(entry) = manifest_by_name.get(name.as_str()) {
             let type_name = match entry.port_type {
-                polydat::node::PortType::U64 => "u64",
-                polydat::node::PortType::F64 => "f64",
-                polydat::node::PortType::Str => "String",
-                polydat::node::PortType::Bool => "bool",
+                polydat::ast::PortType::U64 => "u64",
+                polydat::ast::PortType::F64 => "f64",
+                polydat::ast::PortType::Str => "String",
+                polydat::ast::PortType::Bool => "bool",
                 _ => "String",
             };
             source.push_str(&format!("extern {name}: {type_name}\n"));
@@ -1541,12 +1541,12 @@ pub fn build_op_template_scope_kernel(
             let kind = parent_kernel.program().input_kind(parent_idx);
             if !matches!(kind, Some(polydat::kernel::InputKind::Coordinate)) {
                 let port_type = parent_kernel.program().input_port_type(name)
-                    .unwrap_or(polydat::node::PortType::U64);
+                    .unwrap_or(polydat::ast::PortType::U64);
                 let type_name = match port_type {
-                    polydat::node::PortType::U64 => "u64",
-                    polydat::node::PortType::F64 => "f64",
-                    polydat::node::PortType::Str => "String",
-                    polydat::node::PortType::Bool => "bool",
+                    polydat::ast::PortType::U64 => "u64",
+                    polydat::ast::PortType::F64 => "f64",
+                    polydat::ast::PortType::Str => "String",
+                    polydat::ast::PortType::Bool => "bool",
                     _ => "String",
                 };
                 source.push_str(&format!("extern {name}: {type_name}\n"));
@@ -1605,7 +1605,7 @@ pub fn build_op_template_scope_kernel(
     // values reach the inner kernel's input slots; the trailing
     // `GkKernel::propagate_inputs_into` keeps cascade-extern'd inputs
     // flowing through (until Rule 4 / Rule 5 absorb them).
-    let compile_options = polydat::subcontext::CompileOptions {
+    let compile_options = polydat::kernel::subcontext::CompileOptions {
         workload_dir: workload_dir.map(|p| p.to_path_buf()),
         gk_lib_paths,
         strict,
@@ -1658,7 +1658,7 @@ pub fn build_op_template_scope_kernel(
     }
     let result_source: Option<String> = Some(result_source).filter(|s| !s.trim().is_empty());
 
-    let mut matter_builder = polydat::subcontext::GkMatter::builder()
+    let mut matter_builder = polydat::kernel::subcontext::GkMatter::builder()
         .label(context)
         .source(source)
         .inherited_outputs(inherited_names)
@@ -1691,7 +1691,7 @@ pub fn synthesize_metric_binding_name(metric_name: &str) -> String {
 
 /// Flatten a [`nbrs_workload::model::ResultSpec`] into a single
 /// GK source string suitable for
-/// [`polydat::subcontext::SubcontextBuilder::add_result_bindings`].
+/// [`polydat::kernel::subcontext::SubcontextBuilder::add_result_bindings`].
 /// String-shape entries pass through verbatim; map-shape entries
 /// emit `<name> := <source>` lines (the same projection the
 /// SRD-66 schema specifies); list-shape entries recurse.
@@ -2115,10 +2115,10 @@ pub fn build_scope(
             && !is_iter_var
         {
             let type_name = match entry.port_type {
-                polydat::node::PortType::U64 => "u64",
-                polydat::node::PortType::F64 => "f64",
-                polydat::node::PortType::Str => "String",
-                polydat::node::PortType::Bool => "bool",
+                polydat::ast::PortType::U64 => "u64",
+                polydat::ast::PortType::F64 => "f64",
+                polydat::ast::PortType::Str => "String",
+                polydat::ast::PortType::Bool => "bool",
                 _ => "String",
             };
             scope.add_extern(&entry.name, type_name);
@@ -3865,7 +3865,7 @@ extern keyspace: String
         // Sanity: phase has p as Ext-typed input slot.
         assert_eq!(
             phase_kernel.program().input_port_type("p"),
-            Some(polydat::node::PortType::Ext),
+            Some(polydat::ast::PortType::Ext),
             "phase kernel's `p` must be Ext-typed",
         );
         // Sanity: phase has `n` as an output (the mod_in result).
@@ -3897,7 +3897,7 @@ extern keyspace: String
         // Sanity: the for-each scope's iter-var p is Ext-typed.
         assert_eq!(
             parent_kernel.program().input_port_type("p"),
-            Some(polydat::node::PortType::Ext),
+            Some(polydat::ast::PortType::Ext),
             "for-each scope's iter-var `p` must declare as Ext",
         );
 
@@ -3916,7 +3916,7 @@ extern keyspace: String
 
         // The phase kernel must see `p` as Ext-typed.
         let port_type = phase_kernel.program().input_port_type("p");
-        assert_eq!(port_type, Some(polydat::node::PortType::Ext),
+        assert_eq!(port_type, Some(polydat::ast::PortType::Ext),
             "phase kernel's `p` slot must be Ext (preserved through cascade), got {port_type:?}");
     }
 
@@ -3975,7 +3975,7 @@ extern keyspace: String
         // Type must be Bool (per SRD-13c §"Shared Mutable" step 1
         // + SRD-66 §"Reading from a downstream phase").
         let port_type = phase_kernel.program().input_port_type("has_sai_column_indexes");
-        assert_eq!(port_type, Some(polydat::node::PortType::Bool),
+        assert_eq!(port_type, Some(polydat::ast::PortType::Bool),
             "phase kernel's has_sai_column_indexes slot must be Bool, got {port_type:?}");
 
         // Kind must NOT be Coordinate — cascaded names are IterationExtern
@@ -4084,7 +4084,7 @@ extern keyspace: String
         // entirely if not referenced). It MUST NOT be Coordinate U64.
         if let Some(idx) = executor_kernel.program().find_input("has_a") {
             let typ = executor_kernel.program().input_port_type("has_a");
-            assert_eq!(typ, Some(polydat::node::PortType::Bool),
+            assert_eq!(typ, Some(polydat::ast::PortType::Bool),
                 "executor kernel's has_a slot must be Bool;\n\
                  got {typ:?}\n\
                  emitted source:\n{emitted}\n\
@@ -4156,10 +4156,10 @@ extern keyspace: String
                                  shared has_b := false\n";
         scope.ingest_gk_source(workload_level_gk, BindingOrigin::Inherited);
         let root_source = scope.emit();
-        let root_matter = polydat::subcontext::GkMatter::builder()
+        let root_matter = polydat::kernel::subcontext::GkMatter::builder()
             .label("test_root")
             .source(root_source.clone())
-            .options(polydat::subcontext::CompileOptions {
+            .options(polydat::kernel::subcontext::CompileOptions {
                 workload_dir: None,
                 gk_lib_paths: Vec::new(),
                 strict: false,
@@ -4258,7 +4258,7 @@ extern keyspace: String
         // have has_a as Bool/non-Coordinate.
         if let Some(idx) = exec_kernel.program().find_input("has_a") {
             let typ = exec_kernel.program().input_port_type("has_a");
-            assert_eq!(typ, Some(polydat::node::PortType::Bool),
+            assert_eq!(typ, Some(polydat::ast::PortType::Bool),
                 "FINAL kernel has_a must be Bool, got {typ:?}\n\
                  exec source:\n{exec_source}\n\
                  exec input_names: {:?}\n\
@@ -4337,7 +4337,7 @@ extern keyspace: String
         // The actual workload-root compile goes through
         // parent.build_subscope. Build the matter and finalize.
         let source = scope.emit();
-        let opts = polydat::subcontext::CompileOptions {
+        let opts = polydat::kernel::subcontext::CompileOptions {
             workload_dir: None,
             gk_lib_paths: Vec::new(),
             strict: false,
@@ -4346,7 +4346,7 @@ extern keyspace: String
             cursor_limit: None,
             ..Default::default()
         };
-        let matter = polydat::subcontext::GkMatter::builder()
+        let matter = polydat::kernel::subcontext::GkMatter::builder()
             .label("test_workload_root")
             .source(source.clone())
             .options(opts)
@@ -4367,7 +4367,7 @@ extern keyspace: String
                  root.program().input_names()));
 
         let typ = root.program().input_port_type("has_a");
-        assert_eq!(typ, Some(polydat::node::PortType::Bool),
+        assert_eq!(typ, Some(polydat::ast::PortType::Bool),
             "workload root has_a must be Bool;\n\
              got {typ:?}\n\
              emitted source:\n{source}\n\
@@ -4433,7 +4433,7 @@ extern keyspace: String
         let root_has_a_idx = root.program().find_input("has_a")
             .expect("workload root has_a slot");
         let root_has_a_type = root.program().input_port_type("has_a");
-        assert_eq!(root_has_a_type, Some(polydat::node::PortType::Bool),
+        assert_eq!(root_has_a_type, Some(polydat::ast::PortType::Bool),
             "workload root has_a must be Bool");
         let root_has_a_kind = root.program().input_kind(root_has_a_idx);
         assert_ne!(root_has_a_kind, Some(polydat::kernel::InputKind::Coordinate),
@@ -4455,7 +4455,7 @@ extern keyspace: String
         let fe_has_a_idx = for_each.program().find_input("has_a")
             .expect("for_each has_a slot");
         let fe_has_a_type = for_each.program().input_port_type("has_a");
-        assert_eq!(fe_has_a_type, Some(polydat::node::PortType::Bool),
+        assert_eq!(fe_has_a_type, Some(polydat::ast::PortType::Bool),
             "for_each has_a must be Bool, got {fe_has_a_type:?}");
         let fe_has_a_kind = for_each.program().input_kind(fe_has_a_idx);
         assert_ne!(fe_has_a_kind, Some(polydat::kernel::InputKind::Coordinate),
@@ -4479,7 +4479,7 @@ extern keyspace: String
         let phase_has_a_idx = phase.program().find_input("has_a")
             .expect("phase has_a slot");
         let phase_has_a_type = phase.program().input_port_type("has_a");
-        assert_eq!(phase_has_a_type, Some(polydat::node::PortType::Bool),
+        assert_eq!(phase_has_a_type, Some(polydat::ast::PortType::Bool),
             "phase has_a must be Bool; got {phase_has_a_type:?}\n\
              phase input names: {:?}",
             phase.program().input_names());
@@ -4527,7 +4527,7 @@ extern keyspace: String
 
         // for_each's program must carry has_X as a Bool slot too.
         let fe_type = for_each_kernel.program().input_port_type("has_sai_column_indexes");
-        assert_eq!(fe_type, Some(polydat::node::PortType::Bool),
+        assert_eq!(fe_type, Some(polydat::ast::PortType::Bool),
             "for_each scope's has_sai_column_indexes must be Bool, got {fe_type:?}");
         let fe_idx = for_each_kernel.program().find_input("has_sai_column_indexes")
             .expect("for_each has has_sai_column_indexes input");
@@ -4553,7 +4553,7 @@ extern keyspace: String
         ).expect("phase kernel synth");
 
         let phase_type = phase_kernel.program().input_port_type("has_sai_column_indexes");
-        assert_eq!(phase_type, Some(polydat::node::PortType::Bool),
+        assert_eq!(phase_type, Some(polydat::ast::PortType::Bool),
             "phase scope's has_sai_column_indexes must be Bool, got {phase_type:?}");
         let phase_idx = phase_kernel.program().find_input("has_sai_column_indexes")
             .expect("phase has has_sai_column_indexes input");

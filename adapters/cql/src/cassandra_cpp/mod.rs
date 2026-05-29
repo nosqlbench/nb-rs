@@ -257,7 +257,7 @@ fn resolve_structural_and_mark_remaining<F>(
     mut lookup: F,
 ) -> (String, Vec<String>)
 where
-    F: FnMut(&str) -> Option<polydat::node::Value>,
+    F: FnMut(&str) -> Option<polydat::ast::Value>,
 {
     let chars: Vec<char> = template.chars().collect();
     let n = chars.len();
@@ -1190,7 +1190,7 @@ impl OpDispenser for CqlPreparedDispenser {
             if ch == '?' {
                 if let Some(name) = self.bind_names.get(bind_idx) {
                     let rendered = match wires.get(name) {
-                        Some(polydat::node::Value::Str(s)) => format!("'{s}'"),
+                        Some(polydat::ast::Value::Str(s)) => format!("'{s}'"),
                         Some(v) => v.to_display_string(),
                         None => format!("{{?{name}}}"),
                     };
@@ -1467,7 +1467,7 @@ impl OpDispenser for CqlBatchDispenser {
             if ch == '?' {
                 if let Some(name) = self.bind_names.get(bind_idx) {
                     let rendered = match wires.get(name) {
-                        Some(polydat::node::Value::Str(s)) => format!("'{s}'"),
+                        Some(polydat::ast::Value::Str(s)) => format!("'{s}'"),
                         Some(v) => v.to_display_string(),
                         None => format!("{{?{name}}}"),
                     };
@@ -1540,7 +1540,7 @@ impl OpDispenser for CqlBatchDispenser {
             // prepared statement metadata. Each binder coerces
             // a GK `Value` to the CQL column type for its `?`
             // position.
-            let binders: Vec<Box<dyn Fn(&mut cass::Statement, usize, &polydat::node::Value)
+            let binders: Vec<Box<dyn Fn(&mut cass::Statement, usize, &polydat::ast::Value)
                 -> Result<(), cass::Error> + Send + Sync>> =
                 (0..self.bind_names.len()).map(|i| {
                     let dt = prepared.parameter_data_type(i);
@@ -1685,7 +1685,7 @@ impl OpDispenser for CqlBatchDispenser {
             // through wires.get on the same cycle.
             let _ = ctx.wires.write(
                 "rows_inserted",
-                polydat::node::Value::U64(row_count as u64),
+                polydat::ast::Value::U64(row_count as u64),
             );
             Ok(OpResult {
                 body: None,
@@ -1843,7 +1843,7 @@ fn le_to_be_f32_bytes(le: &[u8]) -> Vec<u8> {
     be
 }
 
-type BinderFn = Box<dyn Fn(&mut cass::Statement, usize, &polydat::node::Value)
+type BinderFn = Box<dyn Fn(&mut cass::Statement, usize, &polydat::ast::Value)
     -> cass::Result<()> + Send + Sync>;
 
 fn make_binder(cql_type: cass::ValueType) -> BinderFn {
@@ -1858,9 +1858,9 @@ fn make_binder(cql_type: cass::ValueType) -> BinderFn {
         cass::ValueType::INT | cass::ValueType::SMALL_INT | cass::ValueType::TINY_INT => {
             Box::new(|stmt, idx, value| {
                 let n = match value {
-                    polydat::node::Value::U64(v) => *v as i32,
-                    polydat::node::Value::F64(v) => *v as i32,
-                    polydat::node::Value::Str(s) => s.parse::<i32>().unwrap_or(0),
+                    polydat::ast::Value::U64(v) => *v as i32,
+                    polydat::ast::Value::F64(v) => *v as i32,
+                    polydat::ast::Value::Str(s) => s.parse::<i32>().unwrap_or(0),
                     _ => 0,
                 };
                 stmt.bind_int32(idx, n)?; Ok(())
@@ -1870,9 +1870,9 @@ fn make_binder(cql_type: cass::ValueType) -> BinderFn {
         cass::ValueType::BIGINT | cass::ValueType::COUNTER => {
             Box::new(|stmt, idx, value| {
                 let n = match value {
-                    polydat::node::Value::U64(v) => *v as i64,
-                    polydat::node::Value::F64(v) => *v as i64,
-                    polydat::node::Value::Str(s) => s.parse::<i64>().unwrap_or(0),
+                    polydat::ast::Value::U64(v) => *v as i64,
+                    polydat::ast::Value::F64(v) => *v as i64,
+                    polydat::ast::Value::Str(s) => s.parse::<i64>().unwrap_or(0),
                     _ => 0,
                 };
                 stmt.bind_int64(idx, n)?; Ok(())
@@ -1882,9 +1882,9 @@ fn make_binder(cql_type: cass::ValueType) -> BinderFn {
         cass::ValueType::FLOAT => {
             Box::new(|stmt, idx, value| {
                 let f = match value {
-                    polydat::node::Value::F64(v) => *v as f32,
-                    polydat::node::Value::U64(v) => *v as f32,
-                    polydat::node::Value::Str(s) => s.parse::<f32>().unwrap_or(0.0),
+                    polydat::ast::Value::F64(v) => *v as f32,
+                    polydat::ast::Value::U64(v) => *v as f32,
+                    polydat::ast::Value::Str(s) => s.parse::<f32>().unwrap_or(0.0),
                     _ => 0.0,
                 };
                 stmt.bind_float(idx, f)?; Ok(())
@@ -1894,9 +1894,9 @@ fn make_binder(cql_type: cass::ValueType) -> BinderFn {
         cass::ValueType::DOUBLE => {
             Box::new(|stmt, idx, value| {
                 let f = match value {
-                    polydat::node::Value::F64(v) => *v,
-                    polydat::node::Value::U64(v) => *v as f64,
-                    polydat::node::Value::Str(s) => s.parse::<f64>().unwrap_or(0.0),
+                    polydat::ast::Value::F64(v) => *v,
+                    polydat::ast::Value::U64(v) => *v as f64,
+                    polydat::ast::Value::Str(s) => s.parse::<f64>().unwrap_or(0.0),
                     _ => 0.0,
                 };
                 stmt.bind_double(idx, f)?; Ok(())
@@ -1906,9 +1906,9 @@ fn make_binder(cql_type: cass::ValueType) -> BinderFn {
         cass::ValueType::BOOLEAN => {
             Box::new(|stmt, idx, value| {
                 let b = match value {
-                    polydat::node::Value::Bool(v) => *v,
-                    polydat::node::Value::U64(v) => *v != 0,
-                    polydat::node::Value::Str(s) => &**s == "true" || &**s == "1",
+                    polydat::ast::Value::Bool(v) => *v,
+                    polydat::ast::Value::U64(v) => *v != 0,
+                    polydat::ast::Value::Str(s) => &**s == "true" || &**s == "1",
                     _ => false,
                 };
                 stmt.bind_bool(idx, b)?; Ok(())
@@ -1922,7 +1922,7 @@ fn make_binder(cql_type: cass::ValueType) -> BinderFn {
         cass::ValueType::CUSTOM => {
             Box::new(|stmt, idx, value| {
                 match value {
-                    polydat::node::Value::Bytes(le_bytes) => {
+                    polydat::ast::Value::Bytes(le_bytes) => {
                         // LE f32 from GK → BE f32 for CQL
                         let be_bytes = le_to_be_f32_bytes(le_bytes);
                         stmt.bind_bytes(idx, be_bytes)?;
@@ -1944,7 +1944,7 @@ fn make_binder(cql_type: cass::ValueType) -> BinderFn {
         cass::ValueType::BLOB => {
             Box::new(|stmt, idx, value| {
                 match value {
-                    polydat::node::Value::Bytes(bytes) => {
+                    polydat::ast::Value::Bytes(bytes) => {
                         stmt.bind_bytes(idx, bytes.to_vec())?;
                     }
                     _ => {

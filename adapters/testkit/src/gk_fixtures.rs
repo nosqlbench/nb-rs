@@ -39,7 +39,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use polydat::node::{GkNode, NodeMeta, Port, Slot, SlotType, Value};
+use polydat::ast::{GkNode, NodeMeta, Port, Slot, SlotType, Value};
 
 /// Process-wide cache of advanced sequence values, keyed by
 /// statefile path. The GK assembly path constructs the node
@@ -364,7 +364,7 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "errorname", slot_type: SlotType::ConstStr, required: true, example: "\"staircase\"", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -378,7 +378,7 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "csv_values",     slot_type: SlotType::ConstStr, required: true, example: "\"10,51,101\"",   constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -392,7 +392,7 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "csv_values",     slot_type: SlotType::ConstStr, required: true, example: "\"10,51,101\"",   constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -405,7 +405,7 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "statefile_path", slot_type: SlotType::ConstStr, required: true, example: "\"/tmp/seq.txt\"", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -414,8 +414,8 @@ pub fn signatures() -> &'static [FuncSig] {
 
 pub fn build_node(
     name: &str,
-    _wires: &[polydat::assembly::WireRef],
-    _wire_types: &[polydat::node::PortType],
+    _wires: &[polydat::compile::assembly::WireRef],
+    _wire_types: &[polydat::ast::PortType],
     consts: &[polydat::dsl::ConstArg],
 ) -> Option<Result<Box<dyn GkNode>, String>> {
     match name {

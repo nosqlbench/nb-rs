@@ -40,7 +40,7 @@ pub struct ActivityConfig {
     /// Source factory for data-driven phases. When present, fibers pull
     /// from this source instead of the cycle counter. Each fiber creates
     /// its own reader via `create_reader()`.
-    pub source_factory: Option<Arc<dyn polydat::source::DataSourceFactory>>,
+    pub source_factory: Option<Arc<dyn polydat::iteration::source::DataSourceFactory>>,
     /// Suppress the inline stderr progress line (TUI handles
     /// display). Wrapped in `Arc<AtomicBool>` so the runner can
     /// flip it at runtime — when the user dismisses the TUI
@@ -558,7 +558,7 @@ pub struct Activity {
     pub error_router: ErrorRouter,
     /// Source factory — creates per-fiber readers. All phases go through
     /// sources. `cycles: N` desugars to `range(0, N)`.
-    source_factory: Arc<dyn polydat::source::DataSourceFactory>,
+    source_factory: Arc<dyn polydat::iteration::source::DataSourceFactory>,
     /// Resolved workload parameters (constant per run).
     pub workload_params: Arc<std::collections::HashMap<String, String>>,
     /// Shared flag: set to true when a `stop` error handler fires.
@@ -768,10 +768,10 @@ impl Activity {
             });
         // All phases go through sources. cycles: N desugars to range(0, N).
         // Named cursors in GK provide their own factory via config.source_factory.
-        let source_factory: Arc<dyn polydat::source::DataSourceFactory> = config.source_factory
+        let source_factory: Arc<dyn polydat::iteration::source::DataSourceFactory> = config.source_factory
             .clone()
             .unwrap_or_else(|| Arc::new(
-                polydat::source::RangeSourceFactory::named("cycles", 0, config.cycles)
+                polydat::iteration::source::RangeSourceFactory::named("cycles", 0, config.cycles)
             ));
 
         Self {
@@ -2340,9 +2340,9 @@ async fn executor_task(
                             .pull("__poll_until")
                             .clone();
                         match predicate_value {
-                            polydat::node::Value::Bool(b) => b,
-                            polydat::node::Value::U64(n) => n != 0,
-                            polydat::node::Value::F64(n) => n != 0.0,
+                            polydat::ast::Value::Bool(b) => b,
+                            polydat::ast::Value::U64(n) => n != 0,
+                            polydat::ast::Value::F64(n) => n != 0.0,
                             _ => false,
                         }
                     };
@@ -2854,8 +2854,8 @@ mod tests {
 
     /// Build a minimal GK root kernel (single identity node) for tests.
     fn test_kernel() -> polydat::kernel::GkKernel {
-        use polydat::assembly::{GkAssembler, WireRef};
-        use polydat::nodes::identity::Identity;
+        use polydat::compile::assembly::{GkAssembler, WireRef};
+        use polydat::library::identity::Identity;
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
         asm.add_node("id", Box::new(Identity::new()), vec![WireRef::input("cycle")]);
         asm.add_output("id", WireRef::node("id"));

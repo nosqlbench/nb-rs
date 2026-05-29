@@ -2003,36 +2003,68 @@ mod inner {
         ///
         /// `PRAGMA wal_checkpoint(TRUNCATE)` forces all
         /// pending WAL frames into the main db file AND
-        /// truncates the WAL to zero bytes. After this, the
-        /// SHM holds no useful state — when the connection
-        /// drops, both sidecars are removed (or left empty,
-        /// safe to delete by hand). The main file alone has
-        /// the complete session record.
+        /// truncates the WAL to zero bytes. We then flip
+        /// `PRAGMA journal_mode=DELETE` so the `-wal` and
+        /// `-shm` sidecars are actually removed by SQLite
+        /// when the connection drops (the TRUNCATE alone
+        /// leaves zero-length sidecars on disk under
+        /// WAL mode). The main file alone holds the complete
+        /// session record after this sequence.
         ///
         /// Called once at session end from
         /// `nbrs-activity::runner` after every reporter has
         /// flushed and before the reporter is dropped.
         /// Failures are logged and swallowed — a partial
         /// consolidation is preferable to a panic during
-        /// shutdown.
+        /// shutdown. Safe to call only at session end: the
+        /// journal-mode flip converts the DB back to
+        /// rollback-journal mode for any subsequent writes,
+        /// so callers must not write after this fires.
         pub fn consolidate_wal(&self) {
             // PRAGMA returns a row carrying (busy, log_size,
             // checkpointed_count). We don't care about the
             // values — just need the operation to run. Use
             // `query_row` to consume the row so SQLite finalises
             // the checkpoint cleanly.
-            let _ = self.conn.query_row(
-                "PRAGMA wal_checkpoint(TRUNCATE)",
-                rusqlite::params![],
-                |_row| Ok(()),
-            ).map_err(|e| {
-                crate::diag::warn(&format!(
-                    "sqlite WAL consolidation failed: {e} \
-                     — `metrics.db-wal` / `metrics.db-shm` may \
-                     still hold committed writes; keep them \
-                     alongside the .db when archiving"
-                ));
-            });
+            let checkpoint_ok = self
+                .conn
+                .query_row(
+                    "PRAGMA wal_checkpoint(TRUNCATE)",
+                    rusqlite::params![],
+                    |_row| Ok(()),
+                )
+                .map_err(|e| {
+                    crate::diag::warn(&format!(
+                        "sqlite WAL consolidation failed: {e} \
+                         — `metrics.db-wal` / `metrics.db-shm` may \
+                         still hold committed writes; keep them \
+                         alongside the .db when archiving"
+                    ));
+                })
+                .is_ok();
+
+            // Only flip the journal mode if the truncate
+            // succeeded — flipping with a non-empty WAL would
+            // force SQLite to drain it under rollback semantics,
+            // which we don't want to risk on an already-failed
+            // shutdown path.
+            if checkpoint_ok {
+                let _ = self
+                    .conn
+                    .query_row(
+                        "PRAGMA journal_mode=DELETE",
+                        rusqlite::params![],
+                        |_row| Ok(()),
+                    )
+                    .map_err(|e| {
+                        crate::diag::warn(&format!(
+                            "sqlite journal_mode=DELETE failed: {e} \
+                             — `metrics.db-wal` / `metrics.db-shm` \
+                             will remain as zero/minimal sidecars \
+                             alongside the .db; safe to delete by hand"
+                        ));
+                    });
+            }
         }
 
         /// Run the session-end WAL consolidation and emit

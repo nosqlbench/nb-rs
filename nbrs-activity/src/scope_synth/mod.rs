@@ -10,7 +10,7 @@
 //! child [`polydat::kernel::GkKernel`].
 //!
 //! This module hosts the walking + Surface #7 helpers + scope-
-//! builder functions that drive [`polydat::subcontext::SubcontextBuilder`]
+//! builder functions that drive [`polydat::kernel::subcontext::SubcontextBuilder`]
 //! to materialize new scope kernels. See
 //! `polydat/docs/design/comprehension_cutover_contact_surfaces.md`
 //! for the architectural framing.
@@ -31,7 +31,7 @@
 //!   consume in lieu of each reinventing the same walk.
 //! - `for_each` — the comprehension-specific iter-var emission +
 //!   shared cascade walker invocation that replaces
-//!   `polydat::comprehension::synthesize_for_each_scope`.
+//!   `polydat::iteration::comprehension::synthesize_for_each_scope`.
 //!
 //! ## What lives in `scope.rs` for now
 //!

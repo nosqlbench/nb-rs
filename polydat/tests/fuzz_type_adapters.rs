@@ -10,7 +10,7 @@
 //! 1. **Adapter-table sweep** ([`adapter_table_is_consistent`]).
 //!    Curated producer/consumer pairs for each [`PortType`], run
 //!    through the compiler, and the result is checked against an
-//!    in-test mirror of [`polydat::assembly::auto_adapter`]. If the
+//!    in-test mirror of [`polydat::compile::assembly::auto_adapter`]. If the
 //!    compiler disagrees with the expected table — either by
 //!    rejecting a pair we think should bridge, or by silently
 //!    accepting a pair we think should error — the test fails with
@@ -30,11 +30,11 @@
 use polydat::dsl::compile::{compile_gk, compile_gk_with_log};
 use polydat::dsl::events::{CompileEvent, CompileEventLog};
 use polydat::dsl::registry::{self, FuncSig};
-use polydat::node::{PortType, SlotType};
+use polydat::ast::{PortType, SlotType};
 
 // ─── Expected-adapter table ───────────────────────────────────────
 //
-// Mirrors `polydat::assembly::auto_adapter`. When the compiler's
+// Mirrors `polydat::compile::assembly::auto_adapter`. When the compiler's
 // table changes, this one must change with it — that's intentional:
 // a silent shift in the compiler's widening rules would otherwise
 // escape review. Update in lock-step.

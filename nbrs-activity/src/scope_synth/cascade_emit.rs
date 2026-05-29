@@ -3,7 +3,7 @@
 
 //! Cascade-extern emission helpers — building blocks the scope
 //! builders use to push individual lines of GK source into a
-//! string that's later folded into a [`polydat::subcontext::GkMatter`]
+//! string that's later folded into a [`polydat::kernel::subcontext::GkMatter`]
 //! and handed to the builder.
 //!
 //! These are the "build" half of walk + build + synthesize: the

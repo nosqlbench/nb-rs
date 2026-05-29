@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use polydat::dsl::compile::compile_gk;
-use polydat::node::Value;
+use polydat::ast::Value;
 
 // ── Terminal helpers ────────────────────────────────────────────
 

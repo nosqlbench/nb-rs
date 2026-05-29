@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::node::{GkNode, Value};
+use crate::ast::{GkNode, Value};
 use super::{WireSource, InputDef};
 use super::engines::{GkState, RawState, ProvScanState, EngineCore};
 use crate::dsl::ast::{GkFile, Statement};
@@ -143,7 +143,7 @@ pub struct GkProgram {
     inherited_outputs: std::collections::HashSet<String>,
     /// Source schemas declared in the GK program. The runtime queries
     /// these to discover data sources and their extents.
-    cursor_schemas: Vec<crate::source::SourceSchema>,
+    cursor_schemas: Vec<crate::iteration::source::SourceSchema>,
     /// Names declared with the `const` keyword in the source. Subject
     /// to the init-binding contract (SRD 11 §"Init Binding Contract"):
     /// every name listed here must reach exactly one effectively-const
@@ -204,7 +204,7 @@ impl GkProgram {
             .map(|name| InputDef {
                 name,
                 default: Value::U64(0),
-                port_type: crate::node::PortType::U64,
+                port_type: crate::ast::PortType::U64,
                 kind: crate::kernel::InputKind::Coordinate,
             })
             .collect();
@@ -469,12 +469,12 @@ impl GkProgram {
 
     /// Source schemas declared in this program. The runtime queries
     /// these to discover data sources, their extents, and projections.
-    pub fn cursor_schemas(&self) -> &[crate::source::SourceSchema] {
+    pub fn cursor_schemas(&self) -> &[crate::iteration::source::SourceSchema] {
         &self.cursor_schemas
     }
 
     /// Set source schemas (called by the compiler after processing source declarations).
-    pub(crate) fn set_cursor_schemas(&mut self, schemas: Vec<crate::source::SourceSchema>) {
+    pub(crate) fn set_cursor_schemas(&mut self, schemas: Vec<crate::iteration::source::SourceSchema>) {
         self.cursor_schemas = schemas;
     }
 
@@ -636,7 +636,7 @@ impl GkProgram {
 
     /// Lookup the declared port type of a named input.
     /// Returns `None` if the name isn't an input of this program.
-    pub fn input_port_type(&self, name: &str) -> Option<crate::node::PortType> {
+    pub fn input_port_type(&self, name: &str) -> Option<crate::ast::PortType> {
         self.input_defs.iter().find(|d| d.name == name).map(|d| d.port_type)
     }
 
@@ -959,7 +959,7 @@ impl GkProgram {
         let mut wire_idx = 0;
         for slot in &meta.ins {
             match slot {
-                crate::node::Slot::Wire(port) => {
+                crate::ast::Slot::Wire(port) => {
                     h.update(b"  wirep:");
                     h.update(port.name.as_bytes());
                     h.update(b":");
@@ -973,7 +973,7 @@ impl GkProgram {
                     h.update(b"\n");
                     wire_idx += 1;
                 }
-                crate::node::Slot::Const { name, value } => {
+                crate::ast::Slot::Const { name, value } => {
                     h.update(b"  const:");
                     h.update(name.as_bytes());
                     h.update(b":");
@@ -1006,7 +1006,7 @@ impl GkProgram {
     }
 
     /// Access a node's metadata by index.
-    pub fn node_meta(&self, idx: usize) -> &crate::node::NodeMeta {
+    pub fn node_meta(&self, idx: usize) -> &crate::ast::NodeMeta {
         self.nodes[idx].meta()
     }
 
@@ -1017,14 +1017,14 @@ impl GkProgram {
     }
 
     /// Probe the compile level of a node by index.
-    pub fn node_compile_level(&self, idx: usize) -> crate::node::CompileLevel {
-        crate::node::compile_level_of(self.nodes[idx].as_ref())
+    pub fn node_compile_level(&self, idx: usize) -> crate::ast::CompileLevel {
+        crate::ast::compile_level_of(self.nodes[idx].as_ref())
     }
 
     /// Probe the compile level of the last node.
-    pub fn last_node_compile_level(&self) -> crate::node::CompileLevel {
+    pub fn last_node_compile_level(&self) -> crate::ast::CompileLevel {
         if self.nodes.is_empty() {
-            return crate::node::CompileLevel::Phase1;
+            return crate::ast::CompileLevel::Phase1;
         }
         self.node_compile_level(self.nodes.len() - 1)
     }
@@ -1059,9 +1059,9 @@ impl GkProgram {
         mut log: Option<&mut crate::dsl::events::CompileEventLog>,
         strict: bool,
     ) -> Result<usize, String> {
-        use crate::nodes::identity::{ConstExt, ConstU64, ConstStr, ConstHandle};
-        use crate::nodes::fixed::ConstF64;
-        use crate::node::Value;
+        use crate::library::identity::{ConstExt, ConstU64, ConstStr, ConstHandle};
+        use crate::library::fixed::ConstF64;
+        use crate::ast::Value;
 
         let n = self.nodes.len();
         if n == 0 { return Ok(0); }
@@ -1191,7 +1191,7 @@ impl GkProgram {
             let wire_inputs = self.nodes[i].meta().wire_inputs();
             for (port_idx, wire_source) in self.wiring[i].iter().enumerate() {
                 if port_idx >= wire_inputs.len() { break; }
-                if wire_inputs[port_idx].wire_cost != crate::node::WireCost::Config {
+                if wire_inputs[port_idx].wire_cost != crate::ast::WireCost::Config {
                     continue;
                 }
                 let source_is_cycle = match wire_source {
@@ -1207,7 +1207,7 @@ impl GkProgram {
                              is connected to a cycle-time source."
                         ));
                     }
-                    crate::audit::warn(&format!(
+                    crate::library::support::audit::warn(&format!(
                         "config wire '{port_name}' on node '{node_name}' is connected to a \
                          cycle-time source."
                     ));
@@ -1255,7 +1255,7 @@ impl GkProgram {
             if strict {
                 return Err(format!("strict mode: {msg}. Use a deterministic alternative."));
             }
-            crate::audit::warn(&msg);
+            crate::library::support::audit::warn(&msg);
             if let Some(ref mut log) = log {
                 log.push(crate::dsl::events::CompileEvent::Warning { message: msg });
             }
@@ -1271,7 +1271,7 @@ impl GkProgram {
                 if strict {
                     return Err(format!("strict mode: {msg}"));
                 }
-                crate::audit::warn(&msg);
+                crate::library::support::audit::warn(&msg);
                 if let Some(ref mut log) = log {
                     log.push(crate::dsl::events::CompileEvent::Warning { message: msg });
                 }
@@ -1294,7 +1294,7 @@ impl GkProgram {
                     return Err(format!("strict mode: {msg}. Remove it or mark as output."));
                 }
                 if !name.contains("__") {
-                    crate::audit::warn(&msg);
+                    crate::library::support::audit::warn(&msg);
                     if let Some(ref mut log) = log {
                         log.push(crate::dsl::events::CompileEvent::Warning { message: msg });
                     }
@@ -1321,7 +1321,7 @@ impl GkProgram {
                 }));
                 if result.is_err() {
                     let node_name = &self.nodes[i].meta().name;
-                    crate::audit::warn(&format!(
+                    crate::library::support::audit::warn(&format!(
                         "constant folding: node '{node_name}' panicked during init-time eval — skipping fold"));
                     is_init[i] = false;
                 }
@@ -1336,7 +1336,7 @@ impl GkProgram {
             let value = state.core.buffers[i][0].clone();
             if matches!(value, Value::None) { continue; }
 
-            let const_node: Box<dyn crate::node::GkNode> = match &value {
+            let const_node: Box<dyn crate::ast::GkNode> = match &value {
                 Value::U64(v) => Box::new(ConstU64::new(*v)),
                 Value::F64(v) => Box::new(ConstF64::new(*v)),
                 Value::Bool(v) => Box::new(ConstU64::new(if *v { 1 } else { 0 })),
@@ -1359,7 +1359,7 @@ impl GkProgram {
                     // debug` for compiler-pipeline
                     // inspection, silent on the default
                     // INFO console.
-                    crate::audit::debug(&format!(
+                    crate::library::support::audit::debug(&format!(
                         "fold: replacing init node '{original_name}' with ConstHandle \
                          (Arc<dyn Any>) — eval will not re-fire post-fold"));
                     Box::new(ConstHandle::new(arc.clone()))
@@ -1372,7 +1372,7 @@ impl GkProgram {
                 // descendant scopes see it as a stable Ext wire.
                 Value::Ext(b) => {
                     let original_name = self.nodes[i].meta().name.clone();
-                    crate::audit::debug(&format!(
+                    crate::library::support::audit::debug(&format!(
                         "fold: replacing init node '{original_name}' with ConstExt \
                          ({}) — eval will not re-fire post-fold",
                         b.type_name(),
@@ -1428,13 +1428,13 @@ fn canonical_wire_source(
     }
 }
 
-/// Hash one [`crate::node::ConstValue`] in canonical form.
+/// Hash one [`crate::ast::ConstValue`] in canonical form.
 /// Floats hash via their bit pattern so 0.0 vs -0.0 (and
 /// distinct NaN payloads) are distinguishable. Strings and
 /// vectors include explicit length tags so concatenation is
 /// unambiguous.
-fn canonical_const_value(v: &crate::node::ConstValue, h: &mut sha2::Sha256) {
-    use crate::node::ConstValue;
+fn canonical_const_value(v: &crate::ast::ConstValue, h: &mut sha2::Sha256) {
+    use crate::ast::ConstValue;
     use sha2::Digest;
     match v {
         ConstValue::U64(x) => {

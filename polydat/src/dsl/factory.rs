@@ -11,9 +11,9 @@
 //! function returning `Option<Result<...>>`.  The top-level `build_node` here
 //! tries each module in turn and falls back to the registry for variadic nodes.
 
-use crate::assembly::WireRef;
-use crate::node::GkNode;
-use crate::nodes::identity::ConstU64;
+use crate::compile::assembly::WireRef;
+use crate::ast::GkNode;
+use crate::library::identity::ConstU64;
 
 use crate::dsl::registry;
 
@@ -107,7 +107,7 @@ pub mod compile_ctx {
 pub fn build_node(
     func: &str,
     wires: &[WireRef],
-    wire_types: &[crate::node::PortType],
+    wire_types: &[crate::ast::PortType],
     consts: &[ConstArg],
 ) -> Result<Box<dyn GkNode>, String> {
     // --- Per-module dispatch via inventory ---
@@ -151,44 +151,44 @@ pub fn build_node(
 
     // --- Sampling functions without a dedicated node module ---
     match func {
-        "identity" => return Ok(Box::new(crate::nodes::identity::Identity::new())),
+        "identity" => return Ok(Box::new(crate::library::identity::Identity::new())),
 
         "lut_sample" | "icd_normal" => {
-            use crate::sampling::icd::IcdSample;
+            use crate::library::sampling::icd::IcdSample;
             return Ok(Box::new(IcdSample::normal(
                 consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
                 consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
             )));
         }
         "icd_exponential" | "dist_exponential" => {
-            use crate::sampling::icd::IcdSample;
+            use crate::library::sampling::icd::IcdSample;
             return Ok(Box::new(IcdSample::exponential(
                 consts.first().map(|c| c.as_f64()).unwrap_or(1.0),
             )));
         }
         "dist_normal" => {
-            use crate::sampling::icd::IcdSample;
+            use crate::library::sampling::icd::IcdSample;
             return Ok(Box::new(IcdSample::normal(
                 consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
                 consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
             )));
         }
         "dist_uniform" => {
-            use crate::sampling::icd::IcdSample;
+            use crate::library::sampling::icd::IcdSample;
             return Ok(Box::new(IcdSample::uniform(
                 consts.first().map(|c| c.as_f64()).unwrap_or(0.0),
                 consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
             )));
         }
         "dist_pareto" => {
-            use crate::sampling::icd::IcdSample;
+            use crate::library::sampling::icd::IcdSample;
             return Ok(Box::new(IcdSample::pareto(
                 consts.first().map(|c| c.as_f64()).unwrap_or(1.0),
                 consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
             )));
         }
         "dist_zipf" => {
-            use crate::sampling::icd::IcdSample;
+            use crate::library::sampling::icd::IcdSample;
             return Ok(Box::new(IcdSample::zipf(
                 consts.first().map(|c| c.as_u64()).unwrap_or(100),
                 consts.get(1).map(|c| c.as_f64()).unwrap_or(1.0),
@@ -203,14 +203,14 @@ pub fn build_node(
             if let Err(e) = validate_histribution_spec(spec) {
                 return Err(format!("bad constant histribution: spec: {e}"));
             }
-            return Ok(Box::new(crate::sampling::histribution::Histribution::new(spec)));
+            return Ok(Box::new(crate::library::sampling::histribution::Histribution::new(spec)));
         }
         "dist_empirical" => {
             let spec = consts.first().map(|c| c.as_str()).unwrap_or("0.0 1.0");
             if let Err(e) = validate_dist_empirical_spec(spec) {
                 return Err(format!("bad constant dist_empirical: spec: {e}"));
             }
-            return Ok(Box::new(crate::sampling::lut::EmpiricalSample::from_spec(spec)));
+            return Ok(Box::new(crate::library::sampling::lut::EmpiricalSample::from_spec(spec)));
         }
         _ => {}
     }
@@ -246,7 +246,7 @@ fn check_param_constraints(
     sig: &crate::dsl::registry::FuncSig,
     consts: &[ConstArg],
 ) -> Result<(), String> {
-    use crate::node::SlotType;
+    use crate::ast::SlotType;
     // Const args appear in positional order, but `sig.params`
     // mixes wire and const slots. Walk both in lockstep, pulling
     // const args from a separate counter.
@@ -268,7 +268,7 @@ fn check_param_constraints(
 /// Validate a `histribution` spec string at assembly time.
 ///
 /// Mirrors the semantics of
-/// [`crate::sampling::histribution::parse_histribution`] but returns
+/// [`crate::library::sampling::histribution::parse_histribution`] but returns
 /// a structured error instead of panicking, so the factory can reject
 /// malformed specs before the node is ever constructed.
 fn validate_histribution_spec(spec: &str) -> Result<(), String> {

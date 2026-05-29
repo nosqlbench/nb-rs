@@ -8,13 +8,13 @@
 //! that the constructed AST produces the documented
 //! cardinality / dispense behavior end-to-end.
 
-use polydat::comprehension::ast::Comprehension;
-use polydat::comprehension::ir::{check_bounds, compile, interpret};
-use polydat::comprehension::metadata::IndexFn;
-use polydat::comprehension::optimize::optimize;
-use polydat::comprehension::source::{LiteralValue, Source};
-use polydat::comprehension::strategies::TupleValue;
-use polydat::comprehension::strategy::{StrategyName, ZipMode};
+use polydat::iteration::comprehension::ast::Comprehension;
+use polydat::iteration::comprehension::ir::{check_bounds, compile, interpret};
+use polydat::iteration::comprehension::metadata::IndexFn;
+use polydat::iteration::comprehension::optimize::optimize;
+use polydat::iteration::comprehension::source::{LiteralValue, Source};
+use polydat::iteration::comprehension::strategies::TupleValue;
+use polydat::iteration::comprehension::strategy::{StrategyName, ZipMode};
 
 fn clause(name: &str, vs: &[i64]) -> Comprehension {
     Comprehension::clause(
@@ -48,7 +48,7 @@ fn spec_11_1_single_cartesian_basic_dispense() {
     // §11.1: cardinality = Bounded(10 × len(profiles)).
     assert!(matches!(
         m.cardinality,
-        polydat::comprehension::cardinality::CardinalityClass::Bounded(6)
+        polydat::iteration::comprehension::cardinality::CardinalityClass::Bounded(6)
     ));
     // §11.1: index_addressable = Some(Lattice { axis_sizes: [10, len] }).
     assert!(matches!(
@@ -157,7 +157,7 @@ fn spec_11_7_bounded_zip() {
     let m = ast.metadata();
     assert!(matches!(
         m.cardinality,
-        polydat::comprehension::cardinality::CardinalityClass::Bounded(3)
+        polydat::iteration::comprehension::cardinality::CardinalityClass::Bounded(3)
     ));
     let tuples = dispense(&ast);
     assert_eq!(tuples.len(), 3);
@@ -188,7 +188,7 @@ fn spec_11_8_cycle_zip_with_shorter_child() {
 
 #[test]
 fn spec_11_9_derived_streamers_independent() {
-    use polydat::comprehension::surfaces::compile as surfaces_compile;
+    use polydat::iteration::comprehension::surfaces::compile as surfaces_compile;
     let base = Comprehension::cartesian(vec![clause("k", &[1, 2, 3]), clause("limit", &[10, 20])]);
     let compiled = surfaces_compile(&base);
 
@@ -204,7 +204,7 @@ fn spec_11_9_derived_streamers_independent() {
 
 #[test]
 fn spec_11_10_continuous_sampling_via_halton() {
-    use polydat::comprehension::cardinality::{Interval, ProductMeasure};
+    use polydat::iteration::comprehension::cardinality::{Interval, ProductMeasure};
     // Continuous source wrapped in Halton sampling.
     let alpha = Comprehension::clause(
         "alpha",
@@ -226,7 +226,7 @@ fn spec_11_10_continuous_sampling_via_halton() {
     let m = ast.metadata();
     assert!(matches!(
         m.cardinality,
-        polydat::comprehension::cardinality::CardinalityClass::Bounded(50)
+        polydat::iteration::comprehension::cardinality::CardinalityClass::Bounded(50)
     ));
 }
 
@@ -234,7 +234,7 @@ fn spec_11_10_continuous_sampling_via_halton() {
 
 #[test]
 fn spec_11_11_sample_then_zip_continuous_pairing() {
-    use polydat::comprehension::cardinality::{Interval, ProductMeasure};
+    use polydat::iteration::comprehension::cardinality::{Interval, ProductMeasure};
     let alpha = Comprehension::clause(
         "alpha",
         Source::ContinuousInterval {
@@ -258,7 +258,7 @@ fn spec_11_11_sample_then_zip_continuous_pairing() {
     // zip-Strict result is Bounded(20).
     assert!(matches!(
         m.cardinality,
-        polydat::comprehension::cardinality::CardinalityClass::Bounded(20)
+        polydat::iteration::comprehension::cardinality::CardinalityClass::Bounded(20)
     ));
 }
 
@@ -285,8 +285,8 @@ fn spec_11_12_dependent_source_loses_addressability() {
 
 #[test]
 fn spec_11_13_three_surfaces_from_one_comprehension() {
-    use polydat::comprehension::strategies::Tuple;
-    use polydat::comprehension::surfaces::{compile as surfaces_compile, KernelScope};
+    use polydat::iteration::comprehension::strategies::Tuple;
+    use polydat::iteration::comprehension::surfaces::{compile as surfaces_compile, KernelScope};
 
     #[derive(Clone)]
     struct K(&'static str);

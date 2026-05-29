@@ -25,7 +25,7 @@
 //! See `docs/sysref/68_dispenser_owned_gk_context.md`.
 
 use polydat::kernel::GkKernel;
-use polydat::node::Value;
+use polydat::ast::Value;
 
 /// Result of a [`WireSource::write`] call.
 ///
@@ -491,7 +491,7 @@ pub fn resolve_op_fields_via_wires(
     op_fields: &[(String, serde_json::Value)],
     wires: &dyn WireSource,
 ) -> Result<crate::adapter::ResolvedFields, String> {
-    use polydat::node::Value;
+    use polydat::ast::Value;
     let mut names = Vec::with_capacity(op_fields.len());
     let mut values = Vec::with_capacity(op_fields.len());
     for (key, json_value) in op_fields {
@@ -746,7 +746,7 @@ mod tests {
     #[test]
     fn to_display_strict_returns_none_for_value_none() {
         // The strict primitive itself; render sites consume it.
-        use polydat::node::Value;
+        use polydat::ast::Value;
         assert_eq!(Value::None.to_display_strict(), None);
         assert_eq!(Value::Str("hello".into()).to_display_strict(),
                    Some("hello".to_string()));
@@ -824,8 +824,8 @@ mod tests {
         // verify the value propagates through `build_subscope`
         // and is visible via `CycleWires::get`.
         use polydat::dsl::compile::compile_gk;
-        use polydat::node::Value;
-        use polydat::subcontext::GkMatter;
+        use polydat::ast::Value;
+        use polydat::kernel::subcontext::GkMatter;
 
         // Parent: declares `optimize_for` as extern + auto-passthrough
         // output via `final` — same pattern the phase synthesizer
@@ -1023,7 +1023,7 @@ mod tests {
         // Case 1: stringified — exact form is implementation-defined,
         // verify the value contains the digits.
         assert!(matches!(resolved.get_value("limit_num"),
-            Some(polydat::node::Value::Str(s)) if s.contains("100")),
+            Some(polydat::ast::Value::Str(s)) if s.contains("100")),
             "case 1: got {:?}", resolved.get_value("limit_num"));
         // Case 2: typed U64.
         assert_eq!(resolved.get_value("typed_ref").map(|v| v.as_u64()),

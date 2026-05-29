@@ -975,7 +975,7 @@ impl<'de> serde::Deserialize<'de> for Checkpoint {
 /// All iteration shapes (`for_each` single-clause,
 /// `for_combinations`, `for_each_union`) collapse into one
 /// `Comprehension` variant carrying the canonical
-/// [`polydat::comprehension::Comprehension`] AST —
+/// [`polydat::iteration::comprehension::Comprehension`] AST —
 /// the operator-tree form of the algebra layer. The
 /// structural variant (`Cartesian` / `Union` / `Clause` /
 /// `Zip`) is the discriminator; `Filter` and `Order` wrap
@@ -1012,7 +1012,7 @@ pub enum ScenarioNode {
     ///   - "k in 100, limit in 100,200,300"
     /// ```
     Comprehension {
-        comprehension: polydat::comprehension::Comprehension,
+        comprehension: polydat::iteration::comprehension::Comprehension,
         children: Vec<ScenarioNode>,
     },
     /// Execute children while condition is true (test after).

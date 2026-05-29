@@ -18,8 +18,8 @@ use nbrs_activity::adapter::{
 };
 use nbrs_activity::opseq::{OpSequence, SequencerType};
 use nbrs_metrics::labels::Labels;
-use polydat::assembly::{GkAssembler, WireRef};
-use polydat::nodes::identity::Identity;
+use polydat::compile::assembly::{GkAssembler, WireRef};
+use polydat::library::identity::Identity;
 
 // =========================================================================
 // Test adapters

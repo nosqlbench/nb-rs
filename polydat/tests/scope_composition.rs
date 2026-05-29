@@ -9,9 +9,9 @@
 
 use polydat::dsl::compile::compile_gk;
 use polydat::dsl::ast::BindingModifier;
-use polydat::node::Value;
+use polydat::ast::Value;
 use polydat::kernel::Construction;
-use polydat::subcontext::GkMatter;
+use polydat::kernel::subcontext::GkMatter;
 
 // =========================================================================
 // materialize_wiring_from_outer: basic wiring

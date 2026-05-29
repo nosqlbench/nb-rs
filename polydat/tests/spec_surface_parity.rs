@@ -26,8 +26,8 @@
 //! `ComprehensionSpec::into_algebra`) and asserts the
 //! resulting compiled programs dispense identical tuples.
 
-use polydat::comprehension::spec::{legacy_to_algebra, parse_comprehension_text, parse_text};
-use polydat::comprehension::surfaces::{compile, CoordinateStream};
+use polydat::iteration::comprehension::spec::{legacy_to_algebra, parse_comprehension_text, parse_text};
+use polydat::iteration::comprehension::surfaces::{compile, CoordinateStream};
 
 /// Dispense up to `cap` tuples from a coord stream and return
 /// them as Debug-rendered strings (cheap structural compare).

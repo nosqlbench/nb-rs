@@ -14,7 +14,7 @@
 
 use std::collections::HashSet;
 
-use crate::assembly::{GkAssembler, WireRef};
+use crate::compile::assembly::{GkAssembler, WireRef};
 use crate::dsl::ast::*;
 use crate::dsl::lexer;
 use crate::dsl::parser;
@@ -77,15 +77,15 @@ impl Compiler {
     /// `default_resolver`, or the node has no Handle inputs.
     pub(super) fn auto_promote_handle_inputs(
         &mut self,
-        asm: &mut crate::assembly::GkAssembler,
+        asm: &mut crate::compile::assembly::GkAssembler,
         func_name: &str,
-        node: &Box<dyn crate::node::GkNode>,
-        wire_refs: &mut Vec<crate::assembly::WireRef>,
+        node: &Box<dyn crate::ast::GkNode>,
+        wire_refs: &mut Vec<crate::compile::assembly::WireRef>,
     ) -> Result<(), String> {
         use crate::dsl::registry::{registry, DefaultResolver};
-        use crate::nodes::identity::ConstStr;
-        use crate::node::PortType;
-        use crate::assembly::WireRef;
+        use crate::library::identity::ConstStr;
+        use crate::ast::PortType;
+        use crate::compile::assembly::WireRef;
 
         // Find the FuncSig — only some functions opt into auto-promotion.
         let resolver = registry()
@@ -104,8 +104,8 @@ impl Compiler {
         let mut wire_idx = 0;
         for slot in &meta.ins {
             let port = match slot {
-                crate::node::Slot::Wire(p) => p,
-                crate::node::Slot::Const { .. } => continue,
+                crate::ast::Slot::Wire(p) => p,
+                crate::ast::Slot::Const { .. } => continue,
             };
             if wire_idx >= wire_refs.len() { break; }
             // Only promote Handle inputs.
@@ -124,8 +124,8 @@ impl Compiler {
                                 Box::new(ConstStr::new(facet.to_string())),
                                 vec![],
                             );
-                            let resolver_node: Box<dyn crate::node::GkNode> =
-                                Box::new(crate::nodes::vectors::DatasetOpen::new());
+                            let resolver_node: Box<dyn crate::ast::GkNode> =
+                                Box::new(crate::library::vectors::DatasetOpen::new());
                             asm.add_node(
                                 &resolver_name,
                                 resolver_node,
@@ -133,8 +133,8 @@ impl Compiler {
                             );
                         }
                         DefaultResolver::Group => {
-                            let resolver_node: Box<dyn crate::node::GkNode> =
-                                Box::new(crate::nodes::vectors::DatasetGroupOpen::new());
+                            let resolver_node: Box<dyn crate::ast::GkNode> =
+                                Box::new(crate::library::vectors::DatasetGroupOpen::new());
                             asm.add_node(
                                 &resolver_name,
                                 resolver_node,
@@ -333,7 +333,7 @@ impl Compiler {
             let out_type = self.output_type_of(asm, &prefixed);
             asm.add_node(
                 target,
-                Box::new(crate::nodes::identity::PortPassthrough::new(target, out_type)),
+                Box::new(crate::library::identity::PortPassthrough::new(target, out_type)),
                 vec![WireRef::node(&prefixed)],
             );
             self.all_names.push(target.clone());
@@ -343,7 +343,7 @@ impl Compiler {
     }
 
     /// Query the output type of a named node in the assembler.
-    fn output_type_of(&self, asm: &GkAssembler, name: &str) -> crate::node::PortType {
+    fn output_type_of(&self, asm: &GkAssembler, name: &str) -> crate::ast::PortType {
         asm.node_output_type(name)
     }
 

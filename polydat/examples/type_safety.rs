@@ -10,7 +10,7 @@
 //! through a typed accessor. Connecting incompatible port types is a
 //! compile error, not a silent coercion.
 
-use polydat::node::Value;
+use polydat::ast::Value;
 
 fn main() {
     let mut kernel = polydat::dsl::compile_gk(r#"

@@ -22,7 +22,7 @@
 //! answers, the step-debugger sees the real values. Compute path
 //! unchanged — the extra slots have no eval cone hanging off them.
 //!
-//! The knob threads through [`crate::subcontext::CompileOptions`]
+//! The knob threads through [`crate::kernel::subcontext::CompileOptions`]
 //! and is consulted at op-template synthesis. The nbrs CLI exposes
 //! it as `--kernel-opt=release|diagnostic` (default `release`).
 

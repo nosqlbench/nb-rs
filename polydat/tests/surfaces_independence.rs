@@ -12,10 +12,10 @@
 use std::sync::Arc;
 use std::thread;
 
-use polydat::comprehension::ast::Comprehension;
-use polydat::comprehension::source::{LiteralValue, Source};
-use polydat::comprehension::strategies::{Tuple, TupleValue};
-use polydat::comprehension::surfaces::{
+use polydat::iteration::comprehension::ast::Comprehension;
+use polydat::iteration::comprehension::source::{LiteralValue, Source};
+use polydat::iteration::comprehension::strategies::{Tuple, TupleValue};
+use polydat::iteration::comprehension::surfaces::{
     compile, scope_once, CompiledComprehension, KernelScope,
 };
 

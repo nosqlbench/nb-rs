@@ -3,10 +3,10 @@
 
 //! Hybrid kernel tests: mixed JIT + closure nodes in the same graph.
 
-use polydat::assembly::{GkAssembler, WireRef};
-use polydat::nodes::arithmetic::*;
-use polydat::nodes::hash::Hash64;
-use polydat::nodes::identity::Identity;
+use polydat::compile::assembly::{GkAssembler, WireRef};
+use polydat::library::arithmetic::*;
+use polydat::library::hash::Hash64;
+use polydat::library::identity::Identity;
 
 #[test]
 fn hybrid_simple_identity() {

@@ -204,7 +204,7 @@ mod tests {
         for cycle in [0u64, 1, 42, 999] {
             state.set_inputs(&[cycle]);
             let v = state.pull(&p, "out");
-            assert!(!matches!(v, polydat::node::Value::None),
+            assert!(!matches!(v, polydat::ast::Value::None),
                 "output should not be None at cycle={cycle}");
         }
     }

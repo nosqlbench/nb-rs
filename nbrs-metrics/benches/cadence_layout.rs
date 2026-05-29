@@ -253,7 +253,7 @@ fn bench_coalesce_direct(c: &mut Criterion) {
     // Histogram coalesce: single-sample reservoirs (cheapest HDR
     // add path).
     group.bench_function("two_histograms_small", |b| {
-        let mut build = || {
+        let build = || {
             let mut h = HdrHistogram::<u64>::new_with_bounds(1, 3_600_000_000_000, 3).unwrap();
             h.record(1_000_000).unwrap();
             let mut s = MetricSet::new(Duration::from_secs(1));
@@ -273,7 +273,7 @@ fn bench_coalesce_direct(c: &mut Criterion) {
     // Histogram coalesce with a fully-populated reservoir (1000
     // distinct values so buckets actually fill).
     group.bench_function("two_histograms_1000s", |b| {
-        let mut build = || {
+        let build = || {
             let mut h = HdrHistogram::<u64>::new_with_bounds(1, 3_600_000_000_000, 3).unwrap();
             for i in 0..1000u64 {
                 h.record(i * 1_009 + 1).unwrap();

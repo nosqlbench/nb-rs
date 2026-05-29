@@ -461,9 +461,9 @@ pub fn plot_graph(req: PlotRequest) -> PlotResult {
                 for name in &output_names {
                     let v = kernel.pull(name);
                     let f = match v {
-                        polydat::node::Value::U64(n) => *n as f64,
-                        polydat::node::Value::F64(n) => *n,
-                        polydat::node::Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+                        polydat::ast::Value::U64(n) => *n as f64,
+                        polydat::ast::Value::F64(n) => *n,
+                        polydat::ast::Value::Bool(b) => if *b { 1.0 } else { 0.0 },
                         _ => f64::NAN,
                     };
                     series.get_mut(name).unwrap().push(f);

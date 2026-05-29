@@ -17,7 +17,7 @@
 //! No external proptest / quickcheck dep — uses polydat's
 //! PCG for deterministic tuple generation.
 
-use polydat::comprehension::predicate::{
+use polydat::iteration::comprehension::predicate::{
     analyze, CoordSet, Determinism, Factorization, OpaqueReason, RangeConstraint,
 };
 
@@ -74,7 +74,7 @@ fn soundness_per_axis_eq() {
         let original = k == 42;
         let from_range = match info.range_constraint.get("k").unwrap() {
             RangeConstraint::Discrete(vs) => vs.iter().any(|v| matches!(v,
-                polydat::comprehension::predicate::info::ConstValue::Int(n) if *n == k
+                polydat::iteration::comprehension::predicate::info::ConstValue::Int(n) if *n == k
             )),
             _ => panic!("expected Discrete"),
         };
@@ -94,7 +94,7 @@ fn soundness_per_axis_gt() {
         let original = k > 10;
         let from_range = match range {
             RangeConstraint::Bounded { lo: Some(lo), lo_inclusive, .. } => match lo {
-                polydat::comprehension::predicate::info::ConstValue::Int(lv) => {
+                polydat::iteration::comprehension::predicate::info::ConstValue::Int(lv) => {
                     if *lo_inclusive { k >= *lv } else { k > *lv }
                 }
                 _ => panic!(),
@@ -125,11 +125,11 @@ fn soundness_range_fold() {
                 hi_inclusive,
             } => {
                 let lo_i = match lo {
-                    polydat::comprehension::predicate::info::ConstValue::Int(n) => *n,
+                    polydat::iteration::comprehension::predicate::info::ConstValue::Int(n) => *n,
                     _ => panic!(),
                 };
                 let hi_i = match hi {
-                    polydat::comprehension::predicate::info::ConstValue::Int(n) => *n,
+                    polydat::iteration::comprehension::predicate::info::ConstValue::Int(n) => *n,
                     _ => panic!(),
                 };
                 let lo_ok = if *lo_inclusive { k >= lo_i } else { k > lo_i };
@@ -155,7 +155,7 @@ fn soundness_discrete_set() {
         let from_range = match range {
             RangeConstraint::Discrete(vs) => vs.iter().any(|v| matches!(
                 v,
-                polydat::comprehension::predicate::info::ConstValue::Int(n) if *n == k
+                polydat::iteration::comprehension::predicate::info::ConstValue::Int(n) if *n == k
             )),
             _ => panic!(),
         };
@@ -181,7 +181,7 @@ fn soundness_per_axis_conjunction_disjoint_axes() {
         let original = k > 5 && limit < 100;
         let k_ok = match k_range {
             RangeConstraint::Bounded { lo: Some(lo), lo_inclusive, .. } => match lo {
-                polydat::comprehension::predicate::info::ConstValue::Int(lv) => {
+                polydat::iteration::comprehension::predicate::info::ConstValue::Int(lv) => {
                     if *lo_inclusive { k >= *lv } else { k > *lv }
                 }
                 _ => panic!(),
@@ -190,7 +190,7 @@ fn soundness_per_axis_conjunction_disjoint_axes() {
         };
         let l_ok = match l_range {
             RangeConstraint::Bounded { hi: Some(hi), hi_inclusive, .. } => match hi {
-                polydat::comprehension::predicate::info::ConstValue::Int(hv) => {
+                polydat::iteration::comprehension::predicate::info::ConstValue::Int(hv) => {
                     if *hi_inclusive { limit <= *hv } else { limit < *hv }
                 }
                 _ => panic!(),

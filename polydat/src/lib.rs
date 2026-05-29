@@ -35,9 +35,9 @@
 //! For programmatic construction:
 //!
 //! ```rust
-//! use polydat::assembly::{GkAssembler, WireRef};
-//! use polydat::nodes::hash::Hash64;
-//! use polydat::nodes::arithmetic::ModU64;
+//! use polydat::compile::assembly::{GkAssembler, WireRef};
+//! use polydat::library::hash::Hash64;
+//! use polydat::library::arithmetic::ModU64;
 //!
 //! let mut asm = GkAssembler::new(vec!["cycle".into()]);
 //! asm.add_node("hashed", Box::new(Hash64::new()), vec![WireRef::input("cycle")]);
@@ -90,39 +90,26 @@
 //!
 //! ## Modules
 //!
-//! - [`node`]: Core types — [`node::Value`], [`node::GkNode`] trait,
-//!   [`node::Port`], [`node::PortType`]
+//! - [`ast`]: Core types — [`ast::Value`], [`ast::GkNode`] trait,
+//!   [`ast::Port`], [`ast::PortType`]
 //! - [`kernel`]: Runtime — [`kernel::GkProgram`], [`kernel::GkKernel`],
 //!   [`kernel::GkState`]
-//! - [`assembly`]: DAG construction — [`assembly::GkAssembler`],
-//!   [`assembly::WireRef`]
+//! - [`compile`]: DAG construction + compilation strategies —
+//!   [`compile::assembly::GkAssembler`], [`compile::fusion`],
+//!   [`compile::closures`] (Phase 2), [`compile::hybrid`]
+//!   (per-node optimal), [`compile::jit`] (Phase 3 Cranelift,
+//!   feature-gated)
 //! - [`dsl`]: GK language — [`dsl::compile_gk`], lexer, parser, registry
-//! - [`nodes`]: 250+ built-in function nodes (hash, arithmetic, string,
-//!   math, distributions, datetime, noise, etc.)
-//! - [`sampling`]: Alias tables, LUT interpolation, ICD sampling
-//! - [`compiled`]: Phase 2 compiled kernel
-//! - [`hybrid`]: Per-node optimal compilation
-//! - [`jit`]: Phase 3 Cranelift JIT (feature-gated)
-//! - [`fusion`]: Graph-level node fusion optimization
+//! - [`library`]: 250+ built-in function nodes (hash, arithmetic, string,
+//!   math, distributions, datetime, noise, etc.) plus [`library::sampling`]
+//!   (alias tables, LUT interpolation, ICD) and [`library::support`]
+//!   (library-internal cache + audit infrastructure)
 //! - [`viz`]: DAG visualization (DOT, Mermaid)
 
-pub mod audit;
-pub mod cache;
-pub mod cursor_partition;
-pub mod node;
-pub mod source;
+pub mod ast;
 pub mod kernel;
-pub mod comprehension;
-pub mod compiled;
-pub mod assembly;
-pub mod fusion;
-pub mod nodes;
-pub mod sampling;
+pub mod iteration;
+pub mod compile;
+pub mod library;
 pub mod dsl;
-#[cfg(feature = "jit")]
-pub mod jit;
-pub mod hybrid;
 pub mod viz;
-pub mod engine;
-pub mod runtime;
-pub mod subcontext;

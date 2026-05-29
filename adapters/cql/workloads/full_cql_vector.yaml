@@ -23,7 +23,7 @@ params:
   k_1_limits: "1,2,4,8,16,32,64"
   k_10_limits: "10,20,30,40,50"
   k_100_limits: "100,125,150,175,200"
-  concurrency: "100"
+  concurrency: "50,100"
   query_concurrency: "20"
   replication: "{'class': 'SimpleStrategy', 'replication_factor': '1'}"
   fknn_profile: default

@@ -3,9 +3,9 @@
 
 //! Programmatic kernel construction via the assembler API.
 
-use polydat::assembly::{GkAssembler, WireRef};
-use polydat::nodes::hash::Hash64;
-use polydat::nodes::arithmetic::{ModU64, MixedRadix};
+use polydat::compile::assembly::{GkAssembler, WireRef};
+use polydat::library::hash::Hash64;
+use polydat::library::arithmetic::{ModU64, MixedRadix};
 
 fn main() {
     let mut asm = GkAssembler::new(vec!["cycle".into()]);

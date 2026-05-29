@@ -3,7 +3,7 @@
 
 //! Polydat-side metric-reading node registration.
 //!
-//! Formerly lived at `polydat::nodes::metrics`. Moved here so polydat
+//! Formerly lived at `polydat::library::metrics`. Moved here so polydat
 //! can publish to crates.io without a reverse dep on `nbrs-metrics`.
 //! `inventory` is the registration channel — polydat's
 //! `register_nodes!` macro emits an `inventory::submit!` block from
@@ -34,7 +34,7 @@
 use std::sync::{Arc, LazyLock, Mutex};
 
 use polydat::dsl::registry::{FuncSig, FuncCategory as C, ParamSpec, Arity};
-use polydat::node::{GkNode, NodeMeta, Port, PortType, SlotType, Value};
+use polydat::ast::{GkNode, NodeMeta, Port, PortType, SlotType, Value};
 use crate::metrics_query::{MetricsQuery, Selection};
 use crate::snapshot::{MetricSet, MetricValue};
 
@@ -199,7 +199,7 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "stat", slot_type: SlotType::ConstStr, required: true, example: "\"p99\"", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -217,7 +217,7 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "stat", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -227,7 +227,7 @@ pub fn signatures() -> &'static [FuncSig] {
 /// Build a metric node from function name and const args.
 fn build_node(
     name: &str,
-    _wires: &[polydat::assembly::WireRef], _wire_types: &[polydat::node::PortType],
+    _wires: &[polydat::compile::assembly::WireRef], _wire_types: &[polydat::ast::PortType],
     consts: &[polydat::dsl::ConstArg],
 ) -> Option<Result<Box<dyn GkNode>, String>> {
     match name {

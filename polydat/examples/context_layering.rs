@@ -12,7 +12,7 @@
 //! site is a separate context. Same definition, two layered uses.
 //!
 //! The same machinery extends to deeper nesting: nbrs's scope-tree
-//! executor uses `polydat::subcontext` to layer entire scope-trees
+//! executor uses `polydat::kernel::subcontext` to layer entire scope-trees
 //! over parent kernels, with typed import/export contracts at every
 //! boundary. The illustration here is the polydat-direct form
 //! (single-file kernel composition); the heavier `SubcontextBuilder`

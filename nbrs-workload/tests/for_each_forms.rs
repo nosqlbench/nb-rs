@@ -6,15 +6,15 @@
 //! multi-clause) and Union comprehension modes.
 //!
 //! Assertions walk the algebra AST directly: a `for_each:`
-//! parses to a `polydat::comprehension::Comprehension`
+//! parses to a `polydat::iteration::comprehension::Comprehension`
 //! whose top-level shape (Clause / Cartesian / Union / Zip,
 //! optionally wrapped by Filter / Order) records the
 //! parsed-out structure.
 
 use std::collections::HashMap;
-use polydat::comprehension::Comprehension as Algebra;
-use polydat::comprehension::source::{LiteralValue, Source};
-use polydat::comprehension::strategy::ZipMode;
+use polydat::iteration::comprehension::Comprehension as Algebra;
+use polydat::iteration::comprehension::source::{LiteralValue, Source};
+use polydat::iteration::comprehension::strategy::ZipMode;
 use nbrs_workload::model::ScenarioNode;
 use nbrs_workload::parse::parse_workload;
 

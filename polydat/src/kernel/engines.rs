@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::node::Value;
+use crate::ast::Value;
 use super::WireSource;
 use super::program::GkProgram;
 
@@ -44,7 +44,7 @@ pub type SharedCell = Arc<Mutex<Value>>;
 #[derive(Clone, Debug)]
 pub struct SharedCellEntry {
     pub name: String,
-    pub port_type: crate::node::PortType,
+    pub port_type: crate::ast::PortType,
     pub cell: SharedCell,
 }
 
@@ -737,7 +737,7 @@ mod panic_enrichment_tests {
             None, vec![], &[], false, "test_workload",
         ).expect("compile");
         let idx = k.program().find_input("x").unwrap();
-        k.state().set_input(idx, crate::node::Value::Str("oops".into()));
+        k.state().set_input(idx, crate::ast::Value::Str("oops".into()));
         let result = std::panic::catch_unwind(
             std::panic::AssertUnwindSafe(|| { k.pull("doubled"); })
         );

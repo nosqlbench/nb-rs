@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use nbrs_activity::adapter::{ExecutionError, OpDispenser, OpResult, ResultBody};
 use nbrs_activity::op_modifier::ModifierChain;
-use polydat::node::Value;
+use polydat::ast::Value;
 use scylla::client::session::Session;
 use scylla::statement::{Consistency, prepared::PreparedStatement};
 

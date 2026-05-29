@@ -335,7 +335,7 @@ pub fn cascade_parent_into_source(inputs: CascadeInputs<'_>, outputs: CascadeOut
         }
         let port_type = parent_program
             .input_port_type(&name)
-            .unwrap_or(polydat::node::PortType::Str);
+            .unwrap_or(polydat::ast::PortType::Str);
         let type_name = port_type_to_extern_name(port_type);
         outputs
             .source

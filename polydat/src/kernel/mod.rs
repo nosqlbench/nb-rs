@@ -54,23 +54,24 @@
 
 mod program;
 mod engines;
-mod gkkernel;
-mod scope_coords;
+mod state;
+mod scope;
 mod manifest;
 mod api;
 mod api_impl;
 mod opt;
 pub mod interp;
+pub mod subcontext;
 
 pub use program::*;
 pub use engines::*;
-pub use gkkernel::*;
-pub use scope_coords::{ScopeCoord, format_scope_coordinate_path};
+pub use state::*;
+pub use scope::{ScopeCoord, format_scope_coordinate_path};
 pub use manifest::{extract_manifest, ManifestEntry};
 pub use api::{Construction, Dataflow, Metadata, WireKey};
 pub use opt::KernelOptLevel;
 
-use crate::node::Value;
+use crate::ast::Value;
 
 /// Source of a value for a node input port.
 #[derive(Debug, Clone)]
@@ -123,7 +124,7 @@ pub struct InputDef {
     pub default: Value,
     /// The declared port type for this input. Used by the assembler
     /// for type checking when wiring nodes to this input.
-    pub port_type: crate::node::PortType,
+    pub port_type: crate::ast::PortType,
     /// Lifecycle classification. Defaults to `Coordinate` so
     /// existing call sites that construct `InputDef` directly
     /// (tests, legacy paths) keep their previous semantics.
@@ -144,9 +145,9 @@ mod tests {
         let program = Arc::new(GkProgram::with_inputs(
             vec![], vec![],
             vec![
-                InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::node::PortType::U64, kind: InputKind::Coordinate },
-                InputDef { name: "balance".into(), default: Value::F64(0.0), port_type: crate::node::PortType::F64, kind: InputKind::CapturePort },
-                InputDef { name: "auth_token".into(), default: Value::Str("anonymous".into()), port_type: crate::node::PortType::Str, kind: InputKind::CapturePort },
+                InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::ast::PortType::U64, kind: InputKind::Coordinate },
+                InputDef { name: "balance".into(), default: Value::F64(0.0), port_type: crate::ast::PortType::F64, kind: InputKind::CapturePort },
+                InputDef { name: "auth_token".into(), default: Value::Str("anonymous".into()), port_type: crate::ast::PortType::Str, kind: InputKind::CapturePort },
             ],
             1, // coord_count
             HashMap::new(),
@@ -176,8 +177,8 @@ mod tests {
         let program = Arc::new(GkProgram::with_inputs(
             vec![], vec![],
             vec![
-                InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::node::PortType::U64, kind: InputKind::Coordinate },
-                InputDef { name: "token".into(), default: Value::Str("anon".into()), port_type: crate::node::PortType::Str, kind: InputKind::CapturePort },
+                InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::ast::PortType::U64, kind: InputKind::Coordinate },
+                InputDef { name: "token".into(), default: Value::Str("anon".into()), port_type: crate::ast::PortType::Str, kind: InputKind::CapturePort },
             ],
             1,
             HashMap::new(),
@@ -199,8 +200,8 @@ mod tests {
         let program = Arc::new(GkProgram::with_inputs(
             vec![], vec![],
             vec![
-                InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::node::PortType::U64, kind: InputKind::Coordinate },
-                InputDef { name: "token".into(), default: Value::Str("anon".into()), port_type: crate::node::PortType::Str, kind: InputKind::CapturePort },
+                InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::ast::PortType::U64, kind: InputKind::Coordinate },
+                InputDef { name: "token".into(), default: Value::Str("anon".into()), port_type: crate::ast::PortType::Str, kind: InputKind::CapturePort },
             ],
             1,
             HashMap::new(),
@@ -258,14 +259,14 @@ mod tests {
     /// Simulates a node with an expensive LUT that's configured by
     /// the first input and driven by the second.
     struct ConfigWireTestNode {
-        meta: crate::node::NodeMeta,
+        meta: crate::ast::NodeMeta,
     }
 
     impl ConfigWireTestNode {
         fn new() -> Self {
-            use crate::node::{Port, Slot};
+            use crate::ast::{Port, Slot};
             Self {
-                meta: crate::node::NodeMeta {
+                meta: crate::ast::NodeMeta {
                     name: "config_test".into(),
                     outs: vec![Port::u64("output")],
                     ins: vec![
@@ -277,8 +278,8 @@ mod tests {
         }
     }
 
-    impl crate::node::GkNode for ConfigWireTestNode {
-        fn meta(&self) -> &crate::node::NodeMeta { &self.meta }
+    impl crate::ast::GkNode for ConfigWireTestNode {
+        fn meta(&self) -> &crate::ast::NodeMeta { &self.meta }
         fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
             let config = inputs[0].as_u64();
             let data = inputs[1].as_u64();
@@ -291,9 +292,9 @@ mod tests {
         // DAG: constant(42) → config_test.config_param
         //      cycle → hash → config_test.data_input
         // Config wire fed by init-time constant → no warning
-        use crate::assembly::{GkAssembler, WireRef};
-        use crate::nodes::identity::ConstU64;
-        use crate::nodes::hash::Hash64;
+        use crate::compile::assembly::{GkAssembler, WireRef};
+        use crate::library::identity::ConstU64;
+        use crate::library::hash::Hash64;
         use crate::dsl::events::CompileEventLog;
 
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
@@ -321,8 +322,8 @@ mod tests {
         // DAG: cycle → hash → config_test.config_param  (BAD: config from cycle)
         //      cycle → config_test.data_input
         // Config wire fed by cycle-time node → should warn
-        use crate::assembly::{GkAssembler, WireRef};
-        use crate::nodes::hash::Hash64;
+        use crate::compile::assembly::{GkAssembler, WireRef};
+        use crate::library::hash::Hash64;
         use crate::dsl::events::CompileEventLog;
 
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
@@ -346,7 +347,7 @@ mod tests {
     fn wire_cost_warning_when_config_is_coordinate_direct() {
         // DAG: cycle → config_test.config_param  (BAD: coordinate direct to config)
         //      cycle → config_test.data_input
-        use crate::assembly::{GkAssembler, WireRef};
+        use crate::compile::assembly::{GkAssembler, WireRef};
         use crate::dsl::events::CompileEventLog;
 
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
@@ -370,8 +371,8 @@ mod tests {
         // DAG: constant(10) → config_test.config_param (init-time, ok)
         //      cycle → config_test.data_input           (cycle-time, ok for Data wire)
         // Only the data wire is cycle-time → no warning
-        use crate::assembly::{GkAssembler, WireRef};
-        use crate::nodes::identity::ConstU64;
+        use crate::compile::assembly::{GkAssembler, WireRef};
+        use crate::library::identity::ConstU64;
         use crate::dsl::events::CompileEventLog;
 
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
@@ -398,9 +399,9 @@ mod tests {
         //   constant(3) → inner.data_input    ─┤→ inner.output → outer.config_param
         //   cycle → hash → outer.data_input
         // inner is fully init-time → its output feeds outer's config wire → no warning
-        use crate::assembly::{GkAssembler, WireRef};
-        use crate::nodes::identity::ConstU64;
-        use crate::nodes::hash::Hash64;
+        use crate::compile::assembly::{GkAssembler, WireRef};
+        use crate::library::identity::ConstU64;
+        use crate::library::hash::Hash64;
         use crate::dsl::events::CompileEventLog;
 
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
@@ -434,8 +435,8 @@ mod tests {
         //   cycle → mixer.data_input          ─┤→ mixer.output → outer.config_param
         //   cycle → outer.data_input
         // mixer depends on cycle → its output is cycle-time → outer's config wire warns
-        use crate::assembly::{GkAssembler, WireRef};
-        use crate::nodes::identity::ConstU64;
+        use crate::compile::assembly::{GkAssembler, WireRef};
+        use crate::library::identity::ConstU64;
         use crate::dsl::events::CompileEventLog;
 
         let mut asm = GkAssembler::new(vec!["cycle".into()]);

@@ -280,7 +280,7 @@ mod tests {
         // Use the cartesian helper so this test stays
         // resilient to changes in the Comprehension struct's
         // private fields.
-        let comp = polydat::comprehension::Comprehension::cartesian(vec![]);
+        let comp = polydat::iteration::comprehension::Comprehension::cartesian(vec![]);
         let mut tree = ScopeTree::build("default", &[
             ScenarioNode::Comprehension {
                 comprehension: comp,

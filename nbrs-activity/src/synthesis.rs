@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use polydat::kernel::{GkKernel, GkProgram, GkState};
-use polydat::node::Value;
+use polydat::ast::Value;
 use nbrs_workload::model::ParsedOp;
 use nbrs_workload::bindpoints::{self, BindPoint, BindQualifier};
 
@@ -157,7 +157,7 @@ impl OpBuilder {
         match self.op_template_programs.get(op_name) {
             Some(program) => {
                 let canonical = self.source_kernel.build_subscope(
-                    polydat::subcontext::GkMatter::builder()
+                    polydat::kernel::subcontext::GkMatter::builder()
                         .program(program.clone())
                         .build()
                         .expect("program-form matter is infallible"),
@@ -352,7 +352,7 @@ impl FiberBuilder {
     /// propagate to the workload-root through the cascade.
     pub fn new(parent: &GkKernel) -> Self {
         let main_kernel = parent.build_subscope(
-            polydat::subcontext::GkMatter::builder().program(parent.program().clone()).build().unwrap(),
+            polydat::kernel::subcontext::GkMatter::builder().program(parent.program().clone()).build().unwrap(),
         ).expect("program-form subscope is infallible");
         Self {
             main_kernel,
@@ -409,7 +409,7 @@ impl FiberBuilder {
         self.per_op_kernels = dispenser_programs.into_iter()
             .map(|maybe_program| maybe_program.map(|program| {
                 let mut op_kernel = self.main_kernel.build_subscope(
-                    polydat::subcontext::GkMatter::builder()
+                    polydat::kernel::subcontext::GkMatter::builder()
                         .program(program)
                         .build()
                         .expect("program-form matter is infallible"),
@@ -524,7 +524,7 @@ impl FiberBuilder {
     ///
     /// SRD-13d Phase 9: ordinal + fields propagate to every
     /// op-template kernel that declares matching slots.
-    pub fn set_source_item(&mut self, item: &polydat::source::SourceItem) {
+    pub fn set_source_item(&mut self, item: &polydat::iteration::source::SourceItem) {
         if self.main_kernel.program().coord_count() > 0 {
             self.main_kernel.state().set_inputs(&[item.ordinal]);
         }
@@ -707,7 +707,7 @@ impl FiberBuilder {
     /// No-op when the kernel carries no write-throughs (typical
     /// for ops without `result:`).
     pub fn commit_op_template_write_throughs_for_idx(&mut self, template_idx: usize) {
-        let debug = polydat::nodes::debug_nodes_enabled();
+        let debug = polydat::library::debug_nodes_enabled();
         let Some(kernel) = self.per_op_kernels.get_mut(template_idx).and_then(|s| s.as_mut()) else {
             if debug {
                 crate::observer::log(
@@ -796,9 +796,9 @@ impl FiberBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polydat::assembly::{GkAssembler, WireRef};
-    use polydat::nodes::hash::Hash64;
-    use polydat::nodes::arithmetic::ModU64;
+    use polydat::compile::assembly::{GkAssembler, WireRef};
+    use polydat::library::hash::Hash64;
+    use polydat::library::arithmetic::ModU64;
 
     fn make_kernel() -> GkKernel {
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
@@ -906,11 +906,11 @@ mod tests {
         // eval call, returns U64(42). Tracks how many times its
         // eval body actually runs across the test.
         struct CountingNode {
-            meta: polydat::node::NodeMeta,
+            meta: polydat::ast::NodeMeta,
             calls: StdArc<AtomicU64>,
         }
-        impl polydat::node::GkNode for CountingNode {
-            fn meta(&self) -> &polydat::node::NodeMeta { &self.meta }
+        impl polydat::ast::GkNode for CountingNode {
+            fn meta(&self) -> &polydat::ast::NodeMeta { &self.meta }
             fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
                 self.calls.fetch_add(1, Ordering::Relaxed);
                 outputs[0] = Value::U64(42);
@@ -921,9 +921,9 @@ mod tests {
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
         // Compile-const seed expression — wires empty.
         asm.add_node("ticks", Box::new(CountingNode {
-            meta: polydat::node::NodeMeta {
+            meta: polydat::ast::NodeMeta {
                 name: "ticks".into(),
-                outs: vec![polydat::node::Port::new("output", polydat::node::PortType::U64)],
+                outs: vec![polydat::ast::Port::new("output", polydat::ast::PortType::U64)],
                 ins: vec![],
             },
             calls: calls.clone(),

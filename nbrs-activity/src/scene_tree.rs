@@ -698,7 +698,7 @@ mod tests {
     /// surfaces every populated outcome in DFS order.
     #[test]
     fn set_phase_outcome_installs_structured_and_mirrors_legacy() {
-        use crate::phase_outcome::{PhaseIdentity, PhaseOutcome, PhaseErrorDetail};
+        use crate::phase_outcome::{PhaseIdentity, PhaseOutcome};
         let mut t = build_simple();
         t.set_phase_running("p", "x=1", 1);
         let outcome = PhaseOutcome::completed(

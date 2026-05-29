@@ -14,7 +14,7 @@
 
 use nbrs_activity::op_modifier::{ModifierChain, OpFieldModifier};
 use polydat::kernel::GkKernel;
-use polydat::node::Value;
+use polydat::ast::Value;
 
 /// Universal per-op field names supported by every CQL engine.
 ///

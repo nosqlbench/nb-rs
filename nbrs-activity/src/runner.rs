@@ -989,14 +989,14 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
     {
         Ok(file) => {
             let handle = std::sync::Arc::new(std::sync::Mutex::new(file));
-            polydat::audit::set_log_fn(move |level, msg| {
+            polydat::library::support::audit::set_log_fn(move |level, msg| {
                 use std::io::Write;
                 let tag = match level {
-                    polydat::audit::LogLevel::Trace => "TRC",
-                    polydat::audit::LogLevel::Debug => "DBG",
-                    polydat::audit::LogLevel::Info  => "INF",
-                    polydat::audit::LogLevel::Warn  => "WRN",
-                    polydat::audit::LogLevel::Error => "ERR",
+                    polydat::library::support::audit::LogLevel::Trace => "TRC",
+                    polydat::library::support::audit::LogLevel::Debug => "DBG",
+                    polydat::library::support::audit::LogLevel::Info  => "INF",
+                    polydat::library::support::audit::LogLevel::Warn  => "WRN",
+                    polydat::library::support::audit::LogLevel::Error => "ERR",
                 };
                 if let Ok(mut f) = handle.lock() {
                     let _ = writeln!(f, "{tag} {msg}");
@@ -1009,7 +1009,7 @@ async fn run_impl(args: &[String], observer: Arc<dyn crate::observer::RunObserve
             crate::diag!(crate::observer::LogLevel::Warn,
                 "audit log: failed to open '{}': {e} (audit messages dropped)",
                 audit_log_path.display());
-            polydat::audit::set_log_fn(|_level, _msg| {});
+            polydat::library::support::audit::set_log_fn(|_level, _msg| {});
         }
     }
 
@@ -3263,7 +3263,7 @@ fn collect_iter_var_names(
     for phase in workload.phases.values() {
         if let Some(text) = phase.for_each.as_deref()
             && let Ok(comp) =
-                polydat::comprehension::spec::parse_comprehension_text(text)
+                polydat::iteration::comprehension::spec::parse_comprehension_text(text)
         {
             for name in comp.coordinate_names() {
                 out.insert(name.to_string());
@@ -3672,11 +3672,11 @@ pub fn resolve_gk_config(value: &str, kernel: &polydat::kernel::GkKernel) -> Opt
 }
 
 /// Convert a GK Value to u64, handling f64→u64 truncation.
-fn value_to_u64(v: &polydat::node::Value) -> u64 {
+fn value_to_u64(v: &polydat::ast::Value) -> u64 {
     match v {
-        polydat::node::Value::U64(n) => *n,
-        polydat::node::Value::F64(f) => *f as u64,
-        polydat::node::Value::Bool(b) => if *b { 1 } else { 0 },
+        polydat::ast::Value::U64(n) => *n,
+        polydat::ast::Value::F64(f) => *f as u64,
+        polydat::ast::Value::Bool(b) => if *b { 1 } else { 0 },
         _ => 0,
     }
 }
@@ -3771,7 +3771,7 @@ fn format_scenario_nodes(
                 // the scope_tree::label_for_comprehension shape
                 // at one level of detail finer (includes the
                 // spec_expr for non-Union shapes).
-                use polydat::comprehension::Comprehension as Comp;
+                use polydat::iteration::comprehension::Comprehension as Comp;
                 // Peel outer Order/Filter for structural detection.
                 let mut body = comprehension;
                 loop {

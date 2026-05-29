@@ -331,6 +331,18 @@ behavior over discrete vs. Continuous inputs. The validator
 strategy's requirement; V8 additionally requires Continuous
 inputs to be wrapped in a strategy that supports them.
 
+**Strategy invocation surface.** Strategies have a single
+entry point, `apply(evaluated: &[EvaluatedSource],
+truncation: Option<u64>)`, where each [`EvaluatedSource`]
+(##10.7.6) carries its values, cardinality, and `IndexFn`.
+There is no split between "metadata-bearing" and
+"metadata-naive" apply paths — the strategy reads the
+`IndexFn` from the evaluated inputs and routes accordingly.
+This is what makes V4 enforceable at strategy-invocation
+time independent of how the source was authored (literal,
+range, registry-recognized generator, or workload-param):
+the shape is *always* known by the time `apply` runs.
+
 | Strategy | Input requirement | Discrete behavior | Continuous behavior |
 |---|---|---|---|
 | `Lex` | any (incl. `None`) | Natural enumeration order — pass-through (§10.2 R1) | Rejected — Continuous has no natural enumeration; use a sampling strategy |
@@ -468,6 +480,19 @@ V4 is **not** a usefulness filter — degenerate-but-defined
 compositions (e.g. `Extrema` over a 1-D `Lattice` yielding
 `{first, last}`) pass V4 and are flagged by §5.8's warning
 mechanism, not rejected.
+
+**V4 enforcement timing (per §10.7.8).** V4 fires at
+strategy-invocation time against the
+[`EvaluatedSource`](##10.7.6) the strategy receives. For
+comprehensions whose sources are all statically evaluable
+(per §10.7.0's eval-class partitioning — `Literal` /
+`IntRange` / `ContinuousInterval` / registry-recognized
+generators per §10.7.7), the compile-time IR planner runs
+evaluation and fires V4 early as a usability nicety —
+malformed shapes error at parse time. For context-required
+sources, the early fire is skipped; runtime fire at strategy
+invocation is the load-bearing check. Either way, the axiom
+is the same.
 
 **V4 + dependent Cartesian.** When a `cartesian`'s children
 have cross-references (dependent product per §3.2), the
@@ -1728,6 +1753,45 @@ bottom-up as a monoid; each constructor's metadata is a total
 function of its children's metadata and its own scalar
 parameters.
 
+#### 10.7.0 Timing — metadata is contextual, not statically-only
+
+A source's metadata (cardinality, IndexFn) is **a property of
+the evaluated source in a kernel context**, not a property of
+the AST in isolation. The rules in §10.7.1–§10.7.5 below
+specify *what* every constructor's metadata is; this section
+specifies *when* it becomes knowable.
+
+Sources are partitioned into three **eval classes**:
+
+- **Statically evaluable**: `Literal { values }`,
+  `IntRange { lo, hi, step }`, `ContinuousInterval { … }`,
+  and any `Generator` polydat recognizes as built-in (the set
+  enumerated in §10.7.6). For these, evaluation succeeds with
+  no kernel context — `source.evaluate(None)` returns
+  `EvaluatedSource` — and the compile-time planner computes
+  the full metadata bundle during parse / R0–R7 optimization.
+- **Context-required**: `WorkloadParamList { name }` and
+  `Generator` outside the built-in set. For these,
+  `source.evaluate(None)` returns `NeedsContext`; the runtime
+  evaluator supplies a kernel context at evaluation time.
+  The metadata becomes knowable then — same rules,
+  later firing.
+- **Distribution**: not enumerated until an enclosing
+  `Order(_, sampling-strategy, Some(n))` discharges V8;
+  evaluation is the sampling pass itself.
+
+The propagation rules in §10.7.1–§10.7.5 are unchanged. What
+the rules describe is what holds *once the source has been
+evaluated*. For statically-evaluable sources, "once" is
+compile time; for context-required sources, "once" is
+strategy-invocation time inside the runtime evaluator.
+
+A statically-evaluable source whose evaluator returns
+`NeedsContext` is a polydat bug, not a workload-author error.
+A context-required source whose evaluator fails because
+required context is missing surfaces as a runtime
+evaluation error attributed to the clause.
+
 #### 10.7.1 The bundle
 
 ```text
@@ -1907,7 +1971,131 @@ metadata field is read.
   values land as coordinated type extensions, not registration
   points. This is what keeps the algebra closed.
 
-#### 10.7.6 Why this matters
+#### 10.7.6 The `EvaluatedSource` contract
+
+The single surface every consumer (IR interpreter, strategies,
+V4) uses to read a source's enumerated form. Produced by
+`Source::evaluate(Option<&Context>)`.
+
+```text
+struct EvaluatedSource {
+  /// Concrete typed values the source dispenses, in
+  /// declaration / enumeration order.
+  values: Vec<polydat::node::Value>,
+
+  /// Cardinality — same enum as §6.1's CardinalityClass, but
+  /// `Bounded(values.len())` for any successfully-evaluated
+  /// discrete source. `Continuous` retained for distribution-
+  /// like sources awaiting an enclosing sampler (V8).
+  cardinality: CardinalityClass,
+
+  /// Closed-form addressing scheme — same enum as §10.7.1's
+  /// IndexFn. For evaluated discrete sources this is
+  /// always `Lattice { axis_sizes: [values.len()] }` at the
+  /// clause level; combinators compose it per §10.7.2's
+  /// rules.
+  index_fn: Option<IndexFn>,
+}
+
+enum EvalError {
+  /// Source's eval class is context-required, but
+  /// evaluate(None) was called. Caller is expected to
+  /// supply a kernel context.
+  NeedsContext,
+  /// Source evaluation against the provided context
+  /// failed (interpolation error, eval_const_expr
+  /// failure, registry-unknown generator, etc.).
+  EvalFailed { spec_text: String, reason: String },
+}
+
+trait Source {
+  fn eval_class(&self) -> EvalClass;
+  fn evaluate(&self, ctx: Option<&Context>) -> Result<EvaluatedSource, EvalError>;
+}
+
+enum EvalClass { Static, ContextRequired, Distribution }
+```
+
+Calling `evaluate(None)` on a `Static` source always succeeds
+(or surfaces a polydat bug). Calling `evaluate(None)` on a
+`ContextRequired` source always returns `NeedsContext` —
+the type signature is *honest* about whether context is needed.
+The runtime evaluator supplies a context when needed.
+
+`Distribution` sources (`Source::Distribution { … }`) evaluate
+only inside the sampling discharge of an enclosing
+`Order(_, sampling-strategy, Some(n))` — the strategy
+produces n drawn points which become the EvaluatedSource's
+`values`. Bare Distribution clauses (no enclosing sampler) are
+V8-rejected at compile time.
+
+#### 10.7.7 Built-in generator registry
+
+The polydat-owned set of generators whose `evaluate(None)`
+succeeds without a kernel context. These move from
+`ContextRequired` to `Static` for planning purposes.
+
+| Generator | Signature | Cardinality |
+|---|---|---|
+| `range(lo, hi)` | int literals | `⌈(hi-lo)⌉` |
+| `range(lo, hi, step)` | int literals | `⌈(hi-lo)/step⌉` |
+| `fib(n)` | int literal | `n` |
+| `pow2(n)` | int literal | `n` |
+| `linear_steps(n)` | int literal | `n` |
+| `geometric(n, base, ratio)` | int + numeric literals | `n` |
+| `concat(s₁, s₂, …, sₖ)` | each sᵢ is itself a registered generator or static source | `Σᵢ |sᵢ|` |
+| `partitions("linear:N")` | literal spec | `N` |
+| `partitions("hash:N")` | literal spec | `N` |
+| `subdivide(lo, hi, n)` | numeric literals | `n` |
+| `bucket(...)`, `concat_seq(...)`, `interval_seq(...)` | literal args | per definition |
+
+A generator is "registry-recognized" when (a) its name matches
+a registry entry and (b) its argument expressions are all
+literal-resolvable without context (recursively for `concat`).
+Mixed cases (`concat({workload_param}, fib(8))`) are
+`ContextRequired` — the recursion bottoms out at a non-static
+piece.
+
+Workload authors do not interact with the registry directly;
+it's polydat-internal. Registry completeness is a polydat
+quality target — every built-in generator polydat ships should
+have a registry entry. Generators *outside* the registry
+(notably the activity-side or adapter-defined ones) remain
+context-required.
+
+#### 10.7.8 Strategy invocation contract
+
+Strategies (§3.6) implement one method:
+
+```text
+trait Strategy {
+  fn apply(
+    &self,
+    evaluated: &EvaluatedSource,
+    truncation: Option<u64>,
+  ) -> Result<Vec<Tuple>, StrategyError>;
+}
+```
+
+The strategy queries `evaluated.index_fn` and
+`evaluated.values` to compute its permutation. The earlier
+`naive_apply` / `indexed_apply` split retires — there's one
+method, and the question "does the strategy have lattice
+metadata to work with?" is answered by inspecting the
+`EvaluatedSource` it receives.
+
+**§V4 enforcement timing.** V4 ("non-`Lex` strategies require
+the input's `IndexFn` to be non-`None`") fires at
+strategy-invocation time, against the `EvaluatedSource`. The
+compile-time IR planner may *additionally* fire V4 early as a
+usability nicety — when an AST's sources are all statically
+evaluable, the planner runs evaluation and surfaces V4
+failures at compile time. For ASTs with context-required
+sources, the early fire is skipped; runtime fire is the load-
+bearing one. Either way, V4 is the same axiom; only the
+*when* changes.
+
+#### 10.7.9 Why this matters
 
 The R-rules become pure pattern matches over metadata + AST
 shape — no global analysis, no out-of-tree consultations, no
@@ -1923,6 +2111,15 @@ surface** alongside the immutable IR (§9.1). A consumer asking
 worst-case working set?" reads metadata, not IR. The two
 surfaces together let external tooling reason about
 comprehension cost without recompiling.
+
+The eval-class partitioning (§10.7.0) plus the registry
+(§10.7.7) keep the static-evaluable subset broad without
+introducing a static / runtime semantic split: it's one
+metadata algebra, run twice for context-required cases (once
+optimistically at compile time, once definitively at strategy
+invocation). The runtime second-fire produces the same
+metadata bundle the static path would have, only with values
+the planner didn't know yet.
 
 ### 10.8 What the optimizer doesn't do
 

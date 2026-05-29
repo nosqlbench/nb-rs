@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::assembly::{GkAssembler, WireRef};
+use crate::compile::assembly::{GkAssembler, WireRef};
 use crate::dsl::ast::*;
 use crate::dsl::lexer;
 use crate::dsl::parser;
@@ -336,7 +336,7 @@ pub fn compile_gk_checked(source: &str) -> (Result<GkKernel, ()>, DiagnosticRepo
 /// let v = eval_const_expr("4.0 * 4.0").unwrap();
 /// assert_eq!(v.as_f64(), 16.0);  // both float literals → f64_mul
 /// ```
-pub fn eval_const_expr(source: &str) -> Result<crate::node::Value, String> {
+pub fn eval_const_expr(source: &str) -> Result<crate::ast::Value, String> {
     let wrapped = format!("\nout := {source}");
     // Constant-folding inside `compile_gk` invokes node `eval`
     // for inputs-free DAGs, so any node that panics on bad data
@@ -350,7 +350,7 @@ pub fn eval_const_expr(source: &str) -> Result<crate::node::Value, String> {
     // panics with their provenance string; that string is what
     // we extract.
     let result = std::panic::catch_unwind(
-        std::panic::AssertUnwindSafe(|| -> Result<crate::node::Value, String> {
+        std::panic::AssertUnwindSafe(|| -> Result<crate::ast::Value, String> {
             let kernel = compile_gk(&wrapped)?;
             kernel.get_constant("out")
                 .cloned()
@@ -393,10 +393,10 @@ fn panic_payload_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 /// the extern declaration.
 fn evaluate_default_expr(
     expr: &crate::dsl::ast::Expr,
-    port_type: crate::node::PortType,
-) -> Result<crate::node::Value, String> {
+    port_type: crate::ast::PortType,
+) -> Result<crate::ast::Value, String> {
     use crate::dsl::ast::Expr;
-    use crate::node::{PortType, Value};
+    use crate::ast::{PortType, Value};
     match (expr, port_type) {
         (Expr::IntLit(v, _), PortType::U64) => Ok(Value::U64(*v)),
         (Expr::IntLit(v, _), PortType::F64) => Ok(Value::F64(*v as f64)),
@@ -426,9 +426,9 @@ fn evaluate_default_expr(
 /// mutation").
 fn try_fold_shared_init(
     expr: &crate::dsl::ast::Expr,
-) -> Option<(crate::node::Value, crate::node::PortType)> {
+) -> Option<(crate::ast::Value, crate::ast::PortType)> {
     use crate::dsl::ast::Expr;
-    use crate::node::{PortType, Value};
+    use crate::ast::{PortType, Value};
     match expr {
         Expr::IntLit(v, _) => Some((Value::U64(*v), PortType::U64)),
         Expr::FloatLit(v, _) => Some((Value::F64(*v), PortType::F64)),
@@ -482,7 +482,7 @@ pub fn compile_ast_strict(file: &GkFile, source_dir: Option<&Path>, strict: bool
 /// Compile a pre-parsed AST with the same library / strict /
 /// required-outputs / context-label knobs as
 /// [`compile_gk_with_libs`]. Used by SRD-67's
-/// [`crate::subcontext::SubcontextBuilder`] when finalize has
+/// [`crate::kernel::subcontext::SubcontextBuilder`] when finalize has
 /// rewritten the AST in-place (Rule 2 write-through) and can
 /// no longer round-trip through the source-string compile path.
 pub fn compile_ast_with_libs(
@@ -554,7 +554,7 @@ pub(super) struct Compiler {
     /// Original source text, attached to compiled programs for diagnostics.
     source_text: String,
     /// Source schemas collected during compilation.
-    pub(super) cursor_schemas: Vec<crate::source::SourceSchema>,
+    pub(super) cursor_schemas: Vec<crate::iteration::source::SourceSchema>,
     /// Deferred cursor extent resolutions: each entry maps a cursor
     /// schema index to the aux output names that, once folded, give
     /// the range's start and end values. These are resolved after the
@@ -648,7 +648,7 @@ impl Compiler {
 
         // All sources get an "ordinal" projection.
         let mut projections = vec![
-            ("ordinal".to_string(), crate::node::PortType::U64),
+            ("ordinal".to_string(), crate::ast::PortType::U64),
         ];
 
         // Determine extent from constructor args. Three cases per arg:
@@ -662,7 +662,7 @@ impl Compiler {
         // routine reads the folded values after compilation and updates
         // the schema's extent in place.
         let mut deferred: Option<(Option<u64>, String, Option<u64>, String)> = None;
-        let mut cursor_kind_for_decl: crate::source::CursorKind = crate::source::CursorKind::Range;
+        let mut cursor_kind_for_decl: crate::iteration::source::CursorKind = crate::iteration::source::CursorKind::Range;
         let extent = match &effective_constructor {
             // ── until_*(...) — extending cursors ────────────────
             // Recognise every cursor function whose constructor
@@ -733,7 +733,7 @@ impl Compiler {
                         let delta_output = if n == 3 {
                             Some(compile_aux(2, "delta")?)
                         } else { None };
-                        crate::source::CursorKind::ExtendingTimed {
+                        crate::iteration::source::CursorKind::ExtendingTimed {
                             min_ms_output: min_ms_name,
                             delta_output,
                         }
@@ -743,7 +743,7 @@ impl Compiler {
                         let delta_output = if n == 3 {
                             Some(compile_aux(2, "delta")?)
                         } else { None };
-                        crate::source::CursorKind::ExtendingPasses {
+                        crate::iteration::source::CursorKind::ExtendingPasses {
                             min_passes_output: min_passes_name,
                             delta_output,
                         }
@@ -753,7 +753,7 @@ impl Compiler {
                         let delta_output = if n == 3 {
                             Some(compile_aux(2, "delta")?)
                         } else { None };
-                        crate::source::CursorKind::ExtendingCount {
+                        crate::iteration::source::CursorKind::ExtendingCount {
                             min_count_output: min_count_name,
                             delta_output,
                         }
@@ -764,7 +764,7 @@ impl Compiler {
                         let delta_output = if n == 4 {
                             Some(compile_aux(3, "delta")?)
                         } else { None };
-                        crate::source::CursorKind::ExtendingElapsedAndPasses {
+                        crate::iteration::source::CursorKind::ExtendingElapsedAndPasses {
                             min_ms_output: min_ms_name,
                             min_passes_output: min_passes_name,
                             delta_output,
@@ -776,7 +776,7 @@ impl Compiler {
                         let delta_output = if n == 4 {
                             Some(compile_aux(3, "delta")?)
                         } else { None };
-                        crate::source::CursorKind::ExtendingElapsedOrPasses {
+                        crate::iteration::source::CursorKind::ExtendingElapsedOrPasses {
                             min_ms_output: min_ms_name,
                             min_passes_output: min_passes_name,
                             delta_output,
@@ -838,9 +838,9 @@ impl Compiler {
         for (field_name, port_type) in &projections {
             let input_name = format!("{source_name}__{field_name}");
             let default_value = match port_type {
-                crate::node::PortType::U64 => crate::node::Value::U64(0),
-                crate::node::PortType::F64 => crate::node::Value::F64(0.0),
-                _ => crate::node::Value::None,
+                crate::ast::PortType::U64 => crate::ast::Value::U64(0),
+                crate::ast::PortType::F64 => crate::ast::Value::F64(0.0),
+                _ => crate::ast::Value::None,
             };
 
             // Cursor projection slots are written by cursor advance
@@ -849,7 +849,7 @@ impl Compiler {
             self.input_names.push(input_name.clone());
 
             let passthrough = Box::new(
-                crate::nodes::identity::PortPassthrough::new(&input_name, *port_type)
+                crate::library::identity::PortPassthrough::new(&input_name, *port_type)
             );
             let node_name = format!("{source_name}__{field_name}");
             asm.add_node(
@@ -885,7 +885,7 @@ impl Compiler {
             let ordinal_wire = format!("{source_name}__ordinal");
             asm.add_node(
                 &limit_node_name,
-                Box::new(crate::nodes::context::CursorLimit::new(limit_val)),
+                Box::new(crate::library::context::CursorLimit::new(limit_val)),
                 vec![WireRef::node(&ordinal_wire)],
             );
             // Shadow the ordinal output with the limited version
@@ -928,15 +928,15 @@ impl Compiler {
             let cursor_input_name = format!("{source_name}__cursor");
             asm.add_input(
                 &cursor_input_name,
-                crate::node::Value::None,
-                crate::node::PortType::Ext,
+                crate::ast::Value::None,
+                crate::ast::PortType::Ext,
                 crate::kernel::InputKind::CapturePort,
             );
             self.input_names.push(cursor_input_name.clone());
             let passthrough = Box::new(
-                crate::nodes::identity::PortPassthrough::new(
+                crate::library::identity::PortPassthrough::new(
                     &cursor_input_name,
-                    crate::node::PortType::Ext,
+                    crate::ast::PortType::Ext,
                 )
             );
             asm.add_node(
@@ -950,7 +950,7 @@ impl Compiler {
             None
         };
 
-        self.cursor_schemas.push(crate::source::SourceSchema {
+        self.cursor_schemas.push(crate::iteration::source::SourceSchema {
             name: source_name.clone(),
             projections,
             extent: effective_extent,
@@ -1055,7 +1055,7 @@ impl Compiler {
         // differs but the resulting input+output shape is identical.
         for input_name in self.input_names.clone() {
             let passthrough = Box::new(
-                crate::nodes::identity::PortPassthrough::new(&input_name, crate::node::PortType::U64)
+                crate::library::identity::PortPassthrough::new(&input_name, crate::ast::PortType::U64)
             );
             let passthrough_name = format!("__port_{input_name}");
             asm.add_node(
@@ -1107,7 +1107,7 @@ impl Compiler {
                         asm.add_input(name, init_value, port_type, crate::kernel::InputKind::CapturePort);
                         self.input_names.push(name.clone());
                         let passthrough = Box::new(
-                            crate::nodes::identity::PortPassthrough::new(name, port_type)
+                            crate::library::identity::PortPassthrough::new(name, port_type)
                         );
                         let passthrough_name = format!("__port_{name}");
                         asm.add_node(
@@ -1163,8 +1163,8 @@ impl Compiler {
                             {
                                 asm.add_input(
                                     target.as_str(),
-                                    crate::node::Value::None,
-                                    crate::node::PortType::Ext,
+                                    crate::ast::Value::None,
+                                    crate::ast::PortType::Ext,
                                     crate::kernel::InputKind::IterationExtern,
                                 );
                             }
@@ -1191,15 +1191,15 @@ impl Compiler {
                     // `materialize_wiring_from_outer` from a parent for_each /
                     // for_combinations clause).
                     let port_type = match port.typ.as_str() {
-                        "u64" => crate::node::PortType::U64,
-                        "f64" => crate::node::PortType::F64,
-                        "bool" => crate::node::PortType::Bool,
-                        "json" | "Json" => crate::node::PortType::Json,
+                        "u64" => crate::ast::PortType::U64,
+                        "f64" => crate::ast::PortType::F64,
+                        "bool" => crate::ast::PortType::Bool,
+                        "json" | "Json" => crate::ast::PortType::Json,
                         // SRD 71: adapter-contributed reflected types
                         // (Partition, PartitionSpec, PartitionList,
                         // and any future ReflectedValue impl).
-                        "Ext" | "ext" => crate::node::PortType::Ext,
-                        _ => crate::node::PortType::Str,
+                        "Ext" | "ext" => crate::ast::PortType::Ext,
+                        _ => crate::ast::PortType::Str,
                     };
                     let (default_value, kind) = match &port.default {
                         Some(expr) => {
@@ -1210,7 +1210,7 @@ impl Compiler {
                             (v, crate::kernel::InputKind::CapturePort)
                         }
                         None => (
-                            crate::node::Value::None,
+                            crate::ast::Value::None,
                             crate::kernel::InputKind::IterationExtern,
                         ),
                     };
@@ -1223,7 +1223,7 @@ impl Compiler {
 
                     // Create a passthrough node wired to the input
                     let passthrough = Box::new(
-                        crate::nodes::identity::PortPassthrough::new(&port.name, port_type)
+                        crate::library::identity::PortPassthrough::new(&port.name, port_type)
                     );
                     let passthrough_name = format!("__port_{}", port.name);
                     asm.add_node(
@@ -1434,7 +1434,7 @@ impl Compiler {
         // (parity with `extern`). See `compile()` for the same wiring.
         for input_name in self.input_names.clone() {
             let passthrough = Box::new(
-                crate::nodes::identity::PortPassthrough::new(&input_name, crate::node::PortType::U64)
+                crate::library::identity::PortPassthrough::new(&input_name, crate::ast::PortType::U64)
             );
             let passthrough_name = format!("__port_{input_name}");
             asm.add_node(
@@ -1462,7 +1462,7 @@ impl Compiler {
                         asm.add_input(name, init_value, port_type, crate::kernel::InputKind::CapturePort);
                         self.input_names.push(name.clone());
                         let passthrough = Box::new(
-                            crate::nodes::identity::PortPassthrough::new(name, port_type)
+                            crate::library::identity::PortPassthrough::new(name, port_type)
                         );
                         let passthrough_name = format!("__port_{name}");
                         asm.add_node(
@@ -1504,8 +1504,8 @@ impl Compiler {
                             {
                                 asm.add_input(
                                     target.as_str(),
-                                    crate::node::Value::None,
-                                    crate::node::PortType::Ext,
+                                    crate::ast::Value::None,
+                                    crate::ast::PortType::Ext,
                                     crate::kernel::InputKind::IterationExtern,
                                 );
                             }
@@ -1520,15 +1520,15 @@ impl Compiler {
                     // iteration extern (effectively-const at
                     // scope-init time).
                     let port_type = match port.typ.as_str() {
-                        "u64" => crate::node::PortType::U64,
-                        "f64" => crate::node::PortType::F64,
-                        "bool" => crate::node::PortType::Bool,
-                        "json" | "Json" => crate::node::PortType::Json,
+                        "u64" => crate::ast::PortType::U64,
+                        "f64" => crate::ast::PortType::F64,
+                        "bool" => crate::ast::PortType::Bool,
+                        "json" | "Json" => crate::ast::PortType::Json,
                         // SRD 71: adapter-contributed reflected types
                         // (Partition, PartitionSpec, PartitionList,
                         // and any future ReflectedValue impl).
-                        "Ext" | "ext" => crate::node::PortType::Ext,
-                        _ => crate::node::PortType::Str,
+                        "Ext" | "ext" => crate::ast::PortType::Ext,
+                        _ => crate::ast::PortType::Str,
                     };
                     let (default_value, kind) = match &port.default {
                         Some(expr) => {
@@ -1539,22 +1539,22 @@ impl Compiler {
                             (v, crate::kernel::InputKind::CapturePort)
                         }
                         None => (
-                            crate::node::Value::None,
+                            crate::ast::Value::None,
                             crate::kernel::InputKind::IterationExtern,
                         ),
                     };
                     asm.add_input(&port.name, default_value, port_type, kind);
                     self.input_names.push(port.name.clone());
                     let passthrough = Box::new(
-                        crate::nodes::identity::PortPassthrough::new(&port.name, port_type)
+                        crate::library::identity::PortPassthrough::new(&port.name, port_type)
                     );
                     let passthrough_name = format!("__port_{}", port.name);
                     asm.add_node(
                         &passthrough_name,
                         passthrough,
-                        vec![crate::assembly::WireRef::input(&port.name)],
+                        vec![crate::compile::assembly::WireRef::input(&port.name)],
                     );
-                    asm.add_output(&port.name, crate::assembly::WireRef::node(&passthrough_name));
+                    asm.add_output(&port.name, crate::compile::assembly::WireRef::node(&passthrough_name));
                 }
                 Statement::Cursor(decl) => {
                     self.process_cursor(&mut asm, decl)?;

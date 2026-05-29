@@ -16,13 +16,13 @@
 //! sources need a sampling order per V8; we restrict to keep
 //! the harness comparing pure-discrete dispense sequences).
 
-use polydat::comprehension::ast::Comprehension;
-use polydat::comprehension::ir::{compile, interpret};
-use polydat::comprehension::optimize::optimize;
-use polydat::comprehension::source::{LiteralValue, Source};
-use polydat::comprehension::strategies::TupleValue;
-use polydat::comprehension::strategy::{StrategyName, ZipMode};
-use polydat::comprehension::validate::{validate, Mode};
+use polydat::iteration::comprehension::ast::Comprehension;
+use polydat::iteration::comprehension::ir::{compile, interpret};
+use polydat::iteration::comprehension::optimize::optimize;
+use polydat::iteration::comprehension::source::{LiteralValue, Source};
+use polydat::iteration::comprehension::strategies::TupleValue;
+use polydat::iteration::comprehension::strategy::{StrategyName, ZipMode};
+use polydat::iteration::comprehension::validate::{validate, Mode};
 
 // ---- RNG helper (inline PCG-style) ----
 

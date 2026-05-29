@@ -30,8 +30,8 @@ use nbrs_metrics::controls::{
     BranchScope, ControlBuilder, ControlOrigin,
 };
 use nbrs_metrics::labels::Labels;
-use polydat::node::{GkNode, Value};
-use polydat::nodes::param_helpers::{
+use polydat::ast::{GkNode, Value};
+use polydat::library::param_helpers::{
     InRangeU64, IsPositiveU64, RequiredU64, ThisOrU64,
 };
 use nbrs_activity::polydat_nodes::runtime_context::{

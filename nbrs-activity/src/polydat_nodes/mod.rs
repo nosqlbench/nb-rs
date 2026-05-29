@@ -4,7 +4,7 @@
 //! Polydat node registrations that need nbrs-activity's runtime
 //! services (component tree, controls, fiber context).
 //!
-//! These nodes were originally inside `polydat::nodes` but got
+//! These nodes were originally inside `polydat::library` but got
 //! relocated here so polydat can publish standalone — they take a
 //! dependency on `nbrs_metrics` (controls + component tree) that
 //! polydat can't carry without dragging nbrs-metrics onto crates.io

@@ -9,7 +9,7 @@
 //! CQL engine registers the same node set and workloads using
 //! `cql_timeuuid(...)` are portable across engines.
 
-use polydat::node::{
+use polydat::ast::{
     Commutativity, GkNode, NodeMeta, Port, PortType, Slot, SlotType, Value,
 };
 use polydat::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
@@ -101,8 +101,8 @@ pub fn cql_signatures() -> &'static [FuncSig] {
 
 pub(crate) fn cql_build_node(
     name: &str,
-    _wires: &[polydat::assembly::WireRef],
-    _wire_types: &[polydat::node::PortType],
+    _wires: &[polydat::compile::assembly::WireRef],
+    _wire_types: &[polydat::ast::PortType],
     _consts: &[polydat::dsl::ConstArg],
 ) -> Option<Result<Box<dyn GkNode>, String>> {
     match name {

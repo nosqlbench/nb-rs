@@ -948,7 +948,7 @@ impl P1Engine for polydat::kernel::ProvScanState {
 /// weighted-slot state. The returned `FnMut(u64)` evaluates one
 /// cycle including input generation and output selection.
 fn build_compiled_kernel(
-    asm: polydat::assembly::GkAssembler,
+    asm: polydat::compile::assembly::GkAssembler,
     level: &str,
     _use_prov: bool,
     eval_mode: EvalMode,
@@ -1014,7 +1014,7 @@ fn build_compiled_kernel(
             }
         }
         "Hybrid" => {
-            asm.compile_hybrid().ok().and_then(|mut k: polydat::hybrid::HybridKernel| {
+            asm.compile_hybrid().ok().and_then(|mut k: polydat::compile::hybrid::HybridKernel| {
                 let default_out = k.resolve_output(last_binding)?;
                 let n = k.coord_count();
                 let ws = resolve_weighted_slots(scenario, |name| k.resolve_output(name));

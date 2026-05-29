@@ -594,7 +594,7 @@ mod tests {
         let dispenser: Arc<dyn OpDispenser> = Arc::from(adapter.map_op(&op, test_kernel()).unwrap());
         let fields = Arc::new(ResolvedFields::new(
             vec!["stmt".into()],
-            vec![polydat::node::Value::Str("SELECT 1;".into())],
+            vec![polydat::ast::Value::Str("SELECT 1;".into())],
         ));
 
         let mut handles = Vec::new();
@@ -626,7 +626,7 @@ mod tests {
         let dispenser = adapter.map_op(&template, test_kernel()).unwrap();
         let fields = ResolvedFields::new(
             vec!["stmt".into()],
-            vec![polydat::node::Value::Str("SELECT 1;".into())],
+            vec![polydat::ast::Value::Str("SELECT 1;".into())],
         );
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let ctx = nbrs_activity::adapter::ExecCtx::new(&fields, &pulls);
@@ -669,7 +669,7 @@ mod tests {
 
         let fields = ResolvedFields::new(
             vec!["stmt".into()],
-            vec![polydat::node::Value::Str("SELECT 1;".into())],
+            vec![polydat::ast::Value::Str("SELECT 1;".into())],
         );
         let pulls = nbrs_activity::fixture::ResolvedPulls::empty();
         let ctx = nbrs_activity::adapter::ExecCtx::new(&fields, &pulls);

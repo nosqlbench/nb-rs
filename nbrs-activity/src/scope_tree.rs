@@ -31,7 +31,7 @@
 //! `dryrun=phase`) can already start consuming it.
 
 use nbrs_workload::model::ScenarioNode;
-use polydat::comprehension::Comprehension;
+use polydat::iteration::comprehension::Comprehension;
 use polydat::dsl::pragmas::PragmaSet;
 
 /// Index into the `ScopeTree.nodes` vector. Stable for the
@@ -160,7 +160,7 @@ impl ScopeKind {
 /// renders as `for_each_union {[...]; [...]}`, and a bare
 /// `Clause` renders as `each <var>`.
 fn label_for_comprehension(comp: &Comprehension) -> String {
-    use polydat::comprehension::source::Source;
+    use polydat::iteration::comprehension::source::Source;
     // Peel outer Order/Filter — these are non-structural for
     // the label.
     let mut body = comp;
@@ -1126,7 +1126,7 @@ mod tests {
         ScenarioNode::Phase(name.into())
     }
     fn for_each(spec: &str, children: Vec<ScenarioNode>) -> ScenarioNode {
-        use polydat::comprehension::spec::{ComprehensionSpec, ForSpec};
+        use polydat::iteration::comprehension::spec::{ComprehensionSpec, ForSpec};
         let comprehension = ComprehensionSpec {
             r#for: ForSpec::Inline(spec.to_string()),
             r#where: None,
@@ -1324,7 +1324,7 @@ mod tests {
         let cached = tree.nodes[0].cached_kernel.get()
             .expect("install populated the slot");
         match cached.get_constant("dataset") {
-            Some(polydat::node::Value::Str(s)) => assert_eq!(&**s, "example"),
+            Some(polydat::ast::Value::Str(s)) => assert_eq!(&**s, "example"),
             other => panic!("expected Str(\"example\"), got {other:?}"),
         }
     }
@@ -1365,7 +1365,7 @@ mod tests {
         // the inherited extern is populated with the parent's
         // value.
         match kernel.get_input("k_values") {
-            Some(polydat::node::Value::Str(s)) => assert_eq!(&*s, "1, 10"),
+            Some(polydat::ast::Value::Str(s)) => assert_eq!(&*s, "1, 10"),
             other => panic!("expected Str(\"1, 10\"), got {other:?}"),
         }
 
@@ -1424,7 +1424,7 @@ mod tests {
         let manifest = crate::runner::extract_manifest(kernel.program());
         let k_entry = manifest.iter().find(|e| e.name == "k")
             .expect("k must appear in manifest");
-        assert_eq!(k_entry.port_type, polydat::node::PortType::U64,
+        assert_eq!(k_entry.port_type, polydat::ast::PortType::U64,
             "iter var over numeric values should be typed u64, not String");
     }
 
@@ -1468,9 +1468,9 @@ mod tests {
         let manifest = crate::runner::extract_manifest(kernel.program());
         let k_entry = manifest.iter().find(|e| e.name == "k").unwrap();
         let limit_entry = manifest.iter().find(|e| e.name == "limit").unwrap();
-        assert_eq!(k_entry.port_type, polydat::node::PortType::U64,
+        assert_eq!(k_entry.port_type, polydat::ast::PortType::U64,
             "k typed u64 from k_values pre-eval");
-        assert_eq!(limit_entry.port_type, polydat::node::PortType::U64,
+        assert_eq!(limit_entry.port_type, polydat::ast::PortType::U64,
             "limit typed u64 via recursive probe k=1 → k_1_limits → \"1, 2, 4, 8\"");
     }
 
@@ -1645,7 +1645,7 @@ mod tests {
 
         let cached = tree.nodes[0].cached_kernel.get().unwrap();
         match cached.get_constant("x") {
-            Some(polydat::node::Value::U64(n)) => assert_eq!(*n, 1),
+            Some(polydat::ast::Value::U64(n)) => assert_eq!(*n, 1),
             other => panic!("expected U64(1), got {other:?}"),
         }
     }
@@ -1710,8 +1710,8 @@ mod tests {
         // Build the x-comprehension AST that both inner scopes
         // share, then verify the path-aware lookup picks the
         // right one from each side.
-        let x_comp = polydat::comprehension::spec::ComprehensionSpec {
-            r#for: polydat::comprehension::spec::ForSpec::Inline("x in xs".to_string()),
+        let x_comp = polydat::iteration::comprehension::spec::ComprehensionSpec {
+            r#for: polydat::iteration::comprehension::spec::ForSpec::Inline("x in xs".to_string()),
             r#where: None,
             order: None,
         }.into_algebra().unwrap();

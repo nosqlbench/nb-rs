@@ -3803,6 +3803,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_xoshiro"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f703f4665700daf5512dcca5f43afa6af89f09db47fb56be587f80636bda2d41"
+dependencies = [
+ "rand_core 0.9.5",
+]
+
+[[package]]
 name = "ratatui"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4028,11 +4037,9 @@ checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
  "base64 0.22.1",
  "bytes",
- "encoding_rs",
  "futures-channel",
  "futures-core",
  "futures-util",
- "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -4041,15 +4048,12 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
- "mime",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
- "serde",
- "serde_json",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -4632,6 +4636,15 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "simsimd"
+version = "6.5.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4fb3bc3cdce07a7d7d4caa4c54f8aa967f6be41690482b54b24100a2253fa70"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "siphasher"
@@ -5658,9 +5671,9 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vectordata"
-version = "1.1.4"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d05347d407ed6d09734e762ab0b926b45ad2014830f4000742119b9fc4c1d9c4"
+checksum = "c5e7bb2620e41dc1fb7659c4615313fa4be5bee4a154dec29b1ec8dd4a749739"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -5674,13 +5687,18 @@ dependencies = [
  "libc",
  "log",
  "memmap2",
+ "rand 0.9.4",
+ "rand_xoshiro",
  "ratatui",
+ "rayon",
  "regex",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
  "serde_yaml",
  "sha2",
+ "signal-hook",
+ "simsimd",
  "slabtastic",
  "thiserror 2.0.18",
  "unicode-width 0.2.0",

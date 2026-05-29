@@ -5,7 +5,7 @@
 //!
 //! Each prepared-statement parameter has a known [`ColumnType`]
 //! retrieved from the prepared-statement metadata. The cycle-time
-//! resolved [`Value`](polydat::node::Value) is wrapped into a
+//! resolved [`Value`](polydat::ast::Value) is wrapped into a
 //! lightweight [`NbrsCell`] that implements [`SerializeValue`].
 //! Scylla's blanket `impl<T: SerializeValue> SerializeRow for Vec<T>`
 //! then turns a `Vec<NbrsCell>` into a row that
@@ -20,7 +20,7 @@
 //! `CqlValue::Vector(Vec<CqlValue::Float>)` wrapper allocation.
 //! Same path for `vector<int, N>` + [`Value::VecI32`].
 
-use polydat::node::Value;
+use polydat::ast::Value;
 use scylla::cluster::metadata::{ColumnType, NativeType};
 use scylla::serialize::value::SerializeValue;
 use scylla::serialize::writers::{CellWriter, WrittenCellProof};

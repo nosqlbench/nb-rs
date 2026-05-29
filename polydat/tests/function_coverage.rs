@@ -1833,7 +1833,7 @@ fn const_expr_via_cli_cycles() {
 fn every_registered_function_compiles() {
     use polydat::dsl::compile::compile_gk;
     use polydat::dsl::registry;
-    use polydat::node::SlotType;
+    use polydat::ast::SlotType;
 
     // Create test fixture files
     let csv_path = std::env::temp_dir().join("_gk_coverage_test.csv");

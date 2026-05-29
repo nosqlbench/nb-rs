@@ -16,8 +16,8 @@
 //! Signatures are owned by their respective node modules. This file
 //! defines the shared types and the collector function.
 
-pub use crate::node::CompileLevel;
-use crate::assembly::WireRef;
+pub use crate::ast::CompileLevel;
+use crate::compile::assembly::WireRef;
 
 /// A node module's registration: signatures + builder.
 ///
@@ -32,7 +32,7 @@ pub struct NodeRegistration {
     /// Returns `None` if the name is not handled by this module,
     /// or `Some(Ok(node))` / `Some(Err(msg))` if it is.
     ///
-    /// `wire_types[i]` is the resolved [`crate::node::PortType`] of
+    /// `wire_types[i]` is the resolved [`crate::ast::PortType`] of
     /// `wires[i]` — the output type of the upstream node feeding
     /// that wire input. Modules that build type-polymorphic nodes
     /// (e.g. `log_info`, whose output type equals its input type)
@@ -40,8 +40,8 @@ pub struct NodeRegistration {
     /// types. Modules whose nodes have type-fixed signatures can
     /// ignore the slice. When the assembler can't resolve a
     /// wire's type (forward reference, dangling), the slot
-    /// defaults to [`crate::node::PortType::U64`].
-    pub build: fn(&str, &[WireRef], &[crate::node::PortType], &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::node::GkNode>, String>>,
+    /// defaults to [`crate::ast::PortType::U64`].
+    pub build: fn(&str, &[WireRef], &[crate::ast::PortType], &[crate::dsl::factory::ConstArg]) -> Option<Result<Box<dyn crate::ast::GkNode>, String>>,
     /// Optional assembly-time validator for this module's constants.
     ///
     /// The factory calls this **before** `build` whenever the name
@@ -234,7 +234,7 @@ impl FuncCategory {
 // Unified parameter specification (SRD 36 §Variadic)
 // ---------------------------------------------------------------------------
 
-use crate::node::SlotType;
+use crate::ast::SlotType;
 
 /// Describes one parameter in a function's call signature.
 ///
@@ -333,13 +333,13 @@ pub struct FuncSig {
     /// For variadic functions: the identity element for zero inputs.
     pub identity: Option<u64>,
     /// Factory for variadic nodes: takes wire count, returns node.
-    pub variadic_ctor: Option<fn(usize) -> Box<dyn crate::node::GkNode>>,
+    pub variadic_ctor: Option<fn(usize) -> Box<dyn crate::ast::GkNode>>,
     /// Positional parameter list: wires and constants in call order.
     pub params: &'static [ParamSpec],
     /// Arity specification.
     pub arity: Arity,
     /// Input commutativity for this function.
-    pub commutativity: crate::node::Commutativity,
+    pub commutativity: crate::ast::Commutativity,
     /// Optional resolver hint for `Handle`-typed input ports. When
     /// the binding compiler emits this function and a `Handle`
     /// input is wired to a `Str`-producing source, it splices in

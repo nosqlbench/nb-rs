@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use serde_json::Value as JVal;
-use polydat::comprehension::spec::{
+use polydat::iteration::comprehension::spec::{
     parse_clause, parse_clause_list, ComprehensionSpec, ForSpec,
 };
 use crate::model::{

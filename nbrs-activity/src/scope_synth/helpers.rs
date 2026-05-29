@@ -5,11 +5,11 @@
 //! typed runtime values and GK source-text form.
 //!
 //! These functions encode nbrs-activity's GK source conventions:
-//! - how a [`polydat::node::Value`] becomes a fold-eligible GK
+//! - how a [`polydat::ast::Value`] becomes a fold-eligible GK
 //!   literal,
 //! - how a workload-param string becomes a quoted-or-numeric GK
 //!   literal,
-//! - how a [`polydat::node::PortType`] becomes an `extern`
+//! - how a [`polydat::ast::PortType`] becomes an `extern`
 //!   declaration type name,
 //! - how `{name}` placeholders are scanned out of clause / body
 //!   text.
@@ -17,13 +17,13 @@
 //! They're pure functions with no comprehension- or scope-
 //! specific knowledge; the scope builders import them as walking
 //! primitives. The polydat side retains parallel copies during
-//! the cutover (still used by `polydat::comprehension::synthesize_for_each_scope`);
+//! the cutover (still used by `polydat::iteration::comprehension::synthesize_for_each_scope`);
 //! those copies retire when the legacy synthesis module is
 //! deleted at the end of PR 9c-1b.
 
 use std::collections::HashSet;
 
-use polydat::node::{PortType, Value};
+use polydat::ast::{PortType, Value};
 
 /// Pick the GK port type for a workload-param string value.
 ///

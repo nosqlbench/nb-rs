@@ -5,12 +5,12 @@
 //! examples. Validates that the full R-rule catalog applied
 //! to a fixed point produces the expected canonical form.
 
-use polydat::comprehension::ast::Comprehension;
-use polydat::comprehension::optimize::{
+use polydat::iteration::comprehension::ast::Comprehension;
+use polydat::iteration::comprehension::optimize::{
     analyze_reducibility, optimize, ComplexityOrdering, RuleId,
 };
-use polydat::comprehension::source::{LiteralValue, Source};
-use polydat::comprehension::strategy::{StrategyName, ZipMode};
+use polydat::iteration::comprehension::source::{LiteralValue, Source};
+use polydat::iteration::comprehension::strategy::{StrategyName, ZipMode};
 
 fn clause(name: &str, vs: &[i64]) -> Comprehension {
     Comprehension::clause(

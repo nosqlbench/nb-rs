@@ -15,7 +15,7 @@
 #![cfg(feature = "vectordata")]
 
 use polydat::dsl::compile_gk;
-use polydat::node::Value;
+use polydat::ast::Value;
 
 #[test]
 #[ignore]

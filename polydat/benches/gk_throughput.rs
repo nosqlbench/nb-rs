@@ -11,10 +11,9 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main, black_box};
 
-use polydat::assembly::{GkAssembler, WireRef};
-use polydat::kernel::GkKernel;
-use polydat::nodes::arithmetic::SumN;
-use polydat::nodes::identity::Identity;
+use polydat::compile::assembly::{GkAssembler, WireRef};
+use polydat::library::arithmetic::SumN;
+use polydat::library::identity::Identity;
 
 // =================================================================
 // Builder helpers (shared by Phase 1 and Phase 2)
@@ -230,8 +229,8 @@ fn bench_hybrid_identity_chain(c: &mut Criterion) {
 // Invalidation strategy benchmarks
 // =================================================================
 
-use polydat::nodes::hash::Hash64;
-use polydat::nodes::arithmetic::ModU64;
+use polydat::library::hash::Hash64;
+use polydat::library::arithmetic::ModU64;
 
 fn asm_hash_chain(depth: usize) -> GkAssembler {
     let mut asm = GkAssembler::new(vec!["cycle".into()]);
@@ -314,5 +313,6 @@ criterion_group!(
     bench_p3_identity_chain,
     bench_hybrid_single_identity,
     bench_hybrid_identity_chain,
+    bench_invalidation_strategy,
 );
 criterion_main!(benches);

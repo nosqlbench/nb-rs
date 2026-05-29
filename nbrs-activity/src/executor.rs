@@ -525,7 +525,7 @@ fn push_scope_scene_node(
 
 /// Format a per-iter binding tuple as `k=v, k=v`. Same shape
 /// pre-map used; surface visible in TUI / post-run summary.
-fn format_iter_label(bindings: &[(String, polydat::node::Value)]) -> String {
+fn format_iter_label(bindings: &[(String, polydat::ast::Value)]) -> String {
     bindings.iter()
         .map(|(k, v)| format!("{k}={}", v.to_display_string()))
         .collect::<Vec<_>>()
@@ -637,10 +637,10 @@ fn execute_node<'a>(
                     // phase-level for_each: a single Clause whose
                     // source is the parsed expr text (routed
                     // through parse_source for typing).
-                    use polydat::comprehension::spec::parse_source;
+                    use polydat::iteration::comprehension::spec::parse_source;
                     let source = parse_source(&expr_parsed)
                         .map_err(|e| format!("phase '{name}' for_each '{spec}': {e}"))?;
-                    let comprehension = polydat::comprehension::Comprehension::clause(
+                    let comprehension = polydat::iteration::comprehension::Comprehension::clause(
                         var_parsed.clone(), source,
                     );
                     let needle = spec.clone();
@@ -931,7 +931,7 @@ fn execute_node<'a>(
                 // first iter's value.
                 let chained = match ctx.current_parent_kernel.as_ref() {
                     Some(parent) => {
-                        let matter = polydat::subcontext::GkMatter::builder()
+                        let matter = polydat::kernel::subcontext::GkMatter::builder()
                             .program(installed.program().clone())
                             .build()
                             .map_err(|e| format!(
@@ -1002,7 +1002,7 @@ fn execute_node<'a>(
 /// halt; `Err(_)` = propagate up.
 ///
 /// Activity-side adapter over the GK
-/// [`polydat::comprehension::iterate_scope`] driver:
+/// [`polydat::iteration::comprehension::iterate_scope`] driver:
 /// applies strict-vs-warn empty-clause policy with diag emission
 /// honoring `ExecCtx::quiet()`. The runtime executor and the
 /// pre-map walker both go through `iterate_scope`; `runtime_iterate`
@@ -1014,12 +1014,12 @@ fn execute_node<'a>(
 /// One iteration position of a comprehension scope, ready for
 /// downstream consumption by the dispatch loop. Local to the
 /// executor since 9c-4b — was previously in
-/// `polydat::comprehension::iteration` but is purely an
+/// `polydat::iteration::comprehension::iteration` but is purely an
 /// executor-side per-iteration record.
 #[derive(Clone, Debug)]
 pub struct IterationStep {
     /// Typed `(var, value)` pairs for this iteration.
-    pub bindings: Vec<(String, polydat::node::Value)>,
+    pub bindings: Vec<(String, polydat::ast::Value)>,
     /// Per-iteration kernel: clone of the comprehension's
     /// canonical, bound to the parent scope, with every input
     /// in [`Self::bindings`] populated. Descendants treat
@@ -1052,9 +1052,9 @@ fn runtime_iterate(
     canonical: &std::sync::Arc<polydat::kernel::GkKernel>,
     parent: &std::sync::Arc<polydat::kernel::GkKernel>,
     parent_coords: &[ScopeCoord],
-    comprehension: &polydat::comprehension::Comprehension,
+    comprehension: &polydat::iteration::comprehension::Comprehension,
 ) -> Result<Vec<IterationStep>, String> {
-    use polydat::comprehension::runtime::{evaluate_for_iteration, EmptyClause};
+    use polydat::iteration::comprehension::runtime::{evaluate_for_iteration, EmptyClause};
     use polydat::kernel::{GkKernel, ScopeCoord};
 
     let strict = ctx.strict;
@@ -1099,7 +1099,7 @@ fn runtime_iterate(
 
 // `Comprehension` trait + `TupleComprehension` retired: the
 // dependent-tuple walk + per-iteration kernel binding is now
-// owned by `polydat::comprehension::iterate_scope` and the
+// owned by `polydat::iteration::comprehension::iterate_scope` and the
 // types it returns. Both runtime (`runtime_iterate`) and pre-map
 // (`premap_iterate`) call into the same GK primitive.
 //
@@ -1414,7 +1414,7 @@ async fn run_do_loop(
     // typed bridge so the rebind primitive sits behind a single
     // entry point.
     let mut loop_kernel = parent.build_subscope(
-        polydat::subcontext::GkMatter::builder().program(canonical.program().clone()).build().unwrap(),
+        polydat::kernel::subcontext::GkMatter::builder().program(canonical.program().clone()).build().unwrap(),
     ).expect("subscope from program is infallible");
 
     let mut counter_value: u64 = 0;
@@ -1425,7 +1425,7 @@ async fn run_do_loop(
         {
             loop_kernel.state().set_input(
                 idx,
-                polydat::node::Value::U64(counter_value),
+                polydat::ast::Value::U64(counter_value),
             );
         }
 
@@ -1436,9 +1436,9 @@ async fn run_do_loop(
         let cond_value = polydat::dsl::compile::eval_const_expr(&interpolated)
             .map_err(|e| format!("do-loop condition '{condition}': {e}"))?;
         let cond_true = match cond_value {
-            polydat::node::Value::Bool(b) => b,
-            polydat::node::Value::U64(n) => n != 0,
-            polydat::node::Value::F64(n) => n != 0.0,
+            polydat::ast::Value::Bool(b) => b,
+            polydat::ast::Value::U64(n) => n != 0,
+            polydat::ast::Value::F64(n) => n != 0.0,
             other => return Err(format!(
                 "do-loop condition '{condition}': expected bool/u64/f64, got {other:?}",
             )),
@@ -1460,7 +1460,7 @@ async fn run_do_loop(
             // via the typed subscope path against the canonical;
             // shares cells but is otherwise throwaway.
             canonical.build_subscope(
-                polydat::subcontext::GkMatter::builder().program(canonical.program().clone()).build().unwrap(),
+                polydat::kernel::subcontext::GkMatter::builder().program(canonical.program().clone()).build().unwrap(),
             ).expect("program-form subscope is infallible"),
         ));
         ctx.current_parent_kernel = Some(arc_loop.clone());
@@ -2035,7 +2035,7 @@ async fn run_phase(
         // chain composition. Single call, single source of
         // values — SRD-16 §"Visibility Rules".
         let mut kernel = parent_kernel.build_subscope(
-            polydat::subcontext::GkMatter::builder().program(phase_program).build().unwrap(),
+            polydat::kernel::subcontext::GkMatter::builder().program(phase_program).build().unwrap(),
         ).expect("program-form subscope is infallible");
 
         // ─── Plan B: Init-Binding Contract (scope-activation) ─────
@@ -2065,7 +2065,7 @@ async fn run_phase(
                 kernel.pull(init_name).clone()
             }));
             match pull_result {
-                Ok(v) if !matches!(v, polydat::node::Value::None) => {}
+                Ok(v) if !matches!(v, polydat::ast::Value::None) => {}
                 Ok(_) => {
                     return Err(format!(
                         "{gk_context}: init binding '{init_name}' violates the init contract: \
@@ -2123,7 +2123,7 @@ async fn run_phase(
                 kernel.pull(final_name).clone()
             }));
             match pull_result {
-                Ok(v) if !matches!(v, polydat::node::Value::None) => {}
+                Ok(v) if !matches!(v, polydat::ast::Value::None) => {}
                 Ok(_) => {
                     return Err(format!(
                         "{gk_context}: final binding '{final_name}' could not be \
@@ -2165,7 +2165,7 @@ async fn run_phase(
         // `over` clause's resolved partition. Empty when the cursor
         // wasn't declared with an `over` clause.
         let mut runtime_partition: HashMap<String, (u64, u64)> = HashMap::new();
-        let cursor_specs: Vec<(String, Option<(String, String)>, Option<u64>, polydat::source::CursorKind, Option<String>)>
+        let cursor_specs: Vec<(String, Option<(String, String)>, Option<u64>, polydat::iteration::source::CursorKind, Option<String>)>
             = kernel.program()
             .cursor_schemas()
             .iter()
@@ -2215,7 +2215,7 @@ async fn run_phase(
                         if let Some(idx) = kernel.program().find_input(&cursor_slot_name) {
                             kernel.state().set_input(
                                 idx,
-                                polydat::node::Value::from_partition(partition),
+                                polydat::ast::Value::from_partition(partition),
                             );
                         }
                     }
@@ -2230,7 +2230,7 @@ async fn run_phase(
                     }
                 }
             }
-            use polydat::source::CursorKind::*;
+            use polydat::iteration::source::CursorKind::*;
             // Each branch pulls only the outputs its policy needs.
             // `delta_output` is optional — when absent, the source
             // factory uses `base` (the initial extent) as the
@@ -2305,7 +2305,7 @@ async fn run_phase(
         let parent = ctx.current_parent_kernel.as_ref()
             .expect("workload-kernel fallback requires an installed parent kernel");
         let workload_subscope = parent.build_subscope(
-            polydat::subcontext::GkMatter::builder().program(ctx.program.clone()).build().unwrap(),
+            polydat::kernel::subcontext::GkMatter::builder().program(ctx.program.clone()).build().unwrap(),
         ).expect("program-form subscope is infallible");
         let mut b = OpBuilder::new(workload_subscope);
         if let Some(phase_idx) = ctx.scope_tree.phase_node_by_name(phase_name) {
@@ -2458,7 +2458,7 @@ async fn run_phase(
     // If the compiled kernel declares cursors, create a source factory
     // from the first cursor's schema (name + extent). Otherwise the
     // Activity falls back to a range source named "cycles".
-    let source_factory: Option<Arc<dyn polydat::source::DataSourceFactory>> = {
+    let source_factory: Option<Arc<dyn polydat::iteration::source::DataSourceFactory>> = {
         let program = iter_op_builder.program();
         let schemas = program.cursor_schemas();
         if let Some(schema) = schemas.first() {
@@ -2478,7 +2478,7 @@ async fn run_phase(
                 .copied()
                 .unwrap_or((0, extent));
             let effective_extent = range_end.saturating_sub(range_start);
-            use polydat::source as src;
+            use polydat::iteration::source as src;
             // Effective extension delta — `runtime_cursor_delta`
             // when the workload supplied an explicit `delta` arg,
             // else the cursor's narrowed extent.
@@ -3463,11 +3463,11 @@ fn parse_var_in_expr(spec: &str) -> (String, String) {
 /// keeps the cursor's full extent. Returns `Err` on a malformed
 /// spec, empty partition list, or unsupported value type.
 fn resolve_over(
-    value: &polydat::node::Value,
+    value: &polydat::ast::Value,
     extent: u64,
-) -> Result<Option<polydat::cursor_partition::Partition>, String> {
-    use polydat::cursor_partition::{parse, resolve, Partition};
-    use polydat::node::Value;
+) -> Result<Option<polydat::iteration::cursor_partition::Partition>, String> {
+    use polydat::iteration::cursor_partition::{parse, resolve, Partition};
+    use polydat::ast::Value;
 
     let first_of = |parts: Vec<Partition>| -> Result<Partition, String> {
         parts.into_iter().next().ok_or_else(|| {

@@ -64,7 +64,7 @@
 //! dispenser, callable per cycle.
 
 use crate::wires::WireSource;
-use polydat::node::Value;
+use polydat::ast::Value;
 use std::fmt;
 
 /// Result of a binder operation. Surfaces unresolved bind point

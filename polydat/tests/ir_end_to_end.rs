@@ -5,12 +5,12 @@
 //! → tuples. Verifies §9.2 correctness via direct dispense
 //! comparison.
 
-use polydat::comprehension::ast::Comprehension;
-use polydat::comprehension::ir::{compile, interpret};
-use polydat::comprehension::optimize::optimize;
-use polydat::comprehension::source::{LiteralValue, Source};
-use polydat::comprehension::strategies::TupleValue;
-use polydat::comprehension::strategy::{StrategyName, ZipMode};
+use polydat::iteration::comprehension::ast::Comprehension;
+use polydat::iteration::comprehension::ir::{compile, interpret};
+use polydat::iteration::comprehension::optimize::optimize;
+use polydat::iteration::comprehension::source::{LiteralValue, Source};
+use polydat::iteration::comprehension::strategies::TupleValue;
+use polydat::iteration::comprehension::strategy::{StrategyName, ZipMode};
 
 fn clause(name: &str, vs: &[i64]) -> Comprehension {
     Comprehension::clause(

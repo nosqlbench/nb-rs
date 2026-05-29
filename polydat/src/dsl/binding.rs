@@ -14,14 +14,14 @@
 //! write `pow(x, 3.0)` or `f64_mul(x, 0.1)` directly without first
 //! binding the constant to a name.
 
-use crate::assembly::{GkAssembler, WireRef};
+use crate::compile::assembly::{GkAssembler, WireRef};
 use crate::dsl::ast::*;
 use crate::dsl::factory::{build_node, ConstArg};
 use crate::dsl::registry;
-use crate::node::{PortType, SlotType};
-use crate::nodes::fixed::*;
-use crate::nodes::identity::*;
-use crate::nodes::format::*;
+use crate::ast::{PortType, SlotType};
+use crate::library::fixed::*;
+use crate::library::identity::*;
+use crate::library::format::*;
 
 use super::compile::Compiler;
 use crate::dsl::lexer::Span;
@@ -567,7 +567,7 @@ impl Compiler {
                     }
 
                     // All inputs treated as Str via auto-adapters
-                    let input_types = vec![crate::node::PortType::Str; bind_names.len()];
+                    let input_types = vec![crate::ast::PortType::Str; bind_names.len()];
                     let node = Box::new(Printf::new(&fmt_str, &input_types));
                     let name = &targets[0];
                     asm.add_node(name, node, wire_refs);
@@ -744,7 +744,7 @@ impl Compiler {
                     let adapted = self.anon_name();
                     asm.add_node(
                         &adapted,
-                        Box::new(crate::nodes::convert::ToF64::new()),
+                        Box::new(crate::library::convert::ToF64::new()),
                         vec![lhs_ref],
                     );
                     WireRef::node(&adapted)
@@ -755,7 +755,7 @@ impl Compiler {
                     let adapted = self.anon_name();
                     asm.add_node(
                         &adapted,
-                        Box::new(crate::nodes::convert::ToF64::new()),
+                        Box::new(crate::library::convert::ToF64::new()),
                         vec![rhs_ref],
                     );
                     WireRef::node(&adapted)
@@ -813,9 +813,9 @@ impl Compiler {
                 // SRD 71's `q.cursor` would be forced to u64 and fail
                 // downstream type-checking.
                 let port_type = asm.output_type(&wire_name)
-                    .unwrap_or(crate::node::PortType::U64);
+                    .unwrap_or(crate::ast::PortType::U64);
                 let identity = Box::new(
-                    crate::nodes::identity::PortPassthrough::new(name, port_type)
+                    crate::library::identity::PortPassthrough::new(name, port_type)
                 );
                 asm.add_node(name, identity, vec![WireRef::node(&wire_name)]);
                 self.all_names.push(name.clone());

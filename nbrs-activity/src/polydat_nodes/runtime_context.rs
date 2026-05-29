@@ -23,7 +23,7 @@ use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use polydat::dsl::registry::{Arity, FuncCategory, FuncSig, ParamSpec};
-use polydat::node::{GkNode, NodeMeta, Port, PortType, Slot, SlotType, Value};
+use polydat::ast::{GkNode, NodeMeta, Port, PortType, Slot, SlotType, Value};
 
 use nbrs_metrics::component::Component;
 
@@ -195,7 +195,7 @@ impl GkNode for ControlSet {
                 match guard.find_control_erased_up(&name) {
                     Some(e) => e,
                     None => {
-                        polydat::audit::warn(&format!(
+                        polydat::library::support::audit::warn(&format!(
                             "control_set({name}, {value}): no control found via walk-up"));
                         return;
                     }
@@ -203,7 +203,7 @@ impl GkNode for ControlSet {
             };
             let origin = nbrs_metrics::controls::ControlOrigin::Gk { binding };
             if let Err(e) = erased.set_f64(value, origin).await {
-                polydat::audit::warn(&format!("control_set({name}, {value}) failed: {e}"));
+                polydat::library::support::audit::warn(&format!("control_set({name}, {value}) failed: {e}"));
             }
         });
 
@@ -554,7 +554,7 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"rate\"", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -567,7 +567,7 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"concurrency\"", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -580,7 +580,7 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"enabled\"", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -593,7 +593,7 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "name", slot_type: SlotType::ConstStr, required: true, example: "\"log_level\"", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -607,7 +607,7 @@ pub fn signatures() -> &'static [FuncSig] {
                 ParamSpec { name: "value", slot_type: SlotType::Wire, required: true, example: "cycle", constraint: None },
             ],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -618,7 +618,7 @@ pub fn signatures() -> &'static [FuncSig] {
             identity: None, variadic_ctor: None,
             params: &[],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -629,7 +629,7 @@ pub fn signatures() -> &'static [FuncSig] {
             identity: None, variadic_ctor: None,
             params: &[],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -640,7 +640,7 @@ pub fn signatures() -> &'static [FuncSig] {
             identity: None, variadic_ctor: None,
             params: &[],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -651,7 +651,7 @@ pub fn signatures() -> &'static [FuncSig] {
             identity: None, variadic_ctor: None,
             params: &[],
             arity: Arity::Fixed,
-            commutativity: polydat::node::Commutativity::Positional,
+            commutativity: polydat::ast::Commutativity::Positional,
             default_resolver: None,
             output_type: polydat::dsl::registry::OutputType::Fixed,
         },
@@ -660,9 +660,9 @@ pub fn signatures() -> &'static [FuncSig] {
 
 pub(crate) fn build_node(
     name: &str,
-    _wires: &[polydat::assembly::WireRef], _wire_types: &[polydat::node::PortType],
+    _wires: &[polydat::compile::assembly::WireRef], _wire_types: &[polydat::ast::PortType],
     consts: &[polydat::dsl::factory::ConstArg],
-) -> Option<Result<Box<dyn polydat::node::GkNode>, String>> {
+) -> Option<Result<Box<dyn polydat::ast::GkNode>, String>> {
     match name {
         "control" => {
             let n = consts.first().map(|c| c.as_str().to_string()).unwrap_or_default();

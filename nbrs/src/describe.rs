@@ -339,34 +339,34 @@ fn describe_gk_functions_md(path: &str) {
             let mut all_params: Vec<String> = Vec::new();
             for p in sig.params {
                 match p.slot_type {
-                    polydat::node::SlotType::Wire => {
+                    polydat::ast::SlotType::Wire => {
                         all_params.push(format!("{}: wire", p.name));
                     }
-                    polydat::node::SlotType::ConstStr => {
+                    polydat::ast::SlotType::ConstStr => {
                         if p.required {
                             all_params.push(format!("{}: str", p.name));
                         } else {
                             all_params.push(format!("[{}]: str", p.name));
                         }
                     }
-                    polydat::node::SlotType::ConstU64 => {
+                    polydat::ast::SlotType::ConstU64 => {
                         if p.required {
                             all_params.push(format!("{}: u64", p.name));
                         } else {
                             all_params.push(format!("[{}]: u64", p.name));
                         }
                     }
-                    polydat::node::SlotType::ConstF64 => {
+                    polydat::ast::SlotType::ConstF64 => {
                         if p.required {
                             all_params.push(format!("{}: f64", p.name));
                         } else {
                             all_params.push(format!("[{}]: f64", p.name));
                         }
                     }
-                    polydat::node::SlotType::ConstVecU64 => {
+                    polydat::ast::SlotType::ConstVecU64 => {
                         all_params.push(format!("{}: vec<u64>", p.name));
                     }
-                    polydat::node::SlotType::ConstVecF64 => {
+                    polydat::ast::SlotType::ConstVecF64 => {
                         all_params.push(format!("{}: vec<f64>", p.name));
                     }
                 }

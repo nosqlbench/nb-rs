@@ -4,7 +4,7 @@
 //! `{name}`-style template interpolation against a GK kernel.
 //!
 //! Surface #5 home (per `polydat/docs/design/comprehension_cutover_contact_surfaces.md`).
-//! Previously lived in `polydat::comprehension::eval`; relocated
+//! Previously lived in `polydat::iteration::comprehension::eval`; relocated
 //! to the kernel module because the operation is general
 //! GK-kernel facility, not a comprehension concern. The
 //! comprehension runtime uses it; synthesisers use it; the
