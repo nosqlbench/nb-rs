@@ -85,11 +85,11 @@ Status as of this draft:
 |---|---|
 | E1 — Self-contained submission | SHIPPED |
 | E2 — Typed result | SHIPPED |
-| E3 — Bounded determinism via the Runtime Model | SHIPPED (modulo D2 PARTIAL upstream) |
+| E3 — Bounded determinism via the Runtime Model | SHIPPED |
 | E4 — Library inheritance | SHIPPED |
 | E5 — Lifecycle transparency | SHIPPED |
 | E6 — Composability via interpolation | SHIPPED |
-| E7 — Typed error ontology | **PLANNED** (surfaces currently return `Result<_, String>`; migration to typed `EmbeddingError` enum tracked in §12.1) |
+| E7 — Typed error ontology | SHIPPED (γ-1 + γ-3 landed `EmbeddingError` enum + surface migration) |
 
 ### §5 (The Embedding System Contract) section-level status
 
@@ -97,57 +97,47 @@ Status as of this draft:
 |---|---|
 | 5.1.1 Polydat's obligations | SHIPPED |
 | 5.1.2 Host's baseline obligations | SHIPPED |
-| 5.1.3 Host's opt-in strict contract | **PLANNED** (depends on §5.3 typed embedding surface) |
+| 5.1.3 Host's opt-in strict contract | SHIPPED (γ-7 `eval_const_expr_typed_strict`) |
 | 5.1.4 Shared vocabulary | SHIPPED |
-| 5.2 Types at the embedding boundary | SHIPPED (baseline only; typed-surface variant PLANNED with §5.3) |
-| 5.3 L-value type inference | **PLANNED** (typed surface `eval_const_expr_typed::<T>` not yet implemented; tracked in §12.7) |
+| 5.2 Types at the embedding boundary | SHIPPED |
+| 5.3 L-value type inference | SHIPPED (γ-4 `eval_const_expr_typed::<T>` + `HostType` trait) |
 | 5.4.1 Current catalog — intra-graph only | SHIPPED |
-| 5.4.2 Planned extension — two boundary sites | **PLANNED** (boundary adapter insertion in Context Fusion's S2 + return-path adapters; depends on §5.3 for the return-path site) |
-| 5.4.3 Contract rules for boundary polyfills | PLANNED with §5.4.2 |
+| 5.4.2 Planned extension — two boundary sites | SHIPPED (γ-5 input-binding adapters in `kernel/state.rs::adapt_boundary_value`; γ-6 return-path adapters in `dsl::compile::eval_const_expr_typed`) |
+| 5.4.3 Contract rules for boundary polyfills | SHIPPED with §5.4.2 |
 | 5.5 Virtual nodes | SHIPPED |
-| 5.6 Virtual wires | **PLANNED** (resolver registration API not yet implemented; tracked in §12.6) |
-| 5.7 Runtime model applied | SHIPPED (re-statement of [Runtime Model](runtime_model.md) axioms in embedding context) |
+| 5.6 Virtual wires | SHIPPED (γ-8 `register_extern_resolver` API in `dsl::factories`; consulted by `materialize_wiring_from_outer` as fall-through) |
+| 5.7 Runtime model applied | SHIPPED |
 
 ### §6 Error Ontology
 
-The eight (now ten) `EmbeddingError` variants are the
-**target shape**; the current implementation produces
-string-encoded errors that hosts parse. Migration to the
-typed enum is the §6.3 / §12.1 plan.
+The ten `EmbeddingError` variants are now the surface
+contract; the migration (γ-1 + γ-3) replaced the string-form
+returns with the typed enum.
 
 | Section | Status |
 |---|---|
-| 6.1 Variant guide | PLANNED (typed-enum form) |
-| 6.2 Provenance | SHIPPED (string form carries provenance prose) |
-| 6.3 Migration plan | PLANNED |
+| 6.1 Variant guide | SHIPPED (typed-enum form) |
+| 6.2 Provenance | SHIPPED |
+| 6.3 Migration plan | COMPLETE (γ-1 = Phase A; γ-3 = Phase B; Phase C deprecation absorbed into γ-3) |
 
 ### §3 host-facing surfaces
 
 | Surface | Status |
 |---|---|
-| 3.1 `eval_const_expr` | SHIPPED |
-| 3.2 `interpolate_via_kernel` + eval composition | SHIPPED |
-| 3.3 `evaluate_spec` | SHIPPED |
-| 3.4 `compile_gk` | SHIPPED |
+| 3.1 `eval_const_expr` | SHIPPED (returns `Result<Value, EmbeddingError>`) |
+| 3.2 `interpolate_via_kernel` + eval composition | SHIPPED (returns `Result<String, EmbeddingError>`) |
+| 3.3 `evaluate_spec` | SHIPPED (returns `Result<Vec<Value>, EmbeddingError>`) |
+| 3.4 `compile_gk` | SHIPPED (returns `Result<GkKernel, String>` — kernel construction; not part of the embedding contract migration) |
 
 ### Summary
 
-**SHIPPED:** E1-E6, §3.1-§3.4, §5.1.1, §5.1.2, §5.1.4, §5.2 (baseline), §5.4.1, §5.5, §5.7.
+**Everything SHIPPED.** All E-axioms (E1–E7), all §5
+sections (5.1–5.7), all §6 sections (6.1–6.3), all §3
+host-facing surfaces.
 
-**PARTIAL:** E3 inherits D2 PARTIAL from the Runtime
-Model; otherwise complete.
-
-**PLANNED:** E7 (typed errors), §5.1.3 (opt-in strict
-contract), §5.3 (l-value typed surface), §5.4.2/§5.4.3
-(boundary adapter extension), §5.6 (virtual wires),
-§6 (typed enum form of error ontology).
-
-The PLANNED items form a coherent unit — the typed
-embedding surface (§5.3), the boundary adapter extension
-(§5.4.2), the typed error ontology (E7 / §6), and the
-opt-in strict contract (§5.1.3) all naturally ship as
-one push. Virtual wires (§5.6) is independent and can
-ship on its own track.
+The PLANNED items from the original draft landed via
+pushes γ-1 through γ-8 (see
+[`spec_implementation_plan.md`](spec_implementation_plan.md)).
 
 ---
 
@@ -582,7 +572,7 @@ via `kernel.lookup` + `Value::to_display_string`).
 Evaluation's contract is text-to-Value. The two compose
 naturally; the pipeline is the canonical host pattern.
 
-### Axiom E7 — Typed error ontology (PLANNED)
+### Axiom E7 — Typed error ontology (SHIPPED)
 
 **Every failure mode the embedding surface produces is
 classified into a typed `EmbeddingError` variant per the
@@ -673,7 +663,7 @@ evaluation reaches for `.as_u64()` post-hoc. Both work
 correctly because the host has out-of-band knowledge of
 the expected type.
 
-#### 5.1.3 Host's opt-in strict contract (PLANNED)
+#### 5.1.3 Host's opt-in strict contract (SHIPPED)
 
 A host that wants polydat to enforce type alignment at
 *kernel compile time* engages additional obligations in
@@ -774,7 +764,7 @@ The boundary is type-strict in both directions. The
 shared `Value` / `PortType` vocabulary makes the strictness
 implementable without per-call negotiation.
 
-### 5.3 L-value type inference (PLANNED)
+### 5.3 L-value type inference (SHIPPED)
 
 The current embedding surfaces are *result-typed*: polydat
 returns a `Value`, and the host applies a typed accessor
@@ -862,7 +852,7 @@ doesn't exist as a tier yet or operates without
 adapter-catalog support, surfacing type mismatches as
 errors rather than healing them.
 
-#### 5.4.2 Planned extension — two additional polyfill sites (PLANNED)
+#### 5.4.2 Planned extension — two additional polyfill sites (SHIPPED)
 
 The substrate-consistent move: extend the same catalog to
 operate at two additional sites that match Context

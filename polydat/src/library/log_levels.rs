@@ -100,6 +100,17 @@ impl GkNode for LogPassthrough {
         crate::library::support::audit::log(audit_level, &msg);
         outputs[0] = inputs[0].clone();
     }
+
+    fn purity(&self) -> crate::ast::Purity {
+        // log_{debug,info,warn,error} pass the value through
+        // unchanged but emit a log line via the audit sink (or
+        // stderr fallback). The typed return is a pure
+        // function of inputs; the log emission is the
+        // observable side channel.
+        crate::ast::Purity::SideChannel {
+            sink: crate::ast::SideChannelSink::LogBuffer,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

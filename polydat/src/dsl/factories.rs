@@ -9,9 +9,78 @@
 //! "built-in" vs "external" distinction visible to the user.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use crate::dsl::registry::{FuncSig, FuncCategory};
-use crate::ast::GkNode;
+use crate::ast::{GkNode, PortType, Value};
+
+// ───── Virtual-wire resolver registry (γ-8) ─────
+
+/// Host-mediated extern resolver per
+/// `expression_engine.md` §5.6 (virtual wires). A resolver
+/// is a callback that fires at Context Fusion scope-init
+/// time when a kernel's extern slot can't be satisfied
+/// from the outer scope's direct bindings.
+///
+/// Arguments: slot name + declared slot type + the kernel
+/// being initialised. The resolver returns `Some(value)` to
+/// fill the slot or `None` to fall through to ordinary
+/// resolution (typed error if no other source exists).
+///
+/// Per §5.6.2's contract: the returned `Value`'s type must
+/// match the slot's declared `PortType` (boundary adapter
+/// applies otherwise per γ-5); the resolver fires once per
+/// scope-init (per S3); and the resolver is responsible for
+/// its own determinism.
+pub type ExternResolver = Box<dyn Fn(&str, PortType) -> Option<Value> + Send + Sync>;
+
+/// Process-level registry of virtual-wire resolvers.
+///
+/// Resolvers are registered via [`register_extern_resolver`]
+/// and consulted by Context Fusion's
+/// `materialize_wiring_from_outer` when an outer-chain
+/// lookup yields nothing. Multiple resolvers iterate in
+/// registration order; the first matching resolver wins.
+///
+/// Test isolation: tests that register a resolver should
+/// call [`clear_extern_resolvers`] in a teardown block to
+/// avoid leaking state across tests.
+static RESOLVERS: Mutex<Vec<ExternResolver>> = Mutex::new(Vec::new());
+
+/// Register a virtual-wire resolver. Resolvers stay
+/// registered for the process's lifetime unless
+/// [`clear_extern_resolvers`] is called.
+///
+/// Per `expression_engine.md` §5.6 PLANNED → γ-8 SHIPPED.
+pub fn register_extern_resolver(resolver: ExternResolver) {
+    let mut r = RESOLVERS.lock().unwrap();
+    r.push(resolver);
+}
+
+/// Clear every registered resolver. Primarily for tests
+/// that want clean teardown.
+pub fn clear_extern_resolvers() {
+    let mut r = RESOLVERS.lock().unwrap();
+    r.clear();
+}
+
+/// Try every registered resolver in order; return the
+/// first `Some(value)` whose type matches `slot_type`
+/// (or whose type the catalog can adapt to `slot_type`).
+///
+/// Called by `crate::kernel::state::materialize_wiring_from_outer`
+/// as a fall-through after outer-chain lookup.
+pub(crate) fn resolve_extern(slot_name: &str, slot_type: PortType) -> Option<Value> {
+    let r = RESOLVERS.lock().unwrap();
+    for resolver in r.iter() {
+        if let Some(value) = resolver(slot_name, slot_type) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+// ───── End virtual-wire resolver registry ─────
 
 /// Constant argument passed to a node factory at build time.
 #[derive(Debug, Clone)]
@@ -147,6 +216,62 @@ mod tests {
     use super::*;
     use crate::dsl::registry::{Arity, ParamSpec};
     use crate::ast::SlotType;
+
+    /// Test helper: serialise resolver-registry tests via a
+    /// process-wide mutex so two tests don't race the static
+    /// `RESOLVERS`.
+    static RESOLVER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn extern_resolver_register_and_lookup() {
+        let _guard = RESOLVER_TEST_LOCK.lock().unwrap();
+        clear_extern_resolvers();
+        register_extern_resolver(Box::new(|name, _typ| {
+            if name == "region" {
+                Some(Value::Str("us-east-1".into()))
+            } else {
+                None
+            }
+        }));
+        let v = resolve_extern("region", PortType::Str);
+        assert_eq!(v, Some(Value::Str("us-east-1".into())));
+        let v = resolve_extern("missing", PortType::Str);
+        assert_eq!(v, None);
+        clear_extern_resolvers();
+    }
+
+    #[test]
+    fn extern_resolver_first_match_wins() {
+        let _guard = RESOLVER_TEST_LOCK.lock().unwrap();
+        clear_extern_resolvers();
+        register_extern_resolver(Box::new(|name, _typ| {
+            if name == "k" {
+                Some(Value::U64(1))
+            } else {
+                None
+            }
+        }));
+        register_extern_resolver(Box::new(|name, _typ| {
+            if name == "k" {
+                Some(Value::U64(2))
+            } else {
+                None
+            }
+        }));
+        let v = resolve_extern("k", PortType::U64);
+        // First registered wins.
+        assert_eq!(v, Some(Value::U64(1)));
+        clear_extern_resolvers();
+    }
+
+    #[test]
+    fn extern_resolver_clear_removes_all() {
+        let _guard = RESOLVER_TEST_LOCK.lock().unwrap();
+        register_extern_resolver(Box::new(|_, _| Some(Value::U64(99))));
+        assert!(resolve_extern("anything", PortType::U64).is_some());
+        clear_extern_resolvers();
+        assert!(resolve_extern("anything", PortType::U64).is_none());
+    }
 
     #[test]
     fn default_runtime_has_builtins() {

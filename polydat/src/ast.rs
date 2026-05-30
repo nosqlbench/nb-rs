@@ -954,6 +954,73 @@ impl NodeMeta {
 /// buffer — no `Value` enum, no virtual dispatch.
 pub type CompiledU64Op = Box<dyn Fn(&[u64], &mut [u64]) + Send + Sync>;
 
+/// Per-node purity classification per
+/// [`runtime_model.md`'s D2 axiom][spec] and
+/// [`composition_substrate.md`'s T1+T2 axioms][substrate].
+///
+/// Every node declares its purity status via
+/// [`GkNode::purity`]. The default is [`Purity::Pure`]; nodes
+/// with observable side channels (logging, file I/O, network)
+/// or eval-call-spanning state override to declare
+/// [`Purity::SideChannel`] or [`Purity::Stateful`].
+///
+/// **D1 (Typed Return Determinism) holds for every purity
+/// class.** The slot contract carries only typed return
+/// values; impure nodes still produce typed-deterministic
+/// returns. What varies between purity classes is the
+/// *observable side channels* (D2): pure nodes have none;
+/// SideChannel nodes have declared side channels; Stateful
+/// nodes additionally have internal eval-call-spanning state
+/// that affects future evaluations.
+///
+/// [spec]: ../docs/design/runtime_model.md
+/// [substrate]: ../docs/design/composition_substrate.md
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Purity {
+    /// Pure function — `eval(inputs)` is a function of inputs,
+    /// no observable side effects, byte-identical determinism
+    /// across calls with identical inputs.
+    Pure,
+
+    /// Has an observable side channel (logging, file I/O,
+    /// network, etc.) but the typed return value is still a
+    /// function of inputs. Hosts that care about side-channel
+    /// observability examine the `sink` to know what
+    /// observable surface this node writes to.
+    SideChannel { sink: SideChannelSink },
+
+    /// Holds eval-call-spanning state. The typed return value
+    /// at call N may depend not only on call N's inputs but
+    /// also on state mutated by calls 1..N-1. Rare; mostly
+    /// for stateful generators where the runtime's
+    /// `node_clean` caching model doesn't apply. The `reason`
+    /// string documents what state the node carries.
+    Stateful { reason: &'static str },
+}
+
+/// Where a [`Purity::SideChannel`] node writes its observable
+/// side effects. Hosts reasoning about side-channel
+/// determinism (D2) pattern-match on this to know what
+/// observable surface to expect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SideChannelSink {
+    /// Writes to the process's stderr.
+    Stderr,
+    /// Writes to the process's stdout.
+    Stdout,
+    /// Writes to a log buffer (e.g. tracing/log crate sink).
+    LogBuffer,
+    /// Writes to a file path determined at construction time.
+    File,
+    /// Writes to a network endpoint determined at
+    /// construction time.
+    Network,
+    /// Writes to an observable surface not covered by the
+    /// other variants. The host should consult the node's
+    /// documentation for the specific contract.
+    Other,
+}
+
 /// Runtime evaluation interface for a GK node.
 ///
 /// Phase 1: called via `dyn GkNode` (dynamic dispatch with `Value` enum).
@@ -1022,6 +1089,37 @@ pub trait GkNode: Send + Sync {
     fn jit_constants(&self) -> Vec<u64> {
         Vec::new()
     }
+
+    /// Declare this node's purity status per the
+    /// [`runtime_model.md`'s D2 axiom][spec]. Default:
+    /// [`Purity::Pure`]. Override to declare an observable
+    /// side channel ([`Purity::SideChannel`]) or
+    /// eval-call-spanning state ([`Purity::Stateful`]).
+    ///
+    /// **What this affects:**
+    ///
+    /// - The runtime's `node_clean` cache (R1) holds for
+    ///   `Purity::Pure` and `Purity::SideChannel`. The
+    ///   typed return value is cached after one eval;
+    ///   subsequent pulls with identical inputs reuse the
+    ///   cache. For `SideChannel` nodes, this means the
+    ///   side channel fires once per dirty-to-clean
+    ///   transition (not on every pull).
+    /// - `Purity::Stateful` nodes opt out of `node_clean`
+    ///   caching at the construction tier (assembly marks
+    ///   them as nondeterministic per
+    ///   `kernel/engines.rs::nondeterministic_nodes`).
+    /// - Hosts inspecting an expression's determinism
+    ///   profile via D2 read this declaration to know
+    ///   whether the constituent node has side channels.
+    ///
+    /// Default: `Purity::Pure`. Most nodes are pure
+    /// functions over their inputs.
+    ///
+    /// [spec]: ../docs/design/runtime_model.md
+    fn purity(&self) -> Purity {
+        Purity::Pure
+    }
 }
 
 /// Determine the compile level of a node (works on trait objects).
@@ -1050,4 +1148,101 @@ pub enum CompileLevel {
     Phase2,
     /// JIT native code via Cranelift.
     Phase3,
+}
+
+#[cfg(test)]
+mod purity_tests {
+    use super::*;
+
+    /// A minimal pure node — defaults to `Purity::Pure` via
+    /// the trait default impl.
+    struct DefaultPureNode {
+        meta: NodeMeta,
+    }
+
+    impl GkNode for DefaultPureNode {
+        fn meta(&self) -> &NodeMeta { &self.meta }
+        fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
+            outputs[0] = Value::U64(42);
+        }
+    }
+
+    /// A node that explicitly declares a side channel.
+    struct SideChannelNode {
+        meta: NodeMeta,
+    }
+
+    impl GkNode for SideChannelNode {
+        fn meta(&self) -> &NodeMeta { &self.meta }
+        fn eval(&self, _inputs: &[Value], _outputs: &mut [Value]) {}
+        fn purity(&self) -> Purity {
+            Purity::SideChannel { sink: SideChannelSink::Stderr }
+        }
+    }
+
+    /// A node that explicitly declares stateful behaviour.
+    struct StatefulNode {
+        meta: NodeMeta,
+    }
+
+    impl GkNode for StatefulNode {
+        fn meta(&self) -> &NodeMeta { &self.meta }
+        fn eval(&self, _inputs: &[Value], _outputs: &mut [Value]) {}
+        fn purity(&self) -> Purity {
+            Purity::Stateful { reason: "test fixture" }
+        }
+    }
+
+    fn empty_meta() -> NodeMeta {
+        NodeMeta {
+            name: "test".into(),
+            ins: vec![],
+            outs: vec![Port::u64("out")],
+        }
+    }
+
+    #[test]
+    fn default_purity_is_pure() {
+        let n = DefaultPureNode { meta: empty_meta() };
+        assert_eq!(n.purity(), Purity::Pure);
+    }
+
+    #[test]
+    fn side_channel_declaration_is_observable() {
+        let n = SideChannelNode { meta: empty_meta() };
+        match n.purity() {
+            Purity::SideChannel { sink } => assert_eq!(sink, SideChannelSink::Stderr),
+            other => panic!("expected SideChannel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stateful_declaration_is_observable() {
+        let n = StatefulNode { meta: empty_meta() };
+        match n.purity() {
+            Purity::Stateful { reason } => assert_eq!(reason, "test fixture"),
+            other => panic!("expected Stateful, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inspect_node_declares_stderr_side_channel() {
+        let n = crate::library::diagnostic::Inspect::u64("x");
+        match n.purity() {
+            Purity::SideChannel { sink } => assert_eq!(sink, SideChannelSink::Stderr),
+            other => panic!("inspect should declare Stderr SideChannel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn log_passthrough_declares_log_buffer_side_channel() {
+        let n = crate::library::log_levels::LogPassthrough::new(
+            crate::library::log_levels::LogLevel::Info,
+            PortType::U64,
+        );
+        match n.purity() {
+            Purity::SideChannel { sink } => assert_eq!(sink, SideChannelSink::LogBuffer),
+            other => panic!("log_passthrough should declare LogBuffer SideChannel, got {other:?}"),
+        }
+    }
 }

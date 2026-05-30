@@ -16,7 +16,7 @@ about runtime behaviour.
 
 This document is the **single authoritative reference** for
 polydat's runtime evaluation model — how values flow along
-wires, how nodes are cached per generation, how invalidation
+wires, how nodes are cached via clean-flag tracking, how invalidation
 propagates (lazily), and what determinism guarantees the
 host can rely on. Where the [Composition Substrate]
 describes the *static contract* (slot contract via S/T/L
@@ -59,8 +59,10 @@ caching does the kernel perform, how does invalidation
 propagate, and what determinism guarantees does the
 composition of those mechanics deliver to consumers?** This
 doc says: data flows along declared wires alone (R3); nodes
-are memoized per generation (R1); invalidation is
-pull-through and lazy (R2); the determinism the runtime
+are memoized via per-node clean flags (R1); invalidation
+is a hybrid push/pull model — set_inputs proactively
+marks dependents dirty, pulls lazily re-evaluate dirty
+nodes that the cone reaches (R2); the determinism the runtime
 delivers has three explicit bounds (D1, D2, D3), each named
 and enforced.
 
@@ -76,11 +78,11 @@ Status as of this draft:
 
 | Axiom | Status |
 |---|---|
-| R1 — Per-generation memoization | SHIPPED |
-| R2 — Lazy pull-through invalidation | SHIPPED |
+| R1 — Per-eval clean-flag memoization | SHIPPED |
+| R2 — Hybrid push/pull invalidation | SHIPPED |
 | R3 — Forward-only data flow | SHIPPED |
 | D1 — Typed Return Determinism | SHIPPED |
-| D2 — Side-Channel Determinism | **PARTIAL** (purity classification currently implicit via JIT compile-level; explicit `GkNode::purity()` declaration PLANNED per [Expression Engine §12.2](expression_engine.md)) |
+| D2 — Side-Channel Determinism | SHIPPED (`GkNode::purity()` declared explicitly; γ-2 landed `Purity` + `SideChannelSink` enums plus diagnostic-node declarations) |
 | D3 — Cost Determinism | SHIPPED |
 
 R1-R3 and D1/D3 are descriptive of current runtime
@@ -146,94 +148,123 @@ discovery of dependencies; everything is structural.
 
 ---
 
-## 3. Node caching — per-generation memoization
+## 3. Node caching — per-eval clean tracking
 
-`GkState` maintains a `generation` counter and a per-node
-`node_generation[i]` slot. When the kernel pulls a value,
-it walks the cone and for each upstream node checks whether
-it has already been evaluated in the current generation:
+`GkState` maintains a per-node `node_clean: Vec<bool>`
+flag. When the kernel pulls a value, it walks the cone
+recursively from the requested output and for each upstream
+node checks whether it has already been evaluated since
+its last dirtying:
 
 ```text
 pull(name):
-  cone = program.upstream_cone(name)
-  for each node in cone, topologically ordered:
-    if state.node_generation[node] == state.generation:
-      continue   # cached from earlier pull this generation
-    node.eval(inputs, outputs)
-    state.node_generation[node] = state.generation
-  return state.buffers[output_index_of(name)]
+  let node_idx = program.output_map[name].node
+  eval_node(program, node_idx)
+  return state.buffers[node_idx][port_idx]
+
+eval_node(program, node_idx):
+  if state.node_clean[node_idx]:
+    return                           # already fresh; cached
+  for source in program.wiring[node_idx]:
+    if let NodeOutput(upstream_idx, _) = source:
+      eval_node(program, upstream_idx)
+  // gather inputs from upstream buffers / input slots
+  node.eval(inputs, outputs)
+  state.node_clean[node_idx] = true
 ```
 
-The effect: **a node is evaluated at most once per
-generation**. Multiple pulls within the same generation
-reuse the cached output. This is the substrate's "T1 slot
-contract" property realised at runtime — same inputs at
-the slot tier, same outputs at the slot tier, and we trust
-the cache.
+The effect: **a node is evaluated at most once between any
+two dirtying events**. Multiple pulls touching the node
+between dirtying events reuse the cached output. This is
+the substrate's "T1 slot contract" property realised at
+runtime — same inputs at the slot tier, same outputs at
+the slot tier, and we trust the cache.
 
 The **Effectively-const buffer** (per the Graph Compiler's
 hoisting analysis) is the special case: its values are
-computed once at scope-init and never re-evaluated within
-the scope's lifetime. The generation counter doesn't visit
-those nodes during per-cycle pulls; they live in a separate
-buffer populated at scope-init.
+computed once at scope-init and never dirtied within the
+scope's lifetime. Their `node_clean[i]` stays `true`
+across every per-cycle pull; the walker visits them once
+during scope-init and never re-evaluates.
 
-### Axiom R1 — Per-generation memoization (SHIPPED)
+### Axiom R1 — Per-eval clean-flag memoization (SHIPPED)
 
-**A node's `eval` is invoked at most once per generation in
-a given `GkState`. Multiple pulls touching the node in the
-same generation use the cached result from
-`node_generation[i] == generation`'s prior eval.**
+**A node's `eval` is invoked at most once between any two
+dirtying events in a given `GkState`. Multiple pulls
+touching the node between dirtying events use the cached
+result; the cache is reset only when an upstream input
+change marks the node dirty.**
 
-Enforcement: the pull walker's generation-comparison check
-(above). The substrate's L1 (each layer owns its state)
-guarantees that `node_generation[i]` is owned by this
+Enforcement: the pull walker's `node_clean[i]` check (see
+pseudocode above). The substrate's L1 (each layer owns its
+state) guarantees that `node_clean[i]` is owned by this
 fiber's `GkState`; no cross-fiber cache contention.
 
 ---
 
 ## 4. Invalidation effects
 
-`set_inputs(&[u64])` advances the generation counter. It
-does not explicitly compute a dirty set; instead, the
-generation-comparison check in pull (§3) handles
-invalidation lazily: a node whose `node_generation[i]` is
-stale (less than the current generation) is re-evaluated on
-its next pull.
+`set_inputs(&[u64])` writes new coordinate values into the
+input slots AND **proactively marks dependent nodes
+dirty** by looking up the per-input dependent list
+(`input_dependents: Vec<Vec<usize>>`, precomputed at
+construction time from the wire-chain provenance):
 
-This is the **pull-through invalidation model**: dirty
-state is the absence of fresh state; freshness is restored
-on demand by the next pull. The model has three named
-properties:
+```text
+set_inputs(coords):
+  for i in 0..coords.len():
+    state.inputs[i] = Value::U64(coords[i])
+    for node_idx in input_dependents[i]:
+      state.node_clean[node_idx] = false   // push-side dirty mark
+  for node_idx in nondeterministic_nodes:
+    state.node_clean[node_idx] = false     // always-dirty floor
 
-- **Lazy.** Unused outputs are never recomputed. If a host
-  call pulls only output `out1`, dependencies of `out2`
-  that share upstream with `out1` are evaluated (because
-  they're in `out1`'s cone), but dependencies of `out2`
-  that are *not* in `out1`'s cone are not visited.
-- **Generation-bounded.** Within a single generation, no
-  node evaluates more than once (R1). The cache hit rate is
-  100% for repeated cone traversals within the same
-  generation.
-- **Forward-only.** Invalidation never propagates backward
-  (a downstream change cannot dirty an upstream node) and
-  never crosses a layered scope boundary unguarded (L4's
-  `SharedCell` write-through is the only legitimate cross-
-  tier write surface).
+pull(name):
+  // walks the cone, evaluating any node whose clean flag
+  // is false; cached otherwise. See §3.
+```
 
-### Axiom R2 — Lazy pull-through invalidation (SHIPPED)
+This is the **hybrid push/pull invalidation model**: the
+dirty *signal* is push-side (input changes proactively
+mark dependents dirty); the dirty *response* is pull-side
+(`eval_node` lazily re-evaluates only when reached by a
+pull). The model has three named properties:
 
-**Invalidation in polydat is the absence of fresh state,
-not a positive dirty-set computation. `set_inputs` advances
-the generation; subsequent pulls observe stale
-`node_generation[i]` entries and re-evaluate those nodes
-on demand. Nodes not reached by any pull are never
+- **Lazy at the pull side.** Unused outputs are never
+  recomputed. If a host call pulls only output `out1`,
+  dependencies of `out2` that share upstream with `out1`
+  are evaluated (because they're in `out1`'s cone), but
+  dependencies of `out2` that are *not* in `out1`'s cone
+  are not visited even if they were marked dirty by
+  `set_inputs`.
+- **Eager at the push side.** `set_inputs` does proactive
+  dirty-marking via the precomputed `input_dependents`
+  list. The lookup is O(dependents of the changed input),
+  not O(total nodes); the dependent list is structural
+  (computed at compile time from `compute_provenance` +
+  `compute_dependents` in `kernel/program.rs`).
+- **Forward-only.** Dirty marks propagate forward along
+  the wire chain (an input change dirties downstream
+  consumers, not upstream producers). Invalidation never
+  crosses a layered scope boundary unguarded (L4's
+  `SharedCell` write-through is the only legitimate
+  cross-tier write surface).
+
+### Axiom R2 — Hybrid push/pull invalidation (SHIPPED)
+
+**Invalidation in polydat is a hybrid: `set_inputs`
+proactively marks dirty every node whose upstream cone
+reaches a changed input (via the precomputed
+`input_dependents` list); subsequent pulls then lazily
+re-evaluate only the dirty nodes that the pull's cone
+walk reaches. Nodes not reached by any pull are never
 re-evaluated, regardless of upstream changes.**
 
-Enforcement: the absence of any "dirty propagation" surface
-in `GkState`. The generation counter is the single
-invalidation signal; pulls are the single freshness
-restoration mechanism.
+Enforcement: `set_inputs` in `kernel/engines.rs` walks
+`input_dependents[i]` for each changed input index and
+sets `node_clean[node_idx] = false`. `eval_node` in the
+same file returns early if `node_clean[node_idx]` is
+true. The two halves together realise the hybrid model.
 
 ### Axiom R3 — Forward-only data flow (SHIPPED)
 
@@ -303,7 +334,7 @@ D1 is the strongest determinism guarantee and the cheapest
 to verify — the host pattern-matches on the typed return
 and gets identical bytes per run.
 
-### Axiom D2 — Side-Channel Determinism (PARTIAL)
+### Axiom D2 — Side-Channel Determinism (SHIPPED)
 
 **Impure constituent nodes' side channels (logging output,
 file I/O, network calls, etc.) are deterministic
@@ -330,33 +361,36 @@ nodes' declared purity status.
 
 **The cost of a single evaluation — measured as count of
 node `eval` invocations — equals the cone size of the
-output(s) pulled, minus the count of nodes already at the
-current generation. The cost is a structural property of
-the compiled program; it does not depend on runtime values
-or evaluation history (modulo the cache state).**
+output(s) pulled, minus the count of currently-clean nodes
+in that cone. The cost is a structural property of the
+compiled program; it does not depend on runtime values or
+evaluation history (modulo the cache state captured by
+each node's `node_clean` flag).**
 
-Enforcement: R1 (memoization bounds eval count per
-generation) + R2 (no work for unreached cones) + structural
-cone size (compile-time computed). The host can predict
-evaluation cost from the program's structure plus the
-current state's cache profile.
+Enforcement: R1 (clean-flag memoization bounds eval count
+to one per dirty-to-clean transition) + R2 (no work for
+unreached cones) + structural cone size (compile-time
+computed via `compute_provenance` in `kernel/program.rs`).
+The host can predict evaluation cost from the program's
+structure plus the current state's cache profile.
 
 Cost determinism gives the host a predictable performance
 model: a small expression with a 3-node cone costs 3 evals
-on a cold state, 0 on a fully-warm state, with the
-intermediate region characterised by which nodes have
-been visited since the last `set_inputs`.
+on a cold state (all nodes dirty), 0 on a fully-warm state
+(all nodes clean), with the intermediate region
+characterised by which nodes were dirtied by the most
+recent `set_inputs`.
 
 ---
 
 ## 7. The R-axioms and D-axioms compose
 
 ```text
-       ┌───────────────────────────┐
-       │  R1 — memoization         │   each node ≤1 eval/gen
-       │  R2 — lazy pull-through   │   no positive dirty set
-       │  R3 — forward-only flow   │   wire chain is the path
-       └─────────────┬─────────────┘
+       ┌──────────────────────────────────────┐
+       │  R1 — clean-flag memoization         │   ≤1 eval/dirty→clean
+       │  R2 — hybrid push/pull invalidation  │   push-dirty + pull-lazy
+       │  R3 — forward-only flow              │   wire chain is the path
+       └────────────────┬─────────────────────┘
                      │
                      ▼  yields
                      │
@@ -417,7 +451,7 @@ host consumers measure this.
 
 D2 holds conditional on declared per-node semantics. Some
 side channels (e.g., stderr writes that interleave between
-nodes within a generation) are deterministic at the
+nodes within a single pull's cone walk) are deterministic at the
 *per-node* level but produce non-deterministic *combined*
 output when multiple impure nodes share a sink. A future
 revision should specify the granularity of D2's claim and

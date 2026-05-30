@@ -68,11 +68,35 @@ use crate::ast::Value;
 pub fn evaluate_spec(
     spec_text: &str,
     kernel: &GkKernel,
+) -> Result<Vec<Value>, crate::dsl::compile::EmbeddingError> {
+    evaluate_spec_internal(spec_text, kernel).map_err(|msg| {
+        if let Some(rest) = msg.strip_prefix("interpolation: unresolved placeholder '{") {
+            if let Some(end) = rest.find('}') {
+                let name = rest[..end].to_string();
+                return crate::dsl::compile::EmbeddingError::UnresolvedPlaceholder {
+                    name,
+                    source: spec_text.to_string(),
+                };
+            }
+        }
+        crate::dsl::compile::EmbeddingError::Parse {
+            source: spec_text.to_string(),
+            message: msg,
+            position: None,
+        }
+    })
+}
+
+fn evaluate_spec_internal(
+    spec_text: &str,
+    kernel: &GkKernel,
 ) -> Result<Vec<Value>, String> {
     if let Some(values) = try_eval_all_cursor(spec_text, kernel)? {
         return Ok(values);
     }
-    let interpolated = interpolate_via_kernel(spec_text, kernel)?;
+    let interpolated = crate::kernel::interp::interpolate_with_lookup(spec_text, |name| {
+        kernel.lookup(name).map(|v| v.to_display_string())
+    })?;
     // SRD-18c Layer 2 / SRD-18e Push 3: range operator
     // (`a..b`, `a..=b`, `a..b..s`, `a..=b..s`). Bounds and
     // step are GK const expressions evaluated at this
@@ -906,7 +930,7 @@ fn try_eval_setop(text: &str, kernel: &GkKernel) -> Result<Option<Vec<Value>>, S
     };
     let arg_texts = split_args_top_level(args);
     let recursively_evaluate = |t: &str| -> Result<Vec<Value>, String> {
-        evaluate_spec(t, kernel)
+        evaluate_spec(t, kernel).map_err(|e| e.to_string())
     };
     match name {
         "concat" => {
@@ -1505,7 +1529,7 @@ mod tests {
         let kernel = crate::dsl::compile::compile_gk(
             "const x := 1\n"
         ).unwrap();
-        let err = interpolate_via_kernel("hello {nope}", &kernel).unwrap_err();
+        let err = interpolate_via_kernel("hello {nope}", &kernel).unwrap_err().to_string();
         assert!(err.contains("unresolved"));
         assert!(err.contains("nope"));
     }
@@ -1568,7 +1592,7 @@ mod tests {
         let kernel = crate::dsl::compile::compile_gk(
             "const unrelated := 1\n"
         ).unwrap();
-        let err = evaluate_spec("all(no_such_cursor)", &kernel).unwrap_err();
+        let err = evaluate_spec("all(no_such_cursor)", &kernel).unwrap_err().to_string();
         assert!(err.contains("all(no_such_cursor)"));
         assert!(err.contains("no resolvable extent"));
     }
@@ -1589,7 +1613,7 @@ mod tests {
             "const __cursor_extent_row_start := 0\n\
              const __cursor_extent_row_end := 5\n"
         ).unwrap();
-        let err = evaluate_spec("all(row, 5)", &kernel).unwrap_err();
+        let err = evaluate_spec("all(row, 5)", &kernel).unwrap_err().to_string();
         assert!(err.contains("all(row, 5)"), "error must mention the failing spec, got: {err}");
         assert!(
             err.contains("failed to evaluate") || err.contains("unknown function"),
@@ -1627,7 +1651,7 @@ mod tests {
         );
         let err = result.expect_err(
             "missing dataset must surface as Err, not silent literal-list fallback"
-        );
+        ).to_string();
         // Doesn't matter which exact error string we get from
         // the catalog layer — the test guards the *contract*:
         // the spec text appears in the error, the failure is
@@ -1649,7 +1673,7 @@ mod tests {
         // commas. This guards the broader contract that
         // protected the dataset-resolution case above.
         let kernel = crate::dsl::compile::compile_gk("const unrelated := 1\n").unwrap();
-        let err = evaluate_spec("nonexistent_func('a', 'b', 'c')", &kernel).unwrap_err();
+        let err = evaluate_spec("nonexistent_func('a', 'b', 'c')", &kernel).unwrap_err().to_string();
         assert!(err.contains("failed to evaluate") || err.contains("unknown"),
             "expected a clean eval-failure error, got: {err}");
     }
@@ -1872,13 +1896,13 @@ mod tests {
 
     #[test]
     fn range_zero_step_errors() {
-        let err = evaluate_spec("1..10..0", &empty_kernel()).unwrap_err();
+        let err = evaluate_spec("1..10..0", &empty_kernel()).unwrap_err().to_string();
         assert!(err.contains("step is zero"), "{err}");
     }
 
     #[test]
     fn range_too_many_dotdot_errors() {
-        let err = evaluate_spec("1..2..3..4", &empty_kernel()).unwrap_err();
+        let err = evaluate_spec("1..2..3..4", &empty_kernel()).unwrap_err().to_string();
         assert!(err.contains("more than two `..`"), "{err}");
     }
 
@@ -1896,7 +1920,7 @@ mod tests {
 
     #[test]
     fn range_step_with_inclusive_separator_errors() {
-        let err = evaluate_spec("1..10..=2", &empty_kernel()).unwrap_err();
+        let err = evaluate_spec("1..10..=2", &empty_kernel()).unwrap_err().to_string();
         assert!(err.contains("step delimiter cannot be `..=`"), "{err}");
     }
 
@@ -2015,7 +2039,7 @@ mod tests {
 
     #[test]
     fn log_steps_rejects_non_positive_bounds() {
-        let err = evaluate_spec("log_steps(0, 100, 5)", &empty_kernel()).unwrap_err();
+        let err = evaluate_spec("log_steps(0, 100, 5)", &empty_kernel()).unwrap_err().to_string();
         assert!(err.contains("must be positive"), "{err}");
     }
 

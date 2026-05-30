@@ -235,10 +235,10 @@ impl SourceEval for Source {
                     .parent
                     .materialize_subscope(ctx.canonical.program().clone(), ctx.prefix);
                 let vals = crate::iteration::comprehension::eval::evaluate_spec(&spec_text, &kernel)
-                    .map_err(|message| EvalError::EvalFailed {
+                    .map_err(|e| EvalError::EvalFailed {
                         var: ctx.var_name.to_string(),
                         source: spec_text,
-                        message,
+                        message: e.to_string(),
                     })?;
                 let n = vals.len() as u64;
                 let index_fn = classify_observed_values(&vals);

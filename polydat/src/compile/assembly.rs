@@ -1344,7 +1344,13 @@ fn assertion_skip_reason(
 }
 
 /// Return an auto-insert edge adapter for common coercions, if one exists.
-fn auto_adapter(from: PortType, to: PortType) -> Option<Box<dyn GkNode>> {
+/// Look up an auto-conversion adapter for type pairs (γ-5 / spec
+/// expression_engine.md §5.4). The catalog is intra-graph
+/// today plus the boundary-adapter sites that γ-5 + γ-6
+/// extend it to. Returns `None` for type pairs the catalog
+/// doesn't cover — callers must surface a typed
+/// `TypeMismatch` error in that case.
+pub fn auto_adapter(from: PortType, to: PortType) -> Option<Box<dyn GkNode>> {
     use crate::library::convert::{
         BoolToStr, BoolToU64,
         U32ToU64, U32ToF64, U32ToString,
@@ -1375,6 +1381,11 @@ fn auto_adapter(from: PortType, to: PortType) -> Option<Box<dyn GkNode>> {
         (PortType::F32, PortType::Str) => Some(Box::new(F32ToString::new())),
         // Bool to numeric
         (PortType::Bool, PortType::U64) => Some(Box::new(BoolToU64::new())),
+        // U64 to Bool (nonzero → true). Added for γ-6 return-path
+        // adapters and for general predicate-style expression
+        // results where polydat's BinOps yield U64 (0 or 1) but
+        // the host wants `bool`.
+        (PortType::U64, PortType::Bool) => Some(Box::new(crate::library::convert::U64ToBool::new())),
         _ => None,
     }
 }

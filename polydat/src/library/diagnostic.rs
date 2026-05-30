@@ -6,7 +6,7 @@
 //! These are development aids, not hot-path nodes. They let users
 //! inspect types and values flowing through the DAG.
 
-use crate::ast::{GkNode, NodeMeta, Port, PortType, Slot, Value};
+use crate::ast::{GkNode, NodeMeta, Port, PortType, Purity, SideChannelSink, Slot, Value};
 
 /// Emit the type name of the input value as a string.
 ///
@@ -120,6 +120,10 @@ impl GkNode for Inspect {
     fn eval(&self, inputs: &[Value], outputs: &mut [Value]) {
         eprintln!("[inspect:{}] {:?}", self.label, inputs[0]);
         outputs[0] = inputs[0].clone();
+    }
+
+    fn purity(&self) -> Purity {
+        Purity::SideChannel { sink: SideChannelSink::Stderr }
     }
 }
 
@@ -239,6 +243,22 @@ impl GkNode for FftAnalyzer {
             }
 
             buf.clear();
+        }
+    }
+
+    fn purity(&self) -> Purity {
+        // FftAnalyzer has TWO impurities composed:
+        //   1. Eval-call-spanning state: the per-cycle signal
+        //      buffer accumulates across calls; the return
+        //      value (current buffer length) depends on prior
+        //      calls' history.
+        //   2. File I/O side channel: every window-emit writes
+        //      a JSONL line to the configured file path.
+        // Declare as Stateful because the eval-spanning state
+        // is the load-bearing aspect — the return value isn't
+        // a function of just this call's inputs.
+        Purity::Stateful {
+            reason: "accumulates signal buffer across calls; writes JSONL on window emit",
         }
     }
 }

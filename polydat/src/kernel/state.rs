@@ -30,6 +30,53 @@ fn seed_shared_cells(state: &mut GkState, program: &GkProgram) {
     }
 }
 
+/// γ-5 boundary-adapter helper: when the outer-scope binding's
+/// runtime value type doesn't match the inner kernel's
+/// declared slot type, consult the catalog
+/// (`compile::assembly::auto_adapter`) and apply the adapter
+/// if one exists. Returns the (possibly adapted) value to set
+/// in the slot.
+///
+/// When no catalog entry exists for the (from, to) type pair,
+/// returns the value unchanged with a one-line warning via
+/// the audit log — the caller's `set_input` will then proceed
+/// with the type-mismatched value, preserving pre-γ-5 behavior
+/// for unhealable mismatches.
+///
+/// Spec: `expression_engine.md` §5.4 (boundary adapter
+/// polyfills); `composition_substrate.md` T2 (typed-mismatch
+/// healing extended to synthesis sites).
+fn adapt_boundary_value(slot_name: &str, slot_type: crate::ast::PortType, value: Value) -> Value {
+    let value_type = value.port_type();
+    if value_type == slot_type {
+        return value;
+    }
+    // `Value::None` is the "absent" sentinel — pass through
+    // without trying to adapt; downstream None-propagation
+    // (SRD-74) handles it.
+    if matches!(value, Value::None) {
+        return value;
+    }
+    match crate::compile::assembly::auto_adapter(value_type, slot_type) {
+        Some(adapter) => {
+            // Adapter::eval reads inputs[0..N], writes outputs[0..M].
+            // For the boundary case, every adapter is 1→1.
+            let inputs = vec![value];
+            let mut outputs = vec![Value::None];
+            adapter.eval(&inputs, &mut outputs);
+            outputs.remove(0)
+        }
+        None => {
+            crate::library::support::audit::warn(&format!(
+                "boundary adapter: no catalog entry for {value_type:?} → {slot_type:?} \
+                 at slot '{slot_name}'; passing value as-is (will likely produce a wire \
+                 error or coerce silently at first read)"
+            ));
+            value
+        }
+    }
+}
+
 /// A compiled GK kernel: an `Arc<GkProgram>` plus one `GkState`.
 ///
 /// ## Invariants
@@ -766,19 +813,35 @@ impl GkKernel {
             // overhead.
             let outer_is_const = outer.program.output_modifier(name)
                 == crate::dsl::ast::BindingModifier::CONST;
+            // Slot's declared port type — needed for γ-5
+            // boundary-adapter dispatch.
+            let inner_slot_type = self
+                .program
+                .input_port_type(name)
+                .unwrap_or(crate::ast::PortType::U64);
             if outer_has_slot {
                 if let Some(value) = outer.lookup(name) {
-                    self.state.set_input(inner_idx, value);
+                    let adapted = adapt_boundary_value(name, inner_slot_type, value);
+                    self.state.set_input(inner_idx, adapted);
                 }
             } else if outer_is_const {
                 if let Some(value) = outer.lookup(name) {
-                    self.state.set_input(inner_idx, value);
+                    let adapted = adapt_boundary_value(name, inner_slot_type, value);
+                    self.state.set_input(inner_idx, adapted);
                 }
             } else if let Some(cell) = outer.state.core.output_cell(&outer.program, name) {
                 self.state.attach_shared_cell(inner_idx, cell);
                 attached_names.insert(name.to_string());
             } else if let Some(value) = outer.lookup(name) {
-                self.state.set_input(inner_idx, value);
+                let adapted = adapt_boundary_value(name, inner_slot_type, value);
+                self.state.set_input(inner_idx, adapted);
+            } else if let Some(value) =
+                crate::dsl::factories::resolve_extern(name, inner_slot_type)
+            {
+                // γ-8 virtual-wire resolver: outer chain has no
+                // binding; a host-registered resolver provides one.
+                let adapted = adapt_boundary_value(name, inner_slot_type, value);
+                self.state.set_input(inner_idx, adapted);
             }
         }
 

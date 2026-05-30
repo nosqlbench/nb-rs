@@ -450,11 +450,11 @@ where
                 .parent
                 .materialize_subscope(self.canonical.program().clone(), &tuple);
             let interpolated = interpolate_via_kernel(predicate, &kernel).map_err(|e| {
-                RuntimeError::FilterEval { predicate: predicate.to_string(), message: e }
+                RuntimeError::FilterEval { predicate: predicate.to_string(), message: e.to_string() }
             })?;
             let result = eval_const_expr(&interpolated).map_err(|e| RuntimeError::FilterEval {
                 predicate: predicate.to_string(),
-                message: e,
+                message: e.to_string(),
             })?;
             let keep = match result {
                 Value::Bool(b) => b,

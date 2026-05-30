@@ -95,7 +95,7 @@ Status as of this draft:
 | S2 — Binding-time materialisation as the synthesis fill rule | SHIPPED |
 | S3 — Cycle clock as the per-cycle synthesis advance | SHIPPED |
 | T1 — Every slot is typed | SHIPPED |
-| T2 — Type mismatches are construction-time or auto-healed | **PARTIAL** (intra-graph yes; embedding-boundary sites PLANNED per Expression Engine §5.4.2) |
+| T2 — Type mismatches are construction-time or auto-healed | SHIPPED (intra-graph + boundary sites; γ-5 + γ-6 landed) |
 | T3 — JIT preserves the slot type contract | SHIPPED |
 | L1 — Each layer owns its own state | SHIPPED |
 | L2 — Two-lifecycle classification bridges layers | SHIPPED |
@@ -265,17 +265,16 @@ Enforcement: the `InputDef` and `Port` types in
 this axiom is the substrate's claim that nothing escapes the
 typing.
 
-### Axiom T2 — Type mismatches are construction-time or auto-healed (PARTIAL)
+### Axiom T2 — Type mismatches are construction-time or auto-healed (SHIPPED)
 
-**Status note:** the catalog operates at the intra-graph
-wire-validation site today (`compile::assembly::resolve` +
-auto-inserted edge adapters from `library::convert`). Two
-additional sites — input-binding adapters during Context
-Fusion synthesis (S2) and return-path adapters at the
-embedding boundary — are PLANNED per
-[Expression Engine §5.4.2](expression_engine.md). Hosts
-that hit a type mismatch at those sites currently see a
-typed error rather than auto-healing.
+**Status note:** the catalog operates at three sites:
+intra-graph wire validation (`compile::assembly::resolve`
++ auto-inserted edge adapters from `library::convert`),
+Context Fusion synthesis (γ-5 added boundary adapters via
+`adapt_boundary_value` in `kernel/state.rs`), and the
+typed-embedding return path (γ-6 added catalog dispatch in
+`dsl::compile::eval_const_expr_typed`). The catalog is
+the single source of truth across all three sites.
 
 **The assembly pass ([`compile::assembly`]) validates every
 wire's source `PortType` against its consumer's expectation.

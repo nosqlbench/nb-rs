@@ -60,10 +60,43 @@ const ROUND_HARD: usize = 1000;
 /// `Value::None` (an unset extern slot) doesn't match — falls
 /// through to the unresolved-name error path at the fixed
 /// point.
-pub fn interpolate_via_kernel(text: &str, kernel: &GkKernel) -> Result<String, String> {
+///
+/// Returns a typed [`crate::dsl::compile::EmbeddingError`] per
+/// E7 of the spec; the underlying string-form
+/// [`interpolate_with_lookup`] is kept for callers that
+/// compose their own lookup and don't want the
+/// typed-error overhead.
+pub fn interpolate_via_kernel(
+    text: &str,
+    kernel: &GkKernel,
+) -> Result<String, crate::dsl::compile::EmbeddingError> {
     interpolate_with_lookup(text, |name| {
         kernel.lookup(name).map(|v| v.to_display_string())
     })
+    .map_err(|msg| classify_interpolate_error(text, msg))
+}
+
+fn classify_interpolate_error(
+    text: &str,
+    msg: String,
+) -> crate::dsl::compile::EmbeddingError {
+    // "interpolation: unresolved placeholder '{name}' in '...'"
+    if let Some(rest) = msg.strip_prefix("interpolation: unresolved placeholder '{") {
+        if let Some(end) = rest.find('}') {
+            let name = rest[..end].to_string();
+            return crate::dsl::compile::EmbeddingError::UnresolvedPlaceholder {
+                name,
+                source: text.to_string(),
+            };
+        }
+    }
+    // Cyclic placeholder fall-through: classify as Parse since
+    // the text didn't stabilise.
+    crate::dsl::compile::EmbeddingError::Parse {
+        source: text.to_string(),
+        message: msg,
+        position: None,
+    }
 }
 
 /// Iterative leaf-placeholder substitution with escape handling,
