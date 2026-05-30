@@ -1,38 +1,18 @@
-# 14: GK Config Expressions
+# 14: GK Config Expressions — nbrs-side framing
 
-GK expressions can appear anywhere a value is needed — config
-fields, CLI params, op templates. The `{...}` syntax is the
-universal expression boundary.
+The substrate half of this SRD (the `{...}` expression syntax,
+the const-expression evaluation API, config-value type
+rendering, and the typed-error surface) has been hoisted into
+the axiom-level polydat design:
 
----
+- [polydat/docs/design/expression_engine.md §3.1](../../polydat/docs/design/expression_engine.md)
+  — `eval_const_expr` API + works/doesn't-work catalog +
+  EmbeddingError variants. Hoisted 2026-05-30 as part of the
+  reconciliation pass (see [docs/polydat_srd_audit.md](../polydat_srd_audit.md))
 
-## Expression Syntax
-
-`{...}` always denotes a GK expression. It is never a literal
-brace. Use `\{` for a literal `{` character.
-
-```yaml
-cycles: "{vector_count('{dataset}')}"       # const expression
-concurrency: "{min(100, 50 * 2)}"           # inline arithmetic
-batch_size: "{1000 * 1000}"                 # pure arithmetic
-literal: "this has \{no expressions\}"      # escaped braces
-```
-
-On the command line:
-
-```bash
-nbrs run workload.yaml 'cycles={vector_count("example") / 10}'
-nbrs run workload.yaml 'cycles={4 * 4}'
-nbrs run workload.yaml 'concurrency={min(100, 50 * 2)}'
-```
-
-In op templates:
-
-```yaml
-ops:
-  show:
-    stmt: "count={vector_count('{dataset}')} dim={vector_dim('{dataset}')}"
-```
+This file retains the nbrs-side resolution order, param
+substitution interaction with SRD-21, implementation state,
+and historical context.
 
 ---
 
@@ -57,54 +37,6 @@ When the resolver encounters `{...}`:
 
 ---
 
-## Const Expression Evaluation
-
-A const expression is any GK expression with no input
-dependencies. It evaluates at compile time via the same
-constant folding pass used for named bindings.
-
-### API
-
-```rust
-pub fn eval_const_expr(source: &str) -> Result<Value, String> {
-    let wrapped = format!("\nout := {source}");
-    let kernel = compile_gk(&wrapped)?;
-    kernel.get_constant("out")
-        .cloned()
-        .ok_or_else(|| "expression depends on runtime inputs".into())
-}
-```
-
-### What works as a const expression
-
-- Literals: `{42}`, `{3.14}`, `{"hello"}`
-- Arithmetic: `{1000 * 1000}`, `{4 ** 0.5}`
-- Function calls with constant args: `{hash(42)}`, `{mod(hash(42), 100)}`
-- Dataset metadata: `{vector_count("example")}`, `{vector_dim("glove-25")}`
-- Nested: `{vector_count("{dataset}") / 10}` (after param substitution)
-
-### What does NOT work
-
-- References to cycle inputs: `{hash(cycle)}` → error
-- References to undefined names: `{undefined_var}` → error
-- Non-deterministic functions: `{counter()}` → error
-
----
-
-## Config Value Types
-
-For config fields that expect integers (`cycles`, `concurrency`),
-the result must be numeric. The resolver calls `.as_u64()`.
-If the expression returns a string, that's a type error.
-
-For string contexts (op templates, param values), all values
-render via `to_display_string()`:
-- `Value::U64(42)` → `"42"`
-- `Value::F64(3.14)` → `"3.14"`
-- `Value::Str(s)` → `s`
-
----
-
 ## Param Substitution Interaction
 
 Params are substituted BEFORE const expression evaluation.
@@ -125,24 +57,8 @@ Order:
 3. GK compilation + constant folding
 4. `{expr}` const expression evaluation for remaining references
 
----
-
-## Error Handling
-
-Errors show the full GK compilation diagnostic — syntax errors,
-unknown functions, type mismatches, missing datasets:
-
-```
-error: const expression failed: '{bad_func(42)}'
-  unknown function: 'bad_func'
-  This function is not registered in the GK function library.
-  Use 'nbrs describe gk functions' to see all available functions.
-```
-
-```
-error: const expression failed: '{hash(cycle)}'
-  not a const expression: depends on runtime input 'cycle'
-```
+The full parameter-precedence and bind-point ownership spec
+lives in [SRD 21 Parameters](21_parameters.md).
 
 ---
 

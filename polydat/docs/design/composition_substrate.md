@@ -2,12 +2,12 @@
 
 **Subtitle:** Context Synthesis, Type Safety, State Layering.
 
-**Status:** DRAFT — formalises the substrate that makes
-polydat's free graph composition work. Names the three
-pillars, the axioms under each, and the boundary handlers that
-connect them. Where prior SRDs (10, 11, 13c, 13d, 13e, 13f, 67,
-74) describe individual mechanisms, this doc names the
-substrate the mechanisms collectively form.
+Formalises the substrate that makes polydat's free graph
+composition work. Names the three pillars, the axioms under
+each, and the boundary handlers that connect them. Where
+prior SRDs (10, 11, 13c, 13d, 13e, 13f, 67, 74) describe
+individual mechanisms, this doc names the substrate the
+mechanisms collectively form.
 
 ## Authoritative ownership declaration
 
@@ -25,28 +25,28 @@ touching SRD's role under this declaration.
 
 ## Companion documents
 
-- [SRD-10: GK Language and Compilation](../../../docs/sysref/10_gk_language.md)
+- [SRD-10: GK Language and Compilation](language_spec.md)
   — node trait, port-type system, expression grammar. Owns
   the syntactic substrate. This doc references the typed-port
   surface SRD-10 defines.
-- [SRD-11: GK Evaluation Model](../../../docs/sysref/11_gk_evaluation.md)
+- [SRD-11: GK Evaluation Model](evaluation_model.md)
   — kernel/state split, effectively-const vs dynamic
   classification, const-binding contract. Owns the lifecycle
   mechanism that Pillar 3 (State Layering) builds on.
-- [SRD-13c: GK Scope Model](../../../docs/sysref/13c_gk_scope_model.md)
+- [SRD-13c: GK Scope Model](scope_model.md)
   — `bind_outer_scope`, `scope_values`, auto-extern, manifest
   extraction. Owns the synthesis mechanisms Pillar 1 (Context
   Synthesis) builds on.
-- [SRD-13f: Cross-Scope Wire Materialization](../../../docs/sysref/13f_cross_scope_wire_materialization.md)
+- [SRD-13f: Cross-Scope Wire Materialization](wire_materialization.md)
   — value-only vs shared-cell classification, read-invariant
   across the chain, write-through semantics. Owns the
   cross-tier read/write contract Pillar 3 (State Layering)
   preserves.
-- [SRD-67: Parent-gated Subcontext Construction](../../../docs/sysref/67_gk_subcontext_construction.md)
+- [SRD-67: Parent-gated Subcontext Construction](subcontext_construction.md)
   — typed [`ScopeKernel`], [`SubcontextBuilder`], the
   walled-off cross-binding API. Owns the construction-tier
   enforcement of all three pillars.
-- [SRD-74: None Propagation](../../../docs/sysref/74_none_propagation.md)
+- [SRD-74: None Propagation](none_semantics.md)
   — `Value::None` propagation rules. Owns None semantics; a
   consequence of the typed-slot contract under Pillar 2.
 - [The Runtime Model](runtime_model.md) — R-axioms (data
@@ -71,36 +71,6 @@ Context Synthesis, Type Safety, State Layering. The pillars
 are not independent; they reinforce each other. The
 *substrate* is the three pillars in composition, not any one
 in isolation.
-
----
-
-## 0. Status legend
-
-Each axiom in this doc carries an explicit status:
-
-- **SHIPPED** — the property holds in the current code; the
-  axiom is descriptive of current behavior.
-- **PARTIAL** — partially implemented; the gap is named in
-  the axiom's "Status note" with a forward link to where
-  the remaining work is tracked.
-- **PLANNED** — not yet implemented; the axiom describes
-  the target contract. Hosts depending on a PLANNED axiom
-  hit the listed gap until the implementation lands.
-
-Status as of this draft:
-
-| Axiom | Status |
-|---|---|
-| S1 — Auto-extern as the synthesis surface discovery rule | SHIPPED |
-| S2 — Binding-time materialisation as the synthesis fill rule | SHIPPED |
-| S3 — Cycle clock as the per-cycle synthesis advance | SHIPPED |
-| T1 — Every slot is typed | SHIPPED |
-| T2 — Type mismatches are construction-time or auto-healed | SHIPPED (intra-graph + boundary sites; γ-5 + γ-6 landed) |
-| T3 — JIT preserves the slot type contract | SHIPPED |
-| L1 — Each layer owns its own state | SHIPPED |
-| L2 — Two-lifecycle classification bridges layers | SHIPPED |
-| L3 — Captures are layered cycle-time bindings | SHIPPED |
-| L4 — Cross-tier writes preserve layer ownership | SHIPPED |
 
 ---
 
@@ -160,13 +130,16 @@ contract**. A `GkKernel` exposes:
 ```text
 input_defs:    Vec<InputDef>          // declared slots — name + PortType + InputKind
 inputs:        Vec<Value>             // slot values at evaluation time
-port_values:   Vec<Value>             // capture slots (subset of inputs)
+port_values:   Vec<Value>             // externally-written slots (subset of inputs)
 node_buffers:  Vec<Vec<Value>>        // per-node output buffers
 ```
 
 Each `InputDef` declares one slot's identity (name), its type
 (PortType), and its origin (InputKind: Coordinate,
-IterationExtern, Extern, Capture, Const, etc.).
+IterationExtern, Extern, ExternalWrite, Const, etc.). The
+`ExternalWrite` kind is the polydat-side surface that hosts
+use for runtime injection patterns; hosts give those patterns
+their own names (e.g., nbrs's *capture* uses this kind).
 
 The slot contract has three guarantees, one from each pillar:
 
@@ -192,7 +165,7 @@ kernel's declared input slots. This is an active construction
 process at three timings: compile (auto-extern), scope-init
 (binding-time materialisation), and per-cycle (set_inputs).
 
-### Axiom S1 — Auto-extern as the synthesis surface discovery rule (SHIPPED)
+### Axiom S1 — Auto-extern as the synthesis surface discovery rule
 
 **At kernel compilation, the compiler walks the body, finds
 every identifier reference that resolves to an outer-scope
@@ -210,7 +183,7 @@ them. This is what makes the substrate *free for the author*:
 they write `query[id={k}]`, the compiler discovers `{k}`
 references the outer iter-var, and the slot appears.
 
-### Axiom S2 — Binding-time materialisation as the synthesis fill rule (SHIPPED)
+### Axiom S2 — Binding-time materialisation as the synthesis fill rule
 
 **At scope-init time, `bind_outer_scope(outer: &GkKernel)`
 (driving `materialize_wiring_from_outer`) iterates the kernel's
@@ -226,14 +199,14 @@ Enforcement: `kernel/state.rs::materialize_wiring_from_outer`
 under SRD-67 ensures this is the *only* path by which outer
 state crosses into inner slots — there is no second channel.
 
-### Axiom S3 — Cycle clock as the per-cycle synthesis advance (SHIPPED)
+### Axiom S3 — Cycle clock as the per-cycle synthesis advance
 
 **The only per-cycle slot mutation is `set_inputs(&[u64])`,
 which mutates exactly the slots whose `InputKind` is
 `Coordinate`. Every other slot — externs from outer scope,
-captures from prior ops, effectively-const bindings — retains
-its scope-init or last-cycle value. Per-cycle advance is
-narrow, named, and typed.**
+externally-written slots, effectively-const bindings —
+retains its scope-init or last-write value. Per-cycle
+advance is narrow, named, and typed.**
 
 Enforcement: the `GkKernel` API surface — `set_inputs` is the
 only public method that mutates input slots during a scope's
@@ -242,17 +215,123 @@ distinguishes coordinate inputs (dynamic, per-cycle) from
 every other input (effectively-const for the scope's
 lifetime).
 
+### Axiom S4 — External-write synthesis as the open-granularity fill path
+
+**A polydat kernel exposes port-typed input slots that
+external producers may populate at any granularity —
+construction-time scope-init, cycle-time injection, or
+arbitrary external-write-time. These slots are ordinary
+wires: nodes reading from them use the standard port-read
+mechanism; provenance tracking (per R2) marks downstream
+consumers dirty when an external write changes a slot;
+clean-flag memoization (per R1) re-evaluates them on next
+pull. S4 names the existence and contract of the
+external-write surface itself; cross-tier write semantics —
+an inner-scope writer populating an outer-scope's `shared`
+wire — are governed by S5's SharedCell write-through
+mechanism.**
+
+Enforcement: the kernel exposes typed-write entry points
+for external producers. T1 + T2 ensure writes are
+type-checked at the boundary. The kernel makes no
+assumption about who the producer is, when it writes, or
+what host-level semantic the write carries — the contract
+is generic external-port population, and downstream nodes
+re-evaluate per the standard provenance rules whenever an
+input changes.
+
+Where the other S-axioms describe chain-internal fill
+paths (S1 discovers the surface; S2 fills at scope-init;
+S3 advances per cycle), S4 names the open-granularity
+surface for fills *originated outside the kernel*. The
+producer is host code, an iteration driver, an event
+source, or any other component the polydat layer does not
+need to know about. The synthesis contract is preserved
+because the typed-write API is the chain's entry point for
+external producers, not a side channel around the chain.
+
+**Volatility opt-in (cross-reference to R1).** When a
+wire's value is not a function of its declared inputs —
+temporal sources, entropy sources, or any genuinely
+non-deterministic producer — the wire is *volatile*.
+Volatility arises from two distinct sources:
+
+- **Intrinsic.** Certain library nodes declare themselves
+  volatile (e.g., `current_epoch_millis`, `counter`,
+  `elapsed_millis`, `thread_id`). The library imposes
+  volatility; no user opt-in is required, and the marker
+  cannot be removed by the workload author.
+- **User opt-in.** A wire is declared `volatile` via the
+  modifier on its binding. The author marks the wire as
+  must-recompute-on-every-read.
+
+Both sources produce the same runtime effect: opt-out of
+clean-flag memoization, and contagion through dependents
+(see R1's volatile sub-axiom in runtime_model.md).
+Volatility is not required for ordinary S4 external
+writes; the provenance machinery handles re-evaluation
+correctly via input-change tracking. Volatility is the
+explicit marker for the genuinely-non-deterministic case
+where input-change tracking is insufficient because the
+value is not a function of the declared inputs.
+
+### Axiom S5 — Compile-emit write-through as the cross-tier synthesis path
+
+**SRD-13f's `SharedCell` write-through is the *only*
+mechanism by which an inner-tier node's output can mutate
+outer-tier state. The rewrite happens at the *compilation*
+layer: a node that declares a write to a wire owned by an
+outer scope's shared cell has its local output rewritten to
+a write-through call. The node itself is unchanged — it
+still produces a value to its declared output port. The
+chain intercepts the output and routes it to the outer
+cell; the outer cell's slot gets filled with the inner-tier
+write through the standard slot-filling contract.**
+
+S5 sits on the S-axis because cross-tier writes are
+fundamentally a slot-filling operation: the inner-tier
+node's output value fills the outer-tier cell's slot. The
+mechanism is compile-emit synthesis (the compiler emits the
+write-through call); the runtime effect is that the outer
+cell's slot has its value updated through the routing. The
+layer-ownership guarantee — that the outer cell remains the
+canonical state holder and no two layers race for write
+authority — is L1's claim, not S5's. S5 names how the
+mechanism preserves L1's invariant: write-through routes
+through the typed-slot surface, so the outer cell's owner
+sees an ordinary slot-write rather than a cross-tier
+mutation.
+
+Enforcement: SRD-13f §"Matter-AST classification" + the
+write-through emission in the compiler. Per SRD-13f's
+"single kernel handle" invariant (B.2 partial), the wires
+layer takes the kernel as the authoritative resolver, and
+write-through routing is the only cross-tier write surface.
+
+**Sub-axiom S5.r — `shared` carries write permission only.**
+The `shared` modifier on a wire declares that the wire is
+*writable across tier boundaries* via the write-through
+mechanism described above. It does NOT affect read access:
+inner-scope reads of any visible cross-tier wire return the
+current outer-tier value via the uniform read invariant
+(per L1), whether or not the wire is marked `shared`. Read
+mediation is governed by the chain's wiring synthesis at
+construction time; the `shared` declaration only enables
+the inner tier to *write* to the wire, opening the
+write-through path. Read uniformity is the substrate's
+guarantee; write permission is the explicit opt-in.
+
 ---
 
 ## 4. Pillar 2 — Type Safety
 
-Every slot in the kernel — input, output, capture — has a
-declared `PortType`. The chain guarantees a value of that
+Every slot in the kernel — input, output, externally-written
+— has a declared `PortType`. The chain guarantees a value of that
 type at every read; the compiler catches mismatches at
 construction or heals them with auto-inserted edge adapters.
 The type contract is *enforceable*, not aspirational.
 
-### Axiom T1 — Every slot is typed (SHIPPED)
+### Axiom T1 — Every slot is typed
 
 **Every entry in `input_defs` carries a declared `PortType`
 (U64, F64, Bool, Str, VecF32, VecI32, Bytes, Json, …). Every
@@ -265,14 +344,14 @@ Enforcement: the `InputDef` and `Port` types in
 this axiom is the substrate's claim that nothing escapes the
 typing.
 
-### Axiom T2 — Type mismatches are construction-time or auto-healed (SHIPPED)
+### Axiom T2 — Type mismatches are construction-time or auto-healed
 
-**Status note:** the catalog operates at three sites:
-intra-graph wire validation (`compile::assembly::resolve`
-+ auto-inserted edge adapters from `library::convert`),
-Context Fusion synthesis (γ-5 added boundary adapters via
+The adapter catalog operates at three sites: intra-graph
+wire validation (`compile::assembly::resolve` +
+auto-inserted edge adapters from `library::convert`),
+Context Fusion synthesis (boundary adapters via
 `adapt_boundary_value` in `kernel/state.rs`), and the
-typed-embedding return path (γ-6 added catalog dispatch in
+typed-embedding return path (catalog dispatch in
 `dsl::compile::eval_const_expr_typed`). The catalog is
 the single source of truth across all three sites.
 
@@ -292,7 +371,7 @@ catalog ([`library::convert`]). The catalog of known
 conversions is finite and explicit; novel conversions require
 adding to the catalog. The substrate does not silently coerce.
 
-### Axiom T3 — JIT preserves the slot type contract (SHIPPED)
+### Axiom T3 — JIT preserves the slot type contract
 
 **JIT-compiled subgraphs receive their inputs via the same
 typed-slot mechanism. The JIT does not bypass type checks; it
@@ -320,26 +399,25 @@ slots populated per lifecycle.
 ### The layer taxonomy
 
 ```text
-Workload ─────────────────── workload-level params
+Outer scope ──────────────── chain-cascaded params, top-level externs
    ▼
-Scenario ─────────────────── scenario configuration, top-level externs
+Nested scopes (any depth) ── per-scope bindings, shared cells, externs
    ▼
-for_each (any nesting) ───── iter-var bindings (per scope, dependent tuple)
-   ▼
-Phase ────────────────────── shared cells, phase-level captures
-   ▼
-Op-template ──────────────── op-field modifiers, runtime context
-   ▼
-Op-execution ──────────────── result-body captures (cycle-time)
+Cycle-time ───────────────── per-pull state + external-write injection
 ```
+
+(Hosts impose their own layer names on this generic
+structure — e.g., nbrs maps these tiers to workload /
+scenario / phase / op-template / op-execution; polydat
+itself remains layer-name-agnostic.)
 
 Each layer owns its own state. Inner layers see outer-layer
 state via auto-extern + binding-time materialisation (S1+S2).
 Outer layers do not see inner-layer state (no callback up the
 chain). Cross-tier writes are bounded to the SharedCell
-write-through mechanism (§9.2).
+write-through mechanism (S5).
 
-### Axiom L1 — Each layer owns its own state (SHIPPED)
+### Axiom L1 — Each layer owns its own state
 
 **A scope-tier instance (workload root, scenario node, for_each
 scope, phase scope, op-template scope, op-execution context)
@@ -347,15 +425,21 @@ owns its own state set. State written at one layer is not
 visible at outer layers; state read at one layer comes from
 that layer's own bindings or from outer layers via
 chain-synthesised slots. There is no cross-tier shared mutable
-state outside the named SharedCell write-through mechanism.**
+state outside the named SharedCell write-through mechanism
+specified by S5 (compile-emit write-through as the cross-tier
+synthesis path).**
 
 Enforcement: the kernel chain is a parent-child tree
 constructed via SRD-67's walled-off API. Construction is
 parent-gated; binding-time materialisation is the only
 state-crossing surface; SRD-13f's classification governs
-read/write semantics.
+read/write semantics. S5 specifies the only cross-tier
+write surface; this axiom's claim is that the outer cell
+remains the canonical state holder regardless of which
+inner tier issues the write, so layer ownership is preserved
+across S5's routing.
 
-### Axiom L2 — Two-lifecycle classification bridges layers (SHIPPED)
+### Axiom L2 — Two-lifecycle classification bridges layers
 
 **Per SRD-11, every input slot has one of two lifecycles:
 *effectively-const* (resolved once at scope-init, frozen for
@@ -373,39 +457,51 @@ materialisation). The classification is *known* before the
 node tier ever sees a value; the chain enforces it by
 populating slots according to each input's lifecycle.
 
-### Axiom L3 — Captures are layered cycle-time bindings (SHIPPED)
+**Sub-axiom L2.f — Failed const materialisation falls
+through to the outer chain (L2 ⊓ T1).** When an
+effectively-const binding's scope-init evaluation yields
+`Value::None` (per the None propagation contract — see
+[none_semantics.md](none_semantics.md)), the slot is
+considered *unfilled at this layer*. The read invariant
+(L1) then returns the outer scope's value for the same
+name via the standard lookup chain. The effectively-const
+guarantee is preserved at the outer layer: the outer
+binding is itself effectively-const for the scope's
+lifetime, so the value the inner reader observes is
+stable across the activation. This composition of L2 (the
+inner binding's lifecycle) with T1 (typed slots include
+the None sentinel) gives the conditional-shadow semantic
+on which the host's `set:`-style sugar relies: an
+intermediate-layer `const X := <expr>` that yields a real
+value shadows the outer X; one that yields None leaves the
+outer X visible.
 
-**A capture is a port-typed input populated at op-execution
-time from a result body (SRD-34). Captures occupy a subset of
-input slots (`GkState.port_values`). Their *layer* is the
-phase scope (where the capture is declared); their *timing
-window* is op-execution → next op-execution within a phase.
-Nodes consuming captures read from the slot via the ordinary
-input contract; the chain handles the timing.**
+**Strict-mode hardening — open.** Silent fall-through on
+intermediate-layer None can mask author intent: did the
+layer mean to provide a shadow that happens to compute to
+None, or did it mean to declare an `extern X` and forget
+to? A future strict-mode rule should diagnose this case
+("layer provided matter for X that yielded None at
+scope-init; declare `extern X` explicitly if fall-through
+to outer was intended"), forcing the author to be explicit
+about whether the layer is participating in the binding or
+deferring entirely. Current behavior is permissive
+fall-through; the strict diagnostic is a candidate rule,
+not a commitment.
 
-Enforcement: SRD-34's capture-points surface + SRD-69's
-unified capture-write contract (when shipped). The
-`ctx.wires.write(name, value)` chokepoint is the single
-write-side surface; reads are ordinary slot reads.
+### Note on cross-tier writes
 
-### Axiom L4 — Cross-tier writes preserve layer ownership (SHIPPED)
-
-**SRD-13f's `SharedCell` write-through is the *only* mechanism
-by which an inner-tier node's output can mutate outer-tier
-state. The rewrite happens at the *compilation* layer: a node
-that declares a write to a wire owned by an outer scope's
-shared cell has its local output rewritten to a write-through
-call. The node itself is unchanged — it still produces a
-value to its declared output port. The chain captures the
-output and routes it to the outer cell. Layer ownership is
-preserved because the outer cell remains the canonical state
-holder; the inner node is just a write source.**
-
-Enforcement: SRD-13f §"Matter-AST classification" + the
-write-through emission in the compiler. Per SRD-13f's
-"single kernel handle" invariant (B.2 partial), the wires
-layer takes the kernel as the authoritative resolver, and
-write-through routing is the only cross-tier write surface.
+The cross-tier-write mechanism (`SharedCell` write-through)
+is a **synthesis-axis** concern and lives at S5 in §3 — the
+mechanism fills outer-tier slots via inner-tier nodes' typed
+output emission, so it belongs with the other slot-filling
+axioms. The **layer-ownership guarantee** that S5 preserves
+— that the outer cell remains the canonical state holder
+and inner-tier writes flow through the typed-slot surface
+rather than as ad-hoc cross-tier mutation — is L1's claim
+(see §"Axiom L1 — Each layer owns its own state" above,
+which names the SharedCell write-through as the only
+permitted exception to single-layer state ownership).
 
 ---
 
@@ -420,13 +516,14 @@ contract durable — and that *no two of three* is sufficient.
 |---|---|---|
 | T + L | S | ...cannot be filled. Slots are typed and layer-aware but the chain has no synthesis mechanism — slots stay empty or take ad-hoc values. |
 | S + L | T | ...is fillable but unsafe. The chain delivers values, but nothing guarantees type. Nodes do defensive type checking or coerce silently. |
-| S + T | L | ...is fillable and typed but flat. Without layering, scope composition collapses; no lifecycle distinction, no nested scope tiers, no cross-tier write semantics. |
+| S + T | L | ...is fillable and typed but flat. Without layering, scope composition collapses; no lifecycle distinction, no nested scope tiers; S5's cross-tier write mechanism would still route values but L1's layer-ownership guarantee would be absent — written-to cells would have no stable owner. |
 | **S + T + L** | — | **...is the durable slot contract.** Slots are filled, typed, layer-aware. Free composition follows. |
 
 The substrate is *exactly* S + T + L. Adding more (e.g., a
-fourth pillar for capture timing or determinism) would
-strengthen specific guarantees but the slot contract holds
-under S + T + L alone.
+fourth pillar for external-write timing, determinism, or
+cross-tier write semantics)
+would strengthen specific guarantees but the slot contract
+holds under S + T + L alone.
 
 ---
 
@@ -455,24 +552,35 @@ Certain timing and identity boundaries need named handlers.
 These aren't substrate violations — they're substrate
 extensions, each preserving the S/T/L axioms.
 
-### 8.1 The capture timing window
+### 8.1 The external-write boundary
 
-Per L3, captures fill port-typed slots at op-execution time.
-The timing window (op-execution → next op-execution within a
-phase) is the temporal boundary. SRD-34 owns the timing
-contract; SRD-69 (when shipped) consolidates the write-side
-into `ctx.wires.write`. Reads are ordinary slot reads; writes
-go through the chokepoint. T2 (type-checked slots) and L1
-(layer ownership) hold across the boundary.
+Per S4, external producers populate port-typed slots through
+the kernel's typed-write API. The timing of writes is
+determined by the producer, not by the kernel; the kernel's
+contract is that any write triggers standard provenance
+invalidation per R2, and consumers re-evaluate on next pull
+per R1. Reads from the slot are ordinary port reads; T1 + T2
+ensure type safety at the write boundary.
 
-### 8.2 SharedCell write-through (§5, L4)
+Hosts with specific timing requirements (runtimes injecting
+values at well-defined synchronisation points, producers
+driving values from event streams, or any other host-level
+write-timing semantic) own that contract at the host layer.
+The polydat kernel itself makes no commitment beyond "writes
+trigger normal invalidation." This separation is what allows
+polydat to serve as a substrate for diverse host runtimes
+without embedding any host's specific write-timing
+semantics.
+
+### 8.2 SharedCell write-through (§3, S5)
 
 A node's output value crosses an outer-tier boundary via
 write-through routing. The node is unchanged; the chain
-performs the routing. L4 names this as the only mechanism;
+performs the routing. S5 names this as the only mechanism;
 T2 ensures the type-check holds across the cell; S2's
 synthesis at the outer scope's next-cycle reads the updated
-cell value.
+cell value; L1's layer-ownership invariant is preserved
+because the outer cell remains the canonical state holder.
 
 ### 8.3 Const lifecycle violations
 
@@ -512,18 +620,16 @@ question on how to formalise this within the substrate.
 
 | SRD | Role under this declaration |
 |---|---|
-| [SRD-10](../../../docs/sysref/10_gk_language.md) | Syntactic substrate. Defines `GkNode`, `Value`, `PortType`. The axioms reference types SRD-10 defines. |
-| [SRD-11](../../../docs/sysref/11_gk_evaluation.md) | Two-lifecycle classification — Pillar 3 (L2). Const-binding contract — boundary handler §8.3. |
-| [SRD-13c](../../../docs/sysref/13c_gk_scope_model.md) | Auto-extern (S1), `bind_outer_scope` (S2), manifest extraction. The synthesis-mechanism layer. |
+| [SRD-10](language_spec.md) | Syntactic substrate. Defines `GkNode`, `Value`, `PortType`. The axioms reference types SRD-10 defines. |
+| [SRD-11](evaluation_model.md) | Two-lifecycle classification — Pillar 3 (L2). Const-binding contract — boundary handler §8.3. |
+| [SRD-13c](scope_model.md) | Auto-extern (S1), `bind_outer_scope` (S2), manifest extraction. The synthesis-mechanism layer. |
 | [SRD-13d](../../../docs/sysref/13d_op_template_scope.md) | Op-template scope tier in the layering (L1). Adds a layer to the taxonomy; the axioms apply transitively. |
 | [SRD-13e](../../../docs/sysref/13e_scope_as_module.md) | Typed `ScopeModule` refinement. Strengthens T1 — modules carry typed import/export contracts that propagate the type contract across the chain. |
-| [SRD-13f](../../../docs/sysref/13f_cross_scope_wire_materialization.md) | Cross-scope read/write semantics. Read-invariant (Pillar 3, L1); write-through routing (L4, §8.2). |
-| [SRD-16](../../../docs/sysref/16_gk_engines.md) | Engine variants. T3 applies across every engine (P1 interpreted, P2 closures, P3 JIT). |
-| [SRD-16b](../../../docs/sysref/16b_gk_jit.md) | JIT boundary. Owns T3's enforcement at the Cranelift boundary. |
-| [SRD-34](../../../docs/sysref/34_capture_points.md) | Captures (L3). Owns the timing-window contract. |
-| [SRD-67](../../../docs/sysref/67_gk_subcontext_construction.md) | Parent-gated child construction. Owns the walled-off enforcement of all three pillars at the construction tier. |
-| [SRD-69](../../../docs/sysref/69_capture_semantics.md) | Unified capture-write contract (when shipped). The single chokepoint through which L3's stateful crossings funnel. |
-| [SRD-74](../../../docs/sysref/74_none_propagation.md) | `Value::None` propagation. Consequence of T1 (typed slots include `Option<T>` semantics via None) — propagation is deterministic, not silent coercion. |
+| [SRD-13f](wire_materialization.md) | Cross-scope read/write semantics. Read-invariant (Pillar 3, L1); write-through routing (S5, §8.2). |
+| [SRD-16](engines.md) | Engine variants. T3 applies across every engine (P1 interpreted, P2 closures, P3 JIT). |
+| [SRD-16b](jit_boundary.md) | JIT boundary. Owns T3's enforcement at the Cranelift boundary. |
+| [SRD-67](subcontext_construction.md) | Parent-gated child construction. Owns the walled-off enforcement of all three pillars at the construction tier. |
+| [SRD-74](none_semantics.md) | `Value::None` propagation. Consequence of T1 (typed slots include `Option<T>` semantics via None) — propagation is deterministic, not silent coercion. |
 
 ---
 
@@ -591,14 +697,21 @@ proof.
 The substrate is established and held by current
 implementations. Three open questions for future revision:
 
-### 12.1 Capture timing window — formal spec
+### 12.1 External-write ordering semantics — formal spec
 
-L3 names the capture timing window ("op-execution → next
-op-execution within a phase") but doesn't formally specify
-it as a sequence of states. SRD-34 carries the practical
-contract; SRD-69 (draft) will carry the unified spec. A
-future revision should pull a formal timing-window spec into
-§8.1, since it's load-bearing for L3.
+S4 names external-write events as the mechanism for
+populating port-typed slots dynamically, but the *ordering
+semantics* between an external write and a concurrent fiber
+pull are not specified at the substrate layer. The current
+implementation serialises writes through a per-port
+mutex-protected slot; this is a runtime concern (per R1 +
+R2). A future revision should formalise the read-write
+ordering guarantees the substrate provides — particularly
+for the case where a producer wants "this value visible to
+all subsequent reads on this fiber starting from cycle N"
+semantics. Hosts with stricter timing needs currently
+establish those guarantees in their own contract; making the
+substrate itself commit to a richer ordering spec is open.
 
 ### 12.2 JIT escape-hatch enumeration
 

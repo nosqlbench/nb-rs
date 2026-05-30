@@ -2,12 +2,12 @@
 
 **Subtitle:** Polydat as host-embeddable evaluation utility.
 
-**Status:** DRAFT — formalises the host-facing evaluation
-surface that emerges from polydat's grammar. Names the
-embedding contract, catalogs the surfaces, and shows how the
-substrate and graph compiler are re-used at expression scale
-to give host crates a typed, deterministic, library-rich
-evaluation engine for free.
+Formalises the host-facing evaluation surface that emerges
+from polydat's grammar. Names the embedding contract,
+catalogs the surfaces, and shows how the substrate and
+graph compiler are re-used at expression scale to give host
+crates a typed, deterministic, library-rich evaluation
+engine for free.
 
 ## Authoritative ownership declaration
 
@@ -41,15 +41,15 @@ unifying capability the surfaces collectively provide.
   into E1 (self-contained submission) + E4 (library
   inheritance) + the expression-as-kernel correspondence
   in §2.
-- [SRD-10: GK Language and Compilation](../../../docs/sysref/10_gk_language.md)
+- [SRD-10: GK Language and Compilation](language_spec.md)
   — DSL syntax. Owns the language grammar; this doc shows
   how the grammar's full expressivity becomes a host
   utility.
-- [SRD-11: GK Evaluation Model](../../../docs/sysref/11_gk_evaluation.md)
+- [SRD-11: GK Evaluation Model](evaluation_model.md)
   — two-lifecycle classification. Owns the const-binding
   contract; this doc shows how `eval_const_expr` is the
   const-binding contract at single-expression scale.
-- [SRD-14: GK Config Expressions](../../../docs/sysref/14_gk_config_expressions.md)
+- [SRD-14: GK Config Expressions](expression_engine.md)
   — the `{...}` config expression surface. Owns one of the
   evaluation surfaces; this doc places it in the broader
   embedding catalog.
@@ -68,76 +68,6 @@ input sizes; the host agrees to submit self-contained text
 and receive typed values; the cost is the substrate's
 ordinary slot-contract overhead, which is small when the
 expression is small.
-
----
-
-## 0. Status legend
-
-Each axiom in this doc carries an explicit status (see
-the legend convention from
-[composition_substrate.md §0](composition_substrate.md)).
-
-Status as of this draft:
-
-### E-axioms (the Embedding Contract)
-
-| Axiom | Status |
-|---|---|
-| E1 — Self-contained submission | SHIPPED |
-| E2 — Typed result | SHIPPED |
-| E3 — Bounded determinism via the Runtime Model | SHIPPED |
-| E4 — Library inheritance | SHIPPED |
-| E5 — Lifecycle transparency | SHIPPED |
-| E6 — Composability via interpolation | SHIPPED |
-| E7 — Typed error ontology | SHIPPED (γ-1 + γ-3 landed `EmbeddingError` enum + surface migration) |
-
-### §5 (The Embedding System Contract) section-level status
-
-| Section | Status |
-|---|---|
-| 5.1.1 Polydat's obligations | SHIPPED |
-| 5.1.2 Host's baseline obligations | SHIPPED |
-| 5.1.3 Host's opt-in strict contract | SHIPPED (γ-7 `eval_const_expr_typed_strict`) |
-| 5.1.4 Shared vocabulary | SHIPPED |
-| 5.2 Types at the embedding boundary | SHIPPED |
-| 5.3 L-value type inference | SHIPPED (γ-4 `eval_const_expr_typed::<T>` + `HostType` trait) |
-| 5.4.1 Current catalog — intra-graph only | SHIPPED |
-| 5.4.2 Planned extension — two boundary sites | SHIPPED (γ-5 input-binding adapters in `kernel/state.rs::adapt_boundary_value`; γ-6 return-path adapters in `dsl::compile::eval_const_expr_typed`) |
-| 5.4.3 Contract rules for boundary polyfills | SHIPPED with §5.4.2 |
-| 5.5 Virtual nodes | SHIPPED |
-| 5.6 Virtual wires | SHIPPED (γ-8 `register_extern_resolver` API in `dsl::factories`; consulted by `materialize_wiring_from_outer` as fall-through) |
-| 5.7 Runtime model applied | SHIPPED |
-
-### §6 Error Ontology
-
-The ten `EmbeddingError` variants are now the surface
-contract; the migration (γ-1 + γ-3) replaced the string-form
-returns with the typed enum.
-
-| Section | Status |
-|---|---|
-| 6.1 Variant guide | SHIPPED (typed-enum form) |
-| 6.2 Provenance | SHIPPED |
-| 6.3 Migration plan | COMPLETE (γ-1 = Phase A; γ-3 = Phase B; Phase C deprecation absorbed into γ-3) |
-
-### §3 host-facing surfaces
-
-| Surface | Status |
-|---|---|
-| 3.1 `eval_const_expr` | SHIPPED (returns `Result<Value, EmbeddingError>`) |
-| 3.2 `interpolate_via_kernel` + eval composition | SHIPPED (returns `Result<String, EmbeddingError>`) |
-| 3.3 `evaluate_spec` | SHIPPED (returns `Result<Vec<Value>, EmbeddingError>`) |
-| 3.4 `compile_gk` | SHIPPED (returns `Result<GkKernel, String>` — kernel construction; not part of the embedding contract migration) |
-
-### Summary
-
-**Everything SHIPPED.** All E-axioms (E1–E7), all §5
-sections (5.1–5.7), all §6 sections (6.1–6.3), all §3
-host-facing surfaces.
-
-The PLANNED items from the original draft landed via
-pushes γ-1 through γ-8 (see
-[`spec_implementation_plan.md`](spec_implementation_plan.md)).
 
 ---
 
@@ -231,7 +161,7 @@ Location: [`crate::dsl::compile::eval_const_expr`].
 Signature:
 
 ```rust
-pub fn eval_const_expr(source: &str) -> Result<Value, String>
+pub fn eval_const_expr(source: &str) -> Result<Value, EmbeddingError>
 ```
 
 Semantics: compile the text wrapped as a single output
@@ -243,22 +173,49 @@ available — node calls, literals, arithmetic, string ops —
 but the expression's lifecycle must be Effectively-const
 (per H1 / H2 / H3).
 
-Use case: SRD-14 `{...}` config expressions, where the
+Hosts that want the host's Rust type back directly should
+use `eval_const_expr_typed::<T>` (see §3 + §5.3); the
+typed surface returns `Result<T, EmbeddingError>` and
+removes the Value enum from the boundary.
+
+Use case: host-side `{...}` config expressions, where the
 host has a small expression and a guarantee it should
 resolve at activity-construction time (no `cycle` reference,
-no captures).
+no external-write inputs). The host wraps the result in its config-value
+contract — typically calling `.as_u64()` for numeric fields
+or `to_display_string()` for string contexts; the projection
+is host policy, not part of the embedding contract.
+
+**What works as a const expression:**
+
+- Literals: `{42}`, `{3.14}`, `{"hello"}`
+- Arithmetic: `{1000 * 1000}`, `{4 ** 0.5}`
+- Function calls with constant args: `{hash(42)}`, `{mod(hash(42), 100)}`
+- Catalog-registered metadata accessors (e.g.
+  `{vector_count("example")}`)
+- Nested: `{vector_count("{dataset}") / 10}` (after the host's
+  param substitution pass — itself outside the embedding
+  contract; see §6.4)
+
+**What does NOT work:**
+
+- References to cycle inputs: `{hash(cycle)}` → error
+- References to undefined names: `{undefined_var}` → error
+- Non-deterministic functions: `{counter()}` → error
 
 Cost: one full compile + scope-init evaluation, ~ms scale.
 The compile dominates; once compiled, the value is folded
 into the program's static state and reading it is free.
 
-Failure modes (returned as typed `Err(String)`):
-- Parse error in the text.
-- The expression's upstream reaches a dynamic input (the
-  surface promises const-only; the chain returns "depends on
-  runtime inputs").
-- A node `eval` panics during scope-init (caught via
-  `catch_unwind` and surfaced as a node-eval-panic error).
+Failure modes (returned as typed `Err(EmbeddingError)` per
+§6 Error Ontology):
+- `Parse` — parse error in the text.
+- `LifecycleMismatch` — the expression's upstream reaches a
+  dynamic input (the surface promises const-only; the chain
+  returns "depends on runtime inputs").
+- `NodeEvalPanic` — a node `eval` panics during scope-init
+  (caught via `catch_unwind` and surfaced as a node-eval-panic
+  error).
 
 ### 3.2 `interpolate_via_kernel` + evaluation — kernel-bound dynamic evaluation
 
@@ -478,7 +435,7 @@ The host gets six guarantees in exchange for submitting
 self-contained text. Each is a substrate / compiler
 property at expression scale.
 
-### Axiom E1 — Self-contained submission (SHIPPED)
+### Axiom E1 — Self-contained submission
 
 **A host submits self-contained text (and optionally a
 `&GkKernel` for context). Polydat does not reach for
@@ -491,7 +448,7 @@ each is a pure function of its declared arguments + the
 process-level node library (registered at startup, fixed
 thereafter).
 
-### Axiom E2 — Typed result (SHIPPED)
+### Axiom E2 — Typed result
 
 **The returned `Value` (or each element of a returned
 `Vec<Value>`) carries a declared type per T1. The host
@@ -505,7 +462,7 @@ returned value's type is the slot's declared type. The
 typed `Err(String)` for failure modes is symmetric — even
 errors are typed (one variant of the `Result`).
 
-### Axiom E3 — Bounded determinism via the Runtime Model (SHIPPED modulo D2 PARTIAL)
+### Axiom E3 — Bounded determinism via the Runtime Model
 
 **For a fixed expression text, a fixed context, and a
 fixed node registry, embedded evaluation produces a
@@ -522,7 +479,7 @@ Enforcement: composition of the Runtime Model's R1–R3
 the substrate's S/T/L axioms and the Graph Compiler's
 H-axioms.
 
-### Axiom E4 — Library inheritance (SHIPPED)
+### Axiom E4 — Library inheritance
 
 **Every node registered in `polydat::dsl::factories::GkRuntime`
 (the default registry plus host-extension factories) is
@@ -537,7 +494,7 @@ nbrs-activity registers runtime-context nodes; nbrs-metrics
 registers GK metric nodes) make those nodes available to all
 embedded expression evaluation.
 
-### Axiom E5 — Lifecycle transparency (SHIPPED)
+### Axiom E5 — Lifecycle transparency
 
 **The host chooses the evaluation depth that matches its
 need: const-fold via `eval_const_expr` (the expression must
@@ -556,7 +513,7 @@ interpolate-then-eval composition handles dynamic-via-
 kernel cases. `compile_gk` exposes the full kernel for any
 remaining use case.
 
-### Axiom E6 — Composability via interpolation (SHIPPED)
+### Axiom E6 — Composability via interpolation
 
 **The interpolation surface (`interpolate_via_kernel`) +
 evaluation surface compose. The host can use them as a
@@ -572,7 +529,7 @@ via `kernel.lookup` + `Value::to_display_string`).
 Evaluation's contract is text-to-Value. The two compose
 naturally; the pipeline is the canonical host pattern.
 
-### Axiom E7 — Typed error ontology (SHIPPED)
+### Axiom E7 — Typed error ontology
 
 **Every failure mode the embedding surface produces is
 classified into a typed `EmbeddingError` variant per the
@@ -602,9 +559,9 @@ evaluation. It establishes:
 - l-value type inference at the embedding surface (§5.3)
 - type-matching adapter polyfills at the boundary (§5.4)
 - virtual nodes — host-registered factory contributions
-  (§5.5, shipped)
+  (§5.5)
 - virtual wires — context-fusion-conditioned host bindings
-  (§5.6, PLANNED)
+  (§5.6)
 - how the [Runtime Model] applies to embedded expressions
   specifically (§5.7)
 
@@ -663,7 +620,7 @@ evaluation reaches for `.as_u64()` post-hoc. Both work
 correctly because the host has out-of-band knowledge of
 the expected type.
 
-#### 5.1.3 Host's opt-in strict contract (SHIPPED)
+#### 5.1.3 Host's opt-in strict contract
 
 A host that wants polydat to enforce type alignment at
 *kernel compile time* engages additional obligations in
@@ -764,7 +721,7 @@ The boundary is type-strict in both directions. The
 shared `Value` / `PortType` vocabulary makes the strictness
 implementable without per-call negotiation.
 
-### 5.3 L-value type inference (SHIPPED)
+### 5.3 L-value type inference
 
 The current embedding surfaces are *result-typed*: polydat
 returns a `Value`, and the host applies a typed accessor
@@ -852,7 +809,7 @@ doesn't exist as a tier yet or operates without
 adapter-catalog support, surfacing type mismatches as
 errors rather than healing them.
 
-#### 5.4.2 Planned extension — two additional polyfill sites (SHIPPED)
+#### 5.4.2 Planned extension — two additional polyfill sites
 
 The substrate-consistent move: extend the same catalog to
 operate at two additional sites that match Context
@@ -992,11 +949,6 @@ integration point, extending the synthesis vocabulary.
 
 ### 5.6 Virtual wires — context-fusion-conditioned bindings
 
-**Status: PLANNED — not implemented. The specification
-in this section is the contract for the planned
-mechanism; the open question §12.6 tracks the
-implementation gap.**
-
 Where virtual nodes (§5.5) extend the *node vocabulary*,
 virtual wires extend the *synthesis vocabulary*. The host
 interposes at Context Fusion's slot-filling step: when
@@ -1004,15 +956,16 @@ polydat's auto-extern discovers a slot the outer scope
 can't satisfy from its direct bindings, the host's
 resolver fires and may provide the value.
 
-Conceptually:
+The host registers a resolver via
+[`crate::dsl::factories::register_extern_resolver`]:
 
 ```rust
-runtime.register_extern_resolver(|slot_name, slot_type, kernel_context| {
+register_extern_resolver(Box::new(|slot_name, slot_type| {
     // Host-mediated resolution; returns Option<Value>.
     // If Some, Context Fusion fills the slot with the
     // returned value; if None, falls through to ordinary
     // resolution (typed error if no binding exists).
-});
+}));
 ```
 
 Use case: the host might want `{cluster_metadata.region}`
@@ -1150,26 +1103,33 @@ embedding cost predictable in practice: a host pattern of
 "compile-once, evaluate-many" pays a one-time compile cost
 plus per-evaluation cost bounded by a small cone.
 
-#### 5.7.3 Capture-aware embedding patterns
+#### 5.7.3 External-write-aware embedding patterns
 
-Per the Runtime Model's L3 realisation (captures as
-cycle-time bindings via `ctx.wires.write`), an embedded
-expression that consumes capture values must be evaluated
-within the capture's timing window. The host pattern:
+Per the Composition Substrate's S4 (external-write
+synthesis as the open-granularity fill path), an embedded
+expression that consumes externally-written wire values
+must be evaluated *after* the host has written the value
+into the slot. The host pattern:
 
 ```rust
-// op-execution boundary fires; captures are bound
-ctx.wires.write("recall_at_k", recall_value);
+// host writes the value into the slot
+state.set_port_value("recall_at_k", recall_value);
 
-// NOW the expression sees the capture
+// NOW the expression sees the written value
 let value = eval_const_expr_against(&kernel, "{recall_at_k} >= 0.8")?;
 ```
 
-If the host calls eval **before** the capture is bound, the
-slot holds `Value::None` (or the slot's default); per
-SRD-74, None propagates through the expression and produces
-a `NonePropagated` error on the host's strict accessor (per
-§6's ontology).
+If the host calls eval **before** the slot is written, the
+slot holds `Value::None` (or the slot's default); per the
+None-propagation contract, None propagates through the
+expression and produces a `NonePropagated` error on the
+host's strict accessor (per §6's ontology).
+
+Hosts that consume this pattern give their write events
+host-specific names — nbrs's *capture* is one such pattern
+that writes op-result values into externally-written slots
+between op executions — but the polydat embedding contract
+sees only the generic external-write mechanism.
 
 #### 5.7.4 Cross-host determinism — what hosts share
 
@@ -1338,25 +1298,6 @@ form the diagnostic chain: polydat owns the polydat-layer
 error variant; the host owns the host-layer location and
 naming.
 
-### 6.3 Migration from `Result<_, String>`
-
-The current surfaces return `Result<_, String>` with
-human-readable messages. Hosts that want to distinguish
-error classes parse the message prefix today. The standard's
-plan:
-
-- Phase A: introduce the typed `EmbeddingError` enum at the
-  trait level; provide a `From<EmbeddingError> for String`
-  implementation so existing string-consumer call sites
-  continue working.
-- Phase B: migrate the surfaces to return
-  `Result<_, EmbeddingError>` directly. Host call sites
-  pattern-match.
-- Phase C: deprecate the string-parsing hosts; the typed
-  enum is the only contract.
-
-The migration is tracked in §12.1.
-
 ---
 
 ## 7. Use case catalog
@@ -1452,11 +1393,11 @@ evaluation guarantee.
 |---|---|
 | [Composition Substrate](composition_substrate.md) | The slot contract that flows through expression evaluation. T1 + L2 are E2 + E3's enforcement layer. |
 | [Graph Compiler](graph_compiler.md) | The compilation pipeline. Embedded evaluation IS this compiler with smaller input. Every E-axiom inherits from the compiler's per-pass guarantees. |
-| [SRD-10](../../../docs/sysref/10_gk_language.md) | Grammar surface. The expression engine's full expressivity is SRD-10's grammar — nothing is held back. |
-| [SRD-11](../../../docs/sysref/11_gk_evaluation.md) | Const-binding contract. `eval_const_expr` (E5, §3.1) is the const-binding contract operating on a single output binding. |
-| [SRD-14](../../../docs/sysref/14_gk_config_expressions.md) | `{...}` config expression surface. One specific embedding pattern; this doc places it in the broader catalog. |
+| [SRD-10](language_spec.md) | Grammar surface. The expression engine's full expressivity is SRD-10's grammar — nothing is held back. |
+| [SRD-11](evaluation_model.md) | Const-binding contract. `eval_const_expr` (E5, §3.1) is the const-binding contract operating on a single output binding. |
+| [SRD-14](expression_engine.md) | `{...}` config expression surface. One specific embedding pattern; this doc places it in the broader catalog. |
 | [SRD-21](../../../docs/sysref/21_parameters.md) | Bind-point resolution. Pairs with `interpolate_via_kernel` for parameter substitution patterns. |
-| [SRD-67](../../../docs/sysref/67_gk_subcontext_construction.md) | `from_program` cache-and-rebind primitive. Hosts caching compiled expressions for repeated evaluation use this. |
+| [SRD-67](subcontext_construction.md) | `from_program` cache-and-rebind primitive. Hosts caching compiled expressions for repeated evaluation use this. |
 
 ---
 
@@ -1504,30 +1445,7 @@ hosts that don't care reach for `eval_const_expr` per call.
 
 ## 12. Open questions
 
-### 12.1 Migration to typed `EmbeddingError` surface
-
-§6 establishes the error ontology as part of the standard,
-but the current surfaces return `Result<_, String>`. The
-migration plan (§6.3 Phases A/B/C) is sketched but not yet
-executed. The order of operations is: introduce the enum
-with `From<EmbeddingError> for String`; migrate surfaces
-to return the typed enum; deprecate the string-parsing
-hosts. Specific scoping decision needed: do we land Phase A
-as a non-breaking addition (enum exists alongside string
-returns), or land Phase A+B atomically (enum returns
-immediately, hosts update)?
-
-### 12.2 Explicit purity declaration on `GkNode`
-
-E3 currently rests on JIT compile-level as the implicit
-purity proxy. The standard claims metadata-declared purity;
-the implementation should match. A future revision adds
-a `GkNode::purity() -> Purity` method with explicit
-variants (`Pure`, `SideChannel { ... }`, `Stateful { ... }`).
-Existing nodes default to inferred-via-JIT-level for
-backward compatibility; new nodes declare explicitly.
-
-### 12.3 Bulk-evaluation surface
+### 12.1 Bulk-evaluation surface
 
 When a host has N expressions over the same kernel context,
 it currently issues N compile + eval cycles. A bulk
@@ -1537,7 +1455,7 @@ compilation work (shared parser state, shared node lookups,
 etc.). Profile-driven: only worth specifying if bulk
 patterns dominate a measurable cost.
 
-### 12.4 Embedded compilation of host source text
+### 12.2 Embedded compilation of host source text
 
 Several host consumers parse host-side data (YAML, JSON,
 TOML) into strings that get passed through polydat
@@ -1549,7 +1467,7 @@ host parsing context) for better cross-crate error
 reporting; this dovetails with §6.2's provenance
 discussion.
 
-### 12.5 Lazy / suspended compilation
+### 12.3 Lazy / suspended compilation
 
 The current surfaces compile eagerly. A "compile when first
 evaluated" surface would let hosts cache compiled programs
@@ -1557,45 +1475,6 @@ for expressions that may or may not be evaluated. Specific
 patterns where this would help: lazily-evaluated assertion
 expressions, validation rules that fire only on specific
 result shapes.
-
-### 12.6 Virtual-wire resolver surface
-
-§5.6 specifies the host-mediated extern resolver — a
-callback the host registers that Context Fusion consults
-when an extern slot can't be satisfied from the kernel
-chain's direct bindings. Currently unimplemented. The
-specification needs:
-
-- Registration API (resolver per name, per name prefix, or
-  per type — three possible scoping rules).
-- Caching semantics — does the resolver result get cached
-  for the scope's lifetime (consistent with S3) or
-  re-invoked per dynamic-input change?
-- Composition with virtual nodes (§5.5) — virtual nodes
-  see virtual-wire bindings uniformly (consistent with
-  the substrate's slot contract), as §5.6.3 states; the
-  implementation should preserve this.
-- Failure mode when the resolver returns `None` — does
-  the slot remain unfilled (yielding `UnresolvedPlaceholder`
-  at use) or fall through to a default? The current
-  draft says fall-through to ordinary resolution; needs
-  confirmation.
-
-### 12.7 L-value-typed embedding surface
-
-§5.3 sketches `eval_const_expr_typed::<T>` and the
-`HostType` trait. Currently unimplemented. The
-specification needs:
-
-- The `HostType` trait definition and impls for each
-  primitive Rust type (bool, u64, i64, f64, String,
-  Vec<T> for some T).
-- The compile-time check pipeline — how the target type
-  flows through compilation and what error variant fires
-  on mismatch.
-- Adapter composition — how return-path adapters from
-  §5.4 select between candidate conversions when the
-  expression's output type is ambiguous.
 
 ---
 

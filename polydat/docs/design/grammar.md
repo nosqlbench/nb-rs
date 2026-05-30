@@ -2,14 +2,14 @@
 
 **Subtitle:** The Grammar Substrate.
 
-**Status:** DRAFT — formalises polydat's GK grammar as a
-substrate the other three design docs depend on. Where
-SRD-10 describes the language *prosaically*, this doc states
-the grammar's productions formally and identifies the
-distinctive properties that make the other docs' axioms
-possible. Names the G-axioms: structural commitments the
-grammar makes that the substrate, compiler, runtime, and
-embedding contracts all rest on.
+Formalises polydat's GK grammar as a substrate the other
+three design docs depend on. Where SRD-10 describes the
+language *prosaically*, this doc states the grammar's
+productions formally and identifies the distinctive
+properties that make the other docs' axioms possible. Names
+the G-axioms: structural commitments the grammar makes that
+the substrate, compiler, runtime, and embedding contracts
+all rest on.
 
 ## Authoritative ownership declaration
 
@@ -47,15 +47,15 @@ specific syntax forms and on rejection rules.
   for embedding. E4 (library inheritance) works because
   the grammar guarantees G6 (single grammar for
   expressions and full programs).
-- [SRD-10: GK Language and Compilation](../../../docs/sysref/10_gk_language.md)
+- [SRD-10: GK Language and Compilation](language_spec.md)
   — prosaic specification. This doc complements SRD-10
   by formalising the grammar-level invariants SRD-10's
   syntax assumes.
-- [SRD-11: GK Evaluation Model](../../../docs/sysref/11_gk_evaluation.md)
+- [SRD-11: GK Evaluation Model](evaluation_model.md)
   — two-lifecycle classification. G5 names this as a
   grammar-level commitment SRD-11's lifecycle taxonomy
   builds on.
-- [SRD-13c: GK Scope Model](../../../docs/sysref/13c_gk_scope_model.md)
+- [SRD-13c: GK Scope Model](scope_model.md)
   — auto-extern + scope-chain composition. G1 and G3 are
   the grammar-level commitments SRD-13c's scope mechanism
   rests on.
@@ -70,30 +70,6 @@ the grammar has six distinctive properties (the G-axioms),
 each a structural commitment, and together they compose
 into a small grammar that does an unusually large amount of
 load-bearing work.
-
----
-
-## 0. Status legend
-
-Each axiom in this doc carries an explicit status (see
-the legend convention from
-[composition_substrate.md §0](composition_substrate.md)).
-
-Status as of this draft:
-
-| Axiom | Status |
-|---|---|
-| G1 — Auto-extern as syntactic discovery | SHIPPED |
-| G2 — Lifecycle declared at the syntactic surface | SHIPPED |
-| G3 — Scope-chain transparency | SHIPPED |
-| G4 — Port-typed expressions | SHIPPED |
-| G5 — Two-lifecycle structural classification | SHIPPED |
-| G6 — Single grammar for expressions and full programs | SHIPPED |
-
-All G-axioms are descriptive of current behavior. The
-grammar productions (§2) and type-inference rules (§3)
-likewise describe current behavior modulo minor
-implementation gaps tracked as §8 open questions.
 
 ---
 
@@ -167,8 +143,8 @@ extern_port    ::= "extern" ident ":" type ("=" expr)?
 
 Inputs are per-cycle kernel input slots (driven by
 `set_inputs`). Externs are slots populated by the
-chain (manifest values from outer scopes, captures from
-ops, etc.).
+chain (manifest values from outer scopes) or written by
+external producers (per composition_substrate S4).
 
 The distinction is structural: an `input` declares a slot
 that *advances* per cycle (the cycle clock S3 of the
@@ -374,7 +350,7 @@ cover every expression constructor; there is no
 Six commitments the grammar makes. Each is a structural
 property the other docs' axioms depend on.
 
-### Axiom G1 — Auto-extern as syntactic discovery (SHIPPED)
+### Axiom G1 — Auto-extern as syntactic discovery
 
 **Every identifier reference in an expression is
 classified by the grammar as local or outer-scope.
@@ -404,7 +380,7 @@ What breaks without G1: workload authors would have to
 manually declare every cross-scope dependency, doubling
 the surface area and creating a maintenance trap.
 
-### Axiom G2 — Lifecycle declared at the syntactic surface (SHIPPED)
+### Axiom G2 — Lifecycle declared at the syntactic surface
 
 **The `const` modifier on a binding declares
 effectively-const lifecycle at the syntactic surface.
@@ -430,7 +406,7 @@ inferred per call, the compiler would need a richer
 analysis, and the wire-chain check would lack a
 declarative anchor.
 
-### Axiom G3 — Scope-chain transparency (SHIPPED)
+### Axiom G3 — Scope-chain transparency
 
 **An identifier referencing an outer-scope binding uses
 the same syntax as one referencing a local binding. There
@@ -455,7 +431,7 @@ require explicit qualifications, expressions would not
 be embeddable as-is, and the substrate's layered design
 would leak through the syntax.
 
-### Axiom G4 — Port-typed expressions (SHIPPED)
+### Axiom G4 — Port-typed expressions
 
 **Every well-formed expression in the grammar has a
 derivable output `PortType`. The type inference rules
@@ -483,7 +459,7 @@ contract would lose its compile-time enforcement, and
 the embedding contract's typed-result guarantee would
 become a runtime concern.
 
-### Axiom G5 — Two-lifecycle structural classification (SHIPPED)
+### Axiom G5 — Two-lifecycle structural classification
 
 **Every wire in a well-formed program is classifiable
 into Effectively-const or Dynamic by structural
@@ -510,7 +486,7 @@ emit partitioned scope-init/per-cycle code paths, and
 the runtime cost-determinism guarantee (D3) would
 lose its structural basis.
 
-### Axiom G6 — Single grammar for expressions and full programs (SHIPPED)
+### Axiom G6 — Single grammar for expressions and full programs
 
 **The grammar treats a single expression and a full
 multi-binding program uniformly: an expression is a
@@ -537,6 +513,73 @@ What breaks without G6: hosts would have to choose
 between two grammars, the compiler would have two
 pipelines to maintain, and the embedding contract would
 lose its uniformity claim.
+
+### Sub-axiom G6.i — Compiler intrinsics are grammar-level desugars
+
+**A small fixed set of expression forms that look like
+function calls or value expressions are *intrinsics* —
+the parser recognises them and emits desugared graph
+shapes rather than ordinary function-call nodes. The
+intrinsic set is closed: each intrinsic rewrites to a
+combination of registered library nodes (or constant-node
+emission for literals), so the post-desugar graph is
+expressible in the grammar's ordinary surface. Nothing
+flows through the compiler that an author could not write
+by hand using only registered nodes.**
+
+The intrinsic catalog is part of the grammar's
+*structural commitment* — these forms exist at parse
+time and are not extensible by library code. The specific
+catalog (currently `if(cond, a, b)`, literal promotion in
+wire position, and string-interpolation desugar to
+`printf(...)`) is delegated to
+[language_spec.md §"Conditional Selection — `if(cond, a,
+b)`" + §"Literal Promotion" + §"String Interpolation"](language_spec.md).
+
+What this enables:
+
+- Closure under composition: an embedded expression that
+  uses `"x={y}"` interpolation compiles to the same
+  printf-call graph the author could write directly. The
+  embedding contract sees nothing magic.
+- Library inheritance (E4): every intrinsic resolves to
+  library-registered nodes, so a host that exposes the
+  standard library exposes every intrinsic.
+- Compiler simplicity: the intrinsic set is small and
+  fixed; the compiler's main loop sees only registered
+  library nodes after parse.
+
+What breaks without G6.i: parse-time desugars would have
+to live in library code (every library node would have to
+declare itself "intrinsic" via a registration mechanism),
+or the grammar would have to grow special-case constructs
+the compiler treats opaquely.
+
+### Sub-axiom G6.p — Infix operators have a stable precedence
+
+**Infix operators in the grammar follow a stable
+Rust-like precedence ordering. Parse-tree shape is
+determined by this precedence table; the table is a
+grammar-structural commitment, not an implementation
+detail. The canonical table lives in
+[language_spec.md §"Infix Operators"](language_spec.md);
+the commitment that *some* stable precedence exists and
+that authors can rely on it for parse-tree shape is the
+grammar's axiom here.**
+
+What this enables:
+
+- Authors can write `a + b * c < d & e` and predict the
+  parse without consulting docs every time.
+- The compiler's type-inference pass (per §3 type rules)
+  operates on a determinate AST shape.
+- Tooling that walks or rewrites the AST can rely on
+  precedence-derived structure.
+
+What breaks without G6.p: every operator would need
+explicit parenthesisation, OR the parse would become
+implementation-defined and tooling would need
+implementation-specific knowledge to walk the tree.
 
 ---
 
@@ -583,12 +626,12 @@ the substrate doesn't have to repeat.
 | [Graph Compiler](graph_compiler.md) | H/CF/NF axioms. G2+G5 underwrite H1+H2; G1 underwrites CF1; G4 underwrites NF1. |
 | [Runtime Model](runtime_model.md) | R/D axioms. G4 underwrites D1; G5 underwrites R1+D3; G3 underwrites L1's runtime realisation. |
 | [Expression Engine](expression_engine.md) | E-axioms. G3+G6 underwrite E1+E4; G4 underwrites E2; G6 underwrites the expression-as-kernel correspondence. |
-| [SRD-10](../../../docs/sysref/10_gk_language.md) | DSL syntax. This doc's productions (§2) formalise the syntax SRD-10 describes prosaically. |
-| [SRD-11](../../../docs/sysref/11_gk_evaluation.md) | Two-lifecycle classification. G2+G5 are the grammar-level commitments SRD-11's lifecycle taxonomy rests on. |
-| [SRD-13c](../../../docs/sysref/13c_gk_scope_model.md) | Scope-composition mechanism. G1+G3 are the grammar-level commitments SRD-13c's auto-extern + `bind_outer_scope` rest on. |
+| [SRD-10](language_spec.md) | DSL syntax. This doc's productions (§2) formalise the syntax SRD-10 describes prosaically. |
+| [SRD-11](evaluation_model.md) | Two-lifecycle classification. G2+G5 are the grammar-level commitments SRD-11's lifecycle taxonomy rests on. |
+| [SRD-13c](scope_model.md) | Scope-composition mechanism. G1+G3 are the grammar-level commitments SRD-13c's auto-extern + `bind_outer_scope` rest on. |
 | [SRD-13d](../../../docs/sysref/13d_op_template_scope.md) | Op-template scope tier. G3's syntactic transparency applies transitively across all scope tiers SRD-13d names. |
 | [SRD-13e](../../../docs/sysref/13e_scope_as_module.md) | Typed `ScopeModule` refinement. G4's port-typed expression rule extends to module input/output contracts. |
-| [SRD-13f](../../../docs/sysref/13f_cross_scope_wire_materialization.md) | Cross-scope read/write. G1's auto-extern discovery is what SRD-13f's gradient classification operates over. |
+| [SRD-13f](wire_materialization.md) | Cross-scope read/write. G1's auto-extern discovery is what SRD-13f's gradient classification operates over. |
 
 ---
 

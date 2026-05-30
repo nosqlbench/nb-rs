@@ -3,14 +3,14 @@
 **Subtitle:** Data Flow, Caching, Invalidation, and the
 Determinism Suite.
 
-**Status:** DRAFT — formalises the runtime mechanism by
-which compiled polydat programs execute. Establishes the
-R-axioms (runtime mechanics — data flow, caching,
-invalidation) and the D-axioms (determinism guarantees the
-runtime delivers to consumers). This doc is the canonical
-cross-cutting reference cited by [Expression Engine],
-[Graph Compiler], and any future doc that needs to talk
-about runtime behaviour.
+Formalises the runtime mechanism by which compiled polydat
+programs execute. Establishes the R-axioms (runtime
+mechanics — data flow, caching, invalidation) and the
+D-axioms (determinism guarantees the runtime delivers to
+consumers). This doc is the canonical cross-cutting
+reference cited by [Expression Engine], [Graph Compiler],
+and any future doc that needs to talk about runtime
+behaviour.
 
 ## Authoritative ownership declaration
 
@@ -39,7 +39,7 @@ contract.
 - [The Expression Engine](expression_engine.md) —
   embedded-evaluation surface. E3 (bounded determinism)
   references D1/D2/D3 from this doc.
-- [SRD-11: GK Evaluation Model](../../../docs/sysref/11_gk_evaluation.md)
+- [SRD-11: GK Evaluation Model](evaluation_model.md)
   — kernel/state split, two-lifecycle classification, const-
   binding contract. Owns the foundational evaluation
   semantics that R-axioms operationalise.
@@ -65,32 +65,6 @@ marks dependents dirty, pulls lazily re-evaluate dirty
 nodes that the cone reaches (R2); the determinism the runtime
 delivers has three explicit bounds (D1, D2, D3), each named
 and enforced.
-
----
-
-## 0. Status legend
-
-Each axiom in this doc carries an explicit status (see
-the legend convention from
-[composition_substrate.md §0](composition_substrate.md)).
-
-Status as of this draft:
-
-| Axiom | Status |
-|---|---|
-| R1 — Per-eval clean-flag memoization | SHIPPED |
-| R2 — Hybrid push/pull invalidation | SHIPPED |
-| R3 — Forward-only data flow | SHIPPED |
-| D1 — Typed Return Determinism | SHIPPED |
-| D2 — Side-Channel Determinism | SHIPPED (`GkNode::purity()` declared explicitly; γ-2 landed `Purity` + `SideChannelSink` enums plus diagnostic-node declarations) |
-| D3 — Cost Determinism | SHIPPED |
-
-R1-R3 and D1/D3 are descriptive of current runtime
-behavior. D2 holds in practice — impure nodes preserve
-typed return determinism and produce side channels per
-their implementations — but the contract is currently
-implicit. Making it explicit (so hosts can pattern-match
-on declared purity) is the planned work.
 
 ---
 
@@ -187,7 +161,7 @@ scope's lifetime. Their `node_clean[i]` stays `true`
 across every per-cycle pull; the walker visits them once
 during scope-init and never re-evaluates.
 
-### Axiom R1 — Per-eval clean-flag memoization (SHIPPED)
+### Axiom R1 — Per-eval clean-flag memoization
 
 **A node's `eval` is invoked at most once between any two
 dirtying events in a given `GkState`. Multiple pulls
@@ -199,6 +173,65 @@ Enforcement: the pull walker's `node_clean[i]` check (see
 pseudocode above). The substrate's L1 (each layer owns its
 state) guarantees that `node_clean[i]` is owned by this
 fiber's `GkState`; no cross-fiber cache contention.
+
+### Sub-axiom R1.v — Volatility carves out clean-flag memoization
+
+**A wire is *volatile* when its value is not a function of
+its declared inputs. Volatile wires opt out of clean-flag
+memoization: every pull re-evaluates the producing node,
+regardless of `node_clean[i]`. Volatility is contagious —
+the compiler computes the transitive volatility set at
+hoisting time, marking every node whose dependency cone
+touches a volatile producer as itself volatile.**
+
+Volatility arises from two distinct sources:
+
+- **Intrinsic.** A library node declares itself volatile in
+  its `NodeMeta`. Examples: `current_epoch_millis`, `counter`,
+  `elapsed_millis`, `thread_id`, entropy sources, and any
+  node whose output is not a pure function of its declared
+  inputs. The library imposes volatility; no user opt-in is
+  required, and the workload author cannot remove the marker.
+- **User opt-in.** A wire's binding declares the `volatile`
+  modifier, marking the wire as must-recompute-on-every-read.
+  The author is asserting that the value should never be
+  cached even though the compiler can't infer it from the
+  wire chain (e.g., a node that reads external mutable state
+  the polydat layer cannot see).
+
+Both sources produce identical runtime behavior:
+
+- The wire opts out of clean-flag memoization. Every pull
+  re-evaluates the producing node; the clean flag is not
+  consulted on this node.
+- The compiler's hoisting pass propagates volatility
+  transitively: any node downstream of a volatile producer
+  is marked volatile too, regardless of whether its binding
+  declared the modifier. The transitive set is computed
+  once at compile time and stored alongside `node_clean`.
+- The intrinsic declaration is authoritative: an absent
+  user modifier does not override a library-declared
+  volatile node, and a present user modifier on a wire that
+  reads a library-declared-pure node still makes the wire
+  itself volatile (and contaminates its downstream).
+
+What volatility is NOT for: ordinary external-write inputs
+(per composition_substrate S4). The provenance machinery
+handles re-evaluation correctly via input-change tracking
+when an external write modifies a slot — the consumers
+re-evaluate on next pull through the standard R2 dirty
+mechanism. Volatility is the explicit marker for the
+genuinely-non-deterministic case where input-change
+tracking is insufficient because the value does not depend
+on the declared inputs at all.
+
+Enforcement: the pull walker treats `node_volatile[i] =
+true` as a permanent dirty bit. Hoisting computes the
+transitive volatility set from intrinsic + user-opt-in seeds
+once at compile time; the set is part of the compiled
+`GkProgram`, not the per-fiber `GkState`. The grammar's
+`volatile` modifier (G2) is the syntactic surface; SRD-10
+documents the specific modifier syntax.
 
 ---
 
@@ -246,11 +279,11 @@ pull). The model has three named properties:
 - **Forward-only.** Dirty marks propagate forward along
   the wire chain (an input change dirties downstream
   consumers, not upstream producers). Invalidation never
-  crosses a layered scope boundary unguarded (L4's
+  crosses a layered scope boundary unguarded (S5's
   `SharedCell` write-through is the only legitimate
   cross-tier write surface).
 
-### Axiom R2 — Hybrid push/pull invalidation (SHIPPED)
+### Axiom R2 — Hybrid push/pull invalidation
 
 **Invalidation in polydat is a hybrid: `set_inputs`
 proactively marks dirty every node whose upstream cone
@@ -266,19 +299,19 @@ sets `node_clean[node_idx] = false`. `eval_node` in the
 same file returns early if `node_clean[node_idx]` is
 true. The two halves together realise the hybrid model.
 
-### Axiom R3 — Forward-only data flow (SHIPPED)
+### Axiom R3 — Forward-only data flow
 
 **Data flow in a kernel evaluation is forward-only along
 declared wires from input slots to output slots.
 Invalidation never propagates backward; cross-tier writes
-are restricted to the substrate's L4 SharedCell write-
+are restricted to the substrate's S5 SharedCell write-
 through mechanism; there is no out-of-band data channel
 between nodes or between scopes.**
 
 Enforcement: the wire-chain structure is acyclic (the
 assembler rejects cycles per `AssemblyError::CycleDetected`);
 the pull walker visits nodes in topological order; the
-substrate's L4 is the only cross-tier write surface. SRD-67
+substrate's S5 is the only cross-tier write surface. SRD-67
 walls off any alternative construction path that could
 violate this.
 
@@ -293,15 +326,21 @@ realisations:
 |---|---|
 | **L1** (each layer owns its state) | Per-fiber `GkState`. The kernel's program is `Arc<GkProgram>` (shared, read-only); state is owned by the fiber that holds the kernel. No cross-fiber state sharing at the node tier. |
 | **L2** (two-lifecycle classification bridges layers) | Effectively-const wires are evaluated once during the kernel's scope-init phase; dynamic wires are evaluated on demand per `set_inputs` advance. The buffer layout reflects this — Effectively-const values live in a separate region computed at scope-init. |
-| **L3** (captures as cycle-time bindings) | Capture slot values (`GkState.port_values`) are populated by `ctx.wires.write(name, value)` at op-execution time per SRD-34 / SRD-69. Downstream nodes consuming captures see them as ordinary input-slot reads at evaluation time. |
-| **L4** (cross-tier writes preserve layer ownership) | `SharedCell` write-through routes a writing node's output to a parent-tier cell at compile-emit time (per Graph Compiler §5); at runtime the write fires as an ordinary node output, captured by the chain and propagated outward. |
 
 The runtime model is the *enactment* of the substrate's
 layered state contract: at every cycle, every layer's state
-is owned by its layer; every cross-tier read goes through
-synthesised slots; every cross-tier write goes through L4's
-chokepoint. The runtime mechanism preserves the layering
-inherited from compilation.
+is owned by its layer (L1); every cross-tier read goes
+through synthesised slots (S1+S2); every cross-tier write
+goes through S5's chokepoint. The runtime mechanism
+preserves the layering inherited from compilation.
+
+The S-axis axioms beyond S1+S2 have their own runtime
+realisations alongside R1/R2/R3:
+
+| S-axiom | Runtime realisation |
+|---|---|
+| **S4** (external-write synthesis, open granularity) | External-write slot values (`GkState.port_values`) are populated through the kernel's typed-write API at any granularity the producer chooses; the provenance machinery (R2) marks consumers dirty on write; clean-flag memoization (R1) re-evaluates on next pull. Volatility (R1.v) is the explicit marker for wires whose value is not a function of declared inputs and so cannot be cached even between pulls. |
+| **S5** (compile-emit write-through, cross-tier path) | `SharedCell` write-through routes a writing node's output to a parent-tier cell at compile-emit time (per Graph Compiler §5); at runtime the write fires as an ordinary node output, intercepted by the chain and propagated outward. The outer cell's slot is filled through the standard slot-filling contract; L1's layer-ownership guarantee holds because the outer cell remains the canonical state holder. |
 
 ---
 
@@ -312,7 +351,7 @@ The D-axioms describe the **determinism guarantees** the
 runtime delivers as consequences of those mechanics. Three
 distinct bounds, each named.
 
-### Axiom D1 — Typed Return Determinism (SHIPPED)
+### Axiom D1 — Typed Return Determinism
 
 **For a fixed `Arc<GkProgram>`, fixed input vector, and
 fixed node registry, the typed return value at every
@@ -334,7 +373,7 @@ D1 is the strongest determinism guarantee and the cheapest
 to verify — the host pattern-matches on the typed return
 and gets identical bytes per run.
 
-### Axiom D2 — Side-Channel Determinism (SHIPPED)
+### Axiom D2 — Side-Channel Determinism
 
 **Impure constituent nodes' side channels (logging output,
 file I/O, network calls, etc.) are deterministic
@@ -357,7 +396,7 @@ planned per Expression Engine §12.2). Hosts that care
 about side-channel determinism examine the constituent
 nodes' declared purity status.
 
-### Axiom D3 — Cost Determinism (SHIPPED)
+### Axiom D3 — Cost Determinism
 
 **The cost of a single evaluation — measured as count of
 node `eval` invocations — equals the cone size of the
@@ -421,11 +460,10 @@ guarantees real?" reads §3–§5 (R-axioms and state layering).
 | [Graph Compiler](graph_compiler.md) | Construction passes (H/CF/NF axioms). The R-axioms operate over compiled output; H1's lifecycle classification determines what runs at scope-init vs per-cycle. |
 | [Expression Engine](expression_engine.md) | Embedded-evaluation surface. E3 references D1/D2/D3 as the realisation of bounded determinism. |
 | [SRD-02](../../../docs/sysref/02_concurrency_model.md) | Concurrency model. L1 (each layer owns its state) is realised as per-fiber `GkState`; SRD-02 owns the cross-fiber contract. D1 holds per-fiber. |
-| [SRD-11](../../../docs/sysref/11_gk_evaluation.md) | Foundational evaluation semantics. R1 / R2 are SRD-11's two-lifecycle classification at runtime. The const-binding contract is the scope-init expression of R1. |
-| [SRD-13f](../../../docs/sysref/13f_cross_scope_wire_materialization.md) | Cross-scope read/write. R3's "forward-only with L4 carve-out" cites SRD-13f's SharedCell write-through as the named exception. |
-| [SRD-34](../../../docs/sysref/34_capture_points.md) | Capture timing window. L3's runtime realisation reads from SRD-34's contract. |
-| [SRD-67](../../../docs/sysref/67_gk_subcontext_construction.md) | Walled-off construction. SRD-67's API prevents alternative construction paths that could violate R3. |
-| [SRD-74](../../../docs/sysref/74_none_propagation.md) | `Value::None` propagation. D1 holds for None propagation — same input None → same output None — because T1 carries the None typing as part of the slot contract. |
+| [SRD-11](evaluation_model.md) | Foundational evaluation semantics. R1 / R2 are SRD-11's two-lifecycle classification at runtime. The const-binding contract is the scope-init expression of R1. |
+| [SRD-13f](wire_materialization.md) | Cross-scope read/write. R3's "forward-only with S5 carve-out" cites SRD-13f's SharedCell write-through as the named exception. |
+| [SRD-67](subcontext_construction.md) | Walled-off construction. SRD-67's API prevents alternative construction paths that could violate R3. |
+| [SRD-74](none_semantics.md) | `Value::None` propagation. D1 holds for None propagation — same input None → same output None — because T1 carries the None typing as part of the slot contract. |
 
 ---
 

@@ -3,11 +3,11 @@
 **Subtitle:** Hoisting and Graph Fusion (Context Fusion + Node
 Fusion).
 
-**Status:** DRAFT — formalises the scope-aware compiler that
-produces ready kernels. Names hoisting as the cross-kernel
-composition mechanism, Graph Fusion as the two-phase
-accommodation pipeline, and the V-axioms each preserves over
-the [composition substrate](composition_substrate.md).
+Formalises the scope-aware compiler that produces ready
+kernels. Names hoisting as the cross-kernel composition
+mechanism, Graph Fusion as the two-phase accommodation
+pipeline, and the axioms each preserves over the
+[composition substrate](composition_substrate.md).
 
 ## Authoritative ownership declaration
 
@@ -42,28 +42,28 @@ this document is authoritative.
   compose into H1 (classification totality) + H2
   (monotonicity); G1 (auto-extern discovery) underwrites
   CF1 (synthesis surface completeness).
-- [SRD-10: GK Language and Compilation](../../../docs/sysref/10_gk_language.md)
+- [SRD-10: GK Language and Compilation](language_spec.md)
   — DSL syntax, compiler pipeline overview. Owns the
   language; this doc owns the compiler's scope-aware passes.
-- [SRD-11: GK Evaluation Model](../../../docs/sysref/11_gk_evaluation.md)
+- [SRD-11: GK Evaluation Model](evaluation_model.md)
   — two-lifecycle classification, const-binding contract.
   Hoisting eligibility (§3.3) is a direct function of SRD-11's
   classification.
-- [SRD-13c: GK Scope Model](../../../docs/sysref/13c_gk_scope_model.md)
+- [SRD-13c: GK Scope Model](scope_model.md)
   — auto-extern, `bind_outer_scope`, manifest extraction.
   Context Fusion (§4) is the runtime fulfilment of SRD-13c's
   scope-init mechanism.
-- [SRD-13f: Cross-Scope Wire Materialization](../../../docs/sysref/13f_cross_scope_wire_materialization.md)
+- [SRD-13f: Cross-Scope Wire Materialization](wire_materialization.md)
   — value-only vs shared-cell classification. Context Fusion
   (§4.4) honours SRD-13f's gradient at synthesis time.
-- [SRD-16: GK Engines](../../../docs/sysref/16_gk_engines.md)
+- [SRD-16: GK Engines](engines.md)
   — P1/P2/P3 execution engines, auto-selection heuristic.
   Owns execution-time engine variants; this doc owns the
   construction-time pipeline that produces them.
-- [SRD-16b: GK JIT Wiring](../../../docs/sysref/16b_gk_jit.md)
+- [SRD-16b: GK JIT Wiring](jit_boundary.md)
   — Cranelift boundary semantics. Node Fusion (§5.5)
   interacts with JIT eligibility at fusion-time.
-- [SRD-67: Parent-gated Subcontext Construction](../../../docs/sysref/67_gk_subcontext_construction.md)
+- [SRD-67: Parent-gated Subcontext Construction](subcontext_construction.md)
   — the walled-off cross-binding API. Context Fusion (§4) is
   the typed-builder construction surface SRD-67 gates.
 
@@ -78,36 +78,6 @@ identifies which computation moves to which scope layer) and
 *Graph Fusion* in two phases (Context Fusion at scope-init,
 Node Fusion at compile time). Together they produce a
 ready-kernel that honours the substrate's slot contract.
-
----
-
-## 0. Status legend
-
-Each axiom in this doc carries an explicit status (see
-the legend convention from
-[composition_substrate.md §0](composition_substrate.md)).
-
-Status as of this draft:
-
-| Axiom | Status |
-|---|---|
-| H1 — Classification is total | SHIPPED |
-| H2 — Classification is monotonic and stable under composition | SHIPPED |
-| H3 — Hoisting boundary is preservation-of-determinism | SHIPPED |
-| CF1 — Surface completeness | SHIPPED |
-| CF2 — Deterministic synthesis | SHIPPED |
-| CF3 — Gradient honouring | SHIPPED |
-| CF4 — Synthesis happens once per scope-init | SHIPPED |
-| NF1 — Slot contract preservation | SHIPPED |
-| NF2 — Determinism preservation | SHIPPED |
-| NF3 — Lifecycle preservation or weakening | SHIPPED |
-| NF4 — Compositional closure | SHIPPED |
-
-All H/CF/NF axioms are descriptive of current compiler
-behavior. The §10 open questions track refinements to the
-formal statement (e.g., polyfill catalog formalisation,
-cross-scope hoisting) but do not flag missing
-implementation.
 
 ---
 
@@ -238,7 +208,7 @@ lifecycle. The classification is structural:
 ```text
 classify(wire) =
     if wire is a Coordinate input slot:        Dynamic
-    if wire is a Capture input slot:           Dynamic
+    if wire is an ExternalWrite input slot:    Dynamic
     if wire is an IterationExtern input slot:  Effectively-const (per-scope-init)
     if wire is a const-marked output:          Effectively-const (per-scope-init)
     if wire is an outer-extern with const RHS: Effectively-const (per-scope-init)
@@ -293,11 +263,11 @@ Concrete consequences:
 
 ### 3.4 The Axiom suite — H-axioms
 
-The substrate's axioms (S1–S3, T1–T3, L1–L4) are general
+The substrate's axioms (S1–S5, T1–T3, L1–L2) are general
 guarantees about slots and layers; hoisting adds specific
 guarantees about the analysis itself.
 
-#### Axiom H1 — Classification is total (SHIPPED)
+#### Axiom H1 — Classification is total
 
 **Every wire in a well-formed graph has exactly one
 lifecycle classification (Effectively-const or Dynamic).
@@ -308,7 +278,7 @@ Enforcement: the structural walk in §3.1 is exhaustive;
 unresolved upstream wires fail at construction (SRD-15
 strict mode promotes the warning to error).
 
-#### Axiom H2 — Classification is monotonic and stable under composition (SHIPPED)
+#### Axiom H2 — Classification is monotonic and stable under composition
 
 **Wire `w`'s classification is a monotonic function of its
 upstream cone's classifications: if any upstream is Dynamic,
@@ -322,7 +292,7 @@ can change `w` from Effectively-const to Dynamic but never
 the reverse; this monotonicity is what makes the analysis
 stable under graph rewrites (Node Fusion, §5).
 
-#### Axiom H3 — Hoisting boundary is preservation-of-determinism (SHIPPED)
+#### Axiom H3 — Hoisting boundary is preservation-of-determinism
 
 **A wire `w` moved from the per-cycle path to the scope-init
 path produces the same value at evaluation time as it would
@@ -416,7 +386,7 @@ shape the synthesis surface will take.)
 
 ### 4.3 The Axiom suite — CF-axioms
 
-#### Axiom CF1 — Surface completeness (SHIPPED)
+#### Axiom CF1 — Surface completeness
 
 **Every extern slot in the kernel's `input_defs` is present
 in the synthesis surface, and Context Fusion fills every slot
@@ -428,7 +398,7 @@ Enforcement: `materialize_wiring_from_outer` iterates
 `input_defs` exhaustively; SRD-67's walled-off construction
 gates ensure no alternative synthesis path exists.
 
-#### Axiom CF2 — Deterministic synthesis (SHIPPED)
+#### Axiom CF2 — Deterministic synthesis
 
 **For a fixed outer scope state and a fixed `GkProgram`,
 Context Fusion produces the same slot values every time.
@@ -441,7 +411,7 @@ Enforcement: the synthesis walk is structural over
 is shadow-aware (SRD-21). Identical inputs produce identical
 slot vectors.
 
-#### Axiom CF3 — Gradient honouring (SHIPPED)
+#### Axiom CF3 — Gradient honouring
 
 **The classification of each slot during synthesis (inlined-
 constant / value-only / shared-cell) is *exactly* SRD-13f's
@@ -454,7 +424,7 @@ Matter-AST classification at outer's compile time, recorded
 in outer's program, and read by Context Fusion at scope-
 init. No re-classification at synthesis.
 
-#### Axiom CF4 — Synthesis happens once per scope-init (SHIPPED)
+#### Axiom CF4 — Synthesis happens once per scope-init
 
 **Context Fusion fires once at scope-init: when the kernel
 is being instantiated as a fresh scope. It does not fire
@@ -564,7 +534,7 @@ to execute it; the two concerns compose without conflict.
 
 ### 5.4 The Axiom suite — NF-axioms
 
-#### Axiom NF1 — Slot contract preservation (SHIPPED)
+#### Axiom NF1 — Slot contract preservation
 
 **A Node Fusion rewrite must preserve the slot contract:
 the input slots, output slots, and their declared
@@ -576,7 +546,7 @@ Enforcement: the assembler ([`compile::assembly`]) re-
 validates the post-fusion DAG against T1+T2. A fusion that
 introduces a slot-contract violation fails assembly.
 
-#### Axiom NF2 — Determinism preservation (SHIPPED)
+#### Axiom NF2 — Determinism preservation
 
 **A Node Fusion rewrite must preserve evaluation determinism:
 for every input vector `v`, the rewritten subgraph produces
@@ -587,7 +557,7 @@ catalog requires a determinism property test per entry
 (equivalence on a representative input space). Subgraph
 fusion adds the rewritten node; the test confirms equivalence.
 
-#### Axiom NF3 — Lifecycle preservation or weakening (SHIPPED)
+#### Axiom NF3 — Lifecycle preservation or weakening
 
 **A Node Fusion rewrite may preserve or *weaken* the
 lifecycle classification of any wire, but may not strengthen
@@ -602,7 +572,7 @@ hoisted wires moved to per-cycle). A strengthening is detected
 as a lifecycle change in the unexpected direction; the
 compiler emits a diagnostic.
 
-#### Axiom NF4 — Compositional closure (SHIPPED)
+#### Axiom NF4 — Compositional closure
 
 **The result of a Node Fusion rewrite is itself a subgraph
 eligible for further Node Fusion. The fusion pass iterates
@@ -686,7 +656,7 @@ both source and consumer typed correctly; the substrate's T1
                   ┌─────────────────────────────┐
                   │   Context Fusion (§4)       │   per-scope-init slot
                   │   - Synthesis surface walk  │   synthesis from outer
-                  │   - Slot filling per S2/L4  │
+                  │   - Slot filling per S2/S5  │
                   │   - Scope-init buffer eval  │
                   └─────────────┬───────────────┘
                                 │ ready GkKernel
@@ -707,14 +677,14 @@ axioms (H, CF, NF) guarantee each pass preserves the contract.
 | SRD | Role under this declaration |
 |---|---|
 | [Composition Substrate](composition_substrate.md) | The slot contract (S/T/L) this doc's mechanisms preserve. |
-| [SRD-10](../../../docs/sysref/10_gk_language.md) | Parse + Bind passes. This doc's pipeline starts with SRD-10's output (assembly DAG). |
-| [SRD-11](../../../docs/sysref/11_gk_evaluation.md) | Two-lifecycle classification. Hoisting (§3) is SRD-11's classification rule applied compositionally over the wire chain. |
-| [SRD-13c](../../../docs/sysref/13c_gk_scope_model.md) | Auto-extern + `bind_outer_scope`. The synthesis-surface discovery (S1) and the synthesis act (S2) — Context Fusion's foundations. |
-| [SRD-13f](../../../docs/sysref/13f_cross_scope_wire_materialization.md) | Gradient classification for outer bindings. CF3 honours SRD-13f's classification; CF cannot rewrite. |
+| [SRD-10](language_spec.md) | Parse + Bind passes. This doc's pipeline starts with SRD-10's output (assembly DAG). |
+| [SRD-11](evaluation_model.md) | Two-lifecycle classification. Hoisting (§3) is SRD-11's classification rule applied compositionally over the wire chain. |
+| [SRD-13c](scope_model.md) | Auto-extern + `bind_outer_scope`. The synthesis-surface discovery (S1) and the synthesis act (S2) — Context Fusion's foundations. |
+| [SRD-13f](wire_materialization.md) | Gradient classification for outer bindings. CF3 honours SRD-13f's classification; CF cannot rewrite. |
 | [SRD-15](../../../docs/sysref/15_strict_mode.md) | Strict mode promotion. H1's totality is enforced at construction; SRD-15 promotes the warnings to errors. |
-| [SRD-16](../../../docs/sysref/16_gk_engines.md) | Engine selection (P1/P2/P3/hybrid). The pipeline's engine-selection pass (§6) is owned by SRD-16; this doc references it. |
-| [SRD-16b](../../../docs/sysref/16b_gk_jit.md) | JIT boundary. Node Fusion (§5.3 polyfills) interacts with JIT eligibility; SRD-16b owns the boundary semantics. |
-| [SRD-67](../../../docs/sysref/67_gk_subcontext_construction.md) | Walled-off construction API. CF1 + CF4 are gated by SRD-67's typed-builder chokepoint. |
+| [SRD-16](engines.md) | Engine selection (P1/P2/P3/hybrid). The pipeline's engine-selection pass (§6) is owned by SRD-16; this doc references it. |
+| [SRD-16b](jit_boundary.md) | JIT boundary. Node Fusion (§5.3 polyfills) interacts with JIT eligibility; SRD-16b owns the boundary semantics. |
+| [SRD-67](subcontext_construction.md) | Walled-off construction API. CF1 + CF4 are gated by SRD-67's typed-builder chokepoint. |
 
 ---
 
