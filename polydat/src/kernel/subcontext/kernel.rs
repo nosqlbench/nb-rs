@@ -577,6 +577,8 @@ impl GkKernel {
                 Ok(self.materialize_subscope(p.program, p.iter_bindings))
             }
             GkMatterInner::Source(s) => {
+                let strict = s.options.strict;
+                let label = s.label.clone();
                 let transient = self.transient_typed_parent(&s.label);
                 let mut builder = transient.clone().subcontext_builder();
                 builder
@@ -590,9 +592,12 @@ impl GkKernel {
                 let module = builder.finalize()?;
                 let child = self.materialize_subscope(module.program.clone(), &[]);
                 drop(transient);
+                enforce_l2f_strict(&child, strict, &label)?;
                 Ok(child)
             }
             GkMatterInner::Statements(s) => {
+                let strict = s.options.strict;
+                let label = s.label.clone();
                 let transient = self.transient_typed_parent(&s.label);
                 let mut builder = transient.clone().subcontext_builder();
                 builder
@@ -606,6 +611,7 @@ impl GkKernel {
                 let module = builder.finalize()?;
                 let child = self.materialize_subscope(module.program.clone(), &[]);
                 drop(transient);
+                enforce_l2f_strict(&child, strict, &label)?;
                 Ok(child)
             }
         }
@@ -617,6 +623,35 @@ impl GkKernel {
     fn transient_typed_parent(&self, label: &str) -> Arc<ScopeKernel<RootMarker>> {
         wrap_root_kernel(self.snapshot_with_cells(), format!("{label}__transient"))
     }
+}
+
+/// L2.f strict-mode hardening — when strict is on, escalate
+/// silent Plan B fall-through to a hard error. Per
+/// composition_substrate.md L2.f's strict-mode hardening
+/// clause: an intermediate-layer `const X := <expr>` whose
+/// RHS evaluates to `Value::None` at scope-init normally
+/// falls through to the outer scope's `X` via the
+/// conditional-shadow semantics (none_semantics.md). Strict
+/// mode rejects this silent fall-through, forcing the author
+/// to either ensure the const yields a defined value or
+/// remove the binding and declare `extern X` explicitly if
+/// fall-through to outer was intended.
+fn enforce_l2f_strict(
+    child: &GkKernel,
+    strict: bool,
+    label: &str,
+) -> Result<(), ContractViolation> {
+    if !strict {
+        return Ok(());
+    }
+    let bindings = child.find_l2f_violations();
+    if bindings.is_empty() {
+        return Ok(());
+    }
+    Err(ContractViolation::StrictNonePropagation {
+        bindings,
+        site: SourceContext::new(label.to_string()),
+    })
 }
 
 // `bind_program_under_parent` and the `build_kernel_under_parent_*`

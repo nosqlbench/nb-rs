@@ -6,6 +6,7 @@
 //! and ProvScanState (provenance-scan).
 
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ast::Value;
 use super::WireSource;
@@ -17,8 +18,7 @@ use super::program::GkProgram;
 /// inner kernel via `materialize_wiring_from_outer`, both kernels' input
 /// slots reference the same `SharedCell`. Writes from inner via
 /// `set_input` flow through to the cell; reads on either side
-/// pick up the latest value (with `refresh_shared` re-reading
-/// the cell into the local snapshot).
+/// pick up the latest value.
 ///
 /// Concurrent writers serialize at the Mutex; the current
 /// semantic is **last-write-wins** (lock-acquisition order).
@@ -26,7 +26,161 @@ use super::program::GkProgram;
 /// merge, etc.) — see SRD-16 §"Open: concurrent shared
 /// mutation" — will introduce alternative cell types selected
 /// per binding declaration.
-pub type SharedCell = Arc<Mutex<Value>>;
+///
+/// ## Cross-fiber validity tracking
+///
+/// Each cell carries its own validity-tracking handles per
+/// `polydat/docs/design/cross_fiber_invalidation.md`:
+///
+/// - `revision: AtomicU64` — monotonic counter, bumped on every
+///   write. Consumer fibers cache the last revision they
+///   observed in their per-fiber `last_seen` map; a mismatch
+///   tells the cone walker to re-evaluate.
+/// - `scope_intent_dirty: Arc<AtomicU64>` — bit-vector shared
+///   with every other cell defined in this cell's scope. The
+///   cell's `bit` position is set on every write, allowing
+///   consumers to do an O(1) bulk check ("any cell in this
+///   scope dirty?") before drilling down to the per-cell
+///   revision compare.
+/// - `bit: u8` — this cell's position in the scope's intent-
+///   dirty vector. Allocated at cell creation by the defining
+///   scope's `EngineCore::allocate_cell_bit`. Bounded at 64
+///   for the first cut; spill-to-`Vec<AtomicU64>` is deferred.
+///
+/// The reader contract (S5 §1.1) is preserved: a producer's
+/// `publish` writes value + revision + intent bit in three
+/// Release stores; a consumer's `check_clean` walk on its next
+/// read observes the change without any host-side ceremony.
+pub struct SharedCellInner {
+    /// Cell value. The mutex serialises concurrent writers and
+    /// gives readers single-value atomicity.
+    pub value: Mutex<Value>,
+    /// Monotonic revision counter. Bumped on every write
+    /// (Release); compared by consumers (Acquire) against
+    /// per-fiber `last_seen`.
+    pub revision: AtomicU64,
+    /// Defining scope's intent-dirty bit-vector. Shared by Arc
+    /// across every cell allocated by the same scope. On every
+    /// write the producer ORs `1 << self.bit` into this
+    /// (Release) so consumers' bulk-mask check sees the scope
+    /// as dirty.
+    pub scope_intent_dirty: Arc<AtomicU64>,
+    /// This cell's bit position in `scope_intent_dirty`. Stable
+    /// for the cell's lifetime.
+    pub bit: u8,
+}
+
+impl std::fmt::Debug for SharedCellInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedCellInner")
+            .field("revision", &self.revision.load(Ordering::Relaxed))
+            .field("bit", &self.bit)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SharedCellInner {
+    /// Construct a new cell with the given initial value, bound
+    /// to the defining scope's intent-dirty word at the given
+    /// bit position within that word. Callers must allocate
+    /// `(word, bit)` via [`EngineCore::allocate_cell_bit`] —
+    /// the bit is not reusable for the cell's lifetime.
+    pub fn new(
+        initial: Value,
+        scope_intent_dirty: Arc<AtomicU64>,
+        bit: u8,
+    ) -> Self {
+        debug_assert!(
+            bit < 64,
+            "bit-within-word {bit} must be < 64; the allocator splits >64-bit \
+             scope vectors across multiple words"
+        );
+        Self {
+            value: Mutex::new(initial),
+            revision: AtomicU64::new(0),
+            scope_intent_dirty,
+            bit,
+        }
+    }
+
+    /// Producer-side write: replace the cell's value, bump the
+    /// revision, set the intent bit. Three Release stores
+    /// publish the write across any consumer fiber per
+    /// `cross_fiber_invalidation.md` §6. The mutex critical
+    /// section is held only for the value swap; the atomics
+    /// run outside it.
+    pub fn publish(&self, value: Value) {
+        {
+            let mut guard = self.value.lock().unwrap();
+            *guard = value;
+        }
+        self.revision.fetch_add(1, Ordering::Release);
+        self.scope_intent_dirty
+            .fetch_or(1u64 << self.bit, Ordering::Release);
+    }
+
+    /// Consumer-side read: snapshot the cell's value and the
+    /// revision it was published at. Returns a pair so the
+    /// caller can update its `last_seen[cell] = revision`
+    /// alongside taking the value, without a second cell access.
+    pub fn snapshot(&self) -> (Value, u64) {
+        // Acquire-load the revision first so the value read
+        // synchronises-with the producer's value publication.
+        // The mutex itself provides the memory barrier for the
+        // value, but the revision is read with explicit Acquire
+        // for the cross-fiber happens-before relation.
+        let value = self.value.lock().unwrap().clone();
+        let revision = self.revision.load(Ordering::Acquire);
+        (value, revision)
+    }
+}
+
+/// Externally-held handle to a shared cell. `Arc<SharedCellInner>`
+/// so a single cell can be referenced from many kernels at
+/// once. The handle is cheap to clone (Arc bump).
+pub type SharedCell = Arc<SharedCellInner>;
+
+/// Per-node cone metadata for cell-bound input dependencies.
+///
+/// Built lazily on first `check_cell_clean` per node and
+/// cached in [`EngineCore::cell_cones`]; invalidated by
+/// clearing the cache whenever cells are attached or detached.
+///
+/// The structure groups a node's cell-bound input dependencies
+/// by the defining scope's `intent_dirty` Arc (compared by
+/// `Arc::ptr_eq`). Each group carries the bulk-check
+/// `interest_mask` for the scope plus per-cell drill-down
+/// entries — implementing the bulk-mask + per-cell-revision
+/// protocol from `cross_fiber_invalidation.md` §5.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct CellCone {
+    /// Cells grouped by defining-scope's `intent_dirty`. Empty
+    /// = no cell-bound deps; check returns trivially clean.
+    pub(crate) groups: Vec<CellConeGroup>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CellConeGroup {
+    /// Defining scope's `intent_dirty` vector (Arc cloned from
+    /// the cells). Bulk-mask check: AND this against
+    /// `interest_mask`; if zero, every cell in this group is
+    /// clean for this consumer (modulo last_seen) — skip the
+    /// drill-down.
+    pub(crate) intent_dirty: Arc<AtomicU64>,
+    /// OR of `1 << cell.bit` for every cell in this group.
+    pub(crate) interest_mask: u64,
+    /// Per-cell drill-down entries. Each gives the bit position
+    /// in `intent_dirty` plus the input slot index where the
+    /// cell is attached, for revision compare against
+    /// `last_seen`.
+    pub(crate) cells: Vec<CellConeEntry>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CellConeEntry {
+    pub(crate) bit: u8,
+    pub(crate) input_slot: usize,
+}
 
 /// One named shared cell propagated through the parent → child
 /// scope chain. Carried on `GkKernel` (and surfaced through
@@ -150,6 +304,81 @@ pub struct EngineCore {
     pub(crate) output_cells: Vec<Option<SharedCell>>,
     /// Pre-allocated scratch buffer for node input gathering.
     pub(crate) input_scratch: Vec<Value>,
+    /// This scope's intent-dirty bit-vector. One `AtomicU64`
+    /// word per 64 cells allocated by this scope; new words
+    /// are appended on demand by [`Self::allocate_cell_bit`].
+    /// Each cell carries a clone of the specific `Arc<AtomicU64>`
+    /// for its word (and its bit-within-word). Consumer fibers'
+    /// bulk-mask check (per `cross_fiber_invalidation.md` §5)
+    /// groups cells by `Arc::ptr_eq` of their word and ANDs
+    /// the loaded word against the cone's interest mask for
+    /// that word.
+    ///
+    /// The `Vec<Arc<...>>` shape — rather than a single
+    /// `Arc<Vec<AtomicU64>>` — lets cells take a stable
+    /// per-word handle that the scope can grow without
+    /// invalidating any existing cell's reference.
+    pub(crate) scope_intent_words: Vec<Arc<AtomicU64>>,
+    /// Next bit position to allocate from
+    /// [`Self::scope_intent_words`]. Word index is
+    /// `next_cell_bit / 64`; bit within word is
+    /// `next_cell_bit % 64`. Monotonic; bits are never reused
+    /// within a scope's lifetime.
+    pub(crate) next_cell_bit: u32,
+    /// Per-fiber cache of the last revision this engine observed
+    /// for each cell it has read. Keyed by `Arc::as_ptr` of the
+    /// `SharedCellInner`. Sparse; entries are inserted lazily
+    /// on first observation via `check_cell_clean`.
+    ///
+    /// Per-fiber state — no contention. Pointer keys are stable
+    /// for the cell's lifetime; orphaned entries for dropped
+    /// cells are harmless (the handle is never observed again).
+    pub(crate) last_seen: std::collections::HashMap<*const SharedCellInner, u64>,
+    /// Per-node cone metadata for cell-bound input deps. Lazy:
+    /// `None` until first `check_cell_clean` for that node;
+    /// then built once and reused. Cleared in bulk on any
+    /// attach/detach of shared cells.
+    pub(crate) cell_cones: Vec<Option<CellCone>>,
+}
+
+// `last_seen` keys are `*const SharedCellInner` raw pointers,
+// which Rust treats as non-Send/non-Sync. The pointers are
+// only compared by identity (never dereferenced) and each
+// `EngineCore` is owned by exactly one fiber, so the
+// non-thread-safe pointer keys are sound. The Send/Sync
+// markers here cover that gap explicitly.
+unsafe impl Send for EngineCore {}
+unsafe impl Sync for EngineCore {}
+
+impl EngineCore {
+    /// Allocate the next bit position from this scope's
+    /// intent-dirty vector for a newly-created cell. Returns
+    /// the specific word's `Arc<AtomicU64>` plus the bit
+    /// position within that word. Grows
+    /// [`Self::scope_intent_words`] on demand — each new word
+    /// is a freshly-allocated `Arc<AtomicU64>` so existing
+    /// cells' references stay stable.
+    pub(crate) fn allocate_cell_bit(&mut self) -> (Arc<AtomicU64>, u8) {
+        let bit = self.next_cell_bit;
+        let word_idx = (bit / 64) as usize;
+        let bit_in_word = (bit % 64) as u8;
+        while self.scope_intent_words.len() <= word_idx {
+            self.scope_intent_words.push(Arc::new(AtomicU64::new(0)));
+        }
+        let word = self.scope_intent_words[word_idx].clone();
+        self.next_cell_bit += 1;
+        (word, bit_in_word)
+    }
+
+    /// Construct a new `SharedCell` bound to this scope's
+    /// intent-dirty vector. Convenience wrapper that allocates
+    /// a fresh bit and builds the cell — every cell creation
+    /// site goes through here so the scope's bit allocator
+    /// stays the single source of truth.
+    pub(crate) fn make_shared_cell(&mut self, initial: Value) -> SharedCell {
+        let (word, bit) = self.allocate_cell_bit();
+        Arc::new(SharedCellInner::new(initial, word, bit))
+    }
 }
 
 impl EngineCore {
@@ -166,9 +395,122 @@ impl EngineCore {
     #[inline]
     pub(crate) fn read_input(&self, idx: usize) -> Value {
         if let Some(cell) = self.shared_cells.get(idx).and_then(|c| c.as_ref()) {
-            return cell.lock().unwrap().clone();
+            return cell.value.lock().unwrap().clone();
         }
         self.inputs[idx].clone()
+    }
+
+    /// Build the cone metadata for `node_idx` — the per-scope
+    /// groups of cell-bound input dependencies, derived from
+    /// `program.input_provenance[node_idx]` and the cells
+    /// currently attached on this engine.
+    ///
+    /// Returns an empty `CellCone { groups: [] }` for nodes
+    /// with no cell-bound deps (the common case).
+    fn build_cell_cone(&self, program: &GkProgram, node_idx: usize) -> CellCone {
+        let prov = program.input_provenance
+            .get(node_idx)
+            .copied()
+            .unwrap_or(0);
+        let mut groups: Vec<CellConeGroup> = Vec::new();
+        // Iterate set bits of `prov` directly: each bit is an
+        // input slot that flows into this node transitively.
+        let mut bits = prov;
+        while bits != 0 {
+            let input_idx = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let Some(Some(cell)) = self.shared_cells.get(input_idx) else { continue; };
+            // Group by Arc-pointer identity of scope_intent_dirty.
+            let group_idx = groups.iter()
+                .position(|g| Arc::ptr_eq(&g.intent_dirty, &cell.scope_intent_dirty));
+            let i = match group_idx {
+                Some(i) => i,
+                None => {
+                    groups.push(CellConeGroup {
+                        intent_dirty: cell.scope_intent_dirty.clone(),
+                        interest_mask: 0,
+                        cells: Vec::new(),
+                    });
+                    groups.len() - 1
+                }
+            };
+            groups[i].interest_mask |= 1u64 << cell.bit;
+            groups[i].cells.push(CellConeEntry {
+                bit: cell.bit,
+                input_slot: input_idx,
+            });
+        }
+        CellCone { groups }
+    }
+
+    /// Cross-fiber check: return `true` if this fiber's
+    /// `last_seen` is up-to-date for every cell in `node_idx`'s
+    /// cone (no cross-fiber writes since last observation).
+    /// Returns `false` if any cell's revision has advanced,
+    /// updating `last_seen` to reflect the new revisions in
+    /// preparation for the caller's re-evaluation.
+    ///
+    /// Per cross_fiber_invalidation.md §5: bulk-mask check
+    /// (one Acquire load + AND per scope group) early-outs
+    /// when nothing in the scope is dirty; per-cell drill-down
+    /// runs only on set bits.
+    fn check_cell_clean(
+        &mut self,
+        program: &GkProgram,
+        node_idx: usize,
+    ) -> bool {
+        // Lazy build the cone metadata.
+        if self.cell_cones.len() <= node_idx {
+            self.cell_cones.resize_with(node_idx + 1, || None);
+        }
+        if self.cell_cones[node_idx].is_none() {
+            let cone = self.build_cell_cone(program, node_idx);
+            self.cell_cones[node_idx] = Some(cone);
+        }
+
+        // First pass: walk the cone, collect mismatches. The
+        // immutable borrow of `self.cell_cones`,
+        // `self.shared_cells`, and `self.last_seen` coexist
+        // because they're disjoint fields of `self`.
+        let mut dirty: Vec<(*const SharedCellInner, u64)> = Vec::new();
+        {
+            let cone = self.cell_cones[node_idx].as_ref().unwrap();
+            for group in &cone.groups {
+                let intent = group.intent_dirty.load(Ordering::Acquire);
+                let masked = intent & group.interest_mask;
+                if masked == 0 { continue; }
+                for entry in &group.cells {
+                    if masked & (1u64 << entry.bit) == 0 { continue; }
+                    let Some(Some(cell)) = self.shared_cells.get(entry.input_slot) else {
+                        continue;
+                    };
+                    let r = cell.revision.load(Ordering::Acquire);
+                    let ptr = Arc::as_ptr(cell);
+                    let prev = self.last_seen.get(&ptr).copied().unwrap_or(0);
+                    if r != prev {
+                        dirty.push((ptr, r));
+                    }
+                }
+            }
+        }
+        let clean = dirty.is_empty();
+        // Second pass: update last_seen for every cell whose
+        // revision we observed has advanced. Done in a
+        // separate pass to release the cone borrow above.
+        for (ptr, r) in dirty {
+            self.last_seen.insert(ptr, r);
+        }
+        clean
+    }
+
+    /// Mark `cell_cones` as stale. Called after any change to
+    /// `shared_cells` that could affect the per-node cone
+    /// metadata (attach, detach). Next `check_cell_clean` on
+    /// any node will rebuild on demand.
+    pub(crate) fn invalidate_cell_cones(&mut self) {
+        for cone in self.cell_cones.iter_mut() {
+            *cone = None;
+        }
     }
 
     /// Evaluate a node by index. Shared by all engines.
@@ -176,7 +518,17 @@ impl EngineCore {
     /// inputs, calls node.eval(), marks clean.
     pub fn eval_node(&mut self, program: &GkProgram, node_idx: usize) {
         if self.node_clean[node_idx] {
-            return;
+            // Memoization hit candidate — confirm cell-bound
+            // inputs in this node's cone are still at the
+            // revisions this fiber last observed. If any
+            // producer fiber has bumped a cell's revision since
+            // then, force a re-eval (the cache is stale even
+            // though `node_clean` is true) per
+            // cross_fiber_invalidation.md §5.
+            if self.check_cell_clean(program, node_idx) {
+                return;
+            }
+            self.node_clean[node_idx] = false;
         }
 
         let wiring = &program.wiring[node_idx];
@@ -277,7 +629,11 @@ impl EngineCore {
             && let Some(Some(cell)) = self.output_cells.get(output_idx)
         {
             let v = self.buffers[node_idx][port_idx].clone();
-            *cell.lock().unwrap() = v;
+            // `publish` does the mutex write + revision bump +
+            // intent-bit set in three Release stores so the
+            // descendant's cone walker observes the change on
+            // its next read (cross_fiber_invalidation.md §5).
+            cell.publish(v);
         }
         &self.buffers[node_idx][port_idx]
     }
@@ -296,19 +652,25 @@ impl EngineCore {
     pub(crate) fn seed_output_cells(&mut self, program: &GkProgram) {
         let n = program.output_names().len();
         if self.output_cells.len() == n { return; }
-        self.output_cells = (0..n).map(|i| {
+        // Two-pass to avoid borrowing `self` immutably (for
+        // buffer lookups) while also borrowing it mutably (for
+        // `make_shared_cell`). First collect initial values,
+        // then construct the cells.
+        let initials: Vec<Value> = (0..n).map(|i| {
             let name = &program.output_list()[i].0;
             let (node_idx, port_idx) = program.output_map[name];
             // Defensive bounds-check: some construction paths
             // (raw state, partial programs) may not populate
             // buffers for every node referenced in the output
             // map. Seed with `Value::None` rather than panic.
-            let init = self.buffers.get(node_idx)
+            self.buffers.get(node_idx)
                 .and_then(|b| b.get(port_idx))
                 .cloned()
-                .unwrap_or(Value::None);
-            Some(std::sync::Arc::new(std::sync::Mutex::new(init)))
+                .unwrap_or(Value::None)
         }).collect();
+        self.output_cells = initials.into_iter()
+            .map(|init| Some(self.make_shared_cell(init)))
+            .collect();
     }
 
     /// Output broadcast cell for the named output, if seeded.
@@ -389,8 +751,13 @@ impl GkState {
             // Cell-bound slot: the cell is the register. We do
             // NOT mirror the value into `inputs[idx]`; that
             // array slot is unused for cell-bound inputs.
-            let mut guard = cell.lock().unwrap();
-            *guard = value;
+            //
+            // `publish` does the mutex write + revision bump +
+            // intent-bit set in three Release stores so the
+            // any other fiber's cone walker observes the
+            // change on its next read
+            // (cross_fiber_invalidation.md §5).
+            cell.publish(value);
         } else {
             self.core.inputs[idx] = value;
         }
@@ -468,6 +835,11 @@ impl GkState {
                 self.core.node_clean[node_idx] = false;
             }
         }
+        // Cone metadata depends on which slots have cells; the
+        // new attachment invalidates any cached cone groups.
+        // Next `check_cell_clean` per node rebuilds on demand
+        // per cross_fiber_invalidation.md §3.1.
+        self.core.invalidate_cell_cones();
     }
 
     /// Returns the `SharedCell` attached to an input slot, if any.
@@ -475,30 +847,6 @@ impl GkState {
     /// inner kernels.
     pub fn shared_cell(&self, idx: usize) -> Option<SharedCell> {
         self.core.shared_cells.get(idx).and_then(|c| c.clone())
-    }
-
-    /// Mark every node that depends on a cell-bound input slot as
-    /// dirty. Called at cycle boundary on descendant kernels so
-    /// that values written into shared cells by ancestor kernels'
-    /// `advance_broadcasts` actually propagate through our memoized
-    /// eval cone on the next pull.
-    ///
-    /// Without this, a passthrough output node like `query` —
-    /// whose wiring is `WireSource::Input(idx_of_query_slot)` and
-    /// whose `query` slot is attached to the phase kernel's output
-    /// cell — caches its first-cycle value forever, because no
-    /// `set_input` call on this kernel ever touches that slot (the
-    /// cell is written by the ancestor, not via our `set_input`).
-    pub fn invalidate_cell_bound_dependents(&mut self) {
-        let n = self.core.shared_cells.len()
-            .min(self.input_dependents.len());
-        for i in 0..n {
-            if self.core.shared_cells[i].is_some() {
-                for &node_idx in &self.input_dependents[i] {
-                    self.core.node_clean[node_idx] = false;
-                }
-            }
-        }
     }
 
     /// Reset a range of inputs to their defaults. Used at stanza

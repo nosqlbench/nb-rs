@@ -366,6 +366,74 @@ fn scope_pipeline_with_shared_and_final() {
 }
 
 // =========================================================================
+// S5.r: `shared` is write-permission-only — reads are uniform
+// =========================================================================
+//
+// Per composition_substrate.md sub-axiom S5.r, the `shared`
+// modifier on a wire declares that it is *writable* across
+// tier boundaries via SharedCell write-through. It does NOT
+// affect read access — inner-scope reads of any visible
+// cross-tier wire return the current outer-tier value via the
+// uniform read invariant (L1), whether the wire is marked
+// `shared` or not. Read mediation is governed by the chain's
+// wiring synthesis at construction time, not by the modifier.
+//
+// This test exercises both wire kinds through the same read
+// path and asserts identical observable behavior: a `shared`
+// wire and an ordinary wire, both visible from the inner
+// scope, return the same value through `state.get_input` and
+// through `kernel.lookup`, and the inner scope's `find_input`
+// resolves both names the same way. Any divergence would
+// indicate read-side branching on the modifier — a violation
+// of S5.r.
+
+#[test]
+fn inner_reads_uniform_across_shared_and_nonshared() {
+    let outer = compile_gk(r#"
+        input cycle: u64
+        shared shared_x := 1
+        plain_y := 2
+    "#).unwrap();
+
+    let inner_program = compile_gk(r#"
+        input cycle: u64
+        extern shared_x: u64 = 0
+        extern plain_y: u64 = 0
+    "#).unwrap();
+    let inner_program = inner_program.program().clone();
+    let mut inner = outer
+        .subscope(GkMatter::builder().program(inner_program).build().unwrap())
+        .unwrap();
+
+    // Both names must resolve through the same input-lookup
+    // path. If `shared` were affecting read access, find_input
+    // might return None for one or different indices for
+    // semantically-equivalent slots.
+    let sx_idx = inner.program().find_input("shared_x")
+        .expect("shared_x must resolve through find_input regardless of `shared` marker");
+    let py_idx = inner.program().find_input("plain_y")
+        .expect("plain_y must resolve through find_input the same way");
+
+    // Both reads go through the same EngineCore::read_input
+    // primitive. The shared wire has a cell installed; the
+    // non-shared wire has its value in the inputs array. The
+    // primitive transparently handles both — observable
+    // behavior must be identical.
+    assert_eq!(inner.state().get_input(sx_idx).as_u64(), 1,
+        "inner read of `shared` wire must return outer's value uniformly");
+    assert_eq!(inner.state().get_input(py_idx).as_u64(), 2,
+        "inner read of non-shared wire must return outer's value uniformly");
+
+    // The higher-level lookup path also goes through
+    // read_input. Both names must yield typed values
+    // identically — no shared-specific fast path or fallback.
+    assert_eq!(inner.lookup("shared_x").unwrap().as_u64(), 1,
+        "lookup must return shared wire value uniformly");
+    assert_eq!(inner.lookup("plain_y").unwrap().as_u64(), 2,
+        "lookup must return non-shared wire value uniformly");
+}
+
+// =========================================================================
 // Multiple sequential scopes (simulates phases)
 // =========================================================================
 

@@ -962,7 +962,7 @@ pub type CompiledU64Op = Box<dyn Fn(&[u64], &mut [u64]) + Send + Sync>;
 /// [`GkNode::purity`]. The default is [`Purity::Pure`]; nodes
 /// with observable side channels (logging, file I/O, network)
 /// or eval-call-spanning state override to declare
-/// [`Purity::SideChannel`] or [`Purity::Stateful`].
+/// [`Purity::SideChannel`] or [`Purity::Nondeterministic`].
 ///
 /// **D1 (Typed Return Determinism) holds for every purity
 /// class.** The slot contract carries only typed return
@@ -989,13 +989,27 @@ pub enum Purity {
     /// observable surface this node writes to.
     SideChannel { sink: SideChannelSink },
 
-    /// Holds eval-call-spanning state. The typed return value
-    /// at call N may depend not only on call N's inputs but
-    /// also on state mutated by calls 1..N-1. Rare; mostly
-    /// for stateful generators where the runtime's
-    /// `node_clean` caching model doesn't apply. The `reason`
-    /// string documents what state the node carries.
-    Stateful { reason: &'static str },
+    /// The typed return value is not a function of declared
+    /// inputs alone — it depends on external sources (system
+    /// clock, entropy, thread identity, environment) or on
+    /// eval-call-spanning internal state mutated by prior calls.
+    /// In either case, the runtime's `node_clean` caching model
+    /// must opt the node out of within-cycle memoization
+    /// suppression; the lifecycle classifier marks the node as
+    /// nondeterministic per `kernel/engines.rs::nondeterministic_nodes`.
+    /// The `reason` string documents the source of
+    /// non-determinism (e.g., "reads system clock",
+    /// "monotonic counter incremented per call",
+    /// "accumulates signal buffer across calls").
+    ///
+    /// This is the intrinsic-volatility marker referenced by
+    /// runtime_model.md R1.v: certain library nodes declare
+    /// themselves volatile via this variant; no user opt-in is
+    /// required, and the workload author cannot remove the
+    /// marker. User-opt-in volatility via the `volatile`
+    /// modifier is a separate surface that produces the same
+    /// runtime effect (see R1.v).
+    Nondeterministic { reason: &'static str },
 }
 
 /// Where a [`Purity::SideChannel`] node writes its observable
@@ -1094,7 +1108,7 @@ pub trait GkNode: Send + Sync {
     /// [`runtime_model.md`'s D2 axiom][spec]. Default:
     /// [`Purity::Pure`]. Override to declare an observable
     /// side channel ([`Purity::SideChannel`]) or
-    /// eval-call-spanning state ([`Purity::Stateful`]).
+    /// eval-call-spanning state ([`Purity::Nondeterministic`]).
     ///
     /// **What this affects:**
     ///
@@ -1105,7 +1119,7 @@ pub trait GkNode: Send + Sync {
     ///   cache. For `SideChannel` nodes, this means the
     ///   side channel fires once per dirty-to-clean
     ///   transition (not on every pull).
-    /// - `Purity::Stateful` nodes opt out of `node_clean`
+    /// - `Purity::Nondeterministic` nodes opt out of `node_clean`
     ///   caching at the construction tier (assembly marks
     ///   them as nondeterministic per
     ///   `kernel/engines.rs::nondeterministic_nodes`).
@@ -1189,7 +1203,7 @@ mod purity_tests {
         fn meta(&self) -> &NodeMeta { &self.meta }
         fn eval(&self, _inputs: &[Value], _outputs: &mut [Value]) {}
         fn purity(&self) -> Purity {
-            Purity::Stateful { reason: "test fixture" }
+            Purity::Nondeterministic { reason: "test fixture" }
         }
     }
 
@@ -1220,7 +1234,7 @@ mod purity_tests {
     fn stateful_declaration_is_observable() {
         let n = StatefulNode { meta: empty_meta() };
         match n.purity() {
-            Purity::Stateful { reason } => assert_eq!(reason, "test fixture"),
+            Purity::Nondeterministic { reason } => assert_eq!(reason, "test fixture"),
             other => panic!("expected Stateful, got {other:?}"),
         }
     }

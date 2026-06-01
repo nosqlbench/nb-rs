@@ -1483,7 +1483,7 @@ mod tests {
 
         let mut asm = GkAssembler::new(vec!["cycle".into()]);
         // Add an extern input (defaults to None)
-        asm.add_input("captured_name", Value::None, PortType::Str, crate::kernel::InputKind::CapturePort);
+        asm.add_input("captured_name", Value::None, PortType::Str, crate::kernel::InputKind::ExternalWrite);
         // Passthrough so the input is a node
         asm.add_node("__port_captured_name",
             Box::new(PortPassthrough::new("captured_name", PortType::Str)),

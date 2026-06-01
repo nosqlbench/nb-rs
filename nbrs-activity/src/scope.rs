@@ -1529,7 +1529,7 @@ pub fn build_op_template_scope_kernel(
             inherited_names.push(name.clone());
         } else if let Some(parent_idx) = parent_kernel.program().find_input(name) {
             // Parent INPUT — for non-Coordinate inputs (iteration
-            // vars, capture ports) emit an explicit `extern` so the
+            // vars, external-write ports) emit an explicit `extern` so the
             // inner kernel's input classification matches the
             // parent's, and materialize_wiring_from_outer can value-copy or
             // shared-cell-attach. For Coordinate inputs (e.g. the
@@ -3934,7 +3934,7 @@ extern keyspace: String
         // the slot.
         //
         // SRD-13c §"Shared Mutable" step 1: `shared X := <literal>`
-        // produces an input slot Bool (kind=CapturePort) plus a
+        // produces an input slot Bool (kind=ExternalWrite) plus a
         // passthrough output Bool, modifier SHARED.
         //
         // This unit-test verifies the documented type-preservation
@@ -3979,7 +3979,7 @@ extern keyspace: String
             "phase kernel's has_sai_column_indexes slot must be Bool, got {port_type:?}");
 
         // Kind must NOT be Coordinate — cascaded names are IterationExtern
-        // (or CapturePort), not Coordinate. Coordinate would put the slot
+        // (or ExternalWrite), not Coordinate. Coordinate would put the slot
         // in the set_inputs(&[u64]) propagation, breaking the cell-bound
         // contract per SRD-13c §"Shared Mutable" step 3.
         let kind = phase_kernel.program().input_kind(idx);
@@ -4290,7 +4290,7 @@ extern keyspace: String
         // we replicate the essential moves to expose what differs
         // from a direct `compile_gk(source)` invocation.
         //
-        // SRD-13c §"Shared Mutable" requires has_a to be CapturePort
+        // SRD-13c §"Shared Mutable" requires has_a to be ExternalWrite
         // kind, Bool type on the workload-root program. The
         // dryrun=gk output of the failing integration test shows
         // the downstream phase has has_a as Coordinate U64, so
@@ -4357,7 +4357,7 @@ extern keyspace: String
         // The workload-root program must have has_a:
         //   - present as an input slot,
         //   - typed Bool (SRD-13c §"Shared Mutable" step 1),
-        //   - kind CapturePort (NOT Coordinate),
+        //   - kind ExternalWrite (NOT Coordinate),
         //   - marked SHARED in output_modifier (so seed_shared_cells fires).
         let has_a_idx = root.program().find_input("has_a")
             .unwrap_or_else(|| panic!(
@@ -4428,7 +4428,7 @@ extern keyspace: String
              selector := mod(cycle, 1)\n"
         ).expect("workload root compile");
 
-        // Workload-root contract: has_a is Bool CapturePort slot
+        // Workload-root contract: has_a is Bool ExternalWrite slot
         // (SRD-13c §"Shared Mutable" step 1).
         let root_has_a_idx = root.program().find_input("has_a")
             .expect("workload root has_a slot");

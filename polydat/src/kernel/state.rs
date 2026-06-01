@@ -4,7 +4,7 @@
 //! GkKernel: a compiled GK kernel pairing an Arc<GkProgram> with a GkState.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::ast::{GkNode, Value};
 use super::{WireSource, InputDef};
@@ -26,7 +26,17 @@ fn seed_shared_cells(state: &mut GkState, program: &GkProgram) {
         let Some(idx) = program.find_input(name) else { continue };
         if state.shared_cell(idx).is_some() { continue; } // already seeded
         let init_value = state.get_input(idx);
-        state.attach_shared_cell(idx, Arc::new(Mutex::new(init_value)));
+        // `make_shared_cell` allocates the next bit position
+        // from this scope's intent-dirty vector and constructs
+        // the cell with the right validity-tracking handles
+        // (cross_fiber_invalidation.md §3.1). The cell carries
+        // its own intent_dirty Arc + bit so any fiber writing
+        // through it publishes dirty intent to this scope's
+        // vector — descendant kernels that later attach via
+        // `materialize_wiring_from_outer` inherit the same
+        // handles automatically.
+        let cell = state.core.make_shared_cell(init_value);
+        state.attach_shared_cell(idx, cell);
     }
 }
 
@@ -46,7 +56,7 @@ fn seed_shared_cells(state: &mut GkState, program: &GkProgram) {
 /// Spec: `expression_engine.md` §5.4 (boundary adapter
 /// polyfills); `composition_substrate.md` T2 (typed-mismatch
 /// healing extended to synthesis sites).
-fn adapt_boundary_value(slot_name: &str, slot_type: crate::ast::PortType, value: Value) -> Value {
+pub(crate) fn adapt_boundary_value(slot_name: &str, slot_type: crate::ast::PortType, value: Value) -> Value {
     let value_type = value.port_type();
     if value_type == slot_type {
         return value;
@@ -546,6 +556,44 @@ impl GkKernel {
         let (node_idx, port_idx) = self.program.output_map.get(name)?;
         let val = &self.state.core.buffers[*node_idx][*port_idx];
         if matches!(val, Value::None) { None } else { Some(val) }
+    }
+
+    /// Find every `const` output whose Plan B materialisation
+    /// left the buffer as `Value::None`. The L2.f sub-axiom in
+    /// composition_substrate.md describes this case: an
+    /// intermediate-layer `const X := <expr>` whose RHS yields
+    /// None falls through silently to the outer scope's X via
+    /// the conditional-shadow semantics in none_semantics.md.
+    /// This method is the substrate's "did silent fall-through
+    /// occur" query — strict-mode callers (per L2.f's
+    /// strict-mode hardening note) use it to escalate the
+    /// silent fall-through to a hard error.
+    ///
+    /// Returns the const-output names whose buffers are
+    /// `Value::None` after the scope-init pull. Empty `Vec`
+    /// means every const materialised to a defined value.
+    /// Polydat itself does not implement the strict-mode
+    /// policy — it provides this query and the caller decides
+    /// whether to surface a diagnostic.
+    ///
+    /// Call only after `materialize_wiring_from_outer` has run
+    /// (i.e., after the kernel is fully constructed and
+    /// scope-init pulls have completed). Calling before
+    /// scope-init returns a misleading result.
+    pub fn find_l2f_violations(&self) -> Vec<String> {
+        self.program.const_outputs.iter()
+            .filter(|name| {
+                self.program.output_map.get(name.as_str())
+                    .map(|(node_idx, port_idx)| {
+                        matches!(
+                            &self.state.core.buffers[*node_idx][*port_idx],
+                            Value::None
+                        )
+                    })
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect()
     }
 
     /// Look up a name in this kernel's scope.

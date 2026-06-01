@@ -28,7 +28,7 @@ pub(crate) enum EvalLifecycle {
     /// duration of one activation.
     ScopeInit,
     /// Re-evaluated on each pull at execution time. Reaches a
-    /// graph input (cycle / capture port) or a non-deterministic
+    /// graph input (cycle / external-write port) or a non-deterministic
     /// source.
     Dynamic,
 }
@@ -62,9 +62,9 @@ fn first_dynamic_wire(
                              (dynamic; changes every cycle)",
                             def.name);
                     }
-                    InputKind::CapturePort => {
+                    InputKind::ExternalWrite => {
                         return format!(
-                            "wire on node '{owner}' reaches capture port '{}' \
+                            "wire on node '{owner}' reaches external-write port '{}' \
                              (dynamic; mutated by op execution)",
                             def.name);
                     }
@@ -562,6 +562,17 @@ impl GkProgram {
             // seed pass sizes it to match output count.
             output_cells: Vec::new(),
             input_scratch: vec![Value::None; max_inputs],
+            // Per-scope intent-dirty vector + bit allocator
+            // (cross_fiber_invalidation.md §3.1). Fresh atomic
+            // per EngineCore — one per fiber state — so cells
+            // allocated through this core publish their dirty
+            // intent through a single shared atomic that this
+            // fiber's check_clean walker reads against the
+            // cone's interest mask.
+            scope_intent_words: Vec::new(),
+            next_cell_bit: 0,
+            last_seen: std::collections::HashMap::new(),
+            cell_cones: Vec::new(),
         }
     }
 
@@ -582,10 +593,57 @@ impl GkProgram {
             .max()
             .unwrap_or(0);
 
-        let nondeterministic_nodes: Vec<usize> = self.nodes.iter().enumerate()
-            .filter(|(i, node)| self.wiring[*i].is_empty() && node.meta().ins.is_empty())
+        // Per R1.v's intrinsic-volatility carve-out + transitive
+        // contagion claim.
+        //
+        // Seed set:
+        //   - Nullary nodes with no inputs at all — nothing to be
+        //     deterministic-with-respect-to.
+        //   - Nodes declaring `Purity::Nondeterministic` — the
+        //     intrinsic-volatility marker; their typed return is not
+        //     a function of declared inputs (system clock, entropy,
+        //     thread identity, eval-spanning state, etc.).
+        //
+        // Then transitively close forward through node-output
+        // wiring: any node consuming a nondeterministic producer's
+        // output is itself nondeterministic (contagion). Without
+        // this closure, downstream consumers of a volatile producer
+        // would retain stale cached values across cycles — the
+        // producer's clean flag is reset per cycle but the
+        // consumer's isn't, so a pull on the consumer would
+        // short-circuit to the cached value referencing the
+        // producer's stale output.
+        let seed: Vec<usize> = self.nodes.iter().enumerate()
+            .filter(|(i, node)| {
+                let nullary = self.wiring[*i].is_empty() && node.meta().ins.is_empty();
+                let declared = matches!(node.purity(), crate::ast::Purity::Nondeterministic { .. });
+                nullary || declared
+            })
             .map(|(i, _)| i)
             .collect();
+        // Forward transitive closure via the existing wire graph
+        // (NodeOutput edges only — Input edges go through the
+        // distinct input_dependents/input_provenance mechanism).
+        let mut volatile_mask: Vec<bool> = vec![false; node_count];
+        for &i in &seed { volatile_mask[i] = true; }
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for i in 0..node_count {
+                if volatile_mask[i] { continue; }
+                for source in &self.wiring[i] {
+                    if let WireSource::NodeOutput(upstream, _) = source {
+                        if volatile_mask[*upstream] {
+                            volatile_mask[i] = true;
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let nondeterministic_nodes: Vec<usize> =
+            (0..node_count).filter(|&i| volatile_mask[i]).collect();
 
         let input_count = inputs.len();
         let core = EngineCore {
@@ -599,6 +657,12 @@ impl GkProgram {
             // seed pass sizes it to match output count.
             output_cells: Vec::new(),
             input_scratch: vec![Value::None; max_inputs],
+            // Per-scope intent-dirty vector + bit allocator
+            // (cross_fiber_invalidation.md §3.1).
+            scope_intent_words: Vec::new(),
+            next_cell_bit: 0,
+            last_seen: std::collections::HashMap::new(),
+            cell_cones: Vec::new(),
         };
 
         GkState::from_parts(core, self.input_dependents.clone(), nondeterministic_nodes)
@@ -612,10 +676,58 @@ impl GkProgram {
     /// Create the provenance-scan engine state (for benchmarking).
     pub fn create_provscan_state(&self) -> ProvScanState {
         let core = self.build_engine_core();
-        let nondeterministic_nodes: Vec<usize> = self.nodes.iter().enumerate()
-            .filter(|(i, node)| self.wiring[*i].is_empty() && node.meta().ins.is_empty())
+        let node_count = self.nodes.len();
+        // Per R1.v's intrinsic-volatility carve-out + transitive
+        // contagion claim.
+        //
+        // Seed set:
+        //   - Nullary nodes with no inputs at all — nothing to be
+        //     deterministic-with-respect-to.
+        //   - Nodes declaring `Purity::Nondeterministic` — the
+        //     intrinsic-volatility marker; their typed return is not
+        //     a function of declared inputs (system clock, entropy,
+        //     thread identity, eval-spanning state, etc.).
+        //
+        // Then transitively close forward through node-output
+        // wiring: any node consuming a nondeterministic producer's
+        // output is itself nondeterministic (contagion). Without
+        // this closure, downstream consumers of a volatile producer
+        // would retain stale cached values across cycles — the
+        // producer's clean flag is reset per cycle but the
+        // consumer's isn't, so a pull on the consumer would
+        // short-circuit to the cached value referencing the
+        // producer's stale output.
+        let seed: Vec<usize> = self.nodes.iter().enumerate()
+            .filter(|(i, node)| {
+                let nullary = self.wiring[*i].is_empty() && node.meta().ins.is_empty();
+                let declared = matches!(node.purity(), crate::ast::Purity::Nondeterministic { .. });
+                nullary || declared
+            })
             .map(|(i, _)| i)
             .collect();
+        // Forward transitive closure via the existing wire graph
+        // (NodeOutput edges only — Input edges go through the
+        // distinct input_dependents/input_provenance mechanism).
+        let mut volatile_mask: Vec<bool> = vec![false; node_count];
+        for &i in &seed { volatile_mask[i] = true; }
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for i in 0..node_count {
+                if volatile_mask[i] { continue; }
+                for source in &self.wiring[i] {
+                    if let WireSource::NodeOutput(upstream, _) = source {
+                        if volatile_mask[*upstream] {
+                            volatile_mask[i] = true;
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let nondeterministic_nodes: Vec<usize> =
+            (0..node_count).filter(|&i| volatile_mask[i]).collect();
         ProvScanState::from_parts(core, self.input_provenance.clone(), nondeterministic_nodes)
     }
 
@@ -638,6 +750,21 @@ impl GkProgram {
     /// Returns `None` if the name isn't an input of this program.
     pub fn input_port_type(&self, name: &str) -> Option<crate::ast::PortType> {
         self.input_defs.iter().find(|d| d.name == name).map(|d| d.port_type)
+    }
+
+    /// Lookup the declared port type of an input by index.
+    /// Returns `None` if `idx` is out of range. Used by the
+    /// typed-write fast path so [`Dataflow::set_wire_idx`] can
+    /// type-check without reverse-resolving an index to a name.
+    pub fn input_port_type_by_idx(&self, idx: usize) -> Option<crate::ast::PortType> {
+        self.input_defs.get(idx).map(|d| d.port_type)
+    }
+
+    /// Lookup the declared name of an input by index. Used by
+    /// the typed-write API to render diagnostic messages
+    /// referencing the slot the caller addressed.
+    pub fn input_name_by_idx(&self, idx: usize) -> Option<&str> {
+        self.input_defs.get(idx).map(|d| d.name.as_str())
     }
 
     /// Number of declared outputs.
@@ -1075,7 +1202,7 @@ impl GkProgram {
         // CompileConst: foldable now (no extern / cycle dependencies).
         // ScopeInit:    not foldable now, but will be at scope
         //               activation (depends on iteration externs).
-        // Dynamic:      depends on cycle inputs, capture ports, or
+        // Dynamic:      depends on cycle inputs, external-write ports, or
         //               non-deterministic sources.
         use crate::kernel::InputKind;
         let mut lifecycle: Vec<EvalLifecycle> = vec![EvalLifecycle::CompileConst; n];
@@ -1088,7 +1215,7 @@ impl GkProgram {
                             .unwrap_or(InputKind::Coordinate);
                         let lc = match kind {
                             InputKind::IterationExtern => EvalLifecycle::ScopeInit,
-                            InputKind::Coordinate | InputKind::CapturePort => EvalLifecycle::Dynamic,
+                            InputKind::Coordinate | InputKind::ExternalWrite => EvalLifecycle::Dynamic,
                         };
                         if lc > lifecycle[i] {
                             lifecycle[i] = lc;
@@ -1097,14 +1224,14 @@ impl GkProgram {
                     WireSource::NodeOutput(_, _) => {}
                 }
             }
-            if wiring.is_empty() {
-                let name = &self.nodes[i].meta().name;
-                if name == "current_epoch_millis" || name == "session_start_millis"
-                    || name == "elapsed_millis" || name == "counter"
-                    || name == "thread_id"
-                {
-                    lifecycle[i] = EvalLifecycle::Dynamic;
-                }
+            // Per R1.v: nodes declaring `Purity::Nondeterministic`
+            // are intrinsically volatile (their typed return is not
+            // a function of declared inputs). Mark them Dynamic so
+            // the fold pass leaves them alone and the canonical_hash
+            // sees node-type + wiring shape but never the value
+            // (workload identity stable across processes).
+            if matches!(self.nodes[i].purity(), crate::ast::Purity::Nondeterministic { .. }) {
+                lifecycle[i] = EvalLifecycle::Dynamic;
             }
 
             // SRD-13f Push D / SRD-44: `volatile` is the
@@ -1229,12 +1356,19 @@ impl GkProgram {
         // node's output feeds into a volatile output, suppress
         // both the strict-mode error and the audit warning.
         //
-        // Direct-consumer check only: walks `output_list` looking
-        // for outputs that map to this node and checks whether
-        // the output's modifier carries `is_volatile`. Suffices
-        // for the common pattern `volatile name := source_fn(...)`.
-        // Full transitive volatile-taint propagation is a future
-        // enhancement keyed to `hash_const`.
+        // Direct-consumer check: walks `output_list` looking for
+        // outputs that map to this node and checks whether the
+        // output's modifier carries `is_volatile`. Transitive
+        // volatility (R1.v contagion) is delivered separately by
+        // the lifecycle classifier's fixed-point propagation: a
+        // node marked Dynamic (via intrinsic Nondeterministic
+        // purity or a downstream volatile modifier) propagates
+        // Dynamic to every consumer through the existing pass at
+        // `compute_lifecycles`. This loop handles only the
+        // strict-mode / audit-warning side: was the
+        // non-deterministic node consumed directly by an
+        // author-declared `volatile` output? If yes, suppress the
+        // warning.
         for i in 0..n {
             let name = &self.nodes[i].meta().name;
             let is_nondeterministic = self.wiring[i].is_empty() && !is_init[i]
@@ -1755,5 +1889,136 @@ bar := mod(foo, 100)
         let chain = k.program()
             .local_inclusion_chain("missing", &std::collections::HashSet::new());
         assert!(chain.is_empty());
+    }
+}
+
+/// R1.v transitive contagion: a node whose dependency cone
+/// reaches a volatile producer must itself be marked
+/// nondeterministic at construction time, so its clean flag
+/// is reset every cycle and downstream pulls re-evaluate.
+/// Without contagion, a consumer of `current_epoch_millis`
+/// would return a stale cached value referencing the prior
+/// cycle's timestamp.
+#[cfg(test)]
+mod r1v_contagion_tests {
+    use crate::dsl::compile_gk;
+    use crate::ast::Value;
+
+    /// Pull `out` from kernel `k` at coordinate `cycle`,
+    /// returning the resulting u64.
+    fn pull_u64_at(k: &mut crate::kernel::GkKernel, cycle: u64, out: &str) -> u64 {
+        k.set_inputs(&[cycle]);
+        match k.pull(out) {
+            Value::U64(v) => *v,
+            other => panic!("expected U64, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn direct_consumer_of_intrinsic_volatile_re_evals_per_cycle() {
+        // `now` reads system clock (volatile); `b` adds 1.
+        // Without R1.v contagion, `b` would return a stale
+        // cached value referencing cycle-0's `now` on cycle 1+.
+        let src = "input cycle: u64\n\
+                   now := current_epoch_millis()\n\
+                   b := add(now, 1)\n";
+        let mut k = compile_gk(src).expect("compile");
+        let v0 = pull_u64_at(&mut k, 0, "b");
+        // Spin briefly to ensure system clock advances. A few ms
+        // is enough; if clock granularity is coarser the test
+        // falls back to asserting at-least-as-many-calls.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let v1 = pull_u64_at(&mut k, 1, "b");
+        assert!(v1 >= v0,
+            "consumer of volatile producer must re-eval per cycle (v0={v0}, v1={v1})");
+        // Stronger: if clock advanced at all, the value must
+        // reflect the advance. Allow ties only when the clock
+        // didn't tick in the sleep window.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let v2 = pull_u64_at(&mut k, 2, "b");
+        assert!(v2 > v0,
+            "after a 4ms cumulative wait the volatile consumer must reflect the advance \
+             (v0={v0}, v2={v2}) — if this fails, R1.v contagion is broken");
+    }
+
+    #[test]
+    fn transitive_consumer_of_intrinsic_volatile_re_evals_per_cycle() {
+        // Three-deep chain: now → b → c. Each level must
+        // re-eval per cycle when `now` advances. Tests the
+        // multi-hop transitive case.
+        let src = "input cycle: u64\n\
+                   now := current_epoch_millis()\n\
+                   b := add(now, 1)\n\
+                   c := add(b, 1)\n";
+        let mut k = compile_gk(src).expect("compile");
+        let v0 = pull_u64_at(&mut k, 0, "c");
+        std::thread::sleep(std::time::Duration::from_millis(4));
+        let v1 = pull_u64_at(&mut k, 1, "c");
+        assert!(v1 > v0,
+            "transitive consumer (chain depth 2) of volatile producer must re-eval \
+             (v0={v0}, v1={v1}) — R1.v contagion must propagate through the chain");
+    }
+
+    #[test]
+    fn counter_intrinsic_volatile_increments_per_cycle() {
+        // `counter` is Purity::Nondeterministic; each cycle
+        // should see a fresh increment. Also tests transitive
+        // contagion through `wrapped`.
+        let src = "input cycle: u64\n\
+                   c := counter()\n\
+                   wrapped := add(c, 1000)\n";
+        let mut k = compile_gk(src).expect("compile");
+        let v0 = pull_u64_at(&mut k, 0, "wrapped");
+        let v1 = pull_u64_at(&mut k, 1, "wrapped");
+        let v2 = pull_u64_at(&mut k, 2, "wrapped");
+        assert_eq!(v1, v0 + 1, "counter must advance per cycle (v0={v0}, v1={v1})");
+        assert_eq!(v2, v1 + 1, "counter must continue advancing (v1={v1}, v2={v2})");
+    }
+
+    #[test]
+    fn within_cycle_volatile_reads_are_consistent() {
+        // Pulling the same volatile-dependent output multiple
+        // times within a single cycle must return the same
+        // value — R1.v guarantees within-cycle consistency, not
+        // per-pull freshness.
+        let src = "input cycle: u64\n\
+                   c := counter()\n";
+        let mut k = compile_gk(src).expect("compile");
+        k.set_inputs(&[0]);
+        let a = match k.pull("c") { Value::U64(v) => *v, _ => panic!() };
+        let b = match k.pull("c") { Value::U64(v) => *v, _ => panic!() };
+        let c = match k.pull("c") { Value::U64(v) => *v, _ => panic!() };
+        assert_eq!(a, b, "within-cycle reads of a volatile node must agree");
+        assert_eq!(b, c, "within-cycle reads of a volatile node must agree");
+    }
+
+    #[test]
+    fn non_volatile_path_does_not_get_contaminated() {
+        // `pure_chain` only depends on `cycle` — no volatile
+        // upstream. It should NOT be in nondeterministic_nodes
+        // (within-cycle clean-flag caching should apply).
+        // Contagion must be precise — only propagate from
+        // actual volatile producers, not blanket-mark every node.
+        let src = "input cycle: u64\n\
+                   pure_chain := add(cycle, 1)\n\
+                   pure_outer := mul(pure_chain, 2)\n";
+        let mut k = compile_gk(src).expect("compile");
+        // For the same coordinate, multiple pulls must return
+        // the same value AND not re-evaluate the eval function.
+        // The latter property is hard to assert without
+        // instrumentation, so check the former; the implicit
+        // claim is that nondeterministic_nodes is precise.
+        k.set_inputs(&[42]);
+        let r1 = match k.pull("pure_outer") { Value::U64(v) => *v, _ => panic!() };
+        let r2 = match k.pull("pure_outer") { Value::U64(v) => *v, _ => panic!() };
+        assert_eq!(r1, r2);
+        // Pure path: same coord → same output.
+        k.set_inputs(&[42]);
+        let r3 = match k.pull("pure_outer") { Value::U64(v) => *v, _ => panic!() };
+        assert_eq!(r1, r3, "pure (non-volatile) chain must be coord-deterministic");
+        // Different coord → different output.
+        k.set_inputs(&[43]);
+        let r4 = match k.pull("pure_outer") { Value::U64(v) => *v, _ => panic!() };
+        assert_ne!(r3, r4);
     }
 }

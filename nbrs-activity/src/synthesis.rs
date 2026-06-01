@@ -195,9 +195,16 @@ impl OpBuilder {
         // Apply scope values by NAME — each kernel resolves the
         // name to its own input slot. Cross-kernel-safe by
         // construction (see `OpBuilder::scope_values` doc).
+        // Per S4: go through the typed Dataflow surface so
+        // type-mismatched scope values fail loud rather than
+        // silently corrupting downstream reads.
+        use polydat::kernel::Dataflow;
         for (name, value) in &self.scope_values {
             if let Some(idx) = fb.main_kernel.program().find_input(name) {
-                fb.state().set_input(idx, value.clone());
+                fb.main_kernel.set_wire_idx(idx, value.clone())
+                    .unwrap_or_else(|e| panic!(
+                        "scope value '{name}' failed typed write at scope-init: {e}"
+                    ));
             }
         }
         for (node_idx, port_idx, value) in &self.init_overrides {
@@ -414,9 +421,15 @@ impl FiberBuilder {
                         .build()
                         .expect("program-form matter is infallible"),
                 ).expect("program-form subscope from fiber.main_kernel is infallible");
-                for (name, value) in &scope_values {
-                    if let Some(idx) = op_kernel.program().find_input(name) {
-                        op_kernel.state().set_input(idx, value.clone());
+                {
+                    use polydat::kernel::Dataflow;
+                    for (name, value) in &scope_values {
+                        if let Some(idx) = op_kernel.program().find_input(name) {
+                            op_kernel.set_wire_idx(idx, value.clone())
+                                .unwrap_or_else(|e| panic!(
+                                    "scope value '{name}' failed typed write at op-template init: {e}"
+                                ));
+                        }
                     }
                 }
                 let const_outputs: Vec<String> = op_kernel.program()
@@ -528,16 +541,28 @@ impl FiberBuilder {
         if self.main_kernel.program().coord_count() > 0 {
             self.main_kernel.state().set_inputs(&[item.ordinal]);
         }
+        // Per S4: typed Dataflow surface for source-item field
+        // writes. Source items carry typed values from their
+        // upstream DataSource; a TypeMismatch here means the
+        // source produced a value incompatible with the slot,
+        // which is a fail-loud condition.
+        use polydat::kernel::Dataflow;
         for (name, value) in &item.fields {
             if let Some(idx) = self.main_kernel.program().find_input(name) {
-                self.main_kernel.state().set_input(idx, value.clone());
+                self.main_kernel.set_wire_idx(idx, value.clone())
+                    .unwrap_or_else(|e| panic!(
+                        "source item field '{name}' failed typed write: {e}"
+                    ));
             }
         }
-        // Cell-bound slots on the main kernel are written by
-        // ancestor (workload-level) kernels outside our `set_input`
-        // path; re-dirty their dependents so passthrough outputs
-        // pick up ancestor refreshes on the next pull.
-        self.main_kernel.state().invalidate_cell_bound_dependents();
+        // Cell-bound cross-fiber visibility is now substrate-
+        // owned via the per-cell revision counter + per-scope
+        // intent-dirty vector + per-fiber `last_seen` (see
+        // polydat/docs/design/cross_fiber_invalidation.md):
+        // ancestor writes through a `SharedCell` bump the
+        // cell's revision and set its intent bit, and our
+        // `eval_node` walker re-checks both before serving a
+        // memoized result. No host-side refresh call needed.
         // SRD-68 per-fiber kernels: same per-cycle propagation.
         for slot in self.per_op_kernels.iter_mut() {
             if let Some(kernel) = slot {
@@ -549,13 +574,6 @@ impl FiberBuilder {
                         kernel.state().set_input(idx, value.clone());
                     }
                 }
-                // Cell-bound slots are written by ancestor kernels
-                // outside our `set_input` path (phase kernel's
-                // `advance_broadcasts` writes through the cell);
-                // re-dirty their dependents so passthrough outputs
-                // re-evaluate on the next pull instead of returning
-                // the first-cycle memoized value.
-                kernel.state().invalidate_cell_bound_dependents();
             }
         }
         // SRD-13f Push D: only advance_broadcasts when a

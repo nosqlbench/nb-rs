@@ -174,46 +174,73 @@ pseudocode above). The substrate's L1 (each layer owns its
 state) guarantees that `node_clean[i]` is owned by this
 fiber's `GkState`; no cross-fiber cache contention.
 
-### Sub-axiom R1.v — Volatility carves out clean-flag memoization
+### Sub-axiom R1.v — Volatility carves out per-cycle clean-flag memoization
 
 **A wire is *volatile* when its value is not a function of
-its declared inputs. Volatile wires opt out of clean-flag
-memoization: every pull re-evaluates the producing node,
-regardless of `node_clean[i]`. Volatility is contagious —
-the compiler computes the transitive volatility set at
-hoisting time, marking every node whose dependency cone
-touches a volatile producer as itself volatile.**
+its declared inputs. Volatile wires opt out of per-cycle
+clean-flag memoization: every cycle (every `set_inputs`
+advance) re-evaluates the producing node on next pull,
+regardless of whether any of the node's declared inputs
+changed. Within a single cycle (between two `set_inputs`
+calls), the node is evaluated at most once and the result
+is cached for subsequent reads — this gives consumers
+within-cycle consistency. Volatility is contagious —
+the compiler's lifecycle classifier propagates the Dynamic
+classification through the wire chain so every node whose
+dependency cone touches a volatile producer is itself
+treated as Dynamic.**
 
 Volatility arises from two distinct sources:
 
-- **Intrinsic.** A library node declares itself volatile in
-  its `NodeMeta`. Examples: `current_epoch_millis`, `counter`,
-  `elapsed_millis`, `thread_id`, entropy sources, and any
-  node whose output is not a pure function of its declared
+- **Intrinsic.** A library node declares itself volatile by
+  returning `Purity::Nondeterministic { reason }` from
+  `GkNode::purity`. Examples: `current_epoch_millis`,
+  `counter`, `elapsed_millis`, `thread_id`,
+  `session_start_millis`, entropy sources, and any node
+  whose output is not a pure function of its declared
   inputs. The library imposes volatility; no user opt-in is
   required, and the workload author cannot remove the marker.
 - **User opt-in.** A wire's binding declares the `volatile`
-  modifier, marking the wire as must-recompute-on-every-read.
+  modifier, marking the wire as must-not-be-const-folded.
   The author is asserting that the value should never be
-  cached even though the compiler can't infer it from the
-  wire chain (e.g., a node that reads external mutable state
-  the polydat layer cannot see).
+  cached across cycles even though the compiler can't infer
+  it from the wire chain (e.g., a node that reads external
+  mutable state the polydat layer cannot see).
 
 Both sources produce identical runtime behavior:
 
-- The wire opts out of clean-flag memoization. Every pull
-  re-evaluates the producing node; the clean flag is not
-  consulted on this node.
-- The compiler's hoisting pass propagates volatility
-  transitively: any node downstream of a volatile producer
-  is marked volatile too, regardless of whether its binding
-  declared the modifier. The transitive set is computed
-  once at compile time and stored alongside `node_clean`.
+- The wire is excluded from compile-time const-folding —
+  the canonical workload hash sees node-type + wiring shape
+  but never the value, keeping workload identity stable
+  across processes.
+- The lifecycle classifier marks the producing node
+  Dynamic; the fixed-point propagation pass then marks
+  every downstream consumer Dynamic too. Dynamic nodes are
+  re-evaluated each cycle when their (now-dirty) inputs
+  resolve.
+- For intrinsic-volatile nodes specifically (those with
+  `Purity::Nondeterministic`), the `nondeterministic_nodes`
+  list at construction time records them for unconditional
+  per-cycle dirty marking — `set_inputs(coords)` resets
+  their `node_clean` flag every cycle whether or not their
+  declared inputs changed.
 - The intrinsic declaration is authoritative: an absent
   user modifier does not override a library-declared
   volatile node, and a present user modifier on a wire that
   reads a library-declared-pure node still makes the wire
-  itself volatile (and contaminates its downstream).
+  itself volatile (and contaminates its downstream via the
+  lifecycle propagation).
+
+**Within-cycle consistency.** Within a single cycle's
+evaluation window, a volatile node is evaluated at most
+once and cached — consumers reading the same value
+multiple times during one op-execution observe a
+consistent value. The "every cycle re-evaluates" guarantee
+is at the cycle granularity, not per-individual-pull. This
+is the correct semantic for temporal nodes (a single op
+reading `current_epoch_millis` multiple times sees one
+consistent timestamp for that cycle) and matches the
+runtime mechanism polydat actually delivers.
 
 What volatility is NOT for: ordinary external-write inputs
 (per composition_substrate S4). The provenance machinery
@@ -225,10 +252,16 @@ genuinely-non-deterministic case where input-change
 tracking is insufficient because the value does not depend
 on the declared inputs at all.
 
-Enforcement: the pull walker treats `node_volatile[i] =
-true` as a permanent dirty bit. Hoisting computes the
-transitive volatility set from intrinsic + user-opt-in seeds
-once at compile time; the set is part of the compiled
+Enforcement: at construction time, `program.rs::create_state`
+builds `nondeterministic_nodes: Vec<usize>` from nodes that
+either are nullary (no declared inputs) OR return
+`Purity::Nondeterministic` from `GkNode::purity`. At runtime,
+`set_inputs(coords)` walks the list and unconditionally
+clears `node_clean[idx]` for each entry. User-opt-in
+`volatile` modifier is enforced by the lifecycle classifier:
+the producing node is marked `EvalLifecycle::Dynamic` and the
+fixed-point propagation contaminates downstream consumers.
+The transitive set is computed
 `GkProgram`, not the per-fiber `GkState`. The grammar's
 `volatile` modifier (G2) is the syntactic surface; SRD-10
 documents the specific modifier syntax.

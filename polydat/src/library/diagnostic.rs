@@ -257,7 +257,7 @@ impl GkNode for FftAnalyzer {
         // Declare as Stateful because the eval-spanning state
         // is the load-bearing aspect — the return value isn't
         // a function of just this call's inputs.
-        Purity::Stateful {
+        Purity::Nondeterministic {
             reason: "accumulates signal buffer across calls; writes JSONL on window emit",
         }
     }

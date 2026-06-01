@@ -127,6 +127,21 @@ pub enum ContractViolation {
     /// closure-binding economy detecting a free identifier with
     /// no matching import).
     Compile(String),
+    /// L2.f strict-mode hardening: an intermediate-layer
+    /// `const` binding's Plan B materialisation yielded
+    /// `Value::None`, and the build was running with strict
+    /// mode enabled. Per composition_substrate.md L2.f's
+    /// strict-mode hardening clause, silent fall-through to
+    /// the outer scope's binding is rejected in strict mode —
+    /// the author must either ensure the const yields a
+    /// defined value or remove the binding and declare an
+    /// explicit `extern <name>` if fall-through to outer was
+    /// intended. The `bindings` field carries every const
+    /// output that materialised to None.
+    StrictNonePropagation {
+        bindings: Vec<String>,
+        site: SourceContext,
+    },
 }
 
 impl std::fmt::Display for ContractViolation {
@@ -173,6 +188,20 @@ impl std::fmt::Display for ContractViolation {
                 this_site.display()
             ),
             Self::Compile(msg) => write!(f, "compile error: {msg}"),
+            Self::StrictNonePropagation { bindings, site } => {
+                let names = bindings.join(", ");
+                write!(
+                    f,
+                    "L2.f strict-mode violation: intermediate-layer const \
+                    binding(s) [{names}] yielded `Value::None` at scope-init \
+                    at {}; strict mode rejects silent fall-through to the \
+                    outer scope. Either ensure the binding yields a defined \
+                    value, or remove the binding and declare \
+                    `extern <name>` explicitly if fall-through to outer was \
+                    intended.",
+                    site.display()
+                )
+            }
         }
     }
 }

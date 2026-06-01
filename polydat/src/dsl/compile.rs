@@ -1343,7 +1343,7 @@ impl Compiler {
 
             // Cursor projection slots are written by cursor advance
             // every cycle — dynamic for init-contract purposes.
-            asm.add_input(&input_name, default_value, *port_type, crate::kernel::InputKind::CapturePort);
+            asm.add_input(&input_name, default_value, *port_type, crate::kernel::InputKind::ExternalWrite);
             self.input_names.push(input_name.clone());
 
             let passthrough = Box::new(
@@ -1428,7 +1428,7 @@ impl Compiler {
                 &cursor_input_name,
                 crate::ast::Value::None,
                 crate::ast::PortType::Ext,
-                crate::kernel::InputKind::CapturePort,
+                crate::kernel::InputKind::ExternalWrite,
             );
             self.input_names.push(cursor_input_name.clone());
             let passthrough = Box::new(
@@ -1602,7 +1602,7 @@ impl Compiler {
                         // init-contract purposes — the cell can be
                         // written by inner scopes between scope-init
                         // and per-cycle reads.
-                        asm.add_input(name, init_value, port_type, crate::kernel::InputKind::CapturePort);
+                        asm.add_input(name, init_value, port_type, crate::kernel::InputKind::ExternalWrite);
                         self.input_names.push(name.clone());
                         let passthrough = Box::new(
                             crate::library::identity::PortPassthrough::new(name, port_type)
@@ -1705,7 +1705,7 @@ impl Compiler {
                                 .map_err(|e| format!(
                                     "extern '{}' default: {e}", port.name,
                                 ))?;
-                            (v, crate::kernel::InputKind::CapturePort)
+                            (v, crate::kernel::InputKind::ExternalWrite)
                         }
                         None => (
                             crate::ast::Value::None,
@@ -1957,7 +1957,7 @@ impl Compiler {
                             try_fold_shared_init(&b.value)
                     {
                         let name = &b.targets[0];
-                        asm.add_input(name, init_value, port_type, crate::kernel::InputKind::CapturePort);
+                        asm.add_input(name, init_value, port_type, crate::kernel::InputKind::ExternalWrite);
                         self.input_names.push(name.clone());
                         let passthrough = Box::new(
                             crate::library::identity::PortPassthrough::new(name, port_type)
@@ -2034,7 +2034,7 @@ impl Compiler {
                                 .map_err(|e| format!(
                                     "extern '{}' default: {e}", port.name,
                                 ))?;
-                            (v, crate::kernel::InputKind::CapturePort)
+                            (v, crate::kernel::InputKind::ExternalWrite)
                         }
                         None => (
                             crate::ast::Value::None,
@@ -3000,7 +3000,7 @@ mod tests {
     //
     // Plan A — compile-time check: every binding declared `init`
     // must classify as compile-const or scope-init. A wire chain
-    // reaching a coordinate input, a capture port, or a
+    // reaching a coordinate input, a external-write port, or a
     // non-deterministic source disqualifies the binding.
     // ─────────────────────────────────────────────────────────────
 
@@ -3056,13 +3056,13 @@ mod tests {
     }
 
     #[test]
-    fn init_binding_wired_to_capture_port_rejected() {
-        // Capture port (extern with default) is dynamic; init
-        // bindings must not depend on one.
+    fn init_binding_wired_to_external_write_port_rejected() {
+        // External-write port (extern with default) is dynamic;
+        // init bindings must not depend on one.
         let src = "extern session_id: u64 = 0\n\
                    const derived := mod(session_id, 100)\n";
         let err = compile_gk(src).expect_err(
-            "Plan A must reject init binding wired to a capture port");
+            "Plan A must reject init binding wired to a external-write port");
         assert!(err.contains("init binding 'derived'") && err.contains("init contract"),
             "diagnostic must name the binding and the contract; got: {err}");
         assert!(err.contains("session_id") || err.contains("capture"),

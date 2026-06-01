@@ -68,7 +68,7 @@ pub use engines::*;
 pub use state::*;
 pub use scope::{ScopeCoord, format_scope_coordinate_path};
 pub use manifest::{extract_manifest, ManifestEntry};
-pub use api::{Construction, Dataflow, Metadata, WireKey};
+pub use api::{Construction, Dataflow, Metadata, WireKey, WriteError};
 pub use opt::KernelOptLevel;
 
 use crate::ast::Value;
@@ -89,7 +89,7 @@ pub enum WireSource {
 /// The init-binding contract uses this to decide whether a wire
 /// to an `Input(idx)` is effectively-const at scope-init time:
 /// `IterationExtern` slots count as effectively-const (rebound
-/// once per scope activation); `Coordinate` and `CapturePort`
+/// once per scope activation); `Coordinate` and `ExternalWrite`
 /// slots are dynamic and disqualify any init binding that reaches
 /// them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,12 +104,12 @@ pub enum InputKind {
     /// External port declared by `extern name: type = default` —
     /// written by capture extraction during op execution; dynamic
     /// across cycle boundaries within a stanza.
-    CapturePort,
+    ExternalWrite,
 }
 
 /// Definition of a named input to the GK graph.
 ///
-/// All inputs — coordinates, iteration externs, and capture ports
+/// All inputs — coordinates, iteration externs, and external-write ports
 /// — are defined uniformly. Coordinates default to `Value::U64(0)`,
 /// captures default to `Value::None` (unset until a capture writes
 /// to them) or to their declared default. The `kind` field carries
@@ -129,7 +129,7 @@ pub struct InputDef {
     /// existing call sites that construct `InputDef` directly
     /// (tests, legacy paths) keep their previous semantics.
     /// The DSL compiler sets this explicitly for iteration
-    /// externs and capture ports.
+    /// externs and external-write ports.
     pub kind: InputKind,
 }
 
@@ -146,8 +146,8 @@ mod tests {
             vec![], vec![],
             vec![
                 InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::ast::PortType::U64, kind: InputKind::Coordinate },
-                InputDef { name: "balance".into(), default: Value::F64(0.0), port_type: crate::ast::PortType::F64, kind: InputKind::CapturePort },
-                InputDef { name: "auth_token".into(), default: Value::Str("anonymous".into()), port_type: crate::ast::PortType::Str, kind: InputKind::CapturePort },
+                InputDef { name: "balance".into(), default: Value::F64(0.0), port_type: crate::ast::PortType::F64, kind: InputKind::ExternalWrite },
+                InputDef { name: "auth_token".into(), default: Value::Str("anonymous".into()), port_type: crate::ast::PortType::Str, kind: InputKind::ExternalWrite },
             ],
             1, // coord_count
             HashMap::new(),
@@ -178,7 +178,7 @@ mod tests {
             vec![], vec![],
             vec![
                 InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::ast::PortType::U64, kind: InputKind::Coordinate },
-                InputDef { name: "token".into(), default: Value::Str("anon".into()), port_type: crate::ast::PortType::Str, kind: InputKind::CapturePort },
+                InputDef { name: "token".into(), default: Value::Str("anon".into()), port_type: crate::ast::PortType::Str, kind: InputKind::ExternalWrite },
             ],
             1,
             HashMap::new(),
@@ -201,7 +201,7 @@ mod tests {
             vec![], vec![],
             vec![
                 InputDef { name: "cycle".into(), default: Value::U64(0), port_type: crate::ast::PortType::U64, kind: InputKind::Coordinate },
-                InputDef { name: "token".into(), default: Value::Str("anon".into()), port_type: crate::ast::PortType::Str, kind: InputKind::CapturePort },
+                InputDef { name: "token".into(), default: Value::Str("anon".into()), port_type: crate::ast::PortType::Str, kind: InputKind::ExternalWrite },
             ],
             1,
             HashMap::new(),

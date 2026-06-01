@@ -48,6 +48,9 @@ impl GkNode for CurrentEpochMillis {
             .as_millis() as u64;
         outputs[0] = Value::U64(millis);
     }
+    fn purity(&self) -> crate::ast::Purity {
+        crate::ast::Purity::Nondeterministic { reason: "reads system clock" }
+    }
 }
 
 /// Session start time in epoch milliseconds, frozen at construction.
@@ -87,6 +90,13 @@ impl GkNode for SessionStartMillis {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(self.start);
+    }
+    fn purity(&self) -> crate::ast::Purity {
+        // Captured at node construction; stable within a session
+        // but differs across sessions. Marked nondeterministic so
+        // it's excluded from const-fold identity (workload hash
+        // remains stable across runs).
+        crate::ast::Purity::Nondeterministic { reason: "session start time captured from system clock" }
     }
 }
 
@@ -132,6 +142,9 @@ impl GkNode for ElapsedMillis {
             .as_millis() as u64;
         outputs[0] = Value::U64(now.saturating_sub(self.start));
     }
+    fn purity(&self) -> crate::ast::Purity {
+        crate::ast::Purity::Nondeterministic { reason: "monotonic elapsed time from system clock" }
+    }
 }
 
 /// Current OS thread numeric identifier.
@@ -164,6 +177,9 @@ impl ThreadId {
 
 impl GkNode for ThreadId {
     fn meta(&self) -> &NodeMeta { &self.meta }
+    fn purity(&self) -> crate::ast::Purity {
+        crate::ast::Purity::Nondeterministic { reason: "OS thread identity varies across fibers" }
+    }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         // Use the thread ID as a u64. std::thread::current().id() returns an
         // opaque ThreadId; we convert via Debug format to extract the numeric ID.
@@ -338,6 +354,9 @@ impl GkNode for Counter {
     fn meta(&self) -> &NodeMeta { &self.meta }
     fn eval(&self, _inputs: &[Value], outputs: &mut [Value]) {
         outputs[0] = Value::U64(self.count.fetch_add(1, Ordering::Relaxed));
+    }
+    fn purity(&self) -> crate::ast::Purity {
+        crate::ast::Purity::Nondeterministic { reason: "monotonic counter incremented per call" }
     }
 }
 

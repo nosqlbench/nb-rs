@@ -9,6 +9,7 @@ cell, plus shadow suppression and value-clone economy).
 
 This doc extends axiom-level statements:
 - [composition_substrate.md L1 (lifecycle isolation) + S5 (cross-tier write-through) + T1 (typed return)](composition_substrate.md)
+- [cross_fiber_invalidation.md (canonical validity-tracking mechanism for shared cells — revision counter + intent vectors + per-fiber `last_seen`)](cross_fiber_invalidation.md)
 - [graph_compiler.md CF1-CF4 (Context Fusion) + CF3 (gradient honoring)](graph_compiler.md)
 - [runtime_model.md R1 (clean-flag memoization) + R2 (hybrid push/pull invalidation)](runtime_model.md)
 - [scope_model.md (visibility rules — the "Default: Immutable Propagation" clause this doc updates)](scope_model.md)
@@ -186,17 +187,20 @@ for the common case but makes scenario-tree shadowing
 unimplementable; the current design is a deliberate trade-off
 in favor of the more general lexical-scope semantics.
 
-### Value-only shared cell with valid bit
+### Value-only shared cell
 
 When the outer wire is recomputable (non-literal RHS, depends on
 inputs that change) but is read-only from the inner scope's
 perspective, the matter interpreter installs a *value-only shared
-cell*: shared storage between outer and inner, valid-bit gated,
-mutex-protected for concurrent reader safety. Inner's local slot
-is wired to read through this cell. Outer's per-cycle re-eval of
-the wire writes its new value into the cell (and toggles the
-valid bit through the normal dirty-propagation machinery); the
-next read on inner returns the current value.
+cell*: shared storage between outer and inner, mutex-protected
+for concurrent reader safety, paired with a `revision: AtomicU64`
+counter. Inner's local slot is wired to read through this cell.
+Outer's per-cycle re-eval of the wire writes its new value into
+the cell, bumps the revision (Release), and sets the cell's
+intent bit on the defining scope's intent-dirty vector. Every
+consumer fiber's cone walker observes the change on its next
+read via the bulk-mask + per-cell-revision compare protocol
+specified in [cross_fiber_invalidation.md].
 
 The inner side has no write surface to this cell.
 
@@ -213,8 +217,12 @@ When the matter classifies the wire as `shared` (or an
 equivalent cross-scope-mutable form), the matter interpreter
 installs a read-write shared cell. Storage is shared with the
 defining scope's kernel; both sides hold local handles backed by
-the same cell; the mutex serializes writes. Inner writes are
-visible to outer (and to siblings sharing the cell) on next read.
+the same cell; the mutex serializes writes; the cell's
+`revision: AtomicU64` counter and the defining scope's intent-
+dirty bit are bumped on every write per
+[cross_fiber_invalidation.md]. Inner writes are visible to outer
+(and to siblings sharing the cell) on next read, without any
+host-side refresh ceremony.
 
 This is the materialization for:
 

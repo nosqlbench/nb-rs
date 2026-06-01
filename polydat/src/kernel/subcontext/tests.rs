@@ -1235,3 +1235,94 @@ fn add_result_bindings_empty_source_is_noop() {
     let module = b.finalize().expect("finalize");
     assert!(module.program().find_input("body").is_none());
 }
+
+// =====================================================================
+// L2.f strict-mode hardening: silent Plan B fall-through is rejected
+// in strict mode (per composition_substrate.md L2.f).
+// =====================================================================
+
+/// With strict mode OFF, an intermediate-layer `const X := <expr>`
+/// whose RHS evaluates to `Value::None` falls through silently to
+/// the outer scope's `X` via the conditional-shadow semantics. This
+/// is the load-bearing behavior `set:` sugar relies on. Test
+/// captures the baseline.
+#[test]
+fn l2f_silent_fall_through_when_strict_off() {
+    use crate::ast::Value;
+    use crate::kernel::Construction;
+    use crate::kernel::subcontext::GkMatter;
+    let outer = compile_gk("input cycle: u64\nconst X := \"outer-value\"\n")
+        .expect("outer compile");
+
+    let opts = super::CompileOptions {
+        workload_dir: None,
+        gk_lib_paths: Vec::new(),
+        strict: false,
+        required_outputs: Vec::new(),
+        context_label: Some("inner".to_string()),
+        cursor_limit: None,
+        ..Default::default()
+    };
+    // Inner declares `extern Y: str` (no default → defaults to
+    // None at scope-init) and `const X := "{Y}"`. The
+    // string-interpolation `"{Y}"` with Y=None yields None per
+    // Printf::eval Rule 1; the const X folds to None;
+    // get_constant filters; lookup falls through to the auto-
+    // emitted extern slot for X, which materialize-wiring fed
+    // from outer's const X.
+    let inner_matter = GkMatter::builder()
+        .label("inner")
+        .source("input cycle: u64\nextern Y: str\nconst X := \"{Y}\"\n".to_string())
+        .options(opts)
+        .build()
+        .expect("matter build");
+    let inner = outer.build_subscope(inner_matter)
+        .expect("strict off: silent fall-through is permitted");
+
+    // The conditional shadow rule says inner.lookup("X") should
+    // see outer's "outer-value" (the inner const folded to None,
+    // get_constant filters, lookup falls through to extern slot
+    // wired from outer at materialize_wiring_from_outer time).
+    match inner.lookup("X") {
+        Some(Value::Str(s)) => assert_eq!(&*s, "outer-value",
+            "conditional shadow must reveal outer's value when inner const yields None"),
+        other => panic!("expected outer's Str value via fall-through, got {other:?}"),
+    }
+}
+
+/// With strict mode ON, the same construction is rejected with
+/// `ContractViolation::StrictNonePropagation` naming the
+/// offending binding(s). The strict-mode hardening clause of L2.f
+/// is what this test exercises.
+#[test]
+fn l2f_strict_rejects_silent_fall_through() {
+    use crate::kernel::Construction;
+    use crate::kernel::subcontext::GkMatter;
+    let outer = compile_gk("input cycle: u64\nconst X := \"outer-value\"\n")
+        .expect("outer compile");
+
+    let opts = super::CompileOptions {
+        workload_dir: None,
+        gk_lib_paths: Vec::new(),
+        strict: true,  // ← the L2.f hardening trigger
+        required_outputs: Vec::new(),
+        context_label: Some("inner-strict".to_string()),
+        cursor_limit: None,
+        ..Default::default()
+    };
+    let inner_matter = GkMatter::builder()
+        .label("inner-strict")
+        .source("input cycle: u64\nextern Y: str\nconst X := \"{Y}\"\n".to_string())
+        .options(opts)
+        .build()
+        .expect("matter build");
+    let err = outer.build_subscope(inner_matter)
+        .expect_err("strict on: silent fall-through must be rejected");
+    match err {
+        ContractViolation::StrictNonePropagation { bindings, .. } => {
+            assert!(bindings.iter().any(|b| b == "X"),
+                "diagnostic must name the offending binding 'X', got {bindings:?}");
+        }
+        other => panic!("expected StrictNonePropagation, got {other:?}"),
+    }
+}

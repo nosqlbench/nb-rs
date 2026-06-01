@@ -49,12 +49,19 @@ use polydat::ast::Value;
 ///
 /// [`KernelOptLevel::Release`]: polydat::kernel::KernelOptLevel::Release
 /// [`KernelOptLevel::Diagnostic`]: polydat::kernel::KernelOptLevel::Diagnostic
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WriteOutcome {
     /// Value written to a real input slot.
     Stored,
     /// No input slot named `name` in this kernel's program.
     NoSlot,
+    /// The slot exists but the value's type does not match the
+    /// slot's declared `PortType` and no boundary auto-adapter
+    /// healed the mismatch. Per composition_substrate.md S4 the
+    /// typed-write contract rejects this rather than silently
+    /// corrupting downstream reads; the `reason` field carries
+    /// the polydat-side diagnostic for surfacing to the operator.
+    TypeMismatch { reason: String },
 }
 
 /// Cycle-time read surface a dispenser uses to resolve names from
@@ -241,12 +248,18 @@ impl<'a> WireSource for CycleWires<'a> {
     }
 
     fn write(&self, name: &str, value: Value) -> WriteOutcome {
+        use polydat::kernel::{Dataflow, WriteError};
         let mut k = self.kernel.lock().expect("CycleWires mutex poisoned");
-        let Some(idx) = k.program().find_input(name) else {
-            return WriteOutcome::NoSlot;
-        };
-        k.state().set_input(idx, value);
-        WriteOutcome::Stored
+        // Go through the typed Dataflow surface (per S4): the
+        // boundary enforces T1+T2 and routes through the auto-
+        // adapter catalog before rejecting mismatched writes.
+        match k.set_wire(name, value) {
+            Ok(()) => WriteOutcome::Stored,
+            Err(WriteError::UnknownWire { .. }) => WriteOutcome::NoSlot,
+            Err(e @ WriteError::TypeMismatch { .. }) => {
+                WriteOutcome::TypeMismatch { reason: e.to_string() }
+            }
+        }
     }
 
     fn advance(&self, coord: u64) {

@@ -42,6 +42,11 @@ touching SRD's role under this declaration.
   across the chain, write-through semantics. Owns the
   cross-tier read/write contract Pillar 3 (State Layering)
   preserves.
+- [Cross-Fiber Cell Invalidation](cross_fiber_invalidation.md)
+  — `SharedCell` revision counter + per-scope intent-dirty
+  vectors + per-fiber `last_seen`. Owns the validity-tracking
+  mechanism that makes S5's cross-tier writes visible to
+  consumers on any fiber without host-side ceremony.
 - [SRD-67: Parent-gated Subcontext Construction](subcontext_construction.md)
   — typed [`ScopeKernel`], [`SubcontextBuilder`], the
   walled-off cross-binding API. Owns the construction-tier
@@ -232,13 +237,20 @@ wire — are governed by S5's SharedCell write-through
 mechanism.**
 
 Enforcement: the kernel exposes typed-write entry points
-for external producers. T1 + T2 ensure writes are
-type-checked at the boundary. The kernel makes no
-assumption about who the producer is, when it writes, or
-what host-level semantic the write carries — the contract
-is generic external-port population, and downstream nodes
-re-evaluate per the standard provenance rules whenever an
-input changes.
+through the [`Dataflow`] trait — `Dataflow::set_wire_idx`
+(indexed fast path) and `Dataflow::set_wire` (name- or
+index-keyed convenience). Both look up the slot's declared
+`PortType`, route through the boundary auto-adapter catalog
+for healable type mismatches, and return
+[`WriteError::TypeMismatch`] when neither direct match nor
+auto-adapter healing applies. `WriteError::UnknownWire`
+covers the case where the key doesn't resolve to a known
+slot. T1 + T2 are enforced uniformly at this boundary; the
+kernel makes no assumption about who the producer is, when
+it writes, or what host-level semantic the write carries —
+the contract is generic external-port population, and
+downstream nodes re-evaluate per the standard provenance
+rules whenever an input changes.
 
 Where the other S-axioms describe chain-internal fill
 paths (S1 discovers the surface; S2 fills at scope-init;
@@ -307,6 +319,19 @@ write-through emission in the compiler. Per SRD-13f's
 "single kernel handle" invariant (B.2 partial), the wires
 layer takes the kernel as the authoritative resolver, and
 write-through routing is the only cross-tier write surface.
+
+**Cross-fiber validity tracking** — the substrate
+guarantees that a producer's write to a `SharedCell` is
+observed by *every* consumer fiber on its next read,
+without any host-layer ceremony. The mechanism — a
+per-cell revision counter, a per-scope intent-dirty
+vector, and per-fiber `last_seen` revisions — is
+specified in [cross_fiber_invalidation.md] and is the
+sole canonical validity-tracking spec for S5's cross-
+tier writes. The reader contract (no host-side refresh
+calls) is preserved by construction.
+
+[cross_fiber_invalidation.md]: cross_fiber_invalidation.md
 
 **Sub-axiom S5.r — `shared` carries write permission only.**
 The `shared` modifier on a wire declares that the wire is
@@ -476,18 +501,23 @@ intermediate-layer `const X := <expr>` that yields a real
 value shadows the outer X; one that yields None leaves the
 outer X visible.
 
-**Strict-mode hardening — open.** Silent fall-through on
+**Strict-mode hardening — shipped.** Silent fall-through on
 intermediate-layer None can mask author intent: did the
 layer mean to provide a shadow that happens to compute to
 None, or did it mean to declare an `extern X` and forget
-to? A future strict-mode rule should diagnose this case
-("layer provided matter for X that yielded None at
-scope-init; declare `extern X` explicitly if fall-through
-to outer was intended"), forcing the author to be explicit
-about whether the layer is participating in the binding or
-deferring entirely. Current behavior is permissive
-fall-through; the strict diagnostic is a candidate rule,
-not a commitment.
+to? In strict mode (per the `strict` flag on
+`subcontext::CompileOptions`), `build_subscope` queries
+[`GkKernel::find_l2f_violations`] after scope-init and
+escalates any const output materialised to `Value::None`
+into [`ContractViolation::StrictNonePropagation`]. The
+diagnostic names each offending binding and directs the
+author to either ensure the binding yields a defined value
+or remove the binding and declare `extern <name>`
+explicitly if fall-through to outer was intended. The
+polydat substrate provides the mechanism
+(`find_l2f_violations` + the StrictNonePropagation
+contract); the policy (which builds get strict mode) is
+the caller's choice via the CompileOptions flag.
 
 ### Note on cross-tier writes
 
@@ -582,6 +612,14 @@ synthesis at the outer scope's next-cycle reads the updated
 cell value; L1's layer-ownership invariant is preserved
 because the outer cell remains the canonical state holder.
 
+Cross-fiber visibility of the written value is owned by
+the validity-tracking spec ([cross_fiber_invalidation.md]):
+the producer's mutex write is accompanied by a revision
+bump and an intent-bit set on the cell's defining scope;
+every consumer's cone walker observes the change on its
+next read via the bulk-mask + per-cell-revision compare
+protocol. No host-side refresh call is required.
+
 ### 8.3 Const lifecycle violations
 
 When a `const X := <expr>` binding's RHS depends on a dynamic
@@ -626,6 +664,7 @@ question on how to formalise this within the substrate.
 | [SRD-13d](../../../docs/sysref/13d_op_template_scope.md) | Op-template scope tier in the layering (L1). Adds a layer to the taxonomy; the axioms apply transitively. |
 | [SRD-13e](../../../docs/sysref/13e_scope_as_module.md) | Typed `ScopeModule` refinement. Strengthens T1 — modules carry typed import/export contracts that propagate the type contract across the chain. |
 | [SRD-13f](wire_materialization.md) | Cross-scope read/write semantics. Read-invariant (Pillar 3, L1); write-through routing (S5, §8.2). |
+| [Cross-Fiber Cell Invalidation](cross_fiber_invalidation.md) | Validity-tracking mechanism for S5 — per-cell revision, per-scope intent vectors, per-fiber `last_seen`. Implements §12.1's cross-fiber visibility guarantee. |
 | [SRD-16](engines.md) | Engine variants. T3 applies across every engine (P1 interpreted, P2 closures, P3 JIT). |
 | [SRD-16b](jit_boundary.md) | JIT boundary. Owns T3's enforcement at the Cranelift boundary. |
 | [SRD-67](subcontext_construction.md) | Parent-gated child construction. Owns the walled-off enforcement of all three pillars at the construction tier. |
@@ -692,26 +731,85 @@ proof.
 
 ---
 
-## 12. Open questions
+## 12. Substrate addenda
 
 The substrate is established and held by current
-implementations. Three open questions for future revision:
+implementations. This section captures the named addenda the
+substrate carries beyond the core S/T/L axioms — formal
+contracts that nail down behaviour the axioms presume but
+don't themselves spell out.
 
-### 12.1 External-write ordering semantics — formal spec
+### 12.1 External-write ordering — substrate contract
 
 S4 names external-write events as the mechanism for
-populating port-typed slots dynamically, but the *ordering
-semantics* between an external write and a concurrent fiber
-pull are not specified at the substrate layer. The current
-implementation serialises writes through a per-port
-mutex-protected slot; this is a runtime concern (per R1 +
-R2). A future revision should formalise the read-write
-ordering guarantees the substrate provides — particularly
-for the case where a producer wants "this value visible to
-all subsequent reads on this fiber starting from cycle N"
-semantics. Hosts with stricter timing needs currently
-establish those guarantees in their own contract; making the
-substrate itself commit to a richer ordering spec is open.
+populating port-typed slots dynamically; this section
+formalises the *ordering and visibility* guarantees the
+substrate provides on those writes. The implementation
+basis is per-port `Mutex<Value>` (with `AtomicU64`
+revision counter, per [cross_fiber_invalidation.md]) for
+cell-bound slots and `&mut`-exclusion for non-cell slots
+(see `kernel/engines.rs::SharedCell` and `set_input`);
+the contract below is the substrate's commitment derived
+from that mechanism.
+
+**Guarantees the substrate provides:**
+
+1. **Per-port atomicity.** A write to one port is atomic
+   with respect to concurrent reads of that port. Non-cell
+   slots are protected by the writing fiber's `&mut`
+   exclusion; cell-bound slots are protected by the cell's
+   `Mutex` acquire/release.
+2. **Per-port acquire/release publication.** A write to a
+   cell-bound port published via the typed Dataflow API
+   (`set_wire_idx` / `set_wire` per S4) happens-before every
+   subsequent read of that same port that observes the new
+   value, on any fiber. The cell's `Mutex` provides the
+   memory barrier.
+3. **Same-fiber program order.** All writes issued on a
+   fiber are observed in program order by subsequent reads
+   on the same fiber. This is Rust's sequenced-before
+   guarantee composed with mutex acquire/release at cell
+   boundaries.
+4. **Local invalidation on write.** A typed write dirties
+   every direct dependent of the written slot on the
+   writing kernel (via `input_dependents`). The writing
+   kernel's next pull observes the new value.
+5. **Cross-fiber invalidation on write.** A typed write to
+   a cell-bound port bumps the cell's revision counter and
+   sets the corresponding bit on the cell's defining
+   scope's intent-dirty vector. Every consumer fiber's
+   cone walker, on its next evaluation of a node whose
+   cone touches that cell, observes the change via the
+   bulk-mask + per-cell-revision compare protocol and re-
+   evaluates the cone. No host-side refresh call is
+   required. Specified in [cross_fiber_invalidation.md].
+
+**Guarantees the substrate explicitly does NOT provide:**
+
+1. **No cross-port ordering across cells.** Writing port A
+   then port B on the producer does not guarantee that a
+   sibling observes A-before-B. Each cell is an independent
+   consistency domain. Producers requiring multi-port
+   atomicity must batch through a single port (typed tuple
+   or composite value) or coordinate at a higher layer.
+2. **No cycle-boundary fence.** `set_inputs(coords)` is
+   not a synchronisation point for cell-bound slots; it
+   touches only the coordinate prefix. Cell-bound state
+   updates are independent of coordinate advance.
+3. **No total order across distinct cells.** Cells observed
+   across fibers do not share a global modification order
+   — only per-cell modification order is defined.
+
+**A latent invariant worth naming.** The
+`set_inputs(&[u64])` fast path writes coordinate values
+directly into the inputs array, bypassing any cell that
+might be attached to a coordinate slot. Today coordinates
+are never cell-bound — coordinate slots and shared cells
+are mutually exclusive at construction time — but nothing
+in the type system enforces it; the invariant is preserved
+by convention. A future hardening would reify the
+distinction in the slot taxonomy so the combination becomes
+ill-typed.
 
 ### 12.2 JIT escape-hatch enumeration
 

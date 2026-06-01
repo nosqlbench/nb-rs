@@ -36,6 +36,51 @@
 
 use crate::ast::{PortType, Value};
 
+/// Error returned by [`Dataflow::set_wire_idx`] /
+/// [`Dataflow::set_wire`] when the typed-write contract at the
+/// composition-substrate boundary cannot be satisfied.
+///
+/// Per composition_substrate.md axiom S4, "T1 + T2 ensure
+/// writes are type-checked at the boundary" — the typed-write
+/// API rejects writes whose Value variant doesn't match the
+/// declared slot port type, after first attempting auto-adapter
+/// healing. This error names the rejection reason.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WriteError {
+    /// The wire key did not resolve to a known input slot.
+    /// Carries the name that was looked up; for indexed writes
+    /// the index is reported instead.
+    UnknownWire { key: String },
+
+    /// The value's port type did not match the slot's declared
+    /// port type and no auto-adapter exists to heal the
+    /// mismatch. Both expected and provided port types are
+    /// reported for diagnostic clarity.
+    TypeMismatch {
+        slot: String,
+        expected: PortType,
+        got: PortType,
+    },
+}
+
+impl std::fmt::Display for WriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WriteError::UnknownWire { key } => {
+                write!(f, "unknown wire '{key}': no input slot by this name")
+            }
+            WriteError::TypeMismatch { slot, expected, got } => {
+                write!(
+                    f,
+                    "type mismatch writing to slot '{slot}': expected {expected:?}, got {got:?} (no auto-adapter available)"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for WriteError {}
+
 /// A wire reference — either a pre-resolved index (fast path)
 /// or a name (resolved against the context's input map).
 ///
@@ -51,6 +96,12 @@ pub trait WireKey: sealed::Sealed {
     /// Resolve to a wire index in `metadata`. Returns `None`
     /// when the key doesn't match a wire on this context.
     fn resolve<M: Metadata + ?Sized>(self, metadata: &M) -> Option<usize>;
+
+    /// Diagnostic rendering of this key — used by
+    /// [`Dataflow::set_wire`] when constructing
+    /// [`WriteError::UnknownWire`] so the error names what the
+    /// caller passed.
+    fn describe(&self) -> String;
 }
 
 mod sealed {
@@ -66,6 +117,8 @@ impl WireKey for usize {
     fn resolve<M: Metadata + ?Sized>(self, _: &M) -> Option<usize> {
         Some(self)
     }
+    #[inline]
+    fn describe(&self) -> String { format!("wire[{self}]") }
 }
 
 impl WireKey for &str {
@@ -73,6 +126,8 @@ impl WireKey for &str {
     fn resolve<M: Metadata + ?Sized>(self, metadata: &M) -> Option<usize> {
         metadata.find_input(self)
     }
+    #[inline]
+    fn describe(&self) -> String { (*self).to_string() }
 }
 
 impl WireKey for String {
@@ -80,6 +135,8 @@ impl WireKey for String {
     fn resolve<M: Metadata + ?Sized>(self, metadata: &M) -> Option<usize> {
         metadata.find_input(&self)
     }
+    #[inline]
+    fn describe(&self) -> String { self.clone() }
 }
 
 impl WireKey for &String {
@@ -87,6 +144,8 @@ impl WireKey for &String {
     fn resolve<M: Metadata + ?Sized>(self, metadata: &M) -> Option<usize> {
         metadata.find_input(self)
     }
+    #[inline]
+    fn describe(&self) -> String { (*self).clone() }
 }
 
 /// Read-only metadata about a GK context: structural shape,
@@ -109,6 +168,13 @@ pub trait Metadata {
 
     /// Declared port type of an input wire, if known.
     fn input_port_type(&self, name: &str) -> Option<PortType>;
+
+    /// Declared port type of an input wire by index. The
+    /// indexed counterpart of [`input_port_type`] — used by
+    /// the typed-write fast path so [`Dataflow::set_wire_idx`]
+    /// can look up the slot's expected type without first
+    /// reverse-resolving an index to a name.
+    fn input_port_type_by_idx(&self, idx: usize) -> Option<PortType>;
 }
 
 /// Data interface to a GK context: write inputs, read wires.
@@ -123,25 +189,38 @@ pub trait Metadata {
 /// program or per-fiber state should use this trait
 /// exclusively.
 pub trait Dataflow: Metadata {
-    /// Write a value to wire `idx`. Out-of-range indices are
-    /// a programming error (the caller already had a resolved
-    /// index); panics in debug, no-ops in release.
-    fn set_wire_idx(&mut self, idx: usize, value: Value);
+    /// Write a value to wire `idx` with typed enforcement.
+    ///
+    /// Per composition_substrate.md axiom S4, the typed-write
+    /// boundary enforces T1 + T2: the value's port type must
+    /// match the slot's declared port type, with auto-adapter
+    /// healing where the implementation supports it. Mismatches
+    /// the boundary cannot heal return [`WriteError::TypeMismatch`].
+    /// An out-of-range index returns
+    /// [`WriteError::UnknownWire`].
+    fn set_wire_idx(&mut self, idx: usize, value: Value) -> Result<(), WriteError>;
 
     /// Read the current value of wire `idx`. Out-of-range
-    /// behaviour mirrors `set_wire_idx`.
+    /// behaviour returns the slot's default `Value::None` (the
+    /// read path is non-fallible; type information is structural
+    /// and reads cannot fail typewise).
     fn get_wire_idx(&self, idx: usize) -> Value;
 
     /// Write a value to a wire identified by `key` (index or
-    /// name). Returns whether the wire was found.
+    /// name). Returns `Ok(())` on success, `Err(WriteError)` on
+    /// failure (unknown wire or type mismatch the boundary
+    /// cannot heal).
     #[inline]
-    fn set_wire<W: WireKey>(&mut self, key: W, value: Value) -> bool {
+    fn set_wire<W: WireKey>(&mut self, key: W, value: Value) -> Result<(), WriteError> {
+        // Capture a string form of the key for diagnostic
+        // reporting before resolution consumes it. The
+        // WireKey::describe method provides this; the default
+        // impl renders index keys as "wire[N]" and name keys
+        // as the name itself.
+        let key_desc = key.describe();
         match key.resolve(self) {
-            Some(idx) => {
-                self.set_wire_idx(idx, value);
-                true
-            }
-            None => false,
+            Some(idx) => self.set_wire_idx(idx, value),
+            None => Err(WriteError::UnknownWire { key: key_desc }),
         }
     }
 

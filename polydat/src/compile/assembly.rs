@@ -285,7 +285,7 @@ impl GkAssembler {
     /// `kind` controls the lifecycle classification used by the
     /// init-binding contract (see [SRD 11](../../../docs/sysref/11_gk_evaluation.md)
     /// §"Effectively-Const Nodes"): `IterationExtern` for slots
-    /// populated by `materialize_wiring_from_outer`, `CapturePort` for slots
+    /// populated by `materialize_wiring_from_outer`, `ExternalWrite` for slots
     /// written by capture extraction.
     pub fn add_input(&mut self, name: impl Into<String>, default: crate::ast::Value, port_type: crate::ast::PortType, kind: crate::kernel::InputKind) -> &mut Self {
         self.input_defs.push(crate::kernel::InputDef {
