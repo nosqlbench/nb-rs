@@ -2571,7 +2571,20 @@ async fn executor_task(
         };
 
         activity.metrics.stanzas_total.inc();
-        fiber.reset_captures();
+        // Stanza-boundary `reset_captures()` was historically called
+        // here to defend against capture leakage between cycles. That
+        // defence is redundant under the post-closure-binding-economy
+        // architecture: every reachable wire is either a per-cycle
+        // kernel output (recomputed each cycle from inputs and the
+        // current `cycle`), a closed-loop capture (the same op that
+        // reads the wire is the op that writes it; a failed write
+        // short-circuits the consumer via OpResult error), a magic
+        // extern (`body` / `count` / `ok`, rewritten pre-eval by
+        // ResultDispenser), or a scope-invariant iter-var / workload
+        // param (constant across the phase activation). None of those
+        // can hold a stale value that a successful cycle would read.
+        // The per-cycle reset + re-apply round-trip was 40% of single-
+        // fiber CPU; removing it leaves end-state semantics identical.
 
         // Phase 2: RENDER + EXECUTE — fiber-local, no contention.
         // Each op resolves via this fiber's GK instance, then

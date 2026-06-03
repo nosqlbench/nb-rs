@@ -264,9 +264,16 @@ impl PartialEq for Value {
             (Value::U64(a), Value::U64(b)) => a == b,
             (Value::F64(a), Value::F64(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
-            (Value::Str(a), Value::Str(b)) => a == b,
-            (Value::Bytes(a), Value::Bytes(b)) => a == b,
-            (Value::Json(a), Value::Json(b)) => a == b,
+            // Arc-backed variants: pointer-eq fast path before
+            // any content compare. Hot per-cycle callers
+            // (notably `GkState::reset_inputs_from`'s
+            // "still at default?" probe) typically test a slot
+            // against a value that was Arc-cloned from the same
+            // source — `Arc::ptr_eq` is O(1) and lets the deep
+            // compare drop out of the per-cycle path.
+            (Value::Str(a), Value::Str(b)) => Arc::ptr_eq(a, b) || a == b,
+            (Value::Bytes(a), Value::Bytes(b)) => Arc::ptr_eq(a, b) || a == b,
+            (Value::Json(a), Value::Json(b)) => Arc::ptr_eq(a, b) || a == b,
             (Value::None, Value::None) => true,
             (Value::Ext(a), Value::Ext(b)) => {
                 a.type_name() == b.type_name() && a.display() == b.display()
